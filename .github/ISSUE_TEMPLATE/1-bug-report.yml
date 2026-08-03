@@ -1,0 +1,131 @@
+name: 🐛 Bug Report
+description: Report a reproducible defect. Incomplete reports will be labeled `needs-info` and may be closed.
+title: "bug: <short description>"
+labels: ["type: bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+        Before submitting, please **search existing issues** (including closed ones) to avoid duplicates.
+
+  - type: checkboxes
+    id: prerequisites
+    attributes:
+      label: Prerequisites
+      options:
+        - label: I have searched existing issues and this is not a duplicate
+          required: true
+        - label: I can reproduce this on the latest release / main branch
+          required: true
+        - label: This is not a security vulnerability (those must be reported privately — see SECURITY.md)
+          required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: A clear and concise description of the bug.
+      placeholder: What happened?
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Minimal, complete steps. Link a minimal reproduction repo/snippet if possible.
+      placeholder: |
+        1. Run '...'
+        2. Call '...'
+        3. See error
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen?
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What actually happened? Include full error messages and stack traces.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: component
+    attributes:
+      label: Which part?
+      description: >
+        The Panel is the web service you deploy; the Core (Harness) is the
+        daemon installed on a machine that runs agents. If you are not sure,
+        pick the one you were looking at when it broke.
+      options:
+        - "Panel — the web service / UI"
+        - "Core (Harness) — the machine-side daemon"
+        - "Core link — pairing, or a Core showing as unreachable"
+        - "actana CLI — setup, update, agents, uninstall"
+        - "install.sh / release tarball"
+        - "Docker image or deployment"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: Affected version(s)
+      description: >
+        Panel version is in Settings → General; a Core's is `actana status`.
+        A commit SHA is fine if you build from source.
+      placeholder: e.g. v0.49.0, or a commit SHA
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: >
+        Where the Panel runs, where the Core runs, and how you deploy. Include
+        both sides if the two are on different machines.
+      render: shell
+      placeholder: |
+        Panel:   ghcr.io/actana/actana-panel:0.49.0, docker compose behind Caddy
+        Core:    Ubuntu 24.04 x64, installed via install.sh, systemd user unit
+        Browser: Firefox 141
+        Agent:   claude 2.1.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity (your assessment)
+      options:
+        - "S1 – Blocker: crash, data loss, no workaround"
+        - "S2 – Major: core feature broken, workaround exists"
+        - "S3 – Minor: non-core feature affected"
+        - "S4 – Trivial: cosmetic"
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Relevant logs
+      description: Paste relevant log output. This will be automatically formatted as code.
+      render: shell
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to submit a PR to fix this bug

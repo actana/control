@@ -1,0 +1,47 @@
+# Reference deployment: the Panel behind Caddy, which terminates TLS with
+# automatic Let's Encrypt certificates (ADR 0010 — the Panel itself speaks
+# plain HTTP and never grows certificate code).
+#
+#   cp .env.example .env    # set AC_PANEL_DOMAIN (and optionally AC_SECRETS_KEY)
+#   docker compose up -d
+#
+# then open https://<your domain>. DNS for the domain must already point at
+# this machine, with ports 80 and 443 reachable, or Let's Encrypt issuance
+# fails. For plain-localhost use skip this file entirely — see DEPLOY.md.
+#
+# Caddy forwards WebSocket upgrades (the panel link) and sets
+# X-Forwarded-Proto out of the box, which is what makes the Panel mark its
+# session cookie Secure behind the proxy.
+services:
+  panel:
+    image: ghcr.io/actana/actana-panel:latest
+    restart: unless-stopped
+    environment:
+      # Optional: hold the secrets key outside the data volume so a copied
+      # volume alone can't open the Core credentials. Empty means the Panel
+      # keeps the key at /data/secrets.key instead.
+      - AC_SECRETS_KEY=${AC_SECRETS_KEY:-}
+    volumes:
+      # The single place all Panel state lives. Backing up this volume is
+      # backing up the Panel.
+      - panel-data:/data
+
+  caddy:
+    image: caddy:2.10
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      - AC_PANEL_DOMAIN=${AC_PANEL_DOMAIN:?set AC_PANEL_DOMAIN to the hostname this Panel is served at}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      # Certificates and ACME account state — losing these only means
+      # re-issuance, but keeping them avoids Let's Encrypt rate limits.
+      - caddy-data:/data
+      - caddy-config:/config
+
+volumes:
+  panel-data:
+  caddy-data:
+  caddy-config:

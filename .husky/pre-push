@@ -1,0 +1,18 @@
+#!/bin/sh
+# Validates the branch name before pushing — same pattern as the Conventions
+# workflow, so a PR-blocking name is caught while it is still one `git branch
+# -m` away.
+#
+# Enable (once per clone): git config core.hooksPath .husky
+
+branch="$(git rev-parse --abbrev-ref HEAD)"
+pattern='^(main|master|develop|(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*)$'
+
+if ! echo "$branch" | grep -qE "$pattern"; then
+  echo "❌ Branch name '$branch' violates the naming convention."
+  echo "   Expected: <type>/<kebab-case-description>"
+  echo "   Types: feat|fix|hotfix|release|chore|docs|refactor|perf|test|ci|revert"
+  echo "   Example: feat/proj-123-oauth-device-flow"
+  echo "   Rename with: git branch -m <new-name>"
+  exit 1
+fi

@@ -1,0 +1,49 @@
+# Automated dependency updates.
+#
+# PR titles carry a conventional-commit prefix so they satisfy the Conventions
+# workflow — without it every Dependabot PR fails the PR-title check and has to
+# be retitled by hand.
+version: 2
+updates:
+  - package-ecosystem: "npm"
+    # The pnpm workspace root plus each package, so a bump in packages/panel
+    # is not invisible to Dependabot.
+    directories:
+      - "/"
+      - "/packages/*"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
+    open-pull-requests-limit: 10
+    labels: ["type: dependencies"]
+    commit-message:
+      prefix: "build"
+      prefix-development: "chore"
+      include: "scope"
+    groups:
+      # One PR for the routine noise, individual PRs for majors — which are the
+      # ones that actually need a human to read a changelog.
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["type: dependencies"]
+    commit-message:
+      prefix: "ci"
+
+  # The Panel image's base. A stale node:24-bookworm base is the most likely
+  # way a CVE reaches operators, and nothing else in this file would catch it.
+  - package-ecosystem: "docker"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels: ["type: dependencies"]
+    commit-message:
+      prefix: "build"

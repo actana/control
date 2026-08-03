@@ -1,0 +1,195 @@
+name: Panel image
+
+# The single implementation of "build the Panel image, prove it works, publish
+# it". Three callers reuse it so the bytes a PR validates are built exactly the
+# way the bytes a release publishes are:
+#
+#   ci.yml            → build + smoke, amd64 only, no push  (every PR)
+#   panel-edge.yml    → :edge and :sha-<short>              (every push to main)
+#   panel-release.yml → :<version> and :latest              (every v* tag)
+#
+# Each architecture builds natively on a runner of its own kind (the image
+# compiles better-sqlite3 during the build — emulating that under QEMU is slow
+# and proves the wrong machine). Every per-arch image passes the smoke script —
+# boot, first-boot setup, state surviving container recreation — before
+# anything is pushed, and the publish job stitches the per-arch tags into the
+# multi-arch manifests that the reference compose file pulls.
+#
+# Registries. GHCR always, authenticated with the workflow's own `github.token`,
+# which GHCR accepts for packages owned by this repository. Docker Hub *as well*
+# whenever the DOCKERHUB_TOKEN secret is set — absent it, every Docker Hub step
+# is skipped and the run still succeeds on GHCR alone. That gating is what lets
+# a fork (or this repo before the keys are added) build and release without any
+# Docker Hub account at all. See docs/ci-cd.md for adding the keys.
+
+on:
+  workflow_call:
+    inputs:
+      ref:
+        description: "Git ref to build."
+        type: string
+        required: true
+      stage:
+        description: "Discriminator for the intermediate per-arch tags (e.g. 0.49.0, edge)."
+        type: string
+        required: true
+      tags:
+        description: "Space-separated final tags to publish (e.g. '0.49.0 latest'). Ignored when push is false."
+        type: string
+        default: ""
+      push:
+        description: "Publish the image. False builds and smokes only."
+        type: boolean
+        default: true
+      matrix:
+        description: "JSON matrix of runners to build on."
+        type: string
+        default: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"},{"os":"ubuntu-24.04-arm","arch":"arm64"}]}'
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolve:
+    name: Resolve registries
+    runs-on: ubuntu-24.04
+    outputs:
+      ghcr: ${{ steps.registries.outputs.ghcr }}
+      dockerhub: ${{ steps.registries.outputs.dockerhub }}
+      images: ${{ steps.registries.outputs.images }}
+    steps:
+      - id: registries
+        env:
+          OWNER: ${{ github.repository_owner }}
+          # A repository variable, so a fork publishing under a different
+          # Docker Hub org doesn't have to edit this file.
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # GHCR requires a lowercase namespace.
+          ghcr="ghcr.io/${OWNER,,}/actana-panel"
+          echo "ghcr=$ghcr" >> "$GITHUB_OUTPUT"
+
+          images="$ghcr"
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+            dockerhub="docker.io/${namespace,,}/actana-panel"
+            echo "dockerhub=$dockerhub" >> "$GITHUB_OUTPUT"
+            images="$images $dockerhub"
+            echo "Publishing to GHCR and Docker Hub ($dockerhub)."
+          else
+            echo "dockerhub=" >> "$GITHUB_OUTPUT"
+            echo "DOCKERHUB_TOKEN is not set — publishing to GHCR only."
+          fi
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build + smoke (${{ matrix.arch }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Build the image
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: docker build --tag "$IMAGE:$STAGE-$ARCH" .
+
+      # The acceptance criterion, against the exact bytes being released:
+      # boot on a clean volume, first-boot setup, then destroy the container
+      # and prove the volume alone carries the state.
+      - name: Smoke — boots, sets up, survives container recreation
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: node scripts/smoke-panel-image.mjs --image "$IMAGE:$STAGE-$ARCH" --skip-build
+
+      - name: Push the per-arch tags
+        if: inputs.push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+          for image in $IMAGES; do
+            # The image was built under the GHCR name; retag for any other registry.
+            if [[ "$image" != "$GHCR_IMAGE" ]]; then
+              docker tag "$GHCR_IMAGE:$STAGE-$ARCH" "$image:$STAGE-$ARCH"
+            fi
+            docker push "$image:$STAGE-$ARCH"
+          done
+
+  publish:
+    name: Publish the multi-arch manifest
+    if: inputs.push
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Stitch per-arch tags into the release tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          MATRIX: ${{ inputs.matrix }}
+          STAGE: ${{ inputs.stage }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAGS// }" ]]; then
+            echo "no tags requested for a pushing build" >&2
+            exit 1
+          fi
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+
+          # The arch list comes from the same matrix the build job used, so a
+          # caller that builds one arch produces a one-arch manifest rather
+          # than referencing a tag that was never pushed.
+          arches="$(echo "$MATRIX" | jq -r '.include[].arch' | tr '\n' ' ')"
+
+          for image in $IMAGES; do
+            sources=()
+            for arch in $arches; do sources+=("$image:$STAGE-$arch"); done
+            tag_args=()
+            for tag in $TAGS; do tag_args+=(--tag "$image:$tag"); done
+            docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+            docker buildx imagetools inspect "$image:${TAGS%% *}"
+          done

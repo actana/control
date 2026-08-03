@@ -1,0 +1,46 @@
+# Dev stack: a Panel and a Core-in-a-box on one compose network, paired by
+# service name — the Panel dials wss://core:8443 internally, so the Core
+# publishes no ports at all. NOT a production deployment (that is
+# ../docker-compose.yml): this exists to try the real pairing flow on one
+# machine with nothing but Docker.
+#
+#   pnpm harness:tarball        # on Linux; see README.md for the macOS way
+#   docker compose up -d --build
+#   docker compose exec core cat /home/operator/registration-blob.txt
+#
+# then open http://localhost:7420, create the Operator, and paste the blob
+# into "Add Core". Full walkthrough in README.md.
+services:
+  panel:
+    build:
+      context: ../..
+    ports:
+      - "127.0.0.1:7420:7420"
+    volumes:
+      - panel-data:/data
+
+  core:
+    build:
+      context: .
+      dockerfile: core.Dockerfile
+      additional_contexts:
+        # Where `pnpm harness:tarball` writes; .dockerignore keeps artifacts/
+        # out of the repo-root context, hence the named extra context.
+        tarball: ../../artifacts/harness
+    # The standard systemd-in-Docker arrangement, mirrored from the e2e's
+    # Core-in-a-box (scripts/lib/systemd-container.mjs) — systemd must manage
+    # its own cgroups.
+    privileged: true
+    cgroup: host
+    tmpfs:
+      - /run
+      - /run/lock
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+      # The Core's whole state — install, SQLite, certs, the provision
+      # marker — so recreating the container keeps the same paired Core.
+      - core-home:/home/operator
+
+volumes:
+  panel-data:
+  core-home:

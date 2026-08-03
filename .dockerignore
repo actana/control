@@ -1,0 +1,42 @@
+# Everything the image build regenerates or must never see. The build COPIES
+# the whole repo after the lockfile layer, so this list is what keeps host
+# artifacts (and host-ABI native builds) out of the context.
+.git
+node_modules
+**/node_modules
+
+# Build outputs — rebuilt inside the container.
+dist
+**/dist
+dist-electron
+dist-electron-out
+dist-server
+.output
+.vite
+.vinxi
+.tanstack
+
+# Local state, scratch, and test residue.
+.env
+.env.*
+.certs
+.cache
+.pnpm-store
+.scratch
+.claude
+.codex
+.cursor
+.impeccable
+Temp
+**/Temp
+test-results
+tmp-*
+artifacts
+release
+*.log
+.DS_Store
+
+# Reference material the runtime never loads.
+designs
+docs
+screenshot.mjs

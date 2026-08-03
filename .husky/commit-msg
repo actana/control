@@ -1,0 +1,19 @@
+#!/bin/sh
+# Checks the commit message against commitlint.config.mjs — the same rules CI
+# enforces on every PR, just told to you now rather than after you push.
+#
+# Enable (once per clone, no dependency required):
+#   git config core.hooksPath .husky
+#
+# commitlint is deliberately NOT a dependency of this repo — adding it would
+# churn the lockfile for a local convenience. If it is not resolvable the hook
+# steps aside with a hint rather than blocking your commit; CI is the gate that
+# actually has to pass.
+
+if npx --no -- commitlint --version >/dev/null 2>&1; then
+  npx --no -- commitlint --edit "$1"
+else
+  echo "ℹ commitlint not installed — skipping the local commit-message check."
+  echo "  CI will still enforce it. To check locally:"
+  echo "    npm install --no-save @commitlint/cli @commitlint/config-conventional"
+fi

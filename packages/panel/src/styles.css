@@ -1,0 +1,2895 @@
+@import "tailwindcss";
+
+/* JetBrains Mono is the Panel's single face — the Studio look uses it for UI
+   and terminal alike. Per-subset imports: latin + latin-ext (box-drawing /
+   extended glyphs in terminals), full 100–800 weight range (JetBrains Mono
+   ships no 900 cut). */
+@import "@fontsource/jetbrains-mono/latin-100.css";
+@import "@fontsource/jetbrains-mono/latin-ext-100.css";
+@import "@fontsource/jetbrains-mono/latin-200.css";
+@import "@fontsource/jetbrains-mono/latin-ext-200.css";
+@import "@fontsource/jetbrains-mono/latin-300.css";
+@import "@fontsource/jetbrains-mono/latin-ext-300.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-ext-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-ext-500.css";
+@import "@fontsource/jetbrains-mono/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-ext-600.css";
+@import "@fontsource/jetbrains-mono/latin-700.css";
+@import "@fontsource/jetbrains-mono/latin-ext-700.css";
+@import "@fontsource/jetbrains-mono/latin-800.css";
+@import "@fontsource/jetbrains-mono/latin-ext-800.css";
+
+@import "@xterm/xterm/css/xterm.css";
+
+@theme {
+  --font-sans: "JetBrains Mono", ui-sans-serif, -apple-system, system-ui,
+    "Segoe UI", Helvetica, "Apple Color Emoji", Arial, sans-serif,
+    "Segoe UI Emoji", "Segoe UI Symbol";
+  --font-mono: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, monospace;
+}
+
+/* =====================================================================
+   STUDIO PALETTE — copied verbatim from Actana Studio
+   (apps/actana/app/_styles/globals.css). Do NOT re-tune these values on the
+   fork; when Studio's palette changes, re-copy the blocks wholesale.
+   Light (`:root, .light`) is the default; `.dark` is toggled on <html> by the
+   pre-hydration script + useTheme — the single surviving theme axis.
+   ===================================================================== */
+
+:root {
+  /* Shadow scale */
+  --shadow-subtle: 0 2px 4px 0 rgba(0, 0, 0, 0.08);
+  --shadow-medium: 0 4px 12px rgba(0, 0, 0, 0.1);
+  --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.15);
+  --shadow-kbd: 0 4px 0 0 rgba(48, 48, 48, 1);
+  --shadow-kbd-sm: 0 2px 0 0 rgba(48, 48, 48, 1);
+  --shadow-brand-inset: inset 0 1.25px 2.5px 0 #6abbe1;
+  --shadow-card: 0 1px 3px rgba(0, 0, 0, 0.04);
+}
+
+@layer base {
+  :root,
+  .light {
+    /*
+     * Surface scale — premium purple-tinted palette.
+     * surface-1 = sidebar (warm white), surface-2 = cards (pure white),
+     * surface-4/hover/active introduce the violet wash that runs across
+     * the whole studio.
+     */
+    --bg: #f3f4f6; /* main canvas — neutral gray, lets cards pop */
+    --surface-1: #f1f9fe; /* sidebar / panels — warm white with purple undertone */
+    --surface-2: #ffffff; /* blocks, cards, modals */
+    --surface-3: #fafafa; /* popovers, headers — slightly off card */
+    --surface-4: #ecf6fd; /* button base / accent-tinted */
+    --surface-5: #f9fafb; /* inputs, form elements */
+    --surface-6: #ddeffb; /* elevated / hovered popovers */
+    --surface-7: #c7e6f6; /* most-elevated accent surface */
+    --surface-hover: #ecf6fd; /* hover state */
+    --surface-active: #ddeffb; /* active/selected state */
+
+    /* Direct aliases from the design palette — prefer these in new code. */
+    --surface-main: #f3f4f6;
+    --surface-card: #ffffff;
+    --surface-sidebar: #f1f9fe;
+
+    --border: #e5e7eb; /* primary border — neutral, doesn't fight content */
+    --border-1: #c7e6f6; /* stronger border — accent-subtle */
+    --workflow-edge: #c7e6f6;
+
+    /* Text — neutral with deep ink for headings, gray for body. */
+    --text-primary: #111827;
+    --text-secondary: #374151;
+    --text-tertiary: #4b5563;
+    --text-muted: #6b7280;
+    --text-subtle: #9ca3af;
+    --text-body: #374151;
+    --text-icon: #6b7280;
+    --text-main: #111827;
+
+    --text-inverse: #f1f9fe;
+    --text-muted-inverse: #7bc3e8;
+    --text-error: #ef4444;
+
+    /* Borders / dividers */
+    --divider: #f3f4f6;
+    --border-default: #e5e7eb; /* alias for --border, used by apps editor + player */
+    --border-muted: #f3f4f6;
+    --border-success: #d1fae5;
+
+    /* Brand & state — accent stays vivid in both modes. */
+    --brand-secondary: #2f9fd6;
+    --brand-accent: #29a9e0;
+    --brand-accent-hover: #1786c2;
+    --accent-primary: #29a9e0; /* alias for --brand-accent */
+    --accent-on-accent: #f1f9fe; /* text/icon color on top of accent fills */
+    --accent-subtle-bg: #ecf6fd; /* tinted bg for accent pills, code chips */
+    --accent-subtle-border: #c7e6f6; /* border for accent pills, focused inputs */
+    --selection: #1786c2;
+    --warning: #ea580c;
+
+    /* Inverted surface (dark chrome on light page, e.g. tag dropdown) */
+    --surface-inverted: #1b1b1b;
+    --surface-inverted-hover: #363636;
+    --border-inverted: #363636;
+
+    /* Tooltip (true inversion: always opposite of page) */
+    --tooltip-bg: #1b1b1b;
+
+    /* Utility */
+    --white: #ffffff;
+
+    /* Font weights - lighter for light mode */
+    --font-weight-base: 400;
+    --font-weight-medium: 500;
+    --font-weight-semibold: 600;
+
+    /* Code editor (theme-aware) */
+    --code-bg: #f5f5f5;
+    --code-foreground: #1a1a1a;
+    --code-line-number: #737373;
+
+    /* Workspace: additional text */
+    --text-placeholder: #8d8d8d;
+    --text-success: #22c55e;
+
+    /* Status / semantic colors */
+    --error: #dc2626;
+    --error-muted: #fecaca;
+    --error-emphasis: #b91c1c;
+    --caution: #f59e0b;
+    --success: #22c55e;
+
+    /* Brand extended */
+    --brand-knowledge: #00b0b0;
+    --selection-dark: #264f78;
+
+    /* Terminal status badges */
+    --terminal-status-error-bg: #fef2f2;
+    --terminal-status-error-border: #f87171;
+    --terminal-status-info-bg: #f7f7f7;
+    --terminal-status-info-border: #a3a3a3;
+    --terminal-status-info-color: #525252;
+    --terminal-status-warning-bg: #fefce8;
+    --terminal-status-warning-border: #facc15;
+    --terminal-status-warning-color: #a16207;
+
+    /* Badge semantic colors */
+    --badge-success-bg: #bbf7d0;
+    --badge-success-text: #15803d;
+    --badge-error-bg: #fecaca;
+    --badge-error-text: #dc2626;
+    --badge-gray-bg: #e7e5e4;
+    --badge-gray-text: #57534e;
+    --badge-blue-bg: #bfdbfe;
+    --badge-blue-text: #1d4ed8;
+    --badge-blue-secondary-bg: #bae6fd;
+    --badge-blue-secondary-text: #0369a1;
+    --badge-purple-bg: #e9d5ff;
+    --badge-purple-text: #7c3aed;
+    --badge-orange-bg: #fed7aa;
+    --badge-orange-text: #c2410c;
+    --badge-amber-bg: #fde68a;
+    --badge-amber-text: #a16207;
+    --badge-teal-bg: #99f6e4;
+    --badge-teal-text: #0f766e;
+    --badge-cyan-bg: #cffafe;
+    --badge-cyan-text: #0891b2;
+    --badge-pink-bg: #fbcfe8;
+    --badge-pink-text: #be185d;
+
+    /* Search/highlight */
+    --highlight-search-active: #f6ad55;
+    --highlight-search: #fcd34d;
+    --highlight-match-bg: #bae6fd;
+    --highlight-match-text: #0369a1;
+
+    /* Selection */
+    --selection-bg: #add6ff;
+
+    /* Active indicator */
+    --indicator-online: #33c482;
+    --indicator-active: #4ade80;
+    --indicator-inactive: #b7b7b7;
+    --indicator-seat-filled: #34b5ff;
+
+    /* Scrollbar colors */
+    --scrollbar-thumb-color: #c0c0c0;
+    --scrollbar-thumb-hover-color: #a8a8a8;
+  }
+
+  .dark {
+    /*
+     * Surface scale — purple-tinted dark, "premium ERP" feel.
+     * surface-1 (sidebar) is the deepest near-black; the bg + cards step
+     * up through navy-purple shades.
+     */
+    --bg: #0e1722; /* main canvas — purple-tinted dark */
+    --surface-1: #0f0f11; /* sidebar — near black */
+    --surface-2: #122231; /* cards / blocks / modals — navy-purple */
+    --surface-3: #16293a; /* popovers, headers */
+    --surface-4: #1b3145; /* button base */
+    --surface-5: #213a52; /* inputs, form elements */
+    --surface-6: #284763; /* elevated / hovered popovers */
+    --surface-7: #0a4a6e; /* most-elevated accent surface */
+    --surface-hover: #16293a;
+    --surface-active: #1f3a52;
+
+    /* Direct aliases from the design palette — prefer these in new code. */
+    --surface-main: #0e1722;
+    --surface-card: #122231;
+    --surface-sidebar: #0f0f11;
+
+    --border: #1c3346; /* primary border — subtle purple tint */
+    --border-1: #244157; /* stronger border */
+    --workflow-edge: #244157;
+
+    /* Text */
+    --text-primary: #f9fafb;
+    --text-secondary: #e5e7eb;
+    --text-tertiary: #d1d5db;
+    --text-muted: #9ca3af;
+    --text-subtle: #6b7280;
+    --text-body: #d1d5db;
+    --text-icon: #9ca3af;
+    --text-main: #f9fafb;
+
+    --text-inverse: #0e1722;
+    --text-muted-inverse: #6b7280;
+    --text-error: #ef4444;
+
+    --divider: #1c3346;
+    --border-default: #1c3346; /* alias for --border, used by apps editor + player */
+    --border-muted: #13202d;
+    --border-success: #14532d;
+
+    /* Brand & state — accent stays vivid in both modes. */
+    --brand-secondary: #2f9fd6;
+    --brand-accent: #29a9e0;
+    --brand-accent-hover: #1786c2;
+    --accent-primary: #29a9e0;
+    --accent-on-accent: #f1f9fe;
+    --accent-subtle-bg: #122231; /* tinted dark surface for accent pills */
+    --accent-subtle-border: #0a4a6e;
+    --selection: #1786c2;
+    --warning: #ff6600;
+
+    /* Inverted surface (in dark mode, falls back to standard surfaces) */
+    --surface-inverted: #242424;
+    --surface-inverted-hover: #363636;
+    --border-inverted: #3d3d3d;
+
+    /* Tooltip (true inversion: always opposite of page) */
+    --tooltip-bg: #fdfdfd;
+
+    /* Utility */
+    --white: #ffffff;
+
+    /* Font weights - standard weights for dark mode */
+    --font-weight-base: 400;
+    --font-weight-medium: 500;
+    --font-weight-semibold: 600;
+
+    /* Code editor (dark mode overrides) */
+    --code-bg: #1f1f1f;
+    --code-foreground: #eeeeee;
+    --code-line-number: #a8a8a8;
+
+    /* Workspace text */
+    --text-placeholder: #8d8d8d;
+    --text-success: #22c55e;
+
+    /* Status / semantic (dark overrides where needed) */
+    --error: #f87171;
+    --error-muted: #f6d2d2;
+    --error-emphasis: #b91c1c;
+    --caution: #f59e0b;
+    --success: #22c55e;
+
+    /* Brand extended */
+    --brand-knowledge: #00b0b0;
+    --selection-dark: #264f78;
+
+    /* Terminal status badges */
+    --terminal-status-error-bg: #491515;
+    --terminal-status-error-border: #883827;
+    --terminal-status-info-bg: #383838;
+    --terminal-status-info-border: #686868;
+    --terminal-status-info-color: #b7b7b7;
+    --terminal-status-warning-bg: #3d3520;
+    --terminal-status-warning-border: #5c4d1f;
+    --terminal-status-warning-color: #d4a72c;
+
+    /* Badge semantic colors */
+    --badge-success-bg: rgba(34, 197, 94, 0.2);
+    --badge-success-text: #86efac;
+    --badge-error-bg: #551a1a;
+    --badge-error-text: #fca5a5;
+    --badge-gray-bg: #3a3a3a;
+    --badge-gray-text: #a8a8a8;
+    --badge-blue-bg: rgba(59, 130, 246, 0.2);
+    --badge-blue-text: #93c5fd;
+    --badge-blue-secondary-bg: rgba(51, 180, 255, 0.2);
+    --badge-blue-secondary-text: #7dd3fc;
+    --badge-purple-bg: rgba(168, 85, 247, 0.2);
+    --badge-purple-text: #d8b4fe;
+    --badge-orange-bg: rgba(249, 115, 22, 0.2);
+    --badge-orange-text: #fdba74;
+    --badge-amber-bg: rgba(245, 158, 11, 0.2);
+    --badge-amber-text: #fcd34d;
+    --badge-teal-bg: rgba(20, 184, 166, 0.2);
+    --badge-teal-text: #5eead4;
+    --badge-cyan-bg: rgba(14, 165, 233, 0.2);
+    --badge-cyan-text: #7dd3fc;
+    --badge-pink-bg: rgba(236, 72, 153, 0.2);
+    --badge-pink-text: #f9a8d4;
+
+    /* Search/highlight */
+    --highlight-search-active: #f6ad55;
+    --highlight-search: #fcd34d;
+    --highlight-match-bg: rgba(51, 180, 255, 0.2);
+    --highlight-match-text: #7dd3fc;
+
+    /* Selection */
+    --selection-bg: #264f78;
+
+    /* Active indicator */
+    --indicator-online: #33c482;
+    --indicator-active: #4ade80;
+    --indicator-inactive: #b7b7b7;
+    --indicator-seat-filled: #6abbe1;
+
+    /* Scrollbar colors */
+    --scrollbar-thumb-color: #5a5a5a;
+    --scrollbar-thumb-hover-color: #6a6a6a;
+
+    /* Shadow scale - dark */
+    --shadow-overlay: 0 16px 48px rgba(0, 0, 0, 0.4);
+  }
+}
+
+/* =====================================================================
+   FORK TOKEN VOCABULARY — the Panel's pre-existing token names, re-bound
+   onto the Studio palette above so every component keeps working. These are
+   ALIASES ONLY: no color literal below may deviate from a Studio token.
+   Prefer the Studio names in new code.
+   ===================================================================== */
+:root {
+  /* Typography — JetBrains Mono everywhere, Studio's sans fallback stack. */
+  --sans: var(--font-sans);
+  --mono: var(--font-mono);
+
+  /* Radius scale — Studio's 0.5rem base with derived steps. */
+  --radius: 0.5rem;
+  --radius-xs: 0.25rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.5rem;
+  --radius-lg: 0.75rem;
+  --mm-radius-sm: var(--radius-xs);
+  --mm-radius: var(--radius-sm);
+  --mm-radius-lg: var(--radius);
+
+  /* Motion + focus grammar. */
+  --mm-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --mm-dur: 140ms;
+  --mm-ring:
+    0 0 0 1px color-mix(in srgb, var(--brand-accent) 90%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--brand-accent) 24%, transparent);
+
+  /* Surfaces + text tiers. */
+  --surface-0: var(--surface-card);
+  --border-strong: var(--border-1);
+  --text: var(--text-primary);
+  --text-dim: var(--text-secondary);
+  --text-faint: var(--text-muted);
+
+  /* Accent — the Studio cyan/blue, fixed. */
+  --accent: var(--brand-accent);
+  --accent-hover: var(--brand-accent-hover);
+  --accent-dim: color-mix(in srgb, var(--brand-accent) 18%, transparent);
+  --accent-faint: color-mix(in srgb, var(--brand-accent) 10%, transparent);
+  --accent-border: var(--accent-subtle-border);
+  --accent-glow: color-mix(in srgb, var(--brand-accent) 38%, transparent);
+  --accent-soft-hover: color-mix(in srgb, var(--brand-accent) 26%, transparent);
+  --accent-ink: var(--brand-accent-hover);
+  --mm-on-accent: var(--accent-on-accent);
+
+  /* Session-state vocabulary, mapped onto Studio's semantic palette. */
+  --status-ready: var(--brand-secondary);
+  --status-running: var(--caution);
+  --status-needs: var(--error);
+  --status-interrupted: var(--warning);
+  --status-done: var(--success);
+  --status-idle: color-mix(in srgb, var(--text-primary) 30%, transparent);
+  /* warning/failed share the running/needs hues by intent (one caution/urgent
+     color language across surfaces) — aliased, not duplicated. */
+  --status-warning: var(--status-running);
+  --status-failed: var(--status-needs);
+  --danger: var(--error);
+  --ok: var(--success);
+
+  /* Terminal canvas ground. */
+  --terminal-bg: var(--surface-card);
+
+  /* Update banner. */
+  --banner-bg: linear-gradient(
+    90deg,
+    var(--accent-faint),
+    var(--surface-0) 34%,
+    var(--accent-faint)
+  );
+  --banner-muted: var(--text-dim);
+  --banner-link: var(--accent-ink);
+  --banner-icon-bg: var(--accent-dim);
+}
+
+.dark {
+  --accent-ink: var(--brand-accent);
+  --terminal-bg: var(--surface-main);
+}
+
+/* =====================================================================
+   SEMANTIC ROLE TOKENS — the vocabulary components should reference.
+   Every token answers "what is this for?" (surface / text tier / intent /
+   status / action) rather than naming a raw value. They ALIAS onto the
+   Studio-bound tokens above, so dark/light re-binds the whole app for free.
+   ===================================================================== */
+:root {
+  /* Surfaces */
+  --background: var(--bg);
+  --card: var(--surface-0);
+  --card-raised: var(--surface-1);
+  --popover: var(--surface-3);
+  --elevated: var(--surface-6);
+  --terminal: var(--terminal-bg);
+  --overlay-scrim: color-mix(in srgb, var(--background) 68%, transparent);
+
+  /* Text hierarchy */
+  --foreground: var(--text);
+  --foreground-secondary: var(--text-dim);
+  --foreground-muted: var(--text-faint);
+
+  /* Intent */
+  --primary: var(--accent);
+  --primary-hover: var(--accent-hover);
+  --primary-foreground: var(--accent-on-accent);
+  --destructive: var(--status-failed);
+  --destructive-foreground: var(--text);
+  --ring: color-mix(in srgb, var(--accent) 75%, transparent);
+  --input: var(--border-strong);
+  --input-bg: var(--surface-5);
+
+  /* Status roles — each paired with a low-alpha -bg tint for badges/pills. */
+  --status-info: var(--status-ready);
+  --status-ready-bg: color-mix(in srgb, var(--status-ready) 14%, transparent);
+  --status-running-bg: color-mix(in srgb, var(--status-running) 14%, transparent);
+  --status-needs-bg: color-mix(in srgb, var(--status-needs) 14%, transparent);
+  --status-interrupted-bg: color-mix(in srgb, var(--status-interrupted) 14%, transparent);
+  --status-done-bg: color-mix(in srgb, var(--status-done) 14%, transparent);
+  --status-warning-bg: color-mix(in srgb, var(--status-warning) 14%, transparent);
+  --status-failed-bg: color-mix(in srgb, var(--status-failed) 14%, transparent);
+  --status-info-bg: color-mix(in srgb, var(--status-info) 14%, transparent);
+
+  /* Domain-verb ACTION tokens — named by app behavior, mapped onto status
+     hues. */
+  --action-commit: var(--status-done);
+  --action-commit-text: var(--primary-foreground);
+  --action-verify: var(--status-ready);
+  --action-interrupt: var(--status-interrupted);
+  --running-indicator: var(--status-running);
+  --running-indicator-text: var(--text);
+}
+
+/* =====================================================================
+   Base element styles
+   ===================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  height: 100%;
+  background: var(--bg);
+}
+
+body {
+  font-family: var(--sans);
+  color: var(--text);
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: 0.28px;
+  overflow: hidden;
+}
+
+body code,
+body kbd,
+body samp,
+body pre,
+body .font-mono {
+  letter-spacing: normal;
+}
+
+#root {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  position: relative;
+  isolation: isolate;
+  background: transparent;
+  padding: 0;
+}
+
+#root > * {
+  position: relative;
+  z-index: 1;
+}
+
+.auth-pending-project-rail {
+  width: 0;
+  flex-shrink: 0;
+  border-right: 1px solid transparent;
+}
+
+[data-has-pinned-projects="true"] .auth-pending-project-rail {
+  width: 72px;
+}
+
+button {
+  font-family: inherit;
+  color: inherit;
+  -webkit-app-region: no-drag;
+}
+
+a,
+input,
+textarea,
+select,
+[role="button"],
+.mc-project-card {
+  -webkit-app-region: no-drag;
+}
+
+/* Ensure visible text caret across inputs and editors */
+input,
+textarea,
+[contenteditable="true"] {
+  caret-color: var(--text-primary);
+}
+
+::selection {
+  background: var(--selection-bg);
+}
+
+input[type="checkbox"],
+input[type="radio"],
+input[type="range"] {
+  accent-color: var(--accent);
+}
+
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--scrollbar-thumb-color);
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--scrollbar-thumb-hover-color);
+  background-clip: content-box;
+  border: 2px solid transparent;
+}
+
+/* =====================================================================
+   Buttons — flat Studio grammar: solid accent primary, accent-subtle
+   outline, borderless-tonal ghost/danger. One 28/32/40 size grid.
+   ===================================================================== */
+
+.mc-btn {
+  --mc-btn-gap: 6px;
+  --mc-btn-height: 32px;
+  --mc-btn-padding-x: 14px;
+  --mc-btn-font-size: 12.5px;
+  position: relative;
+  isolation: isolate;
+  min-height: var(--mc-btn-height);
+  padding: 0 var(--mc-btn-padding-x);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--mm-radius);
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-dim);
+  font-family: var(--sans);
+  font-size: var(--mc-btn-font-size);
+  font-weight: 500;
+  letter-spacing: -0.005em;
+  line-height: 1;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color var(--mm-dur) var(--mm-ease),
+    border-color var(--mm-dur) var(--mm-ease),
+    color var(--mm-dur) var(--mm-ease),
+    opacity var(--mm-dur) var(--mm-ease),
+    box-shadow var(--mm-dur) var(--mm-ease),
+    transform var(--mm-dur) var(--mm-ease);
+}
+
+.mc-btn-sm {
+  --mc-btn-gap: 5px;
+  --mc-btn-height: 28px;
+  --mc-btn-padding-x: 10px;
+  --mc-btn-font-size: 12px;
+  border-radius: var(--mm-radius-sm);
+}
+
+.mc-btn-md {
+  --mc-btn-gap: 6px;
+  --mc-btn-height: 32px;
+  --mc-btn-padding-x: 14px;
+  --mc-btn-font-size: 12.5px;
+}
+
+.mc-btn-lg {
+  --mc-btn-gap: 7px;
+  --mc-btn-height: 40px;
+  --mc-btn-padding-x: 18px;
+  --mc-btn-font-size: 13px;
+}
+
+.mc-btn-content {
+  position: relative;
+  z-index: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--mc-btn-gap);
+  min-width: 0;
+}
+
+.mc-btn-solid {
+  background: var(--surface-4);
+  border-color: var(--border-1);
+  color: var(--text);
+}
+
+.mc-btn-solid:hover {
+  background: var(--surface-6);
+}
+
+.mc-btn-accent {
+  background: var(--accent-subtle-bg);
+  border-color: var(--accent-subtle-border);
+  color: var(--accent-ink);
+}
+
+.mc-btn-accent:hover {
+  background: var(--surface-6);
+}
+
+/* Primary: the solid brand-accent CTA. */
+.mc-btn-primary {
+  height: var(--mc-btn-height);
+  min-width: 0;
+  background: var(--brand-accent);
+  border-color: color-mix(in srgb, var(--brand-accent) 90%, black);
+  color: var(--accent-on-accent);
+  font-weight: 600;
+  box-shadow: var(--shadow-subtle);
+}
+
+.mc-btn-primary:hover {
+  background: var(--brand-accent-hover);
+  box-shadow: var(--shadow-medium);
+}
+
+/* Frame: the accent-subtle outline button (secondary CTA). */
+.mc-btn-frame {
+  height: var(--mc-btn-height);
+  min-width: 0;
+  background: var(--accent-subtle-bg);
+  border-color: color-mix(in srgb, var(--brand-accent) 38%, transparent);
+  color: var(--accent-ink);
+  font-weight: 600;
+}
+
+.mc-btn-frame:hover {
+  background: color-mix(in srgb, var(--brand-accent) 12%, transparent);
+  border-color: color-mix(in srgb, var(--brand-accent) 54%, transparent);
+}
+
+/* Ghost / gray-frame / danger go borderless-tonal: affordance comes from the
+   icon/label + a tonal fill that appears on hover (gray-frame keeps a resting
+   fill so it still reads one step above ghost). The 1px border is kept
+   transparent so hover can light it without a layout shift. */
+.mc-btn-ghost {
+  height: var(--mc-btn-height);
+  min-height: var(--mc-btn-height);
+  min-width: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--text-dim);
+}
+
+.mc-btn-ghost:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.mc-btn-gray-frame {
+  height: var(--mc-btn-height);
+  min-height: var(--mc-btn-height);
+  min-width: 0;
+  background: var(--surface-hover);
+  border-color: transparent;
+  color: var(--text);
+}
+
+.mc-btn-gray-frame:hover {
+  background: var(--surface-active);
+}
+
+.mc-btn-danger {
+  height: var(--mc-btn-height);
+  min-height: var(--mc-btn-height);
+  min-width: 0;
+  background: transparent;
+  border-color: transparent;
+  color: var(--status-failed);
+}
+
+.mc-btn-danger:hover {
+  background: color-mix(in srgb, var(--status-failed) 12%, transparent);
+}
+
+/* Modal footers are decision points, not chrome: give footer buttons a
+   resting hairline + fill so both choices read as buttons; toolbar/menu ghost
+   and danger stay borderless. */
+.mc-modal-footer .mc-btn-ghost {
+  background: var(--surface-5);
+  border-color: var(--border-strong);
+  color: var(--text);
+}
+
+.mc-modal-footer .mc-btn-ghost:hover {
+  background: var(--surface-hover);
+}
+
+.mc-modal-footer .mc-btn-danger {
+  background: color-mix(in srgb, var(--status-failed) 12%, transparent);
+  border-color: color-mix(in srgb, var(--status-failed) 42%, transparent);
+  color: var(--status-failed);
+}
+
+.mc-modal-footer .mc-btn-danger:hover {
+  background: color-mix(in srgb, var(--status-failed) 20%, transparent);
+  border-color: color-mix(in srgb, var(--status-failed) 58%, transparent);
+}
+
+/* New session button: soft-outline accent pill so the label and its attached
+   +/gear segments read as one button. */
+.mc-btn-primary.mc-btn-new-session {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+.mc-btn-primary.mc-btn-new-session:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 78%, transparent);
+  box-shadow: none;
+}
+.mc-btn-primary.mc-btn-new-session:focus-visible {
+  box-shadow: var(--mm-ring);
+}
+.mc-btn-ghost.mc-btn-new-session-config,
+.mc-btn-ghost.mc-btn-new-session-row {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 62%, transparent);
+  color: var(--accent-ink);
+  box-shadow: none;
+}
+.mc-btn-ghost.mc-btn-new-session-config:hover,
+.mc-btn-ghost.mc-btn-new-session-row:hover {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  border-color: color-mix(in srgb, var(--accent) 78%, transparent);
+}
+
+/* Attached segments share edges: collapse the touching radius + border. */
+.mc-btn-primary.mc-btn-attached-left,
+.mc-btn-frame.mc-btn-attached-left,
+.mc-btn-ghost.mc-btn-attached-left,
+.mc-btn-gray-frame.mc-btn-attached-left,
+.mc-btn-danger.mc-btn-attached-left {
+  border-left: none;
+  border-top-left-radius: 0;
+  border-bottom-left-radius: 0;
+}
+
+.mc-btn-primary.mc-btn-attached-right,
+.mc-btn-frame.mc-btn-attached-right,
+.mc-btn-ghost.mc-btn-attached-right,
+.mc-btn-gray-frame.mc-btn-attached-right,
+.mc-btn-danger.mc-btn-attached-right {
+  border-right: none;
+  border-top-right-radius: 0;
+  border-bottom-right-radius: 0;
+}
+
+/* Segmented pairs (Review-changes + Ship, branch + sync): a single hairline
+   frame around the pair plus one divider on the trailing attached-left cell. */
+.mc-ship-group {
+  border: 1px solid var(--border-strong);
+  border-radius: var(--mm-radius);
+  background: var(--surface-5);
+  overflow: hidden;
+}
+.mc-ship-group .mc-btn {
+  border-radius: 0;
+}
+.mc-ship-group .mc-btn.mc-btn-attached-left {
+  border-top: 0;
+  border-right: 0;
+  border-bottom: 0;
+  border-left: 1px solid var(--border-strong);
+}
+
+/* Press: 0.5px micro-translate, faster ease-out to feel tactile. */
+.mc-btn:not(:disabled):not([aria-disabled="true"]):active {
+  transform: translateY(0.5px);
+  transition-duration: 60ms;
+}
+
+/* Focus: soft brand-tinted halo, no hard outline. */
+.mc-btn:focus-visible {
+  outline: none;
+  box-shadow: var(--mm-ring);
+}
+.mc-btn-primary:focus-visible {
+  outline: none;
+  box-shadow:
+    var(--shadow-subtle),
+    var(--mm-ring);
+}
+
+.mc-btn:disabled,
+.mc-btn[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
+.mc-btn-primary:disabled,
+.mc-btn-primary[aria-disabled="true"] {
+  filter: grayscale(0.4);
+}
+
+/* Logo + wordmark home button in the top bar. */
+.mc-topbar-home {
+  background: transparent;
+  transition: background 150ms ease;
+}
+.mc-topbar-home:hover {
+  background: var(--surface-hover);
+}
+.mc-topbar-home:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-topbar-home {
+    transition: none;
+  }
+}
+
+/* =====================================================================
+   Inputs
+   ===================================================================== */
+
+.mc-input-frame {
+  border: 1px solid var(--border-strong) !important;
+  border-radius: var(--mm-radius) !important;
+  background: var(--input-bg) !important;
+  filter: none !important;
+  box-shadow: none !important;
+  transition:
+    background-color var(--mm-dur) var(--mm-ease),
+    border-color var(--mm-dur) var(--mm-ease),
+    box-shadow var(--mm-dur) var(--mm-ease) !important;
+}
+
+.mc-input-frame > * {
+  position: relative;
+  z-index: 1;
+}
+
+.mc-input-frame:hover:not(:focus-within) {
+  border-color: color-mix(in srgb, var(--accent) 26%, var(--border-strong)) !important;
+}
+
+.mc-input-frame:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 58%, transparent) !important;
+  background: var(--surface-0) !important;
+  box-shadow: none !important;
+}
+
+/* =====================================================================
+   Toasts (Sonner)
+   ===================================================================== */
+
+[data-sonner-toaster] {
+  --width: min(460px, calc(100vw - 32px));
+}
+
+[data-sonner-toast] {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.mc-toast-panel {
+  --mc-toast-tone: var(--accent);
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 64px;
+  padding: 14px 48px 14px 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  border: 1px solid color-mix(in srgb, var(--mc-toast-tone) 40%, var(--border-strong));
+  border-radius: var(--mm-radius);
+  background: color-mix(in srgb, var(--surface-0) 92%, var(--mc-toast-tone) 8%);
+  color: var(--text);
+  font-family: var(--sans);
+  line-height: 1.35;
+  box-shadow:
+    var(--shadow-medium),
+    0 0 0 1px color-mix(in srgb, var(--mc-toast-tone) 12%, transparent);
+}
+
+.mc-toast-success {
+  --mc-toast-tone: var(--status-done);
+}
+
+.mc-toast-error {
+  --mc-toast-tone: var(--status-failed);
+}
+
+.mc-toast-loading {
+  --mc-toast-tone: var(--status-running, var(--accent));
+}
+
+.mc-toast-warning {
+  --mc-toast-tone: var(--status-warning, var(--accent));
+}
+
+/* Sonner's loading spinner sits in [data-icon]; tint it to the toast tone and
+   let it spin inside the circular badge instead of the default bare loader. */
+.mc-toast-panel [data-icon] .sonner-loading-wrapper,
+.mc-toast-panel [data-icon] [data-sonner-spinner],
+.mc-toast-panel [data-icon] .sonner-spinner {
+  width: 16px;
+  height: 16px;
+  color: var(--mc-toast-tone);
+}
+
+.mc-toast-panel [data-icon] .sonner-loading-bar {
+  background: currentColor;
+}
+
+.mc-toast-panel [data-icon] {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--mc-toast-tone) 16%, transparent);
+  border: 1px solid color-mix(in srgb, var(--mc-toast-tone) 46%, transparent);
+  color: var(--mc-toast-tone);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 28px;
+}
+
+/* Sonner's loading wrapper is position:absolute; inset:0, relying on its
+   default [data-icon]{position:relative} — which `unstyled` disables. Let the
+   badge's flex centering place the 16px spinner instead of pinning it to the
+   toast corner. */
+.mc-toast-panel [data-icon] .sonner-loading-wrapper {
+  position: relative;
+  inset: auto;
+}
+
+.mc-toast-panel [data-icon] svg {
+  width: 16px;
+  height: 16px;
+}
+
+.mc-toast-panel [data-content] {
+  min-width: 0;
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.mc-toast-panel [data-title] {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.mc-toast-panel [data-description] {
+  color: var(--text-faint);
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.mc-toast-panel [data-button] {
+  min-height: 30px;
+  margin-left: auto;
+  padding: 0 12px;
+  border: 1px solid color-mix(in srgb, var(--mc-toast-tone) 50%, transparent);
+  border-radius: var(--mm-radius-sm);
+  background: color-mix(in srgb, var(--mc-toast-tone) 16%, transparent);
+  color: var(--mc-toast-tone);
+  font-family: var(--sans);
+  font-size: 12px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.mc-toast-panel [data-close-button],
+.mc-toast-close-btn {
+  position: absolute;
+  top: 50%;
+  right: 14px;
+  transform: translateY(-50%);
+  flex-shrink: 0;
+  z-index: 1;
+}
+
+/* Themed close button: a round chip tinted to the toast tone so it reads as
+   part of the frame. Scoped to .mc-toast-panel so tone-less custom toasts keep
+   their own close styling. */
+.mc-toast-panel [data-close-button].mc-toast-close-btn.mc-btn-ghost {
+  width: 24px;
+  min-width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--mc-toast-tone) 42%, transparent);
+  background: color-mix(in srgb, var(--mc-toast-tone) 14%, transparent);
+  color: color-mix(in srgb, var(--mc-toast-tone) 78%, var(--text));
+  filter: none;
+  transition:
+    background 0.12s ease,
+    border-color 0.12s ease,
+    color 0.12s ease;
+}
+
+.mc-toast-panel [data-close-button].mc-toast-close-btn.mc-btn-ghost:hover {
+  background: color-mix(in srgb, var(--mc-toast-tone) 24%, transparent);
+  border-color: color-mix(in srgb, var(--mc-toast-tone) 58%, transparent);
+  color: color-mix(in srgb, var(--mc-toast-tone) 88%, var(--text));
+}
+
+.mc-toast-panel:focus-visible {
+  outline: 2px solid var(--mc-toast-tone);
+  outline-offset: 3px;
+}
+
+/* Custom toasts render their own CardFrame; strip the outer Sonner shell frame. */
+[data-sonner-toast].mc-toast-custom-shell {
+  border: none;
+  border-image: none;
+  background: transparent;
+  padding: 0;
+  min-height: 0;
+  display: block;
+  gap: 0;
+  filter: none;
+  box-shadow: none;
+}
+
+[data-sonner-toast].mc-toast-custom-shell [data-content] {
+  display: block;
+  flex: none;
+  min-width: 0;
+}
+
+[data-sonner-toast].mc-toast-custom-shell [data-title] {
+  color: inherit;
+  font-size: inherit;
+  font-weight: inherit;
+  overflow: visible;
+}
+
+.mc-toast-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  margin-left: 12px;
+}
+
+.mc-toast-actions .mc-toast-close-btn {
+  position: static;
+  top: auto;
+  right: auto;
+  transform: none;
+}
+
+.mc-toast-close-btn {
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
+}
+
+/* =====================================================================
+   App chrome — top bar, dashboard, project header. Flush Studio chrome:
+   surface-on-surface separation with quiet hairlines, no painted frames.
+   ===================================================================== */
+
+.mc-topbar {
+  border-bottom: 1px solid var(--border) !important;
+  background: var(--surface-1) !important;
+}
+
+.mc-project-rail,
+[data-user-terminal-panel] {
+  border: none !important;
+  border-radius: 0 !important;
+}
+
+/* Dashboard page wrapper: no card chrome of its own — the content cards carry
+   the surface. Reclaim the frame's border-width as real inline padding. */
+.mc-dashboard-frame {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  padding-inline: 32px !important;
+  padding-block: 24px !important;
+}
+
+.mc-dashboard-header {
+  margin: -24px -32px 28px !important;
+  padding: 32px 32px 24px !important;
+}
+
+.mc-dashboard-hero {
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: 0 !important;
+  background: var(--surface-1) !important;
+}
+
+/* Project page wrapper: dissolve its opaque card surface so the session grid
+   sits directly on the page ground. */
+.mc-project-frame {
+  background: transparent !important;
+  border: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Project header: a tight toolbar strip so the project name + actions sit
+   close to the grid. Overrides the component's inline padding. */
+.mc-project-header {
+  border-bottom: 1px solid var(--border) !important;
+  border-radius: 0 !important;
+  background: var(--surface-1) !important;
+  padding: 6px 20px !important;
+}
+
+.mc-project-header-trigger {
+  border: 1px solid transparent;
+  background: transparent;
+  transition:
+    background 120ms ease,
+    border-color 120ms ease;
+}
+
+.mc-project-header-trigger:hover {
+  background: var(--surface-hover);
+  border-color: var(--border-1);
+}
+
+.mc-project-header-trigger:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.mc-dashboard-hero-copy,
+.mc-dashboard-hero-actions {
+  position: relative;
+}
+
+@media (max-width: 760px) {
+  .mc-dashboard-hero {
+    margin: -8px -8px 24px !important;
+    padding: 24px 16px 20px !important;
+  }
+
+  .mc-dashboard-hero-actions {
+    width: 100%;
+  }
+
+  .mc-project-header {
+    margin: -8px -8px 24px !important;
+    padding: 18px 16px 16px !important;
+  }
+}
+
+/* Pinned-project hotkey badge (1, 2, …): a defined notch on the rail ground
+   so the digit pops. Inline styles, so !important. */
+.mc-project-hotkey-badge {
+  background: var(--bg) !important;
+  border-color: var(--border-strong) !important;
+  color: var(--text-dim) !important;
+}
+
+/* Focus Mode session bar: scrolls horizontally without a visible scrollbar so
+   the compact tab strip stays clean. Wheel-to-horizontal is wired in JS. */
+.mc-focus-tabs {
+  scrollbar-width: none;
+  scroll-behavior: smooth;
+}
+.mc-focus-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+/* =====================================================================
+   Cards — CardFrame still carries painted-era inline styles (border-image,
+   background blends); these !important rules are the single flattening
+   pass that turns every card into a Studio card: surface + hairline +
+   whisper of shadow.
+   ===================================================================== */
+
+.mc-card-frame {
+  border: 1px solid var(--border) !important;
+  border-image: none !important;
+  border-radius: var(--mm-radius-lg) !important;
+  background: var(--surface-0) !important;
+  background-blend-mode: normal !important;
+  box-shadow: var(--shadow-card) !important;
+  transition:
+    background-color var(--mm-dur) var(--mm-ease),
+    border-color var(--mm-dur) var(--mm-ease),
+    box-shadow var(--mm-dur) var(--mm-ease) !important;
+}
+
+/* Session-grid panes are laid out flush (gap 0), so their corners stay square —
+   rounding would notch the seams between touching cells. */
+[data-session-grid] .mc-card-frame {
+  border-radius: 0 !important;
+}
+.mc-card-frame[data-session-terminal-panel] {
+  border-radius: 0 !important;
+}
+
+.mc-card-frame[data-solid="true"] {
+  background: var(--surface-3) !important;
+}
+
+/* Dashboard/project focused cards: solid accent border + soft drop shadow. */
+.mc-card-frame[data-focused="true"] {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent),
+    var(--shadow-medium) !important;
+}
+
+/* Pinned session panes: a faint accent wash + slightly warmer border so a
+   pinned cell reads as held/kept without competing with the focused cell's
+   full accent ring. */
+[data-session-grid] .mc-card-frame[data-pinned="true"]:not(:focus-within) {
+  border-color: color-mix(in srgb, var(--accent) 45%, var(--border)) !important;
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface-0)) !important;
+}
+[data-session-grid]
+  .mc-card-frame[data-pinned="true"]:not(:focus-within)
+  [data-session-header] {
+  background: color-mix(in srgb, var(--accent) 12%, var(--surface-0)) !important;
+}
+
+/* Active session in the grid: the cell whose terminal currently holds focus
+   gets an accent ring and a faintly accent-tinted header bar so it reads as
+   "the one you're in" at a glance. Driven by :focus-within (xterm focuses a
+   textarea inside the card), so it needs no extra React state. */
+[data-session-grid] .mc-card-frame:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 60%, transparent) !important;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 42%, transparent),
+    var(--shadow-medium),
+    0 0 20px color-mix(in srgb, var(--accent) 12%, transparent) !important;
+  /* Lift the active cell (a grid item, so z-index applies without position)
+     so its shadow reads over the flush neighbours. Left un-!important so
+     the inline drag/expand/nav z-indices still win when they're set. */
+  z-index: 3;
+}
+[data-session-grid] .mc-card-frame:focus-within [data-session-header] {
+  background: color-mix(in srgb, var(--accent) 8%, transparent) !important;
+  border-bottom-color: color-mix(in srgb, var(--accent) 24%, var(--border)) !important;
+}
+
+/* =====================================================================
+   Keyframes + micro-interactions (theme-independent)
+   ===================================================================== */
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.45;
+    transform: scale(0.85);
+  }
+}
+@keyframes pulse-border {
+  0%,
+  100% {
+    box-shadow: 0 0 0 transparent;
+  }
+  50% {
+    box-shadow: 0 0 14px var(--accent-glow);
+  }
+}
+@keyframes caret {
+  0%,
+  50% {
+    opacity: 1;
+  }
+  51%,
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@keyframes pinned-project-running-sweep {
+  0% {
+    opacity: 0;
+    transform: translateX(-115%) skewX(-18deg);
+  }
+  18% {
+    opacity: 0.88;
+  }
+  68% {
+    opacity: 0.88;
+  }
+  100% {
+    opacity: 0;
+    transform: translateX(115%) skewX(-18deg);
+  }
+}
+/* Needs-input badge on pinned project tiles: a periodic double-bounce so a
+   session waiting on the user keeps drawing the eye without a constant pulse. */
+.mc-needs-input-badge {
+  animation: mc-needs-input-bounce 2s ease-in-out infinite;
+}
+@keyframes mc-needs-input-bounce {
+  0%,
+  55%,
+  100% {
+    transform: translateY(0);
+  }
+  63% {
+    transform: translateY(-3px);
+  }
+  71% {
+    transform: translateY(0);
+  }
+  79% {
+    transform: translateY(-1.5px);
+  }
+  87% {
+    transform: translateY(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-needs-input-badge {
+    animation: none;
+  }
+}
+/* ── Session icon "running" stroke-draw ───────────────────────────────────
+   While a session's status is "running", its header glyph is continuously
+   re-drawn: each sub-path is normalized to pathLength=1 (in SessionIcon) so a
+   single keyframe sweeps stroke-dashoffset 1 → 0 → -1. Multi-path glyphs
+   stagger by nth-child so strokes cascade instead of firing in unison. */
+.mc-session-icon-running {
+  color: var(--accent);
+}
+.mc-session-icon-drawing > * {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+  animation: mc-session-icon-draw 2.2s cubic-bezier(0.65, 0, 0.35, 1) infinite;
+}
+.mc-session-icon-drawing > *:nth-child(2) {
+  animation-delay: 0.09s;
+}
+.mc-session-icon-drawing > *:nth-child(3) {
+  animation-delay: 0.18s;
+}
+.mc-session-icon-drawing > *:nth-child(4) {
+  animation-delay: 0.27s;
+}
+.mc-session-icon-drawing > *:nth-child(5) {
+  animation-delay: 0.36s;
+}
+.mc-session-icon-drawing > *:nth-child(n + 6) {
+  animation-delay: 0.45s;
+}
+@keyframes mc-session-icon-draw {
+  0% {
+    stroke-dashoffset: 1;
+  }
+  45% {
+    stroke-dashoffset: 0;
+  }
+  62% {
+    stroke-dashoffset: 0;
+  }
+  100% {
+    stroke-dashoffset: -1;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-session-icon-drawing > * {
+    animation: none;
+    stroke-dashoffset: 0;
+  }
+}
+/* Window idle (html[data-window-idle], driven by src/lib/window-idle.ts):
+   the window is blurred or hidden — freeze the session-icon stroke draw. */
+html[data-window-idle] .mc-session-icon-drawing > * {
+  animation: none;
+  stroke-dashoffset: 0;
+}
+
+/* Grid/list view toggle: morph the four cells between the grid and list
+   layouts so a click reads as the view physically changing. */
+.mc-viewtoggle-icon rect {
+  transition:
+    x 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    y 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    width 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    height 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    rx 0.34s cubic-bezier(0.34, 1.32, 0.5, 1);
+}
+.mc-viewtoggle-icon rect:nth-of-type(2) {
+  transition-delay: 0.04s;
+}
+.mc-viewtoggle-icon rect:nth-of-type(4) {
+  transition-delay: 0.06s;
+}
+.mc-viewtoggle-icon {
+  transform-origin: center;
+  transition: transform 0.18s ease;
+}
+.mc-btn:hover .mc-viewtoggle-icon {
+  transform: scale(1.06);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-viewtoggle-icon rect,
+  .mc-btn:hover .mc-viewtoggle-icon {
+    transition: none;
+  }
+}
+
+/* Grid-layout control glyph: six cells reflow between two-rows-of-three and
+   three-rows-of-two (see GridLayoutIcon.tsx). */
+.mc-gridlayout-icon rect {
+  transition:
+    x 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    y 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    width 0.34s cubic-bezier(0.34, 1.32, 0.5, 1),
+    height 0.34s cubic-bezier(0.34, 1.32, 0.5, 1);
+}
+.mc-gridlayout-icon rect:nth-of-type(2) { transition-delay: 0.03s; }
+.mc-gridlayout-icon rect:nth-of-type(3) { transition-delay: 0.05s; }
+.mc-gridlayout-icon rect:nth-of-type(4) { transition-delay: 0.04s; }
+.mc-gridlayout-icon rect:nth-of-type(5) { transition-delay: 0.07s; }
+.mc-gridlayout-icon rect:nth-of-type(6) { transition-delay: 0.09s; }
+/* Hover preview: morph to the reflowed state without opening the menu. The
+   values duplicate GridLayoutIcon's TWO_PER_ROW set. */
+.mc-btn:hover .mc-gridlayout-icon rect:nth-of-type(1) { x: 2px; y: 2px; width: 5.5px; height: 3.4px; }
+.mc-btn:hover .mc-gridlayout-icon rect:nth-of-type(2) { x: 8.5px; y: 2px; width: 5.5px; height: 3.4px; }
+.mc-btn:hover .mc-gridlayout-icon rect:nth-of-type(3) { x: 2px; y: 6.3px; width: 5.5px; height: 3.4px; }
+.mc-btn:hover .mc-gridlayout-icon rect:nth-of-type(4) { x: 8.5px; y: 6.3px; width: 5.5px; height: 3.4px; }
+.mc-btn:hover .mc-gridlayout-icon rect:nth-of-type(5) { x: 2px; y: 10.6px; width: 5.5px; height: 3.4px; }
+.mc-btn:hover .mc-gridlayout-icon rect:nth-of-type(6) { x: 8.5px; y: 10.6px; width: 5.5px; height: 3.4px; }
+@media (prefers-reduced-motion: reduce) {
+  .mc-gridlayout-icon rect {
+    transition: none;
+  }
+}
+
+/* Header icon micro-animations: each top-bar button's glyph springs to life on
+   hover. Each glyph moves in the direction of its meaning. */
+.mc-icon-play,
+.mc-icon-file,
+.mc-icon-upload {
+  transition: transform 0.28s cubic-bezier(0.34, 1.5, 0.5, 1);
+}
+
+/* Run ▶ — darts to the right, the "go" cue. */
+.mc-btn:hover .mc-icon-play {
+  transform: translateX(2px) scale(1.06);
+}
+
+/* Branch — the branch-off node (third circle) pulses to signal divergence. */
+.mc-icon-git-branch circle:nth-of-type(3) {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.mc-btn:hover .mc-icon-git-branch circle:nth-of-type(3) {
+  animation: mc-branch-pulse 0.9s ease-in-out infinite;
+}
+@keyframes mc-branch-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.5);
+  }
+}
+
+/* Changes — the page peeks up and tilts, like lifting a corner to look. */
+.mc-icon-file {
+  transform-origin: bottom left;
+}
+.mc-btn:hover .mc-icon-file {
+  transform: translateY(-1.5px) rotate(-5deg);
+}
+
+/* Ship ⬆ — the arrow lifts off. */
+.mc-btn:hover .mc-icon-upload {
+  transform: translateY(-2px);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-icon-play,
+  .mc-icon-git-branch circle:nth-of-type(3),
+  .mc-icon-file,
+  .mc-icon-upload {
+    transition: none;
+  }
+  .mc-btn:hover .mc-icon-play,
+  .mc-btn:hover .mc-icon-file,
+  .mc-btn:hover .mc-icon-upload {
+    transform: none;
+  }
+  .mc-btn:hover .mc-icon-git-branch circle:nth-of-type(3) {
+    animation: none;
+  }
+}
+
+/* Right-zone header controls — same meaning-driven hover language. */
+.mc-icon-camera,
+.mc-icon-file-search,
+.mc-icon-plus,
+.mc-icon-row-plus,
+.mc-icon-settings {
+  transform-origin: center;
+  transition: transform 0.3s cubic-bezier(0.34, 1.5, 0.5, 1);
+}
+
+.mc-icon-camera circle,
+.mc-icon-file-search circle {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.mc-btn:hover .mc-icon-camera {
+  transform: translateY(-1px);
+}
+.mc-btn:hover .mc-icon-camera circle {
+  animation: mc-shutter 0.7s ease-in-out infinite;
+}
+@keyframes mc-shutter {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  45% {
+    transform: scale(0.6);
+  }
+}
+
+.mc-btn:hover .mc-icon-file-search {
+  transform: translateY(-1px);
+}
+.mc-btn:hover .mc-icon-file-search circle {
+  animation: mc-search-focus 0.85s ease-in-out infinite;
+}
+@keyframes mc-search-focus {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.2);
+  }
+}
+
+.mc-btn:hover .mc-icon-plus {
+  transform: rotate(90deg) scale(1.12);
+}
+
+.mc-btn:hover .mc-icon-row-plus {
+  transform: translateY(1.5px) scale(1.06);
+}
+
+.mc-btn:hover .mc-icon-settings {
+  transform: rotate(72deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mc-icon-camera,
+  .mc-icon-camera circle,
+  .mc-icon-file-search,
+  .mc-icon-file-search circle,
+  .mc-icon-plus,
+  .mc-icon-row-plus,
+  .mc-icon-settings {
+    transition: none;
+  }
+  .mc-btn:hover .mc-icon-camera,
+  .mc-btn:hover .mc-icon-file-search,
+  .mc-btn:hover .mc-icon-plus,
+  .mc-btn:hover .mc-icon-row-plus,
+  .mc-btn:hover .mc-icon-settings {
+    transform: none;
+  }
+  .mc-btn:hover .mc-icon-camera circle,
+  .mc-btn:hover .mc-icon-file-search circle {
+    animation: none;
+  }
+}
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+@keyframes slide-right {
+  from {
+    opacity: 0;
+    transform: translateX(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+/* ── Agent question overlay (AskUserQuestion native menu) ─────────────────
+   Placeholder needs the same 4.5:1 as body text — the faint ramp is too low. */
+.mc-aq-input::placeholder {
+  color: var(--text-dim);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-aq-panel {
+    animation: none !important;
+  }
+}
+
+/* ── Dialog entrance ──────────────────────────────────────────────────────
+   The backdrop only fades while the panel itself rises and settles. */
+.mc-modal-backdrop-in {
+  animation: mc-modal-backdrop-in 0.15s ease-out;
+}
+.mc-modal-panel-in {
+  animation: mc-modal-panel-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@keyframes mc-modal-backdrop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes mc-modal-panel-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+/* ── Selection feedback (settings controls, pickers) ──────────────────────
+   The check badge mounts at the exact moment a choice lands — a small pop
+   acknowledges the pick. */
+.mc-check-pop {
+  animation: mc-check-pop 0.2s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@keyframes mc-check-pop {
+  from {
+    opacity: 0;
+    transform: scale(0.4);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+/* Mode toggles (system/light/dark): acknowledge the press. */
+.mc-mode-option {
+  transition:
+    background 0.12s ease,
+    color 0.12s ease,
+    transform 100ms ease;
+}
+.mc-mode-option:active {
+  transform: scale(0.96);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-modal-backdrop-in,
+  .mc-modal-panel-in,
+  .mc-check-pop {
+    animation: none;
+  }
+  .mc-mode-option:active {
+    transform: none;
+  }
+}
+/* ── Add-project dialog: selections register physically ─────────────────── */
+.mc-pick-card {
+  transition:
+    border-color 150ms ease,
+    background 150ms ease;
+}
+.mc-pick-card::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  border-radius: inherit;
+  background: color-mix(in srgb, var(--text) 5%, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+.mc-pick-card[data-selected="true"]::before {
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+}
+.mc-pick-card:not(:disabled):hover::before {
+  opacity: 1;
+}
+.mc-pick-card:not(:disabled):active::before {
+  opacity: 1;
+  background: color-mix(in srgb, var(--text) 12%, transparent);
+}
+.mc-pick-card:focus-visible,
+.mc-color-swatch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mc-pick-pop {
+  animation: mc-pick-pop 0.26s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@keyframes mc-pick-pop {
+  0% {
+    transform: scale(0.72);
+  }
+  55% {
+    transform: scale(1.08);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+.mc-availability-checking {
+  animation: mc-availability-pulse 1.2s ease-in-out infinite;
+}
+@keyframes mc-availability-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 0.9;
+  }
+}
+.mc-color-swatch {
+  transition:
+    transform 150ms cubic-bezier(0.16, 1, 0.3, 1),
+    box-shadow 150ms ease;
+}
+.mc-color-swatch:hover {
+  transform: translateY(-1px) scale(1.06);
+}
+.mc-color-swatch:active {
+  transform: translateY(0) scale(0.94);
+}
+.mc-identity-pop {
+  animation: mc-pick-pop 0.3s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+.mc-identity-fallback {
+  animation: mc-identity-fallback-in 0.22s cubic-bezier(0.16, 1, 0.3, 1) backwards;
+}
+@keyframes mc-identity-fallback-in {
+  0% {
+    opacity: 0;
+    transform: translateX(-6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+/* Project-dialog avatar tile: the identity preview doubles as the image
+   upload button — hover/focus reveals a camera scrim over it. */
+.mc-avatar-tile {
+  transition: border-color 150ms ease;
+}
+.mc-avatar-tile-overlay {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.45);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 150ms ease;
+  pointer-events: none;
+}
+.mc-avatar-tile:not(:disabled):hover .mc-avatar-tile-overlay,
+.mc-avatar-tile:focus-visible .mc-avatar-tile-overlay {
+  opacity: 1;
+}
+.mc-avatar-tile:focus-visible,
+.mc-color-trigger:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+.mc-avatar-upload-badge {
+  position: absolute;
+  bottom: -5px;
+  right: -5px;
+  z-index: 1;
+  width: 19px;
+  height: 19px;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  pointer-events: none;
+  transition: color 150ms ease, border-color 150ms ease;
+}
+.mc-avatar-tile:not(:disabled):hover ~ .mc-avatar-upload-badge,
+.mc-avatar-tile:focus-visible ~ .mc-avatar-upload-badge {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+.mc-avatar-remove {
+  position: absolute;
+  top: -5px;
+  right: -5px;
+  z-index: 1;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-3);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  cursor: pointer;
+}
+.mc-avatar-remove:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+.mc-avatar-remove:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-pick-card:not(:disabled):hover,
+  .mc-pick-card:not(:disabled):active,
+  .mc-color-swatch:hover,
+  .mc-color-swatch:active {
+    transform: none;
+  }
+  .mc-pick-pop,
+  .mc-identity-pop,
+  .mc-identity-fallback,
+  .mc-availability-checking {
+    animation: none;
+  }
+}
+/* ── Form inputs: visible keyboard focus ─────────────────────────────────── */
+.mc-text-field {
+  border: 1px solid var(--border-strong);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.mc-text-field:focus-within {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.mc-initials-input {
+  outline: none;
+  border: 1px solid var(--border-strong);
+  transition:
+    border-color 120ms ease,
+    box-shadow 120ms ease;
+}
+.mc-initials-input:focus-visible {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.mc-combo-option-active {
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-text-field,
+  .mc-initials-input {
+    transition: none;
+  }
+}
+/* ── Attach-landing pulse ────────────────────────────────────────────────── */
+.mc-cell-attach-flash {
+  position: absolute;
+  inset: 0;
+  z-index: 10;
+  pointer-events: none;
+  opacity: 0;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  box-shadow:
+    inset 0 0 0 2px var(--accent),
+    inset 0 0 32px color-mix(in srgb, var(--accent) 30%, transparent);
+  animation: mc-cell-attach-flash 1s ease-out;
+}
+@keyframes mc-cell-attach-flash {
+  0% {
+    opacity: 0;
+  }
+  10% {
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.25;
+  }
+  65% {
+    opacity: 0.85;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@keyframes mc-cell-attach-flash-fade {
+  0% {
+    opacity: 0.9;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-cell-attach-flash {
+    animation: mc-cell-attach-flash-fade 0.8s ease-out;
+  }
+}
+
+.shimmer-bar {
+  height: 2px;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    transparent 30%,
+    var(--accent) 50%,
+    transparent 70%,
+    transparent 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 2.4s linear infinite;
+}
+
+[data-activity="none"] .shimmer-bar,
+[data-activity="none"] [class*="shimmer"] {
+  animation: none !important;
+  background: var(--border) !important;
+}
+[data-activity="pulse"] .shimmer-bar,
+[data-activity="pulse"] [class*="shimmer"] {
+  animation: pulse-dot 1.6s ease-in-out infinite;
+  background: var(--accent) !important;
+}
+
+/* Pattern ground behind the dashboard + session grid. */
+.dot-grid-bg {
+  background: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--text-primary) 6%, transparent) 1px,
+      transparent 1px
+    )
+    0 0 / 24px 24px;
+}
+.dark .dot-grid-bg {
+  background: radial-gradient(
+      circle,
+      color-mix(in srgb, var(--text-primary) 5%, transparent) 1px,
+      transparent 1px
+    )
+    0 0 / 24px 24px;
+}
+
+/* =====================================================================
+   Projects table
+   ===================================================================== */
+
+.mc-projects-table-scroll {
+  overflow-x: auto;
+}
+
+.mc-projects-table-grid {
+  width: 100%;
+  border-collapse: collapse;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.mc-projects-table-grid thead tr {
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.mc-projects-table-head {
+  padding: 10px 14px;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.mc-projects-table-pin-head {
+  width: 88px;
+  padding: 10px 14px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 14%, var(--border));
+}
+
+.mc-projects-table-sort {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--text-faint);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.mc-projects-table-sort[data-active="true"] {
+  color: var(--text);
+}
+
+.mc-projects-table-sort:hover {
+  color: var(--text);
+}
+
+.mc-projects-table-row {
+  position: relative;
+  border-bottom: 1px solid var(--border);
+  transition: background 0.12s ease;
+}
+
+.mc-projects-table-row:last-child {
+  border-bottom: 0;
+}
+
+.mc-projects-table-row:hover {
+  background: var(--surface-hover);
+}
+
+.mc-projects-table-row[data-active="true"]::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--accent);
+  box-shadow: 0 0 12px var(--accent-glow);
+}
+
+.mc-projects-table-cell {
+  padding: 12px 14px;
+  vertical-align: middle;
+}
+
+.mc-projects-table-name {
+  min-width: 220px;
+}
+
+.mc-projects-table-name-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-align: left;
+}
+
+.mc-projects-table-name-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+.mc-projects-table-group {
+  min-width: 120px;
+  color: var(--text);
+}
+
+.mc-projects-table-group-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.mc-projects-table-group-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.mc-projects-table-pills {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 120px;
+}
+
+.mc-projects-table-date {
+  min-width: 100px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.mc-projects-table-muted {
+  color: var(--text-faint);
+  font-size: 11px;
+}
+
+.mc-projects-table-pin {
+  text-align: right;
+}
+
+.pinned-project-logo {
+  overflow: visible;
+  isolation: isolate;
+}
+
+.pinned-project-logo-surface {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  isolation: isolate;
+}
+
+.pinned-project-logo-surface > img,
+.pinned-project-logo-surface > div {
+  position: relative;
+  z-index: 1;
+}
+
+.pinned-project-logo-surface--running::after {
+  content: "";
+  position: absolute;
+  pointer-events: none;
+  inset: 2px;
+  z-index: 2;
+  border-radius: 10px;
+  background: linear-gradient(
+    105deg,
+    transparent 0%,
+    transparent 26%,
+    color-mix(in srgb, var(--accent) 18%, transparent) 41%,
+    color-mix(in srgb, var(--status-running) 52%, transparent) 50%,
+    color-mix(in srgb, var(--accent) 24%, transparent) 59%,
+    transparent 74%,
+    transparent 100%
+  );
+  mix-blend-mode: screen;
+  animation: pinned-project-running-sweep 1.7s cubic-bezier(0.16, 1, 0.3, 1) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pinned-project-logo-surface--running::after {
+    animation: none;
+    opacity: 0.28;
+    transform: none;
+  }
+}
+
+/* Cursor glow: a quiet accent-tinted spotlight following the pointer. */
+.cursor-glow {
+  --cursor-glow-size: 320px;
+  --cursor-glow-color: color-mix(in srgb, var(--accent) 6%, transparent);
+  --cursor-glow-filter: brightness(1.02) saturate(1.04);
+  --cursor-glow-mask: radial-gradient(
+    var(--cursor-glow-size) circle at var(--x, 50%) var(--y, 50%),
+    #000 0%,
+    rgb(0 0 0 / 0.82) 42%,
+    transparent 74%
+  );
+
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 9;
+  opacity: 0;
+  transition: opacity 400ms ease;
+  mix-blend-mode: screen;
+  backdrop-filter: var(--cursor-glow-filter);
+  -webkit-backdrop-filter: var(--cursor-glow-filter);
+  mask-image: var(--cursor-glow-mask);
+  -webkit-mask-image: var(--cursor-glow-mask);
+  background: radial-gradient(
+    var(--cursor-glow-size) circle at var(--x, 50%) var(--y, 50%),
+    var(--cursor-glow-color),
+    transparent 70%
+  );
+}
+.cursor-glow[data-active] {
+  opacity: 1;
+}
+.dark .cursor-glow {
+  --cursor-glow-size: 360px;
+  --cursor-glow-color: color-mix(in srgb, var(--accent) 9%, transparent);
+  --cursor-glow-filter: brightness(1.06) saturate(1.08);
+}
+@media (pointer: coarse) {
+  .cursor-glow {
+    display: none;
+  }
+}
+body[data-card-glow] .cursor-glow {
+  opacity: 0;
+}
+
+[data-glow]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  border-radius: inherit;
+  opacity: 0;
+  transition: opacity 200ms ease;
+  background: radial-gradient(
+    220px circle at var(--gx, 50%) var(--gy, 50%),
+    color-mix(in srgb, var(--accent) 10%, transparent),
+    transparent 65%
+  );
+  z-index: 0;
+}
+[data-glow="1"]::before {
+  opacity: 1;
+}
+.dark [data-glow]::before {
+  background: radial-gradient(
+    220px circle at var(--gx, 50%) var(--gy, 50%),
+    color-mix(in srgb, var(--accent) 18%, transparent),
+    transparent 65%
+  );
+}
+[data-glow] > * {
+  position: relative;
+  z-index: 1;
+}
+
+/* =====================================================================
+   Menus, popovers, tooltips
+   ===================================================================== */
+
+.mc-project-actions-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+  padding: 4px;
+}
+
+.mc-dropdown-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+  padding: 7px 8px;
+  border-radius: var(--mm-radius-sm);
+  border: none;
+  background: transparent;
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.3;
+  cursor: pointer;
+}
+
+.mc-dropdown-menu-item:hover:not(:disabled) {
+  background: var(--surface-hover);
+}
+
+.mc-dropdown-menu-item:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+.mc-dropdown-menu-item:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.mc-dropdown-menu-item-danger {
+  color: var(--status-failed);
+}
+
+.mc-dropdown-menu-item-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: inherit;
+  opacity: 0.88;
+}
+
+.mc-dropdown-menu-item-label {
+  flex: 1;
+  min-width: 0;
+}
+
+.mc-dropdown-menu-separator {
+  height: 1px;
+  background: var(--border);
+  margin: 4px 8px;
+  flex-shrink: 0;
+}
+
+/* Provider usage popover: fade-only entrance (no transform — a translate
+   animation composites the popover on a GPU layer at fractional offsets
+   over the WebGL terminals, which resamples every glyph blurry). */
+.mc-usage-pop {
+  animation: mc-usage-pop-in 0.15s ease-out;
+}
+@keyframes mc-usage-pop-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+.mc-usage-fill {
+  transition: width 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.mc-usage-ring-arc {
+  transition: stroke-dashoffset 0.32s cubic-bezier(0.16, 1, 0.3, 1);
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-usage-pop {
+    animation: none;
+  }
+  .mc-usage-fill {
+    transition: none;
+  }
+  .mc-usage-ring-arc {
+    transition: none;
+  }
+}
+
+/* Provider usage popover — opaque pane over the WebGL terminals. */
+.mc-usage-glass {
+  border-radius: 16px;
+  border: 1px solid var(--border-strong);
+  background: linear-gradient(158deg, var(--surface-2) 0%, var(--surface-3) 100%);
+  box-shadow: var(--shadow-overlay);
+}
+
+/* Tooltip */
+.mc-tooltip-trigger {
+  display: contents;
+}
+.mc-tooltip {
+  position: fixed;
+  z-index: 10000;
+  pointer-events: none;
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 5px 8px;
+  font-family: var(--sans);
+  font-size: 12px;
+  line-height: 1.3;
+  box-shadow: var(--shadow-medium);
+  max-width: 320px;
+  animation: mc-tooltip-in 120ms ease-out;
+}
+.mc-tooltip-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.mc-tooltip-label {
+  color: var(--text-dim);
+}
+@keyframes mc-tooltip-in {
+  from {
+    opacity: 0;
+    transform: translateY(2px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* Hidden-sessions bar (session grid): borderless-tonal chips. */
+.mc-hidden-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: var(--mm-radius);
+  border: 1px solid transparent;
+  background: var(--surface-hover);
+  color: var(--text-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+  cursor: pointer;
+  white-space: nowrap;
+  flex-shrink: 0;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+.mc-hidden-chip:hover {
+  background: var(--surface-active);
+  color: var(--text);
+}
+.mc-hidden-chip:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+.mc-hidden-restore-all {
+  border-color: transparent;
+  background: transparent;
+}
+
+/* Pinned-project rail tiles (ProjectBar.tsx): a faint tonal wash on hover. */
+.mc-pinned-tile {
+  background: transparent;
+  border: 1px solid transparent;
+  transition: background 120ms ease, border-color 150ms ease;
+}
+.mc-pinned-tile:hover {
+  background: var(--surface-hover);
+}
+
+/* Group-cluster header in the pinned rail (ProjectBar.tsx). */
+.mc-group-header {
+  background: transparent;
+}
+.mc-group-header:hover {
+  background: var(--surface-hover);
+}
+.mc-group-header:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  outline-offset: 1px;
+}
+.mc-groups-dialog-drag-handle {
+  background: transparent;
+  color: var(--text-faint);
+  transition:
+    background 120ms cubic-bezier(0.25, 1, 0.5, 1),
+    color 120ms cubic-bezier(0.25, 1, 0.5, 1);
+}
+.mc-groups-dialog-drag-handle:hover,
+.mc-groups-dialog-drag-handle[data-active="true"] {
+  background: var(--surface-hover);
+  color: var(--text-dim);
+}
+.mc-groups-dialog-drag-handle:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 72%, transparent);
+  outline-offset: 2px;
+}
+.mc-group-header__grip {
+  opacity: 0;
+  transition: opacity 140ms ease;
+}
+.mc-group-header:hover .mc-group-header__grip,
+.mc-group-header:focus-visible .mc-group-header__grip {
+  opacity: 0.85;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-groups-dialog-row,
+  .mc-groups-dialog-drag-handle {
+    transition: none !important;
+  }
+  .mc-group-header__grip {
+    transition: none;
+  }
+}
+
+/* Floating name label for the pinned-project rail (ProjectBar.tsx). */
+.mc-project-hover-label {
+  position: fixed;
+  z-index: 9999;
+  pointer-events: none;
+  transform: translateY(-50%);
+  max-width: 260px;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  background: var(--surface-3);
+  color: var(--text);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  padding: 6px 11px;
+  font-family: var(--sans);
+  font-size: 13px;
+  font-weight: 500;
+  line-height: 1.2;
+  box-shadow: var(--shadow-medium);
+  animation: mc-project-hover-label-in 160ms cubic-bezier(0.22, 1, 0.36, 1);
+  transition: top 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes mc-project-hover-label-in {
+  from {
+    opacity: 0;
+    transform: translateY(-50%) translateX(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(-50%) translateX(0);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-project-hover-label {
+    animation-duration: 1ms;
+    transition: none;
+  }
+}
+
+/* Status pills (StatusDot.tsx) and project activity badges: tonal fill + the
+   status dot carry the pill; no hairline noise. */
+.mc-status-pill {
+  background: var(--surface-3);
+  border: 1px solid transparent;
+}
+.mc-project-status-badge {
+  background: var(--surface-3);
+  border: 1px solid transparent;
+}
+.mc-project-status-badge[data-active] {
+  background: var(--accent-faint);
+  border-color: var(--accent-border);
+}
+
+/* Terminal tabs (project/user terminal bar): borderless-tonal; the active tab
+   reads by accent-tinted fill. */
+.mc-terminal-tab {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: var(--mm-radius-sm);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+}
+.mc-terminal-tab:hover {
+  background: var(--surface-hover);
+}
+.mc-terminal-tab[data-active] {
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.mc-terminal-tab:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: 1px;
+}
+
+/* Bottom terminal dock open/close: the grid `0fr -> 1fr` trick animates the
+   wrapper between zero and its natural terminal height. */
+.mc-userterm-body {
+  display: grid;
+  grid-template-rows: 0fr;
+  min-height: 0;
+  transition: grid-template-rows 220ms cubic-bezier(0.4, 0, 0.2, 1);
+}
+.mc-userterm-body[data-open="true"] {
+  grid-template-rows: 1fr;
+}
+.mc-userterm-body > .mc-userterm-body-inner {
+  min-height: 0;
+  overflow: hidden;
+}
+@media (prefers-reduced-motion: reduce) {
+  .mc-userterm-body {
+    transition: none;
+  }
+}
+
+/* Grid cell header controls rest at half strength so a wall of terminal panes
+   reads calm; the active session sits a little brighter, and any control
+   lights fully when you reach for it. */
+[data-grid-cell] .mc-pane-header-actions button {
+  opacity: 0.5;
+  transition: opacity 120ms ease;
+}
+[data-grid-cell]:focus-within .mc-pane-header-actions button {
+  opacity: 0.9;
+}
+[data-grid-cell] .mc-pane-header-actions button:hover,
+[data-grid-cell] .mc-pane-header-actions button:focus-visible,
+[data-grid-cell] .mc-pane-header-actions button[aria-pressed="true"] {
+  opacity: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  [data-grid-cell] .mc-pane-header-actions button {
+    transition: none;
+  }
+}
+
+/* xterm overrides to match the app theme */
+.xterm-viewport {
+  background-color: var(--terminal-bg) !important;
+}
+.xterm .xterm-screen {
+  background-color: var(--terminal-bg);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.settings-toggle-switch {
+  position: relative;
+  box-sizing: border-box;
+  width: 44px;
+  height: 24px;
+  border-radius: 999px;
+  border: 1px solid var(--border-strong);
+  background: var(--surface-5);
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  transition:
+    background 0.15s ease,
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+
+.settings-toggle-switch:not(:disabled):not([aria-checked="true"]):hover {
+  border-color: var(--border-strong);
+  background: var(--surface-hover);
+}
+
+.settings-toggle-switch[aria-checked="true"] {
+  background: var(--accent);
+  border-color: var(--brand-accent-hover);
+}
+
+.settings-toggle-switch:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.settings-toggle-switch:disabled {
+  cursor: not-allowed;
+}
+
+.settings-toggle-switch__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.28);
+  transition: transform 0.15s ease;
+}
+
+.settings-toggle-switch[aria-checked="true"] .settings-toggle-switch__knob {
+  transform: translateX(22px);
+}
+
+/* ── Terminal / appearance settings: quiet control column + live preview hero ── */
+.term-settings-shell {
+  container-type: inline-size;
+}
+
+.term-settings {
+  display: grid;
+  grid-template-columns: minmax(0, 440px) minmax(0, 1fr);
+  align-items: start;
+  gap: 36px;
+}
+
+.term-settings__controls {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.term-settings__preview {
+  min-width: 0;
+  position: sticky;
+  top: 4px;
+  align-self: start;
+}
+
+@container (max-width: 720px) {
+  .term-settings {
+    grid-template-columns: 1fr;
+    gap: 26px;
+  }
+  .term-settings__preview {
+    position: static;
+  }
+}
+
+.term-weight {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.term-weight__row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.term-weight__key {
+  flex: 0 0 auto;
+  min-width: 52px;
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.term-value {
+  border-radius: 5px;
+  transition:
+    color 0.12s ease,
+    background 0.12s ease;
+}
+
+.term-value:hover {
+  color: var(--text);
+  background: var(--surface-hover);
+}
+
+.term-value:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.term-select {
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.term-select:hover {
+  border-color: var(--border-strong);
+}
+
+.term-select:focus-visible {
+  outline: none;
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 32%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .term-value,
+  .term-select {
+    transition: none;
+  }
+}
+
+/* Markdown-preview annotation affordance: a "+" that appears in the gutter
+   when hovering an annotatable block. */
+.mc-md-annot-add {
+  position: absolute;
+  top: 2px;
+  right: -34px;
+  width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--mm-radius-sm);
+  background: var(--surface-3);
+  color: var(--text-dim);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.12s ease, background 0.12s ease, color 0.12s ease;
+}
+.mc-md-annot-add-inside {
+  top: 6px;
+  right: 6px;
+}
+.mc-md-block:hover > .mc-md-annot-add,
+.mc-md-block:focus-within > .mc-md-annot-add,
+.mc-md-annot-add:focus-visible {
+  opacity: 1;
+}
+.mc-md-annot-add:hover {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+/* Respect user's prefers-reduced-motion setting (WCAG 2.3.3). */
+@media (prefers-reduced-motion: reduce) {
+  .mc-btn:not(:disabled):not([aria-disabled="true"]):active {
+    transform: none;
+  }
+}

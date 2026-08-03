@@ -1,0 +1,115 @@
+import { spawn } from "node:child_process";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { resolveAgentCommandOnPath } from "../../../../harness/src/agent-cli-resolution";
+import { resolveCommandOnPath, sanitizedProcessEnv } from "../../../../harness/src/shell-env";
+import { isWindowsCommandScript } from "@actana/shared/windows-cmd";
+
+export type RunCliOptions = {
+  cwd?: string;
+  /** Stdin payload. If supplied, child gets a real stdin pipe instead of "ignore". */
+  input?: string;
+  /** Override the timeout. Defaults to 60s — long enough for headless `claude -p` calls. */
+  timeoutMs?: number;
+};
+
+const DEFAULT_TIMEOUT_MS = 60_000;
+
+type CliSpawnInvocation = {
+  command: string;
+  args: string[];
+  env: Record<string, string>;
+};
+
+const CMD_SHIM_TARGET = /%(?:~dp0|dp0)%[\\/]+([^"]+\.(?:cjs|js|mjs))"/gi;
+
+function resolveWindowsCmdShimInvocation(
+  binary: string,
+  args: string[],
+  env: Record<string, string>,
+): CliSpawnInvocation | null {
+  let text: string;
+  try {
+    text = fs.readFileSync(binary, "utf8");
+  } catch {
+    return null;
+  }
+
+  const dir = path.dirname(binary);
+  for (const match of text.matchAll(CMD_SHIM_TARGET)) {
+    const rel = match[1];
+    if (!rel) continue;
+    const script = path.join(dir, ...rel.split(/[\\/]+/));
+    if (!fs.existsSync(script)) continue;
+
+    const bundledNode = path.join(dir, "node.exe");
+    const node = fs.existsSync(bundledNode)
+      ? bundledNode
+      : resolveCommandOnPath("node", env, "win32");
+    if (!node) return null;
+    return {
+      command: node,
+      args: [script, ...args],
+      env,
+    };
+  }
+
+  return null;
+}
+
+export function buildCliSpawnInvocation(
+  cmd: string,
+  args: string[],
+  env: Record<string, string> = sanitizedProcessEnv(),
+  platform: NodeJS.Platform = os.platform(),
+): CliSpawnInvocation {
+  const resolved = resolveAgentCommandOnPath(cmd, env, platform) ?? cmd;
+  if (platform === "win32" && isWindowsCommandScript(resolved)) {
+    const shim = resolveWindowsCmdShimInvocation(resolved, args, env);
+    if (shim) return shim;
+    throw new Error(`cannot safely launch Windows command shim for ${cmd}`);
+  }
+  return { command: resolved, args, env };
+}
+
+/**
+ * Spawn a managed agent CLI through the same PATH resolver used by session
+ * launch. That keeps print-mode helpers aligned with Windows `.cmd` shims,
+ * Cursor's `agent.exe` alias, and the augmented GUI-app PATH.
+ */
+export function runCli(
+  cmd: string,
+  args: string[],
+  options: RunCliOptions = {},
+): Promise<string> {
+  const { cwd, input, timeoutMs = DEFAULT_TIMEOUT_MS } = options;
+  return new Promise((resolve, reject) => {
+    const invocation = buildCliSpawnInvocation(cmd, args);
+    const child = spawn(invocation.command, invocation.args, {
+      cwd,
+      env: invocation.env,
+      stdio: [input !== undefined ? "pipe" : "ignore", "pipe", "pipe"],
+    });
+    let out = "";
+    let err = "";
+    const timer = setTimeout(() => {
+      child.kill("SIGTERM");
+      reject(new Error("timeout"));
+    }, timeoutMs);
+    child.stdout?.on("data", (d) => (out += d.toString()));
+    child.stderr?.on("data", (d) => (err += d.toString()));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      if (code === 0) resolve(out);
+      else reject(new Error(err.trim() || `exit ${code}`));
+    });
+    if (input !== undefined && child.stdin) {
+      child.stdin.end(input);
+    }
+  });
+}

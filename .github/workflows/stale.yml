@@ -1,0 +1,34 @@
+# Keeps the backlog honest: marks inactive issues/PRs stale, then closes them.
+# Issues labeled `pinned` or `security` are never touched.
+name: Stale housekeeping
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # daily, off-peak
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  stale:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
+        with:
+          days-before-issue-stale: 60
+          days-before-issue-close: 14
+          days-before-pr-stale: 30
+          days-before-pr-close: 14
+          stale-issue-label: "stale"
+          stale-pr-label: "stale"
+          exempt-issue-labels: "pinned,security,blocked,needs-info"
+          exempt-pr-labels: "pinned,security,blocked"
+          stale-issue-message: >
+            This issue has been automatically marked as stale due to 60 days of
+            inactivity. It will be closed in 14 days unless there is new activity.
+            If this is still relevant, please comment or remove the stale label.
+          stale-pr-message: >
+            This PR has been automatically marked as stale due to 30 days of
+            inactivity. It will be closed in 14 days unless there is new activity.
+            Please rebase and address review feedback, or convert to draft.
