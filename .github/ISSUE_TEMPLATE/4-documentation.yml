@@ -1,0 +1,38 @@
+name: 📚 Documentation
+description: Report missing, unclear, or incorrect documentation.
+title: "docs: <short description>"
+labels: ["type: docs", "needs-triage"]
+body:
+  - type: input
+    id: location
+    attributes:
+      label: Affected page / file
+      description: URL or file path of the documentation in question. Leave empty if the docs are missing entirely.
+      placeholder: docs/getting-started.md
+
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind of problem
+      options:
+        - "Incorrect / outdated content"
+        - "Unclear or confusing"
+        - "Missing documentation"
+        - "Broken link / formatting"
+    validations:
+      required: true
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What is wrong or missing, and what should it say instead?
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: contribution
+    attributes:
+      label: Contribution
+      options:
+        - label: I am willing to submit a PR to fix the documentation

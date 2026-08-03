@@ -1,0 +1,15 @@
+mission-control-updated
+Copyright (c) 2026 qcentic
+
+This product is a derivative work of Mission Control by AgentSystemLabs,
+originally available at https://github.com/AgentSystemLabs/mission-control
+and licensed under the MIT License. It was forked at tag v0.49.0
+(commit 8dff848c1652c0bb5c3895d5dce28582219092b0).
+
+The upstream Mission Control project is:
+
+    Copyright (c) AgentSystemLabs
+    Licensed under the MIT License. See LICENSE for the full text.
+
+Files that remain byte-identical to or substantially derived from the
+upstream project retain their original MIT license and copyright.

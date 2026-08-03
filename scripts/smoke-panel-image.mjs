@@ -1,0 +1,171 @@
+#!/usr/bin/env node
+// Smoke test — the Panel image is a working one-container deployment.
+//
+// Builds the Dockerfile (unless told the image already exists), boots it with
+// a fresh named volume, and walks the operator's first day as HTTP calls:
+// first boot wants setup, setup creates the Operator, and — after the
+// container is destroyed and recreated on the same volume, the upgrade
+// motion — the Panel still knows its Operator and accepts the password.
+// That is issue 09's acceptance criterion "all persistent state survives
+// container recreation via the single volume" stated as a test.
+//
+// Needs a Docker daemon. Everything it creates (container, volume) carries a
+// unique suffix and is removed on exit; the built image is left behind on
+// purpose — CI pushes the very bytes that passed.
+//
+// Usage:
+//   node scripts/smoke-panel-image.mjs [--image <tag>] [--skip-build] [--timeout <ms>]
+//
+// --image <tag>   Image tag to build and/or run (default: actana-panel:smoke)
+// --skip-build    Run an already-built image instead of building first
+// --timeout <ms>  Per-boot readiness wait (default: 120000 — cold pulls and
+//                 first-boot schema creation on a CI runner are slow)
+
+import { spawnSync } from "node:child_process";
+
+import { parseArgs } from "./lib/cli.mjs";
+import { makeDie, pickFreePort } from "./lib/harness-smoke.mjs";
+import { PANEL_PORT, repoRoot } from "./lib/panel-image.mjs";
+
+const die = makeDie("panel-image-smoke");
+const log = (message) => console.log(`[panel-image-smoke] ${message}`);
+
+const args = parseArgs(process.argv.slice(2));
+const image = typeof args.image === "string" ? args.image : "actana-panel:smoke";
+const timeoutMs = Number(args.timeout ?? 120_000);
+
+const suffix = `${process.pid}-${Date.now().toString(36)}`;
+const containerName = `actana-panel-smoke-${suffix}`;
+const volumeName = `actana-panel-smoke-data-${suffix}`;
+
+const OPERATOR = { name: "Smoke Operator", password: "smoke-operator-passphrase" };
+
+function docker(dockerArgs, { allowFailure = false } = {}) {
+  const result = spawnSync("docker", dockerArgs, { encoding: "utf8" });
+  if (result.error) die(`docker ${dockerArgs[0]}: ${result.error.message}`);
+  if (result.status !== 0 && !allowFailure) {
+    die(`docker ${dockerArgs.join(" ")} exited ${result.status}:\n${result.stderr}`);
+  }
+  return result;
+}
+
+function cleanup() {
+  docker(["rm", "-f", containerName], { allowFailure: true });
+  docker(["volume", "rm", "-f", volumeName], { allowFailure: true });
+}
+process.on("exit", cleanup);
+for (const signal of ["SIGINT", "SIGTERM"]) {
+  process.on(signal, () => process.exit(1));
+}
+
+function startContainer(hostPort) {
+  docker([
+    "run",
+    "--detach",
+    "--name",
+    containerName,
+    "--publish",
+    `127.0.0.1:${hostPort}:${PANEL_PORT}`,
+    "--volume",
+    `${volumeName}:/data`,
+    image,
+  ]);
+}
+
+function containerLogsTail() {
+  const result = docker(["logs", "--tail", "40", containerName], { allowFailure: true });
+  return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+}
+
+async function waitForReady(base) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(`${base}/api/healthz`);
+      if (response.ok) return;
+    } catch {
+      // not listening yet
+    }
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+  die(`Panel not ready within ${timeoutMs}ms. Container logs:\n${containerLogsTail()}`);
+}
+
+async function api(base, method, path, body) {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: body ? { "content-type": "application/json" } : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return response;
+}
+
+async function authState(base) {
+  const response = await api(base, "GET", "/api/auth/state");
+  if (!response.ok) die(`GET /api/auth/state → ${response.status}`);
+  return response.json();
+}
+
+// The reference compose file must at least be a compose file: `config`
+// resolves the YAML and the env interpolation, which the invariant tests'
+// deliberately narrow parser cannot vouch for.
+log("validating deploy/docker-compose.yml …");
+const composeCheck = spawnSync(
+  "docker",
+  ["compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"],
+  { cwd: repoRoot, encoding: "utf8", env: { ...process.env, AC_PANEL_DOMAIN: "panel.example.com" } },
+);
+if (composeCheck.status !== 0) {
+  die(`docker compose config rejected the reference compose file:\n${composeCheck.stderr}`);
+}
+
+if (!args["skip-build"]) {
+  log(`building ${image} …`);
+  const build = spawnSync("docker", ["build", "--tag", image, "."], {
+    cwd: repoRoot,
+    stdio: "inherit",
+  });
+  if (build.status !== 0) die(`docker build exited ${build.status}`);
+}
+
+docker(["volume", "create", volumeName]);
+
+// Boot 1: a clean machine. First boot must ask for setup, and setup must
+// create the Operator.
+const firstPort = await pickFreePort();
+const firstBase = `http://127.0.0.1:${firstPort}`;
+log(`boot 1 on ${firstBase} — expecting first-boot setup`);
+startContainer(firstPort);
+await waitForReady(firstBase);
+
+const fresh = await authState(firstBase);
+if (fresh.needsSetup !== true) die(`fresh volume reports needsSetup=${fresh.needsSetup}`);
+
+const setup = await api(firstBase, "POST", "/api/auth/setup", OPERATOR);
+if (!setup.ok) die(`POST /api/auth/setup → ${setup.status}: ${await setup.text()}`);
+log("setup created the Operator");
+
+// Recreate: destroy the container (the upgrade motion — the image is
+// replaceable), keep the volume (the state is not).
+docker(["rm", "-f", containerName]);
+const secondPort = await pickFreePort();
+const secondBase = `http://127.0.0.1:${secondPort}`;
+log(`boot 2 on ${secondBase} — same volume, new container`);
+startContainer(secondPort);
+await waitForReady(secondBase);
+
+const survived = await authState(secondBase);
+if (survived.needsSetup !== false) {
+  die(`recreated container lost the Operator (needsSetup=${survived.needsSetup})`);
+}
+
+const login = await api(secondBase, "POST", "/api/auth/login", {
+  password: OPERATOR.password,
+});
+if (!login.ok) die(`POST /api/auth/login → ${login.status}: ${await login.text()}`);
+if (!login.headers.getSetCookie().some((c) => c.includes("HttpOnly"))) {
+  die("login set no HttpOnly session cookie");
+}
+
+log("PASS — image boots, sets up, and its state survives container recreation");
+process.exit(0);

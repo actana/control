@@ -1,0 +1,26 @@
+# <type>(<scope>): <subject>          (max 72 chars, imperative, lowercase, no period)
+# |<----  Using a maximum of 72 characters  ---->|
+
+
+# Body: WHY is this change needed? (wrap at 100 chars)
+# |<----   Try to limit each line to a maximum of 100 characters   ---->|
+
+
+# Footer(s):
+# BREAKING CHANGE: <description + migration path>
+# Refs: #<issue>
+#
+# --- Allowed types ---
+#   feat     ✨ new functionality                (SemVer: minor)
+#   fix      🐛 bug fix                          (SemVer: patch)
+#   perf     ⚡ performance improvement
+#   refactor ♻️  no behavior change
+#   docs     📚 documentation only
+#   style    🎨 formatting, no logic change
+#   test     ✅ tests only
+#   build    📦 build system / dependencies
+#   ci       🤖 CI configuration
+#   chore    🔧 maintenance
+#   revert   ⏪ reverts a previous commit
+#
+# Breaking change? Add "!" after type/scope AND a BREAKING CHANGE footer.

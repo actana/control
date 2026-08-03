@@ -1,0 +1,331 @@
+name: Container image
+
+# The single implementation of "build a container image, prove it works,
+# publish it". Callers pick which image via the `image` input:
+#
+#   panel → the Panel web service, from the root Dockerfile
+#   core  → the dev Core-in-a-box, from deploy/dev/core.Dockerfile
+#
+# and three callers reuse it, so the bytes a PR validates are built exactly the
+# way the bytes a release publishes are:
+#
+#   ci.yml             → build + smoke, amd64 only, no push  (every PR)
+#   images-edge.yml    → :edge and :sha-<short>              (every push to main)
+#   images-release.yml → :<version> and :latest              (every v* tag)
+#
+# Each architecture builds natively on a runner of its own kind. The Panel
+# image compiles better-sqlite3 during the build and the Core image bakes in a
+# per-architecture Harness tarball — emulating either under QEMU is slow and
+# proves the wrong machine.
+#
+# Registries. GHCR always, authenticated with the workflow's own `github.token`,
+# which GHCR accepts for packages owned by this repository. Docker Hub *as well*
+# whenever the DOCKERHUB_TOKEN secret is set — absent it, every Docker Hub step
+# is skipped and the run still succeeds on GHCR alone. That gating is what lets
+# a fork build and release without any Docker Hub account. See docs/ci-cd.md.
+#
+# No `permissions:` block here on purpose. A reusable workflow may not request
+# more than its caller granted — declaring `packages: write` made the PR build
+# in ci.yml, which needs only `read`, fail at startup. The callers set what they
+# need: `write` for the edge and release paths, `read` for the PR build.
+
+on:
+  workflow_call:
+    inputs:
+      image:
+        description: "Which image to build: panel or core."
+        type: string
+        required: true
+      ref:
+        description: "Git ref to build."
+        type: string
+        required: true
+      stage:
+        description: "Discriminator for the intermediate per-arch tags (e.g. 0.49.0, edge)."
+        type: string
+        required: true
+      tags:
+        description: "Space-separated final tags to publish (e.g. '0.49.0 latest'). Ignored when push is false."
+        type: string
+        default: ""
+      push:
+        description: "Publish the image. False builds and smokes only."
+        type: boolean
+        default: true
+      matrix:
+        description: "JSON matrix of runners to build on."
+        type: string
+        default: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"},{"os":"ubuntu-24.04-arm","arch":"arm64"}]}'
+    secrets:
+      DOCKERHUB_USERNAME:
+        required: false
+      DOCKERHUB_TOKEN:
+        required: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolve:
+    name: Resolve registries
+    runs-on: ubuntu-24.04
+    outputs:
+      ghcr: ${{ steps.registries.outputs.ghcr }}
+      dockerhub: ${{ steps.registries.outputs.dockerhub }}
+      images: ${{ steps.registries.outputs.images }}
+    steps:
+      - id: registries
+        env:
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ inputs.image }}
+          # A repository variable, so a fork publishing under a different
+          # Docker Hub org doesn't have to edit this file.
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          case "$IMAGE" in
+            panel|core) ;;
+            *) echo "unknown image '$IMAGE' — expected 'panel' or 'core'" >&2; exit 1 ;;
+          esac
+
+          # GHCR requires a lowercase namespace.
+          ghcr="ghcr.io/${OWNER,,}/${IMAGE}"
+          echo "ghcr=$ghcr" >> "$GITHUB_OUTPUT"
+
+          images="$ghcr"
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+            dockerhub="docker.io/${namespace,,}/${IMAGE}"
+            echo "dockerhub=$dockerhub" >> "$GITHUB_OUTPUT"
+            images="$images $dockerhub"
+            echo "Publishing to GHCR and Docker Hub ($dockerhub)."
+          else
+            echo "dockerhub=" >> "$GITHUB_OUTPUT"
+            echo "DOCKERHUB_TOKEN is not set — publishing to GHCR only."
+          fi
+          echo "images=$images" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build + smoke (${{ matrix.arch }})
+    needs: resolve
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(inputs.matrix) }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # ---------------------------------------------------------------- panel
+
+      # The OCI labels live in the Dockerfile so a local build carries them too;
+      # only source/revision are passed in, so a fork links to the fork.
+      - name: Build the Panel image
+        if: inputs.image == 'panel'
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          docker build \
+            --build-arg "IMAGE_SOURCE=https://github.com/$REPO" \
+            --build-arg "IMAGE_REVISION=$SHA" \
+            --tag "$IMAGE:$STAGE-$ARCH" .
+
+      # The acceptance criterion, against the exact bytes being released:
+      # boot on a clean volume, first-boot setup, then destroy the container
+      # and prove the volume alone carries the state.
+      - name: Smoke — boots, sets up, survives container recreation
+        if: inputs.image == 'panel'
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: node scripts/smoke-panel-image.mjs --image "$IMAGE:$STAGE-$ARCH" --skip-build
+
+      # ----------------------------------------------------------------- core
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        if: inputs.image == 'core'
+        with:
+          version: 11.1.2
+          cache: true
+
+      - name: Install dependencies
+        if: inputs.image == 'core'
+        run: pnpm install --frozen-lockfile
+
+      # The Core image bakes in the tarball a release ships, for this runner's
+      # architecture — which is why the two arches cannot share a build.
+      - name: Build the Harness tarball
+        if: inputs.image == 'core'
+        run: pnpm harness:tarball
+
+      # `additional_contexts: tarball` in deploy/dev/docker-compose.yml, as a
+      # plain build flag: artifacts/ is excluded by .dockerignore, so the
+      # tarball has to arrive as a named context rather than in the main one.
+      #
+      # The labels are load-bearing. This image is the development fixture from
+      # deploy/dev — passwordless sudo for the operator, linger baked in, a
+      # provision script that hardcodes `--public-host core`, and systemd as
+      # PID 1 (so it needs --privileged and the host cgroup). Anyone who pulls
+      # it should be able to find that out from the image itself.
+      - name: Build the Core image
+        if: inputs.image == 'core'
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docker build \
+            --file deploy/dev/core.Dockerfile \
+            --build-context tarball=artifacts/harness \
+            --label "org.opencontainers.image.title=Actana Core (development fixture)" \
+            --label "org.opencontainers.image.description=Dev Core-in-a-box: systemd Ubuntu with the Harness baked in. NOT a production deployment — requires --privileged and the host cgroup, grants the operator passwordless sudo, and its provision script hardcodes the hostname 'core'. To run a real Core, install the Harness on a machine you own (INSTALL.md)." \
+            --label "org.opencontainers.image.source=https://github.com/$REPO" \
+            --label "org.opencontainers.image.revision=$SHA" \
+            --label "org.opencontainers.image.licenses=MIT" \
+            --label "ai.actana.image.role=development-fixture" \
+            --tag "$IMAGE:$STAGE-$ARCH" \
+            deploy/dev
+
+      # systemd is PID 1 here, so the image cannot be booted without
+      # --privileged and a cgroup mount. Overriding the command checks the two
+      # things a build can actually get wrong — the architecture-matched
+      # tarball landing in /opt/harness, and the first-boot unit being enabled.
+      - name: Smoke — the tarball is baked in and the provision unit is enabled
+        if: inputs.image == 'core'
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          case "$ARCH" in
+            amd64) target=linux-x64 ;;
+            arm64) target=linux-arm64 ;;
+            *) echo "unmapped arch $ARCH" >&2; exit 1 ;;
+          esac
+          docker run --rm --entrypoint /bin/bash "$IMAGE:$STAGE-$ARCH" -euo pipefail -c "
+            ls /opt/harness/actana-harness-*-${target}.tar.gz >/dev/null
+            test -L /etc/systemd/system/multi-user.target.wants/core-provision.service
+            test -x /usr/local/lib/core-provision.sh
+            test -f /var/lib/systemd/linger/operator
+            echo 'core image smoke OK (${target})'
+          "
+
+      # --------------------------------------------------------------- shared
+
+      - name: Push the per-arch tags
+        if: inputs.push
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          GHCR_IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+
+          # GHCR is the primary registry and it has already authenticated, so a
+          # Docker Hub credential problem must not take the release down with
+          # it: push what we can, then fail at the end with the reason. Failing
+          # here instead would leave GHCR unpublished because a *mirror* was
+          # misconfigured.
+          dockerhub_ok=1
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
+              dockerhub_ok=0
+              echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. The username depends on which kind of token you made. ORGANISATION access token (created under the org, app.docker.com/accounts/<org>): DOCKERHUB_USERNAME must be the ORGANISATION NAME — an OAT authenticates as the org, not as the person who created it, and OATs need a Team or Business subscription. PERSONAL access token (Account settings > Personal access tokens): DOCKERHUB_USERNAME is your own username, and that account needs push rights on the target repos. Either way the token needs Read & Write, and an account password will never work. GHCR was published; Docker Hub was not."
+            fi
+          fi
+
+          for image in $IMAGES; do
+            if [[ "$image" == docker.io/* && "$dockerhub_ok" -eq 0 ]]; then
+              echo "Skipping $image — Docker Hub login failed."
+              continue
+            fi
+            # The image was built under the GHCR name; retag for any other registry.
+            if [[ "$image" != "$GHCR_IMAGE" ]]; then
+              docker tag "$GHCR_IMAGE:$STAGE-$ARCH" "$image:$STAGE-$ARCH"
+            fi
+            docker push "$image:$STAGE-$ARCH"
+          done
+
+          # Deliberately not `exit 1` here: the publish job needs this one to
+          # succeed, and failing now would leave GHCR with per-arch tags and no
+          # manifest. The run is failed at the end of publish instead, once
+          # GHCR is completely published.
+
+  publish:
+    name: Publish the multi-arch manifest
+    if: inputs.push
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Stitch per-arch tags into the release tags
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_ACTOR: ${{ github.actor }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGES: ${{ needs.resolve.outputs.images }}
+          MATRIX: ${{ inputs.matrix }}
+          STAGE: ${{ inputs.stage }}
+          TAGS: ${{ inputs.tags }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${TAGS// }" ]]; then
+            echo "no tags requested for a pushing build" >&2
+            exit 1
+          fi
+          echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
+
+          # Same posture as the build job: GHCR is finished no matter what
+          # Docker Hub does, and the run is failed at the very end if Docker
+          # Hub was configured but unusable.
+          dockerhub_ok=1
+          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
+            if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
+              dockerhub_ok=0
+              echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. DOCKERHUB_USERNAME must be the Docker Hub *account* that owns the access token — not the organisation name. If you publish under an org, set DOCKERHUB_USERNAME to your user account and DOCKERHUB_NAMESPACE to the org. The token needs Read & Write. GHCR was published; Docker Hub was not."
+            fi
+          fi
+
+          # The arch list comes from the same matrix the build job used, so a
+          # caller that builds one arch produces a one-arch manifest rather
+          # than referencing a tag that was never pushed.
+          arches="$(echo "$MATRIX" | jq -r '.include[].arch' | tr '\n' ' ')"
+
+          for image in $IMAGES; do
+            if [[ "$image" == docker.io/* && "$dockerhub_ok" -eq 0 ]]; then
+              echo "Skipping $image — Docker Hub login failed."
+              continue
+            fi
+            sources=()
+            for arch in $arches; do sources+=("$image:$STAGE-$arch"); done
+            tag_args=()
+            for tag in $TAGS; do tag_args+=(--tag "$image:$tag"); done
+            docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+            docker buildx imagetools inspect "$image:${TAGS%% *}"
+          done
+
+          # Configured but broken is a failure — just not one that costs GHCR.
+          [[ "$dockerhub_ok" -eq 1 ]] || exit 1

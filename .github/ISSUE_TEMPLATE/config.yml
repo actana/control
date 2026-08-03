@@ -1,0 +1,9 @@
+# Disable blank issues so every issue goes through a structured form.
+blank_issues_enabled: false
+contact_links:
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/actana/control/security/advisories/new
+    about: Please do NOT open a public issue for security problems. Use private vulnerability reporting instead.
+  - name: 💬 Questions & discussions
+    url: https://github.com/actana/control/discussions
+    about: Ask questions, share ideas, or get help. Issues are reserved for actionable bugs and features.

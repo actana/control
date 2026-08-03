@@ -1,0 +1,504 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  typecheck:
+    name: Typecheck
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test
+
+  lint:
+    name: Lint
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm lint
+
+  dependency-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm audit --audit-level high
+
+  secret-scan:
+    name: Secret Scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm scan:secrets
+
+  # The Harness smoke seam (web-panel-extraction issue 01): the standalone
+  # Harness bundle must boot under plain node with working standard-ABI
+  # natives, bootstrap its schema, and accept an mTLS + bearer core-link dial.
+  harness-smoke:
+    name: Smoke — standalone Harness
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      # node-gyp 9.x imports distutils; pin 3.11.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build harness bundle
+        run: pnpm --filter @actana/harness build
+
+      - name: Smoke — standalone Harness boots clean under plain node
+        run: node scripts/smoke-standalone-harness.mjs
+
+  # The Panel service seam (web-panel-extraction issue 10) — the spec's primary
+  # testing seam. Boots the built Panel as a plain node process against a temp
+  # data directory plus a real Harness, then drives it exactly as a browser
+  # would: setup → login → paste a pairing token → panel link → PTY frames →
+  # killed link → replay from cursor, with the pre-login refusals and the
+  # secrets-at-rest legs alongside. One command covers auth, the registry,
+  # secrets, the router, and a live core-link.
+  #
+  # Both OSes, because this is where the deployable actually runs and the two
+  # differ in the places that bite: node-pty and better-sqlite3 natives, and the
+  # login shell a VM Shell Session lands in. The Harness runs as a local process
+  # here; the containerized Core-in-a-box slots into the same fixture interface
+  # when it lands (scripts/lib/harness-fixture.mjs).
+  panel-e2e:
+    name: E2E — Panel service seam (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      # node-gyp 9.x imports distutils; pin 3.11 like the harness smoke does.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `panel:e2e` builds both artifacts and then drives them, so the test
+      # always runs against freshly built code rather than a stale dist.
+      - name: E2E — the Panel service, driven as a browser
+        run: pnpm panel:e2e
+
+  # The release-tarball seam (harness-installer issue 01): the artifact
+  # operators actually download must extract and boot on its own — bundled Node,
+  # bundled natives, no system Node, no network. Built here on every PR for the
+  # runner's own platform so a broken tarball is caught before tag time;
+  # harness-release.yml builds and smokes all four targets on a tag push.
+  #
+  # Both Linux architectures, because everything downstream consumes these
+  # artifacts (harness-installer issue 07): the installer matrix and the
+  # Core-in-a-box leg download them rather than rebuilding per leg, so one build
+  # per architecture feeds every e2e job that needs it. arm64 builds natively on
+  # an arm runner — the tarball carries prebuilt natives, and a cross-built one
+  # would prove nothing about what operators download.
+  harness-tarball-smoke:
+    name: Smoke — Harness release tarball (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: linux-x64
+          - runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the tarball
+        run: pnpm harness:tarball
+
+      - name: Smoke — extracted tarball boots a dialable Harness
+        run: |
+          set -euo pipefail
+          tarball="$(find artifacts/harness -name 'actana-harness-*-${{ matrix.target }}.tar.gz' | head -n1)"
+          node scripts/smoke-harness-tarball.mjs --tarball "$tarball"
+
+      # The checksum asset is generated code too — a formatting slip only shows
+      # up as an operator's failed `sha256sum -c`, so verify it here.
+      - name: Compose and verify SHA256SUMS
+        run: |
+          set -euo pipefail
+          node scripts/compose-harness-shasums.mjs --dir artifacts/harness --expect 1
+          cd artifacts/harness && sha256sum -c SHA256SUMS
+
+      - name: Upload the tarball for the installer e2es
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: harness-tarball-${{ matrix.target }}
+          path: artifacts/harness/actana-harness-*-${{ matrix.target }}.tar.gz
+          retention-days: 1
+
+  # The installer matrix (harness-installer issue 07) — the whole Linux install
+  # story, crossed over the axes that can actually break it.
+  #
+  #   suite  — `actana-setup` is setup, the lifecycle verbs, update, token
+  #            regenerate and uninstall (issues 02 and 06); `install-sh` is the
+  #            real `curl … | bash` one-liner (issue 03). Together they are the
+  #            complete e2e the spec asks for.
+  #   distro — Ubuntu and Debian. What differs between them is precisely what
+  #            this test is about: PAM, polkit and the logind rules that decide
+  #            whether a sudo-less `systemctl --user` and `loginctl
+  #            enable-linger` work at all.
+  #   arch   — linux-x64 and linux-arm64, each on its own hardware. The tarball
+  #            ships prebuilt native modules, so an architecture that is never
+  #            booted is an architecture nobody has tested.
+  #
+  # Eight legs, all parallel, each downloading a tarball built once above rather
+  # than building its own — so the matrix costs one container boot of wall clock,
+  # not eight builds. `fail-fast: false` because "Debian arm64 only" is exactly
+  # the signal this job exists to produce.
+  #
+  # The axes are declared in scripts/lib/container-matrix.mjs, and
+  # scripts/__tests__/container-matrix.test.mjs reads this file to check the two
+  # still agree — a distro added there and forgotten here fails the unit tests.
+  installer-e2e:
+    name: E2E — ${{ matrix.suite }} (${{ matrix.distro }}, ${{ matrix.arch }})
+    needs: harness-tarball-smoke
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [actana-setup, install-sh]
+        distro: [ubuntu, debian]
+        arch: [x64, arm64]
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+            target: linux-x64
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      # Only `ws` is needed — the e2es' core-link dial is the sole dependency
+      # they have on the repo's own node_modules.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: harness-tarball-${{ matrix.target }}
+          path: artifacts/harness
+
+      - name: E2E — the installer on a fresh systemd machine
+        run: |
+          set -euo pipefail
+          tarball="$(find artifacts/harness -name 'actana-harness-*-${{ matrix.target }}.tar.gz' | head -n1)"
+          node scripts/e2e-${{ matrix.suite }}-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
+
+  # The Core-in-a-box leg (harness-installer issue 07, third criterion): the
+  # Panel e2e above pairs with a Harness this repo spawned; this one pairs with
+  # the release tarball, installed by `actana setup` and started by systemd on a
+  # container. Same script, same assertions — the fixture is the only thing that
+  # changes (scripts/lib/harness-fixture.mjs), which is what makes the image
+  # reusable as the Panel epic's canonical Core fixture rather than a second
+  # test to keep in sync.
+  #
+  # x64 and Ubuntu only: what this leg adds over `panel-e2e` is the containerised
+  # Core, and the distro/architecture spread is already covered by the installer
+  # matrix.
+  panel-e2e-core-in-a-box:
+    name: E2E — Panel against Core-in-a-box
+    runs-on: ubuntu-24.04
+    needs: harness-tarball-smoke
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      # node-gyp 9.x imports distutils; pin 3.11 like the other Panel jobs. The
+      # Panel is built here; the Harness is not, because the container installs
+      # the tarball instead.
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: harness-tarball-linux-x64
+          path: artifacts/harness
+
+      # `pnpm build`, not the `pnpm build:web` this used to call — that script
+      # does not exist in package.json, so this job failed at the same step
+      # every run. Root `build` is Harness-then-Panel, the order the Panel's
+      # build needs (it imports the Harness's types).
+      - name: Build the Panel
+        run: pnpm build
+
+      - name: E2E — the Panel service against a containerised Core
+        run: |
+          set -euo pipefail
+          tarball="$(find artifacts/harness -name 'actana-harness-*-linux-x64.tar.gz' | head -n1)"
+          node scripts/e2e-panel-smoke.mjs --harness-tarball "$tarball"
+
+  # The agent-offers seam (harness-installer issue 05): a fresh machine has no
+  # agent CLI on it, so this is where "detects missing agents, offers each, and
+  # an accepted offer leaves a working vendor-installed CLI on PATH" can
+  # actually be checked. Unlike the other container e2es this one is NOT
+  # hermetic — it runs a vendor's real installer, which is the only way to
+  # prove the vendor's official method is what we invoke.
+  actana-agents-e2e:
+    name: E2E — agent CLI offers (systemd)
+    runs-on: ubuntu-24.04
+    needs: harness-tarball-smoke
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the tarball
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: harness-tarball-linux-x64
+          path: artifacts/harness
+
+      - name: E2E — agent detection, offers, and `actana agents install`
+        run: |
+          set -euo pipefail
+          tarball="$(find artifacts/harness -name 'actana-harness-*-linux-x64.tar.gz' | head -n1)"
+          node scripts/e2e-actana-agents-linux.mjs --tarball "$tarball"
+
+  # The macOS half of the same seam (harness-installer issue 04): `actana setup`
+  # must write and load a LaunchAgent, start the daemon, and give the lifecycle
+  # verbs something to drive — with no sudo and no Gatekeeper interruption.
+  #
+  # No container, unlike the Linux leg: a Mac's launchd IS the host's launchd,
+  # and an agent bootstrapped anywhere but the runner's own domain would not be
+  # the thing under test. The e2e uses a scratch HOME and boots the agent out
+  # again, so the runner is left as it was found.
+  #
+  # Both architectures run natively — the tarballs carry prebuilt natives, so a
+  # cross-built leg would prove nothing about the artifact operators download.
+  # Reboot persistence is the one criterion a runner cannot exercise; it lives
+  # on docs/harness-macos-prerelease-checklist.md.
+  actana-setup-e2e-macos:
+    name: E2E — actana setup (launchd, ${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: mac-arm64
+          - os: macos-15-intel
+            target: mac-x64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Built here rather than downloaded from the linux job: the tarball is
+      # per-platform, and this runner's own architecture is the only mac
+      # tarball it can honestly build or run.
+      - name: Build the tarball
+        run: pnpm harness:tarball
+
+      - name: E2E — actana setup against launchd
+        run: |
+          set -euo pipefail
+          tarball="$(find artifacts/harness -name 'actana-harness-*-${{ matrix.target }}.tar.gz' | head -n1)"
+          node scripts/e2e-actana-setup-macos.mjs --tarball "$tarball"
+
+  # The Panel image, built and smoked on every PR but never pushed. Until this
+  # existed, a Dockerfile or build-stage break stayed invisible until someone
+  # cut a release tag and the release itself failed. Same reusable workflow the
+  # release uses, so this is the release build, not an approximation of it.
+  #
+  # amd64 only: the release and edge builds cover arm64 natively, and paying
+  # for a second runner on every PR buys little — the two legs share a
+  # Dockerfile, and arch-specific breakage is almost always in better-sqlite3's
+  # native build, which this leg already exercises.
+  panel-image:
+    name: Panel image
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      image: panel
+      ref: ${{ github.sha }}
+      stage: ci
+      push: false
+      matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
+
+  # Same reasoning for the dev Core-in-a-box: it is a published image now, so a
+  # break in core.Dockerfile or the provision unit should surface on the PR
+  # that caused it rather than on the next release.
+  core-image:
+    name: Core image
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: read
+    with:
+      image: core
+      ref: ${{ github.sha }}
+      stage: ci
+      push: false
+      matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'

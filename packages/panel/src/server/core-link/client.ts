@@ -1,0 +1,959 @@
+// WebSocket client for one Core's core-link — the Panel service side.
+//
+// Connects to that Harness's `wss://` server and exposes a `pty` API
+// (spawn/write/resize/kill/replay/findByTask/onData/onExit) that the panel-link
+// router forwards browser frames onto.
+//
+// Reconnection: the service holds one client per registered Core. If the
+// WebSocket drops (Harness restart, machine asleep), the client auto-reconnects
+// with backoff. On reconnect `ready` fires and callers reattach via
+// `findByTask` + `replay` — the Harness's PTY buffer retains everything across
+// the gap.
+
+import {
+  CORE_LINK_PROTOCOL_VERSION,
+  coreLinkProtocolCompatible,
+  type CoreLinkAgentAvailabilityMap,
+  type CoreLinkEvent,
+  type CoreLinkProjectMutation,
+  type CoreLinkRequestFrame,
+  type CoreLinkResponseFrame,
+  type CoreLinkStreamFrame,
+  type CoreLinkPtySpawnOptions,
+  type CoreLinkProjectSnapshot,
+  type CoreLinkSessionSnapshot,
+  type CoreLinkTaskMutation,
+  type CoreLinkTaskSnapshot,
+  type CoreLinkLaunchProcessKillResult,
+  type CoreLinkPtyReplay,
+} from "../../../../shared/src/core-link-frames";
+
+export type PtyCoreLinkClientHandlers = {
+  onData: (msg: { ptyId: string; data: string; seq: number }) => void;
+  onExit: (msg: { ptyId: string; exitCode: number; signal?: number }) => void;
+};
+
+/** A localStorage-like store for persisting the per-Core lastEventId cursor. */
+export interface CoreLinkCursorStorage {
+  getItem(key: string): string | null;
+  setItem(key: string, value: string): void;
+}
+
+export type PtyCoreLinkClientOptions = {
+  /** The WebSocket URL to dial (e.g. `ws://127.0.0.1:5174` or `wss://host:443`). */
+  url: string;
+  /** Injectable socket factory (tests). Default: the browser's native WebSocket. */
+  createSocket?: (url: string) => WebSocketLike;
+  /** Reconnect backoff (ms). Default: 500 initial, 5000 max. */
+  reconnectInitialMs?: number;
+  reconnectMaxMs?: number;
+  /**
+   * Injectable storage for the per-Core `lastEventId` cursor. Default: the
+   * global `localStorage` when available. When unavailable (the service's own
+   * Node process, tests), a no-op store is used and the cursor is kept
+   * in-memory for the session — replay still works across reconnects within
+   * that process, just not across a restart.
+   */
+  storage?: CoreLinkCursorStorage;
+  /** localStorage key under which the lastEventId cursor is persisted. */
+  cursorStorageKey?: string;
+  /**
+   * Signed bearer `{coreId, exp, sig}` presented in the `auth` frame right
+   * after every (re)connect (ADR 0002). Required for every Core — there is no
+   * trusted transport left to omit it on (ADR 0010). When set, the client sends
+   * `auth` BEFORE `subscribe` so the Harness gates the event-cursor replay
+   * behind authentication.
+   */
+  bearer?: string;
+};
+
+export interface WebSocketLike {
+  readonly readyState: number;
+  send(data: string): void;
+  close(): void;
+  on(event: "open", cb: () => void): void;
+  on(event: "message", cb: (data: unknown) => void): void;
+  on(event: "close", cb: () => void): void;
+  on(event: "error", cb: (err: Error) => void): void;
+  /**
+   * Pong frames (Node `ws` only). The browser transport ignores this
+   * registration — its `on` adapter drops unknown events — which is correct:
+   * the browser engine answers pings itself and never surfaces them.
+   */
+  on(event: "pong", cb: () => void): void;
+  removeEventListener?: (event: string, cb: (...args: unknown[]) => void) => void;
+  /**
+   * Send a WS ping frame. Present on the Node (`ws`) transport the service
+   * dials with; absent on a plain browser WebSocket. Its presence is what arms
+   * the heartbeat — see {@link PtyCoreLinkClient}.
+   */
+  ping?: () => void;
+  /**
+   * Destroy the socket immediately without a close handshake. Used when the
+   * heartbeat declares the peer dead: a half-open TCP connection will never
+   * complete a graceful close, so waiting for one just extends the outage.
+   */
+  terminate?: () => void;
+}
+
+type Pending = {
+  resolve: (value: unknown) => void;
+  reject: (err: Error) => void;
+  timer: ReturnType<typeof setTimeout>;
+};
+
+const DEFAULT_RECONNECT_INITIAL_MS = 500;
+const DEFAULT_RECONNECT_MAX_MS = 5_000;
+const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+/**
+ * Heartbeat cadence. A remote Core's core-link runs over the open internet, so
+ * it crosses NATs and stateful firewalls that silently drop idle flows — an
+ * agent sitting at its prompt sends nothing for minutes, which is exactly the
+ * traffic pattern those boxes reap. Without a heartbeat the drop is invisible:
+ * TCP has no keepalive here, so the Panel keeps `ready = true`, keystrokes are
+ * written into a dead socket, and RPCs hang for the full 30s timeout while the
+ * Harness happily streams output nobody receives. Pinging every 15s keeps the
+ * flow alive AND detects death within one window.
+ */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+/** Declare the peer dead after this long with no frame of any kind (3 pings). */
+const HEARTBEAT_TIMEOUT_MS = 45_000;
+const DEFAULT_CURSOR_STORAGE_KEY = "mc.coreLink.lastEventId";
+
+/**
+ * A no-op cursor store used when `localStorage` is unavailable (the service's
+ * own Node process, tests). The cursor still advances in-memory for the
+ * session, so replay works across reconnects within one process — just not
+ * across a restart.
+ */
+class NullCursorStorage implements CoreLinkCursorStorage {
+  getItem(): string | null {
+    return null;
+  }
+  setItem(): void {
+    /* no-op */
+  }
+}
+
+function resolveStorage(opts: PtyCoreLinkClientOptions): CoreLinkCursorStorage {
+  if (opts.storage) return opts.storage;
+  // `localStorage` exists only where this client runs in a browser. It is
+  // absent in the service's Node process and in tests — degrade to a null store
+  // instead of throwing on construction.
+  try {
+    if (typeof localStorage !== "undefined" && localStorage) return localStorage;
+  } catch {
+    /* access throws in some sandbox contexts */
+  }
+  return new NullCursorStorage();
+}
+
+/**
+ * Panel-side core-link client. One instance per Core the service holds a link
+ * to. Auto-reconnects; exposes a promise-based + callback API.
+ *
+ * On every (re)connect it sends a `subscribe` frame carrying the persisted
+ * `lastEventId` cursor so the Harness can stream the event-log tail; live
+ * `event` frames resume once `eventsReplayed` is received. The cursor is
+ * persisted to the injected storage so killing the Panel and reopening it
+ * restores the full event/task timeline from the gap.
+ */
+export class PtyCoreLinkClient {
+  private readonly url: string;
+  private readonly createSocket: (url: string) => WebSocketLike;
+  private readonly reconnectInitialMs: number;
+  private readonly reconnectMaxMs: number;
+  private readonly storage: CoreLinkCursorStorage;
+  private readonly cursorStorageKey: string;
+  private readonly bearer: string | null;
+  private socket: WebSocketLike | null = null;
+  private reqSeq = 0;
+  private readonly pending = new Map<string, Pending>();
+  private readonly dataListeners = new Set<(msg: { ptyId: string; data: string; seq: number }) => void>();
+  private readonly exitListeners = new Set<(msg: { ptyId: string; exitCode: number; signal?: number }) => void>();
+  private readonly eventListeners = new Set<(msg: { event: CoreLinkEvent }) => void>();
+  private readonly eventsReplayedListeners = new Set<(msg: { lastEventId: number }) => void>();
+  private readonly authOkListeners = new Set<(msg: { coreId: string; exp: number }) => void>();
+  private readonly authErrorListeners = new Set<(msg: { reason: "expired" | "bad-signature" | "malformed" }) => void>();
+  private readonly disconnectedListeners = new Set<(msg: { error?: string }) => void>();
+  private readonly protocolVersionListeners = new Set<
+    (msg: { version: string | null; compatible: boolean }) => void
+  >();
+  /** The protocol version from this connection's `ready` frame; null before it. */
+  private protocolVersion: string | null = null;
+  private reconnectAttempt = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private closed = false;
+  private ready = false;
+  private readonly queuedFrames: CoreLinkRequestFrame[] = [];
+  /** In-memory mirror of the persisted cursor; updated on every event/replay. */
+  private lastEventId = 0;
+  private subscribed = false;
+  /** True once the server has accepted this connection's `auth` frame. */
+  private authenticated = false;
+  /** Heartbeat timer; non-null only while a ping-capable socket is open. */
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  /** Epoch ms of the last frame received (message OR pong) on this connection. */
+  private lastInboundAt = 0;
+  /**
+   * reqIds actually written to the current socket. A frame still sitting in
+   * `queuedFrames` has not been sent and stays queued across a reconnect; one
+   * that went out on a connection that then died will never be answered, so it
+   * is rejected the moment the socket closes rather than hanging for 30s.
+   */
+  private readonly inFlight = new Set<string>();
+
+  constructor(opts: PtyCoreLinkClientOptions) {
+    this.url = opts.url;
+    this.createSocket = opts.createSocket ?? defaultCreateSocket;
+    this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
+    this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
+    this.storage = resolveStorage(opts);
+    this.bearer = opts.bearer ?? null;
+    // The cursor is per-Core (CONTEXT.md "Event cursor": "the single number
+    // the Panel stores per Core"). Derive the storage key from the core-link
+    // URL so each registered Core gets its own cursor — a second Core on a
+    // different endpoint never shares or corrupts this Core's replay position.
+    // An explicit `cursorStorageKey` (tests) overrides the derivation.
+    this.cursorStorageKey =
+      opts.cursorStorageKey ?? `${DEFAULT_CURSOR_STORAGE_KEY}.${deriveCoreKey(this.url)}`;
+    this.lastEventId = this.readPersistedCursor();
+    this.connect();
+  }
+
+  private readPersistedCursor(): number {
+    try {
+      const raw = this.storage.getItem(this.cursorStorageKey);
+      const n = raw == null ? NaN : Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  private persistCursor(): void {
+    try {
+      this.storage.setItem(this.cursorStorageKey, String(this.lastEventId));
+    } catch {
+      /* storage unavailable — keep the in-memory value */
+    }
+  }
+
+  private connect(): void {
+    if (this.closed) return;
+    let socket: WebSocketLike;
+    try {
+      socket = this.createSocket(this.url);
+    } catch (err) {
+      this.emitDisconnected(err instanceof Error ? err.message : String(err));
+      this.scheduleReconnect();
+      return;
+    }
+    this.socket = socket;
+    // The reason the socket died, captured from the `error` event so the close
+    // handler can report something better than "it closed" (TLS handshake
+    // rejections and ECONNREFUSED both arrive here, then close silently).
+    let lastError: string | undefined;
+
+    socket.on("open", () => {
+      this.reconnectAttempt = 0;
+      this.ready = true;
+      this.startHeartbeat(socket);
+      // Reset per-connection auth state — every (re)connect must re-present
+      // the bearer after the mTLS handshake (ADR 0002). The server gates the
+      // event-cursor replay behind authentication, so `subscribe` is sent
+      // AFTER `auth` (or immediately when no bearer is configured, which only
+      // happens in tests — a real Core always presents one).
+      this.authenticated = false;
+      this.subscribed = false;
+      if (this.bearer) {
+        this.sendAuth();
+      } else {
+        // No bearer configured (tests) — go straight to the event-cursor
+        // subscribe so the Harness streams the replay tail.
+        this.sendSubscribe();
+      }
+      // Flush any RPCs that were queued while the WS wasn't open (e.g. the
+      // first pty.* call after a reconnect, before the WS handshake
+      // completed). Sent after `auth`/`subscribe` so the replay tail is
+      // delivered before the RPC responses.
+      const queued = this.queuedFrames.splice(0);
+      for (const frame of queued) {
+        try {
+          this.socket!.send(JSON.stringify(frame));
+        } catch {
+          /* will be handled by the close handler */
+        }
+      }
+    });
+
+    socket.on("message", (raw) => {
+      this.lastInboundAt = Date.now();
+      this.onMessage(raw);
+    });
+
+    // Pong frames prove the peer is alive during an idle stretch (an agent
+    // waiting at its prompt emits nothing for minutes). Only the Node `ws`
+    // transport surfaces them; a browser WebSocket answers pings in the engine
+    // and never tells us, which is why the heartbeat only arms on `ws`.
+    socket.on("pong", () => {
+      this.lastInboundAt = Date.now();
+    });
+
+    socket.on("close", () => {
+      this.ready = false;
+      this.subscribed = false;
+      this.authenticated = false;
+      this.stopHeartbeat();
+      this.rejectInFlight("core-link connection lost");
+      if (this.closed) return;
+      this.emitDisconnected(lastError);
+      this.scheduleReconnect();
+    });
+
+    socket.on("error", (err) => {
+      // The close handler will trigger reconnect. Errors are expected during
+      // a Harness restart — we only keep the reason for the status report.
+      lastError = err instanceof Error ? err.message : String(err);
+    });
+  }
+
+  /**
+   * Arm the heartbeat for a freshly opened socket. Only transports that can
+   * actually send a ping participate (the Node `ws` client the service dials
+   * with); a browser WebSocket has no ping API.
+   */
+  private startHeartbeat(socket: WebSocketLike): void {
+    this.stopHeartbeat();
+    if (!socket.ping) return;
+    this.lastInboundAt = Date.now();
+    this.heartbeatTimer = setInterval(() => {
+      if (this.socket !== socket) {
+        this.stopHeartbeat();
+        return;
+      }
+      if (Date.now() - this.lastInboundAt > HEARTBEAT_TIMEOUT_MS) {
+        // Half-open: the peer stopped answering. A graceful close would wait
+        // for a FIN that is never coming, so destroy the socket and let the
+        // close handler run the normal reconnect path.
+        this.stopHeartbeat();
+        try {
+          socket.terminate ? socket.terminate() : socket.close();
+        } catch {
+          /* already gone — the close handler still fires */
+        }
+        return;
+      }
+      try {
+        socket.ping?.();
+      } catch {
+        /* the close handler will take it from here */
+      }
+    }, HEARTBEAT_INTERVAL_MS);
+  }
+
+  private stopHeartbeat(): void {
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+  }
+
+  /**
+   * Fail every RPC that was written to the socket that just died. Their replies
+   * can never arrive, so leaving them pending only makes the UI wait out the
+   * full RPC timeout before it can retry on the new connection.
+   */
+  private rejectInFlight(reason: string): void {
+    if (this.inFlight.size === 0) return;
+    for (const reqId of this.inFlight) {
+      const pending = this.pending.get(reqId);
+      if (!pending) continue;
+      this.pending.delete(reqId);
+      clearTimeout(pending.timer);
+      pending.reject(new Error(reason));
+    }
+    this.inFlight.clear();
+  }
+
+  private scheduleReconnect(): void {
+    if (this.closed) return;
+    if (this.reconnectTimer) return;
+    const delay = Math.min(
+      this.reconnectInitialMs * Math.pow(2, this.reconnectAttempt),
+      this.reconnectMaxMs,
+    );
+    this.reconnectAttempt++;
+    this.reconnectTimer = setTimeout(() => {
+      this.reconnectTimer = null;
+      this.connect();
+    }, delay);
+  }
+
+  private onMessage(raw: unknown): void {
+    let msg: Record<string, unknown>;
+    try {
+      msg = JSON.parse(typeof raw === "string" ? raw : String(raw));
+    } catch {
+      return;
+    }
+    if (!msg || typeof msg.type !== "string") return;
+    const type = msg.type;
+
+    // Stream frames (no reqId — pushed to listeners).
+    if (type === "data") {
+      const ptyId = typeof msg.ptyId === "string" ? msg.ptyId : "";
+      const data = typeof msg.data === "string" ? msg.data : "";
+      const seq = typeof msg.seq === "number" ? msg.seq : 0;
+      if (ptyId) {
+        const payload = { ptyId, data, seq };
+        for (const cb of this.dataListeners) cb(payload);
+      }
+      return;
+    }
+    if (type === "exit") {
+      const ptyId = typeof msg.ptyId === "string" ? msg.ptyId : "";
+      const exitCode = typeof msg.exitCode === "number" ? msg.exitCode : 0;
+      const signal = typeof msg.signal === "number" ? msg.signal : undefined;
+      if (ptyId) {
+        const payload = { ptyId, exitCode, signal };
+        for (const cb of this.exitListeners) cb(payload);
+      }
+      return;
+    }
+
+    // Event-cursor frames (issue 02). `event` carries a CoreLinkEvent from the
+    // Harness's monotonic event log; `eventsReplayed` marks end-of-tail. Both
+    // advance the persisted lastEventId cursor so a kill+reopen restores the
+    // missed timeline.
+    if (type === "event") {
+      const event = this.parseEvent(msg);
+      if (!event) return;
+      // Dedupe: skip events at or below the cursor (a late duplicate from a
+      // replay overlap, or a re-delivery after reconnect).
+      if (event.eventId <= this.lastEventId) return;
+      this.lastEventId = event.eventId;
+      this.persistCursor();
+      for (const cb of this.eventListeners) cb({ event });
+      return;
+    }
+    if (type === "eventsReplayed") {
+      const lastEventId = typeof msg.lastEventId === "number" ? msg.lastEventId : this.lastEventId;
+      // The marker is authoritative for the caught-up cursor: advance even if
+      // no individual event frames preceded it (empty tail).
+      if (lastEventId > this.lastEventId) {
+        this.lastEventId = lastEventId;
+        this.persistCursor();
+      }
+      this.subscribed = true;
+      for (const cb of this.eventsReplayedListeners) cb({ lastEventId: this.lastEventId });
+      return;
+    }
+    // The Harness's first frame on every connection: which core-link it
+    // speaks. The version gate (issue 07) hangs off this — a Core whose
+    // vocabulary this build doesn't share is a chore to report, not a
+    // connection to half-use (ADR 0005). Emitted on every `ready`, so a Core
+    // that reconnects after an update flips back to compatible with no extra
+    // plumbing.
+    if (type === "ready") {
+      this.protocolVersion = typeof msg.version === "string" ? msg.version : null;
+      const payload = {
+        version: this.protocolVersion,
+        compatible: coreLinkProtocolCompatible(this.protocolVersion),
+      };
+      for (const cb of this.protocolVersionListeners) cb(payload);
+      return;
+    }
+    if (type === "subscribeAck") {
+      // Informational — the event stream + eventsReplayed follow. Nothing to do.
+      return;
+    }
+
+    // ─── Bearer auth frames (issue 04) ───
+    if (type === "authOk") {
+      const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
+      const exp = typeof msg.exp === "number" ? msg.exp : 0;
+      this.authenticated = true;
+      // Now that the Harness has accepted the bearer, send the event-cursor
+      // `subscribe` so the replay tail + live events flow. Auth came first, so
+      // the server's auth gate lets the subscribe through.
+      this.subscribed = false;
+      this.sendSubscribe();
+      for (const cb of this.authOkListeners) cb({ coreId, exp });
+      return;
+    }
+    if (type === "authError") {
+      const reason =
+        msg.reason === "expired" || msg.reason === "bad-signature" || msg.reason === "malformed"
+          ? msg.reason
+          : "malformed";
+      this.authenticated = false;
+      for (const cb of this.authErrorListeners) cb({ reason });
+      // The server closes on auth failure; the close handler triggers the
+      // reconnect path. If the bearer is expired it will keep failing until a
+      // reissued blob is pasted — that's the designed "reissuing is a VM-side
+      // operation" property (ADR 0003).
+      return;
+    }
+
+    // Response frames (correlated by reqId).
+    const reqId = typeof msg.reqId === "string" ? msg.reqId : null;
+    if (reqId) {
+      const pending = this.pending.get(reqId);
+      if (pending) {
+        this.pending.delete(reqId);
+        this.inFlight.delete(reqId);
+        clearTimeout(pending.timer);
+        pending.resolve(msg as CoreLinkResponseFrame);
+        return;
+      }
+    }
+  }
+
+  private rpc(frame: CoreLinkRequestFrame, timeoutMs = DEFAULT_RPC_TIMEOUT_MS): Promise<unknown> {
+    return this.request(frame, timeoutMs).then((response) => unwrapResponse(response));
+  }
+
+  /**
+   * Send any core-link request frame and resolve with the Harness's raw
+   * response frame — errors included, as frames rather than rejections.
+   *
+   * This is the seam the panel-link router forwards through. A router that had
+   * to go through the typed methods above would have to unwrap each response
+   * only to re-wrap it, and would have to invent a shape for the failures the
+   * typed methods turn into rejections. Handing it the frame keeps the Panel a
+   * router rather than a translator.
+   *
+   * The `reqId` on the frame passed in is ignored — this client owns request
+   * correlation on its own socket, and the returned frame carries the reqId it
+   * assigned. Callers who need to match an answer to a caller (the router does,
+   * across many browsers) key on their own id and rewrite it on the way back.
+   */
+  request(
+    frame: CoreLinkRequestFrame,
+    timeoutMs = DEFAULT_RPC_TIMEOUT_MS,
+  ): Promise<CoreLinkResponseFrame> {
+    if (this.closed) return Promise.reject(new Error("core-link client closed"));
+    const reqId = `r${++this.reqSeq}`;
+    const framed = { ...frame, reqId } as CoreLinkRequestFrame;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(reqId);
+        this.inFlight.delete(reqId);
+        reject(new Error(`core-link rpc ${framed.type} timed out`));
+      }, timeoutMs);
+      this.pending.set(reqId, { resolve: resolve as (value: unknown) => void, reject, timer });
+      this.trySend(framed);
+    });
+  }
+
+  private trySend(frame: CoreLinkRequestFrame): void {
+    if (this.closed) {
+      const reqId = (frame as { reqId?: string }).reqId;
+      if (reqId) {
+        const pending = this.pending.get(reqId);
+        if (pending) {
+          this.pending.delete(reqId);
+          clearTimeout(pending.timer);
+          pending.reject(new Error("core-link client closed"));
+        }
+      }
+      return;
+    }
+    if (!this.socket || !this.ready) {
+      // The WS isn't open yet (Harness still booting, or reconnecting after a
+      // drop). The frame is already registered in `pending` with a timeout —
+      // it will be sent once `on("open")` fires and flushes the queue, or it
+      // will time out. This avoids a hard rejection on the first call after a
+      // reconnect, which used to break ptyReplay.
+      this.queuedFrames.push(frame);
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify(frame));
+      const reqId = (frame as { reqId?: string }).reqId;
+      if (reqId) this.inFlight.add(reqId);
+    } catch {
+      // The close handler will trigger reconnect.
+    }
+  }
+
+  /**
+   * Send the `subscribe` frame carrying the persisted `lastEventId` cursor.
+   * Called on every (re)connect so the Harness streams the event-log tail the
+   * Panel missed while away. Fire-and-forget — the response is the `event`
+   * stream + `eventsReplayed` marker (handled in {@link onMessage}), not a
+   * reqId-correlated RPC.
+   */
+  private sendSubscribe(): void {
+    const reqId = `sub-${++this.reqSeq}`;
+    const frame: CoreLinkRequestFrame = {
+      type: "subscribe",
+      reqId,
+      lastEventId: this.lastEventId,
+    };
+    if (!this.socket || !this.ready) {
+      this.queuedFrames.unshift(frame);
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify(frame));
+    } catch {
+      // The close handler will reconnect; the next open re-sends subscribe.
+    }
+  }
+
+  /**
+   * Send the `auth` frame carrying the bearer. Called on every (re)connect
+   * after the mTLS handshake. Fire-and-forget — the response is `authOk` /
+   * `authError` (handled in {@link onMessage}), not a reqId-correlated RPC.
+   * The `subscribe` frame follows only after `authOk`, so the Harness's auth
+   * gate lets the event-cursor replay through.
+   */
+  private sendAuth(): void {
+    if (!this.bearer) return;
+    const reqId = `auth-${++this.reqSeq}`;
+    const frame: CoreLinkRequestFrame = { type: "auth", reqId, bearer: this.bearer };
+    if (!this.socket || !this.ready) {
+      this.queuedFrames.unshift(frame);
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify(frame));
+    } catch {
+      // The close handler will reconnect; the next open re-sends auth.
+    }
+  }
+
+  /**
+   * Notified once per (re)connect when the Harness accepts the bearer. `{ exp }`
+   * is the session expiry — the Panel can hint "session expires at". The event
+   * replay (`subscribe`) is sent automatically right after.
+   */
+  onAuthOk(cb: (msg: { coreId: string; exp: number }) => void): () => void {
+    this.authOkListeners.add(cb);
+    return () => this.authOkListeners.delete(cb);
+  }
+
+  /**
+   * Notified when the Harness rejects the bearer (expired / bad signature).
+   * The server closes on rejection; the reconnect path takes over. An expired
+   * bearer will keep failing until a reissued blob is pasted (ADR 0003).
+   */
+  onAuthError(
+    cb: (msg: { reason: "expired" | "bad-signature" | "malformed" }) => void,
+  ): () => void {
+    this.authErrorListeners.add(cb);
+    return () => this.authErrorListeners.delete(cb);
+  }
+
+  /**
+   * Notified whenever the socket goes down — a dropped connection, a Harness
+   * restart, a dial that never completed. Fires on every attempt, so a Core
+   * that is simply off shows as unreachable rather than sitting at
+   * "connecting" for as long as the backoff runs. `close()` does not fire it:
+   * that is the Panel hanging up, not the Core going away.
+   */
+  onDisconnected(cb: (msg: { error?: string }) => void): () => void {
+    this.disconnectedListeners.add(cb);
+    return () => this.disconnectedListeners.delete(cb);
+  }
+
+  /**
+   * Notified on every connection's `ready` frame with the protocol version the
+   * Harness advertises and whether this build can speak it. The manager turns
+   * an incompatible answer into the Core's "needs update" dial state.
+   */
+  onProtocolVersion(
+    cb: (msg: { version: string | null; compatible: boolean }) => void,
+  ): () => void {
+    this.protocolVersionListeners.add(cb);
+    return () => this.protocolVersionListeners.delete(cb);
+  }
+
+  private emitDisconnected(error?: string): void {
+    for (const cb of this.disconnectedListeners) cb({ error });
+  }
+
+  /** True once the server has accepted this connection's `auth` frame. */
+  isAuthenticated(): boolean {
+    return this.authenticated;
+  }
+
+  /** Parse and validate an `event` frame's `event` field into a CoreLinkEvent. */
+  private parseEvent(msg: Record<string, unknown>): CoreLinkEvent | null {
+    const raw = msg.event;
+    if (!raw || typeof raw !== "object") return null;
+    const e = raw as Record<string, unknown>;
+    const eventId = typeof e.eventId === "number" ? e.eventId : NaN;
+    if (!Number.isFinite(eventId) || eventId <= 0) return null;
+    return {
+      eventId,
+      ts: typeof e.ts === "number" ? e.ts : 0,
+      kind: typeof e.kind === "string" ? e.kind : "",
+      ptyId: typeof e.ptyId === "string" ? e.ptyId : null,
+      taskId: typeof e.taskId === "string" ? e.taskId : null,
+      payload: typeof e.payload === "string" ? e.payload : "{}",
+    };
+  }
+
+  // ─── Public API ─────────────────────────────────────────────────────────
+
+  spawn(opts: CoreLinkPtySpawnOptions): Promise<{ ptyId: string }> {
+    return this.rpc({ type: "spawn", reqId: "", opts }) as Promise<{ ptyId: string }>;
+  }
+
+  write(ptyId: string, data: string): Promise<boolean> {
+    return this.rpc({ type: "write", reqId: "", ptyId, data }) as Promise<boolean>;
+  }
+
+  resize(ptyId: string, cols: number, rows: number): Promise<boolean> {
+    return this.rpc({ type: "resize", reqId: "", ptyId, cols, rows }) as Promise<boolean>;
+  }
+
+  kill(ptyId: string): Promise<boolean> {
+    return this.rpc({ type: "kill", reqId: "", ptyId }) as Promise<boolean>;
+  }
+
+  killLaunchProcesses(opts: {
+    cwd: string;
+    commands: string[];
+    ports?: number[];
+  }): Promise<CoreLinkLaunchProcessKillResult> {
+    return this.rpc({
+      type: "killLaunchProcesses",
+      reqId: "",
+      cwd: opts.cwd,
+      commands: opts.commands,
+      ports: opts.ports,
+    }) as Promise<CoreLinkLaunchProcessKillResult>;
+  }
+
+  findByTask(taskId: string): Promise<{ ptyId: string | null }> {
+    return this.rpc({ type: "findByTask", reqId: "", taskId }) as Promise<{ ptyId: string | null }>;
+  }
+
+  /** See {@link CoreLinkRequestFrame} `replay` — `sinceSeq` asks for the tail
+   *  past a cursor (a reattach); omitting it asks for the whole scrollback. */
+  replay(ptyId: string, sinceSeq?: number): Promise<CoreLinkPtyReplay> {
+    return this.rpc({ type: "replay", reqId: "", ptyId, sinceSeq }) as Promise<CoreLinkPtyReplay>;
+  }
+
+  /**
+   * List every project on this Core as a live snapshot (issue 07 — per-Core
+   * navigation). The Harness is the source of truth; the Panel holds none. The
+   * returned `path` is a VM path — only the Harness can validate it.
+   */
+  projectsList(): Promise<CoreLinkProjectSnapshot[]> {
+    return this.rpc({ type: "projectsList", reqId: "" }) as Promise<CoreLinkProjectSnapshot[]>;
+  }
+
+  /**
+   * List every active (non-archived) task on this Core, optionally filtered to
+   * one project (issue 07 — per-Core navigation + Fleet view fan-out). The
+   * Harness omits archived tasks; the Panel caches nothing.
+   */
+  tasksList(projectId?: string): Promise<CoreLinkTaskSnapshot[]> {
+    return this.rpc({ type: "tasksList", reqId: "", projectId }) as Promise<CoreLinkTaskSnapshot[]>;
+  }
+
+  /**
+   * Create / rename / archive a project on this Core (issue 04 write path).
+   * The Harness validates the VM path server-side; an invalid path comes back
+   * as an `error` frame that rejects this promise. Returns `null` when a
+   * `rename`/`archive` targets a missing row.
+   */
+  projectsMutate(
+    mutation: CoreLinkProjectMutation,
+  ): Promise<CoreLinkProjectSnapshot | null> {
+    return this.rpc({ type: "projectsMutate", reqId: "", mutation }) as Promise<
+      CoreLinkProjectSnapshot | null
+    >;
+  }
+
+  /**
+   * Create / update a task on this Core (issue 04 write path). Returns `null`
+   * when an `update` targets a missing row.
+   */
+  tasksMutate(mutation: CoreLinkTaskMutation): Promise<CoreLinkTaskSnapshot | null> {
+    return this.rpc({ type: "tasksMutate", reqId: "", mutation }) as Promise<
+      CoreLinkTaskSnapshot | null
+    >;
+  }
+
+  /**
+   * List every active session on this Core (optionally filtered to one
+   * project). A session's `ptyId` is set when the Harness has a live PTY for
+   * that task — the Panel uses this to know which sessions it can reattach to.
+   */
+  sessionsList(projectId?: string): Promise<CoreLinkSessionSnapshot[]> {
+    return this.rpc({ type: "sessionsList", reqId: "", projectId }) as Promise<
+      CoreLinkSessionSnapshot[]
+    >;
+  }
+
+  /**
+   * Snapshot of this Core's CLI availability (issue 11). Called on Panel mount
+   * to hydrate the per-Core availability store without waiting for the next
+   * `agents:availabilityChanged` event. Live updates arrive via `onEvent`.
+   */
+  agentsAvailabilityList(): Promise<CoreLinkAgentAvailabilityMap> {
+    return this.rpc({ type: "agentsAvailabilityList", reqId: "" }) as Promise<
+      CoreLinkAgentAvailabilityMap
+    >;
+  }
+
+  onData(cb: (msg: { ptyId: string; data: string; seq: number }) => void): () => void {
+    this.dataListeners.add(cb);
+    return () => this.dataListeners.delete(cb);
+  }
+
+  onExit(cb: (msg: { ptyId: string; exitCode: number; signal?: number }) => void): () => void {
+    this.exitListeners.add(cb);
+    return () => this.exitListeners.delete(cb);
+  }
+
+  /**
+   * Subscribe to domain events from the Harness's monotonic event log (task
+   * status, hook, session finish, PTY spawn/exit lifecycle). The callback
+   * receives one `{ event: CoreLinkEvent }` per replayed or live event. The
+   * client dedupes by eventId and persists the cursor, so on a kill+reopen the
+   * Panel restores the missed timeline via the subscribe replay.
+   */
+  onEvent(cb: (msg: { event: CoreLinkEvent }) => void): () => void {
+    this.eventListeners.add(cb);
+    return () => this.eventListeners.delete(cb);
+  }
+
+  /**
+   * Notified once after each (re)connect when the Harness finishes streaming
+   * the replay tail and live event push resumes. `{ lastEventId }` is the new
+   * caught-up cursor.
+   */
+  onEventsReplayed(cb: (msg: { lastEventId: number }) => void): () => void {
+    this.eventsReplayedListeners.add(cb);
+    return () => this.eventsReplayedListeners.delete(cb);
+  }
+
+  /** The highest eventId the client has seen (mirrors the persisted cursor). */
+  getLastEventId(): number {
+    return this.lastEventId;
+  }
+
+  close(): void {
+    this.closed = true;
+    this.stopHeartbeat();
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    for (const pending of this.pending.values()) {
+      clearTimeout(pending.timer);
+      pending.reject(new Error("core-link client closed"));
+    }
+    this.pending.clear();
+    if (this.socket) {
+      try {
+        this.socket.close();
+      } catch {
+        /* best effort */
+      }
+      this.socket = null;
+    }
+  }
+}
+
+/**
+ * Turn a response frame into the value the typed methods promise, or throw the
+ * failure it carries. The two failure frames (`spawnError`, `error`) become
+ * rejections here so a caller of `spawn()` sees an exception rather than a
+ * frame it has to inspect; the router bypasses this and forwards the frame.
+ */
+function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
+  switch (msg.type) {
+    case "spawned":
+      return { ptyId: msg.ptyId };
+    case "spawnError":
+      throw new Error(msg.message);
+    case "writeResult":
+    case "resizeResult":
+    case "killResult":
+      return msg.ok;
+    case "killLaunchProcessesResult":
+      return msg.result;
+    case "findByTaskResult":
+      return { ptyId: msg.ptyId };
+    case "replayResult":
+      return { data: msg.data, nextSeq: msg.nextSeq, from: msg.from };
+    case "tasksListResult":
+      return msg.tasks;
+    case "projectsListResult":
+      return msg.projects;
+    case "tasksMutateResult":
+      return msg.task;
+    case "projectsMutateResult":
+      return msg.project;
+    case "sessionsListResult":
+      return msg.sessions;
+    case "agentsAvailabilityListResult":
+      return msg.availability;
+    case "error":
+      throw new Error(msg.message);
+    default:
+      // `ready`, `subscribeAck`, the auth frames — not request/response answers
+      // any typed method awaits. Resolving undefined matches the old behaviour
+      // of leaving such a frame unhandled rather than rejecting on it.
+      return undefined;
+  }
+}
+
+/**
+ * Derive a stable, filesystem-safe key suffix from the core-link URL so each
+ * Core gets its own `lastEventId` cursor in storage. The URL carries the host
+ * + port that uniquely identify a Core; we strip the scheme and replace
+ * non-alphanumerics so the result is a safe storage key segment. Two Cores on
+ * different ports get different cursors.
+ */
+function deriveCoreKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `${u.hostname}-${u.port}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+  } catch {
+    // Malformed URL — fall back to a sanitized full string so callers still
+    // get key isolation between distinct (if odd) URLs.
+    return url.replace(/[^a-zA-Z0-9_-]/g, "_").slice(-64);
+  }
+}
+
+/**
+ * Default socket factory — uses the platform's global WebSocket, which both
+ * Node and the browser provide.
+ */
+function defaultCreateSocket(url: string): WebSocketLike {
+  const ws = new WebSocket(url);
+  return {
+    get readyState() {
+      return ws.readyState;
+    },
+    send: (data: string) => ws.send(data),
+    close: () => ws.close(),
+    on: (event, cb) => {
+      if (event === "open") {
+        ws.addEventListener("open", () => (cb as () => void)());
+      } else if (event === "message") {
+        ws.addEventListener("message", (e: MessageEvent) =>
+          (cb as (data: unknown) => void)(e.data),
+        );
+      } else if (event === "close") {
+        ws.addEventListener("close", () => (cb as () => void)());
+      } else if (event === "error") {
+        ws.addEventListener("error", () =>
+          (cb as (err: Error) => void)(new Error("WebSocket error")),
+        );
+      }
+    },
+    removeEventListener: (event, cb) => {
+      ws.removeEventListener(event, cb as EventListener);
+    },
+  };
+}

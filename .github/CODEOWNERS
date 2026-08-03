@@ -1,0 +1,39 @@
+# CODEOWNERS — automatic review assignment + required reviews.
+# Later rules override earlier ones. Order: generic → specific.
+# Combine with a branch ruleset: "Require review from Code Owners".
+# Docs: https://docs.github.com/en/repositories/managing-your-repositorys-settings-and-features/customizing-your-repository/about-code-owners
+#
+# ⚠️  Every team named here must exist in the actana org, or GitHub silently
+#     assigns nobody — and with "Require review from Code Owners" enabled, the
+#     PR can then never be approved. Create @actana/maintainers before turning
+#     that rule on. See docs/REPO_SETUP.md.
+#
+# One team on purpose: the template's backend/frontend/docs/platform split
+# describes a layout this repo does not have (there is no /src, no /infra), and
+# teams that do not exist are worse than no rule. The per-package lines below
+# are where a split would go once there are enough maintainers to route.
+
+# ---- Default owners for everything not matched below ----
+*                           @actana/maintainers
+
+# ---- The two halves of the product ----
+/packages/panel/            @actana/maintainers
+/packages/harness/          @actana/maintainers
+
+# The wire contract both halves agree on. A change here is a compatibility
+# event — the Panel and its Cores are version-locked — never a local edit.
+/packages/shared/           @actana/maintainers
+
+# ---- Protected: the decisions, the contracts, and the release path ----
+/CONTEXT.md                 @actana/maintainers
+/docs/adr/                  @actana/maintainers
+/.github/                   @actana/maintainers
+/SECURITY.md                @actana/maintainers
+/LICENSE                    @actana/maintainers
+/NOTICE                     @actana/maintainers
+/Dockerfile                 @actana/maintainers
+/install.sh                 @actana/maintainers
+/deploy/                    @actana/maintainers
+/package.json               @actana/maintainers
+/pnpm-lock.yaml             @actana/maintainers
+/pnpm-workspace.yaml        @actana/maintainers

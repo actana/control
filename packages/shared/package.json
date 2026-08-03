@@ -1,0 +1,21 @@
+{
+  "name": "@actana/shared",
+  "version": "0.49.0",
+  "description": "Actana Control shared wire contract — core-link frames, protocol types, mutation/query contracts, registration-blob codec.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./*": "./src/*.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "7.6.13",
+    "@types/node": "25.8.0",
+    "typescript": "6.0.3",
+    "vitest": "4.1.6"
+  }
+}

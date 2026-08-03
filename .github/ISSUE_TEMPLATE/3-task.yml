@@ -1,0 +1,43 @@
+name: 🔧 Task / Chore
+description: Internal work item — refactoring, tech debt, tooling, CI, dependencies. Primarily for maintainers and team members.
+title: "chore: <short description>"
+labels: ["type: task", "needs-triage"]
+body:
+  - type: textarea
+    id: description
+    attributes:
+      label: Description
+      description: What needs to be done and why?
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      description: A checklist that defines "done" for this task.
+      placeholder: |
+        - [ ] Criterion 1
+        - [ ] Criterion 2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - "Build / CI"
+        - "Dependencies"
+        - "Refactoring / tech debt"
+        - "Testing"
+        - "Tooling / DX"
+        - "Other"
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Related issues, links, constraints, deadlines.

@@ -1,0 +1,21 @@
+# Cross-core session-finish notifications ride the existing core-link event stream
+
+When a Session finishes on any Core — loopback or remote — the Panel raises exactly one notification (in-app toast, and optionally a native OS notification), identifying which Core the Session belonged to. The trigger is the existing `session:finished` event flowing over core-link; there is no new transport, no polling, and no per-Core listener wiring beyond what `RemoteCoreDialer` already provides. The `lastEventId` cursor already persisted per Core covers reconnect replay: if the Panel is asleep when a remote Session finishes, the notification fires when the Panel wakes and drains the event tail. No `session:finished` event is ever missed.
+
+Granularity is **per Session**, not per Task. A Task that spawns multiple Sessions raises one notification per Session. Toast delivery defaults on; OS-notification delivery defaults off (user-toggleable in settings). Notification sounds are a separate toggle and are unchanged in behavior. The notification body carries the Core alias (or id, if the Core has no alias) plus the Session/project label so the operator sees at a glance which machine surfaced the event.
+
+## Considered Options
+
+- **Fire notifications from each Core's own machine (rejected).** Each Harness would raise a native notification on its own OS. Rejected because the operator sits at the Panel; notifications on a remote VM's desktop nobody is watching don't help. The Panel is the single point of attention.
+- **Add a dedicated notification transport parallel to core-link (rejected).** A separate WebSocket or HTTP channel just for notifications. Extra auth surface, extra reconnect logic, extra failure mode. The existing event stream already carries `session:finished` with monotonic ids and replay — reuse it.
+- **Poll each Core for finished Sessions (rejected).** Introduces latency, wastes network on idle Cores, and cannot preserve exactly-once delivery without server-side dedup. Event-stream delivery is already exactly-once via `lastEventId` cursor.
+- **Fire from the Panel, on the Panel's event listener across all Cores (chosen).** `RemoteCoreDialer.onEvent(msg.event)` already surfaces every Core's events uniformly; the loopback client publishes the same shape. The finish-notification hook subscribes at the Panel level and treats all Cores identically.
+
+## Consequences
+
+- `src/lib/use-session-finish-notifications.tsx` is extended from "loopback events only" to "events from every registered Core." Subscription source becomes the union of the loopback event stream and the remote dialer's per-Core streams; the hook is otherwise unchanged.
+- Event handling deduplicates by `(coreId, sessionId, eventId)` so a race between a live event and a replay tail on reconnect can't fire twice.
+- The notification body gains a Core-identity field. `session-notification-store` stores `coreId` on each stored notification so the "click to open" action navigates to the right Core in the Fleet view.
+- Notification permission requests remain a Panel-side concern (`electron/notification-permissions.ts`, unchanged). Remote Harnesses never touch OS notification APIs on either machine.
+- Bootstrapping cost is minimal because `lastEventId` per Core, `RemoteCoreDialer`'s `onEvent`, and the finish-toast UI all already exist. This ADR mostly *ratifies* extending an existing hook rather than inventing anything.
+- Any future notification kind (e.g., a "Core became unreachable" alert) follows the same pattern: subscribe at the Panel, key off event kind, no per-Core plumbing. The precedent set here is deliberate.
