@@ -63,8 +63,17 @@ function restrictPermissions(filePath: string): void {
  * chmod'd to 0o600 because it contains private keys.
  */
 export function persistMaterial(configDir: string, material: PersistedMaterial): void {
-  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const filePath = materialFilePath(configDir);
+  persistMaterialToFile(materialFilePath(configDir), material);
+}
+
+/**
+ * Persist material to an explicit path, creating the directory it names. The
+ * counterpart of {@link loadMaterialFromFile}, and what the container Core
+ * writes through: its material lives wherever `AC_CORE_MATERIAL_FILE` points
+ * inside the mounted volume, not under a config dir this process chose.
+ */
+export function persistMaterialToFile(filePath: string, material: PersistedMaterial): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(filePath, JSON.stringify(material, null, 2), {
     encoding: "utf8",
     mode: 0o600,

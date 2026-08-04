@@ -26,6 +26,11 @@
 //                                     this mode; the operator already has it
 //                                     from `core install`.
 //
+// Container mode (ADR 0016 D15): the image bakes `ACTANA_CONTAINER=1` and the
+// operator sets `ACTANA_PUBLIC_HOST`, which `actana daemon` hands down as
+// `AC_CORE_PUBLIC_HOST`. Missing, the boot stops here rather than defaulting to
+// the bind address — a Core with a guessed SAN pairs with nothing.
+//
 // Prints "@@AC_CORE_LISTENING@@" on stdout once the WS server is listening,
 // so the parent can resolve boot readiness (mirrors server-runner.mjs). In
 // remote mode also prints "@@AC_CORE_REGISTRATION_BLOB@@<base64>" — the
@@ -65,6 +70,7 @@ import { generateCertMaterial } from "./core-cert-material";
 import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { loadMaterialFromFile } from "./core-material-store";
+import { CONTAINER_PUBLIC_HOST_ENV, inContainer } from "./actana-container";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "./harness-availability-store";
 
@@ -202,6 +208,21 @@ async function startCore(): Promise<void> {
   };
 
   if (remoteMode) {
+    // In a container the public host is the operator's to supply and never
+    // ours to guess (ADR 0016 D15): it is baked into the server certificate's
+    // SAN and into every pairing token, so falling back to the bind address
+    // would mint a Core no Panel can verify. `actana daemon` translates
+    // `ACTANA_PUBLIC_HOST` into `AC_CORE_PUBLIC_HOST` before it gets here; this
+    // is the same refusal one layer down, for anything that execs the daemon
+    // bundle directly.
+    if (inContainer(process.env) && !process.env.AC_CORE_PUBLIC_HOST) {
+      console.error(
+        `[core-entry] ${CONTAINER_PUBLIC_HOST_ENV} is not set, and this Core will not ` +
+          "guess the address a Panel dials. Set it to the host or IP your Panel reaches " +
+          `this container on:\n  ${CONTAINER_PUBLIC_HOST_ENV}=core1.example.com`,
+      );
+      process.exit(1);
+    }
     const publicHost = process.env.AC_CORE_PUBLIC_HOST || host;
     const materialFile = process.env.AC_CORE_MATERIAL_FILE;
 
