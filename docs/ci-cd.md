@@ -123,6 +123,81 @@ wrong: the identity is `core` at 1000:1000, `tini` is at the path the baked
 is a separate seam, covered by the `E2E — Panel against Core-in-a-box` job in
 `ci.yml`.
 
+## Dependency and CVE policy
+
+Three populations, three owners, one gate each. They are written out separately
+because nobody should later "simplify" one into another: `pnpm audit` cannot see
+the base image at all, and Trivy has no dev/prod notion, so neither substitutes
+for the other ([ADR 0016](adr/0016-the-0-1-0-shape.md) D37).
+
+| Population | Gate | Runs |
+| --- | --- | --- |
+| Shipped npm packages | `pnpm audit --prod --audit-level high` | every PR |
+| Dev-tree packages | `pnpm audit --audit-level high` — opens an issue, does not gate | weekly |
+| The image: OS layer + the `node_modules` it ships | Trivy, fails on **fixable** CRITICAL/HIGH | every PR, on the built image |
+
+Only the third row is live as written. `dependency-audit` in
+[`ci.yml`](../.github/workflows/ci.yml) still runs without `--prod`, which is
+[#47](https://github.com/actana/control/issues/47)'s change and needs
+`pnpm update -r postcss @babel/core` alongside it (D39); the weekly dev-tree
+audit arrives with `housekeeping.yml`
+([#51](https://github.com/actana/control/issues/51)). The table is the policy,
+not a description of today's workflow files.
+
+The Trivy leg is [`scripts/scan-core-image.mjs`](../scripts/scan-core-image.mjs),
+run from `container-image.yml` against the image that was just built and before
+anything is pushed. Run it yourself with `pnpm core:image:scan --image <tag>`,
+or against a saved tarball with `--input <image.tar>`.
+
+**Fixable only.** An unfixed CRITICAL does not fail the build: there is nothing
+a contributor can do about it, and a gate that is red for work nobody can do is
+a gate everyone learns to click past. Medium and low are printed on every run
+and never gate. The same reasoning is why `--prod` is on the npm gate — it still
+catches `postcss` and `@babel/core`, which reach the runtime image through the
+Panel's production graph, while dropping dev-only findings no contributor caused.
+
+### What is suppressed, and what is merely out of scope
+
+Two things stay out of the gate. They are different in kind and the difference
+matters, so they live in different places rather than one hiding inside the
+other.
+
+**One suppression, one file, one entry:
+[`.trivyignore.rego`](../.trivyignore.rego).** It suppresses `linux-libc-dev`,
+which is ~1200 of the ~1246 distinct findings in the Core image, and the
+justification is written beside the rule: the package is kernel headers, 1008 of
+its 1015 files are under `/usr/include`, it contains no executable code, and the
+kernel a Core runs is the *host's*. The toolchain that pulls it in stays because
+it is what the product is — `npm install` on any project with a native addon
+invokes node-gyp, which needs `make`, `g++` and `python3` (D7). Nothing else is
+suppressed anywhere in this repository, and adding a second entry is an ADR
+change, not a build fix.
+
+It is a Rego ignore policy rather than a plain `.trivyignore` for one measured
+reason: `.trivyignore` and `.trivyignore.yaml` match on CVE **id** only. Naming a
+package in either parses cleanly, filters nothing, and warns about nothing.
+Because that failure is silent, the scan script asserts the suppression actually
+took effect and fails if any `linux-libc-dev` row survives.
+
+**One scope exclusion, in the gate rather than the allowlist: the system Node's
+own bundled npm** (`usr/local/lib/node_modules/npm/`). Every fixable
+CRITICAL/HIGH in the Core image today is in that one directory — `tar`,
+`undici`, `brace-expansion`, `ip-address`, vendored inside npm — and no released
+npm clears them: npm 12.0.2, the newest there is, still ships
+`brace-expansion` 5.0.7 against fixes at 5.0.8 and 5.0.9, and `ip-address`
+10.2.0 against a fix at 10.3.1. Bumping `NODE_VERSION` clears none of it either.
+This is a second suppression and calling it anything else would be laundering
+it; what makes it a different *kind* is that it is bounded by path rather than
+by CVE, so a new finding in that tree is silently non-gating too. That is the
+cost, accepted knowingly. Every one of those findings is printed by name on
+every run, and paying them down belongs to the weekly rebuild, not to a PR.
+
+The boundary is deliberately narrow. The Core's own shipped tree under
+`/opt/actana` gates normally — it is fixable with `pnpm update`, and it is clean
+today because [`pnpm-workspace.yaml`](../pnpm-workspace.yaml) pins fixed versions
+through `overrides` rather than suppressing anything. So does anything else
+installed beside npm under `/usr/local/lib/node_modules`.
+
 ## Registries
 
 **GHCR always.** It authenticates with the workflow's own `github.token`, which

@@ -25,10 +25,10 @@
 # Core without the toolchain cannot even `pnpm install` Actana Control. Those
 # findings are kernel headers under /usr/include with no executable code, on a
 # kernel that belongs to the host. D7 suppresses them with a single justified
-# entry in a checked-in `.trivyignore` — which #38 lands, along with the gate
-# that reads it. There is no `.trivyignore` in the tree yet, so the raw
-# number a scan of this image reports today is 1246, not the 46 that survive
-# the suppression.
+# entry in a checked-in allowlist — `.trivyignore.rego` at the repo root,
+# landed by #38 along with the gate that reads it. A raw scan of this image
+# still reports 1246 distinct; 46 survive the suppression, and none of the
+# 1200 is a fixable CRITICAL or HIGH.
 #
 # Two figures from D6 do NOT survive measurement, and this file is the wrong
 # place to repeat them:
