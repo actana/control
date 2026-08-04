@@ -1,69 +1,111 @@
-# Actana Core — development fixture
+# Actana Core
 
-> ### ⚠️ This is not a production deployment
->
-> This image exists so you can try the real Panel↔Core pairing flow on one
-> machine with nothing but Docker. It is **not** how you host a Core, and it is
-> not hardened. Specifically, it:
->
-> - runs **systemd as PID 1**, so it needs `--privileged` and the host cgroup
-> - grants the `operator` user **passwordless sudo**
-> - bakes systemd **linger** into the image
-> - hardcodes `--public-host core`, so it only pairs when the Panel can reach
->   it at the hostname `core`
->
-> **To run a real Core, install the Core on a machine you own** —
-> [INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md). There is
-> no supported container deployment of a Core.
+The **Core** is the machine half of [Actana Control](https://github.com/actana/control): the daemon
+that owns your projects, your sessions, the SQLite database and the PTYs, running on a machine that
+actually has your code on it. The **Panel** (`actana/panel`) is a connection broker over your fleet
+of Cores and stores nothing task-shaped; every write happens here.
 
-## What a Core is
+This image is a Core you run, not a machine you install one on. There is no versioned tree, no
+service unit and no `actana setup`: the image tag is the version, the entrypoint is the unit, and
+`docker compose pull && up -d` is the upgrade. Installing on a machine you own —
+[INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md) — remains fully supported and
+is unrelated to this image.
 
-In [Actana Control](https://github.com/actana/control), a **Core** is a machine
-that actually has your code on it. It runs a **Core** daemon that owns the
-projects, the sessions, the SQLite database, and the PTYs — it is the only
-process that writes its own state. The **Panel** (`actana/panel`) is a
-connection broker over your fleet of Cores; it stores nothing task-shaped.
+## Quick start
 
-This image is an Ubuntu machine with the Core tarball baked in and a
-first-boot unit that installs it, so a `docker compose up` gives you a working
-pair to click around in.
-
-## Use it with the dev compose
+The reference [`deploy/docker-compose.yml`](https://github.com/actana/control/blob/main/deploy/docker-compose.yml)
+brings this image up beside a Panel on one network:
 
 ```bash
-git clone https://github.com/actana/control
-cd control/deploy/dev
 docker compose up -d
-docker compose exec core cat /home/operator/registration-blob.txt
+docker compose logs core        # copy the registration blob it printed
 ```
 
-Open `http://localhost:7420`, create the Operator, and paste that blob into
-"Add Core". The Panel dials `wss://core:8443` over the compose network; the
-Core publishes no ports to your machine at all.
+Then open the Panel and paste that blob into **Add Core**. The Panel dials this
+container by its compose service name, so the Core publishes no port at all. A
+second Core is the same service block again with a different name, host and
+volume — nothing here is a singleton.
 
-Full walkthrough: [deploy/dev/README.md](https://github.com/actana/control/blob/main/deploy/dev/README.md).
+## Configuration
 
-The compose file supplies the `privileged`, `cgroup`, and tmpfs settings
-systemd needs. Running this image with a plain `docker run` will not boot.
+Three variables, and only the first is required.
+
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `ACTANA_PUBLIC_HOST` | — **required** | The host your Panel will dial. It is in the server certificate's SAN and in the registration blob. |
+| `ACTANA_PORT` | `8443` | The core-link port, and the port the image exposes. |
+| `ACTANA_LABEL` | — | The name the Panel shows for this Core. |
+
+The image never guesses the public host. A container's hostname is its container ID, so a guessing
+default would silently change the certificate SAN every time you recreated the container, and every
+paired Panel would stop trusting it.
+
+## State
+
+One volume, mounted at `/home/core` — the whole home directory.
+
+It holds the identity (CA, certificates, bearer secret, Core ID), the recorded configuration, the
+SQLite database, **and each Harness's own credentials** (`~/.claude`, `~/.codex`,
+`~/.config/opencode`, …). The mount is the home rather than a narrower state directory precisely
+because Harnesses write all over `$HOME`: a narrower mount would log you out of your coding CLIs on
+every `docker compose up`. One mount, one backup target.
+
+`docker compose down -v` destroys the pairing. Nothing else does — restarts, upgrades and host
+changes all keep it.
+
+Changing `ACTANA_PUBLIC_HOST` re-signs the server certificate for the new address, from the CA
+already in the volume. The Core ID, the CA, the bearer secret and your Panel's client certificate
+are untouched, so a Panel paired before the change still trusts this Core — but it is still dialling
+the old address, so point it at the new one. `registration-blob.txt` in the volume is rewritten with
+a token for the new address if you would rather re-pair:
+
+```bash
+docker compose exec core cat /home/core/.config/actana/registration-blob.txt
+```
 
 ## Harness CLIs
 
-The image provisions itself with `--no-harnesses`, so it comes up hermetically
-with no vendor CLI installed. Add them afterwards:
+Not baked in, on purpose. `claude-code`, `codex`, `cursor-cli` and `opencode` are about 1.15 GB
+between them, they ship on their own cadences and are stale within days of any image build, and
+they are four vendors' binaries under four licences.
+
+Install them into the volume instead, where they persist across image upgrades and self-update in
+place:
 
 ```bash
-docker compose exec core machinectl shell operator@ /bin/bash -lc 'actana harnesses install claude'
+docker compose exec core actana harnesses install claude-code
 ```
 
-## Building it yourself
+## What is inside
 
-Preferred when you are changing the Core — the published image carries the
-tarball from whichever commit built it:
+Ubuntu 24.04, pinned by digest, with `apt-get upgrade` in the same layer so a rebuild on that pinned
+digest still collects Canonical's security fixes.
 
-```bash
-pnpm core:tarball        # on Linux; see the dev README for the macOS path
-docker compose up -d --build
-```
+A real toolchain, because a Core exists to run coding agents against real repositories: `git`,
+`curl`, `openssh-client`, `ripgrep`, `jq`, `lsof`, `vim-tiny`, and `build-essential` + `python3` so
+that `npm install` on a project with a native addon can actually invoke node-gyp. The `core` user
+(uid 1000, gid 1000) has passwordless `sudo` for the same reason.
+
+A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
+`SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
+its own release tarball.
+
+`tini` is PID 1 and the daemon runs as its child. That is baked into the image rather than left to
+`--init` / `init: true`, because a Core forks shells that fork agents, and a Node process running as
+PID 1 does not reap the ones that get reparented to it.
+
+### uid 1000, and bind-mounted repositories
+
+The `core` user is pinned to uid 1000 and gid 1000 explicitly. If you bind-mount a repository from
+your host and your login user is not uid 1000, files the Core writes will be owned by a uid that
+does not exist on your host. Two supported answers: `chown -R 1000:1000` the directory, or use a
+named volume and let the Core own the checkout.
+
+Overriding `user:` is **not** supported — it half-works, which is worse. `sudo` is granted by name,
+and npm's prefix points into `/home/core`, so an overridden uid gets neither.
+
+Under rootless Docker or Podman the engine maps container uid 1000 to a host subuid, so plain
+`chown 1000` is the wrong advice there; use `podman unshare chown` or `--userns=keep-id`.
 
 ## Tags
 
@@ -74,15 +116,12 @@ docker compose up -d --build
 | `edge` | every push to `main` |
 | `sha-<short>` | never |
 
-`linux/amd64` and `linux/arm64`. Each architecture bakes in the Core tarball
-for *that* architecture, so the two cannot be cross-built.
-
-The image carries `ai.actana.image.role=development-fixture` as a label, in
-case you want to assert on it.
+`linux/amd64` and `linux/arm64`. Each architecture bakes in the Core release tarball built for *that*
+architecture, so the two cannot be cross-built.
 
 ## Links
 
-- [Source](https://github.com/actana/control) · [Installing a real Core](https://github.com/actana/control/blob/main/INSTALL.md) · [Security policy](https://github.com/actana/control/blob/main/SECURITY.md)
+- [Source](https://github.com/actana/control) · [Installing on a machine you own](https://github.com/actana/control/blob/main/INSTALL.md) · [Security policy](https://github.com/actana/control/blob/main/SECURITY.md)
 - Also published as `ghcr.io/actana/core`
 
 MIT licensed. A derivative work of Mission Control by AgentSystem Labs — see

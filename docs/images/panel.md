@@ -25,16 +25,14 @@ Binding `127.0.0.1` is deliberate — the Panel speaks **plain HTTP** and leaves
 TLS to a reverse proxy. Anything reaching it from another machine should arrive
 through one.
 
-## Hosted, with HTTPS
+## With a Core, and behind your own proxy
 
 The reference [`deploy/docker-compose.yml`](https://github.com/actana/control/blob/main/deploy/docker-compose.yml)
-pairs this image with Caddy, which gets and renews a Let's Encrypt certificate,
-forwards WebSocket upgrades, and sets `X-Forwarded-Proto` — the signal that
-makes the Panel mark its session cookie `Secure`.
-
-Behind a proxy you already run, point it at port 7420. Two requirements:
-forward WebSocket upgrades, and set `X-Forwarded-Proto: https`. Without the
-latter the Panel issues a cookie the browser will send over plain HTTP.
+brings this image up beside a Core on one network, which is the whole product
+in one command. It ships no TLS terminator: point your Traefik / Nginx / Caddy
+at port 7420. Two requirements: forward WebSocket upgrades, and set
+`X-Forwarded-Proto: https`. Without the latter the Panel issues a cookie the
+browser will send over plain HTTP.
 
 ## Configuration
 

@@ -37,12 +37,43 @@ updates:
     commit-message:
       prefix: "ci"
 
-  # The Panel image's base. A stale node:24-bookworm base is the most likely
-  # way a CVE reaches operators, and nothing else in this file would catch it.
+  # The image bases. A stale base is the most likely way a CVE reaches
+  # operators, and nothing else in this file would catch it.
+  #
+  # `deploy/`, not `/` — both shipped Dockerfiles live there now. Three things
+  # have to be true for this one entry to reach both, and each is asserted in
+  # scripts/__tests__/base-pins.test.mjs rather than assumed:
+  #
+  #   1. The *file names* match. Dependabot's docker fetcher matches
+  #      `/dockerfile|containerfile/i` against the file name, not the whole
+  #      path, which is why `core.Dockerfile` and `panel.Dockerfile` are picked
+  #      up at all despite not being called `Dockerfile`.
+  #   2. The files are *directly* in this directory. The fetcher lists the
+  #      directory's own contents and does not recurse, so `deploy/dev/` is
+  #      outside this entry — deliberately, see NOT_COVERED in
+  #      scripts/lib/base-pins.mjs.
+  #   3. Both bases are digest-pinned, so there is a digest to move.
+  #
+  # The two pins are deliberately different shapes — `ubuntu:24.04@sha256:…`
+  # carries its tag and the distroless runtime deliberately does not — because
+  # Dependabot resolves the two cases from different tags. Do not "tidy" one to
+  # match the other before reading why: docs/ci-cd.md § "The two digests are
+  # pinned in different shapes on purpose" (ADR 0016 D5, D20).
+  #
+  # `ARG NODE_VERSION` in deploy/core.Dockerfile is a nodejs.org tarball, not
+  # an image reference, so nothing in this file can see it. It is bumped by
+  # .github/workflows/base-pins.yml, which also re-resolves both digests weekly
+  # and reports any this entry has not moved (D10).
   - package-ecosystem: "docker"
-    directory: "/"
+    directory: "/deploy"
+    # Spelled out rather than left to the default, because base-pins.yml's
+    # weekly cron is deliberately scheduled *after* this one and a default
+    # Dependabot picks for itself is not something a cron can be after.
     schedule:
       interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Europe/Berlin"
     open-pull-requests-limit: 5
     labels: ["type: dependencies"]
     commit-message:

@@ -220,6 +220,22 @@ describe("setup", () => {
     expect(out.join("\n")).toMatch(/stays paired/i);
   });
 
+  it("tells an operator who moved the Core to re-address their Panel, not re-pair blind", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    await setup(fakeSystem(), ["--public-host", "core.example"]);
+
+    const text = out.join("\n");
+    // The credentials survived the move (ADR 0016 D18) — the address did not,
+    // and that is the half the Panel holds.
+    expect(text).toMatch(/unchanged/i);
+    expect(text).toContain("core.example");
+    expect(text).not.toMatch(/stays paired/i);
+    expect(decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)?.endpoint)
+      .toBe("wss://core.example:8443");
+  });
+
   it("defaults the public host to the machine's routable address", async () => {
     await setup(fakeSystem());
     expect(out.join("\n")).toContain("wss://10.0.0.5:8443");
@@ -1012,6 +1028,212 @@ describe("daemon", () => {
   it("is not advertised in help — operators use start/stop", async () => {
     await runActanaCli(deps(["--help"], fakeSystem()));
     expect(out.join("\n")).not.toMatch(/^\s+daemon\b/m);
+  });
+});
+
+// ─── container mode (ADR 0016 D13/D15/D16) ────────────────────────────────
+
+describe("in a container", () => {
+  /** The image's baked marker plus whatever the operator's compose file set. */
+  function containerEnv(over: Record<string, string> = {}): Record<string, string> {
+    return {
+      HOME: home,
+      PATH: path.join(home, ".local", "bin"),
+      ACTANA_CONTAINER: "1",
+      ACTANA_PUBLIC_HOST: "core1.example.com",
+      AC_CORE_MATERIAL_FILE: path.join(home, "state", "material.json"),
+      ...over,
+    };
+  }
+
+  /** Material as first boot leaves it — the pairing that survives a restart. */
+  function writeContainerMaterial(env: Record<string, string>): void {
+    const file = env.AC_CORE_MATERIAL_FILE;
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        caCert: "ca-cert",
+        caKey: "ca-key",
+        serverCert: "server-cert",
+        serverKey: "server-key",
+        clientCert: "client-cert",
+        clientKey: "client-key",
+        bearerSecret: "a1b2c3d4",
+        coreId: "core_container",
+      }),
+    );
+  }
+
+  const REFUSED = ["setup", "start", "stop", "restart", "update", "uninstall", "logs"];
+
+  it.each(REFUSED)("refuses `%s` and names the Docker command that does it", async (verb) => {
+    const system = fakeSystem();
+    const code = await runActanaCli(deps([verb], system, { env: containerEnv() }));
+
+    expect(code).not.toBe(0);
+    expect(err.join("\n")).toContain(`actana ${verb}`);
+    expect(err.join("\n")).toMatch(/docker/);
+    // Refusing means refusing: no unit is written, nothing is asked of an init
+    // system that is not in the image.
+    expect(system.calls).toEqual([]);
+    expect(fs.existsSync(layoutForHome().servicePath)).toBe(false);
+  });
+
+  it("points update at pull-and-recreate rather than at a tree swap", async () => {
+    await runActanaCli(deps(["update"], fakeSystem(), { env: containerEnv() }));
+    expect(err.join("\n")).toContain("docker compose pull && docker compose up -d");
+  });
+
+  it("detects the image by its own marker, never by /.dockerenv", async () => {
+    // Without the baked marker this is an ordinary Linux Core, and `start`
+    // goes to systemd as it always did.
+    const system = fakeSystem();
+    await runActanaCli(deps(["start"], system, { env: { HOME: home } }));
+    expect(err.join("\n")).not.toMatch(/docker/);
+  });
+
+  it("reports status against the container, not against a unit", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+    const system = fakeSystem();
+
+    expect(await runActanaCli(deps(["status"], system, { env }))).toBe(0);
+
+    const text = out.join("\n");
+    expect(text).toMatch(/healthy/i);
+    expect(text).toContain("wss://core1.example.com:8443");
+    expect(text).toMatch(/restart policy/i);
+    expect(text).not.toMatch(/actana-core\.service/);
+    expect(system.calls.some((call) => call[0] === "systemctl")).toBe(false);
+  });
+
+  it("is stopped, not degraded, when the daemon's port does not answer", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+    const system = fakeSystem();
+    system.waitForPort = async () => false;
+
+    expect(await runActanaCli(deps(["status"], system, { env }))).toBe(1);
+    expect(out.join("\n")).toMatch(/stopped/i);
+  });
+
+  it("says which variable is missing rather than guessing a public host", async () => {
+    const env = containerEnv({ ACTANA_PUBLIC_HOST: "" });
+    expect(await runActanaCli(deps(["status"], fakeSystem(), { env }))).toBe(1);
+    expect(err.join("\n")).toContain("ACTANA_PUBLIC_HOST");
+    // The guess `choosePublicHost` would have made on metal.
+    expect(out.join("\n")).not.toContain("10.0.0.5");
+  });
+
+  it("reprints a pairing token built from the environment contract", async () => {
+    const env = containerEnv({ ACTANA_PORT: "9443", ACTANA_LABEL: "build box" });
+    writeContainerMaterial(env);
+
+    expect(await runActanaCli(deps(["token"], fakeSystem(), { env }))).toBe(0);
+
+    const blob = decodeRegistrationBlob(out.join("\n").trim());
+    expect(blob?.endpoint).toBe("wss://core1.example.com:9443");
+    expect(blob?.label).toBe("build box");
+  });
+
+  it("labels the Core with its public host when the operator named no label", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+    await runActanaCli(deps(["token"], fakeSystem(), { env }));
+    expect(decodeRegistrationBlob(out.join("\n").trim())?.label).toBe("core1.example.com");
+  });
+
+  it("refuses to boot the daemon without a public host, naming the variable", async () => {
+    const env = containerEnv({ ACTANA_PUBLIC_HOST: "" });
+    expect(await runActanaCli(deps(["daemon"], fakeSystem(), { env }))).toBe(1);
+    expect(err.join("\n")).toContain("ACTANA_PUBLIC_HOST");
+    expect(daemonRuns).toBe(0);
+  });
+
+  it("hands the daemon the AC_* form of the contract it reads", async () => {
+    const env = containerEnv({ ACTANA_PORT: "9443" });
+    let handed: Record<string, string> | undefined;
+    const code = await runActanaCli(
+      deps(["daemon"], fakeSystem(), {
+        env,
+        runDaemon: async (daemonEnv) => {
+          handed = daemonEnv;
+        },
+      }),
+    );
+
+    expect(code).toBe(0);
+    expect(handed).toMatchObject({
+      AC_CORE_LINK_PORT: "9443",
+      AC_CORE_PUBLIC_HOST: "core1.example.com",
+      ACTANA_LABEL: "core1.example.com",
+    });
+  });
+
+  // The default lives in `readContainerContract`, and `core-entry` has its own
+  // `process.env.ACTANA_LABEL || ""` fallback — so a daemon handed everything
+  // but the label boots with an empty one, and the blob it prints on first run
+  // disagrees with the one `actana token` prints for the same Core.
+  it("hands the daemon the label default when the operator named none", async () => {
+    let handed: Record<string, string> | undefined;
+    await runActanaCli(
+      deps(["daemon"], fakeSystem(), {
+        env: containerEnv(),
+        runDaemon: async (daemonEnv) => {
+          handed = daemonEnv;
+        },
+      }),
+    );
+    expect(handed?.ACTANA_LABEL).toBe("core1.example.com");
+  });
+
+  it("hands the daemon the operator's label when they named one", async () => {
+    let handed: Record<string, string> | undefined;
+    await runActanaCli(
+      deps(["daemon"], fakeSystem(), {
+        env: containerEnv({ ACTANA_LABEL: "build-box" }),
+        runDaemon: async (daemonEnv) => {
+          handed = daemonEnv;
+        },
+      }),
+    );
+    expect(handed?.ACTANA_LABEL).toBe("build-box");
+  });
+
+  it("leaves the daemon's env alone on metal — the unit already set it", async () => {
+    let handed: Record<string, string> | undefined;
+    await runActanaCli(
+      deps(["daemon"], fakeSystem(), {
+        runDaemon: async (daemonEnv) => {
+          handed = daemonEnv;
+        },
+      }),
+    );
+    expect(handed).toEqual({});
+  });
+
+  it("still installs a Harness — that verb is the same job in a container", async () => {
+    const system = fakeSystem();
+    const code = await runActanaCli(
+      deps(["harnesses", "install", "claude-code"], system, {
+        env: containerEnv(),
+        probeHarnesses: () => ({ "claude-code": { status: "available", version: "2.1.0" } }),
+      }),
+    );
+    expect(code).toBe(0);
+    expect(system.calls.some((call) => call[0] === "systemctl")).toBe(false);
+  });
+
+  it("lists the three variables and the refused verbs in help", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem(), { env: containerEnv() }));
+    const text = out.join("\n");
+    for (const name of ["ACTANA_PUBLIC_HOST", "ACTANA_PORT", "ACTANA_LABEL"]) {
+      expect(text).toContain(name);
+    }
+    for (const verb of REFUSED) {
+      expect(text).toMatch(new RegExp(`\\b${verb}\\b`));
+    }
   });
 });
 

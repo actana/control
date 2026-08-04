@@ -97,7 +97,7 @@ body:
         both sides if the two are on different machines.
       render: shell
       placeholder: |
-        Panel:   ghcr.io/actana/panel:0.1.0, docker compose behind Caddy
+        Panel:   ghcr.io/actana/panel:0.1.0, docker compose behind my own nginx
         Core:    Ubuntu 24.04 x64, installed via install.sh, systemd user unit
         Browser: Firefox 141
         Harness: claude 2.1.0

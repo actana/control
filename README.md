@@ -66,7 +66,7 @@ control/
 │   └── shared/             core-link / panel-link frames, protocol types
 ├── docs/adr/               Architecture decisions
 ├── designs/                Original HTML+JSX prototype (source of truth)
-├── deploy/                 Reference compose: Panel + TLS proxy
+├── deploy/                 The two images and the one reference compose
 ├── INSTALL.md              Installing a Core
 ├── DEPLOY.md               Deploying the Panel
 ├── SPEC.md                 Approved product spec
@@ -80,9 +80,17 @@ Install a Core on each machine you want to work on — see [INSTALL.md](INSTALL.
 
 ### The Panel, deployed
 
-The Panel ships as a Docker image; the reference compose file in
-[`deploy/`](deploy) puts it behind a TLS-terminating proxy with automatic
-Let's Encrypt, and `localhost` needs no proxy at all:
+The Panel ships as a Docker image. [`deploy/docker-compose.yml`](deploy/docker-compose.yml)
+is the reference deployment — a Panel and a Core on one network, which is the
+whole product in one command:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs core   # the registration blob
+```
+
+Open `http://localhost:7420`, create the Operator, and paste that blob into
+"Add Core". Just the Panel, on its own, is one command too:
 
 ```bash
 docker run -d -p 127.0.0.1:7420:7420 -v actana-panel-data:/data \
@@ -202,7 +210,7 @@ A drop-in skill for Claude Code / Codex / Cursor CLI lives in `docs/skills/missi
 | --- | --- |
 | Deploy the Panel | [DEPLOY.md](DEPLOY.md) |
 | Install a Core on a machine | [INSTALL.md](INSTALL.md) |
-| A local Panel + Core pair, no provisioning | [deploy/dev/](deploy/dev/README.md) |
+| A Panel + Core pair in one command | [deploy/docker-compose.yml](deploy/docker-compose.yml) |
 | The vocabulary and the invariants | [CONTEXT.md](CONTEXT.md) |
 | Why the architecture is like this | [docs/adr/](docs/adr/) |
 | Contribute | [CONTRIBUTING.md](CONTRIBUTING.md) |

@@ -144,8 +144,8 @@ jobs:
   # Both OSes, because this is where the deployable actually runs and the two
   # differ in the places that bite: node-pty and better-sqlite3 natives, and the
   # login shell a VM Shell Session lands in. The Core runs as a local process
-  # here; the containerized Core-in-a-box slots into the same fixture interface
-  # when it lands (scripts/lib/core-fixture.mjs).
+  # here (scripts/lib/core-fixture.mjs); pairing against a *containerised* Core
+  # is the `core-image` job below, against the image that ships.
   panel-e2e:
     name: E2E — Panel service seam (${{ matrix.os }})
     strategy:
@@ -187,9 +187,9 @@ jobs:
   # core-release.yml builds and smokes all four targets on a tag push.
   #
   # Both Linux architectures, because everything downstream consumes these
-  # artifacts (core-installer issue 07): the installer matrix and the
-  # Core-in-a-box leg download them rather than rebuilding per leg, so one build
-  # per architecture feeds every e2e job that needs it. arm64 builds natively on
+  # artifacts (core-installer issue 07): the installer matrix downloads them
+  # rather than rebuilding per leg, so one build per architecture feeds every
+  # e2e job that needs it. arm64 builds natively on
   # an arm runner — the tarball carries prebuilt natives, and a cross-built one
   # would prove nothing about what operators download.
   core-tarball-smoke:
@@ -315,64 +315,6 @@ jobs:
           tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
           node scripts/e2e-${{ matrix.suite }}-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
 
-  # The Core-in-a-box leg (core-installer issue 07, third criterion): the
-  # Panel e2e above pairs with a Core this repo spawned; this one pairs with
-  # the release tarball, installed by `actana setup` and started by systemd on a
-  # container. Same script, same assertions — the fixture is the only thing that
-  # changes (scripts/lib/core-fixture.mjs), which is what makes the image
-  # reusable as the Panel epic's canonical Core fixture rather than a second
-  # test to keep in sync.
-  #
-  # x64 and Ubuntu only: what this leg adds over `panel-e2e` is the containerised
-  # Core, and the distro/architecture spread is already covered by the installer
-  # matrix.
-  panel-e2e-core-in-a-box:
-    name: E2E — Panel against Core-in-a-box
-    runs-on: ubuntu-24.04
-    needs: core-tarball-smoke
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 11.1.2
-          cache: true
-
-      # node-gyp 9.x imports distutils; pin 3.11 like the other Panel jobs. The
-      # Panel is built here; the Core is not, because the container installs
-      # the tarball instead.
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Download the tarball
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: core-tarball-linux-x64
-          path: artifacts/core
-
-      # `pnpm build`, not the `pnpm build:web` this used to call — that script
-      # does not exist in package.json, so this job failed at the same step
-      # every run. Root `build` is Core-then-Panel, the order the Panel's
-      # build needs (it imports the Core's types).
-      - name: Build the Panel
-        run: pnpm build
-
-      - name: E2E — the Panel service against a containerised Core
-        run: |
-          set -euo pipefail
-          tarball="$(find artifacts/core -name 'actana-core-*-linux-x64.tar.gz' | head -n1)"
-          node scripts/e2e-panel-smoke.mjs --core-tarball "$tarball"
-
   # The agent-offers seam (core-installer issue 05): a fresh machine has no
   # Harness on it, so this is where "detects missing agents, offers each, and
   # an accepted offer leaves a working vendor-installed CLI on PATH" can
@@ -487,9 +429,11 @@ jobs:
       push: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
 
-  # Same reasoning for the dev Core-in-a-box: it is a published image now, so a
-  # break in core.Dockerfile or the provision unit should surface on the PR
-  # that caused it rather than on the next release.
+  # Same reasoning, and this job carries more than a build: the Core image's
+  # boot-and-pair smoke and the Trivy gate both run inside it (ADR 0016 D36),
+  # so a break in core.Dockerfile surfaces on the PR that caused it rather
+  # than on the next release. It is what `panel-e2e-core-in-a-box` used to be,
+  # against the bytes that ship and with nothing privileged.
   core-image:
     name: Core image
     uses: ./.github/workflows/container-image.yml

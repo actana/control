@@ -122,5 +122,5 @@ jobs:
           sync panel docs/images/panel.md \
             "Self-hosted web Panel for driving agentic coding work across your machines." || rc=1
           sync core docs/images/core.md \
-            "DEVELOPMENT FIXTURE — a containerised Actana Core for trying the pairing flow locally." || rc=1
+            "The Actana Core daemon: the machine your agentic coding sessions actually run on." || rc=1
           exit "$rc"

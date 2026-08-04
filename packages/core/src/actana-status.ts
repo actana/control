@@ -14,6 +14,21 @@
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
 import type { ActanaServiceState } from "./actana-service";
 
+/**
+ * What stands in for the unit's rows in a container (ADR 0016 D16).
+ *
+ * There is no unit to ask and no init system to ask it of: the CLI and the
+ * daemon are two processes in one container, so "is it running" is answered by
+ * connecting to the core-link port, and "does it come back" is the container's
+ * restart policy — a fact of the host that nothing inside can read.
+ */
+export type ContainerStatus = {
+  /** Whether something accepted a connection on the core-link port. */
+  listening: boolean;
+  /** The port that was probed — named in the row, so a miss is actionable. */
+  port: number;
+};
+
 /** Everything `actana status` reports. */
 export type ActanaStatusReport = {
   /** Whether `actana setup` has ever completed on this machine. */
@@ -30,6 +45,8 @@ export type ActanaStatusReport = {
   service: ActanaServiceState | null;
   /** How the daemon persists across sessions. null when it could not be read. */
   persistence: { label: string; value: string } | null;
+  /** Set only in container mode, where the three rows above have no answer. */
+  container: ContainerStatus | null;
   /** Whether pairing material exists — i.e. a pairing token can be printed. */
   paired: boolean;
   /** The Core's own view of which Harnesses resolve on its PATH. */
@@ -49,6 +66,14 @@ export type ActanaHealth = "healthy" | "stopped" | "degraded" | "not-installed";
  */
 export function summarizeHealth(report: ActanaStatusReport): ActanaHealth {
   if (!report.installed) return "not-installed";
+  // In a container the same two halves are asked of different things: the port
+  // stands in for the unit's active state, and there is no third answer — a
+  // daemon that is not answering is stopped, and the restart policy is the
+  // host's business, not a degradation this Core can see.
+  if (report.container) {
+    if (!report.container.listening) return "stopped";
+    return report.paired ? "healthy" : "degraded";
+  }
   if (!report.service) return "degraded";
   if (report.service.activeState === "active") {
     return report.service.subState === "running" && report.paired ? "healthy" : "degraded";
@@ -84,16 +109,34 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
   if (report.target) lines.push(row("Target", report.target));
   lines.push(row("Endpoint", report.endpoint ?? "unknown"));
 
-  lines.push(row("Auto-start", report.serviceName ?? "unknown"));
-  if (report.service) {
-    lines.push(row("State", `${report.service.activeState} (${report.service.subState})`));
-    lines.push(row("PID", report.service.mainPid === null ? "—" : String(report.service.mainPid)));
+  if (report.container) {
+    // Naming `docker inspect` rather than a policy value is the honest answer:
+    // the policy is set on the host and a process inside the container has no
+    // way to read it back.
+    lines.push(
+      row("Auto-start", "the container's restart policy — read it on the host with"),
+      row("", "`docker inspect -f '{{.HostConfig.RestartPolicy.Name}}' <container>`"),
+      row(
+        "State",
+        report.container.listening
+          ? `running (port ${report.container.port} answers)`
+          : `not running (nothing answers on port ${report.container.port})`,
+      ),
+    );
   } else {
-    lines.push(row("State", "not installed"));
-  }
+    lines.push(row("Auto-start", report.serviceName ?? "unknown"));
+    if (report.service) {
+      lines.push(row("State", `${report.service.activeState} (${report.service.subState})`));
+      lines.push(
+        row("PID", report.service.mainPid === null ? "—" : String(report.service.mainPid)),
+      );
+    } else {
+      lines.push(row("State", "not installed"));
+    }
 
-  if (report.persistence) {
-    lines.push(row(report.persistence.label, report.persistence.value));
+    if (report.persistence) {
+      lines.push(row(report.persistence.label, report.persistence.value));
+    }
   }
 
   lines.push(

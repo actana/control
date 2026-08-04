@@ -18,39 +18,48 @@ It ships two equivalent ways:
 - the same build as a **plain Node process**, for machines where containers
   are unavailable or unwanted
 
-## Hosted with HTTPS — the reference compose
+## The reference compose — a Panel and a Core
 
 The copy-paste path. [`deploy/docker-compose.yml`](deploy/docker-compose.yml)
-pairs the Panel with [Caddy](https://caddyserver.com), which obtains and
-renews a Let's Encrypt certificate automatically and forwards WebSocket
-upgrades (the panel link) and `X-Forwarded-Proto` — the signal that makes the
-Panel mark its session cookie `Secure`.
-
-Prerequisites: a machine with Docker, a DNS record for your domain pointing
-at it, and ports 80/443 reachable from the internet (Let's Encrypt issuance
-needs them).
+brings up a Panel and a Core on one network, from published images, in one
+command. Prerequisite: a machine with Docker.
 
 ```bash
 git clone https://github.com/actana/control
 cd control/deploy
-cp .env.example .env      # set AC_PANEL_DOMAIN; optionally AC_SECRETS_KEY
 docker compose up -d
+docker compose logs core        # copy the registration blob it printed
 ```
 
-Open `https://<your domain>`: the first boot asks you to create the Operator
-(name + password), and after logging in you pair your first Core with the
-registration blob `actana setup` printed on that machine. Both cookies and the panel
-link's `wss://` upgrade work behind the proxy out of the box.
+Open `http://localhost:7420`: the first boot asks you to create the Operator
+(name + password), and after logging in you paste that blob into **Add Core**.
+The Panel dials `wss://core:8443` over the compose network — which is why the
+Core's `ACTANA_PUBLIC_HOST` is the compose service name and not a DNS name,
+and why the Core publishes no port to your machine at all.
 
-Only `deploy/docker-compose.yml`, `deploy/Caddyfile`, and your `.env` matter
-— copying those three files to a bare VM works just as well as cloning.
+Only `deploy/docker-compose.yml` matters — copying that one file to a bare VM
+works just as well as cloning, plus `mkdir repos` beside it for the bind mount
+the Core service names. (Swap that mount for a named volume and even the
+directory goes away; the file says how.) A second Core is the same service
+block again with a different name, host and volume; the file carries the block
+to paste.
 
-### Behind a proxy you already run
+### TLS
 
-Skip the bundled Caddy and point your Traefik/Nginx/Caddy at the container's
-port 7420. Two requirements: forward WebSocket upgrades, and set
-`X-Forwarded-Proto: https` — without it the Panel issues a cookie the browser
-will happily send over plain HTTP.
+There is no terminator in that file and none is coming. The Panel speaks plain
+HTTP by design ([ADR 0010](docs/adr/0010-panel-becomes-a-self-hosted-web-service.md))
+and the compose publishes port 7420 on loopback, so `localhost` — a secure
+context without TLS — works as it stands, and anything reaching the Panel from
+another machine should arrive through a proxy you run.
+
+Point your Traefik / Nginx / Caddy at port 7420. Two requirements: forward
+WebSocket upgrades (the panel link), and set `X-Forwarded-Proto: https` —
+without it the Panel issues a cookie the browser will happily send over plain
+HTTP.
+
+None of this touches the core-link, which is mutually authenticated TLS with
+material the Core mints itself ([ADR 0002](docs/adr/0002-core-link-auth-and-transport.md)).
+It is not something you supply, renew, or put a proxy in front of.
 
 ## Localhost — no proxy needed
 
@@ -67,6 +76,21 @@ docker run -d --name actana-panel \
 Open `http://localhost:7420`. Binding `127.0.0.1` keeps the plain-HTTP port
 off the network; anything reaching the Panel from another machine should come
 through a TLS proxy instead.
+
+### If you bind-mount the data directory instead of using a volume
+
+The container runs as uid **65532** (the distroless `nonroot` account), so a
+host directory mounted at `/data` has to be writable by it — `sudo chown -R
+65532:65532 <dir>` before the first start. A *named* volume, as above, needs
+none of this: Docker seeds a fresh volume with the ownership the image
+carries, which is already 65532. Under rootless Docker or Podman the engine
+maps container uids to host subuids, so use `podman unshare chown` or
+`--userns=keep-id` rather than a plain `chown`.
+
+There is also no shell in the image — it is distroless, which is what takes it
+from 192 known CVEs to 14. `docker exec actana-panel sh` will not work; reach
+for `docker exec actana-panel /nodejs/bin/node -e '…'`, `docker cp`, or a
+debugging sidecar sharing the container's namespaces.
 
 ## The bare `node` path
 

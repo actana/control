@@ -22,6 +22,14 @@ export type CertPem = {
   key: string;
 };
 
+/** A signing CA — the pair {@link issueServerCert} signs against. */
+export type CertAuthority = {
+  /** PEM-encoded CA certificate. */
+  cert: string;
+  /** PEM-encoded CA private key. */
+  key: string;
+};
+
 export type CertMaterial = {
   /** Self-signed CA that signs the server + client certs. Pinned by the Panel. */
   ca: CertPem;
@@ -90,38 +98,12 @@ export async function generateCertMaterial(
   );
 
   // ─── Server cert, signed by the CA ───
-  // type 2 = DNS, type 7 = IPv4. If the host parses as an IP, add it as IP;
-  // otherwise add it as DNS. Always also cover localhost + 127.0.0.1 so a
-  // loopback dial against the same Core works too.
-  const sanAltNames: { type: 2 | 7; value?: string; ip?: string }[] = [];
-  if (isIp(host)) {
-    sanAltNames.push({ type: 7, ip: host });
-  } else {
-    sanAltNames.push({ type: 2, value: host });
-  }
-  if (host !== "localhost") sanAltNames.push({ type: 2, value: "localhost" });
-  sanAltNames.push({ type: 7, ip: "127.0.0.1" });
-
-  const server = await selfsigned.generate(
-    [{ name: "commonName", value: host }],
-    {
-      algorithm: "sha256",
-      notBeforeDate: notBefore,
-      notAfterDate: addDays(notBefore, leafDays),
-      ca: { key: ca.private, cert: ca.cert },
-      extensions: [
-        { name: "basicConstraints", cA: false, critical: true },
-        {
-          name: "keyUsage",
-          digitalSignature: true,
-          keyEncipherment: true,
-          critical: true,
-        },
-        { name: "extKeyUsage", serverAuth: true },
-        { name: "subjectAltName", altNames: sanAltNames },
-      ],
-    },
-  );
+  const server = await issueServerCert({
+    ca: { cert: ca.cert, key: ca.private },
+    host,
+    days: leafDays,
+    notBefore,
+  });
 
   // ─── Client cert (Panel), signed by the CA ───
   const client = await selfsigned.generate(
@@ -146,9 +128,67 @@ export async function generateCertMaterial(
 
   return {
     ca: { cert: ca.cert, key: ca.private },
-    server: { cert: server.cert, key: server.private },
+    server,
     client: { cert: client.cert, key: client.private },
   };
+}
+
+export type IssueServerCertOptions = {
+  /** The CA to sign with — the Panel has already pinned its certificate. */
+  ca: CertAuthority;
+  /** The host a Panel dials, which the SAN must cover. */
+  host: string;
+  /** Leaf validity in days. Defaults to a year. */
+  days?: number;
+  /** Backdate/align the validity window. Defaults to now. */
+  notBefore?: Date;
+};
+
+/**
+ * Sign a server cert for `host` against an existing CA.
+ *
+ * Split out of {@link generateCertMaterial} because a Core that moves keeps its
+ * identity and only outgrows its SAN: re-issuing from the CA the Panel already
+ * pinned leaves that Panel's trust intact, where a fresh CA would revoke it
+ * (ADR 0016 D18).
+ */
+export async function issueServerCert(opts: IssueServerCertOptions): Promise<CertPem> {
+  const host = opts.host && opts.host.length > 0 ? opts.host : "localhost";
+  const notBefore = opts.notBefore ?? new Date();
+
+  // type 2 = DNS, type 7 = IPv4. If the host parses as an IP, add it as IP;
+  // otherwise add it as DNS. Always also cover localhost + 127.0.0.1 so a
+  // loopback dial against the same Core works too.
+  const sanAltNames: { type: 2 | 7; value?: string; ip?: string }[] = [];
+  if (isIp(host)) {
+    sanAltNames.push({ type: 7, ip: host });
+  } else {
+    sanAltNames.push({ type: 2, value: host });
+  }
+  if (host !== "localhost") sanAltNames.push({ type: 2, value: "localhost" });
+  sanAltNames.push({ type: 7, ip: "127.0.0.1" });
+
+  const server = await selfsigned.generate(
+    [{ name: "commonName", value: host }],
+    {
+      algorithm: "sha256",
+      notBeforeDate: notBefore,
+      notAfterDate: addDays(notBefore, opts.days ?? LEAF_DAYS),
+      ca: { key: opts.ca.key, cert: opts.ca.cert },
+      extensions: [
+        { name: "basicConstraints", cA: false, critical: true },
+        {
+          name: "keyUsage",
+          digitalSignature: true,
+          keyEncipherment: true,
+          critical: true,
+        },
+        { name: "extKeyUsage", serverAuth: true },
+        { name: "subjectAltName", altNames: sanAltNames },
+      ],
+    },
+  );
+  return { cert: server.cert, key: server.private };
 }
 
 /** Crude IPv4 detector — good enough for SAN choice (no false positives that matter). */

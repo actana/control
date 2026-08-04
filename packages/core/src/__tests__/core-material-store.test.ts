@@ -2,10 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { X509Certificate, createPublicKey } from "node:crypto";
 import {
   persistMaterial,
   loadMaterial,
   materialFilePath,
+  mintFreshMaterial,
+  reissueServerCert,
+  checkServerCertHost,
   type PersistedMaterial,
 } from "../core-material-store";
 
@@ -25,6 +29,7 @@ const sample: PersistedMaterial = {
   clientKey: "-----BEGIN PRIVATE KEY-----\nCLIENTKEY\n-----END PRIVATE KEY-----",
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
+  serverHost: "10.0.0.5",
 };
 
 function tmpDir(): string {
@@ -92,6 +97,17 @@ describe("core material store", () => {
       expect(loadMaterial(nested)).toEqual(sample);
     });
 
+    it("loads material written before serverHost existed as an unknown host", () => {
+      const { serverHost, ...legacy } = sample;
+      fs.writeFileSync(materialFilePath(dir), JSON.stringify(legacy));
+
+      // The identity is intact — only the SAN's provenance is unknown, and
+      // rejecting the file over that would unpair a Panel to save a field.
+      const loaded = loadMaterial(dir);
+      expect(loaded).toEqual({ ...legacy, serverHost: "" });
+      expect(checkServerCertHost(loaded!, serverHost)).toBe("unrecorded");
+    });
+
     it("restricts file permissions to owner-only (0o600)", () => {
       persistMaterial(dir, sample);
       const stat = fs.statSync(materialFilePath(dir));
@@ -99,6 +115,71 @@ describe("core material store", () => {
       if (process.platform !== "win32") {
         expect(stat.mode & 0o777).toBe(0o600);
       }
+    });
+  });
+
+  // A moved public host used to re-mint everything, which locked out every
+  // paired Panel over what is usually a typo'd env var (ADR 0016 D18).
+  describe("reissueServerCert", () => {
+    it("keeps every credential a Panel pinned and replaces only the server cert", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+
+      const moved = await reissueServerCert(minted, "core.example.test");
+
+      expect(moved.coreId).toBe(minted.coreId);
+      expect(moved.bearerSecret).toBe(minted.bearerSecret);
+      expect(moved.caCert).toBe(minted.caCert);
+      expect(moved.caKey).toBe(minted.caKey);
+      expect(moved.clientCert).toBe(minted.clientCert);
+      expect(moved.clientKey).toBe(minted.clientKey);
+      expect(moved.serverCert).not.toBe(minted.serverCert);
+      expect(moved.serverKey).not.toBe(minted.serverKey);
+    });
+
+    it("signs the new cert with the CA the Panel already pinned", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+
+      const moved = await reissueServerCert(minted, "core.example.test");
+
+      // This is the whole point: the Panel validates the Core against the CA
+      // in the blob it holds, so that CA must still vouch for the new cert.
+      const server = new X509Certificate(moved.serverCert);
+      expect(server.verify(createPublicKey(minted.caCert))).toBe(true);
+      expect(server.subjectAltName).toContain("core.example.test");
+      expect(server.subjectAltName).not.toContain("10.0.0.5");
+    });
+
+    it("records the host it signed for, so the next boot knows it is covered", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+      expect(checkServerCertHost(minted, "10.0.0.5")).toBe("covered");
+      expect(checkServerCertHost(minted, "core.example.test")).toBe("moved");
+
+      const moved = await reissueServerCert(minted, "core.example.test");
+
+      expect(moved.serverHost).toBe("core.example.test");
+      expect(checkServerCertHost(moved, "core.example.test")).toBe("covered");
+    });
+  });
+
+  describe("checkServerCertHost", () => {
+    const unrecorded: PersistedMaterial = { ...sample, serverHost: "" };
+
+    it("separates a host that moved from one nothing on disk records", () => {
+      // The two must not collapse: re-signing is safe either way, but telling
+      // an operator their Core moved when it did not is a fiction.
+      expect(checkServerCertHost(unrecorded, "10.0.0.5")).toBe("unrecorded");
+      expect(checkServerCertHost(sample, "10.0.0.9")).toBe("moved");
+    });
+
+    it("takes the caller's fallback for material that predates the record", () => {
+      // `actana setup` wrote the host into the config beside the material,
+      // which is as authoritative as the record would have been.
+      expect(checkServerCertHost(unrecorded, "10.0.0.5", "10.0.0.5")).toBe("covered");
+      expect(checkServerCertHost(unrecorded, "10.0.0.9", "10.0.0.5")).toBe("moved");
+    });
+
+    it("prefers the recorded host over the fallback", () => {
+      expect(checkServerCertHost(sample, "10.0.0.5", "stale.example")).toBe("covered");
     });
   });
 });
