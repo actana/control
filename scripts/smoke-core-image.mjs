@@ -74,7 +74,10 @@ const log = (message) => console.log(`[core-image-smoke] ${message}`);
 const args = parseArgs(process.argv.slice(2));
 const image = stringFlag(args, "image", die) ?? "actana-core:smoke";
 const target = stringFlag(args, "target", die);
-const timeoutMs = Number(args.timeout ?? 120_000);
+const timeoutMs = Number(stringFlag(args, "timeout", die) ?? 120_000);
+// `Number("abc")` is NaN and `Date.now() >= NaN` is false forever, so a
+// mistyped timeout would hang every wait below rather than fail.
+if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) die(`--timeout must be a positive number of ms`);
 
 const suffix = `${process.pid}-${Date.now().toString(36)}`;
 const OPERATOR = { name: "Smoke Operator", password: "smoke-operator-passphrase" };
@@ -116,10 +119,11 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
  * `publicHost:port`, and a token the test then rewrote would stop being the
  * token an operator pastes.
  */
-async function bootCore(name) {
-  const containerName = `actana-core-smoke-${name}-${suffix}`;
-  const volumeName = `actana-core-smoke-${name}-${suffix}`;
-  const port = await pickFreePort();
+async function bootCore(name, { port } = {}) {
+  const id = `actana-core-smoke-${name}-${suffix}`;
+  const containerName = id;
+  const volumeName = id;
+  port ??= await pickFreePort();
 
   docker(["volume", "create", volumeName]);
   teardown.push(() => docker(["volume", "rm", "-f", volumeName], { allowFailure: true }));
@@ -278,7 +282,7 @@ if (first.blob.endpoint !== core.endpoint) {
 }
 // What the operator is told to do is `docker compose logs core`, so the token
 // has to be in the log and not only in the volume.
-if (!core.logs().includes('paste this into your Panel\'s "Add Core"')) {
+if (!core.logs("all").includes('paste this into your Panel\'s "Add Core"')) {
   die(`the first boot printed no pairing-token notice:\n${core.logs()}`);
 }
 
@@ -302,9 +306,8 @@ if (target) {
   // A cross-architecture tarball surfaces as `exec format error` at first boot
   // if nothing checks; naming the target says which build input was wrong.
   const manifest = core.exec(["cat", `${CORE_APP_ROOT}/core-manifest.json`]).stdout;
-  if (!JSON.parse(manifest)?.target || JSON.parse(manifest).target !== target) {
-    die(`the baked tarball reports target ${JSON.parse(manifest)?.target}, expected ${target}`);
-  }
+  const baked = JSON.parse(manifest)?.target;
+  if (baked !== target) die(`the baked tarball reports target ${baked}, expected ${target}`);
   log(`the baked Core tarball is ${target}`);
 }
 
@@ -393,8 +396,13 @@ if (afterRestart.coreId !== first.coreId) {
 if (afterRestart.registrationBlob !== first.registrationBlob) {
   die("restart rewrote the pairing token, so every paired Panel would be holding a stale one");
 }
+// One over the container's whole life: the first boot's. A restart that
+// printed another would read to an operator as "this Core moved" and send them
+// re-pairing for nothing.
 const notices = core.logs("all").split('paste this into your Panel\'s "Add Core"').length - 1;
-if (notices > 1) die(`the restarted Core printed ${notices} pairing tokens; a restart must print none`);
+if (notices !== 1) {
+  die(`the Core has printed ${notices} pairing tokens across its life; expected exactly 1`);
+}
 
 await assertConnects("after a restart");
 log("restart is a no-op for pairing — same identity, no new token, still connected");
@@ -406,10 +414,15 @@ log("restart is a no-op for pairing — same identity, no new token, still conne
 // answer, not a bug: the CA, the bearer secret and the Panel's client
 // certificate all lived in that volume.
 log("destroying the volume — the `down -v` motion …");
+const staleEndpointPort = core.port;
 docker(["rm", "-f", core.name]);
 docker(["volume", "rm", "-f", core.volume]);
 
-const replacement = await bootCore("replacement");
+// On the *same* published port the destroyed Core had, so the Panel's stored
+// endpoint still reaches something. Boot it anywhere else and the dial fails
+// with "connection refused", which would prove nothing about the credentials —
+// the claim under test is that the material is gone, not that the container is.
+const replacement = await bootCore("replacement", { port: staleEndpointPort });
 const second = readBlob(replacement);
 if (second.coreId === first.coreId) {
   die("a Core booted on a destroyed volume kept its identity — `down -v` did not unpair");
@@ -418,9 +431,10 @@ if (second.blob.bearer === first.blob.bearer || second.blob.caCert === first.blo
   die("a Core booted on a destroyed volume reused its old credentials");
 }
 
-// And the Panel, which still holds the old pairing, must say so rather than
-// sit in `connecting` or — much worse — reach `connected` against a Core that
-// no longer shares its CA.
+// And the Panel, which still holds the old pairing and is still dialling the
+// address the replacement now answers on, must say so rather than sit in
+// `connecting` or — much worse — reach `connected` against a Core that no
+// longer shares its CA.
 const stale = await pollUntil(
   "the Panel to report the old pairing no longer opens this Core",
   DIAL_TIMEOUT_MS,

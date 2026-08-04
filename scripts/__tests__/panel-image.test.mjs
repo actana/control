@@ -40,7 +40,9 @@ const workflow = readRepoFile(".github/workflows/images-release.yml");
 const imageWorkflow = readRepoFile(".github/workflows/container-image.yml");
 const edgeWorkflow = readRepoFile(".github/workflows/images-edge.yml");
 const coreDockerfile = readRepoFile("deploy/core.Dockerfile");
-const core = dockerfileFacts(coreDockerfile);
+// Named apart from `compose.services.core`: one is the image's instructions,
+// the other is the service that runs it, and the two are asserted side by side.
+const coreImage = dockerfileFacts(coreDockerfile);
 
 describe("Dockerfile", () => {
   it("lives in deploy/, not at the repo root", () => {
@@ -231,7 +233,7 @@ describe("reference compose", () => {
     expect(coreService.environment).toContain("ACTANA_PUBLIC_HOST=core");
     // A baked default in the image would make this line decorative; the image
     // contract (D15) is that the variable is required and never guessed.
-    expect(core.env.ACTANA_PUBLIC_HOST).toBeUndefined();
+    expect(coreImage.env.ACTANA_PUBLIC_HOST).toBeUndefined();
   });
 
   // All four died with systemd, and the image carries tini as PID 1 (D14), so
@@ -282,6 +284,10 @@ describe("reference compose", () => {
       // Its own volume, not a second mount of the first Core's — which would
       // put two Cores' identities and databases in one directory.
       expect(second.volumes).not.toContain(coreService.volumes[0]);
+      // And named volumes throughout, not a bind mount: a pasted-in service
+      // has no host directory, so a `./repos2` would be created root-owned by
+      // Docker and uid 1000 could not write to its own checkouts.
+      expect(second.volumes.some((v) => v.startsWith("./"))).toBe(false);
     });
   });
 });
@@ -382,19 +388,19 @@ describe("core image", () => {
   // noble-security at build time, so the in-layer upgrade is what makes the
   // weekly rebuild collect anything at all.
   it("pins the base by digest, on a single Ubuntu 24.04 stage", () => {
-    expect(core.froms).toHaveLength(1);
-    expect(core.froms[0].image).toMatch(/^ubuntu:24\.04@sha256:[0-9a-f]{64}$/);
+    expect(coreImage.froms).toHaveLength(1);
+    expect(coreImage.froms[0].image).toMatch(/^ubuntu:24\.04@sha256:[0-9a-f]{64}$/);
   });
 
   it("upgrades in the same RUN layer that installs, not a later one", () => {
-    const install = core.runs.filter((run) => run.includes("apt-get install"));
+    const install = coreImage.runs.filter((run) => run.includes("apt-get install"));
     expect(install).toHaveLength(1);
     expect(install[0]).toMatch(/apt-get update.*apt-get upgrade -y.*apt-get install/s);
   });
 
   // D6 — the package set is the whole CVE story, so it is asserted exactly.
   it("installs the agreed package set and nothing else", () => {
-    const install = core.runs.find((run) => run.includes("apt-get install"));
+    const install = coreImage.runs.find((run) => run.includes("apt-get install"));
     expect(aptPackages(install)).toEqual([...CORE_PACKAGES]);
   });
 
@@ -409,8 +415,8 @@ describe("core image", () => {
 
   // D8 — nodejs.org tarball, verified against that release's own SHASUMS.
   it("takes Node 24 from nodejs.org, sha256-verified", () => {
-    expect(core.args.NODE_VERSION).toMatch(/^24\./);
-    const install = core.runs.find((run) => run.includes("nodejs.org"));
+    expect(coreImage.args.NODE_VERSION).toMatch(/^24\./);
+    const install = coreImage.runs.find((run) => run.includes("nodejs.org"));
     expect(install).toContain("https://nodejs.org/dist/v${NODE_VERSION}");
     expect(install).toContain("SHASUMS256.txt");
     expect(install).toContain("sha256sum -c");
@@ -426,15 +432,15 @@ describe("core image", () => {
   // D12 — 1000:1000 explicitly, because useradd's own pick is 1001:100 and
   // that breaks every bind-mounted repo.
   it("removes the stock ubuntu user and pins core to 1000:1000", () => {
-    const account = core.runs.find((run) => run.includes("useradd"));
+    const account = coreImage.runs.find((run) => run.includes("useradd"));
     expect(account).toContain("userdel");
     expect(account).toMatch(/groupadd --gid 1000 core/);
     expect(account).toMatch(/useradd --uid 1000 --gid 1000/);
-    expect(core.users.at(-1)).toBe("core");
+    expect(coreImage.users.at(-1)).toBe("core");
   });
 
   it("gives NOPASSWD sudo to core and to nobody else", () => {
-    const sudoers = core.runs.filter((run) => run.includes("NOPASSWD"));
+    const sudoers = coreImage.runs.filter((run) => run.includes("NOPASSWD"));
     expect(sudoers).toHaveLength(1);
     expect(sudoers[0]).toContain("core ALL=(ALL) NOPASSWD:ALL");
     expect(sudoers[0]).toContain("/etc/sudoers.d/core");
@@ -443,14 +449,14 @@ describe("core image", () => {
   // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
   // `--init` is opt-in and a bare `docker run` would skip it.
   it("runs the daemon under tini as PID 1", () => {
-    expect(core.entrypoint).toBe('["/usr/bin/tini", "--"]');
-    expect(core.cmd).toBe('["actana", "daemon"]');
+    expect(coreImage.entrypoint).toBe('["/usr/bin/tini", "--"]');
+    expect(coreImage.cmd).toBe('["actana", "daemon"]');
   });
 
   // D15 — the operator contract is three ACTANA_* variables; everything here
   // is a private image constant the container mode depends on.
   it("bakes the container-mode environment", () => {
-    expect(core.env).toMatchObject({
+    expect(coreImage.env).toMatchObject({
       ACTANA_CONTAINER: "1",
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_HOST: "0.0.0.0",
@@ -459,14 +465,14 @@ describe("core image", () => {
       AC_CORE_MATERIAL_FILE: `${CORE_HOME}/.config/actana/material.json`,
       NPM_CONFIG_PREFIX: `${CORE_HOME}/.local`,
     });
-    expect(core.env.PATH).toContain(`${CORE_APP_ROOT}/bin`);
-    expect(core.env.PATH).toContain(`${CORE_HOME}/.local/bin`);
+    expect(coreImage.env.PATH).toContain(`${CORE_APP_ROOT}/bin`);
+    expect(coreImage.env.PATH).toContain(`${CORE_HOME}/.local/bin`);
   });
 
   it("exposes the port from the same ARG as ACTANA_PORT", () => {
-    expect(core.args.ACTANA_PORT).toBe(String(CORE_PORT));
-    expect(core.env.ACTANA_PORT).toBe("${ACTANA_PORT}");
-    expect(core.exposesRaw).toEqual(["${ACTANA_PORT}"]);
+    expect(coreImage.args.ACTANA_PORT).toBe(String(CORE_PORT));
+    expect(coreImage.env.ACTANA_PORT).toBe("${ACTANA_PORT}");
+    expect(coreImage.exposesRaw).toEqual(["${ACTANA_PORT}"]);
   });
 
   // D9 — ~1.15 GB of the ~1.4 GB a baked image would weigh, stale within days
@@ -474,7 +480,7 @@ describe("core image", () => {
   // Asserted against the instructions, not the file text: the comments name
   // every one of these on purpose, to say why it is absent.
   it("bakes no Harnesses", () => {
-    const built = core.runs.join("\n");
+    const built = coreImage.runs.join("\n");
     for (const harness of ["@anthropic-ai/claude-code", "@openai/codex", "opencode", "cursor"]) {
       expect(built).not.toContain(harness);
     }
@@ -482,7 +488,7 @@ describe("core image", () => {
   });
 
   it("keeps systemd, and the machine-shaped install, out entirely", () => {
-    const built = core.runs.join("\n");
+    const built = coreImage.runs.join("\n");
     for (const dead of ["systemd", "loginctl", "linger", "core-provision", "actana setup"]) {
       expect(built).not.toContain(dead);
     }

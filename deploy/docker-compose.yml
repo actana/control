@@ -71,8 +71,14 @@ services:
 
 # A second Core is the block above again with three things changed: the
 # service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
-# here is a singleton. Uncomment, add `core2-home:` under `volumes:`, and pair
-# it the same way — its blob is in `docker compose logs core2`.
+# here is a singleton. Uncomment, add `core2-home:` and `core2-repos:` under
+# `volumes:`, and pair it the same way — its blob is in
+# `docker compose logs core2`.
+#
+# Its repos are a named volume rather than a second bind mount, which is the
+# swap the first Core's comment describes: a bind mount needs a host directory
+# that already exists and is writable by uid 1000, and a pasted-in service
+# would have neither.
 #
 # >>> second Core
 #   core2:
@@ -83,7 +89,7 @@ services:
 #       - ACTANA_LABEL=core2
 #     volumes:
 #       - core2-home:/home/core
-#       - ./repos2:/home/core/repos
+#       - core2-repos:/home/core/repos
 # <<< second Core
 
 volumes:

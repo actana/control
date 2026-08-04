@@ -38,8 +38,11 @@ Core's `ACTANA_PUBLIC_HOST` is the compose service name and not a DNS name,
 and why the Core publishes no port to your machine at all.
 
 Only `deploy/docker-compose.yml` matters — copying that one file to a bare VM
-works just as well as cloning. A second Core is the same service block again
-with a different name, host and volume; the file carries the block to paste.
+works just as well as cloning, plus `mkdir repos` beside it for the bind mount
+the Core service names. (Swap that mount for a named volume and even the
+directory goes away; the file says how.) A second Core is the same service
+block again with a different name, host and volume; the file carries the block
+to paste.
 
 ### TLS
 
