@@ -28,22 +28,14 @@
 //   • and the `AC_SECRETS_KEY` path works: a Panel given the key by environment
 //     pairs and dials without ever writing a key file.
 //
-// The Core it pairs with comes from `scripts/lib/core-fixture.mjs`, and
-// which implementation is used is the one thing a caller chooses here: by
-// default a local Core process, and with `--core-tarball` the
-// Core-in-a-box — the release tarball installed by `actana setup` on a systemd
-// container. Every assertion below is written against the fixture interface,
-// so the two run the identical test.
+// The Core it pairs with comes from `scripts/lib/core-fixture.mjs` — a local
+// Core process. The `--core-tarball` Core-in-a-box variant is gone with the
+// fixture behind it (ADR 0016 D36); pairing against a *containerised* Core is
+// now `scripts/smoke-core-image.mjs`, which does it against the image that
+// ships rather than a privileged systemd fixture built for the test.
 //
 // Usage:
 //   node scripts/e2e-panel-smoke.mjs [--panel-entry <file>] [--core-entry <file>]
-//   node scripts/e2e-panel-smoke.mjs --core-tarball <file> [--distro <id>] [--keep]
-//
-// --core-tarball <file>  Pair with a Core-in-a-box installed from this
-//                           release tarball instead of a local Core process.
-// --distro <id>             Which distribution the Core-in-a-box runs
-//                           (scripts/lib/container-matrix.mjs). Ubuntu default.
-// --keep                    Leave the Core-in-a-box container up afterwards.
 //
 // Build first (CI does both):
 //   pnpm --filter @actana/core build && pnpm build:web
@@ -59,8 +51,7 @@ import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { makeDie } from "./lib/core-smoke.mjs";
-import { distroFlag } from "./lib/container-matrix.mjs";
-import { startContainerCore, startLocalCore } from "./lib/core-fixture.mjs";
+import { startLocalCore } from "./lib/core-fixture.mjs";
 import {
   PANEL_SESSION_COOKIE,
   PanelLink,
@@ -101,30 +92,20 @@ async function main() {
     stringFlag(args, "panel-entry", die) ??
       path.join(repoRoot, "packages", "panel", "dist", "server", "server.js"),
   );
-  const coreTarball = stringFlag(args, "core-tarball", die);
   const coreEntry = path.resolve(
     stringFlag(args, "core-entry", die) ??
       path.join(repoRoot, "packages", "core", "dist", "core-entry.cjs"),
   );
   if (!fs.existsSync(panelEntry)) die(`no built Panel at ${panelEntry} — run \`pnpm build:web\` first`);
-  if (!coreTarball && !fs.existsSync(coreEntry)) {
+  if (!fs.existsSync(coreEntry)) {
     die(`no built Core at ${coreEntry} — run \`pnpm --filter @actana/core build\` first`);
   }
 
   log(`node=${process.execPath} (${process.version})`);
   log(`panel=${panelEntry}`);
-  log(coreTarball ? `core-in-a-box=${coreTarball}` : `core=${coreEntry}`);
+  log(`core=${coreEntry}`);
 
-  // The same interface either way — see scripts/lib/core-fixture.mjs.
-  const bootCore = coreTarball
-    ? startContainerCore({
-        tarball: path.resolve(coreTarball),
-        distro: distroFlag(args, die).id,
-        keep: args.keep === true,
-        log,
-      })
-    : startLocalCore({ entry: coreEntry, log });
-  const core = await bootCore.catch((err) =>
+  const core = await startLocalCore({ entry: coreEntry, log }).catch((err) =>
     die(`core fixture failed to boot: ${err.message}`, err.logLines),
   );
   teardown.push(() => core.stop());
@@ -161,8 +142,9 @@ async function keyFilePhase({ panelBin, panelEntry, core }) {
 
   await assertLinkSubscribes(link, coreId, fail);
 
-  // From the fixture, not from `tempDir`: a Core-in-a-box cannot open a path
-  // on this machine (see scripts/lib/core-fixture.mjs).
+  // From the fixture, not from `tempDir`: the fixture interface exists so
+  // that a Core which cannot see this machine's filesystem still works here
+  // (see scripts/lib/core-fixture.mjs).
   const projectPath = core.makeProjectDir("ac-e2e-project-");
   await assertProjectAndTaskLists(link, coreId, projectPath, fail);
   await assertPtyStreams(link, coreId, fail);

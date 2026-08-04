@@ -36,8 +36,13 @@ pnpm dev            # Panel dev server
 The Panel's native dependency (`better-sqlite3`) is compiled during install. If
 it goes stale after a Node upgrade, `pnpm native:node:rebuild`.
 
-To exercise a real Panel↔Core pair without provisioning a machine, use the
-containerised Core in [`deploy/dev/`](deploy/dev/README.md).
+To exercise a real Panel↔Core pair without provisioning a machine, bring up
+the reference deployment — the published Panel and Core images on one network:
+
+```bash
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs core   # the registration blob
+```
 
 ## Before you open a PR
 
@@ -55,7 +60,8 @@ Heavier suites, worth running when you have touched their seam:
 | Command | Covers |
 | --- | --- |
 | `pnpm panel:e2e` | the Panel service seam against a real Core |
-| `pnpm panel:image:smoke` | the Docker image boots, sets up, and survives container recreation |
+| `pnpm panel:image:smoke` | the Panel image boots, sets up, and survives container recreation |
+| `pnpm core:image:smoke` | the Core image boots unprivileged and a Panel pairs with it (needs `pnpm core:tarball` first) |
 | `pnpm core:tarball:smoke` | the release tarball unpacks and runs |
 | `pnpm core:setup:e2e` | `actana setup` against systemd (Linux) |
 

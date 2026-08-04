@@ -127,7 +127,7 @@ log("validating deploy/docker-compose.yml …");
 const composeCheck = spawnSync(
   "docker",
   ["compose", "-f", "deploy/docker-compose.yml", "config", "--quiet"],
-  { cwd: repoRoot, encoding: "utf8", env: { ...process.env, AC_PANEL_DOMAIN: "panel.example.com" } },
+  { cwd: repoRoot, encoding: "utf8" },
 );
 if (composeCheck.status !== 0) {
   die(`docker compose config rejected the reference compose file:\n${composeCheck.stderr}`);

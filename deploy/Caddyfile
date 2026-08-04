@@ -1,7 +1,0 @@
-# TLS termination for the Panel. Caddy obtains and renews the Let's Encrypt
-# certificate for AC_PANEL_DOMAIN automatically; reverse_proxy passes
-# WebSocket upgrades (the panel link) and X-Forwarded-Proto through on its
-# own, so no further directives are needed.
-{$AC_PANEL_DOMAIN} {
-	reverse_proxy panel:7420
-}

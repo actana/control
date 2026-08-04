@@ -3,7 +3,7 @@
 CI installs a Core on Linux many times per pull request: `.github/workflows/ci.yml`'s
 `installer-e2e` job runs `scripts/e2e-install-sh-linux.mjs` and
 `scripts/e2e-actana-setup-linux.mjs` across Ubuntu and Debian, on x64 and arm64,
-and `panel-e2e-core-in-a-box` pairs a Panel with a containerised Core.
+and the `core-image` job pairs a Panel with the containerised Core.
 
 All of it runs with the prompts suppressed and nobody watching. That is the
 gap this fills: **once per release, a person pastes the real one-liner into a
