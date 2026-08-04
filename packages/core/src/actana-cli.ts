@@ -21,7 +21,12 @@ import * as fs from "node:fs";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
-import { loadMaterial, materialFilePath, persistMaterial } from "./core-material-store";
+import {
+  loadMaterial,
+  materialFilePath,
+  mintFreshMaterial,
+  persistMaterial,
+} from "./core-material-store";
 import { endpointFor, readActanaConfig, type ActanaConfig } from "./actana-config";
 import { binDirOnPath, resolveActanaLayout, type ActanaLayout } from "./actana-layout";
 import { readCoreManifest, type CoreManifest } from "./actana-manifest";
@@ -31,7 +36,7 @@ import {
   type ActanaServiceManager,
   type ServiceVerb,
 } from "./actana-service";
-import { choosePublicHost, mintFreshMaterial, runActanaSetup } from "./actana-setup";
+import { choosePublicHost, runActanaSetup } from "./actana-setup";
 import {
   harnessFlagNames,
   harnessFromFlagName,

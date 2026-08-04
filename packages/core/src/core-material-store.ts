@@ -13,6 +13,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { randomBytes } from "node:crypto";
+import { generateCertMaterial } from "./core-cert-material";
 import log from "./log";
 
 /**
@@ -58,13 +60,46 @@ function restrictPermissions(filePath: string): void {
 }
 
 /**
+ * Mint a brand-new Core identity: a fresh CA, fresh certs, a fresh bearer
+ * secret and a fresh coreId, all valid for `publicHost`.
+ *
+ * Everything a paired Panel pinned is replaced, so whoever calls this is
+ * choosing to lock that Panel out until it re-pairs. Setup calls it only when
+ * there is nothing to reuse; `actana token regenerate` calls it deliberately,
+ * which is how a leaked pairing token is revoked; the daemon's first run in a
+ * container calls it when the volume is empty (ADR 0016 D17).
+ */
+export async function mintFreshMaterial(publicHost: string): Promise<PersistedMaterial> {
+  const generated = await generateCertMaterial({ host: publicHost });
+  return {
+    caCert: generated.ca.cert,
+    caKey: generated.ca.key,
+    serverCert: generated.server.cert,
+    serverKey: generated.server.key,
+    clientCert: generated.client.cert,
+    clientKey: generated.client.key,
+    bearerSecret: randomBytes(32).toString("hex"),
+    coreId: `core_${randomBytes(8).toString("hex")}`,
+  };
+}
+
+/**
  * Persist material to `{configDir}/material.json` as JSON. Creates `configDir`
  * if it does not exist. Overwrites any existing material (reissue). The file is
  * chmod'd to 0o600 because it contains private keys.
  */
 export function persistMaterial(configDir: string, material: PersistedMaterial): void {
-  fs.mkdirSync(configDir, { recursive: true, mode: 0o700 });
-  const filePath = materialFilePath(configDir);
+  persistMaterialToFile(materialFilePath(configDir), material);
+}
+
+/**
+ * Persist material to an explicit file path, creating its parent directory.
+ * Used by the daemon's first-run path, which receives the full path via
+ * `AC_CORE_MATERIAL_FILE` and has no config dir to derive it from — in a
+ * container there is no `actana setup` to have made one (ADR 0016 D13).
+ */
+export function persistMaterialToFile(filePath: string, material: PersistedMaterial): void {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true, mode: 0o700 });
   fs.writeFileSync(filePath, JSON.stringify(material, null, 2), {
     encoding: "utf8",
     mode: 0o600,
