@@ -268,7 +268,7 @@ async function startCore(): Promise<void> {
         console.error(`[core-entry] ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-      const { material, blob } = resolved;
+      const { material, blob, reissued } = resolved;
       const secret: BearerSecret = material.bearerSecret;
 
       serverOpts.tls = {
@@ -277,6 +277,18 @@ async function startCore(): Promise<void> {
         serverKey: material.serverKey,
       };
       serverOpts.authVerifier = (b) => verifyBearer(b, secret);
+
+      // A moved public host keeps the identity and re-signs the cert for the
+      // new address (D18), so this is not a pairing event — but the Panel is
+      // still dialling the old address, so say where the fresh token is.
+      if (reissued) {
+        console.log(
+          `[core-entry] public host is now ${publicHost} — re-issued this Core's server ` +
+            "certificate from its existing CA. Pairing credentials are unchanged; update " +
+            `this Core's address in your Panel, or re-pair with the token in ` +
+            `${registrationBlobPath(materialFile)}.`,
+        );
+      }
 
       // Printed only when this boot minted the identity. On every later boot
       // `blob` is null: the operator has already paired, and a second blob in

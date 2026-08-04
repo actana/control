@@ -8,7 +8,8 @@
 //
 //   material file absent  → mint, persist, write `registration-blob.txt`
 //                           beside it, hand the blob back to be printed once
-//   material file present → load it, print nothing
+//   material file present → load it, print nothing; re-sign only the server
+//                           cert if `ACTANA_PUBLIC_HOST` moved (D18)
 //
 // That asymmetry is the whole pairing contract for a containerised Core:
 // `docker compose restart` re-enters the second branch and is a no-op for
@@ -38,6 +39,8 @@ import {
   loadMaterialFromFile,
   mintFreshMaterial,
   persistMaterialToFile,
+  reissueServerCert,
+  serverCertCoversHost,
   type PersistedMaterial,
 } from "./core-material-store";
 
@@ -105,6 +108,12 @@ export type LoadOrMintResult = {
   material: PersistedMaterial;
   /** The pairing blob, to print once. `null` on every boot after the first. */
   blob: string | null;
+  /**
+   * True when `ACTANA_PUBLIC_HOST` moved and the server cert was re-signed for
+   * the new one. The identity behind it is untouched, so there is no new blob —
+   * only a line worth logging.
+   */
+  reissued: boolean;
 };
 
 /**
@@ -113,6 +122,13 @@ export type LoadOrMintResult = {
  *
  * Named for both paths because it runs on every boot, and after the first one
  * the load is all that happens.
+ *
+ * The one thing a load may change is the server cert: `ACTANA_PUBLIC_HOST` is
+ * an env var, so it moves far more easily in a container than on metal, and the
+ * cert's SAN has to follow it or the Panel's next dial fails hostname
+ * verification. Re-signing it from the CA already in the volume keeps the CA,
+ * the bearer secret, the `coreId` and the Panel's client cert exactly as they
+ * were — a typo'd env var costs a certificate, not the pairing (ADR 0016 D18).
  *
  * Throws when the file exists but cannot be parsed — the operator decides
  * whether to discard a corrupt identity, not the daemon.
@@ -127,21 +143,38 @@ export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadO
           "every paired Panel has to re-pair.",
       );
     }
-    return { material: existing, blob: null };
+    if (serverCertCoversHost(existing, opts.publicHost)) {
+      return { material: existing, blob: null, reissued: false };
+    }
+    const reissued = await reissueServerCert(existing, opts.publicHost);
+    persistMaterialToFile(opts.materialFile, reissued);
+    // The blob on disk still points a Panel at the address this Core just left,
+    // and that address is the one thing re-issuing cannot fix from here — the
+    // Panel holds it. Rewriting the file means the documented `cat` hands the
+    // operator a token for where the Core actually is.
+    writeBlobFile(opts.materialFile, buildRegistrationBlob(reissued, opts));
+    return { material: reissued, blob: null, reissued: true };
   }
 
   const material = await mintFreshMaterial(opts.publicHost);
   persistMaterialToFile(opts.materialFile, material);
 
   const blob = buildRegistrationBlob(material, opts);
-  // The blob file holds the blob and nothing else: the documented way to get
-  // it is `cat`, and its output has to be pasteable without editing.
-  fs.writeFileSync(registrationBlobPath(opts.materialFile), `${blob}\n`, {
+  writeBlobFile(opts.materialFile, blob);
+
+  return { material, blob, reissued: false };
+}
+
+/**
+ * Write the blob beside the material file. It holds the blob and nothing else:
+ * the documented way to get it is `cat`, and its output has to be pasteable
+ * without editing.
+ */
+function writeBlobFile(materialFile: string, blob: string): void {
+  fs.writeFileSync(registrationBlobPath(materialFile), `${blob}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
-
-  return { material, blob };
 }
 
 /**

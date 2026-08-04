@@ -2,11 +2,12 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { X509Certificate, createPublicKey } from "node:crypto";
 import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { readActanaConfig } from "../actana-config";
 import { resolveActanaLayout, type ActanaLayout } from "../actana-layout";
-import { loadMaterial } from "../core-material-store";
+import { loadMaterial, persistMaterial } from "../core-material-store";
 import { createServiceManager } from "../actana-service";
 import { runActanaSetup, choosePublicHost, type SetupOptions } from "../actana-setup";
 import type { ActanaSystem, CommandResult } from "../actana-system";
@@ -404,15 +405,80 @@ describe("runActanaSetup — re-running over an existing install", () => {
     );
   });
 
-  it("reissues material when the public host changed — the old cert would not verify", async () => {
-    const first = await runActanaSetup(options(fakeSystem()));
+  it("re-issues the server cert when the public host changed — the old SAN would not verify", async () => {
+    await runActanaSetup(options(fakeSystem()));
+    const before = loadMaterial(layout.configDir)!;
+
     const second = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
 
-    expect(second.reusedMaterial).toBe(false);
-    expect(decodeRegistrationBlob(second.blob)!.caCert).not.toBe(
-      decodeRegistrationBlob(first.blob)!.caCert,
-    );
+    const after = loadMaterial(layout.configDir)!;
+    expect(second.reissuedServerCert).toBe(true);
+    expect(after.serverCert).not.toBe(before.serverCert);
+    expect(new X509Certificate(after.serverCert).subjectAltName).toContain("10.0.0.9");
     expect(decodeRegistrationBlob(second.blob)!.endpoint).toBe("wss://10.0.0.9:8443");
+  });
+
+  // The regression this ticket exists for (ADR 0016 D18): re-minting on a host
+  // change locked out every paired Panel, and in a container a typo'd env var
+  // fires it. Nothing about the identity may change here.
+  it("keeps the identity across a host change — no new CA, coreId or bearer secret", async () => {
+    const first = await runActanaSetup(options(fakeSystem()));
+    const before = loadMaterial(layout.configDir)!;
+
+    const second = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+
+    const after = loadMaterial(layout.configDir)!;
+    expect(after.coreId).toBe(before.coreId);
+    expect(after.bearerSecret).toBe(before.bearerSecret);
+    expect(after.caCert).toBe(before.caCert);
+    expect(after.caKey).toBe(before.caKey);
+    expect(after.clientCert).toBe(before.clientCert);
+    expect(second.reusedMaterial).toBe(true);
+
+    const a = decodeRegistrationBlob(first.blob)!;
+    const b = decodeRegistrationBlob(second.blob)!;
+    expect(b.caCert).toBe(a.caCert);
+    expect(b.clientCert).toBe(a.clientCert);
+  });
+
+  it("a Panel paired before the move still validates the Core against its pinned CA", async () => {
+    const first = await runActanaSetup(options(fakeSystem()));
+    const pinnedCa = decodeRegistrationBlob(first.blob)!.caCert;
+
+    await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+
+    const server = new X509Certificate(loadMaterial(layout.configDir)!.serverCert);
+    expect(server.verify(createPublicKey(pinnedCa))).toBe(true);
+  });
+
+  it("re-issues rather than re-mints for material predating the recorded host", async () => {
+    await runActanaSetup(options(fakeSystem()));
+    // Material written before `serverHost` existed: the config setup wrote
+    // beside it is what says which host the cert was signed for.
+    const legacy = loadMaterial(layout.configDir)!;
+    persistMaterial(layout.configDir, { ...legacy, serverHost: "" });
+
+    const same = await runActanaSetup(options(fakeSystem()));
+    expect(same.reissuedServerCert).toBe(false);
+    expect(loadMaterial(layout.configDir)!.serverCert).toBe(legacy.serverCert);
+
+    persistMaterial(layout.configDir, { ...legacy, serverHost: "" });
+    const moved = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+
+    expect(moved.reissuedServerCert).toBe(true);
+    expect(loadMaterial(layout.configDir)!.coreId).toBe(legacy.coreId);
+  });
+
+  it("says it re-issued the certificate rather than announcing a new token", async () => {
+    const lines: string[] = [];
+    await runActanaSetup(options(fakeSystem()));
+    await runActanaSetup(
+      options(fakeSystem(), { publicHost: "10.0.0.9", out: (l) => lines.push(l) }),
+    );
+
+    const said = lines.join("\n");
+    expect(said).toContain("10.0.0.9");
+    expect(said).toMatch(/re-issuing this Core's server certificate/i);
   });
 
   it("survives an existing `current` symlink pointing at a deleted tree", async () => {

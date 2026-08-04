@@ -2,10 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { X509Certificate, createPublicKey } from "node:crypto";
 import {
   persistMaterial,
   loadMaterial,
   materialFilePath,
+  mintFreshMaterial,
+  reissueServerCert,
+  serverCertCoversHost,
   type PersistedMaterial,
 } from "../core-material-store";
 
@@ -25,6 +29,7 @@ const sample: PersistedMaterial = {
   clientKey: "-----BEGIN PRIVATE KEY-----\nCLIENTKEY\n-----END PRIVATE KEY-----",
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
+  serverHost: "10.0.0.5",
 };
 
 function tmpDir(): string {
@@ -92,6 +97,17 @@ describe("core material store", () => {
       expect(loadMaterial(nested)).toEqual(sample);
     });
 
+    it("loads material written before serverHost existed as an unknown host", () => {
+      const { serverHost, ...legacy } = sample;
+      fs.writeFileSync(materialFilePath(dir), JSON.stringify(legacy));
+
+      // The identity is intact — only the SAN's provenance is unknown, and
+      // rejecting the file over that would unpair a Panel to save a field.
+      const loaded = loadMaterial(dir);
+      expect(loaded).toEqual({ ...legacy, serverHost: "" });
+      expect(serverCertCoversHost(loaded!, serverHost)).toBe(false);
+    });
+
     it("restricts file permissions to owner-only (0o600)", () => {
       persistMaterial(dir, sample);
       const stat = fs.statSync(materialFilePath(dir));
@@ -99,6 +115,49 @@ describe("core material store", () => {
       if (process.platform !== "win32") {
         expect(stat.mode & 0o777).toBe(0o600);
       }
+    });
+  });
+
+  // A moved public host used to re-mint everything, which locked out every
+  // paired Panel over what is usually a typo'd env var (ADR 0016 D18).
+  describe("reissueServerCert", () => {
+    it("keeps every credential a Panel pinned and replaces only the server cert", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+
+      const moved = await reissueServerCert(minted, "core.example.test");
+
+      expect(moved.coreId).toBe(minted.coreId);
+      expect(moved.bearerSecret).toBe(minted.bearerSecret);
+      expect(moved.caCert).toBe(minted.caCert);
+      expect(moved.caKey).toBe(minted.caKey);
+      expect(moved.clientCert).toBe(minted.clientCert);
+      expect(moved.clientKey).toBe(minted.clientKey);
+      expect(moved.serverCert).not.toBe(minted.serverCert);
+      expect(moved.serverKey).not.toBe(minted.serverKey);
+    });
+
+    it("signs the new cert with the CA the Panel already pinned", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+
+      const moved = await reissueServerCert(minted, "core.example.test");
+
+      // This is the whole point: the Panel validates the Core against the CA
+      // in the blob it holds, so that CA must still vouch for the new cert.
+      const server = new X509Certificate(moved.serverCert);
+      expect(server.verify(createPublicKey(minted.caCert))).toBe(true);
+      expect(server.subjectAltName).toContain("core.example.test");
+      expect(server.subjectAltName).not.toContain("10.0.0.5");
+    });
+
+    it("records the host it signed for, so the next boot knows it is covered", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+      expect(serverCertCoversHost(minted, "10.0.0.5")).toBe(true);
+      expect(serverCertCoversHost(minted, "core.example.test")).toBe(false);
+
+      const moved = await reissueServerCert(minted, "core.example.test");
+
+      expect(moved.serverHost).toBe("core.example.test");
+      expect(serverCertCoversHost(moved, "core.example.test")).toBe(true);
     });
   });
 });
