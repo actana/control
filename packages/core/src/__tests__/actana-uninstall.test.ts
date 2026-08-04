@@ -43,9 +43,9 @@ function fakeService() {
 
 /** Everything `actana setup` leaves on a machine. */
 function installedMachine(): void {
-  const installDir = installDirFor(layout, "0.49.0");
+  const installDir = installDirFor(layout, "0.1.0");
   writeTarballTree(installDir, {
-    version: "0.49.0",
+    version: "0.1.0",
     protocolVersion: "3",
     target: "linux-x64",
     platform: "linux",
@@ -61,7 +61,7 @@ function installedMachine(): void {
   fs.mkdirSync(layout.configDir, { recursive: true });
   fs.writeFileSync(materialFilePath(layout.configDir), '{"coreId":"core_1"}');
   writeActanaConfig(layout.configDir, {
-    version: "0.49.0",
+    version: "0.1.0",
     port: 8443,
     host: "0.0.0.0",
     publicHost: "10.0.0.5",

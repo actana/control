@@ -47,7 +47,7 @@ comes from a flag. Flags the installer does not own are passed straight through
 to `actana setup`:
 
 ```bash
-curl -fsSL <install-script-url> | bash -s -- --version 0.49.0 --public-host core1.example.com --yes
+curl -fsSL <install-script-url> | bash -s -- --version 0.1.0 --public-host core1.example.com --yes
 ```
 
 | Flag | Meaning |
@@ -116,11 +116,11 @@ That must print `OK`. If it does not, stop — do not extract or run anything.
 ### Step 2 — Extract and run setup
 
 ```bash
-tar -xzf actana-core-0.49.0-linux-x64.tar.gz
+tar -xzf actana-core-0.1.0-linux-x64.tar.gz
 ```
 
 ```bash
-./actana-core-0.49.0-linux-x64/bin/actana setup
+./actana-core-0.1.0-linux-x64/bin/actana setup
 ```
 
 `setup` does all of it:
@@ -233,7 +233,7 @@ anything is touched — the Core keeps running the version it was on.
 Pair a Panel that reports "needs update" with the exact version it wants:
 
 ```bash
-actana update --version 0.50.0
+actana update --version 0.2.0
 ```
 
 Old versions stay in `~/.local/share/actana/versions`, so going back is a

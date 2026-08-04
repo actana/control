@@ -12,7 +12,7 @@ import { materialFilePath } from "../core-material-store";
 import { fixtureFetcher, writeRelease } from "./release-fixture";
 
 const MANIFEST = {
-  version: "0.49.0",
+  version: "0.1.0",
   protocolVersion: "3",
   target: "linux-x64",
   platform: "linux",
@@ -146,7 +146,7 @@ async function setup(system: ActanaSystem, extra: string[] = []): Promise<number
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "actana-cli-"));
   home = path.join(tmp, "home");
-  installRoot = path.join(tmp, "extract", "actana-core-0.49.0-linux-x64");
+  installRoot = path.join(tmp, "extract", "actana-core-0.1.0-linux-x64");
   releaseDir = path.join(tmp, "releases");
   fs.mkdirSync(home, { recursive: true });
   fs.mkdirSync(releaseDir, { recursive: true });
@@ -183,7 +183,7 @@ describe("usage", () => {
 
   it("reports the bundled version", async () => {
     expect(await runActanaCli(deps(["--version"], fakeSystem()))).toBe(0);
-    expect(out.join("\n")).toContain("0.49.0");
+    expect(out.join("\n")).toContain("0.1.0");
   });
 
   it("rejects an unknown verb on stderr with a non-zero exit", async () => {
@@ -276,7 +276,7 @@ describe("status", () => {
 
     const text = out.join("\n");
     expect(text).toMatch(/healthy/i);
-    expect(text).toContain("0.49.0");
+    expect(text).toContain("0.1.0");
     expect(text).toContain("wss://10.0.0.5:8443");
     expect(text).toMatch(/protocol.*3/i);
     expect(text).toMatch(/claude\s+available/);
@@ -439,12 +439,12 @@ describe("update", () => {
 
   it("lands a newer release, restarts, and reports the versions", async () => {
     await setup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     out.length = 0;
     const system = fakeSystem();
 
     expect(await update(system)).toBe(0);
-    expect(out.join("\n")).toContain("0.49.0 → 0.50.0");
+    expect(out.join("\n")).toContain("0.1.0 → 0.2.0");
     expect(system.calls.map((c) => c.join(" "))).toContain(
       "systemctl --user restart actana-core.service",
     );
@@ -452,20 +452,20 @@ describe("update", () => {
 
   it("leaves `status` reporting the new version", async () => {
     await setup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     await update(fakeSystem());
     out.length = 0;
 
     await runActanaCli(
       deps(["status"], fakeSystem({ "systemctl --user show": { status: 0, stdout: RUNNING_UNIT, stderr: "" } })),
     );
-    expect(out.join("\n")).toContain("0.50.0");
+    expect(out.join("\n")).toContain("0.2.0");
   });
 
   it("says the pairing credentials survived — a paired Panel stays paired", async () => {
     await setup(fakeSystem());
     const before = decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)!;
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     out.length = 0;
     await update(fakeSystem());
     expect(out.join("\n")).toMatch(/unchanged|stay paired/i);
@@ -477,7 +477,7 @@ describe("update", () => {
 
   it("aborts on a bad checksum, leaving the old install running", async () => {
     await setup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     out.length = 0;
     err.length = 0;
 
@@ -485,7 +485,7 @@ describe("update", () => {
     const code = await runActanaCli(
       deps(["update", "--base-url", RELEASE_BASE_URL], system, {
         fetcher: fixtureFetcher(releaseDir, CHANNEL, {
-          corrupt: [releaseAssetName("0.50.0", "linux-x64")],
+          corrupt: [releaseAssetName("0.2.0", "linux-x64")],
         }),
       }),
     );
@@ -493,19 +493,19 @@ describe("update", () => {
     expect(code).toBe(1);
     expect(err.join("\n")).toMatch(/checksum/i);
     expect(err.join("\n")).not.toMatch(/at Object\.|node:internal/);
-    expect(fs.existsSync(installDirFor(layoutForHome(), "0.50.0"))).toBe(false);
+    expect(fs.existsSync(installDirFor(layoutForHome(), "0.2.0"))).toBe(false);
     expect(system.calls.some((c) => c.join(" ").includes("restart"))).toBe(false);
   });
 
   it("installs the exact version --version names, for a Panel version lock", async () => {
     await setup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
-    writeRelease({ dir: releaseDir, version: "0.51.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.3.0", target: "linux-x64" });
     out.length = 0;
 
-    expect(await update(fakeSystem(), ["--version", "0.50.0"])).toBe(0);
-    expect(out.join("\n")).toContain("0.49.0 → 0.50.0");
-    expect(out.join("\n")).not.toContain("0.51.0");
+    expect(await update(fakeSystem(), ["--version", "0.2.0"])).toBe(0);
+    expect(out.join("\n")).toContain("0.1.0 → 0.2.0");
+    expect(out.join("\n")).not.toContain("0.3.0");
   });
 
   it("says so and does nothing when already on the newest release", async () => {
@@ -513,8 +513,8 @@ describe("update", () => {
     out.length = 0;
     const system = fakeSystem();
 
-    // The fixture serves only 0.49.0 — the version setup installed.
-    writeRelease({ dir: releaseDir, version: "0.49.0", target: "linux-x64" });
+    // The fixture serves only 0.1.0 — the version setup installed.
+    writeRelease({ dir: releaseDir, version: "0.1.0", target: "linux-x64" });
     expect(await update(system)).toBe(0);
     expect(out.join("\n")).toMatch(/already/i);
     expect(system.calls.some((c) => c.join(" ").includes("restart"))).toBe(false);
@@ -531,13 +531,13 @@ describe("update", () => {
 
   it("points at a version to go back to when the new daemon does not come up", async () => {
     await setup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     err.length = 0;
     const system = fakeSystem();
     system.waitForPort = async () => false;
 
     expect(await update(system)).toBe(1);
-    expect(err.join("\n")).toContain("actana update --version 0.49.0");
+    expect(err.join("\n")).toContain("actana update --version 0.1.0");
   });
 
   it("rejects --version with no value instead of resolving latest", async () => {
@@ -706,7 +706,7 @@ describe("macOS", () => {
   let macRoot: string;
 
   beforeEach(() => {
-    macRoot = path.join(tmp, "extract", "actana-core-0.49.0-mac-arm64");
+    macRoot = path.join(tmp, "extract", "actana-core-0.1.0-mac-arm64");
     makeTarballTree(macRoot, MAC_MANIFEST);
   });
 
@@ -911,7 +911,7 @@ describe("macOS", () => {
 
   it("updates to a mac build and kickstarts the agent onto it", async () => {
     await macSetup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "mac-arm64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
     out.length = 0;
 
     const system = fakeSystem({
@@ -925,7 +925,7 @@ describe("macOS", () => {
       await runActanaCli(macDeps(["update", "--base-url", RELEASE_BASE_URL], system)),
     ).toBe(0);
 
-    expect(out.join("\n")).toContain("0.49.0 → 0.50.0");
+    expect(out.join("\n")).toContain("0.1.0 → 0.2.0");
     expect(system.calls.map((c) => c.join(" "))).toContain(
       "launchctl kickstart -k gui/501/com.actana.core",
     );
@@ -933,7 +933,7 @@ describe("macOS", () => {
 
   it("will not install a linux build on a Mac", async () => {
     await macSetup(fakeSystem());
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "linux-x64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     err.length = 0;
 
     expect(

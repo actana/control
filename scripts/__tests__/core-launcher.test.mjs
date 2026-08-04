@@ -104,7 +104,7 @@ describeOnPosix("bin/actana launcher", () => {
     // setup links ~/.local/bin/actana -> <root>/current/bin/actana, and
     // <root>/current -> <root>/versions/<v>. Resolving only the first hop
     // would land the install root on `current`'s parent.
-    const versioned = path.join(root, "versions", "0.49.0");
+    const versioned = path.join(root, "versions", "0.1.0");
     fs.mkdirSync(path.dirname(versioned), { recursive: true });
     fs.symlinkSync(installRoot, versioned);
     const current = path.join(root, "current");

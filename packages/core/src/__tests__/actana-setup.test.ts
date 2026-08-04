@@ -12,7 +12,7 @@ import { runActanaSetup, choosePublicHost, type SetupOptions } from "../actana-s
 import type { ActanaSystem, CommandResult } from "../actana-system";
 
 const MANIFEST = {
-  version: "0.49.0",
+  version: "0.1.0",
   protocolVersion: "3",
   target: "linux-x64",
   platform: "linux",
@@ -122,7 +122,7 @@ function options(system: ActanaSystem, over: Partial<SetupOptions> = {}): SetupO
 beforeEach(() => {
   tmp = fs.mkdtempSync(path.join(os.tmpdir(), "actana-setup-"));
   home = path.join(tmp, "home");
-  sourceRoot = path.join(tmp, "extract", "actana-core-0.49.0-linux-x64");
+  sourceRoot = path.join(tmp, "extract", "actana-core-0.1.0-linux-x64");
   fs.mkdirSync(home, { recursive: true });
   makeTarballTree(sourceRoot);
   layout = resolveActanaLayout({}, home, "linux");
@@ -136,7 +136,7 @@ describe("runActanaSetup — the install layout", () => {
   it("installs the tree under the operator's home, versioned", async () => {
     const result = await runActanaSetup(options(fakeSystem()));
 
-    expect(result.installDir).toBe(path.join(layout.versionsDir, "0.49.0"));
+    expect(result.installDir).toBe(path.join(layout.versionsDir, "0.1.0"));
     expect(fs.existsSync(path.join(result.installDir, "app", "core-entry.cjs"))).toBe(true);
     expect(fs.existsSync(path.join(result.installDir, "node", "bin", "node"))).toBe(true);
   });
@@ -176,12 +176,12 @@ describe("runActanaSetup — the install layout", () => {
   it("records what it decided in actana.json", async () => {
     await runActanaSetup(options(fakeSystem()));
     expect(readActanaConfig(layout.configDir)).toEqual({
-      version: "0.49.0",
+      version: "0.1.0",
       port: 8443,
       host: "0.0.0.0",
       publicHost: "10.0.0.5",
       label: "vm-1",
-      installDir: path.join(layout.versionsDir, "0.49.0"),
+      installDir: path.join(layout.versionsDir, "0.1.0"),
       dataDir: layout.dataDir,
     });
   });
@@ -366,22 +366,22 @@ describe("runActanaSetup — re-running over an existing install", () => {
   it("upgrades in place: the new version installs and current follows it", async () => {
     await runActanaSetup(options(fakeSystem()));
 
-    const nextManifest = { ...MANIFEST, version: "0.50.0" };
-    const nextRoot = path.join(tmp, "extract", "actana-core-0.50.0-linux-x64");
+    const nextManifest = { ...MANIFEST, version: "0.2.0" };
+    const nextRoot = path.join(tmp, "extract", "actana-core-0.2.0-linux-x64");
     makeTarballTree(nextRoot, nextManifest);
     const result = await runActanaSetup(
       options(fakeSystem(), { sourceRoot: nextRoot, manifest: nextManifest }),
     );
 
-    expect(result.installDir).toBe(path.join(layout.versionsDir, "0.50.0"));
+    expect(result.installDir).toBe(path.join(layout.versionsDir, "0.2.0"));
     expect(fs.realpathSync(layout.currentLink)).toBe(fs.realpathSync(result.installDir));
-    expect(readActanaConfig(layout.configDir)?.version).toBe("0.50.0");
+    expect(readActanaConfig(layout.configDir)?.version).toBe("0.2.0");
     // The old tree stays put so a failed upgrade has something to roll back to.
-    expect(fs.existsSync(path.join(layout.versionsDir, "0.49.0"))).toBe(true);
+    expect(fs.existsSync(path.join(layout.versionsDir, "0.1.0"))).toBe(true);
   });
 
   it("replaces a half-written tree of the same version rather than merging into it", async () => {
-    const installDir = path.join(layout.versionsDir, "0.49.0");
+    const installDir = path.join(layout.versionsDir, "0.1.0");
     fs.mkdirSync(installDir, { recursive: true });
     fs.writeFileSync(path.join(installDir, "leftover.txt"), "from a crashed install");
 

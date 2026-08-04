@@ -54,8 +54,8 @@ describe("release targets", () => {
   });
 
   it("names the asset the way the release workflow does", () => {
-    expect(releaseAssetName("0.50.0", "linux-arm64")).toBe(
-      "actana-core-0.50.0-linux-arm64.tar.gz",
+    expect(releaseAssetName("0.2.0", "linux-arm64")).toBe(
+      "actana-core-0.2.0-linux-arm64.tar.gz",
     );
   });
 });
@@ -84,8 +84,8 @@ describe("the release channel", () => {
 
 describe("parsing the releases API", () => {
   it("reads the tag, with or without the leading v", () => {
-    expect(parseLatestTag(JSON.stringify({ tag_name: "v0.50.0" }))).toBe("0.50.0");
-    expect(parseLatestTag(JSON.stringify({ tag_name: "0.50.0" }))).toBe("0.50.0");
+    expect(parseLatestTag(JSON.stringify({ tag_name: "v0.2.0" }))).toBe("0.2.0");
+    expect(parseLatestTag(JSON.stringify({ tag_name: "0.2.0" }))).toBe("0.2.0");
   });
 
   it("returns null rather than guessing when the answer is not a release", () => {
@@ -139,13 +139,13 @@ describe("resolving which version to install", () => {
   const latestUrl = "http://h:1/repos/actana/control/releases/latest";
 
   it("asks the API for the latest release when no version is pinned", async () => {
-    const fetcher = fakeFetcher({ [latestUrl]: JSON.stringify({ tag_name: "v0.51.0" }) });
-    expect(await resolveReleaseVersion(fetcher, channel)).toBe("0.51.0");
+    const fetcher = fakeFetcher({ [latestUrl]: JSON.stringify({ tag_name: "v0.3.0" }) });
+    expect(await resolveReleaseVersion(fetcher, channel)).toBe("0.3.0");
   });
 
   it("does not call the API at all for a pinned version", async () => {
     const fetcher = fakeFetcher({});
-    expect(await resolveReleaseVersion(fetcher, channel, "v0.49.0")).toBe("0.49.0");
+    expect(await resolveReleaseVersion(fetcher, channel, "v0.1.0")).toBe("0.1.0");
     expect(fetcher.asked).toEqual([]);
   });
 

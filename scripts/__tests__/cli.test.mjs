@@ -4,10 +4,10 @@ import { parseArgs, stringFlag } from "../lib/cli.mjs";
 
 describe("parseArgs", () => {
   it("reads --key value pairs", () => {
-    expect(parseArgs(["--out-dir", "artifacts", "--version", "0.49.0"])).toEqual({
+    expect(parseArgs(["--out-dir", "artifacts", "--version", "0.1.0"])).toEqual({
       _: [],
       "out-dir": "artifacts",
-      version: "0.49.0",
+      version: "0.1.0",
     });
   });
 
