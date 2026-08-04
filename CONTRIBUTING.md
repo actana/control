@@ -143,6 +143,11 @@ Subjects may open with a ticket id (`E10 — black-box Panel service e2e`); the
 lint does not force a lowercase first letter. Subject limit is 120 characters,
 body lines 100.
 
+Footers (`Refs #39`, `Co-authored-by:`, `BREAKING CHANGE:`) go last, separated
+from the body by a blank line. Only those known tokens start a footer, so a
+body sentence that wraps onto `that: it is absent under Podman…` stays prose —
+see the `trailer-leading-blank` note in `commitlint.config.mjs`.
+
 - Keep PRs to one reviewable idea.
 - Fill in the PR template. The "how was this tested?" section is the one
   reviewers actually read.
