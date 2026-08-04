@@ -1,4 +1,4 @@
-// Registration blob — the single base64 artifact emitted by `harness install`
+// Registration blob — the single base64 artifact emitted by `core install`
 // and pasted once into the Panel's "Add Core" (ADR 0003, CONTEXT.md
 // "Registration blob").
 //
@@ -12,19 +12,19 @@
 // goes through this blob path.
 //
 // This file is self-contained (no `~/` imports) so it compiles under both the
-// Vite (browser/server) and the Harness's CommonJS tsconfigs. It uses Node's
+// Vite (browser/server) and the Core's CommonJS tsconfigs. It uses Node's
 // `Buffer` for base64, available in all three runtimes (the renderer preload
 // runs in a Node-powered context with `Buffer` exposed).
 
 /** The decoded shape of a registration blob. */
 export type RegistrationBlob = {
-  /** `wss://<host>:<port>` — the Harness's core-link endpoint. */
+  /** `wss://<host>:<port>` — the Core's core-link endpoint. */
   endpoint: string;
   /** Human-friendly alias for the Core (optional in the blob; "" if absent). */
   label?: string;
-  /** PEM-encoded self-signed CA cert that signed the Harness server cert. */
+  /** PEM-encoded self-signed CA cert that signed the Core server cert. */
   caCert: string;
-  /** PEM-encoded client cert presented to the Harness in the mTLS handshake. */
+  /** PEM-encoded client cert presented to the Core in the mTLS handshake. */
   clientCert: string;
   /** PEM-encoded private key for {@link RegistrationBlob.clientCert}. */
   clientKey: string;

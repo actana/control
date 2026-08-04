@@ -7,7 +7,7 @@ import type { CoreLinkProjectSnapshot } from "@actana/shared/core-link-frames";
 /**
  * The bridge is what UI components call. What matters here is which frame each
  * call puts on the wire and which Core it is addressed to — a write that went
- * anywhere but the owning Harness would be a write the rest of the fleet never
+ * anywhere but the owning Core would be a write the rest of the fleet never
  * sees.
  */
 
@@ -96,7 +96,7 @@ describe("panel bridge — writes", () => {
     await expect(pending).resolves.toEqual(PROJECT);
   });
 
-  it("sends a task mutation and hands back the Harness's snapshot", async () => {
+  it("sends a task mutation and hands back the Core's snapshot", async () => {
     const { bridge, socket } = bridged();
 
     const pending = bridge.mutateTask("core_a", {
@@ -130,7 +130,7 @@ describe("panel bridge — writes", () => {
     await expect(pending).resolves.toMatchObject({ taskId: "task_9" });
   });
 
-  it("surfaces a Harness rejection as a failed call, not a result to inspect", async () => {
+  it("surfaces a Core rejection as a failed call, not a result to inspect", async () => {
     const { bridge, socket } = bridged();
 
     const pending = bridge.mutateProject("core_a", {

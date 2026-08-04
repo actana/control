@@ -1,12 +1,12 @@
-# First boot only: install the baked-in Harness tarball as the operator.
+# First boot only: install the baked-in Core tarball as the operator.
 # Root runs the script, but the install itself happens through
 # `machinectl shell operator@` — a real logind session, which is what makes
 # `loginctl enable-linger` and `systemctl --user` behave the way they do for
 # a person at the keyboard (the same mechanism the installer e2es use).
 [Unit]
-Description=Install the Harness on first boot (dev Core-in-a-box)
+Description=Install the Core on first boot (dev Core-in-a-box)
 After=multi-user.target systemd-logind.service dbus.service
-ConditionPathExists=!/home/operator/.harness-provisioned
+ConditionPathExists=!/home/operator/.core-provisioned
 
 [Service]
 Type=oneshot

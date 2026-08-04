@@ -41,10 +41,10 @@ const SEED_PROJECTS = [
   },
   {
     id: "p-3",
-    name: "agent-cli",
+    name: "harness-cli",
     icon: "AX",
     iconColor: "#7ce58a",
-    path: "~/dev/agentsystem/agent-cli",
+    path: "~/dev/agentsystem/harness-cli",
     groupId: "g-agentsys",
     pinned: false,
     branch: "main",
@@ -128,7 +128,7 @@ const SEED_PROJECTS = [
   },
 ];
 
-const AGENT_META = {
+const HARNESS_META = {
   "claude-code": { label: "Claude Code", color: "#d6a56b", glyph: "◆" },
   "codex":       { label: "Codex",       color: "#8ab4ff", glyph: "◇" },
   "cursor-cli":  { label: "Cursor CLI",  color: "#c792ea", glyph: "▲" },
@@ -141,4 +141,4 @@ const STATUS_META = {
   "idle":        { label: "Idle",        color: "var(--status-idle)",    dot: false, shimmer: false },
 };
 
-Object.assign(window, { SEED_GROUPS, SEED_PROJECTS, AGENT_META, STATUS_META });
+Object.assign(window, { SEED_GROUPS, SEED_PROJECTS, HARNESS_META, STATUS_META });

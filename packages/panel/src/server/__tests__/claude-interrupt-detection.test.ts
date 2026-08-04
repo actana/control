@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   hasClaudeInterruptPrompt,
   hasCodexHookReviewPrompt,
-} from "../../../../harness/src/pty-manager";
+} from "../../../../core/src/pty-manager";
 
 describe("Claude interrupt output detection", () => {
   it("detects the current Esc interrupt prompt", () => {

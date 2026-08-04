@@ -5,17 +5,17 @@ const REGENERATE_COMMAND = "actana token regenerate";
 export function ApiSettingsPage() {
   const { copied, copy } = useCopy();
 
-  // The hook endpoint is the Harness's, on the Core's own machine — the Panel
+  // The hook endpoint is the Core's, on the Core's own machine — the Panel
   // is a browser client and has no endpoint of its own to publish, and the
-  // token belongs to that Harness (ADR 0010). Both are printed by `actana
+  // token belongs to that Core (ADR 0010). Both are printed by `actana
   // status` on the Core.
-  const baseUrl = "http://127.0.0.1:<harness-port>";
+  const baseUrl = "http://127.0.0.1:<core-port>";
 
   return (
     <>
       <SettingsSection
         title="External API"
-        subtitle="External CLIs (Claude Code / Codex / Cursor CLI) post status updates to the Harness on the Core they run on. Run `actana status` there for its address and token."
+        subtitle="External CLIs (Claude Code / Codex / Cursor CLI) post status updates to the Core on the Core they run on. Run `actana status` there for its address and token."
         headingLevel="h1"
       >
         <Field label="Endpoint">

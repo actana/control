@@ -2,7 +2,7 @@ name: Images Release
 
 # Publishes the container images for a version tag — the Panel web service and
 # the dev Core-in-a-box. One image each, no installers, no signing (ADR 0010);
-# the Harness tarballs ship from harness-release.yml on the same tag.
+# the Core tarballs ship from core-release.yml on the same tag.
 #
 # The build/smoke/publish machinery lives in container-image.yml, shared with
 # the PR build in ci.yml and the edge build in images-edge.yml. All this

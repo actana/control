@@ -250,9 +250,9 @@ export function createProject(input: {
   iconColor?: string;
   groupId?: string | null;
   /** Default agent to launch for this project's sessions (create-time onboarding). */
-  savedAgent?: Project["savedAgent"] | null;
-  /** When true, "New session" launches savedAgent directly instead of prompting. */
-  rememberAgentSettings?: boolean;
+  savedHarness?: Project["savedHarness"] | null;
+  /** When true, "New session" launches savedHarness directly instead of prompting. */
+  rememberHarnessSettings?: boolean;
   /** Layout the project first opens in: true = grid, false = list. */
   defaultGridView?: boolean;
   /** Pin the project to the top of the sidebar the moment it's created. */
@@ -266,8 +266,8 @@ export function createProject(input: {
   const id = newId("p");
   // Only remember an agent when one was actually chosen at create time — a bare
   // "remember" with no agent would make "New session" a no-op.
-  const savedAgent = input.savedAgent ?? null;
-  const rememberAgentSettings = !!input.rememberAgentSettings && !!savedAgent;
+  const savedHarness = input.savedHarness ?? null;
+  const rememberHarnessSettings = !!input.rememberHarnessSettings && !!savedHarness;
   const row = {
     id,
     name,
@@ -279,8 +279,8 @@ export function createProject(input: {
     pinned: !!input.pinned,
     pinnedOrder: input.pinned ? nextPinnedOrder(findAllProjects()) : null,
     launchUrl: null,
-    rememberAgentSettings,
-    savedAgent,
+    rememberHarnessSettings,
+    savedHarness,
     savedSkipPermissions: false,
     savedBareSession: false,
     defaultGridView: !!input.defaultGridView,
@@ -306,8 +306,8 @@ export function updateProject(
       | "pinned"
       | "pinnedOrder"
       | "launchUrl"
-      | "rememberAgentSettings"
-      | "savedAgent"
+      | "rememberHarnessSettings"
+      | "savedHarness"
       | "savedSkipPermissions"
       | "savedBareSession"
     >

@@ -11,12 +11,12 @@ Actana Control is two programs that talk over one WebSocket:
 - The **Panel** (`packages/panel`) — the self-hosted web service you deploy.
   It owns the Core registry and terminates every core-link. It holds no task,
   session, or project state.
-- The **Harness** (`packages/harness`) — the daemon installed on each machine
-  you want to run agents on. It owns everything task-shaped: PTYs, SQLite, the
+- The **Core** (`packages/core`) — the daemon installed on each machine
+  you want to run harnesses on. It owns everything task-shaped: PTYs, SQLite, the
   event log, the project registry.
 - `packages/shared` — the types and wire contracts both sides agree on.
 
-A **Core** is the Panel's name for a registered Harness. If that vocabulary is
+A **Core** is the Panel's name for a registered Core. If that vocabulary is
 new, read [`CONTEXT.md`](CONTEXT.md) before you write code — it is the
 project's glossary, and reviewers use its terms.
 
@@ -29,7 +29,7 @@ You need **Node 24** (`.nvmrc` pins it; `preinstall` refuses anything else) and
 git clone https://github.com/actana/control
 cd control
 pnpm install
-pnpm build          # Harness bundle first, then the Panel — that order matters
+pnpm build          # Core bundle first, then the Panel — that order matters
 pnpm dev            # Panel dev server
 ```
 
@@ -54,10 +54,10 @@ Heavier suites, worth running when you have touched their seam:
 
 | Command | Covers |
 | --- | --- |
-| `pnpm panel:e2e` | the Panel service seam against a real Harness |
+| `pnpm panel:e2e` | the Panel service seam against a real Core |
 | `pnpm panel:image:smoke` | the Docker image boots, sets up, and survives container recreation |
-| `pnpm harness:tarball:smoke` | the release tarball unpacks and runs |
-| `pnpm harness:setup:e2e` | `actana setup` against systemd (Linux) |
+| `pnpm core:tarball:smoke` | the release tarball unpacks and runs |
+| `pnpm core:setup:e2e` | `actana setup` against systemd (Linux) |
 
 CI runs all of these plus an installer matrix across distros and
 architectures. See [`docs/ci-cd.md`](docs/ci-cd.md) for what runs when.
@@ -69,7 +69,7 @@ These are load-bearing, not style preferences. Each is explained in
 
 - **Nothing task-shaped lives on the Panel.** The Panel stores Cores and one
   `lastEventId` per Core. Tasks, sessions, terminal logs, hook events, and
-  project paths live on the Harness that owns them.
+  project paths live on the Core that owns them.
 - **Only the Panel dials Cores.** Browsers cannot hold client certificates, so
   every core-link terminates inside the Panel. The Panel UI reaches Cores
   through its panel link, never directly.
@@ -85,8 +85,8 @@ is not.
 
 ## Architectural decisions
 
-Anything that changes a wire contract, moves state across the Panel/Harness
-boundary, or adds a dependency to the Harness bundle wants an ADR. Add a file
+Anything that changes a wire contract, moves state across the Panel/Core
+boundary, or adds a dependency to the Core bundle wants an ADR. Add a file
 to [`docs/adr/`](docs/adr/) using the next number, following the existing
 format (Context / Decision / Consequences). Open it in the same PR as the code.
 
@@ -126,7 +126,7 @@ Commit messages and **PR titles** follow
 
 ```
 feat(panel): badge Cores by reachability in Fleet view
-fix(harness): replay from lastEventId after a socket drop
+fix(core): replay from lastEventId after a socket drop
 ```
 
 We **squash-merge, using the PR title as the commit message** — so the PR title

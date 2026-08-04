@@ -1,9 +1,9 @@
-import { AGENT_REGISTRY } from "@actana/shared/agents";
-import { STATUS_SELECTION_PRIORITY, TASK_STATUS_META, type TaskAgent, type TaskStatus } from "@actana/shared/domain";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
+import { STATUS_SELECTION_PRIORITY, TASK_STATUS_META, type Harness, type TaskStatus } from "@actana/shared/domain";
 
 export { STATUS_SELECTION_PRIORITY } from "@actana/shared/domain";
 
-export const AGENT_META: Record<TaskAgent, { label: string; color: string; glyph: string; cmd: string }> = {
+export const HARNESS_META: Record<Harness, { label: string; color: string; glyph: string; cmd: string }> = {
   "claude-code": metaFor("claude-code"),
   codex: metaFor("codex"),
   "cursor-cli": metaFor("cursor-cli"),
@@ -66,7 +66,7 @@ export const CLOSE_SETTINGS_EVENT = "mc:close-settings";
 export const ICON_COLORS = ["#ff5a1f", "#8ab4ff", "#c792ea", "#ff9466", "#f472b6", "#34d399", "#fb923c"];
 export const GROUP_COLORS = ["#ff5a1f", "#8ab4ff", "#c792ea", "#ff9466", "#f472b6", "#34d399", "#fb923c"];
 
-function metaFor(agent: TaskAgent) {
-  const meta = AGENT_REGISTRY[agent];
+function metaFor(agent: Harness) {
+  const meta = HARNESS_REGISTRY[agent];
   return { label: meta.label, color: meta.color, glyph: meta.glyph, cmd: meta.command };
 }

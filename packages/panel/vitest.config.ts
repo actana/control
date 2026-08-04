@@ -13,8 +13,8 @@ export default defineConfig({
       "~": path.resolve(__dirname, "./src"),
       "@actana/shared": path.resolve(__dirname, "../shared/src"),
       // Test-only: the core-link suites drive the Panel's client against the
-      // real Harness server rather than a hand-rolled stand-in.
-      "@actana/harness": path.resolve(__dirname, "../harness/src"),
+      // real Core server rather than a hand-rolled stand-in.
+      "@actana/core": path.resolve(__dirname, "../core/src"),
     },
   },
 });

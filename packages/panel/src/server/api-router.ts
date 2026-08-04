@@ -18,14 +18,14 @@ import * as hooksController from "./controllers/hooks.controller";
 import * as usageController from "./controllers/usage.controller";
 import * as claudeUsageLimitsController from "./controllers/claude-usage-limits.controller";
 import * as providerUsageController from "./controllers/provider-usage.controller";
-import * as agentLaunchersController from "./controllers/agent-launchers.controller";
+import * as harnessLaunchersController from "./controllers/harness-launchers.controller";
 import * as eventsController from "./controllers/events.controller";
 import * as healthController from "./controllers/health.controller";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
 import * as coresController from "./controllers/cores.controller";
 
-const AGENT_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
+const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
 const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
 const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
@@ -96,12 +96,12 @@ export const ANONYMOUS_ROUTES: ReadonlyArray<{ method: string; pathname: string 
 ];
 
 /**
- * Agent hook endpoints. Not an Operator surface — an agent process POSTs here
+ * Harness hook endpoints. Not an Operator surface — an agent process POSTs here
  * with the machine token, no browser and no session involved. See hook-auth.ts;
- * these move onto the Harness with the rest of the session path.
+ * these move onto the Core with the rest of the session path.
  */
 function isHookRoute(pathname: string): boolean {
-  return AGENT_HOOK_PATH.test(pathname);
+  return HARNESS_HOOK_PATH.test(pathname);
 }
 
 function isAnonymousRoute(method: string, pathname: string): boolean {
@@ -321,8 +321,8 @@ async function dispatch(
     if (method === "DELETE") return keybindingsController.reset(url);
   }
 
-  // Agent hooks
-  m = pathname.match(AGENT_HOOK_PATH);
+  // Harness hooks
+  m = pathname.match(HARNESS_HOOK_PATH);
   if (m && method === "POST") return hooksController.receive(url, request);
 
   // Usage + events
@@ -333,15 +333,15 @@ async function dispatch(
   if (pathname === "/api/provider-usage" && method === "GET") {
     return providerUsageController.read(url);
   }
-  if (pathname === "/api/agent-launchers/accounts" && method === "GET") {
-    return agentLaunchersController.accounts();
+  if (pathname === "/api/harness-launchers/accounts" && method === "GET") {
+    return harnessLaunchersController.accounts();
   }
-  if (pathname === "/api/agent-launchers/latest-versions" && method === "GET") {
-    return agentLaunchersController.latestVersions(url);
+  if (pathname === "/api/harness-launchers/latest-versions" && method === "GET") {
+    return harnessLaunchersController.latestVersions(url);
   }
   if (pathname === "/api/events" && method === "GET") return eventsController.stream();
 
   return jsonError(HTTP_NOT_FOUND, "not found");
 }
 
-export { mapHookEventToStatus } from "~/shared/agent-hook-events";
+export { mapHookEventToStatus } from "~/shared/harness-hook-events";

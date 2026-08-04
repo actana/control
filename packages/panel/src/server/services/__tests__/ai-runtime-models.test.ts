@@ -70,7 +70,7 @@ bad model with spaces
     expect(result.models.some((model) => model.id === "composer-2.5")).toBe(true);
   });
 
-  it("dedupes concurrent live discovery for the same harness", async () => {
+  it("dedupes concurrent live discovery for the same core", async () => {
     vi.mocked(runCli).mockResolvedValueOnce("composer-2.5 - Composer 2.5\n");
 
     await Promise.all([

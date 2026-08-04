@@ -9,7 +9,7 @@ function stripTerminalEscapes(chunk: string): string {
 
 /**
  * Accumulate printable terminal input until the user submits with Enter.
- * Used when an agent CLI does not fire beforeSubmitPrompt / UserPromptSubmit hooks.
+ * Used when a Harness does not fire beforeSubmitPrompt / UserPromptSubmit hooks.
  */
 export function accumulateTerminalPrompt(
   buffer: string,

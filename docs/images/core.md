@@ -12,19 +12,19 @@
 > - hardcodes `--public-host core`, so it only pairs when the Panel can reach
 >   it at the hostname `core`
 >
-> **To run a real Core, install the Harness on a machine you own** —
+> **To run a real Core, install the Core on a machine you own** —
 > [INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md). There is
 > no supported container deployment of a Core.
 
 ## What a Core is
 
 In [Actana Control](https://github.com/actana/control), a **Core** is a machine
-that actually has your code on it. It runs a **Harness** daemon that owns the
+that actually has your code on it. It runs a **Core** daemon that owns the
 projects, the sessions, the SQLite database, and the PTYs — it is the only
 process that writes its own state. The **Panel** (`actana/panel`) is a
 connection broker over your fleet of Cores; it stores nothing task-shaped.
 
-This image is an Ubuntu machine with the Harness tarball baked in and a
+This image is an Ubuntu machine with the Core tarball baked in and a
 first-boot unit that installs it, so a `docker compose up` gives you a working
 pair to click around in.
 
@@ -46,22 +46,22 @@ Full walkthrough: [deploy/dev/README.md](https://github.com/actana/control/blob/
 The compose file supplies the `privileged`, `cgroup`, and tmpfs settings
 systemd needs. Running this image with a plain `docker run` will not boot.
 
-## Agent CLIs
+## Harness CLIs
 
-The image provisions itself with `--no-agents`, so it comes up hermetically
+The image provisions itself with `--no-harnesses`, so it comes up hermetically
 with no vendor CLI installed. Add them afterwards:
 
 ```bash
-docker compose exec core machinectl shell operator@ /bin/bash -lc 'actana agents install claude'
+docker compose exec core machinectl shell operator@ /bin/bash -lc 'actana harnesses install claude'
 ```
 
 ## Building it yourself
 
-Preferred when you are changing the Harness — the published image carries the
+Preferred when you are changing the Core — the published image carries the
 tarball from whichever commit built it:
 
 ```bash
-pnpm harness:tarball        # on Linux; see the dev README for the macOS path
+pnpm core:tarball        # on Linux; see the dev README for the macOS path
 docker compose up -d --build
 ```
 
@@ -74,7 +74,7 @@ docker compose up -d --build
 | `edge` | every push to `main` |
 | `sha-<short>` | never |
 
-`linux/amd64` and `linux/arm64`. Each architecture bakes in the Harness tarball
+`linux/amd64` and `linux/arm64`. Each architecture bakes in the Core tarball
 for *that* architecture, so the two cannot be cross-built.
 
 The image carries `ai.actana.image.role=development-fixture` as a label, in

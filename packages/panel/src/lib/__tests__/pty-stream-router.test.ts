@@ -139,7 +139,7 @@ describe("pty-stream-router", () => {
 
   // ─── Reattach after a dropped panel link ──────────────────────────────────
   //
-  // While the link is down the Harness keeps running the PTY and buffering its
+  // While the link is down the Core keeps running the PTY and buffering its
   // output. On reconnect the tab is behind by however long the gap lasted, and
   // the terminal on screen must end up showing exactly what the PTY produced —
   // no repeat of what's already painted, no hole where the gap was.
@@ -266,7 +266,7 @@ describe("pty-stream-router", () => {
     await vi.waitFor(() => expect(got).toEqual(["before", "last words", "exit:3"]));
   });
 
-  it("resets the surface when the Harness ring rolled past the cursor", async () => {
+  it("resets the surface when the Core ring rolled past the cursor", async () => {
     // A long outage: the bytes right after what we painted are gone for good,
     // so splicing the tail on would render a lie. Repaint instead.
     const t = makeTransport({

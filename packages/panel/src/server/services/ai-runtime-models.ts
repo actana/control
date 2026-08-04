@@ -3,7 +3,7 @@ import {
   getAiRuntimeModelOptions,
   isAiModelId,
   type AiModelOption,
-  type AiRuntimeHarness,
+  type Harness,
   type AiRuntimeModelsResponse,
 } from "@actana/shared/ai-runtime-defaults";
 import { runCli } from "./claude-cli";
@@ -11,10 +11,10 @@ import { runCli } from "./claude-cli";
 const MODEL_LIST_TIMEOUT_MS = 8_000;
 const MODEL_LIST_CACHE_TTL_MS = 60_000;
 const cache = new Map<
-  AiRuntimeHarness,
+  Harness,
   { expiresAt: number; response: AiRuntimeModelsResponse }
 >();
-const inFlight = new Map<AiRuntimeHarness, Promise<AiRuntimeModelsResponse>>();
+const inFlight = new Map<Harness, Promise<AiRuntimeModelsResponse>>();
 
 export function clearAiRuntimeModelCache(): void {
   cache.clear();
@@ -65,7 +65,7 @@ function redactDiscoveryError(value: string): string {
 }
 
 async function liveModelOptions(
-  harness: AiRuntimeHarness,
+  harness: Harness,
 ): Promise<AiModelOption[] | null> {
   switch (harness) {
     case "cursor-cli": {
@@ -89,7 +89,7 @@ async function liveModelOptions(
 }
 
 export async function listAiRuntimeModels(
-  harness: AiRuntimeHarness,
+  harness: Harness,
 ): Promise<AiRuntimeModelsResponse> {
   const cached = cache.get(harness);
   if (cached && cached.expiresAt > Date.now()) return cached.response;
@@ -111,7 +111,7 @@ export async function listAiRuntimeModels(
 }
 
 async function loadAiRuntimeModels(
-  harness: AiRuntimeHarness,
+  harness: Harness,
 ): Promise<AiRuntimeModelsResponse> {
   const catalog = [...getAiRuntimeModelOptions(harness)];
   try {

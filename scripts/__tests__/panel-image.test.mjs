@@ -114,7 +114,7 @@ describe("reference compose", () => {
 });
 
 describe("release workflow", () => {
-  it("builds the image on version tags, like the Harness release", () => {
+  it("builds the image on version tags, like the Core release", () => {
     expect(workflow).toMatch(/tags:\s*\n\s*- "v\*"/);
   });
 
@@ -188,12 +188,12 @@ describe("core image", () => {
     expect(imageWorkflow).toContain("deploy/dev/core.Dockerfile");
   });
 
-  it("supplies the Harness tarball as a named build context", () => {
+  it("supplies the Core tarball as a named build context", () => {
     // artifacts/ is excluded by .dockerignore, so the tarball cannot ride in
     // on the main context — core.Dockerfile COPYs it `--from=tarball`.
     expect(coreDockerfile).toContain("COPY --from=tarball");
-    expect(imageWorkflow).toContain("--build-context tarball=artifacts/harness");
-    expect(imageWorkflow).toContain("pnpm harness:tarball");
+    expect(imageWorkflow).toContain("--build-context tarball=artifacts/core");
+    expect(imageWorkflow).toContain("pnpm core:tarball");
   });
 
   it("labels itself a development fixture", () => {

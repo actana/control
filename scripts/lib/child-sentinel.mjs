@@ -2,8 +2,8 @@
 //
 // Every process-spawning test in `scripts/` asks the same question of its
 // child: did it print its readiness marker before it died or ran out of time,
-// and what did it say on the way? The Harness smokes want that for
-// `@@AC_HARNESS_LISTENING@@`, the Panel e2e for `@@AC_LISTENING@@`, and the
+// and what did it say on the way? The Core smokes want that for
+// `@@AC_CORE_LISTENING@@`, the Panel e2e for `@@AC_CORE_LISTENING@@`, and the
 // difference between them is a string and what else they pick off each line.
 //
 // Keeping one waiter means the failure behaviour is one behaviour: the child's
@@ -19,7 +19,7 @@ import * as readline from "node:readline";
  *
  * `observer.logLines` collects every line, tagged with the stream it came from.
  * `onLine(raw)` is called for each line before the sentinel check, which is how
- * a caller picks other things out of the output (the Harness's registration
+ * a caller picks other things out of the output (the Core's registration
  * blob, its bad-log tags) without a second reader on the same stream.
  * `subject` names the child in error messages.
  */

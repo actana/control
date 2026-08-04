@@ -134,8 +134,8 @@ describe("mergeFleetTasks", () => {
   });
 
   it("excludes archived tasks from the merged rows", () => {
-    // The Fleet view is for active work; archived tasks stay on the Harness
-    // and are not fanned out into the dashboard. The merge trusts the Harness
+    // The Fleet view is for active work; archived tasks stay on the Core
+    // and are not fanned out into the dashboard. The merge trusts the Core
     // to omit them, but defensively drops any that slip through so a stale
     // Core never pollutes the active dashboard.
     const result = mergeFleetTasks([

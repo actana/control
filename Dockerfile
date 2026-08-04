@@ -20,16 +20,16 @@ WORKDIR /app
 # changing step — survives source edits in the Docker cache.
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY scripts/require-node-24.mjs scripts/
-COPY packages/harness/package.json packages/harness/
+COPY packages/core/package.json packages/core/
 COPY packages/panel/package.json packages/panel/
 COPY packages/shared/package.json packages/shared/
 RUN pnpm install --frozen-lockfile
 
 COPY . .
 
-# Harness first: the Panel's build imports its types (devDependency), same
+# Core first: the Panel's build imports its types (devDependency), same
 # order as the repo's root `pnpm build`.
-RUN pnpm --filter @actana/harness build && pnpm --filter @actana/panel build
+RUN pnpm --filter @actana/core build && pnpm --filter @actana/panel build
 
 # A pruned production install of just the Panel. `deploy` excludes gitignored
 # files (dist/ among them), so the built output is copied in on top.

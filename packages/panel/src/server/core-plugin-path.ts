@@ -59,7 +59,7 @@ export function discoverCorePluginSkills(pluginRoot: string): CorePluginSkill[] 
 }
 
 export function discoverCorePluginAgents(pluginRoot: string): CorePluginAgent[] {
-  const agentsDir = path.join(pluginRoot, "agents");
+  const agentsDir = path.join(pluginRoot, "harnesses");
   if (!fs.existsSync(agentsDir)) return [];
   return fs
     .readdirSync(agentsDir)

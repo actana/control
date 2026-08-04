@@ -29,7 +29,7 @@ import * as http from "node:http";
 import * as net from "node:net";
 import * as path from "node:path";
 
-import { formatShasums, tarballName, tarballRootDirName } from "./harness-tarball.mjs";
+import { formatShasums, tarballName, tarballRootDirName } from "./core-tarball.mjs";
 
 /** The repository the installer defaults to — also this fixture's default. */
 export const DEFAULT_REPO = "actana/control";
@@ -37,7 +37,7 @@ export const DEFAULT_REPO = "actana/control";
 /** The checksum asset every release carries, named as the release workflow names it. */
 export const SHASUMS_ASSET = "SHA256SUMS";
 
-const ASSET_PATTERN = /^actana-harness-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/;
+const ASSET_PATTERN = /^actana-core-(\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?)-([a-z0-9]+-[a-z0-9]+)\.tar\.gz$/;
 
 /**
  * Split a release tarball's name back into `{ version, target }`, or null when
@@ -261,7 +261,7 @@ function shasumsFor(releaseDir, release) {
 export function repackWithVersion(tarball, version, workDir, fail) {
   const die = fail ?? ((message) => { throw new Error(message); });
   const parsed = parseAssetName(path.basename(tarball));
-  if (!parsed) die(`${path.basename(tarball)} is not a Harness release tarball`);
+  if (!parsed) die(`${path.basename(tarball)} is not a Core release tarball`);
 
   const stageDir = path.join(workDir, `repack-${version}`);
   fs.mkdirSync(stageDir, { recursive: true });
@@ -272,7 +272,7 @@ export function repackWithVersion(tarball, version, workDir, fail) {
   const newRoot = path.join(stageDir, tarballRootDirName(version, parsed.target));
   fs.renameSync(oldRoot, newRoot);
 
-  const manifestPath = path.join(newRoot, "harness-manifest.json");
+  const manifestPath = path.join(newRoot, "core-manifest.json");
   const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
   fs.writeFileSync(manifestPath, JSON.stringify({ ...manifest, version }, null, 2) + "\n");
 
@@ -349,21 +349,21 @@ async function waitForFixturePort(port, die, timeoutMs = 15_000) {
  * installing anything.
  *
  * The tests that use this are about the *bootstrapper* — platform mapping,
- * checksums, version resolution, flag passthrough. Building a real Harness for
+ * checksums, version resolution, flag passthrough. Building a real Core for
  * them would take minutes and prove nothing extra; the container e2e is where
  * the real tarball runs.
  */
 export function writeStubRelease({ dir, version, target, script }) {
   fs.mkdirSync(dir, { recursive: true });
-  const rootName = `actana-harness-${version}-${target}`;
+  const rootName = `actana-core-${version}-${target}`;
   const stageDir = path.join(dir, `.stage-${rootName}`);
   const binDir = path.join(stageDir, rootName, "bin");
   fs.rmSync(stageDir, { recursive: true, force: true });
   fs.mkdirSync(binDir, { recursive: true });
 
   fs.writeFileSync(
-    path.join(stageDir, rootName, "harness-manifest.json"),
-    JSON.stringify({ name: "actana-harness", version, target }, null, 2) + "\n",
+    path.join(stageDir, rootName, "core-manifest.json"),
+    JSON.stringify({ name: "actana-core", version, target }, null, 2) + "\n",
   );
   const actana = path.join(binDir, "actana");
   fs.writeFileSync(actana, script);

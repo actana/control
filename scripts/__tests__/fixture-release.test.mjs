@@ -24,7 +24,7 @@ import {
   startFixtureReleaseServer,
   writeStubRelease,
 } from "../lib/fixture-release.mjs";
-import { parseShasums, tarballName } from "../lib/harness-tarball.mjs";
+import { parseShasums, tarballName } from "../lib/core-tarball.mjs";
 
 describe("parseAssetName", () => {
   it("is the inverse of tarballName for every shape the build emits", () => {
@@ -38,7 +38,7 @@ describe("parseAssetName", () => {
   });
 
   it("ignores files that are not release tarballs", () => {
-    for (const name of ["SHA256SUMS", "actana-harness-0.49.0-linux-x64.tar.gz.bak", "notes.txt"]) {
+    for (const name of ["SHA256SUMS", "actana-core-0.49.0-linux-x64.tar.gz.bak", "notes.txt"]) {
       expect(parseAssetName(name)).toBeNull();
     }
   });

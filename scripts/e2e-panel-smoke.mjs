@@ -3,7 +3,7 @@
 // issue 10, the spec's primary testing seam).
 //
 // Boots the *built* Panel service as a plain Node process against a temp data
-// directory, boots a real Harness, and then drives the Panel exactly as a
+// directory, boots a real Core, and then drives the Panel exactly as a
 // browser would — HTTP with a session cookie, and one panel-link WebSocket
 // carrying `coreId`-tagged frames. Nothing here imports the Panel's own code:
 // what it asserts is what a deployed artifact does.
@@ -19,7 +19,7 @@
 //     up in the next list — the write path is mutation frames, not HTTP;
 //   • a PTY spawned over the panel link streams `coreId`-tagged output frames
 //     carrying what was typed into it;
-//   • the panel link is killed mid-flight, events happen on the Harness while
+//   • the panel link is killed mid-flight, events happen on the Core while
 //     no browser is attached, and a reconnected link replaying from its cursor
 //     sees every one of them — no event loss;
 //   • the Core's secrets are unreadable at rest: the bearer appears nowhere in
@@ -28,28 +28,28 @@
 //   • and the `AC_SECRETS_KEY` path works: a Panel given the key by environment
 //     pairs and dials without ever writing a key file.
 //
-// The Core it pairs with comes from `scripts/lib/harness-fixture.mjs`, and
+// The Core it pairs with comes from `scripts/lib/core-fixture.mjs`, and
 // which implementation is used is the one thing a caller chooses here: by
-// default a local Harness process, and with `--harness-tarball` the
+// default a local Core process, and with `--core-tarball` the
 // Core-in-a-box — the release tarball installed by `actana setup` on a systemd
 // container. Every assertion below is written against the fixture interface,
 // so the two run the identical test.
 //
 // Usage:
-//   node scripts/e2e-panel-smoke.mjs [--panel-entry <file>] [--harness-entry <file>]
-//   node scripts/e2e-panel-smoke.mjs --harness-tarball <file> [--distro <id>] [--keep]
+//   node scripts/e2e-panel-smoke.mjs [--panel-entry <file>] [--core-entry <file>]
+//   node scripts/e2e-panel-smoke.mjs --core-tarball <file> [--distro <id>] [--keep]
 //
-// --harness-tarball <file>  Pair with a Core-in-a-box installed from this
-//                           release tarball instead of a local Harness process.
+// --core-tarball <file>  Pair with a Core-in-a-box installed from this
+//                           release tarball instead of a local Core process.
 // --distro <id>             Which distribution the Core-in-a-box runs
 //                           (scripts/lib/container-matrix.mjs). Ubuntu default.
 // --keep                    Leave the Core-in-a-box container up afterwards.
 //
 // Build first (CI does both):
-//   pnpm --filter @actana/harness build && pnpm build:web
+//   pnpm --filter @actana/core build && pnpm build:web
 //
 // Exit codes: 0 on pass, non-zero on any failed step. On failure the tail of
-// the Panel's and the Harness's output is printed so triage doesn't need a
+// the Panel's and the Core's output is printed so triage doesn't need a
 // rerun.
 
 import { randomBytes } from "node:crypto";
@@ -58,9 +58,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
-import { makeDie } from "./lib/harness-smoke.mjs";
+import { makeDie } from "./lib/core-smoke.mjs";
 import { distroFlag } from "./lib/container-matrix.mjs";
-import { startContainerHarness, startLocalHarness } from "./lib/harness-fixture.mjs";
+import { startContainerCore, startLocalCore } from "./lib/core-fixture.mjs";
 import {
   PANEL_SESSION_COOKIE,
   PanelLink,
@@ -101,36 +101,36 @@ async function main() {
     stringFlag(args, "panel-entry", die) ??
       path.join(repoRoot, "packages", "panel", "dist", "server", "server.js"),
   );
-  const harnessTarball = stringFlag(args, "harness-tarball", die);
-  const harnessEntry = path.resolve(
-    stringFlag(args, "harness-entry", die) ??
-      path.join(repoRoot, "packages", "harness", "dist", "harness-entry.cjs"),
+  const coreTarball = stringFlag(args, "core-tarball", die);
+  const coreEntry = path.resolve(
+    stringFlag(args, "core-entry", die) ??
+      path.join(repoRoot, "packages", "core", "dist", "core-entry.cjs"),
   );
   if (!fs.existsSync(panelEntry)) die(`no built Panel at ${panelEntry} — run \`pnpm build:web\` first`);
-  if (!harnessTarball && !fs.existsSync(harnessEntry)) {
-    die(`no built Harness at ${harnessEntry} — run \`pnpm --filter @actana/harness build\` first`);
+  if (!coreTarball && !fs.existsSync(coreEntry)) {
+    die(`no built Core at ${coreEntry} — run \`pnpm --filter @actana/core build\` first`);
   }
 
   log(`node=${process.execPath} (${process.version})`);
   log(`panel=${panelEntry}`);
-  log(harnessTarball ? `core-in-a-box=${harnessTarball}` : `harness=${harnessEntry}`);
+  log(coreTarball ? `core-in-a-box=${coreTarball}` : `core=${coreEntry}`);
 
-  // The same interface either way — see scripts/lib/harness-fixture.mjs.
-  const bootHarness = harnessTarball
-    ? startContainerHarness({
-        tarball: path.resolve(harnessTarball),
+  // The same interface either way — see scripts/lib/core-fixture.mjs.
+  const bootCore = coreTarball
+    ? startContainerCore({
+        tarball: path.resolve(coreTarball),
         distro: distroFlag(args, die).id,
         keep: args.keep === true,
         log,
       })
-    : startLocalHarness({ entry: harnessEntry, log });
-  const harness = await bootHarness.catch((err) =>
-    die(`harness fixture failed to boot: ${err.message}`, err.logLines),
+    : startLocalCore({ entry: coreEntry, log });
+  const core = await bootCore.catch((err) =>
+    die(`core fixture failed to boot: ${err.message}`, err.logLines),
   );
-  teardown.push(() => harness.stop());
+  teardown.push(() => core.stop());
 
-  await keyFilePhase({ panelBin, panelEntry, harness });
-  await envKeyPhase({ panelBin, panelEntry, harness });
+  await keyFilePhase({ panelBin, panelEntry, core });
+  await envKeyPhase({ panelBin, panelEntry, core });
 
   log("OK — the Panel service seam holds end to end");
 }
@@ -142,7 +142,7 @@ async function main() {
  * registry, the sealed secrets, and the key file are exactly the state a
  * deployment is supposed to survive on.
  */
-async function keyFilePhase({ panelBin, panelEntry, harness }) {
+async function keyFilePhase({ panelBin, panelEntry, core }) {
   const dataDir = tempDir("ac-e2e-panel-");
   const port = await pickFreePort();
   const boot = () =>
@@ -150,25 +150,25 @@ async function keyFilePhase({ panelBin, panelEntry, harness }) {
 
   let panel = await boot().catch((err) => die(`panel failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
-  const fail = (message) => die(message, [...panel.logLines(), ...harness.logLines()]);
+  const fail = (message) => die(message, [...panel.logLines(), ...core.logLines()]);
 
   await assertUnauthenticatedIsRefused(panel, fail);
   await assertSetupAndLogin(panel, fail);
 
-  const coreId = await assertCoreRegisters(panel, harness, fail);
+  const coreId = await assertCoreRegisters(panel, core, fail);
   const link = await openLink(panel, fail);
   await assertDialConnects(link, coreId, fail);
 
   await assertLinkSubscribes(link, coreId, fail);
 
   // From the fixture, not from `tempDir`: a Core-in-a-box cannot open a path
-  // on this machine (see scripts/lib/harness-fixture.mjs).
-  const projectPath = harness.makeProjectDir("ac-e2e-project-");
+  // on this machine (see scripts/lib/core-fixture.mjs).
+  const projectPath = core.makeProjectDir("ac-e2e-project-");
   await assertProjectAndTaskLists(link, coreId, projectPath, fail);
   await assertPtyStreams(link, coreId, fail);
   await assertReconnectReplaysMissedEvents(panel, link, coreId, fail);
 
-  await assertSecretsSealedAtRest(dataDir, harness, fail);
+  await assertSecretsSealedAtRest(dataDir, core, fail);
 
   // …and a data directory whose key file is gone cannot read them back.
   await panel.stop();
@@ -186,7 +186,7 @@ async function keyFilePhase({ panelBin, panelEntry, harness }) {
   await assertLoginAndDial(panel, coreId, fail);
   log("secrets at rest: sealed in panel.db, dead without the key file, alive with it");
 
-  // Hand the Harness back before the next phase pairs with it. A Harness serves
+  // Hand the Core back before the next phase pairs with it. A Core serves
   // one core-link at a time, so two live Panels dialing it would spend the run
   // displacing each other's connection.
   await panel.stop();
@@ -197,7 +197,7 @@ async function keyFilePhase({ panelBin, panelEntry, harness }) {
  * data directory. A fresh Panel given one must pair and dial without ever
  * writing a key file beside the data.
  */
-async function envKeyPhase({ panelBin, panelEntry, harness }) {
+async function envKeyPhase({ panelBin, panelEntry, core }) {
   const dataDir = tempDir("ac-e2e-panel-envkey-");
   const port = await pickFreePort();
   const secretsKey = randomBytes(32).toString("hex");
@@ -210,10 +210,10 @@ async function envKeyPhase({ panelBin, panelEntry, harness }) {
     log,
   }).catch((err) => die(`panel (AC_SECRETS_KEY) failed to boot: ${err.message}`, err.logLines));
   teardown.push(() => panel.kill());
-  const fail = (message) => die(message, [...panel.logLines(), ...harness.logLines()]);
+  const fail = (message) => die(message, [...panel.logLines(), ...core.logLines()]);
 
   await assertSetupAndLogin(panel, fail);
-  const coreId = await assertCoreRegisters(panel, harness, fail);
+  const coreId = await assertCoreRegisters(panel, core, fail);
   const link = await openLink(panel, fail);
   await assertDialConnects(link, coreId, fail);
   link.close();
@@ -221,7 +221,7 @@ async function envKeyPhase({ panelBin, panelEntry, harness }) {
   if (fs.existsSync(path.join(dataDir, "secrets.key"))) {
     fail("AC_SECRETS_KEY was set but the Panel still wrote a secrets.key beside the data");
   }
-  await assertSecretsSealedAtRest(dataDir, harness, fail);
+  await assertSecretsSealedAtRest(dataDir, core, fail);
   log("AC_SECRETS_KEY: paired and dialed with the key held outside the data directory");
 }
 
@@ -309,13 +309,13 @@ async function assertSetupAndLogin(panel, fail) {
   log("setup → logout → login: the session cookie is the whole gate");
 }
 
-/** Pasting the Harness's registration blob registers a Core. */
-async function assertCoreRegisters(panel, harness, fail) {
+/** Pasting the Core's registration blob registers a Core. */
+async function assertCoreRegisters(panel, core, fail) {
   const rejected = await panel.client.post("/api/cores", { registrationBlob: "not-a-blob" });
   if (rejected.status !== 400) fail(`a junk registration blob: expected 400, got ${rejected.status}`);
 
   const added = await panel.client.post("/api/cores", {
-    registrationBlob: harness.registrationBlob,
+    registrationBlob: core.registrationBlob,
   });
   if (added.status !== 201) {
     fail(`add Core: expected 201, got ${added.status} (${added.text.slice(0, 200)})`);
@@ -328,10 +328,10 @@ async function assertCoreRegisters(panel, harness, fail) {
     fail(`the registered Core is not in GET /api/cores: ${listed.text.slice(0, 300)}`);
   }
   // The secrets went in with the paste and must not come back out of any API.
-  if (listed.text.includes(harness.blob.bearer) || listed.text.includes(harness.blob.clientKey)) {
+  if (listed.text.includes(core.blob.bearer) || listed.text.includes(core.blob.clientKey)) {
     fail("GET /api/cores leaked the Core's credentials");
   }
-  log(`registered Core ${coreId} from the Harness's registration blob`);
+  log(`registered Core ${coreId} from the Core's registration blob`);
   return coreId;
 }
 
@@ -343,7 +343,7 @@ async function openLink(panel, fail) {
   return link;
 }
 
-/** The dial-status frame is the one fact the Harness cannot report about itself. */
+/** The dial-status frame is the one fact the Core cannot report about itself. */
 async function assertDialConnects(link, coreId, fail) {
   await link
     .waitFor((f) => f.t === "dial" && f.status.coreId === coreId && f.status.state === "connected", {
@@ -386,7 +386,7 @@ async function assertProjectAndTaskLists(link, coreId, projectPath, fail) {
   const before = await link.request(coreId, { type: "projectsList" });
   if (before.type !== "projectsListResult") fail(`projectsList answered ${before.type}`);
   if (!Array.isArray(before.projects) || before.projects.length !== 0) {
-    fail(`a fresh Harness should have no projects, got ${JSON.stringify(before.projects)}`);
+    fail(`a fresh Core should have no projects, got ${JSON.stringify(before.projects)}`);
   }
 
   const created = await link.request(coreId, {
@@ -416,7 +416,7 @@ async function assertProjectAndTaskLists(link, coreId, projectPath, fail) {
  *
  * The marker is split across a quote (`AC""E2E-…`) so the shell's echo of the
  * typed line cannot satisfy the assertion — only the command's own output,
- * which the Harness read off the pty and the router forwarded, contains the
+ * which the Core read off the pty and the router forwarded, contains the
  * joined string.
  */
 async function assertPtyStreams(link, coreId, fail) {
@@ -473,8 +473,8 @@ async function assertPtyStreams(link, coreId, fail) {
  * so an event it reports was necessarily buffered before that link existed — a
  * live push cannot stand in for the replay this is asserting.
  *
- * Arming an event this way rather than causing one directly on the Harness is
- * deliberate: the Harness serves one core-link at a time, so a second dial
+ * Arming an event this way rather than causing one directly on the Core is
+ * deliberate: the Core serves one core-link at a time, so a second dial
  * would displace the Panel's own — the test would be measuring its own
  * interference instead of the service.
  */
@@ -507,7 +507,7 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
 
   link.kill();
 
-  // Nobody is attached for this stretch: the PTY runs out, the Harness appends
+  // Nobody is attached for this stretch: the PTY runs out, the Core appends
   // the exit, and the service's core-link carries it up to a router with no
   // sessions on it.
   await delay(ptyLifetimeMs + 1_000);
@@ -555,14 +555,14 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
  * main file alone would clear a Panel that had just written the bearer in the
  * clear.
  */
-async function assertSecretsSealedAtRest(dataDir, harness, fail) {
+async function assertSecretsSealedAtRest(dataDir, core, fail) {
   if (!fs.existsSync(path.join(dataDir, "panel.db"))) fail(`no panel.db in ${dataDir}`);
   const dbFiles = fs.readdirSync(dataDir).filter((name) => name.startsWith("panel.db"));
   for (const file of dbFiles) {
     const raw = fs.readFileSync(path.join(dataDir, file));
     for (const [name, secret] of [
-      ["bearer", harness.blob.bearer],
-      ["client key", harness.blob.clientKey],
+      ["bearer", core.blob.bearer],
+      ["client key", core.blob.clientKey],
     ]) {
       if (raw.includes(Buffer.from(secret, "utf8"))) {
         fail(`the Core's ${name} is stored in ${file} in the clear`);

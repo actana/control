@@ -1,5 +1,7 @@
 # Panel becomes a self-hosted web service (drop Electron)
 
+> _Written before the #33 rename. Read "Harness" as what is now a **Core**, and "agent"/"TaskAgent" as what is now a **Harness**; the wording is left as it was decided._
+
 The Electron Panel forced a per-OS distribution story — mac/win/linux builds, code signing, notarization, native-module ABI rebuilds, an auto-updater — for what is, underneath, already a local web server: the renderer loads `http://127.0.0.1:<port>` from a bundled TanStack Start server, and only seven files in `electron/` actually import Electron. We drop Electron entirely. The Panel ships as **one self-hosted web service** — a single deployable (Docker image; also runnable as a plain Node process) that serves the Panel UI to any browser. The operator's browser is the client; there is no desktop app.
 
 Shape of the decision:

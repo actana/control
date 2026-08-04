@@ -1,14 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { CardFrame } from "~/components/ui/CardFrame";
-import { AGENT_META } from "~/lib/design-meta";
+import { HARNESS_META } from "~/lib/design-meta";
 import {
   GRID_COLUMN_OPTIONS,
   requestGridSort,
   saveGridColumnLimit,
 } from "~/lib/grid-layout-prefs";
 import { Z_INDEX } from "~/lib/z-index";
-import type { TaskAgent } from "@actana/shared/domain";
+import type { Harness } from "@actana/shared/domain";
 
 // The width options as the arrow keys walk them: Auto, then 1..6.
 const WIDTH_STEPS: Array<number | null> = [null, ...GRID_COLUMN_OPTIONS];
@@ -39,8 +39,8 @@ export function GridLayoutQuickPicker({
   scopeKey: string;
   /** The scope's active sessions-per-row lock (null = auto). */
   currentLimit: number | null;
-  /** Agents with open sessions in the scope, in registry order. */
-  agents: TaskAgent[];
+  /** Harnesses with open sessions in the scope, in registry order. */
+  agents: Harness[];
 }) {
   const cardRef = useRef<HTMLElement>(null);
   // Focused row: 0 = the width chips, 1..agents.length = a sort option.
@@ -67,7 +67,7 @@ export function GridLayoutQuickPicker({
     const next = Math.max(0, Math.min(WIDTH_STEPS.length - 1, (idx < 0 ? 0 : idx) + delta));
     saveGridColumnLimit(scopeKey, WIDTH_STEPS[next] ?? null);
   };
-  const applySort = (agent: TaskAgent | undefined) => {
+  const applySort = (agent: Harness | undefined) => {
     if (!agent) return;
     requestGridSort(scopeKey, agent);
     onClose();
@@ -265,11 +265,11 @@ export function GridLayoutQuickPicker({
                     width: 8,
                     height: 8,
                     borderRadius: "50%",
-                    background: AGENT_META[agent].color,
+                    background: HARNESS_META[agent].color,
                     flexShrink: 0,
                   }}
                 />
-                {AGENT_META[agent].label} first
+                {HARNESS_META[agent].label} first
               </button>
             ))}
           </div>

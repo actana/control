@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveAgentCommandOnPath } from "../../../../harness/src/agent-cli-resolution";
-import { resolveCommandOnPath, sanitizedProcessEnv } from "../../../../harness/src/shell-env";
+import { resolveHarnessCommandOnPath } from "../../../../core/src/harness-cli-resolution";
+import { resolveCommandOnPath, sanitizedProcessEnv } from "../../../../core/src/shell-env";
 import { isWindowsCommandScript } from "@actana/shared/windows-cmd";
 
 export type RunCliOptions = {
@@ -64,7 +64,7 @@ export function buildCliSpawnInvocation(
   env: Record<string, string> = sanitizedProcessEnv(),
   platform: NodeJS.Platform = os.platform(),
 ): CliSpawnInvocation {
-  const resolved = resolveAgentCommandOnPath(cmd, env, platform) ?? cmd;
+  const resolved = resolveHarnessCommandOnPath(cmd, env, platform) ?? cmd;
   if (platform === "win32" && isWindowsCommandScript(resolved)) {
     const shim = resolveWindowsCmdShimInvocation(resolved, args, env);
     if (shim) return shim;
@@ -74,7 +74,7 @@ export function buildCliSpawnInvocation(
 }
 
 /**
- * Spawn a managed agent CLI through the same PATH resolver used by session
+ * Spawn a managed Harness through the same PATH resolver used by session
  * launch. That keeps print-mode helpers aligned with Windows `.cmd` shims,
  * Cursor's `agent.exe` alias, and the augmented GUI-app PATH.
  */

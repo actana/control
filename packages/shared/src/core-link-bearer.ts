@@ -1,26 +1,26 @@
 // Signed bearer token for the core-link app-layer session (ADR 0002).
 //
 // After the mTLS handshake the Panel presents a signed bearer
-// `{coreId, exp, sig}` in an `auth` frame; the Harness validates `exp` and
+// `{coreId, exp, sig}` in an `auth` frame; the Core validates `exp` and
 // closes on expiry. The Panel then re-handshakes TLS and reconnects, replaying
 // missed events via `lastEventId` (the same path as Panel-sleep recovery — no
 // rolling renewal over the live socket).
 //
 // The token is a compact, URL-safe string: `base64url(payload).base64url(sig)`
 // where `payload` is JSON `{coreId, exp}` and `sig` is HMAC-SHA256 over the
-// payload string, keyed by the shared secret provisioned at Harness install
+// payload string, keyed by the shared secret provisioned at Core install
 // (carried in the registration blob). ~50 lines of app-layer code on top of
 // TLS; the mTLS handshake is the key-pair handshake, TLS 1.3 is the symmetric
 // encryption, and this bearer is only the bounded session lifetime.
 //
 // This file is self-contained (no `~/` imports) so it compiles under both the
-// Vite (browser/server) and the Harness's CommonJS tsconfigs. It uses Node's
+// Vite (browser/server) and the Core's CommonJS tsconfigs. It uses Node's
 // `node:crypto` via a thin injectable HMAC port so it can be exercised from
 // either runtime; the default port calls `crypto.createHmac`.
 
 import { createHmac, timingSafeEqual } from "node:crypto";
 
-/** The shared HMAC key. Provisioned at Harness install; carried in the blob. */
+/** The shared HMAC key. Provisioned at Core install; carried in the blob. */
 export type BearerSecret = string;
 
 export type BearerClaims = {
@@ -32,8 +32,8 @@ export type BearerClaims = {
 
 /**
  * HMAC port. The default implementation uses `node:crypto.createHmac`, which is
- * available in the Panel service, the Harness, and
- * node tests. The renderer preload does not sign/verify (only the Harness
+ * available in the Panel service, the Core, and
+ * node tests. The renderer preload does not sign/verify (only the Core
  * verifies; the Panel just stores + presents the pre-signed blob), so the
  * default is fine everywhere this module is imported.
  */
@@ -139,7 +139,7 @@ export function verifyBearer(
 /**
  * Decode a bearer's `{coreId, exp}` payload WITHOUT verifying the signature.
  * Used by the Panel to inspect a bearer it holds (e.g. to read `exp` for a UI
- * "session expires at" hint) — never by the Harness, which must always verify.
+ * "session expires at" hint) — never by the Core, which must always verify.
  */
 export function decodeBearer(token: string): BearerClaims | null {
   const sep = token.indexOf(SEP);

@@ -1695,7 +1695,7 @@ html[data-window-idle] .mc-session-icon-drawing > * {
     transform: translateX(0);
   }
 }
-/* ── Agent question overlay (AskUserQuestion native menu) ─────────────────
+/* ── Harness question overlay (AskUserQuestion native menu) ─────────────────
    Placeholder needs the same 4.5:1 as body text — the faint ramp is too low. */
 .mc-aq-input::placeholder {
   color: var(--text-dim);

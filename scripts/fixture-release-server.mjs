@@ -1,13 +1,13 @@
 #!/usr/bin/env node
-// Serve a directory of Harness tarballs as if it were GitHub Releases.
+// Serve a directory of Core tarballs as if it were GitHub Releases.
 //
 // This is the hermetic stand-in the installer tests run against, exposed as a
-// command so a person can use it too: point it at `artifacts/harness`, and the
-// real one-liner installs a locally built Harness with no release published and
+// command so a person can use it too: point it at `artifacts/core`, and the
+// real one-liner installs a locally built Core with no release published and
 // no network involved.
 //
-//   node scripts/build-harness-tarball.mjs
-//   node scripts/fixture-release-server.mjs --dir artifacts/harness --port 8788
+//   node scripts/build-core-tarball.mjs
+//   node scripts/fixture-release-server.mjs --dir artifacts/core --port 8788
 //   curl -fsSL http://localhost:8788/install.sh | bash -s -- --base-url http://localhost:8788
 //
 // Usage:
@@ -15,7 +15,7 @@
 //                                           [--host <addr>] [--repo <slug>]
 //                                           [--corrupt <asset>]
 //
-// --dir      Directory of `actana-harness-<version>-<target>.tar.gz` files.
+// --dir      Directory of `actana-core-<version>-<target>.tar.gz` files.
 //            Versions come from the file names; the newest is `latest`.
 // --port     Port to listen on (default 8788; 0 picks a free one).
 // --host     Address to bind (default 127.0.0.1; use 0.0.0.0 to serve a VM).
@@ -63,7 +63,7 @@ async function main() {
 
   const releases = indexReleases(fs.readdirSync(dir));
   if (releases.length === 0) {
-    log(`warning: no Harness tarballs in ${dir} — every release request will 404`);
+    log(`warning: no Core tarballs in ${dir} — every release request will 404`);
   }
   for (const release of releases) {
     log(`release v${release.version}: ${[...release.assets.keys()].sort().join(", ")}`);

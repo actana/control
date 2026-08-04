@@ -8,7 +8,7 @@ import { resolvePanelDataDir } from "./panel-data-dir";
  * The Panel's own database: the Operator and their Panel sessions, the Core
  * registry, its sealed secrets, and the per-Core replay cursors.
  * Deliberately separate from the legacy app database (db/client.ts) — that one
- * holds Harness-owned material that moves behind the core-link, while this one
+ * holds Core-owned material that moves behind the core-link, while this one
  * is what the Panel service itself must survive a restart with.
  *
  * Schema is created in place rather than through the drizzle migration runner:

@@ -1,7 +1,7 @@
 import type { PanelBridge } from "~/lib/panel-bridge";
 import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
 
-// A Core's projectsList result changes when the Harness appends one of these
+// A Core's projectsList result changes when the Core appends one of these
 // event kinds to its monotonic event log. Everything else (task lifecycle,
 // PTY spawn/exit, hook, session) leaves projects untouched — filtering here
 // keeps refetches proportional to the mutation surface `useCoreProjects`
@@ -10,7 +10,7 @@ const PROJECT_EVENT_KINDS = new Set([
   "project:created",
   "project:renamed",
   "project:archived",
-  // Pin is a Harness fact stored on the project row; a change fans out via
+  // Pin is a Core fact stored on the project row; a change fans out via
   // this dedicated kind. Every mounted `useCoreProjects` refetches so two
   // Panels on the same Core end up with the same pin state.
   "project:pinnedChanged",

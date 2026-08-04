@@ -31,12 +31,12 @@
 // Reboot persistence is the one criterion CI cannot exercise (a GitHub runner
 // is destroyed rather than rebooted, and a LaunchAgent needs a login to come
 // back). It lands on the manual checklist in
-// `docs/harness-macos-prerelease-checklist.md` instead.
+// `docs/core-macos-prerelease-checklist.md` instead.
 //
 // Usage:
 //   node scripts/e2e-actana-setup-macos.mjs --tarball <file> [--keep]
 //
-// --tarball <file>  A mac-* tarball from scripts/build-harness-tarball.mjs.
+// --tarball <file>  A mac-* tarball from scripts/build-core-tarball.mjs.
 //                   Must match this machine's architecture.
 // --keep            Leave the scratch home and the loaded agent behind.
 
@@ -52,8 +52,8 @@ import {
   repackWithVersion,
   startFixtureServerProcess,
 } from "./lib/fixture-release.mjs";
-import { dialAndListProjects, makeDie, pickFreePort } from "./lib/harness-smoke.mjs";
-import { tarballName as releaseAssetName } from "./lib/harness-tarball.mjs";
+import { dialAndListProjects, makeDie, pickFreePort } from "./lib/core-smoke.mjs";
+import { tarballName as releaseAssetName } from "./lib/core-tarball.mjs";
 import {
   extractPairingToken,
   runCaptured,
@@ -64,7 +64,7 @@ import {
 const die = makeDie("setup-e2e-mac");
 const log = (message) => console.log(`[setup-e2e-mac] ${message}`);
 
-const LABEL = "com.actana.harness";
+const LABEL = "com.actana.core";
 
 /** How long launchd is given to finish tearing a booted-out job down. */
 const UNLOAD_TIMEOUT_MS = 10_000;
@@ -103,7 +103,7 @@ async function main() {
   log(`launchd domain: ${domain}`);
 
   /** Wait for launchd to finish unloading the agent, or say who left it there. */
-  const untilAgentUnloaded = (what) =>
+  const untilHarnessUnloaded = (what) =>
     until(
       `${what} to unload the LaunchAgent`,
       UNLOAD_TIMEOUT_MS,
@@ -235,7 +235,7 @@ async function main() {
   mustAsOperator("actana stop");
   // `launchctl bootout` returns before launchd has finished tearing the job
   // down, so this waits rather than reading the domain one beat too early.
-  await untilAgentUnloaded("`actana stop`");
+  await untilHarnessUnloaded("`actana stop`");
   if (asOperator("actana status").status === 0) {
     die("`actana status` reported healthy while the daemon was stopped");
   }
@@ -293,7 +293,7 @@ async function main() {
   // bytes with a bumped manifest version, which is a genuinely different
   // release as far as resolution, install directory and `status` are concerned.
   const parsedAsset = parseAssetName(path.basename(tarball));
-  if (!parsedAsset) die(`${path.basename(tarball)} is not a Harness release tarball`);
+  if (!parsedAsset) die(`${path.basename(tarball)} is not a Core release tarball`);
   const installedVersion = parsedAsset.version;
   const nextVersion = bumpPatch(installedVersion);
   const latestVersion = bumpPatch(nextVersion);
@@ -419,7 +419,7 @@ async function main() {
   mustAsOperator("actana uninstall --yes");
 
   if (fs.existsSync(plist)) die(`uninstall left the LaunchAgent at ${plist}`);
-  await untilAgentUnloaded("`actana uninstall`");
+  await untilHarnessUnloaded("`actana uninstall`");
   if (fs.existsSync(path.join(home, ".local", "bin", "actana"))) {
     die("uninstall left the launcher on the PATH");
   }

@@ -9,8 +9,8 @@ import {
 } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { Kbd } from "~/components/ui/Kbd";
-import type { AgentQuestion, PendingQuestion } from "~/shared/agent-questions";
-import { sanitizeFreeText, type QuestionAnswer } from "~/lib/agent-question-answer";
+import type { HarnessQuestion, PendingQuestion } from "~/shared/harness-questions";
+import { sanitizeFreeText, type QuestionAnswer } from "~/lib/harness-question-answer";
 
 /** Inline keyboard hint: rendered key glyphs followed by a label. */
 function hint(label: string, keys: string[]): ReactNode {
@@ -729,7 +729,7 @@ export function AskUserQuestionOverlay({
 
 /** Highlight to restore when navigating back to an answered question. */
 function restoredHighlight(
-  question: AgentQuestion,
+  question: HarnessQuestion,
   recorded: QuestionAnswer | null,
 ): number {
   if (recorded?.kind === "options") return recorded.optionIndexes[0] ?? 0;

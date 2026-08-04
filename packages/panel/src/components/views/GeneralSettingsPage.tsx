@@ -1,4 +1,4 @@
-import { DEFAULT_AGENT_LAUNCHER_CONFIG } from "~/shared/agent-launcher-config";
+import { DEFAULT_AGENT_LAUNCHER_CONFIG } from "~/shared/harness-launcher-config";
 import { useEffect, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { Btn } from "~/components/ui/Btn";
@@ -64,9 +64,9 @@ export function GeneralSettingsPage() {
     sessionHeaderButtons:
       settings?.sessionHeaderButtons ?? DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
     headerButtons: settings?.headerButtons ?? DEFAULT_HEADER_BUTTON_VISIBILITY,
-    defaultAgent: settings?.defaultAgent ?? "claude-code",
+    defaultHarness: settings?.defaultHarness ?? "claude-code",
     defaultModel: settings?.defaultModel ?? null,
-    shipAgent: settings?.shipAgent ?? "claude-code",
+    shipHarness: settings?.shipHarness ?? "claude-code",
     shipModel: settings?.shipModel ?? null,
     shipPrompt: settings?.shipPrompt ?? DEFAULT_SHIP_PROMPT,
     questionOverlayEnabled: settings?.questionOverlayEnabled ?? true,
@@ -75,7 +75,7 @@ export function GeneralSettingsPage() {
     claudeUsageLimitsShowWeekly: settings?.claudeUsageLimitsShowWeekly ?? true,
     providerUsageEnabled: settings?.providerUsageEnabled ?? false,
     providerUsageIds: settings?.providerUsageIds ?? ["claude", "codex", "cursor"],
-    agentLauncherConfig: settings?.agentLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG,
+    harnessLauncherConfig: settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG,
     showGroupSwitcher: settings?.showGroupSwitcher ?? true,
     showProjectHeaderGroup: settings?.showProjectHeaderGroup ?? true,
     ...queryClient.getQueryData<AppSettings>(queryKeys.settings),

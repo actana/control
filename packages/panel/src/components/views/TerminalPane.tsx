@@ -19,7 +19,7 @@ import { TextField } from "~/components/ui/TextField";
 import { EscTooltip, HotkeyTooltip, Tooltip } from "~/components/ui/Tooltip";
 import { Z_INDEX } from "~/lib/z-index";
 import {
-  AGENT_META,
+  HARNESS_META,
   DUPLICATE_ACTIVE_SESSION_EVENT,
   STATUS_META,
 } from "~/lib/design-meta";
@@ -51,15 +51,15 @@ import { TerminalZoomControls } from "~/components/views/TerminalZoomControls";
 import { api } from "~/lib/api";
 import { errMsg } from "~/shared/err-msg";
 import {
-  agentUsesPersistedSession,
-  buildFreshAgentLaunchCommand,
-  isAgentResumeCommand,
+  harnessUsesPersistedSession,
+  buildFreshHarnessLaunchCommand,
+  isHarnessResumeCommand,
   newSessionId,
-} from "~/lib/agent-command";
-import { getDefaultModelForAgent } from "~/lib/default-model-store";
+} from "~/lib/harness-command";
+import { getDefaultModelForHarness } from "~/lib/default-model-store";
 import {
   terminalInputStartsTurn,
-  agentUsesTerminalPromptFallback,
+  harnessUsesTerminalPromptFallback,
   shouldResetTerminalRunningFallback,
 } from "~/lib/task-status-sync";
 import { accumulateTerminalPrompt } from "~/lib/terminal-prompt-capture";
@@ -83,7 +83,7 @@ import {
   useQuestionDesynced,
   useQuestionDismissed,
   useTaskQuestion,
-} from "~/lib/agent-question-store";
+} from "~/lib/harness-question-store";
 import {
   buildPayloadAnswerKeySequence,
   writeAnswerSequence,
@@ -92,7 +92,7 @@ import {
   SUBMIT_CONFIRM_DELAY_MS,
   SUBMIT_CONFIRM_KEY,
   type QuestionAnswer,
-} from "~/lib/agent-question-answer";
+} from "~/lib/harness-question-answer";
 import {
   createQuestionMenuHold,
   questionMenuSignatures,
@@ -121,7 +121,7 @@ import {
 import { useTerminalActions } from "~/lib/terminal-store";
 import type { Project, Task } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
-import { AGENT_REGISTRY } from "@actana/shared/agents";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import { toast } from "sonner";
 
 export type TerminalDescriptor = {
@@ -492,13 +492,13 @@ export function TerminalPane({
   const { data: selectedLiveTask } = useTask(project.id, task.id);
   const liveTask = selectedLiveTask ?? task;
   liveTaskStatusRef.current = liveTask.status;
-  const meta = AGENT_META[liveTask.agent];
+  const meta = HARNESS_META[liveTask.agent];
   const statusMeta = STATUS_META[liveTask.status];
   const sessionRunning = liveTask.status === "running";
   const tasksKey = queryKeys.tasks(project.id);
 
   // Native AskUserQuestion overlay: pending question data arrives over SSE
-  // (see agent-question-store); hydrate covers panes that mount after the
+  // (see harness-question-store); hydrate covers panes that mount after the
   // event fired (e.g. reopening a project mid-question).
   const pendingQuestion = useTaskQuestion(task.id);
   const questionDismissed = useQuestionDismissed(pendingQuestion?.id);
@@ -618,7 +618,7 @@ export function TerminalPane({
     terminals.syncTask(optimisticTask);
 
     try {
-      // A rename is Harness-owned state, so it travels the same mutation frame
+      // A rename is Core-owned state, so it travels the same mutation frame
       // pin and icon do (ADR-0005): the Core that owns the row is the one that
       // renames it, and every other tab watching that Core sees the new title.
       const snapshot = await mutateTaskForCore(descriptor.coreId, {
@@ -720,7 +720,7 @@ export function TerminalPane({
 
       // The pane's PTY runs on its Core, reached over this tab's panel link:
       // the service holds that Core's core-link and forwards the spawn/write/
-      // resize/kill frames to its Harness, and the output streams back the same
+      // resize/kill frames to its Core, and the output streams back the same
       // way. With no Core there is no transport — the pane renders but never
       // spawns.
       const corePtyBridge = getCorePtyBridge(descriptor.coreId);
@@ -847,7 +847,7 @@ export function TerminalPane({
         const elapsed = Date.now() - spawnAt;
         if (
           spawnedAsResume &&
-          agentUsesPersistedSession(task.agent) &&
+          harnessUsesPersistedSession(task.agent) &&
           elapsed < START_FAILURE_EXIT_MS
         ) {
           void (async () => {
@@ -859,12 +859,12 @@ export function TerminalPane({
               /* best effort — even if patch fails, spawn with fresh id */
             }
             term.writeln(
-              `\x1b[33m[resume failed; starting a fresh ${AGENT_REGISTRY[task.agent].label} session]\x1b[0m`
+              `\x1b[33m[resume failed; starting a fresh ${HARNESS_REGISTRY[task.agent].label} session]\x1b[0m`
             );
-            const cmd = buildFreshAgentLaunchCommand(
+            const cmd = buildFreshHarnessLaunchCommand(
               { ...task, claudeSessionId: fresh },
               fresh ?? "",
-              { model: getDefaultModelForAgent(task.agent) },
+              { model: getDefaultModelForHarness(task.agent) },
             );
             try {
               await spawnAndWire(cmd, false);
@@ -966,7 +966,7 @@ export function TerminalPane({
             }
             handlePtyExit(msg.exitCode);
           },
-          // A reattach after a long link outage whose gap the Harness's ring no
+          // A reattach after a long link outage whose gap the Core's ring no
           // longer covers: what follows is a fresh screen, so drop the stale
           // one rather than splicing onto it.
           reset: () => term.reset(),
@@ -1004,7 +1004,7 @@ export function TerminalPane({
           // query responses) which must NOT count as typing; injected answers
           // bypass onData entirely. No-op when no question is pending.
           if (!isTerminalAutoReply(data)) markQuestionDesynced(descriptor.taskId);
-          const usesPromptFallback = agentUsesTerminalPromptFallback(task.agent);
+          const usesPromptFallback = harnessUsesTerminalPromptFallback(task.agent);
           let submittedPrompt: string | null = null;
           if (usesPromptFallback && !promptTitlePosted) {
             const captured = accumulateTerminalPrompt(promptCaptureBuffer, data);
@@ -1165,7 +1165,7 @@ export function TerminalPane({
           }
 
           // Pty ids are lost when the tab reloads, but the agent processes
-          // survive on the Harness. Reattach to a live PTY for this task
+          // survive on the Core. Reattach to a live PTY for this task
           // instead of spawning a duplicate — agents that pin a session id die
           // with "Session ID ... is already in use" when a second copy
           // launches. `findByTask` is answered by the Core the pane is bound
@@ -1188,7 +1188,7 @@ export function TerminalPane({
             }
           }
 
-          const isResume = isAgentResumeCommand(task.agent, descriptor.startCommand);
+          const isResume = isHarnessResumeCommand(task.agent, descriptor.startCommand);
           await spawnAndWire(descriptor.startCommand, isResume);
         } catch (err: any) {
           const message = errMsg(err ?? "unknown error");

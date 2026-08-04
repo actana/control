@@ -5,7 +5,7 @@
 // privileged systemd container with no sudo on it, a fixture server standing
 // in for GitHub Releases, and the actual `install.sh` piped into bash.
 //
-//   • the one-liner ends with a running Harness and a printed pairing token
+//   • the one-liner ends with a running Core and a printed pairing token
 //     that a test client can dial the core-link with;
 //   • a wrong checksum and an unknown platform abort before anything from the
 //     download runs, and leave the machine untouched;
@@ -17,14 +17,14 @@
 //
 // Two releases are needed to tell "pinned" from "latest" apart, and only one
 // tarball is ever built — so the newer one is the same bytes repacked with a
-// bumped manifest version. It is a real Harness either way; what differs is
+// bumped manifest version. It is a real Core either way; what differs is
 // the version the installer has to resolve and the directory setup installs
 // it into.
 //
 // Usage:
 //   node scripts/e2e-install-sh-linux.mjs --tarball <file> [--distro <id>] [--keep]
 //
-// --tarball <file>  A linux-* tarball from scripts/build-harness-tarball.mjs.
+// --tarball <file>  A linux-* tarball from scripts/build-core-tarball.mjs.
 //                   Must match the Docker daemon's architecture.
 // --distro <id>     Which distribution to install on (scripts/lib/container-matrix.mjs).
 //                   Defaults to ubuntu; CI runs every one of them.
@@ -44,8 +44,8 @@ import {
   repackWithVersion,
   startFixtureServerProcess,
 } from "./lib/fixture-release.mjs";
-import { dialAndListProjects, extractToken, makeDie } from "./lib/harness-smoke.mjs";
-import { tarballName } from "./lib/harness-tarball.mjs";
+import { dialAndListProjects, extractToken, makeDie } from "./lib/core-smoke.mjs";
+import { tarballName } from "./lib/core-tarball.mjs";
 import { pickHostPort, startSystemdContainer, waitForPort } from "./lib/systemd-container.mjs";
 
 const die = makeDie("install-sh-e2e");
@@ -69,7 +69,7 @@ async function main() {
   const tarball = path.resolve(tarballFlag);
   if (!fs.existsSync(tarball)) die(`no tarball at ${tarball}`);
   const parsed = parseAssetName(path.basename(tarball));
-  if (!parsed) die(`${path.basename(tarball)} is not a Harness release tarball`);
+  if (!parsed) die(`${path.basename(tarball)} is not a Core release tarball`);
   if (!parsed.target.startsWith("linux-")) {
     die(`${parsed.target} is not a linux target — this test runs Linux containers`);
   }
@@ -185,7 +185,7 @@ async function main() {
   }
   log("the one-liner installed unattended and printed a pairing token");
 
-  const active = mustAsOperator("systemctl --user is-active actana-harness.service");
+  const active = mustAsOperator("systemctl --user is-active actana-core.service");
   if (active.stdout.trim() !== "active") {
     die(`unit is ${active.stdout.trim()}, expected active`, install.stdout.split("\n"));
   }

@@ -4,9 +4,9 @@ import { ShimmerBar } from "~/components/ui/ShimmerBar";
 import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { HotkeyTooltip } from "~/components/ui/Tooltip";
-import { AgentLogo } from "~/components/ui/AgentLogo";
+import { HarnessLogo } from "~/components/ui/HarnessLogo";
 import { SessionIcon } from "~/components/ui/SessionIcon";
-import { AGENT_META, STATUS_META } from "~/lib/design-meta";
+import { HARNESS_META, STATUS_META } from "~/lib/design-meta";
 import { isSentinelTitle } from "~/lib/task-sentinels";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { DEFAULT_SESSION_ICON, isSessionIcon } from "~/lib/session-icons";
@@ -42,7 +42,7 @@ function TaskCardImpl({
   const [confirmArchiveOpen, setConfirmArchiveOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
 
-  const meta = AGENT_META[task.agent];
+  const meta = HARNESS_META[task.agent];
   const statusMeta = STATUS_META[task.status];
   const isRunning = task.status === "running";
 
@@ -97,7 +97,7 @@ function TaskCardImpl({
         }}
       />
 
-      {/* Agent brand watermark — faint, right side, decorative only. */}
+      {/* Harness brand watermark — faint, right side, decorative only. */}
       <div
         aria-hidden
         style={
@@ -127,7 +127,7 @@ function TaskCardImpl({
               }
         }
       >
-        {task.agent !== "opencode" ? <AgentLogo agent={task.agent} size={140} /> : null}
+        {task.agent !== "opencode" ? <HarnessLogo agent={task.agent} size={140} /> : null}
       </div>
 
       <div

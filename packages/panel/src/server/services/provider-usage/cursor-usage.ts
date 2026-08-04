@@ -128,7 +128,7 @@ function readCursorAccessToken(): string | null {
     accessToken = readAccessTokenFromVscdb(dbPath);
     if (accessToken) break;
   }
-  // Port-only extension beyond CodexBar: cursor-agent CLI auth files.
+  // Port-only extension beyond CodexBar: cursor-Harness auth files.
   if (!accessToken) accessToken = readCursorAgentAuthFile();
   if (!accessToken) return null;
   return tokenIsUsable(accessToken) ? accessToken : null;

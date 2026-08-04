@@ -7,7 +7,7 @@
 // a test that reached inside `packages/panel/src` would stop being evidence
 // that the deployed artifact works.
 //
-// `scripts/lib/harness-smoke.mjs` stays the home for the Harness side (env,
+// `scripts/lib/core-smoke.mjs` stays the home for the Core side (env,
 // boot sentinel, registration blob, the mTLS core-link dial); this module
 // spawns and drives the Panel, and the e2e composes the two.
 
@@ -17,11 +17,11 @@ import { WebSocket } from "ws";
 import { waitForSentinel } from "./child-sentinel.mjs";
 
 // Re-exported so a caller driving the Panel has one import for the whole
-// browser side; the implementation stays with the Harness smoke that grew it.
-export { pickFreePort } from "./harness-smoke.mjs";
+// browser side; the implementation stays with the Core smoke that grew it.
+export { pickFreePort } from "./core-smoke.mjs";
 
 /** What `bin/panel.mjs` prints once the HTTP server is accepting. */
-export const PANEL_LISTENING_SENTINEL = "@@AC_LISTENING@@";
+export const PANEL_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 
 /** Where the Panel accepts panel-link upgrades (packages/panel/src/shared/panel-link.ts). */
 export const PANEL_LINK_PATH = "/panel-link";

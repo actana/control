@@ -4,10 +4,10 @@
 
 ## The idea
 
-Today the session grid is human-driven: I launch each agent session, watch it,
+Today the session grid is human-driven: I launch each harness session, watch it,
 answer its questions, and merge it myself. The **Session Orchestrator** turns
 that same grid into a self-driving pool. One "orchestrator" session owns a fleet
-of worktree-scoped agent sessions (the cells we already have), feeds them work,
+of worktree-scoped harness sessions (the cells we already have), feeds them work,
 keeps them unblocked, and merges finished work through a quality gate — so I go
 from *operator* to *supervisor*.
 
@@ -17,7 +17,7 @@ We already have every primitive this needs; the orchestrator is mostly glue:
 
 - **Session grid + cells** → the fleet of workers, already rendered and focusable.
 - **Git worktrees + scoped sessions** → each task runs isolated on its own branch.
-- **New-agent launcher** → the orchestrator uses it to spin up a cell and pick the model.
+- **New-harness launcher** → the orchestrator uses it to spin up a cell and pick the model.
 - **Git integration** → branch/merge/verify plumbing for the quality gate.
 
 The new parts are: a task queue, the assignment/monitor loop, the merge gate, and
@@ -26,7 +26,7 @@ an orchestrator control surface (probably a special cell or a panel over the gri
 ## How it works (the loop)
 
 1. Give the orchestrator a **plan** — an ordered list of tasks.
-2. It assigns the next task to an **idle cell** (worktree + agent session), setting
+2. It assigns the next task to an **idle cell** (worktree + harness session), setting
    model + effort for that task.
 3. It **watches** each running cell: if a session goes idle, finishes, or asks a
    question, the orchestrator responds — answer if it can, escalate to me if it can't.

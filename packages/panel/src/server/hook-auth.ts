@@ -8,9 +8,9 @@ import { jsonError } from "./http-responses";
  * POST to while a session runs. This is not an Operator surface: no human and
  * no browser is involved, so the Operator session cookie cannot gate it.
  *
- * These endpoints belong to the Harness, and move onto it with the rest of the
+ * These endpoints belong to the Core, and move onto it with the rest of the
  * PTY/session path (tickets 05 and 06). Until then the Panel process still
- * serves them, gated by the same shared token the Harness hands each agent in
+ * serves them, gated by the same shared token the Core hands each agent in
  * its hook environment (shared/mission-control-hook-env.ts).
  */
 function tokensEqual(a: string, b: string): boolean {

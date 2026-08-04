@@ -39,30 +39,30 @@ export function TermsSettingsPage() {
           Actana Control is a local orchestration tool that lets you launch,
           coordinate, and interact with autonomous and semi-autonomous
           third-party AI agents, command-line tools, scripts, and processes
-          (&ldquo;Agents&rdquo;) on your own machine, in your own working
+          (&ldquo;Harnesses&rdquo;) on your own machine, in your own working
           directories, and against your own source code and accounts. Actana
           Control itself does not author, control, supervise, or guarantee the
-          output, behavior, or safety of any Agent. You are solely responsible
-          for selecting which Agents to run, what permissions to grant them,
+          output, behavior, or safety of any Harness. You are solely responsible
+          for selecting which Harnesses to run, what permissions to grant them,
           and what work to entrust to them.
         </p>
 
-        <h3 style={HEADING}>2. Your Responsibility for Agent Actions</h3>
+        <h3 style={HEADING}>2. Your Responsibility for Harness Actions</h3>
         <p style={PARAGRAPH}>
-          Agents you run through Actana Control may read, write, modify, or
+          Harnesses you run through Actana Control may read, write, modify, or
           delete files; execute shell commands; commit and push code; call
           external APIs; spend money on paid services; and otherwise take
           actions with real-world consequences. You acknowledge and agree
           that:
         </p>
         <p style={PARAGRAPH}>
-          (a) every action taken by an Agent launched from Actana Control is
+          (a) every action taken by a Harness launched from Actana Control is
           your action and your responsibility; (b) you are responsible for
-          reviewing, approving, and verifying anything an Agent produces or
+          reviewing, approving, and verifying anything a Harness produces or
           changes before relying on it; (c) you are responsible for
           maintaining your own backups, version control, and recovery
           procedures; and (d) you are responsible for ensuring your use of
-          Agents complies with all applicable laws, contracts, licenses, and
+          Harnesses complies with all applicable laws, contracts, licenses, and
           third-party terms of service.
         </p>
 
@@ -107,7 +107,7 @@ export function TermsSettingsPage() {
           against any and all claims, damages, losses, liabilities, costs,
           and expenses (including reasonable attorneys&apos; fees) arising out
           of or related to (a) your use of the Software; (b) any action taken
-          by an Agent you launched, configured, or authorized through the
+          by a Harness you launched, configured, or authorized through the
           Software; (c) your violation of these Terms; or (d) your violation
           of any third party&apos;s rights, including any intellectual
           property, privacy, or contractual right.
@@ -115,7 +115,7 @@ export function TermsSettingsPage() {
 
         <h3 style={HEADING}>6. Third-Party Tools and Services</h3>
         <p style={PARAGRAPH}>
-          Actana Control integrates with third-party Agents, models, APIs,
+          Actana Control integrates with third-party Harnesses, models, APIs,
           and tools that are governed by their own terms and pricing. Actana
           Control is not responsible for those services, their availability,
           their output, or any charges they incur on your behalf. You are

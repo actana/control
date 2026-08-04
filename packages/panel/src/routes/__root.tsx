@@ -274,7 +274,7 @@ function Shell() {
   }, []);
   // Issue 11: the boot-time IPC probe is retired. Per-Core availability is
   // hydrated on first `useCliAvailability(coreId)` mount + kept fresh by
-  // `agents:availabilityChanged` events from each Core's Harness — no root-
+  // `agents:availabilityChanged` events from each Core's Core — no root-
   // level pre-warm needed.
 
   const path = useRouterState({ select: (state) => state.location.pathname });

@@ -10,25 +10,25 @@ import {
   type WebSocketServerLike,
   type WebSocketLike,
   type EventLogPort,
-} from "@actana/harness/pty-core-link-server";
-import { sliceReplayWindow } from "@actana/harness/pty-replay-window";
-import { generateCertMaterial } from "@actana/harness/harness-cert-material";
+} from "@actana/core/pty-core-link-server";
+import { sliceReplayWindow } from "@actana/core/pty-replay-window";
+import { generateCertMaterial } from "@actana/core/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import type { PtyHarnessCore } from "@actana/harness/pty-manager";
+import type { PtyCore } from "@actana/core/pty-manager";
 import type { CoreLinkEvent, CoreLinkPtySpawnOptions } from "@actana/shared/core-link-frames";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**
- * Terminals in the browser, end to end: a tab spawns a PTY on a real Harness
+ * Terminals in the browser, end to end: a tab spawns a PTY on a real Core
  * across its panel link, types into it, watches the output come back, and — the
  * part that only a whole path can prove — survives losing the link mid-session
  * and picks the session back up with nothing repeated and nothing missing.
  *
- * The Harness here runs the real core-link server behind real mTLS; what stands
+ * The Core here runs the real core-link server behind real mTLS; what stands
  * in is the PTY itself, because a test that shells out to a login shell asserts
  * the operating system, not this code. The stand-in keeps a bounded ring with
- * per-chunk seqs and answers `replay` through the Harness's own slicing, so the
+ * per-chunk seqs and answers `replay` through the Core's own slicing, so the
  * replay contract under test is the shipped one.
  */
 
@@ -140,7 +140,7 @@ class Tab {
   }
 }
 
-// ─── A Harness whose PTYs are scripted ───────────────────────────────────────
+// ─── A Core whose PTYs are scripted ───────────────────────────────────────
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -167,7 +167,7 @@ type ScriptedPty = {
   input: string[];
 };
 
-type ScriptedCore = PtyHarnessCore & {
+type ScriptedCore = PtyCore & {
   ptys: Map<string, ScriptedPty>;
   spawned: CoreLinkPtySpawnOptions[];
   /** The PTY emits — what a real one does when its process writes. */
@@ -339,14 +339,14 @@ function eventLog(): EventLogPort & { all(): CoreLinkEvent[] } {
   } as EventLogPort & { all(): CoreLinkEvent[] };
 }
 
-type Harness = {
+type Core = {
   server: PtyCoreLinkServer;
   blob: string;
   core: ScriptedCore;
   log: ReturnType<typeof eventLog>;
 };
 
-async function startHarness(label: string): Promise<Harness> {
+async function startCore(label: string): Promise<Core> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
   const bound = { port: await freePort() };
   const core = scriptedCore();
@@ -379,14 +379,14 @@ const running: PtyCoreLinkServer[] = [];
 const tabs: Tab[] = [];
 const paired: string[] = [];
 
-async function pair(label = "prod-vm-1"): Promise<{ coreId: string; harness: Harness }> {
-  const harness = await startHarness(label);
-  running.push(harness.server);
+async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: Core }> {
+  const core = await startCore(label);
+  running.push(core.server);
   const response = await handleApiRequest(
     new Request(`${ORIGIN}/api/cores`, {
       method: "POST",
       headers: { cookie: operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify({ registrationBlob: harness.blob }),
+      body: JSON.stringify({ registrationBlob: core.blob }),
     }),
   );
   const body = (await response!.json()) as { core: { id: string } };
@@ -400,7 +400,7 @@ async function pair(label = "prod-vm-1"): Promise<{ coreId: string; harness: Har
       .cores;
     expect(cores.find((c) => c.id === coreId)?.dial.state).toBe("connected");
   }, 10_000);
-  return { coreId, harness };
+  return { coreId, core };
 }
 
 async function openTab(coreId?: string): Promise<Tab> {
@@ -410,7 +410,7 @@ async function openTab(coreId?: string): Promise<Tab> {
   return tab;
 }
 
-const AGENT_SPAWN = {
+const HARNESS_SPAWN = {
   taskId: "task_1",
   cwd: "/srv/warehouse",
   command: "claude",
@@ -443,55 +443,55 @@ afterAll(async () => {
 
 describe("terminals in the browser", () => {
   it("spawns an agent session on the Core and streams its output to the tab", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
 
-    const spawned = await tab.ask(coreId, { type: "spawn", opts: AGENT_SPAWN });
+    const spawned = await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN });
     expect(spawned.type).toBe("spawned");
     const ptyId = spawned.ptyId as string;
 
-    harness.core.emit(ptyId, "Welcome to Claude Code");
+    core.core.emit(ptyId, "Welcome to Claude Code");
 
     await vi.waitFor(
       () => expect(tab.output(coreId, ptyId)).toBe("Welcome to Claude Code"),
       5_000,
     );
-    // The Harness sees the spawn size the browser measured, not a default.
-    expect(harness.core.ptys.get(ptyId)!.size).toEqual({ cols: 100, rows: 30 });
+    // The Core sees the spawn size the browser measured, not a default.
+    expect(core.core.ptys.get(ptyId)!.size).toEqual({ cols: 100, rows: 30 });
   });
 
   it("round-trips keystrokes, a resize and a kill", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
-    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: AGENT_SPAWN })).ptyId as string;
+    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
 
     await tab.ask(coreId, { type: "write", ptyId, data: "ls -la\r" });
     await tab.ask(coreId, { type: "resize", ptyId, cols: 120, rows: 40 });
 
-    expect(harness.core.ptys.get(ptyId)!.input).toEqual(["ls -la\r"]);
-    expect(harness.core.ptys.get(ptyId)!.size).toEqual({ cols: 120, rows: 40 });
+    expect(core.core.ptys.get(ptyId)!.input).toEqual(["ls -la\r"]);
+    expect(core.core.ptys.get(ptyId)!.size).toEqual({ cols: 120, rows: 40 });
     // The echo comes back the same way any output does.
     await vi.waitFor(() => expect(tab.output(coreId, ptyId)).toBe("ls -la\r"), 5_000);
 
     await tab.ask(coreId, { type: "kill", ptyId });
     await vi.waitFor(() => expect(tab.exits(coreId, ptyId)).toEqual([0]), 5_000);
-    expect(harness.core.ptys.has(ptyId)).toBe(false);
+    expect(core.core.ptys.has(ptyId)).toBe(false);
   });
 
   it("keeps several terminals apart over the one link", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
 
-    const first = (await tab.ask(coreId, { type: "spawn", opts: AGENT_SPAWN })).ptyId as string;
+    const first = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
     const second = (
       await tab.ask(coreId, {
         type: "spawn",
-        opts: { ...AGENT_SPAWN, taskId: "task_2" },
+        opts: { ...HARNESS_SPAWN, taskId: "task_2" },
       })
     ).ptyId as string;
 
-    harness.core.emit(first, "first says hello");
-    harness.core.emit(second, "second says hi");
+    core.core.emit(first, "first says hello");
+    core.core.emit(second, "second says hi");
 
     await vi.waitFor(() => {
       expect(tab.output(coreId, first)).toBe("first says hello");
@@ -502,7 +502,7 @@ describe("terminals in the browser", () => {
   it("reattaches a live agent session by task instead of spawning a second one", async () => {
     const { coreId } = await pair();
     const tab = await openTab(coreId);
-    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: AGENT_SPAWN })).ptyId as string;
+    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
 
     const found = await tab.ask(coreId, { type: "findByTask", taskId: "task_1" });
 
@@ -510,7 +510,7 @@ describe("terminals in the browser", () => {
   });
 
   it("opens a VM Shell Session on the Core's own machine", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
 
     const spawned = await tab.ask(coreId, {
@@ -518,11 +518,11 @@ describe("terminals in the browser", () => {
       opts: { shellSession: true, taskId: "term_vm_1", command: "" },
     });
     const ptyId = spawned.ptyId as string;
-    harness.core.emit(ptyId, "operator@prod-vm-1:~$ ");
+    core.core.emit(ptyId, "operator@prod-vm-1:~$ ");
 
     // No project folder, no agent — and it streams like any other terminal.
-    expect(harness.core.spawned.at(-1)).toMatchObject({ shellSession: true });
-    expect(harness.core.ptys.get(ptyId)!.shellSession).toBe(true);
+    expect(core.core.spawned.at(-1)).toMatchObject({ shellSession: true });
+    expect(core.core.ptys.get(ptyId)!.shellSession).toBe(true);
     await vi.waitFor(
       () => expect(tab.output(coreId, ptyId)).toBe("operator@prod-vm-1:~$ "),
       5_000,
@@ -534,7 +534,7 @@ describe("terminals in the browser", () => {
   });
 
   it("records the VM shell in the event log so a reconnecting tab can tell it apart", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
 
     await tab.ask(coreId, {
@@ -542,17 +542,17 @@ describe("terminals in the browser", () => {
       opts: { shellSession: true, taskId: "term_vm_2", command: "" },
     });
 
-    const spawns = harness.log.all().filter((e) => e.kind === "pty:spawn");
+    const spawns = core.log.all().filter((e) => e.kind === "pty:spawn");
     expect(JSON.parse(spawns.at(-1)!.payload)).toMatchObject({ shellSession: true });
   });
 
   it("shows the same session's stream in two tabs at once", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const one = await openTab(coreId);
     const two = await openTab(coreId);
 
-    const ptyId = (await one.ask(coreId, { type: "spawn", opts: AGENT_SPAWN })).ptyId as string;
-    harness.core.emit(ptyId, "shared output");
+    const ptyId = (await one.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
+    core.core.emit(ptyId, "shared output");
 
     await vi.waitFor(() => {
       expect(one.output(coreId, ptyId)).toBe("shared output");
@@ -561,23 +561,23 @@ describe("terminals in the browser", () => {
 
     // And the second tab can drive it too — the session is not owned by a tab.
     await two.ask(coreId, { type: "write", ptyId, data: "q" });
-    expect(harness.core.ptys.get(ptyId)!.input).toEqual(["q"]);
+    expect(core.core.ptys.get(ptyId)!.input).toEqual(["q"]);
   });
 
   it("reattaches after a dropped link with exactly what the tab missed", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const before = await openTab(coreId);
-    const ptyId = (await before.ask(coreId, { type: "spawn", opts: AGENT_SPAWN }))
+    const ptyId = (await before.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN }))
       .ptyId as string;
 
-    harness.core.emit(ptyId, "painted before the drop\n");
+    core.core.emit(ptyId, "painted before the drop\n");
     await vi.waitFor(() => expect(before.output(coreId, ptyId)).toContain("before"), 5_000);
     const cursor = before.cursor(coreId, ptyId);
     before.close();
 
     // The agent keeps working while the operator's network is down.
-    harness.core.emit(ptyId, "ran while away\n");
-    harness.core.emit(ptyId, "still running\n");
+    core.core.emit(ptyId, "ran while away\n");
+    core.core.emit(ptyId, "still running\n");
 
     const after = await openTab(coreId);
     const replay = await after.ask(coreId, { type: "replay", ptyId, sinceSeq: cursor + 1 });
@@ -587,7 +587,7 @@ describe("terminals in the browser", () => {
     expect(replay.data).toBe("ran while away\nstill running\n");
 
     // And the stream resumes live on the new link.
-    harness.core.emit(ptyId, "after reattach\n");
+    core.core.emit(ptyId, "after reattach\n");
     await vi.waitFor(
       () => expect(after.output(coreId, ptyId)).toBe("after reattach\n"),
       5_000,
@@ -595,15 +595,15 @@ describe("terminals in the browser", () => {
   });
 
   it("tells a reattaching tab when the Core's buffer no longer covers the gap", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
-    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: AGENT_SPAWN })).ptyId as string;
+    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
 
-    harness.core.emit(ptyId, "ancient\n");
-    harness.core.emit(ptyId, "old\n");
-    harness.core.emit(ptyId, "recent\n");
+    core.core.emit(ptyId, "ancient\n");
+    core.core.emit(ptyId, "old\n");
+    core.core.emit(ptyId, "recent\n");
     // A long outage under a chatty agent: the ring rolled past the cursor.
-    harness.core.forgetBefore(ptyId, 2);
+    core.core.forgetBefore(ptyId, 2);
 
     const replay = await tab.ask(coreId, { type: "replay", ptyId, sinceSeq: 1 });
 
@@ -612,11 +612,11 @@ describe("terminals in the browser", () => {
   });
 
   it("hands a fresh attach the whole scrollback", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab(coreId);
-    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: AGENT_SPAWN })).ptyId as string;
-    harness.core.emit(ptyId, "line one\n");
-    harness.core.emit(ptyId, "line two\n");
+    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
+    core.core.emit(ptyId, "line one\n");
+    core.core.emit(ptyId, "line two\n");
 
     const replay = await tab.ask(coreId, { type: "replay", ptyId });
 

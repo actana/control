@@ -51,7 +51,7 @@ type Session = {
   coreId?: string;
   /**
    * True when this session is a VM Shell Session (issue 06) — a free-form
-   * shell on the Harness's machine, distinct from a project-scoped or home
+   * shell on the Core's machine, distinct from a project-scoped or home
    * shell. In-memory only (never persisted): a VM shell reuses the
    * home-terminal row for its lifecycle, but spawns with `shellSession: true`
    * (no project-root requirement) and renders with a distinct "VM shell"
@@ -90,7 +90,7 @@ type Ctx = {
   }) => Promise<UserTerminal | null>;
   /**
    * Open a VM Shell Session (issue 06) — a free-form interactive shell on the
-   * Harness's machine, distinct from agent workspaces and dashboard home
+   * Core's machine, distinct from agent workspaces and dashboard home
    * terminals. Reuses the home-terminal row for its lifecycle but spawns with
    * `shellSession: true` (no project-root requirement) and renders with a
    * distinct "VM shell" surface. Only available in the project-less dashboard

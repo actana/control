@@ -44,7 +44,7 @@ export type PtyStreamHandlers = {
   exit: (msg: PtyExitMsg) => void;
   /**
    * Throw away what is on screen — the next `data` is a fresh screen, not a
-   * continuation. Called only when a reattach finds the Harness's ring has
+   * continuation. Called only when a reattach finds the Core's ring has
    * rolled past what this surface last painted.
    */
   reset?: () => void;
@@ -101,9 +101,9 @@ export function createPtyStreamRouter(transport: PtyStreamTransport): PtyStreamR
 
   /**
    * The link is back. Every pty still on screen is behind by whatever it
-   * emitted during the gap, so ask the Harness for exactly that and paint it.
+   * emitted during the gap, so ask the Core for exactly that and paint it.
    *
-   * When the answer starts past where we resumed from, the Harness's bounded
+   * When the answer starts past where we resumed from, the Core's bounded
    * ring rolled over during the outage: the missing bytes are gone, and
    * appending the tail would put a lie on the screen. Reset the surface and
    * paint the tail as a fresh screen instead.

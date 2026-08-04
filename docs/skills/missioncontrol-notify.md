@@ -55,7 +55,7 @@ Lookup order:
 
 - `running` — actively making progress
 - `needs-input` — blocked on a user decision
-- `interrupted` — user interrupted the agent and it is waiting for revised instructions
+- `interrupted` — user interrupted the harness and it is waiting for revised instructions
 - `finished` — task complete, ready for review/commit
 - `terminated` — task stopped and won't proceed without intervention
 - `disconnected` — Actana Control lost the terminal process

@@ -15,7 +15,7 @@ name: Container image
 #
 # Each architecture builds natively on a runner of its own kind. The Panel
 # image compiles better-sqlite3 during the build and the Core image bakes in a
-# per-architecture Harness tarball — emulating either under QEMU is slow and
+# per-architecture Core tarball — emulating either under QEMU is slow and
 # proves the wrong machine.
 #
 # Registries. GHCR always, authenticated with the workflow's own `github.token`,
@@ -167,9 +167,9 @@ jobs:
 
       # The Core image bakes in the tarball a release ships, for this runner's
       # architecture — which is why the two arches cannot share a build.
-      - name: Build the Harness tarball
+      - name: Build the Core tarball
         if: inputs.image == 'core'
-        run: pnpm harness:tarball
+        run: pnpm core:tarball
 
       # `additional_contexts: tarball` in deploy/dev/docker-compose.yml, as a
       # plain build flag: artifacts/ is excluded by .dockerignore, so the
@@ -192,9 +192,9 @@ jobs:
           set -euo pipefail
           docker build \
             --file deploy/dev/core.Dockerfile \
-            --build-context tarball=artifacts/harness \
+            --build-context tarball=artifacts/core \
             --label "org.opencontainers.image.title=Actana Core (development fixture)" \
-            --label "org.opencontainers.image.description=Dev Core-in-a-box: systemd Ubuntu with the Harness baked in. NOT a production deployment — requires --privileged and the host cgroup, grants the operator passwordless sudo, and its provision script hardcodes the hostname 'core'. To run a real Core, install the Harness on a machine you own (INSTALL.md)." \
+            --label "org.opencontainers.image.description=Dev Core-in-a-box: systemd Ubuntu with the Core baked in. NOT a production deployment — requires --privileged and the host cgroup, grants the operator passwordless sudo, and its provision script hardcodes the hostname 'core'. To run a real Core, install the Core on a machine you own (INSTALL.md)." \
             --label "org.opencontainers.image.source=https://github.com/$REPO" \
             --label "org.opencontainers.image.revision=$SHA" \
             --label "org.opencontainers.image.licenses=MIT" \
@@ -205,7 +205,7 @@ jobs:
       # systemd is PID 1 here, so the image cannot be booted without
       # --privileged and a cgroup mount. Overriding the command checks the two
       # things a build can actually get wrong — the architecture-matched
-      # tarball landing in /opt/harness, and the first-boot unit being enabled.
+      # tarball landing in /opt/core, and the first-boot unit being enabled.
       - name: Smoke — the tarball is baked in and the provision unit is enabled
         if: inputs.image == 'core'
         env:
@@ -220,7 +220,7 @@ jobs:
             *) echo "unmapped arch $ARCH" >&2; exit 1 ;;
           esac
           docker run --rm --entrypoint /bin/bash "$IMAGE:$STAGE-$ARCH" -euo pipefail -c "
-            ls /opt/harness/actana-harness-*-${target}.tar.gz >/dev/null
+            ls /opt/core/actana-core-*-${target}.tar.gz >/dev/null
             test -L /etc/systemd/system/multi-user.target.wants/core-provision.service
             test -x /usr/local/lib/core-provision.sh
             test -f /var/lib/systemd/linger/operator

@@ -21,10 +21,10 @@ import type { CoreLinkClientLike } from "../services/core-link-manager";
  *
  * The router translates nothing. A frame that goes down the core-link is the
  * frame the browser wrote, and a frame that comes back up is the frame the
- * Harness wrote. The single exception is `subscribe`, and it is an exception
+ * Core wrote. The single exception is `subscribe`, and it is an exception
  * for a structural reason: the *service* holds the core-link, and several tabs
  * may be watching it at once with different cursors. One tab reconnecting must
- * not re-subscribe the shared link and replay the Harness's log at every other
+ * not re-subscribe the shared link and replay the Core's log at every other
  * tab. So the router answers `subscribe` itself, out of a buffer of the recent
  * tail it has been keeping since the link came up.
  */
@@ -51,7 +51,7 @@ export interface PanelLinkSocket {
  * the buffer gets the tail plus the caught-up marker — and its views refetch on
  * reconnect anyway, so it converges on the truth rather than on a stale prefix
  * of it. The buffer is deliberately not persisted: the durable log lives on the
- * Harness, and the service's own cursor (the registry's) is what replays it.
+ * Core, and the service's own cursor (the registry's) is what replays it.
  */
 const DEFAULT_EVENT_BUFFER_SIZE = 2048;
 
@@ -108,7 +108,7 @@ export class PanelLinkRouter {
    * `connected` opens it, because the manager reaches `connected` only after a
    * `ready` frame this build could speak. Every other state — a flap to
    * `connecting`, an `unreachable` stretch, an auth failure — says nothing
-   * about which protocol the Harness speaks, and treating it as an answer would
+   * about which protocol the Core speaks, and treating it as an answer would
    * re-open the gate on a Core that has not changed at all.
    */
   private applyGate(status: CoreDialStatus): void {
@@ -247,7 +247,7 @@ export class PanelLinkSession {
         coreId,
         frame: coreLinkError(
           reqId,
-          `core ${coreId} needs an update — its Harness speaks a different core-link protocol`,
+          `core ${coreId} needs an update — its Core speaks a different core-link protocol`,
         ),
       });
       return;

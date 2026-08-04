@@ -10,12 +10,12 @@ import {
   type WebSocketServerLike,
   type WebSocketLike,
   type EventLogPort,
-  type HarnessQueryPort,
-} from "@actana/harness/pty-core-link-server";
-import { generateCertMaterial } from "@actana/harness/harness-cert-material";
+  type CoreQueryPort,
+} from "@actana/core/pty-core-link-server";
+import { generateCertMaterial } from "@actana/core/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import type { PtyHarnessCore } from "@actana/harness/pty-manager";
+import type { PtyCore } from "@actana/core/pty-manager";
 import { CORE_LINK_PROTOCOL_VERSION } from "@actana/shared/core-link-frames";
 import type {
   CoreLinkEvent,
@@ -25,7 +25,7 @@ import type {
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**
- * The live read path, end to end: a real Harness behind mTLS, the Panel service
+ * The live read path, end to end: a real Core behind mTLS, the Panel service
  * dialing it, and a browser holding one panel link.
  *
  * Everything here is driven the way a tab drives it — frames on a WebSocket —
@@ -119,7 +119,7 @@ class Tab {
   }
 }
 
-// ─── A real Harness on a real wss:// port ────────────────────────────────────
+// ─── A real Core on a real wss:// port ────────────────────────────────────
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -136,7 +136,7 @@ function freePort(): Promise<number> {
   });
 }
 
-function mockCore(): PtyHarnessCore {
+function mockCore(): PtyCore {
   return {
     setEmitTarget: () => {},
     spawn: async () => ({ ptyId: "pty-1" }),
@@ -148,7 +148,7 @@ function mockCore(): PtyHarnessCore {
     findByTask: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
-  } as unknown as PtyHarnessCore;
+  } as unknown as PtyCore;
 }
 
 function tlsCreateServer(bound: { port: number }) {
@@ -207,7 +207,7 @@ function adapt(ws: import("ws").WebSocket): WebSocketLike {
   };
 }
 
-/** An event log a test can append to, standing in for the Harness's own. */
+/** An event log a test can append to, standing in for the Core's own. */
 function growableEventLog(): EventLogPort & { push(kind: string): number } {
   const events: CoreLinkEvent[] = [];
   return {
@@ -251,16 +251,16 @@ const TASK: CoreLinkTaskSnapshot = {
   updatedAt: 2,
 };
 
-function queryPort(): HarnessQueryPort {
+function queryPort(): CoreQueryPort {
   return {
     listProjects: () => [PROJECT],
     listTasks: (projectId) => (projectId && projectId !== PROJECT.projectId ? [] : [TASK]),
   };
 }
 
-type Harness = { server: PtyCoreLinkServer; blob: string; log: ReturnType<typeof growableEventLog> };
+type Core = { server: PtyCoreLinkServer; blob: string; log: ReturnType<typeof growableEventLog> };
 
-async function startHarness(label: string, protocolVersion?: string): Promise<Harness> {
+async function startCore(label: string, protocolVersion?: string): Promise<Core> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
   const bound = { port: await freePort() };
   const log = growableEventLog();
@@ -298,14 +298,14 @@ const paired: string[] = [];
 async function pair(
   label = "prod-vm-1",
   opts: { protocolVersion?: string; settlesAt?: string } = {},
-): Promise<{ coreId: string; harness: Harness }> {
-  const harness = await startHarness(label, opts.protocolVersion);
-  running.push(harness.server);
+): Promise<{ coreId: string; core: Core }> {
+  const core = await startCore(label, opts.protocolVersion);
+  running.push(core.server);
   const response = await handleApiRequest(
     new Request(`${ORIGIN}/api/cores`, {
       method: "POST",
       headers: { cookie: operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify({ registrationBlob: harness.blob }),
+      body: JSON.stringify({ registrationBlob: core.blob }),
     }),
   );
   const body = (await response!.json()) as { core: { id: string } };
@@ -319,7 +319,7 @@ async function pair(
       .cores;
     expect(cores.find((c) => c.id === coreId)?.dial.state).toBe(opts.settlesAt ?? "connected");
   }, 10_000);
-  return { coreId, harness };
+  return { coreId, core };
 }
 
 async function openTab(): Promise<Tab> {
@@ -354,8 +354,8 @@ afterAll(async () => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
-describe("the live read path, browser to Harness", () => {
-  it("answers a project query from the Harness itself", async () => {
+describe("the live read path, browser to Core", () => {
+  it("answers a project query from the Core itself", async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
@@ -398,12 +398,12 @@ describe("the live read path, browser to Harness", () => {
     expect(answer).toMatchObject({ type: "error", message: expect.stringContaining("connected") });
   });
 
-  it("streams a change made on the Harness to a watching tab", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair();
+  it("streams a change made on the Core to a watching tab", { timeout: 20_000 }, async () => {
+    const { coreId, core } = await pair();
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
-    harness.log.push("task:statusChanged");
+    core.log.push("task:statusChanged");
 
     await vi.waitFor(
       () => expect(tab.events(coreId).map((e) => e.kind)).toContain("task:statusChanged"),
@@ -412,13 +412,13 @@ describe("the live read path, browser to Harness", () => {
   });
 
   it("gives two tabs the same live view of one Core", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const one = await openTab();
     const two = await openTab();
     one.subscribe(coreId, 0);
     two.subscribe(coreId, 0);
 
-    harness.log.push("task:created");
+    core.log.push("task:created");
 
     await vi.waitFor(() => {
       expect(one.events(coreId)).toHaveLength(1);
@@ -427,17 +427,17 @@ describe("the live read path, browser to Harness", () => {
   });
 
   it("replays what a tab missed while its link was down", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const before = await openTab();
     before.subscribe(coreId, 0);
-    harness.log.push("task:created");
+    core.log.push("task:created");
     await vi.waitFor(() => expect(before.events(coreId)).toHaveLength(1), 5_000);
     before.close();
 
     // Off the air while the fleet keeps working.
-    harness.log.push("task:statusChanged");
-    harness.log.push("session:finished");
-    await vi.waitFor(() => expect(harness.log.getLastEventId()).toBe(3));
+    core.log.push("task:statusChanged");
+    core.log.push("session:finished");
+    await vi.waitFor(() => expect(core.log.getLastEventId()).toBe(3));
 
     const after = await openTab();
     after.subscribe(coreId, 1);
@@ -453,8 +453,8 @@ describe("the live read path, browser to Harness", () => {
   });
 });
 
-// The version gate, with a real Harness that has drifted. Nothing is faked but
-// the Harness's own advertised version: the Panel dials it over mTLS, reads its
+// The version gate, with a real Core that has drifted. Nothing is faked but
+// the Core's own advertised version: the Panel dials it over mTLS, reads its
 // `ready` frame, and decides — before any query — that this Core is a chore.
 describe("a Core speaking a protocol this Panel does not", () => {
   it("settles as needs-update, naming both versions and staying reachable", { timeout: 20_000 }, async () => {
@@ -490,14 +490,14 @@ describe("a Core speaking a protocol this Panel does not", () => {
   });
 
   it("keeps its events off every tab", { timeout: 20_000 }, async () => {
-    const { coreId, harness } = await pair("stale-vm", {
+    const { coreId, core } = await pair("stale-vm", {
       protocolVersion: "0.1.0",
       settlesAt: "needs-update",
     });
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
-    harness.log.push("session:finished");
+    core.log.push("session:finished");
 
     // Give the push path the same window a live event would have had.
     await new Promise((resolve) => setTimeout(resolve, 1_500));

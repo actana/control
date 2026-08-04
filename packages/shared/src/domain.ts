@@ -1,7 +1,7 @@
 import { safeJsonParse } from "./safe-json";
 
-export const TASK_AGENTS = ["claude-code", "codex", "cursor-cli", "opencode"] as const;
-export type TaskAgent = (typeof TASK_AGENTS)[number];
+export const HARNESSES = ["claude-code", "codex", "cursor-cli", "opencode"] as const;
+export type Harness = (typeof HARNESSES)[number];
 
 export const TASK_STATUSES = [
   "ready",
@@ -112,8 +112,8 @@ export const STATUS_SELECTION_PRIORITY = [...TASK_STATUSES].sort(
 export const ACTIVE_STATUSES = TASK_STATUSES.filter((s) => TASK_STATUS_META[s].countsAsActive);
 export const TERMINAL_STATUSES = TASK_STATUSES.filter((s) => TASK_STATUS_META[s].isTerminal);
 
-export const isTaskAgent = (value: unknown): value is TaskAgent =>
-  typeof value === "string" && (TASK_AGENTS as readonly string[]).includes(value);
+export const isHarness = (value: unknown): value is Harness =>
+  typeof value === "string" && (HARNESSES as readonly string[]).includes(value);
 
 export const isTaskStatus = (value: unknown): value is TaskStatus =>
   typeof value === "string" && (TASK_STATUSES as readonly string[]).includes(value);

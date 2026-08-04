@@ -33,7 +33,7 @@ export function FleetView() {
   const addProject = useAddProject();
 
   // Into the per-Core shell, tagged with the owning Core so SessionGrid /
-  // ProjectBar / NewAgentDialog address their reads and writes at it.
+  // ProjectBar / NewHarnessDialog address their reads and writes at it.
   const openProject = useCallback(
     (coreId: string, projectId: string) => {
       void router.navigate({
@@ -107,7 +107,7 @@ export function FleetView() {
           {cores.length === 0 ? (
             <EmptyState
               title="Add your first Core"
-              subtitle="A Core is a machine running the Harness. Install it there, then pair it with this Panel using its registration blob to see its sessions here."
+              subtitle="A Core is a machine running the Core. Install it there, then pair it with this Panel using its registration blob to see its sessions here."
               icon="grid"
             />
           ) : error ? (

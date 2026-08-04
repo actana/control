@@ -5,17 +5,17 @@
 // alike without prop-drilling settings through the terminal store.
 
 import {
-  isAiRuntimeHarness,
+  isHarness,
   normalizeAiModelId,
   type AiModelId,
-  type AiRuntimeHarness,
+  type Harness,
 } from "@actana/shared/ai-runtime-defaults";
 
-let defaultAgent: AiRuntimeHarness = "claude-code";
+let defaultHarness: Harness = "claude-code";
 let defaultModel: AiModelId | null = null;
 
-export function setDefaultAgent(agent: AiRuntimeHarness): void {
-  defaultAgent = agent;
+export function setDefaultHarness(agent: Harness): void {
+  defaultHarness = agent;
 }
 
 export function setDefaultModel(model: AiModelId | null): void {
@@ -23,15 +23,15 @@ export function setDefaultModel(model: AiModelId | null): void {
 }
 
 export function syncDefaultRuntimeDefaults(settings: {
-  defaultAgent?: unknown;
+  defaultHarness?: unknown;
   defaultModel?: unknown;
 }): void {
-  defaultAgent = isAiRuntimeHarness(settings.defaultAgent)
-    ? settings.defaultAgent
+  defaultHarness = isHarness(settings.defaultHarness)
+    ? settings.defaultHarness
     : "claude-code";
   defaultModel = normalizeAiModelId(settings.defaultModel);
 }
 
-export function getDefaultModelForAgent(agent: AiRuntimeHarness): AiModelId | null {
-  return agent === defaultAgent ? defaultModel : null;
+export function getDefaultModelForHarness(agent: Harness): AiModelId | null {
+  return agent === defaultHarness ? defaultModel : null;
 }

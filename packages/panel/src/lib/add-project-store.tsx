@@ -93,7 +93,7 @@ export function AddProjectProvider({ children }: { children: React.ReactNode }) 
         onSave={async (data) => {
           const { coreId: targetCoreId, ...createBody } = data;
           // Every project belongs to a Core, and only that Core can create it:
-          // the path is a path on its machine, and its Harness owns the row
+          // the path is a path on its machine, and its Core owns the row
           // (ADR 0004). There is no Panel-side project table to fall back on.
           const coreId = targetCoreId || selectedCoreId;
           if (!coreId) {
@@ -105,14 +105,14 @@ export function AddProjectProvider({ children }: { children: React.ReactNode }) 
           setSelectedCoreId(coreId);
 
           // Default the name to the path's basename so a user who left it blank
-          // still passes the Harness's non-empty-name check.
+          // still passes the Core's non-empty-name check.
           const inferredName =
             createBody.name?.trim() ||
             createBody.path.split(/[\\/]/).filter(Boolean).pop() ||
             "";
           // Throws on an unreachable Core, a failed auth, or a path that
           // machine rejects — the dialog's error box paints the message the
-          // Harness wrote. Nothing is persisted Panel-side either way.
+          // Core wrote. Nothing is persisted Panel-side either way.
           const created = await mutateProjectForCore(coreId, {
             op: "create",
             name: inferredName,
@@ -124,7 +124,7 @@ export function AddProjectProvider({ children }: { children: React.ReactNode }) 
           // A Core that answers without a row wrote nothing — closing the
           // dialog on that would show a project that does not exist.
           if (!created) throw new Error("The Core did not create the project.");
-          // The Harness's `project:created` event reaches every tab watching
+          // The Core's `project:created` event reaches every tab watching
           // this Core over the panel link, which is what refreshes the lists.
           close();
           void router.navigate({ to: "/fleet" });

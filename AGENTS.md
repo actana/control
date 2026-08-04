@@ -1,4 +1,4 @@
-# Agent skills
+# Harness skills
 
 ### Issue tracker
 

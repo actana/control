@@ -147,7 +147,7 @@ const ArchiveList = ({ tasks, onRestore }) => {
           border: "1px solid var(--border)",
           borderRadius: 8,
         }}>
-          <AgentGlyph agent={t.agent} size={12} />
+          <HarnessGlyph agent={t.agent} size={12} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 13, color: "var(--text)" }}>{t.title}</div>
             <div style={{ fontFamily: "var(--mono)", fontSize: 10.5, color: "var(--text-faint)", marginTop: 2 }}>
@@ -226,7 +226,7 @@ const TerminalPanel = ({ state, dispatch, projects }) => {
 };
 
 const TerminalPane = ({ project, task, onClose, isLast }) => {
-  const meta = AGENT_META[task.agent];
+  const meta = HARNESS_META[task.agent];
   const statusMeta = STATUS_META[task.status];
   const isRunning = task.status === "running";
   const scrollRef = React.useRef(null);
@@ -335,7 +335,7 @@ const TerminalPane = ({ project, task, onClose, isLast }) => {
 };
 
 const makeTranscript = (task) => {
-  const meta = AGENT_META[task.agent];
+  const meta = HARNESS_META[task.agent];
   const base = [
     { prefix: "$", text: `${task.agent} --resume`, color: "var(--text-dim)" },
     { text: `session resumed · ${task.branch} · +${task.lines} lines`, color: "var(--text-faint)" },
@@ -595,14 +595,14 @@ const GroupsDialog = ({ open, groups, projects, onClose, onAdd, onRename, onRemo
   );
 };
 
-// ── New Agent picker ────────────────────────────────────────────────────────
-const NewAgentDialog = ({ open, project, onClose, onStart }) => {
-  const [agent, setAgent] = React.useState("claude-code");
+// ── New Harness picker ────────────────────────────────────────────────────────
+const NewHarnessDialog = ({ open, project, onClose, onStart }) => {
+  const [agent, setHarness] = React.useState("claude-code");
   const [title, setTitle] = React.useState("");
   const [branch, setBranch] = React.useState("");
 
   React.useEffect(() => {
-    if (open) { setAgent("claude-code"); setTitle(""); setBranch(""); }
+    if (open) { setHarness("claude-code"); setTitle(""); setBranch(""); }
   }, [open]);
 
   const agents = [
@@ -640,13 +640,13 @@ const NewAgentDialog = ({ open, project, onClose, onStart }) => {
             fontFamily: "var(--mono)", fontSize: 10.5, fontWeight: 500,
             color: "var(--text-dim)", letterSpacing: "0.05em", textTransform: "uppercase",
             display: "block", marginBottom: 8,
-          }}>Agent</label>
+          }}>Harness</label>
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
             {agents.map(a => {
-              const meta = AGENT_META[a.id];
+              const meta = HARNESS_META[a.id];
               const selected = agent === a.id;
               return (
-                <button key={a.id} onClick={() => setAgent(a.id)}
+                <button key={a.id} onClick={() => setHarness(a.id)}
                   style={{
                     display: "flex", alignItems: "center", gap: 12, textAlign: "left",
                     padding: "12px 14px",
@@ -787,7 +787,7 @@ function App() {
             branch: action.data.branch,
             updated: "just now",
             lines: 0,
-            preview: `Starting ${AGENT_META[action.data.agent].label}…`,
+            preview: `Starting ${HARNESS_META[action.data.agent].label}…`,
           };
           return {
             ...s, modal: null,
@@ -856,7 +856,7 @@ function App() {
         onAdd={(name) => dispatch({ type: "add-group", name })}
         onRemove={(id) => dispatch({ type: "remove-group", id })}
       />
-      <NewAgentDialog
+      <NewHarnessDialog
         open={state.modal === "new-agent"}
         project={modalProject}
         onClose={() => dispatch({ type: "close-modal" })}

@@ -1,5 +1,7 @@
 # The Panel does not install skills into the user's harness
 
+> _Written before the #33 rename. Read "Harness" as what is now a **Core**, and "agent"/"TaskAgent" as what is now a **Harness**; the wording is left as it was decided._
+
 Actana Control ships no bundled agent skills and installs nothing into the operator's `.claude/skills/`, `.codex/skills/`, `.cursor/skills/`, or any equivalent harness skill directory. The previous "diagram" and "ship" skills, the recall MCP, and the recall skill are removed. The Panel does not write to any harness config path outside its own registry storage. Skills, MCPs, hooks, and CLAUDE.md-style config are the operator's territory; the Panel is a remote control that observes and drives Sessions but does not modify the harness's own behavior.
 
 The immediate motivations are (1) *result bias* — a Session run through the Panel behaves differently from the same Session run without it, so results are not comparable, and (2) *collision risk* — skills installed by the Panel persist outside the Panel process and can conflict with the operator's own configuration. Git-touching skills (previously "ship") are the sharpest case: a Panel-installed skill can commit or push in ways the operator did not configure.

@@ -1,5 +1,7 @@
 # Remove the managed sandbox / remote VM subsystem
 
+> _Written before the #33 rename. Read "Harness" as what is now a **Core**, and "agent"/"TaskAgent" as what is now a **Harness**; the wording is left as it was decided._
+
 Actana Control drops the upstream "sandbox" feature entirely: the `sandboxes` table, the scope dropdown, the AWS EC2 provisioner (`scripts/remote-vm.mjs` and the `remoteVm:*` IPC surface), the Electron-side `SandboxManager` / `SandboxAgentClient`, the `@agentsystemlabs/mission-control-agent` runtime dependency, and every `scopeId` column layered on top of `tasks`, `user_terminals`, `home_terminals`, and `project_memory`. Managed remote work is replaced by the detached-core Harness that already ships in the fork: the operator installs a Harness on any machine they own, and the Panel drives it over the core-link protocol (ADR 0001, 0002).
 
 The upstream sandbox is a **thin remote-hands RPC** — a Node.js daemon (`@agentsystemlabs/mission-control-agent`, systemd-supervised) that exposes `fs.*`, `git.*`, `pty.spawn`, `creds.setup` over WSS+bearer, letting the desktop drive files and terminals on a provisioned VM. It owns no session state; if the desktop disconnects, the session dies. It is provider-specific in practice (AWS EC2, with a DigitalOcean plan that was never implemented) and lives entirely inside the Panel's own binary.
