@@ -368,13 +368,19 @@ if (identity !== "1000:1000") die(`the Core runs as ${identity}, expected 1000:1
 // *is* PID 1, reaping nothing) and in no other.
 //
 // `comm` rather than the full cmdline: the launcher `exec`s the bundled Node
-// in place, so the daemon reads as `node` and not as a second shell.
+// in place, so the daemon reads as `node` and not as a second shell — except
+// that `/proc/<pid>/comm` is the *thread* name, and the bundled Node names its
+// main thread `MainThread`, so the daemon legitimately reads as either. Both
+// are the daemon; a second shell would read as `sh`.
+const DAEMON_COMMS = ["node", "MainThread"];
 const processes = processTable(core);
 const pid1 = processes.find((process) => process.pid === 1);
 if (pid1?.comm !== "tini") {
   die(`PID 1 is ${JSON.stringify(pid1?.comm)}, expected tini:\n${formatProcesses(processes)}`);
 }
-const daemon = processes.find((process) => process.comm === "node" && process.ppid === 1);
+const daemon = processes.find(
+  (process) => DAEMON_COMMS.includes(process.comm) && process.ppid === 1,
+);
 if (!daemon) {
   die(
     `no node process is a child of PID 1, so nothing is reaping the Harnesses ` +
