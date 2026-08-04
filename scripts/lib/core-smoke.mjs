@@ -1,11 +1,17 @@
 // Shared machinery for the Core boot smokes.
 //
-// Both smokes ask the same question — "does this Core boot clean and accept
-// an authenticated core-link dial?" — and differ only in what they spawn:
-// `smoke-standalone-core.mjs` runs the built bundle under the caller's
-// node, `smoke-core-tarball.mjs` runs a released tarball's own launcher and
-// its bundled Node. The env the Core needs and the whole assertion sequence
-// live here so the two scripts stay honestly comparable.
+// Every smoke and e2e asks the same question — "does this Core boot clean and
+// accept an authenticated core-link dial?" — and they differ only in what they
+// spawn: a released tarball's own launcher and bundled Node
+// (`smoke-core-tarball.mjs`), the shipped container image
+// (`smoke-core-image.mjs`), or an installed machine (the `e2e-*-linux.mjs`
+// scripts). The env the Core needs and the whole assertion sequence live here
+// so those arrivals stay honestly comparable.
+//
+// There used to be one more: `smoke-standalone-core.mjs`, which ran the built
+// bundle under the caller's own node. ADR 0016 D35 deleted it — it made this
+// file's `assertBootsAndDials` assertion against a path nothing ships, one
+// layer inside the tarball smoke that does ship.
 
 import * as net from "node:net";
 // `ws` is loaded lazily, inside dialAndRequest — see the note there.

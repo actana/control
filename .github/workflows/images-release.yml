@@ -5,7 +5,7 @@ name: Images Release
 # the Core tarballs ship from core-release.yml on the same tag.
 #
 # The build/smoke/publish machinery lives in container-image.yml, shared with
-# the PR build in ci.yml and the edge build in images-edge.yml. All this
+# the PR build and the edge build, both in ci.yml. All this
 # workflow adds is the version tag: validate it, then ask for :<version> and
 # :latest.
 

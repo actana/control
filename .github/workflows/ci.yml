@@ -5,6 +5,21 @@ on:
   push:
     branches:
       - main
+    # Carried across from images-edge.yml, whose jobs this workflow absorbed
+    # (ADR 0016 D30): a docs-only merge must not rebuild and republish two
+    # container images. On the `push` trigger only — a PR is gated on
+    # everything it changes, whatever it changes. The trade is that a
+    # docs-only merge skips the whole post-merge run, gates included; those
+    # gates already ran on the PR that produced the merge.
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
+      - ".scratch/**"
+      - "designs/**"
+  # Also carried across: republishing `:edge` without a new commit, for when a
+  # registry was down or a run was cancelled. On a dispatch the gate jobs run
+  # too — that is the cheap half, and a dispatch is rare.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -17,6 +32,112 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  # The repo conventions, in one job (ADR 0016 D34):
+  #   1. PR title follows Conventional Commits (it becomes the squash-merge subject)
+  #   2. Every commit message in the PR follows Conventional Commits (commitlint)
+  #   3. Branch name follows the branch naming convention
+  #
+  # These were three jobs in conventions.yml, two of which each `npm install`-ed
+  # their own copy of commitlint — three copies of one 30-second setup to run a
+  # couple of seconds of linting. One job, one install, one required check.
+  #
+  # The title check runs the PR title through the same commitlint.config.mjs the
+  # commit check uses, rather than a third-party action. One rule set, one place
+  # to change it, and no unpinned third-party code reading pull-request context.
+  #
+  # The title is read from the API at run time rather than from the event
+  # payload. conventions.yml carried `types: [edited]` so that fixing a bad
+  # title re-ran the check — a re-run replays the *original* payload, so
+  # without it the check stays red until someone pushes a commit. Putting
+  # `edited` on this workflow instead would re-run the entire gate on every
+  # description edit, which is the opposite of what D35 is for. Asking GitHub
+  # for the title as it is now buys the same property for one API call.
+  #
+  # commitlint is installed into RUNNER_TEMP, never into the checkout: this is a
+  # pnpm workspace, and the root package.json declares `workspace:*` dependencies
+  # that npm cannot parse ("EUNSUPPORTEDPROTOCOL"). Installing beside the config
+  # copy keeps `extends: ['@commitlint/config-conventional']` resolvable, and
+  # `--cwd` points commitlint back at the checkout for its git queries.
+  conventions:
+    name: Conventions
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - name: Install commitlint
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/commitlint"
+          cp commitlint.config.mjs "$RUNNER_TEMP/commitlint/"
+          cd "$RUNNER_TEMP/commitlint"
+          npm init -y >/dev/null
+          npm install --silent @commitlint/cli @commitlint/config-conventional
+
+      # Held in a shell variable and piped, never interpolated into the script
+      # — a PR title is attacker-controlled text.
+      - name: Lint the PR title
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: |
+          set -euo pipefail
+          title="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq .title)"
+          printf '%s' "$title" | "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
+            --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
+            --cwd "$GITHUB_WORKSPACE" --verbose
+
+      - name: Lint commits in PR
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
+            --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
+            --cwd "$GITHUB_WORKSPACE" \
+            --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+
+      - name: Check branch name
+        env:
+          BRANCH: ${{ github.head_ref }}
+        run: |
+          set -euo pipefail
+          # Allowed: <type>/<kebab-case-description>
+          # Examples: feat/proj-123-oauth-device-flow, fix/header-crash, release/v1.4.0
+          PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
+
+          # Bots name their own branches and cannot be asked to stop. Dependabot
+          # opens `dependabot/npm_and_yarn/<dep>-<version>`; without this the
+          # convention check fails on every dependency PR forever, which trains
+          # everyone to ignore a red check. Their *commit messages* are still
+          # linted by the step above — that is the part that reaches main.
+          if echo "$BRANCH" | grep -qE '^(dependabot|renovate)/'; then
+            echo "✅ Branch name '$BRANCH' is bot-generated — convention not enforced."
+            exit 0
+          fi
+
+          if echo "$BRANCH" | grep -qE "$PATTERN"; then
+            echo "✅ Branch name '$BRANCH' is valid."
+          else
+            echo "❌ Branch name '$BRANCH' violates the convention."
+            echo ""
+            echo "Expected: <type>/<kebab-case-description>"
+            echo "Types: feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert"
+            echo "Examples: feat/proj-123-oauth-device-flow, fix/header-crash, release/v1.4.0"
+            echo "Rules: lowercase only; words separated by hyphens; no consecutive/leading/trailing separators."
+            exit 1
+          fi
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-24.04
@@ -65,6 +186,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm lint
 
+  # `--prod` (ADR 0016 D37): the gate is about what ships. It still catches
+  # `postcss` and `@babel/core`, which reach the runtime image through the
+  # Panel's *production* graph, and it drops the dev-only `brace-expansion`
+  # highs that no contributor caused and none can fix. A check that is red for
+  # reasons unrelated to the change in front of it is a check everyone learns
+  # to click past. The dev tree is not unwatched — it gets a weekly audit that
+  # opens an issue instead of gating a PR (housekeeping.yml).
   dependency-audit:
     name: Dependency Audit
     runs-on: ubuntu-24.04
@@ -79,7 +207,7 @@ jobs:
           version: 11.1.2
           cache: true
       - run: pnpm install --frozen-lockfile
-      - run: pnpm audit --audit-level high
+      - run: pnpm audit --prod --audit-level high
 
   secret-scan:
     name: Secret Scan
@@ -99,13 +227,25 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm scan:secrets
 
-  # The Core smoke seam (web-panel-extraction issue 01): the standalone
-  # Core bundle must boot under plain node with working standard-ABI
-  # natives, bootstrap its schema, and accept an mTLS + bearer core-link dial.
-  core-smoke:
-    name: Smoke — standalone Core
+  # The Panel service seam (web-panel-extraction issue 10) — the spec's primary
+  # testing seam. Boots the built Panel as a plain node process against a temp
+  # data directory plus a real Core, then drives it exactly as a browser
+  # would: setup → login → paste a pairing token → panel link → PTY frames →
+  # killed link → replay from cursor, with the pre-login refusals and the
+  # secrets-at-rest legs alongside. One command covers auth, the registry,
+  # secrets, the router, and a live core-link.
+  #
+  # Ubuntu only (ADR 0016 D35). This ran on macOS too, at 10× the billing, for
+  # a way the Panel ships nowhere: the deployable is a container. The natives
+  # that leg existed to exercise — node-pty and better-sqlite3 — are built and
+  # booted on the platform that ships by `panel-image` below.
+  #
+  # The Core runs as a local process here (scripts/lib/core-fixture.mjs);
+  # pairing against a *containerised* Core is the `core-image` job.
+  panel-e2e:
+    name: E2E — Panel service seam
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -127,54 +267,6 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build core bundle
-        run: pnpm --filter @actana/core build
-
-      - name: Smoke — standalone Core boots clean under plain node
-        run: node scripts/smoke-standalone-core.mjs
-
-  # The Panel service seam (web-panel-extraction issue 10) — the spec's primary
-  # testing seam. Boots the built Panel as a plain node process against a temp
-  # data directory plus a real Core, then drives it exactly as a browser
-  # would: setup → login → paste a pairing token → panel link → PTY frames →
-  # killed link → replay from cursor, with the pre-login refusals and the
-  # secrets-at-rest legs alongside. One command covers auth, the registry,
-  # secrets, the router, and a live core-link.
-  #
-  # Both OSes, because this is where the deployable actually runs and the two
-  # differ in the places that bite: node-pty and better-sqlite3 natives, and the
-  # login shell a VM Shell Session lands in. The Core runs as a local process
-  # here (scripts/lib/core-fixture.mjs); pairing against a *containerised* Core
-  # is the `core-image` job below, against the image that ships.
-  panel-e2e:
-    name: E2E — Panel service seam (${{ matrix.os }})
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, macos-15]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 11.1.2
-          cache: true
-
-      # node-gyp 9.x imports distutils; pin 3.11 like the core smoke does.
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
       # `panel:e2e` builds both artifacts and then drives them, so the test
       # always runs against freshly built code rather than a stale dist.
       - name: E2E — the Panel service, driven as a browser
@@ -185,6 +277,12 @@ jobs:
   # bundled natives, no system Node, no network. Built here on every PR for the
   # runner's own platform so a broken tarball is caught before tag time;
   # core-release.yml builds and smokes all four targets on a tag push.
+  #
+  # This is now the only boot-and-dial smoke on a PR. There was a second —
+  # `smoke-standalone-core.mjs`, against the unpacked bundle — but it made the
+  # same `assertBootsAndDials` assertion this one does, one layer further from
+  # anything that ships, and nothing ships the path it uniquely covered
+  # (ADR 0016 D35).
   #
   # Both Linux architectures, because everything downstream consumes these
   # artifacts (core-installer issue 07): the installer matrix downloads them
@@ -264,6 +362,10 @@ jobs:
   # not eight builds. `fail-fast: false` because "Debian arm64 only" is exactly
   # the signal this job exists to produce.
   #
+  # ADR 0016 D36 cuts this to two legs — one merged suite, ubuntu and debian at
+  # x64, with arm64 moving to the tag run — but that is a change to the e2e
+  # scripts themselves and belongs to the ticket that makes it (#48), not here.
+  #
   # The axes are declared in scripts/lib/container-matrix.mjs, and
   # scripts/__tests__/container-matrix.test.mjs reads this file to check the two
   # still agree — a distro added there and forgotten here fails the unit tests.
@@ -315,98 +417,6 @@ jobs:
           tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
           node scripts/e2e-${{ matrix.suite }}-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
 
-  # The agent-offers seam (core-installer issue 05): a fresh machine has no
-  # Harness on it, so this is where "detects missing agents, offers each, and
-  # an accepted offer leaves a working vendor-installed CLI on PATH" can
-  # actually be checked. Unlike the other container e2es this one is NOT
-  # hermetic — it runs a vendor's real installer, which is the only way to
-  # prove the vendor's official method is what we invoke.
-  actana-harnesses-e2e:
-    name: E2E — Harness offers (systemd)
-    runs-on: ubuntu-24.04
-    needs: core-tarball-smoke
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 11.1.2
-          cache: true
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      - name: Download the tarball
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
-        with:
-          name: core-tarball-linux-x64
-          path: artifacts/core
-
-      - name: E2E — agent detection, offers, and `actana harnesses install`
-        run: |
-          set -euo pipefail
-          tarball="$(find artifacts/core -name 'actana-core-*-linux-x64.tar.gz' | head -n1)"
-          node scripts/e2e-actana-harnesses-linux.mjs --tarball "$tarball"
-
-  # The macOS half of the same seam (core-installer issue 04): `actana setup`
-  # must write and load a LaunchAgent, start the daemon, and give the lifecycle
-  # verbs something to drive — with no sudo and no Gatekeeper interruption.
-  #
-  # No container, unlike the Linux leg: a Mac's launchd IS the host's launchd,
-  # and an agent bootstrapped anywhere but the runner's own domain would not be
-  # the thing under test. The e2e uses a scratch HOME and boots the agent out
-  # again, so the runner is left as it was found.
-  #
-  # Both architectures run natively — the tarballs carry prebuilt natives, so a
-  # cross-built leg would prove nothing about the artifact operators download.
-  # Reboot persistence is the one criterion a runner cannot exercise; it lives
-  # on docs/core-macos-prerelease-checklist.md.
-  actana-setup-e2e-macos:
-    name: E2E — actana setup (launchd, ${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: mac-arm64
-          - os: macos-15-intel
-            target: mac-x64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 11.1.2
-          cache: true
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Built here rather than downloaded from the linux job: the tarball is
-      # per-platform, and this runner's own architecture is the only mac
-      # tarball it can honestly build or run.
-      - name: Build the tarball
-        run: pnpm core:tarball
-
-      - name: E2E — actana setup against launchd
-        run: |
-          set -euo pipefail
-          tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
-          node scripts/e2e-actana-setup-macos.mjs --tarball "$tarball"
-
   # The Panel image, built and smoked on every PR but never pushed. Until this
   # existed, a Dockerfile or build-stage break stayed invisible until someone
   # cut a release tag and the release itself failed. Same reusable workflow the
@@ -418,6 +428,7 @@ jobs:
   # native build, which this leg already exercises.
   panel-image:
     name: Panel image
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -436,6 +447,7 @@ jobs:
   # against the bytes that ship and with nothing privileged.
   core-image:
     name: Core image
+    if: github.event_name == 'pull_request'
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -446,3 +458,69 @@ jobs:
       stage: ci
       push: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
+
+  # ----------------------------------------------------------------- edge
+  #
+  # A push to `main` publishes the unreleased images, so anyone can try what is
+  # about to ship without waiting for a version tag:
+  #
+  #   :edge          always the latest main
+  #   :sha-<short>   the immutable pin for that exact commit
+  #
+  # This was images-edge.yml. ADR 0016 D30 folded it in here rather than keep a
+  # fourth entry point for jobs that differ from the PR build only in which
+  # tags come out the other end: same reusable workflow, same build, same
+  # smoke, same registries. Nothing here moves `:latest` — that stays the
+  # property of a version tag.
+  #
+  # They are separate jobs from the two above, rather than the same jobs with
+  # conditional inputs, because `permissions:` takes no expression and a caller
+  # that asks for `packages: write` fails at startup where the token cannot be
+  # granted it — a fork's PR. The two sets are mutually exclusive on
+  # `github.event_name`, so no single run ever builds an image twice.
+  #
+  # `!= 'pull_request'` rather than `== 'push'`, so `workflow_dispatch`
+  # republishes `:edge` the way images-edge.yml's own dispatch did.
+  edge-tags:
+    name: Resolve edge tags
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    outputs:
+      tags: ${{ steps.tags.outputs.tags }}
+    steps:
+      - id: tags
+        env:
+          SHA: ${{ github.sha }}
+        run: echo "tags=edge sha-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+
+  panel-image-edge:
+    name: Panel image (edge)
+    if: github.event_name != 'pull_request'
+    needs: edge-tags
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+    with:
+      image: panel
+      ref: ${{ github.sha }}
+      stage: edge
+      tags: ${{ needs.edge-tags.outputs.tags }}
+      push: true
+
+  core-image-edge:
+    name: Core image (edge)
+    if: github.event_name != 'pull_request'
+    needs: edge-tags
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+    with:
+      image: core
+      ref: ${{ github.sha }}
+      stage: edge
+      tags: ${{ needs.edge-tags.outputs.tags }}
+      push: true

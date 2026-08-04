@@ -38,7 +38,10 @@ const workflow = readRepoFile(".github/workflows/images-release.yml");
 // edge, and release paths share a single implementation; images-release.yml is
 // now only the version-tag half. Assertions follow the code.
 const imageWorkflow = readRepoFile(".github/workflows/container-image.yml");
-const edgeWorkflow = readRepoFile(".github/workflows/images-edge.yml");
+// The edge publish is a push-to-`main` condition inside ci.yml, not a workflow
+// of its own — ADR 0016 D30 deleted images-edge.yml for being a fourth entry
+// point to jobs that differ only in which tags come out the other end.
+const ciWorkflow = readRepoFile(".github/workflows/ci.yml");
 const coreDockerfile = readRepoFile("deploy/core.Dockerfile");
 // Named apart from `compose.services.core`: one is the image's instructions,
 // the other is the service that runs it, and the two are asserted side by side.
@@ -337,22 +340,44 @@ describe("release workflow", () => {
   });
 });
 
-describe("edge workflow", () => {
-  it("publishes from main through the same shared image workflow", () => {
-    expect(edgeWorkflow).toContain("./.github/workflows/container-image.yml");
-    expect(edgeWorkflow).toMatch(/branches:\s*\n\s*- main/);
+describe("the edge publish", () => {
+  it("lives in ci.yml rather than a workflow of its own", () => {
+    expect(fs.existsSync(path.join(repoRoot, ".github/workflows/images-edge.yml"))).toBe(false);
+    expect(ciWorkflow).toContain("./.github/workflows/container-image.yml");
+    expect(ciWorkflow).toMatch(/branches:\s*\n\s*- main/);
+  });
+
+  it("publishes from a push to main, and a pull request never pushes", () => {
+    // The two sets of image jobs are mutually exclusive on the event, which is
+    // what stops a push to `main` building each image twice.
+    // The edge jobs read `!= 'pull_request'` rather than `== 'push'` so a
+    // workflow_dispatch republishes :edge, the way images-edge.yml's own
+    // dispatch trigger did.
+    for (const [job, condition] of [
+      ["panel-image:", "== 'pull_request'"],
+      ["core-image:", "== 'pull_request'"],
+      ["panel-image-edge:", "!= 'pull_request'"],
+      ["core-image-edge:", "!= 'pull_request'"],
+    ]) {
+      const start = ciWorkflow.indexOf(`\n  ${job}`);
+      expect(start, `ci.yml has no ${job} job`).toBeGreaterThan(-1);
+      expect(ciWorkflow.slice(start, start + 200)).toContain(
+        `github.event_name ${condition}`,
+      );
+    }
+    expect(ciWorkflow).toContain("push: false");
   });
 
   it("tags :edge and an immutable per-commit tag, and never moves :latest", () => {
     // Assert on the tags the workflow actually emits, not on the file text —
     // the prose above the trigger says the word "latest" on purpose.
-    const tags = edgeWorkflow.match(/^\s*run: echo "tags=(.*?)"/m)?.[1];
+    const tags = ciWorkflow.match(/^\s*run: echo "tags=(.*?)"/m)?.[1];
     expect(tags).toBe("edge sha-${SHA:0:7}");
     expect(tags).not.toContain("latest");
   });
 
   it("publishes the Core image alongside the Panel", () => {
-    for (const wf of [workflow, edgeWorkflow]) {
+    for (const wf of [workflow, ciWorkflow]) {
       expect(wf).toContain("image: panel");
       expect(wf).toContain("image: core");
     }
