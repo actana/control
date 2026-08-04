@@ -104,10 +104,8 @@ images **and** updates descriptions. Then delete the old token in Docker Hub.
   - [ ] Require approval of the most recent reviewable push
   - [ ] **Require conversation resolution** before merging
 - [ ] **Require status checks to pass** (and require branches to be up to date):
-  - [ ] `PR title (Conventional Commits)`
-  - [ ] `Commit messages (commitlint)`
-  - [ ] `Branch name convention`
-  - [ ] `Typecheck`, `Unit Tests`, `Lint`, `Secret Scan`
+  - [ ] `Conventions` — PR title, commit messages, and branch name, in one job
+  - [ ] `Typecheck`, `Unit Tests`, `Lint`, `Secret Scan`, `Dependency Audit`
   - [ ] `Panel image` and `Core image` — the PR container builds
   - [ ] The E2E legs you want blocking. They are slow; a common split is to
         require the fast four plus both image builds, and let the installer
@@ -117,7 +115,8 @@ images **and** updates descriptions. Then delete the old token in Docker Hub.
 
 Optional: a second ruleset on branch **creation** restricting new branch names
 to the allowed prefixes. GitHub enforces that natively, which turns the
-`Branch name convention` job into a friendly error rather than the only gate.
+`Conventions` job's branch-name step into a friendly error rather than the only
+gate.
 
 ## 4. Merge settings (Settings → General)
 
@@ -127,7 +126,7 @@ to the allowed prefixes. GitHub enforces that natively, which turns the
 - [ ] ✅ Automatically delete head branches
 - [ ] ✅ Always suggest updating pull request branches
 
-Squash-with-PR-title is what makes the `PR title (Conventional Commits)` check
+Squash-with-PR-title is what makes the `Conventions` job's PR-title check
 load-bearing: the title becomes the commit message on `main`, which is what the
 changelog is assembled from.
 
@@ -251,7 +250,8 @@ git config core.hooksPath .husky
 ```
 
 `commit-msg` checks the message against `commitlint.config.mjs`; `pre-push`
-checks the branch name. Both mirror the Conventions workflow, so they only tell
+checks the branch name. Both mirror the `Conventions` job in
+[`ci.yml`](../.github/workflows/ci.yml), so they only tell
 you earlier what CI would have told you later. `commit-msg` no-ops with a hint
 if commitlint is not installed locally; the install line is in
 [`ci-cd.md`](ci-cd.md#running-ci-locally) — it goes through a temp directory

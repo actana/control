@@ -110,7 +110,7 @@ Allowed types: `feat` `feature` `fix` `bugfix` `hotfix` `release` `chore`
 `docs` `refactor` `perf` `test` `ci` `revert`. Lowercase only, hyphen-separated,
 no leading/trailing/doubled separators.
 
-CI checks this (`Branch name convention`). To be told before you push instead
+CI checks this (the `Conventions` job in `ci.yml`). To be told before you push instead
 of after, enable the local hooks once per clone:
 
 ```bash

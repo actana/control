@@ -1,10 +1,10 @@
 /**
  * Commitlint configuration — enforces Conventional Commits v1.0.0.
  * Keep the `type-enum` list in sync with:
- *   - .github/workflows/conventions.yml (PR title check)
+ *   - .github/workflows/ci.yml (the Conventions job's PR title check)
  *   - CONTRIBUTING.md (documentation)
  *
- * Self-contained on purpose: conventions.yml copies *this file alone* into
+ * Self-contained on purpose: the Conventions job copies *this file alone* into
  * RUNNER_TEMP beside a throwaway commitlint install, so the rule below is an
  * inline plugin rather than an import. One file, one place to change it.
  */

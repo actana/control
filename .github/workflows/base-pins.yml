@@ -106,7 +106,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          # `chore/`, not `build/`: the branch-name check in conventions.yml
+          # `chore/`, not `build/`: the branch-name check in ci.yml
           # does not list `build` as a branch type, and a bot cannot retitle
           # its own branch after the fact. The *commit* is still `build(...)`,
           # which is the part commitlint reads.

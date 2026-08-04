@@ -7,13 +7,19 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
-| [`ci.yml`](../.github/workflows/ci.yml) | every PR, push to `main` | nothing — it gates |
-| [`conventions.yml`](../.github/workflows/conventions.yml) | every PR | nothing — it gates |
-| [`images-edge.yml`](../.github/workflows/images-edge.yml) | push to `main` | `:edge`, `:sha-<short>` |
+| [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing — it gates |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` | `:edge`, `:sha-<short>` |
 | [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
 | [`base-pins.yml`](../.github/workflows/base-pins.yml) | weekly cron | a `NODE_VERSION` bump PR, or nothing |
 | [`stale.yml`](../.github/workflows/stale.yml) | daily cron | stale labels / closures |
-| [`react-doctor.yml`](../.github/workflows/react-doctor.yml) | see the file | a report |
+
+`ci.yml` is one file doing two jobs, and the trigger is the difference. On a
+PR it gates and pushes nothing; on a push to `main` it publishes `:edge` and
+`:sha-<short>` from the same reusable build. That fold is [ADR
+0016](adr/0016-the-0-1-0-shape.md) D30 — an edge publish that differs from the
+PR build only in which tags come out the other end does not need a workflow
+file of its own. The repo conventions — PR title, commit messages, branch name
+— are the `Conventions` job inside it (D34).
 
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
@@ -144,6 +150,24 @@ arrival, a different PID 1 and a different install location
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36). The Trivy gate below runs in the
 same job, on the same built image.
 
+### What no longer runs on a PR, and what is meant to pick it up
+
+Two seams were taken off the PR gate ahead of the workflow that replaces them,
+so the gap is written down rather than discovered:
+
+- **`actana harnesses install <id>`** — that a vendor's official installer
+  still leaves a CLI on `PATH`. Deliberately non-hermetic, so no PR can cause
+  its failure and no PR author can fix it; gating on it is how a team learns
+  that red means nothing ([ADR 0016](adr/0016-the-0-1-0-shape.md) D38).
+  `scripts/e2e-actana-harnesses-linux.mjs` and `pnpm core:harnesses:e2e` are
+  kept for the weekly vendor canary in
+  [#51](https://github.com/actana/control/issues/51). Until it lands, nothing
+  watches this — and it is failing on `opencode` today
+  ([#31](https://github.com/actana/control/issues/31)).
+- **The macOS install path** — `actana setup` against launchd. Nothing
+  automated covers it at all now; [the manual pre-release
+  checklist](core-macos-prerelease-checklist.md) is the whole of it.
+
 ## Dependency and CVE policy
 
 Three populations, three owners, one gate each. They are written out separately
@@ -157,13 +181,11 @@ for the other ([ADR 0016](adr/0016-the-0-1-0-shape.md) D37).
 | Dev-tree packages | `pnpm audit --audit-level high` — opens an issue, does not gate | weekly |
 | The image: OS layer + the `node_modules` it ships | Trivy, fails on **fixable** CRITICAL/HIGH | every PR, on the built image |
 
-Only the third row is live as written. `dependency-audit` in
-[`ci.yml`](../.github/workflows/ci.yml) still runs without `--prod`, which is
-[#47](https://github.com/actana/control/issues/47)'s change and needs
-`pnpm update -r postcss @babel/core` alongside it (D39); the weekly dev-tree
-audit arrives with `housekeeping.yml`
-([#51](https://github.com/actana/control/issues/51)). The table is the policy,
-not a description of today's workflow files.
+The first and third rows are live as written. The weekly dev-tree audit
+arrives with `housekeeping.yml`
+([#51](https://github.com/actana/control/issues/51)); until it does, the
+dev tree is unwatched by CI and `pnpm audit --audit-level high` locally is the
+only thing that looks at it.
 
 The Trivy leg is [`scripts/scan-core-image.mjs`](../scripts/scan-core-image.mjs),
 run from `container-image.yml` against the image that was just built and before
@@ -409,10 +431,11 @@ repository never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
 
 ## Running CI locally
 
-The four checks that gate every PR:
+The five checks that gate every PR:
 
 ```bash
 pnpm typecheck && pnpm lint && pnpm test && pnpm scan:secrets
+pnpm audit --prod --audit-level high
 ```
 
 The container build:
@@ -436,7 +459,7 @@ The detour through a temp directory is not ceremony: this is a pnpm workspace,
 and the root `package.json` declares `workspace:*` dependencies that npm
 refuses to parse (`EUNSUPPORTEDPROTOCOL`). Installing outside the checkout —
 with the config copied alongside, so `extends` still resolves — is what the
-Conventions workflow itself does.
+`Conventions` job itself does.
 
 ## Notes for forks
 

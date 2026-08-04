@@ -3,8 +3,8 @@
 //
 // Extracts the tarball into a temp dir and runs `bin/actana daemon` — the
 // launcher, the bundled CLI, and the verb the systemd unit execs — with every
-// Node scrubbed from PATH, then makes the same boot-and-dial assertion the
-// standalone smoke makes (see scripts/lib/core-smoke.mjs).
+// Node scrubbed from PATH, then makes the shared boot-and-dial assertion
+// (see scripts/lib/core-smoke.mjs).
 //
 // This is the acceptance criterion of the per-platform tarball work stated as
 // a test: "extracting a tarball on its target platform and running the

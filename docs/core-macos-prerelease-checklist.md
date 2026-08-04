@@ -1,23 +1,27 @@
 # macOS Core — manual pre-release checklist
 
-CI covers almost all of the macOS install story: `.github/workflows/ci.yml`'s
-`actana-setup-e2e-macos` job runs `scripts/e2e-actana-setup-macos.mjs` on both
-`mac-arm64` and `mac-x64` runners and walks setup, the loaded LaunchAgent, a
-core-link dial with the printed pairing token, every lifecycle verb, and two
-idempotent re-installs.
+**CI no longer covers any of this.** It used to: an `actana-setup-e2e-macos`
+job walked setup, the loaded LaunchAgent, a core-link dial with the printed
+pairing token, every lifecycle verb, and two idempotent re-installs, on both
+`mac-arm64` and `mac-x64` runners. [ADR 0016](adr/0016-the-0-1-0-shape.md) D35
+deleted it — macOS runners bill at 10×, and those two legs plus the macOS
+`panel-e2e` were 72% of the CI bill for a platform
+[#6](https://github.com/actana/control/issues/6) descoped.
 
-What it **cannot** cover is anything that needs a machine to be rebooted and
-logged back into. A GitHub runner is destroyed rather than restarted, and a
-LaunchAgent is by definition tied to a login session — so "does the Core come
-back?" has to be answered by a person, on a real Mac, before a release.
+So this checklist is now the whole macOS install story, not the tail of it.
+Two of its sections were always going to be manual whatever CI did — a GitHub
+runner is destroyed rather than restarted, and a LaunchAgent is by definition
+tied to a login session, so "does the Core come back?" can only be answered by
+a person on a real Mac. The rest is here because nothing else checks it any
+more.
 
 Run this once per release on **one Apple-silicon Mac** and, when the release
 touches the install path, **one Intel Mac**. Ten minutes.
 
 Its Linux counterpart is [the one-liner rehearsal](core-linux-rehearsal.md) —
 `pnpm core:rehearse` for a throwaway machine to paste the real one-liner
-into. Run both before a release: this one protects reboot and logout, that one
-protects the prompts and the pairing token.
+into. Run both before a release: this one is the only check the macOS install
+path gets at all, that one protects the prompts and the pairing token.
 
 ---
 
