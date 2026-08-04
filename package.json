@@ -62,7 +62,7 @@
     "@actana/core": "workspace:*",
     "@actana/panel": "workspace:*",
     "@actana/shared": "workspace:*",
-    "better-sqlite3": "12.10.0",
+    "better-sqlite3": "13.0.2",
     "ws": "8.21.0"
   },
   "devDependencies": {
