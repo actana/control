@@ -1,7 +1,7 @@
 # The Panel as one container (ADR 0010): plain HTTP out, every piece of state
 # in the single AC_PANEL_DATA_DIR volume, TLS left to the proxy in front.
 #
-#   docker build -t actana-panel .
+#   docker build -f deploy/panel.Dockerfile -t actana-panel .   # from the repo root
 #   docker run -p 127.0.0.1:7420:7420 -v actana-panel-data:/data actana-panel
 #
 # The reference deployment with HTTPS lives in deploy/docker-compose.yml;

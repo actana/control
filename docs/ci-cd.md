@@ -190,7 +190,7 @@ pnpm typecheck && pnpm lint && pnpm test && pnpm scan:secrets
 The container build:
 
 ```bash
-pnpm panel:image:smoke      # builds the Dockerfile, then smokes it
+pnpm panel:image:smoke      # builds deploy/panel.Dockerfile, then smokes it
 ```
 
 Commit conventions, without installing anything permanently:

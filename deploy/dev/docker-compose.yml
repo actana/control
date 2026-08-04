@@ -14,6 +14,9 @@ services:
   panel:
     build:
       context: ../..
+      # Relative to the context, not to this file: the Panel's Dockerfile
+      # lives beside the Core's in deploy/, so the root no longer implies it.
+      dockerfile: deploy/panel.Dockerfile
     ports:
       - "127.0.0.1:7420:7420"
     volumes:

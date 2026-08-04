@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   PANEL_DATA_DIR,
+  PANEL_DOCKERFILE,
   PANEL_IMAGE,
   PANEL_PORT,
   composeFacts,
@@ -17,7 +18,7 @@ import {
 // files that must agree on the image name, the port, and the single data
 // directory. These tests are the agreement.
 
-const dockerfile = dockerfileFacts(readRepoFile("Dockerfile"));
+const dockerfile = dockerfileFacts(readRepoFile(PANEL_DOCKERFILE));
 const compose = composeFacts(readRepoFile("deploy/docker-compose.yml"));
 const caddyfile = readRepoFile("deploy/Caddyfile");
 const workflow = readRepoFile(".github/workflows/images-release.yml");
@@ -29,6 +30,21 @@ const edgeWorkflow = readRepoFile(".github/workflows/images-edge.yml");
 const coreDockerfile = readRepoFile("deploy/dev/core.Dockerfile");
 
 describe("Dockerfile", () => {
+  it("lives in deploy/, not at the repo root", () => {
+    expect(fs.existsSync(path.join(repoRoot, PANEL_DOCKERFILE))).toBe(true);
+    expect(fs.existsSync(path.join(repoRoot, "Dockerfile"))).toBe(false);
+  });
+
+  it("is named by every builder, since the repo root no longer implies it", () => {
+    // The context stays the repo root, so each builder has to name the file.
+    // Miss one and it looks for a root Dockerfile that is not there.
+    expect(imageWorkflow).toContain(`--file ${PANEL_DOCKERFILE}`);
+    expect(readRepoFile("scripts/smoke-panel-image.mjs")).toContain(PANEL_DOCKERFILE);
+    expect(readRepoFile("deploy/dev/docker-compose.yml")).toContain(
+      `dockerfile: ${PANEL_DOCKERFILE}`,
+    );
+  });
+
   it("builds and runs on the exact Node CI tests against", () => {
     const ciNode = readRepoFile(".github/workflows/ci.yml").match(/node-version:\s*(\S+)/)?.[1];
     expect(ciNode).toBeTruthy();
@@ -44,7 +60,7 @@ describe("Dockerfile", () => {
 
   it("installs the pinned pnpm from package.json's packageManager field", () => {
     const { packageManager } = JSON.parse(readRepoFile("package.json"));
-    expect(readRepoFile("Dockerfile")).toContain(`npm install -g ${packageManager}`);
+    expect(readRepoFile(PANEL_DOCKERFILE)).toContain(`npm install -g ${packageManager}`);
   });
 
   it("exposes the port bin/panel.mjs defaults to", () => {
@@ -238,7 +254,7 @@ describe("docker hub descriptions", () => {
 
   it("links the GHCR packages back to this repository", () => {
     // Without image.source the package page has no README at all.
-    expect(readRepoFile("Dockerfile")).toContain("org.opencontainers.image.source");
+    expect(readRepoFile(PANEL_DOCKERFILE)).toContain("org.opencontainers.image.source");
     expect(imageWorkflow).toContain("org.opencontainers.image.source");
   });
 });

@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Smoke test — the Panel image is a working one-container deployment.
 //
-// Builds the Dockerfile (unless told the image already exists), boots it with
-// a fresh named volume, and walks the operator's first day as HTTP calls:
+// Builds deploy/panel.Dockerfile against the repo root as build context
+// (unless told the image already exists), boots it with a fresh named
+// volume, and walks the operator's first day as HTTP calls:
 // first boot wants setup, setup creates the Operator, and — after the
 // container is destroyed and recreated on the same volume, the upgrade
 // motion — the Panel still knows its Operator and accepts the password.
@@ -25,7 +26,7 @@ import { spawnSync } from "node:child_process";
 
 import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
-import { PANEL_PORT, repoRoot } from "./lib/panel-image.mjs";
+import { PANEL_DOCKERFILE, PANEL_PORT, repoRoot } from "./lib/panel-image.mjs";
 
 const die = makeDie("panel-image-smoke");
 const log = (message) => console.log(`[panel-image-smoke] ${message}`);
@@ -121,7 +122,7 @@ if (composeCheck.status !== 0) {
 
 if (!args["skip-build"]) {
   log(`building ${image} …`);
-  const build = spawnSync("docker", ["build", "--tag", image, "."], {
+  const build = spawnSync("docker", ["build", "--file", PANEL_DOCKERFILE, "--tag", image, "."], {
     cwd: repoRoot,
     stdio: "inherit",
   });

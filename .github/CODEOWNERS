@@ -31,7 +31,6 @@
 /SECURITY.md                @actana/maintainers
 /LICENSE                    @actana/maintainers
 /NOTICE                     @actana/maintainers
-/Dockerfile                 @actana/maintainers
 /install.sh                 @actana/maintainers
 /deploy/                    @actana/maintainers
 /package.json               @actana/maintainers
