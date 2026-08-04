@@ -249,6 +249,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     interactive: opts.interactive,
     platform: opts.platform,
     system: opts.system,
+    homeDir: layout.home,
     out: opts.out,
   });
 

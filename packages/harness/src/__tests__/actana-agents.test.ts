@@ -1,5 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import * as fs from "node:fs";
 import { HarnessAvailabilityStore } from "../harness-availability-store";
+import { MANAGED_BLOCK_BEGIN } from "../operator-login-path";
+import { cleanupTempHomes, makeTempHome, readHomeFile } from "./temp-home";
 import {
   agentFlagNames,
   agentFromFlagName,
@@ -249,5 +252,73 @@ describe("vendor installer failures", () => {
       options({ assumeYes: true, system: fakeSystem({ "": 1 }) }),
     );
     expect(outcomes.every((o) => o.status === "failed")).toBe(true);
+  });
+});
+
+// A vendor installer decides for itself which dotfile it edits, and OpenCode's
+// picks one a non-interactive login shell never reads. After a successful
+// install the offer round writes Actana's own block so the CLI it just
+// installed is genuinely on the operator's login PATH.
+describe("the operator's login PATH", () => {
+  afterEach(cleanupTempHomes);
+
+  const profile = (home: string) => readHomeFile(home, ".profile");
+
+  /** An offer round that names a home, with the shell pinned for determinism. */
+  const linking = (home: string, over: Partial<AgentOfferOptions> = {}) =>
+    options({ homeDir: home, shell: "/bin/bash", ...over });
+
+  it("links the agent directories after an install that worked", async () => {
+    const home = makeTempHome();
+    await offerAgentInstalls(linking(home, { assumeYes: true }));
+    expect(profile(home)).toContain(MANAGED_BLOCK_BEGIN);
+    expect(profile(home)).toContain('"$HOME/.opencode/bin"');
+  });
+
+  it("tells the operator which file it changed", async () => {
+    const home = makeTempHome();
+    await offerAgentInstalls(linking(home, { assumeYes: true }));
+    expect(out.join("\n")).toContain("~/.profile");
+  });
+
+  // The repair path: a CLI the vendor installed directly has the broken login
+  // PATH this whole module exists to fix, and re-running the install verb is
+  // what an operator would try.
+  it("repairs the PATH for an agent that was already installed", async () => {
+    const home = makeTempHome();
+    await offerAgentInstalls(
+      linking(home, { availability: ALL_PRESENT, requested: ["opencode"] }),
+    );
+    expect(ran).toEqual([]);
+    expect(profile(home)).toContain('"$HOME/.opencode/bin"');
+  });
+
+  it("writes nothing when every vendor installer failed", async () => {
+    const home = makeTempHome();
+    await offerAgentInstalls(linking(home, { assumeYes: true, system: fakeSystem({ "": 1 }) }));
+    expect(profile(home)).toBe("");
+  });
+
+  it("writes nothing when nothing was installed or already there", async () => {
+    const home = makeTempHome();
+    await offerAgentInstalls(linking(home));
+    expect(profile(home)).toBe("");
+  });
+
+  // Safe by default: a caller that never names a home directory — every unit
+  // test in this file that is not about this behaviour — must not reach the
+  // operator's real dotfiles.
+  it("does not touch the real home when no home directory was named", async () => {
+    const home = makeTempHome();
+    const realHome = process.env.HOME;
+    process.env.HOME = home;
+    try {
+      const outcomes = await offerAgentInstalls(options({ assumeYes: true }));
+      expect(outcomes.filter((o) => o.status === "installed")).toHaveLength(4);
+    } finally {
+      if (realHome === undefined) delete process.env.HOME;
+      else process.env.HOME = realHome;
+    }
+    expect(fs.readdirSync(home)).toEqual([]);
   });
 });

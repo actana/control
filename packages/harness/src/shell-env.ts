@@ -361,7 +361,12 @@ export function resolveCommandOnPath(
   return resolveAllCommandsOnPath(command, env, platform)[0] ?? null;
 }
 
-function shellBasename(shell: string): string {
+/**
+ * A shell path reduced to the lowercased name callers switch on, extension and
+ * all: `/usr/bin/zsh` → `zsh`, `pwsh.exe` → `pwsh.exe`. Shared with
+ * `operator-login-path.ts`, which picks a login profile off the same name.
+ */
+export function shellBasename(shell: string): string {
   return path.basename(shell).toLowerCase();
 }
 
