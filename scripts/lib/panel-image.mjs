@@ -45,6 +45,29 @@ export const PANEL_DATA_DIR = "/data";
  */
 export const PANEL_RUNTIME_USER = "65532:65532";
 
+/**
+ * Where node lives in the distroless runtime, absolutely. It is the image's
+ * ENTRYPOINT, so nothing that goes *through* the entrypoint needs it — but
+ * anything with its own argv does, because `/nodejs/bin` is not on `PATH`
+ * and a bare `node` is simply not found (ADR 0016 D23). The healthcheck and
+ * every `docker exec` into this image are the argv cases.
+ */
+export const PANEL_NODE_BIN = "/nodejs/bin/node";
+
+/**
+ * Every table `panel-db.ts` migrates into `<data dir>/panel.db`. The smoke
+ * script reads them back out of a real container to prove that better-sqlite3
+ * — compiled in the build stage, against a different Node and a different
+ * glibc — actually loads under the distroless runtime. A booted Panel that
+ * answers `/api/healthz` does not prove that; a migrated schema does.
+ */
+export const PANEL_TABLES = Object.freeze([
+  "operator",
+  "panel_sessions",
+  "cores",
+  "core_secrets",
+]);
+
 /** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */
 export const CORE_PORT = 8443;
 

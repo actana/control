@@ -10,8 +10,10 @@ import {
   PANEL_DATA_DIR,
   PANEL_DOCKERFILE,
   PANEL_IMAGE,
+  PANEL_NODE_BIN,
   PANEL_PORT,
   PANEL_RUNTIME_USER,
+  PANEL_TABLES,
   aptPackages,
   composeFacts,
   dockerfileFacts,
@@ -73,7 +75,7 @@ describe("Dockerfile", () => {
   });
 
   // D20. The runtime carries no shell, no package manager and no build
-  // toolchain — which is where 174 of the 192 CVEs went. Pinned by digest
+  // toolchain — which is what took the OS findings from 174 to 12. Pinned by digest
   // because the repository's 6,980 tags contain no version number anywhere:
   // four mutable names plus opaque build SHAs, so a tag is not a pin.
   it("ships a digest-pinned distroless runtime, with the full build stage left behind", () => {
@@ -111,9 +113,10 @@ describe("Dockerfile", () => {
   // contain /nodejs/bin, so the naive ["node", …] form reports UNHEALTHY even
   // for a script that cannot fail.
   it("names node by absolute path in the healthcheck, since argv bypasses ENTRYPOINT", () => {
-    expect(dockerfile.healthcheck).toContain("/nodejs/bin/node");
-    expect(dockerfile.healthcheck).toMatch(/CMD\s*\[/);
-    expect(dockerfile.healthcheck).toContain("/api/healthz");
+    // Exec form: the shell form would need a shell, and there isn't one.
+    const argv = JSON.parse(dockerfile.healthcheck.match(/CMD\s*(\[.*\])\s*$/)[1]);
+    expect(argv[0]).toBe(PANEL_NODE_BIN);
+    expect(argv.join(" ")).toContain("/api/healthz");
   });
 
   // D23. node *is* the ENTRYPOINT, so CMD is argv to node. Leaving "node" in
@@ -126,10 +129,27 @@ describe("Dockerfile", () => {
   // builder that does the same would ship an image with no healthcheck while
   // every local build looks fine. Confirmed on the built bytes, not assumed.
   it("confirms the built image actually carries the healthcheck", () => {
-    expect(readRepoFile("scripts/smoke-panel-image.mjs")).toContain("Config.Healthcheck");
+    // Assert on the code that runs, not on prose about it: a comment
+    // mentioning the healthcheck would satisfy a bare substring match while
+    // the check itself had been deleted.
+    const smoke = readRepoFile("scripts/smoke-panel-image.mjs");
+    expect(smoke).toContain(`"image", "inspect"`);
+    expect(smoke).toContain("config?.Healthcheck?.Test");
     // And again on the published multi-arch manifest, which is a different
     // artifact from the per-arch image the smoke ran against.
-    expect(imageWorkflow).toContain("Healthcheck");
+    expect(imageWorkflow).toContain(".value.config.Healthcheck.Test");
+    expect(imageWorkflow).toContain(PANEL_NODE_BIN);
+  });
+
+  // The native module compiled in the build stage has to dlopen under a
+  // different Node and a different glibc in the runtime stage. The smoke
+  // script proves it by reading the migrated schema back out of a running
+  // container; this keeps the tables it looks for honest, so dropping one
+  // from panel-db.ts cannot quietly weaken that proof.
+  it("names every table the Panel migrates, so the smoke can prove better-sqlite3 loaded", () => {
+    const schema = readRepoFile("packages/panel/src/server/panel-db.ts");
+    const migrated = [...schema.matchAll(/CREATE TABLE IF NOT EXISTS (\w+)/g)].map((m) => m[1]);
+    expect([...PANEL_TABLES].sort()).toEqual(migrated.sort());
   });
 
   it("installs the pinned pnpm from package.json's packageManager field", () => {

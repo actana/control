@@ -34,8 +34,10 @@ import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
 import {
   PANEL_DOCKERFILE,
+  PANEL_NODE_BIN,
   PANEL_PORT,
   PANEL_RUNTIME_USER,
+  PANEL_TABLES,
   repoRoot,
 } from "./lib/panel-image.mjs";
 
@@ -147,12 +149,12 @@ if (!args["skip-build"]) {
 // image that lost it would still pass every functional check below as root.
 log("verifying the built image carries its healthcheck and drops privilege …");
 const config = JSON.parse(
-  docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout || "null",
+  docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout,
 );
 const healthcheckTest = (config?.Healthcheck?.Test ?? []).join(" ");
-if (!healthcheckTest.includes("/nodejs/bin/node")) {
+if (!healthcheckTest.includes(PANEL_NODE_BIN)) {
   die(
-    `${image} carries no healthcheck naming /nodejs/bin/node — the builder dropped it, ` +
+    `${image} carries no healthcheck naming ${PANEL_NODE_BIN} — the builder dropped it, ` +
       `or the Dockerfile used the bare "node" form that distroless's PATH cannot find. ` +
       `Config.Healthcheck was ${JSON.stringify(config?.Healthcheck ?? null)}`,
   );
@@ -177,6 +179,32 @@ if (fresh.needsSetup !== true) die(`fresh volume reports needsSetup=${fresh.need
 const setup = await api(firstBase, "POST", "/api/auth/setup", OPERATOR);
 if (!setup.ok) die(`POST /api/auth/setup → ${setup.status}: ${await setup.text()}`);
 log("setup created the Operator");
+
+// better-sqlite3 is a native module compiled in the build stage against a
+// different Node and a different glibc from the one it dlopens under. That it
+// loads at all is the load-bearing fact behind the distroless runtime (ADR
+// 0016 D20, D25), and "the Panel answered /api/healthz" does not prove it —
+// the schema is what proves it. Read the migrated database from inside the
+// container, through the same better-sqlite3 the Panel just used.
+//
+// An absolute node: `docker exec` does not go through ENTRYPOINT, and
+// /nodejs/bin is not on the image's PATH, so a bare `node` is not found —
+// the same trap the healthcheck has.
+log("verifying the migrated schema in the volume …");
+const tables = docker([
+  "exec",
+  containerName,
+  PANEL_NODE_BIN,
+  "-e",
+  `const db=require("better-sqlite3")(process.env.AC_PANEL_DATA_DIR+"/panel.db",{readonly:true});` +
+    `console.log(db.prepare("select name from sqlite_master where type='table'").all().map(r=>r.name).join(" "))`,
+]).stdout.split(/\s+/);
+for (const table of PANEL_TABLES) {
+  if (!tables.includes(table)) {
+    die(`the migrated database has no '${table}' table — found: ${tables.join(", ") || "(none)"}`);
+  }
+}
+log(`better-sqlite3 loaded and migrated ${PANEL_TABLES.join(", ")} into the volume`);
 
 // Recreate: destroy the container (the upgrade motion — the image is
 // replaceable), keep the volume (the state is not).
