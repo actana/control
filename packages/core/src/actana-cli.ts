@@ -502,7 +502,7 @@ async function cmdSetup(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     );
   }
   deps.out("");
-  if (result.reissuedServerCert) {
+  if (result.materialOutcome === "reissued") {
     // The identity survived the move (ADR 0016 D18) but the address did not,
     // and the address is the half the Panel holds — so the token is the fix
     // here, not just an option.
@@ -511,7 +511,7 @@ async function cmdSetup(deps: ActanaCliDeps, argv: string[]): Promise<number> {
         `trusts this Core, but it is dialling the address it paired with. Point it at ` +
         `${publicHost} or re-pair it with this token:`,
     );
-  } else if (result.reusedMaterial) {
+  } else if (result.materialOutcome === "reused") {
     // The bytes differ every time (the bearer inside carries a fresh expiry),
     // so "the same token" would be a lie — but the credentials a paired Panel
     // pinned are untouched, which is what the operator needs to know.

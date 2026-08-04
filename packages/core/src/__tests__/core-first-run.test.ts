@@ -46,6 +46,7 @@ afterEach(() => {
 
 const options = {
   publicHost: "core.example.test",
+  publicHostDeclared: true,
   port: 8443,
   label: "workshop",
   bearerDays: 365,
@@ -171,7 +172,7 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
       publicHost: "core2.example.test",
     });
 
-    expect(moved.reissued).toBe(true);
+    expect(moved.certAction).toBe("moved");
     expect(moved.material.coreId).toBe(first.material.coreId);
     expect(moved.material.bearerSecret).toBe(first.material.bearerSecret);
     expect(moved.material.caCert).toBe(first.material.caCert);
@@ -212,7 +213,7 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
       publicHost: "core2.example.test",
     });
 
-    expect(again.reissued).toBe(false);
+    expect(again.certAction).toBe("unchanged");
     expect(again.material.serverCert).toBe(moved.material.serverCert);
   });
 
@@ -227,18 +228,40 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     expect(decodeRegistrationBlob(onDisk)?.endpoint).toBe("wss://core2.example.test:8443");
   });
 
-  it("re-issues for material written before the host was recorded", async () => {
+  it("re-issues quietly for material written before the host was recorded", async () => {
     const minted = await loadOrMintMaterial({ materialFile, ...options });
     const { serverHost: _recorded, ...legacy } = minted.material;
     fs.writeFileSync(materialFile, JSON.stringify(legacy));
+    const blobBefore = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
 
-    // An unrecorded host is an unknown one, so the SAN is re-signed once for
-    // the host in hand and recorded — cheap, and it keeps the identity.
+    // An unrecorded host is an unknown one, not a moved one: the SAN is
+    // re-signed once for the host in hand and recorded, but the boot after an
+    // upgrade must not tell an operator their Core moved when it did not.
     const boot = await loadOrMintMaterial({ materialFile, ...options });
 
-    expect(boot.reissued).toBe(true);
+    expect(boot.certAction).toBe("backfilled");
     expect(boot.material.coreId).toBe(minted.material.coreId);
     expect(boot.material.serverHost).toBe(options.publicHost);
+    expect(fs.readFileSync(registrationBlobPath(materialFile), "utf8")).toBe(blobBefore);
+  });
+
+  it("leaves the cert alone when the public host was never declared", async () => {
+    const first = await loadOrMintMaterial({ materialFile, ...options });
+    const blobBefore = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
+
+    // A daemon started without `ACTANA_PUBLIC_HOST` falls back to its bind
+    // address. That is a guess, and re-signing the SAN with a guess would take
+    // a working Core off its own address and onto 127.0.0.1.
+    const boot = await loadOrMintMaterial({
+      materialFile,
+      ...options,
+      publicHost: "127.0.0.1",
+      publicHostDeclared: false,
+    });
+
+    expect(boot.certAction).toBe("unchanged");
+    expect(boot.material.serverCert).toBe(first.material.serverCert);
+    expect(fs.readFileSync(registrationBlobPath(materialFile), "utf8")).toBe(blobBefore);
   });
 });
 

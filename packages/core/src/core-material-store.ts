@@ -92,14 +92,29 @@ export async function mintFreshMaterial(publicHost: string): Promise<PersistedMa
 }
 
 /**
- * Whether `material`'s server cert already covers `host` — i.e. whether a Panel
- * dialling `host` would get past TLS hostname verification.
+ * What `material`'s server cert says about `host`:
  *
- * Material written before `serverHost` existed answers `false` for every host,
- * which costs one re-issue on the boot after an upgrade and records the answer.
+ * - `covered` — it was signed for exactly this host; a Panel dialling it gets
+ *   past TLS hostname verification.
+ * - `moved` — it was signed for a different one, and that Panel would not.
+ * - `unrecorded` — the material predates `serverHost` and nothing on disk says
+ *   either way.
+ *
+ * `fallbackHost` is what the caller knows independently, for material that
+ * predates the record: `actana setup` wrote the host into the config beside the
+ * material, which is as good as the record would have been. A daemon booting in
+ * a container has no such config, which is why `unrecorded` stays a third
+ * answer rather than collapsing into `moved` — re-signing is safe, but telling
+ * an operator their Core moved when it did not is not.
  */
-export function serverCertCoversHost(material: PersistedMaterial, host: string): boolean {
-  return material.serverHost !== "" && material.serverHost === host;
+export function checkServerCertHost(
+  material: PersistedMaterial,
+  host: string,
+  fallbackHost?: string,
+): "covered" | "moved" | "unrecorded" {
+  const signedFor = material.serverHost || fallbackHost || "";
+  if (signedFor === "") return "unrecorded";
+  return signedFor === host ? "covered" : "moved";
 }
 
 /**

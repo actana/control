@@ -9,7 +9,7 @@ import {
   materialFilePath,
   mintFreshMaterial,
   reissueServerCert,
-  serverCertCoversHost,
+  checkServerCertHost,
   type PersistedMaterial,
 } from "../core-material-store";
 
@@ -105,7 +105,7 @@ describe("core material store", () => {
       // rejecting the file over that would unpair a Panel to save a field.
       const loaded = loadMaterial(dir);
       expect(loaded).toEqual({ ...legacy, serverHost: "" });
-      expect(serverCertCoversHost(loaded!, serverHost)).toBe(false);
+      expect(checkServerCertHost(loaded!, serverHost)).toBe("unrecorded");
     });
 
     it("restricts file permissions to owner-only (0o600)", () => {
@@ -151,13 +151,35 @@ describe("core material store", () => {
 
     it("records the host it signed for, so the next boot knows it is covered", async () => {
       const minted = await mintFreshMaterial("10.0.0.5");
-      expect(serverCertCoversHost(minted, "10.0.0.5")).toBe(true);
-      expect(serverCertCoversHost(minted, "core.example.test")).toBe(false);
+      expect(checkServerCertHost(minted, "10.0.0.5")).toBe("covered");
+      expect(checkServerCertHost(minted, "core.example.test")).toBe("moved");
 
       const moved = await reissueServerCert(minted, "core.example.test");
 
       expect(moved.serverHost).toBe("core.example.test");
-      expect(serverCertCoversHost(moved, "core.example.test")).toBe(true);
+      expect(checkServerCertHost(moved, "core.example.test")).toBe("covered");
+    });
+  });
+
+  describe("checkServerCertHost", () => {
+    const unrecorded: PersistedMaterial = { ...sample, serverHost: "" };
+
+    it("separates a host that moved from one nothing on disk records", () => {
+      // The two must not collapse: re-signing is safe either way, but telling
+      // an operator their Core moved when it did not is a fiction.
+      expect(checkServerCertHost(unrecorded, "10.0.0.5")).toBe("unrecorded");
+      expect(checkServerCertHost(sample, "10.0.0.9")).toBe("moved");
+    });
+
+    it("takes the caller's fallback for material that predates the record", () => {
+      // `actana setup` wrote the host into the config beside the material,
+      // which is as authoritative as the record would have been.
+      expect(checkServerCertHost(unrecorded, "10.0.0.5", "10.0.0.5")).toBe("covered");
+      expect(checkServerCertHost(unrecorded, "10.0.0.9", "10.0.0.5")).toBe("moved");
+    });
+
+    it("prefers the recorded host over the fallback", () => {
+      expect(checkServerCertHost(sample, "10.0.0.5", "stale.example")).toBe("covered");
     });
   });
 });

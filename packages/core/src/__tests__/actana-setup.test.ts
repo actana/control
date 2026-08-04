@@ -353,7 +353,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     const b = decodeRegistrationBlob(second.blob)!;
     expect(b.caCert).toBe(a.caCert);
     expect(b.clientCert).toBe(a.clientCert);
-    expect(second.reusedMaterial).toBe(true);
+    expect(second.materialOutcome).toBe("reused");
   });
 
   it("leaves exactly one unit file and one current symlink", async () => {
@@ -412,7 +412,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     const second = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
 
     const after = loadMaterial(layout.configDir)!;
-    expect(second.reissuedServerCert).toBe(true);
+    expect(second.materialOutcome).toBe("reissued");
     expect(after.serverCert).not.toBe(before.serverCert);
     expect(new X509Certificate(after.serverCert).subjectAltName).toContain("10.0.0.9");
     expect(decodeRegistrationBlob(second.blob)!.endpoint).toBe("wss://10.0.0.9:8443");
@@ -433,7 +433,8 @@ describe("runActanaSetup — re-running over an existing install", () => {
     expect(after.caCert).toBe(before.caCert);
     expect(after.caKey).toBe(before.caKey);
     expect(after.clientCert).toBe(before.clientCert);
-    expect(second.reusedMaterial).toBe(true);
+    expect(after.clientKey).toBe(before.clientKey);
+    expect(second.materialOutcome).toBe("reissued");
 
     const a = decodeRegistrationBlob(first.blob)!;
     const b = decodeRegistrationBlob(second.blob)!;
@@ -459,13 +460,13 @@ describe("runActanaSetup — re-running over an existing install", () => {
     persistMaterial(layout.configDir, { ...legacy, serverHost: "" });
 
     const same = await runActanaSetup(options(fakeSystem()));
-    expect(same.reissuedServerCert).toBe(false);
+    expect(same.materialOutcome).toBe("reused");
     expect(loadMaterial(layout.configDir)!.serverCert).toBe(legacy.serverCert);
 
     persistMaterial(layout.configDir, { ...legacy, serverHost: "" });
     const moved = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
 
-    expect(moved.reissuedServerCert).toBe(true);
+    expect(moved.materialOutcome).toBe("reissued");
     expect(loadMaterial(layout.configDir)!.coreId).toBe(legacy.coreId);
   });
 

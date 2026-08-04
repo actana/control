@@ -26,10 +26,10 @@ import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
   loadMaterial,
   materialFilePath,
+  checkServerCertHost,
   mintFreshMaterial,
   persistMaterial,
   reissueServerCert,
-  serverCertCoversHost,
   type PersistedMaterial,
 } from "./core-material-store";
 import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses";
@@ -79,6 +79,9 @@ export type SetupOptions = {
   out: (line: string) => void;
 };
 
+/** What `actana setup` did to this machine's pairing material. */
+export type MaterialOutcome = "minted" | "reused" | "reissued";
+
 export type SetupResult = {
   /** The pairing token — base64 of the Registration blob. */
   blob: string;
@@ -91,13 +94,16 @@ export type SetupResult = {
   serviceSummary: string;
   /** Whether the daemon will survive logout. */
   survivesLogout: boolean;
-  /** True when the existing pairing material was kept (a paired Panel stays paired). */
-  reusedMaterial: boolean;
   /**
-   * True when the public host moved and the server cert was re-signed for it.
-   * The identity behind it is the same one — see {@link reusedMaterial}.
+   * What this run did to the pairing material:
+   *
+   * - `minted` — a new identity; there was nothing to keep.
+   * - `reused` — the existing one, untouched; a paired Panel stays paired.
+   * - `reissued` — the existing identity, with a server cert re-signed for a
+   *   public host that moved. A paired Panel still trusts this Core but is
+   *   dialling the address it paired with.
    */
-  reissuedServerCert: boolean;
+  materialOutcome: MaterialOutcome;
   /** Whether the daemon's port answered before the timeout. */
   listening: boolean;
   /** What became of each managed Harness during the offer round. */
@@ -144,29 +150,30 @@ export function choosePublicHost(
  */
 async function resolveMaterial(
   opts: SetupOptions,
-): Promise<{ material: PersistedMaterial; reused: boolean; reissued: boolean }> {
+): Promise<{ material: PersistedMaterial; outcome: MaterialOutcome }> {
   const existing = loadMaterial(opts.layout.configDir);
   if (!existing) {
-    return { material: await mintFreshMaterial(opts.publicHost), reused: false, reissued: false };
+    return { material: await mintFreshMaterial(opts.publicHost), outcome: "minted" };
   }
 
   const previous = readActanaConfig(opts.layout.configDir);
-  const material =
-    existing.serverHost === "" && previous
-      ? { ...existing, serverHost: previous.publicHost }
-      : existing;
-  if (serverCertCoversHost(material, opts.publicHost)) {
-    return { material, reused: true, reissued: false };
+  const check = checkServerCertHost(existing, opts.publicHost, previous?.publicHost);
+  if (check === "covered") {
+    // Backfilled for material that predates the record: the config setup wrote
+    // beside it is what proved the cert covers this host, so record the answer.
+    return { material: { ...existing, serverHost: opts.publicHost }, outcome: "reused" };
   }
 
   opts.out(
-    `Public host changed to ${opts.publicHost} — re-issuing this Core's server ` +
-      "certificate from its own CA.",
+    check === "moved"
+      ? `Public host changed to ${opts.publicHost} — re-issuing this Core's server ` +
+          "certificate from its own CA."
+      : "This Core's material does not record which host its certificate was signed " +
+          `for — re-issuing it for ${opts.publicHost} from its own CA.`,
   );
   return {
-    material: await reissueServerCert(material, opts.publicHost),
-    reused: true,
-    reissued: true,
+    material: await reissueServerCert(existing, opts.publicHost),
+    outcome: "reissued",
   };
 }
 
@@ -210,7 +217,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
   pointSymlink(layout.binLink, path.join(layout.currentLink, "bin", "actana"));
   fs.mkdirSync(layout.dataDir, { recursive: true });
 
-  const { material, reused, reissued } = await resolveMaterial(opts);
+  const { material, outcome } = await resolveMaterial(opts);
   persistMaterial(layout.configDir, material);
 
   const config = {
@@ -284,8 +291,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     serviceName: service.name,
     serviceSummary: persistence.summary,
     survivesLogout: persistence.survivesLogout,
-    reusedMaterial: reused,
-    reissuedServerCert: reissued,
+    materialOutcome: outcome,
     listening,
     agents,
   };

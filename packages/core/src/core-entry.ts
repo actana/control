@@ -260,6 +260,10 @@ async function startCore(): Promise<void> {
         resolved = await loadOrMintMaterial({
           materialFile,
           publicHost,
+          // `host` is the bind address standing in for an answer the operator
+          // did not give — enough to mint a first identity from, never enough
+          // to re-sign an existing one's SAN with.
+          publicHostDeclared: Boolean(process.env.AC_CORE_PUBLIC_HOST),
           port,
           label,
           bearerDays,
@@ -268,7 +272,7 @@ async function startCore(): Promise<void> {
         console.error(`[core-entry] ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-      const { material, blob, reissued } = resolved;
+      const { material, blob, certAction } = resolved;
       const secret: BearerSecret = material.bearerSecret;
 
       serverOpts.tls = {
@@ -281,7 +285,7 @@ async function startCore(): Promise<void> {
       // A moved public host keeps the identity and re-signs the cert for the
       // new address (D18), so this is not a pairing event — but the Panel is
       // still dialling the old address, so say where the fresh token is.
-      if (reissued) {
+      if (certAction === "moved") {
         console.log(
           `[core-entry] public host is now ${publicHost} — re-issued this Core's server ` +
             "certificate from its existing CA. Pairing credentials are unchanged; update " +
