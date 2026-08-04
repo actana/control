@@ -141,12 +141,14 @@ changelog is assembled from.
 - [ ] Enable secret scanning + push protection
 - [ ] Set the GHCR packages `panel` and `core` to **public** once the repo is public,
       or `docker pull` fails for everyone but org members
-- [ ] **⚠ before public** — set the **Docker Hub description on `actana/core`**.
-      The image carries OCI labels marking it a development fixture, but nobody
-      reads labels before pulling. Paste the warning from
-      [`ci-cd.md`](ci-cd.md#the-published-images): it needs `--privileged` and
-      the host cgroup, grants passwordless sudo, and only pairs at the hostname
-      `core`. Docker Hub descriptions are set in its UI, not by this repo.
+- [ ] After the first release, check that **both Docker Hub pages render** —
+      `actana/panel` and `actana/core`. Nothing here is manual: `release.yml`'s
+      `descriptions` job PATCHes each page from [`docs/images/`](images/) as
+      soon as both images are published ([ADR
+      0016](adr/0016-the-0-1-0-shape.md) D33), and a
+      typo is fixed by editing the file and dispatching that workflow rather
+      than by cutting a release. Neither page has ever been published, so the
+      first release is the first time either is seen.
 
 ## 6. Tag history
 
@@ -238,7 +240,7 @@ new "stale"               795548 "Inactive; scheduled for auto-close"
 ```
 
 `pinned`, `security`, `blocked`, and `needs-info` are exempt from the stale bot
-([`stale.yml`](../.github/workflows/stale.yml)) — an issue waiting on a
+([`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `stale` job) — an issue waiting on a
 maintainer's question should not be closed for the reporter's silence.
 
 ## 8. Local hooks (optional, per clone)

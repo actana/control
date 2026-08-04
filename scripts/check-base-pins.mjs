@@ -50,11 +50,11 @@ const NODE_ROW = "NODE_VERSION";
 
 /**
  * Who opens the PR for a drifted pin. Named here rather than spelled out at
- * each use because base-pins.yml branches on it: a bare string matched across
- * that language boundary is a rename waiting to fail silently.
+ * each use because housekeeping.yml branches on it: a bare string matched
+ * across that language boundary is a rename waiting to fail silently.
  */
 const DEPENDABOT = "dependabot";
-const THIS_WORKFLOW = "base-pins.yml";
+const THIS_WORKFLOW = "housekeeping.yml (base-pins)";
 
 // Both list and OCI forms. Asking for only the Docker list media type gets a
 // 404 from registries that publish an OCI index — gcr.io does — and asking for

@@ -62,11 +62,12 @@ updates:
   #
   # `ARG NODE_VERSION` in deploy/core.Dockerfile is a nodejs.org tarball, not
   # an image reference, so nothing in this file can see it. It is bumped by
-  # .github/workflows/base-pins.yml, which also re-resolves both digests weekly
-  # and reports any this entry has not moved (D10).
+  # the `base-pins` job in .github/workflows/housekeeping.yml, which also
+  # re-resolves both digests weekly and reports any this entry has not moved
+  # (D10).
   - package-ecosystem: "docker"
     directory: "/deploy"
-    # Spelled out rather than left to the default, because base-pins.yml's
+    # Spelled out rather than left to the default, because housekeeping's
     # weekly cron is deliberately scheduled *after* this one and a default
     # Dependabot picks for itself is not something a cron can be after.
     schedule:

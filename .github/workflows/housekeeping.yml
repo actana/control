@@ -1,0 +1,538 @@
+name: Housekeeping
+
+# The third and last workflow (ADR 0016 D34), and the one that is not a check.
+#
+# Five chores on two schedules. What they have in common is not their subject —
+# they share nothing — but their relationship to a pull request: **none of them
+# gates one, and none of them can be caused or fixed by one.** That is the whole
+# reason they are here rather than in `ci.yml`.
+#
+#   stale           daily   labels and closes an inactive issue or PR
+#   base-pins       weekly  opens the NODE_VERSION bump PR, reports digest drift
+#   core-rebuild    weekly  rebuilds and republishes the released Core image
+#   dev-audit       weekly  `pnpm audit` over the dev tree — opens an issue
+#   harness-canary  weekly  the vendors' real installers — opens an issue
+#
+# Two of them deliberately end in `gh issue create` rather than a red run.
+# `dev-audit` (D37) is red for advisories in packages that never ship, and
+# `harness-canary` (D38) is red when a vendor changes their installer — neither
+# is payable by the person whose PR happens to be open, and a permanently red
+# scheduled workflow is how a team learns that red means nothing.
+#
+# Six jobs, five chores: `release-ref` is `core-rebuild`'s resolver rather than a
+# chore of its own — it is a separate job only because a `uses:` job cannot run
+# a step to work out its own inputs.
+#
+# `base-pins` was `base-pins.yml`; `stale` was `stale.yml`. Both are folded in
+# here rather than kept as files of their own, because D34's count is entry
+# points: `ci`, `release`, `housekeeping`, plus `container-image.yml` as a
+# reusable workflow. A weekly cron that opens a PR is housekeeping by
+# definition, and the alternative was two more files that `ls
+# .github/workflows` has to explain.
+#
+# Jobs are gated on `github.event.schedule`, which is how one file carries two
+# cadences: a job with the daily cron in its `if:` does not run on the weekly
+# tick. `workflow_dispatch` names one chore, or `weekly` for the four that share
+# the Monday tick — see `scripts/__tests__/workflows.test.mjs`, which reads this
+# file and asserts each job is on the cron it claims.
+
+on:
+  schedule:
+    # Daily, off-peak. Carried across from stale.yml unchanged.
+    - cron: "17 3 * * *"
+    # Mondays at 07:00 UTC. Weekly rather than nightly for the rebuild (D10):
+    # Canonical does not ship security updates nightly, and a nightly rebuild is
+    # a property of a vendor's build farm, not something worth imitating here.
+    #
+    # The time is base-pins' and the reason is base-pins': it is after the 06:00
+    # Europe/Berlin the `docker` entry in .github/dependabot.yml is scheduled
+    # for (05:00 UTC in winter, 04:00 in summer). Ordering matters only for the
+    # reporting — a digest Dependabot has just opened a PR for should not also
+    # be listed here as one nobody has moved.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+    inputs:
+      chore:
+        description: "Which chore to run. `weekly` runs the four on the Monday tick."
+        type: choice
+        default: weekly
+        options:
+          - weekly
+          - stale
+          - base-pins
+          - core-rebuild
+          - dev-audit
+          - harness-canary
+
+# Serialised, never cancelled: a run that is halfway through republishing an
+# image must finish, and a stale sweep that is skipped is a day of backlog
+# nobody swept.
+concurrency:
+  group: housekeeping
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ------------------------------------------------------------------ daily
+
+  # Keeps the backlog honest: marks inactive issues/PRs stale, then closes them.
+  # Issues labeled `pinned` or `security` are never touched.
+  stale:
+    name: Stale issues and PRs
+    if: >-
+      github.event.schedule == '17 3 * * *'
+      || (github.event_name == 'workflow_dispatch' && inputs.chore == 'stale')
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/stale@5bef64f19d7facfb25b37b414482c7164d639639 # v9
+        with:
+          days-before-issue-stale: 60
+          days-before-issue-close: 14
+          days-before-pr-stale: 30
+          days-before-pr-close: 14
+          stale-issue-label: "stale"
+          stale-pr-label: "stale"
+          exempt-issue-labels: "pinned,security,blocked,needs-info"
+          exempt-pr-labels: "pinned,security,blocked"
+          stale-issue-message: >
+            This issue has been automatically marked as stale due to 60 days of
+            inactivity. It will be closed in 14 days unless there is new activity.
+            If this is still relevant, please comment or remove the stale label.
+          stale-pr-message: >
+            This PR has been automatically marked as stale due to 30 days of
+            inactivity. It will be closed in 14 days unless there is new activity.
+            Please rebase and address review feedback, or convert to draft.
+
+  # ----------------------------------------------------------------- weekly
+
+  # The third of ADR 0016 D10's three rebuild mechanisms, plus a backstop for
+  # the second. Which pin is whose job, and why a checker exists alongside the
+  # Dependabot config at all, is written up once in docs/ci-cd.md § "The image
+  # bases, and what moves them" — this job implements that split rather than
+  # re-arguing it:
+  #
+  #   opens PRs for   `ARG NODE_VERSION`, which is a nodejs.org tarball (D8) and
+  #                   so invisible to Dependabot's docker ecosystem
+  #   reports only    the two base digests, which are Dependabot's to open PRs
+  #                   for; two bots racing on one PR is worse than one bot
+  #   not here        the weekly rebuild-and-republish, which is `core-rebuild`
+  #                   below
+  #
+  # One correction worth carrying, because the wording is easy to repeat: D10
+  # calls the NODE_VERSION bump "the only thing that clears the Node-attributed
+  # findings", and D10's own amendment measured that false — no released Node 24
+  # ships a clean bundled npm, and D11's amendment scopes that tree out of the
+  # gate. The bump is worth making for Node's own security fixes, not the gate.
+  base-pins:
+    name: Check the image bases and NODE_VERSION
+    if: >-
+      github.event.schedule == '0 7 * * 1'
+      || (github.event_name == 'workflow_dispatch'
+          && contains(fromJSON('["weekly","base-pins"]'), inputs.chore))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # No `pnpm install`: the checker is dependency-free on purpose, so a
+      # broken lockfile cannot be the reason nobody hears about a stale base.
+      #
+      # Exactly one invocation, and it does all three jobs — prints the table,
+      # writes this step's outputs, and applies the NODE_VERSION bump to the
+      # working tree. A second invocation would re-resolve every pin over the
+      # network and could disagree with the first if a digest moved in between.
+      # `--fix-node` runs unconditionally because it is a no-op when nothing has
+      # drifted, and the tree is thrown away with the runner if no PR follows.
+      #
+      # Deciding what "drifted" means, and whose job each pin is, stays inside
+      # the checker where it is tested — re-deriving it from the JSON in shell
+      # would give it a second, untested definition.
+      - name: Resolve every pin against its upstream
+        id: check
+        run: |
+          set -euo pipefail
+
+          {
+            echo "### Pins"
+            echo ""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          node scripts/check-base-pins.mjs \
+            --fix-node \
+            --github-output "$GITHUB_OUTPUT" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Report-only, and the wording matters: this is not a failure, it is
+      # Dependabot's PR being late or absent. Someone reading the run should
+      # know which of those to go and check.
+      - name: Note any digest Dependabot has not moved
+        if: steps.check.outputs.digest-drift != ''
+        env:
+          DRIFTED: ${{ steps.check.outputs.digest-drift }}
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### Digests behind upstream"
+            echo ""
+            echo "\`$DRIFTED\` — these are Dependabot's to bump (.github/dependabot.yml, \`docker\`)."
+            echo "If no PR is open for them, check the updater's own log at"
+            echo "\`https://github.com/$GITHUB_REPOSITORY/network/updates\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open the NODE_VERSION bump
+        if: steps.check.outputs.node-drifted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.check.outputs.node-latest }}
+          CURRENT: ${{ steps.check.outputs.node-current }}
+        run: |
+          set -euo pipefail
+
+          # `chore/`, not `build/`: the branch-name check in ci.yml
+          # does not list `build` as a branch type, and a bot cannot retitle
+          # its own branch after the fact. The *commit* is still `build(...)`,
+          # which is the part commitlint reads.
+          branch="chore/node-version-${LATEST//./-}"
+
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "A PR for $branch is already open — nothing to do."
+            exit 0
+          fi
+
+          # The bump itself is already in the working tree — the check step
+          # applied it. This step only turns it into a branch and a PR.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "build(core-image): bump NODE_VERSION to ${LATEST}"
+          git push --force-with-lease origin "$branch"
+
+          # --body-file rather than an inline heredoc: this block is already
+          # inside a YAML block scalar, and nesting a heredoc's terminator
+          # inside one is the kind of thing that survives review and then
+          # breaks on the first run nobody is watching.
+          {
+            echo "Node ${CURRENT} → ${LATEST} in \`deploy/core.Dockerfile\`."
+            echo ""
+            echo "Opened by the \`base-pins\` job in \`.github/workflows/housekeeping.yml\`, which"
+            echo "owns this pin because it is a nodejs.org tarball rather than an image reference,"
+            echo "so Dependabot's \`docker\` ecosystem cannot see it (ADR 0016 D8, D10)."
+            echo ""
+            echo "The tarball is SHA-256 verified against that release's own \`SHASUMS256.txt\`"
+            echo "inside the build, so a wrong version fails the image build rather than shipping."
+            echo ""
+            echo "**Checks do not run on this PR.** It is pushed with \`GITHUB_TOKEN\`, and GitHub"
+            echo "deliberately does not trigger workflows from it. Close and reopen the PR to get a"
+            echo "full run before merging."
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          # No `--label`: every label this PR could want has to exist on the
+          # repo already, and `gh pr create` fails outright on one that does
+          # not — which would mean the bump is never opened at all. Labelling is
+          # triage's job and triage can see the branch name.
+          gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$branch" \
+            --title "build(core-image): bump NODE_VERSION to ${LATEST}" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
+
+  # The first of D10's three mechanisms, and the one that pays down findings
+  # rather than reporting them.
+  #
+  # `apt-get upgrade` runs inside the Core image's own layer (D5), so it
+  # resolves `noble-security` at *build* time: a rebuild on an unchanged base
+  # digest still collects every fix Canonical has shipped since the last one.
+  # That is what makes the digest pin honest — without this, pinning a digest
+  # means shipping the security state of the day it was pinned, forever.
+  #
+  # It rebuilds the newest published release rather than `main`, and republishes
+  # that release's own tags: `:<version>` and `:latest` now point at an image
+  # with this week's fixes and the same code. A rebuild that pushed nothing
+  # would prove the base still builds and ship none of what it collected.
+  #
+  # The Core image only. The Panel is distroless — it has no apt at all, so a
+  # rebuild on an unchanged base digest collects nothing and its findings move
+  # only when Chainguard moves the base, which is Dependabot's job.
+  #
+  # T9's Trivy gate comes for free: `container-image.yml` runs it on the built
+  # image before anything is pushed, so a base that has rotted past fixable
+  # CRITICAL/HIGH fails the rebuild instead of republishing over a good tag.
+  release-ref:
+    name: Resolve the released Core to rebuild
+    if: >-
+      github.event.schedule == '0 7 * * 1'
+      || (github.event_name == 'workflow_dispatch'
+          && contains(fromJSON('["weekly","core-rebuild"]'), inputs.chore))
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.release.outputs.ref }}
+      version: ${{ steps.release.outputs.version }}
+      tags: ${{ steps.release.outputs.tags }}
+    steps:
+      - id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # Prereleases are excluded because they must not move `:latest`
+          # (D30), and rebuilding one would republish exactly the tag pair the
+          # release deliberately withheld.
+          ref="$(gh release list \
+            --exclude-drafts --exclude-pre-releases \
+            --limit 1 --json tagName --jq '.[0].tagName // empty')"
+
+          if [[ -z "$ref" ]]; then
+            # Before 0.1.0 this is the normal answer, not a failure: there is
+            # no published image for a rebuild to republish over.
+            echo "::notice title=Nothing to rebuild::No published release yet."
+            exit 0
+          fi
+
+          version="${ref#v}"
+          echo "Rebuilding $ref → $version, latest"
+          {
+            echo "ref=$ref"
+            echo "version=$version"
+            echo "tags=$version latest"
+          } >> "$GITHUB_OUTPUT"
+
+  core-rebuild:
+    name: Weekly Core image rebuild
+    needs: release-ref
+    if: needs.release-ref.outputs.ref != ''
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+    with:
+      image: core
+      ref: ${{ needs.release-ref.outputs.ref }}
+      # The same stage the release used, so the per-arch tags are overwritten
+      # rather than accumulating a `rebuild-…` set beside them. This job is the
+      # release's `core` job run again, on purpose.
+      stage: ${{ needs.release-ref.outputs.version }}
+      tags: ${{ needs.release-ref.outputs.tags }}
+      push: true
+
+  # The second of D37's three populations. `ci.yml`'s `dependency-audit` runs
+  # `--prod`, which is the graph that reaches an operator; this is everything
+  # else — the build tooling, the test harness, the linters.
+  #
+  # It opens an issue instead of gating because the two populations fail
+  # differently. A high in the shipped graph is a bug in something we ship and
+  # the PR in front of it can be held. A high in `brace-expansion` under
+  # `vitest` ships nowhere, is nobody's PR to have caused, and is frequently
+  # nobody's PR to be able to fix — gating on it teaches everyone to click past
+  # a red check, which then also covers the one that mattered.
+  dev-audit:
+    name: Weekly dependency audit (dev tree)
+    if: >-
+      github.event.schedule == '0 7 * * 1'
+      || (github.event_name == 'workflow_dispatch'
+          && contains(fromJSON('["weekly","dev-audit"]'), inputs.chore))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # No `--prod`, which is the whole point of this job — see above.
+      #
+      # The exit status is captured rather than allowed to fail the step: a red
+      # scheduled run is the outcome this job exists to *avoid*, so the finding
+      # has to travel by issue instead.
+      - name: pnpm audit --audit-level high
+        id: audit
+        run: |
+          set -uo pipefail
+          if pnpm audit --audit-level high > "$RUNNER_TEMP/audit.txt" 2>&1; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "clean=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$RUNNER_TEMP/audit.txt"
+          {
+            echo "### \`pnpm audit --audit-level high\` (dev tree)"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/audit.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an issue for the advisories
+        if: steps.audit.outputs.clean == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Weekly dev-tree audit: high or critical advisories"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # One open issue at a time. Re-running weekly against an advisory
+          # nobody has got to yet should be silent, not a new issue every
+          # Monday — the run link on the original is enough to find the latest
+          # output, and a closed issue means someone decided it was handled, so
+          # a fresh recurrence deserves a fresh issue.
+          open="$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          if [[ -n "$open" ]]; then
+            echo "::notice title=Already tracked::#$open is open for this. Not filing another."
+            exit 0
+          fi
+
+          {
+            echo "\`pnpm audit --audit-level high\` over the **dev** tree reported findings."
+            echo ""
+            echo "This does not gate a pull request and it is not a release blocker on its own"
+            echo "(ADR 0016 D37): these are packages that never reach an operator. The shipped"
+            echo "graph is audited with \`--prod\` on every PR, and the image's own layers are"
+            echo "Trivy's."
+            echo ""
+            echo "[Run]($RUN_URL)"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/audit.txt"
+            echo '```'
+          } > "$RUNNER_TEMP/issue.md"
+
+          # `needs-triage` and nothing else. `gh issue create` fails outright on a
+          # label the repo does not have, which would turn "open an issue" into
+          # the red run this job exists to avoid — and the repo's live label set
+          # and the bootstrap in docs/REPO_SETUP.md do not agree on much beyond
+          # this one.
+          gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
+            --label needs-triage
+
+  # The vendor canary (D38). "A vendor changed their installer and `actana
+  # harnesses install <id>` no longer leaves a CLI on PATH" is worth catching —
+  # it is what `e2e-actana-harnesses-linux.mjs` asserts, against four vendors'
+  # real installers over the real network.
+  #
+  # It is deliberately non-hermetic, which is exactly why it is here and not in
+  # `ci.yml`: no PR can cause this failure and no PR author can fix it. Gating a
+  # PR on it is how a team learns that red means nothing.
+  #
+  # This is the one place in the test suite where the word Harness legitimately
+  # survives the rename — it is a vendor's product being installed, not ours.
+  harness-canary:
+    name: Weekly Harness-install canary
+    if: >-
+      github.event.schedule == '0 7 * * 1'
+      || (github.event_name == 'workflow_dispatch'
+          && contains(fromJSON('["weekly","harness-canary"]'), inputs.chore))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: true
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # From `main`, not from the released tarball: what is under test is the
+      # install path in the code as it stands now, so that a vendor move shows
+      # up here the week it happens rather than the week after a release.
+      - name: Build the tarball
+        run: pnpm core:tarball
+
+      - name: Canary — the vendors' own installers, on a fresh systemd machine
+        id: canary
+        run: |
+          set -uo pipefail
+          tarball="$(find artifacts/core -name 'actana-core-*-linux-x64.tar.gz' | head -n1)"
+          if [[ -z "$tarball" ]]; then
+            echo "no linux-x64 tarball was built" >&2
+            exit 1
+          fi
+          if node scripts/e2e-actana-harnesses-linux.mjs --tarball "$tarball" \
+               > "$RUNNER_TEMP/canary.log" 2>&1; then
+            echo "ok=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ok=false" >> "$GITHUB_OUTPUT"
+          fi
+          cat "$RUNNER_TEMP/canary.log"
+
+      - name: Open an issue for the vendor break
+        if: steps.canary.outputs.ok == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TITLE: "Harness-install canary is failing"
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          open="$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          if [[ -n "$open" ]]; then
+            echo "::notice title=Already tracked::#$open is open for this. Not filing another."
+            exit 0
+          fi
+
+          # Tail, not the whole log: a failed run of this script is thousands of
+          # lines of four vendors' installers, and the assertion that failed is
+          # at the end. The full log is on the run.
+          {
+            echo "\`actana harnesses install <id>\` no longer does what a vendor's installer"
+            echo "used to leave behind. This is a vendor-side change, not a regression a pull"
+            echo "request caused (ADR 0016 D38) — which is why it arrives as an issue rather"
+            echo "than a red check."
+            echo ""
+            echo "Reproduce locally: \`pnpm core:tarball && pnpm core:harnesses:e2e --tarball <file>\`"
+            echo ""
+            echo "[Full log]($RUN_URL)"
+            echo ""
+            echo '```'
+            tail -n 100 "$RUNNER_TEMP/canary.log"
+            echo '```'
+          } > "$RUNNER_TEMP/issue.md"
+
+          # `needs-triage` and nothing else. `gh issue create` fails outright on a
+          # label the repo does not have, which would turn "open an issue" into
+          # the red run this job exists to avoid — and the repo's live label set
+          # and the bootstrap in docs/REPO_SETUP.md do not agree on much beyond
+          # this one.
+          gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
+            --label needs-triage

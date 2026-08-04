@@ -58,17 +58,16 @@ volume and you have backed up the Panel. Schema migrations run on boot.
 
 ## You also need a Core
 
-The Panel bundles no harness runtime and runs nothing itself. Each machine you
-want to work on needs a **Core** installed on it, which the Panel then
-registers as a **Core**:
+The Panel runs nothing itself — it is a connection broker. The work happens on a
+**Core**, and every machine you want to work on needs one:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
 ```
 
 See [INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md). The
-`actana/core` image is a *development fixture* for trying the pairing flow on
-one machine — it is not how you host a real Core.
+`actana/core` image is the other supported way to run one, and the reference
+compose above brings both up together.
 
 ## Tags
 
