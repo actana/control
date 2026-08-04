@@ -227,6 +227,55 @@ jobs:
             echo 'core image smoke OK (${target})'
           "
 
+      # The CVE gate (ADR 0016 D11, D37), on the built image rather than on a
+      # lockfile — `pnpm audit` cannot see the base layer at all. It runs
+      # before the push for the same reason the smoke does: an image that
+      # fails the gate must not reach a registry.
+      #
+      # Fixable CRITICAL/HIGH fail; unfixed findings and medium/low are
+      # reported. The one suppression is the checked-in .trivyignore.rego.
+      #
+      # Trivy arrives as its own release tarball, checked against that
+      # release's published checksums — the same "a download we verify, not a
+      # publisher we trust" posture core.Dockerfile takes with Node (D8), and
+      # the reason this is not `curl … install.sh | sh`. Pinning the version
+      # also pins the *scanner*, so a finding count only moves when a
+      # deliberate bump moves it.
+      - name: Trivy — fixable CRITICAL/HIGH gate
+        if: inputs.image == 'core'
+        env:
+          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          STAGE: ${{ inputs.stage }}
+          ARCH: ${{ matrix.arch }}
+          TRIVY_VERSION: 0.73.0
+        run: |
+          set -euo pipefail
+          case "$ARCH" in
+            amd64) trivy_arch=Linux-64bit ;;
+            arm64) trivy_arch=Linux-ARM64 ;;
+            *) echo "unmapped arch $ARCH" >&2; exit 1 ;;
+          esac
+          archive="trivy_${TRIVY_VERSION}_${trivy_arch}.tar.gz"
+          dist="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$dist/$archive"
+          curl -fsSLO "$dist/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " ${archive}\$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum -c -
+          mkdir -p bin && tar -xzf "$archive" -C bin trivy
+          cd "$GITHUB_WORKSPACE"
+          PATH="$RUNNER_TEMP/bin:$PATH" node scripts/scan-core-image.mjs \
+            --image "$IMAGE:$STAGE-$ARCH" --json "$RUNNER_TEMP/trivy-core.json"
+
+      # Always, including on a failed gate: the JSON is how somebody works out
+      # what to bump without re-running the build to see it.
+      - name: Keep the scan
+        if: always() && inputs.image == 'core'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: trivy-core-${{ inputs.stage }}-${{ matrix.arch }}
+          path: ${{ runner.temp }}/trivy-core.json
+          if-no-files-found: ignore
+
       # --------------------------------------------------------------- shared
 
       - name: Push the per-arch tags

@@ -50,6 +50,7 @@
     "panel:image:smoke": "node scripts/smoke-panel-image.mjs",
     "core:tarball": "pnpm --filter @actana/core build && node scripts/build-core-tarball.mjs",
     "core:tarball:smoke": "node scripts/smoke-core-tarball.mjs",
+    "core:image:scan": "node scripts/scan-core-image.mjs",
     "core:setup:e2e": "node scripts/e2e-actana-setup-linux.mjs",
     "core:setup:e2e:macos": "node scripts/e2e-actana-setup-macos.mjs",
     "core:install:e2e": "node scripts/e2e-install-sh-linux.mjs",
