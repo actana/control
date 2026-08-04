@@ -5,14 +5,14 @@ import { FormErrorBox } from "~/components/ui/FormErrorBox";
 import { Btn } from "~/components/ui/Btn";
 import { TextField } from "~/components/ui/TextField";
 import { Icon } from "~/components/ui/Icon";
-import { AgentLogo } from "~/components/ui/AgentLogo";
+import { HarnessLogo } from "~/components/ui/HarnessLogo";
 import { PickCardGroup } from "~/components/ui/PickCardGroup";
 import { ToggleSwitch } from "~/components/views/SettingsParts";
 import { HotkeyTooltip, EscTooltip } from "~/components/ui/Tooltip";
 import { useHotkey } from "~/lib/use-hotkey";
-import { AGENT_META, ICON_COLORS } from "~/lib/design-meta";
+import { HARNESS_META, ICON_COLORS } from "~/lib/design-meta";
 import {
-  agentCanLaunch,
+  harnessCanLaunch,
   availabilityFor,
   useCliAvailability,
 } from "~/lib/cli-availability";
@@ -24,12 +24,12 @@ import {
 } from "~/shared/project-image-limits";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { useSettings } from "~/queries";
-import { AGENT_REGISTRY } from "@actana/shared/agents";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
   DEFAULT_AGENT_LAUNCHER_CONFIG,
-  visibleLauncherAgents,
-} from "~/shared/agent-launcher-config";
-import type { TaskAgent } from "@actana/shared/domain";
+  visibleLauncherHarnesses,
+} from "~/shared/harness-launcher-config";
+import type { Harness } from "@actana/shared/domain";
 import type { Group, Project } from "~/db/schema";
 
 const fieldLabelStyle: CSSProperties = {
@@ -171,8 +171,8 @@ export function ProjectDialog({
     groupId: string | null;
     imagePath?: string | null;
     // Create-only onboarding fields (undefined when editing an existing project).
-    savedAgent?: TaskAgent | null;
-    rememberAgentSettings?: boolean;
+    savedHarness?: Harness | null;
+    rememberHarnessSettings?: boolean;
     defaultGridView?: boolean;
     autoStart?: boolean;
     pinned?: boolean;
@@ -204,7 +204,7 @@ export function ProjectDialog({
   const [iconColor, setIconColor] = useState<string>(ICON_COLORS[0]);
   // Optional at create time: null means "just create the project", a selection
   // means "create it and start a session with that agent".
-  const [agent, setAgent] = useState<TaskAgent | null>(null);
+  const [agent, setHarness] = useState<Harness | null>(null);
   const [gridView, setGridView] = useState(false);
   const [colorMenuOpen, setColorMenuOpen] = useState(false);
   const [imagePath, setImagePath] = useState<string | null>(null);
@@ -217,7 +217,7 @@ export function ProjectDialog({
   const [error, setError] = useState<string | null>(null);
   const [pinned, setPinned] = useState(true);
   // No fallback id: browsing and saving both address a Core by name, and an
-  // id nobody registered would address a Harness that cannot answer. Empty
+  // id nobody registered would address a Core that cannot answer. Empty
   // means "no Core yet", which the Browse button and submit both respect.
   const [coreId, setCoreId] = useState<string>(initialCoreId ?? "");
   const [confirmingClose, setConfirmingClose] = useState(false);
@@ -256,12 +256,12 @@ export function ProjectDialog({
   const { data: settings } = useSettings();
   // Order + visibility mirror the New-session picker (Settings → Providers), so
   // the agent chosen here reads as the same set the user launches with later.
-  const launcherConfig = settings?.agentLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG;
-  const agentOptions = useMemo(
+  const launcherConfig = settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG;
+  const harnessOptions = useMemo(
     () =>
-      visibleLauncherAgents(launcherConfig)
-        .filter((id) => AGENT_REGISTRY[id].uiVisible)
-        .map((id) => ({ id, ...AGENT_REGISTRY[id] })),
+      visibleLauncherHarnesses(launcherConfig)
+        .filter((id) => HARNESS_REGISTRY[id].uiVisible)
+        .map((id) => ({ id, ...HARNESS_REGISTRY[id] })),
     [launcherConfig],
   );
 
@@ -296,7 +296,7 @@ export function ProjectDialog({
       setGridView(project?.defaultGridView ?? false);
       setImagePath(project?.imagePath ?? null);
       setColorMenuOpen(false);
-      setAgent(null);
+      setHarness(null);
       setPinned(true);
       // Reseed the Core selector every open (create flow) — the seed can
       // change between opens when the user picks a different Core in the Fleet
@@ -329,8 +329,8 @@ export function ProjectDialog({
   // session that can't launch. Optional-by-default means null is a valid rest.
   useEffect(() => {
     if (!open || project) return;
-    setAgent((current) =>
-      current && agentCanLaunch(cliAvailability, current) ? current : null,
+    setHarness((current) =>
+      current && harnessCanLaunch(cliAvailability, current) ? current : null,
     );
   }, [open, project, cliAvailability]);
 
@@ -497,8 +497,8 @@ export function ProjectDialog({
         ...(project
           ? {}
           : {
-              savedAgent: agent,
-              rememberAgentSettings: agent !== null,
+              savedHarness: agent,
+              rememberHarnessSettings: agent !== null,
               defaultGridView: gridView,
               autoStart: willStartSession,
               pinned,
@@ -890,11 +890,11 @@ export function ProjectDialog({
         // speakable (WCAG label-in-name).
         ariaLabel="Start with — coding agent for the first session (optional)"
         value={agent}
-        onChange={setAgent}
+        onChange={setHarness}
         deselectable
         style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
-        options={agentOptions.map((a) => {
-          const meta = AGENT_META[a.id];
+        options={harnessOptions.map((a) => {
+          const meta = HARNESS_META[a.id];
           const availability = availabilityFor(cliAvailability, a.id);
           const cliMissing = availability.status === "missing";
           const cliOutdated = availability.status === "outdated";
@@ -905,7 +905,7 @@ export function ProjectDialog({
             !cliOutdated &&
             (availability.status === "checking" || availability.status === "unknown");
           const disabled =
-            submitting || (!cliOutdated && !agentCanLaunch(cliAvailability, a.id));
+            submitting || (!cliOutdated && !harnessCanLaunch(cliAvailability, a.id));
           // Reason lives in the name (not just `title`) so keyboard/AT users
           // hear why it's unavailable; `aria-disabled` keeps it focusable.
           const statusReason = cliMissing
@@ -938,7 +938,7 @@ export function ProjectDialog({
                     flex: "0 0 auto",
                   }}
                 >
-                  <AgentLogo agent={a.id} size={17} />
+                  <HarnessLogo agent={a.id} size={17} />
                 </div>
                 <span
                   style={{
@@ -1426,7 +1426,7 @@ export function ProjectDialog({
             {groupField}
           </GroupCard>
           <GroupCard title="Sessions">
-            {/* Agent picker and layout side-by-side — layout is the lighter
+            {/* Harness picker and layout side-by-side — layout is the lighter
                 choice, so it sits as a slim column with a rule between them. */}
             <div style={{ display: "flex", gap: 14, alignItems: "stretch" }}>
               <div style={{ flex: 1, minWidth: 0 }}>{startWithField}</div>

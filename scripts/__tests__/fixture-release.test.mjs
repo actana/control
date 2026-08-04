@@ -24,12 +24,12 @@ import {
   startFixtureReleaseServer,
   writeStubRelease,
 } from "../lib/fixture-release.mjs";
-import { parseShasums, tarballName } from "../lib/harness-tarball.mjs";
+import { parseShasums, tarballName } from "../lib/core-tarball.mjs";
 
 describe("parseAssetName", () => {
   it("is the inverse of tarballName for every shape the build emits", () => {
     for (const [version, target] of [
-      ["0.49.0", "linux-x64"],
+      ["0.1.0", "linux-x64"],
       ["1.0.0", "mac-arm64"],
       ["1.2.3-rc.1", "linux-arm64"],
     ]) {
@@ -38,7 +38,7 @@ describe("parseAssetName", () => {
   });
 
   it("ignores files that are not release tarballs", () => {
-    for (const name of ["SHA256SUMS", "actana-harness-0.49.0-linux-x64.tar.gz.bak", "notes.txt"]) {
+    for (const name of ["SHA256SUMS", "actana-core-0.1.0-linux-x64.tar.gz.bak", "notes.txt"]) {
       expect(parseAssetName(name)).toBeNull();
     }
   });
@@ -60,12 +60,12 @@ describe("compareVersions", () => {
 describe("indexReleases", () => {
   it("groups tarballs by version, oldest first", () => {
     const index = indexReleases([
-      tarballName("0.50.0", "linux-x64"),
-      tarballName("0.49.0", "linux-x64"),
-      tarballName("0.49.0", "mac-arm64"),
+      tarballName("0.2.0", "linux-x64"),
+      tarballName("0.1.0", "linux-x64"),
+      tarballName("0.1.0", "mac-arm64"),
       "SHA256SUMS",
     ]);
-    expect(index.map((r) => r.version)).toEqual(["0.49.0", "0.50.0"]);
+    expect(index.map((r) => r.version)).toEqual(["0.1.0", "0.2.0"]);
     expect([...index[0].assets.keys()].sort()).toEqual(["linux-x64", "mac-arm64"]);
   });
 });
@@ -75,16 +75,16 @@ describe("routeFixtureRequest", () => {
 
   it("recognises the two release-API paths the installer uses", () => {
     expect(routeFixtureRequest(`/repos/${repo}/releases/latest`, repo)).toEqual({ kind: "latest" });
-    expect(routeFixtureRequest(`/repos/${repo}/releases/tags/v0.49.0`, repo)).toEqual({
+    expect(routeFixtureRequest(`/repos/${repo}/releases/tags/v0.1.0`, repo)).toEqual({
       kind: "tag",
-      tag: "v0.49.0",
+      tag: "v0.1.0",
     });
   });
 
   it("recognises asset downloads", () => {
     expect(
-      routeFixtureRequest(`/${repo}/releases/download/v0.49.0/${SHASUMS_ASSET}`, repo),
-    ).toEqual({ kind: "asset", tag: "v0.49.0", asset: SHASUMS_ASSET });
+      routeFixtureRequest(`/${repo}/releases/download/v0.1.0/${SHASUMS_ASSET}`, repo),
+    ).toEqual({ kind: "asset", tag: "v0.1.0", asset: SHASUMS_ASSET });
   });
 
   it("serves the bootstrapper itself", () => {
@@ -100,14 +100,14 @@ describe("releaseJson", () => {
   it("lists the checksum asset alongside the tarballs", () => {
     const json = releaseJson({
       repo: DEFAULT_REPO,
-      version: "0.49.0",
-      assets: new Map([["linux-x64", tarballName("0.49.0", "linux-x64")]]),
+      version: "0.1.0",
+      assets: new Map([["linux-x64", tarballName("0.1.0", "linux-x64")]]),
       baseUrl: "http://127.0.0.1:9999",
     });
-    expect(json.tag_name).toBe("v0.49.0");
-    expect(json.assets.map((a) => a.name)).toEqual([SHASUMS_ASSET, tarballName("0.49.0", "linux-x64")]);
+    expect(json.tag_name).toBe("v0.1.0");
+    expect(json.assets.map((a) => a.name)).toEqual([SHASUMS_ASSET, tarballName("0.1.0", "linux-x64")]);
     expect(json.assets[0].browser_download_url).toBe(
-      `http://127.0.0.1:9999/${DEFAULT_REPO}/releases/download/v0.49.0/${SHASUMS_ASSET}`,
+      `http://127.0.0.1:9999/${DEFAULT_REPO}/releases/download/v0.1.0/${SHASUMS_ASSET}`,
     );
   });
 });
@@ -118,12 +118,12 @@ describe("the fixture server", () => {
 
   beforeAll(async () => {
     dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-fixture-release-"));
-    for (const version of ["0.49.0", "0.50.0"]) {
+    for (const version of ["0.1.0", "0.2.0"]) {
       writeStubRelease({ dir, version, target: "linux-x64", script: "#!/bin/sh\nexit 0\n" });
     }
     server = await startFixtureReleaseServer({
       dir,
-      corruptAssets: [tarballName("0.49.0", "linux-x64")],
+      corruptAssets: [tarballName("0.1.0", "linux-x64")],
     });
   });
 
@@ -140,12 +140,12 @@ describe("the fixture server", () => {
   it("answers `latest` with the highest version present", async () => {
     const { status, body } = await get(`/repos/${DEFAULT_REPO}/releases/latest`);
     expect(status).toBe(200);
-    expect(JSON.parse(body.toString()).tag_name).toBe("v0.50.0");
+    expect(JSON.parse(body.toString()).tag_name).toBe("v0.2.0");
   });
 
   it("answers a pinned tag with that exact release", async () => {
-    const { body } = await get(`/repos/${DEFAULT_REPO}/releases/tags/v0.49.0`);
-    expect(JSON.parse(body.toString()).tag_name).toBe("v0.49.0");
+    const { body } = await get(`/repos/${DEFAULT_REPO}/releases/tags/v0.1.0`);
+    expect(JSON.parse(body.toString()).tag_name).toBe("v0.1.0");
   });
 
   it("404s a tag it has no tarball for", async () => {
@@ -153,8 +153,8 @@ describe("the fixture server", () => {
   });
 
   it("derives SHA256SUMS from the bytes on disk", async () => {
-    const name = tarballName("0.50.0", "linux-x64");
-    const { body } = await get(`/${DEFAULT_REPO}/releases/download/v0.50.0/${SHASUMS_ASSET}`);
+    const name = tarballName("0.2.0", "linux-x64");
+    const { body } = await get(`/${DEFAULT_REPO}/releases/download/v0.2.0/${SHASUMS_ASSET}`);
     const digests = parseShasums(body.toString());
     const { createHash } = await import("node:crypto");
     const onDisk = createHash("sha256").update(fs.readFileSync(path.join(dir, name))).digest("hex");
@@ -162,9 +162,9 @@ describe("the fixture server", () => {
   });
 
   it("serves a corrupted asset that no longer matches its published digest", async () => {
-    const name = tarballName("0.49.0", "linux-x64");
-    const { body: served } = await get(`/${DEFAULT_REPO}/releases/download/v0.49.0/${name}`);
-    const { body: sums } = await get(`/${DEFAULT_REPO}/releases/download/v0.49.0/${SHASUMS_ASSET}`);
+    const name = tarballName("0.1.0", "linux-x64");
+    const { body: served } = await get(`/${DEFAULT_REPO}/releases/download/v0.1.0/${name}`);
+    const { body: sums } = await get(`/${DEFAULT_REPO}/releases/download/v0.1.0/${SHASUMS_ASSET}`);
     const { createHash } = await import("node:crypto");
     expect(createHash("sha256").update(served).digest("hex")).not.toBe(
       parseShasums(sums.toString()).get(name),

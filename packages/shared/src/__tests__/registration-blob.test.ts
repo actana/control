@@ -5,7 +5,7 @@ import {
   type RegistrationBlob,
 } from "../registration-blob";
 
-// The single base64 artifact emitted by `harness install` (ADR 0003), pasted
+// The single base64 artifact emitted by `core install` (ADR 0003), pasted
 // once into the Panel's "Add Core". `endpoint` + `label` go to the Core
 // registry; the secret fields (caCert, clientCert, clientKey, bearer) go to
 // `safeStorage`. See CONTEXT.md "Registration blob".

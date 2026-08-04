@@ -8,11 +8,11 @@ import {
 } from "../services/settings";
 import {
   AI_MODEL_ID_HELP,
-  AI_RUNTIME_HARNESS_VALUES,
-  isAiRuntimeHarness,
+  HARNESSES,
+  isHarness,
   normalizeAiModelId,
   type AiModelId,
-  type AiRuntimeHarness,
+  type Harness,
 } from "@actana/shared/ai-runtime-defaults";
 import {
   ACTIVE_PROJECT_GROUP_MAX_LENGTH,
@@ -28,9 +28,9 @@ import {
   type ProviderUsageId,
 } from "~/shared/provider-usage";
 import {
-  normalizeAgentLauncherConfig,
-  type AgentLauncherConfig,
-} from "~/shared/agent-launcher-config";
+  normalizeHarnessLauncherConfig,
+  type HarnessLauncherConfig,
+} from "~/shared/harness-launcher-config";
 import {
   DEFAULT_TERMINAL_ZOOM_LEVEL,
   TERMINAL_ZOOM_MAX,
@@ -65,7 +65,7 @@ const CLAUDE_USAGE_LIMITS_SHOW_SESSION_KEY = "claude_usage_limits_show_session";
 const CLAUDE_USAGE_LIMITS_SHOW_WEEKLY_KEY = "claude_usage_limits_show_weekly";
 const PROVIDER_USAGE_ENABLED_KEY = "provider_usage_enabled";
 const PROVIDER_USAGE_IDS_KEY = "provider_usage_ids";
-const AGENT_LAUNCHER_CONFIG_KEY = "agent_launcher_config";
+const HARNESS_LAUNCHER_CONFIG_KEY = "agent_launcher_config";
 const SHOW_GROUP_SWITCHER_KEY = "show_group_switcher";
 const SHOW_PROJECT_HEADER_GROUP_KEY = "show_project_header_group";
 
@@ -82,7 +82,7 @@ const aiModelBody = z.union([z.string(), z.null()]).transform((value, ctx): AiMo
 });
 
 // The api bearer token is intentionally NOT delivered over HTTP: it belongs to
-// each Core's Harness, not the Panel, so no page can exfiltrate it via fetch
+// each Core's Core, not the Panel, so no page can exfiltrate it via fetch
 // even from the same origin. See
 // todos/bugs/done/02-api-settings-leaks-bearer-token.md for the original leak.
 // .strict() so a stale client that still sends the removed `regenerate: true`
@@ -111,9 +111,9 @@ const updateSettingsBody = z
     headerButtons: z
       .record(z.string(), z.boolean())
       .transform((value): HeaderButtonVisibility => normalizeHeaderButtonVisibility(value)),
-    defaultAgent: z.enum(AI_RUNTIME_HARNESS_VALUES),
+    defaultHarness: z.enum(HARNESSES),
     defaultModel: aiModelBody,
-    shipAgent: z.enum(AI_RUNTIME_HARNESS_VALUES),
+    shipHarness: z.enum(HARNESSES),
     shipModel: aiModelBody,
     shipPrompt: z.string().transform((value) => normalizeShipPrompt(value)),
     claudeUsageLimitsEnabled: z.boolean(),
@@ -121,17 +121,17 @@ const updateSettingsBody = z
     claudeUsageLimitsShowWeekly: z.boolean(),
     providerUsageEnabled: z.boolean(),
     providerUsageIds: z.array(z.string()).transform((value) => normalizeProviderUsageIds(value)),
-    agentLauncherConfig: z
+    harnessLauncherConfig: z
       .object({ order: z.array(z.string()), hidden: z.array(z.string()) })
-      .transform((value): AgentLauncherConfig => normalizeAgentLauncherConfig(value)),
+      .transform((value): HarnessLauncherConfig => normalizeHarnessLauncherConfig(value)),
     showGroupSwitcher: z.boolean(),
     showProjectHeaderGroup: z.boolean(),
   })
   .partial();
 
-function getDefaultAgentSetting(): AiRuntimeHarness {
+function getDefaultHarnessSetting(): Harness {
   const value = getSetting(DEFAULT_AGENT_SETTING_KEY);
-  return isAiRuntimeHarness(value) ? value : "claude-code";
+  return isHarness(value) ? value : "claude-code";
 }
 
 function getDefaultModelSetting(): AiModelId | null {
@@ -139,9 +139,9 @@ function getDefaultModelSetting(): AiModelId | null {
   return normalizeAiModelId(value);
 }
 
-function getShipAgentSetting(): AiRuntimeHarness {
+function getShipHarnessSetting(): Harness {
   const value = getSetting(SHIP_AGENT_SETTING_KEY);
-  return isAiRuntimeHarness(value) ? value : "claude-code";
+  return isHarness(value) ? value : "claude-code";
 }
 
 function getShipModelSetting(): AiModelId | null {
@@ -184,9 +184,9 @@ function getHeaderButtonsSetting(): HeaderButtonVisibility {
   );
 }
 
-function getAgentLauncherConfigSetting(): AgentLauncherConfig {
-  return normalizeAgentLauncherConfig(
-    safeJsonParse<unknown>(getSetting(AGENT_LAUNCHER_CONFIG_KEY), null),
+function getHarnessLauncherConfigSetting(): HarnessLauncherConfig {
+  return normalizeHarnessLauncherConfig(
+    safeJsonParse<unknown>(getSetting(HARNESS_LAUNCHER_CONFIG_KEY), null),
   );
 }
 
@@ -217,9 +217,9 @@ function settingsPayload() {
     terminalZoomLevel: getTerminalZoomLevelSetting(),
     sessionHeaderButtons: getSessionHeaderButtonsSetting(),
     headerButtons: getHeaderButtonsSetting(),
-    defaultAgent: getDefaultAgentSetting(),
+    defaultHarness: getDefaultHarnessSetting(),
     defaultModel: getDefaultModelSetting(),
-    shipAgent: getShipAgentSetting(),
+    shipHarness: getShipHarnessSetting(),
     shipModel: getShipModelSetting(),
     shipPrompt: getShipPromptSetting(),
     // Off by default: usage reaches out to provider APIs using local logins.
@@ -230,7 +230,7 @@ function settingsPayload() {
     // so existing users who already enabled Claude usage keep their indicator.
     providerUsageEnabled: getProviderUsageEnabledSetting(),
     providerUsageIds: getProviderUsageIdsSetting(),
-    agentLauncherConfig: getAgentLauncherConfigSetting(),
+    harnessLauncherConfig: getHarnessLauncherConfigSetting(),
     showGroupSwitcher: getShowGroupSwitcherSetting(),
     showProjectHeaderGroup: getShowProjectHeaderGroupSetting(),
   };
@@ -315,8 +315,8 @@ export async function update(request: Request): Promise<Response> {
   if (body.headerButtons !== undefined) {
     setSetting(HEADER_BUTTONS_KEY, JSON.stringify(body.headerButtons));
   }
-  if (body.defaultAgent !== undefined) {
-    setSetting(DEFAULT_AGENT_SETTING_KEY, body.defaultAgent);
+  if (body.defaultHarness !== undefined) {
+    setSetting(DEFAULT_AGENT_SETTING_KEY, body.defaultHarness);
   }
   if (body.defaultModel !== undefined) {
     if (body.defaultModel === null) {
@@ -325,8 +325,8 @@ export async function update(request: Request): Promise<Response> {
       setSetting(DEFAULT_MODEL_SETTING_KEY, body.defaultModel);
     }
   }
-  if (body.shipAgent !== undefined) {
-    setSetting(SHIP_AGENT_SETTING_KEY, body.shipAgent);
+  if (body.shipHarness !== undefined) {
+    setSetting(SHIP_AGENT_SETTING_KEY, body.shipHarness);
   }
   if (body.shipModel !== undefined) {
     if (body.shipModel === null) {
@@ -360,8 +360,8 @@ export async function update(request: Request): Promise<Response> {
   if (body.providerUsageIds !== undefined) {
     setSetting(PROVIDER_USAGE_IDS_KEY, JSON.stringify(body.providerUsageIds));
   }
-  if (body.agentLauncherConfig !== undefined) {
-    setSetting(AGENT_LAUNCHER_CONFIG_KEY, JSON.stringify(body.agentLauncherConfig));
+  if (body.harnessLauncherConfig !== undefined) {
+    setSetting(HARNESS_LAUNCHER_CONFIG_KEY, JSON.stringify(body.harnessLauncherConfig));
   }
   if (body.showGroupSwitcher !== undefined) {
     setBooleanSetting(SHOW_GROUP_SWITCHER_KEY, body.showGroupSwitcher);

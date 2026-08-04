@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildMissionControlApiUrl,
   buildLocalMissionControlApiUrl,
-  buildAgentLocalHookApiUrl,
+  buildHarnessLocalHookApiUrl,
   buildSyntheticHookUrl,
   hookEndpointSlug,
   LOCAL_HOOK_API_HOST,
@@ -35,8 +35,8 @@ describe("host-specific convenience builders", () => {
     expect(buildLocalMissionControlApiUrl(0)).toBeNull();
   });
 
-  it("buildAgentLocalHookApiUrl targets loopback agent HTTP", () => {
-    expect(buildAgentLocalHookApiUrl(9333)).toBe("http://127.0.0.1:9333");
+  it("buildHarnessLocalHookApiUrl targets loopback agent HTTP", () => {
+    expect(buildHarnessLocalHookApiUrl(9333)).toBe("http://127.0.0.1:9333");
   });
 });
 

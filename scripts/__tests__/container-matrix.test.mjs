@@ -153,12 +153,12 @@ describe("the CI workflow runs the declared matrix", () => {
 
   it("reuses the built tarballs rather than rebuilding them per leg", () => {
     expect(job).toMatch(/download-artifact/);
-    expect(job).not.toMatch(/pnpm harness:tarball\b/);
+    expect(job).not.toMatch(/pnpm core:tarball\b/);
   });
 
   it("builds a tarball for every architecture the matrix consumes", () => {
-    const start = workflow.indexOf("\n  harness-tarball-smoke:");
-    expect(start, "ci.yml has no harness-tarball-smoke job").toBeGreaterThan(-1);
+    const start = workflow.indexOf("\n  core-tarball-smoke:");
+    expect(start, "ci.yml has no core-tarball-smoke job").toBeGreaterThan(-1);
     const rest = workflow.slice(start + 1);
     const next = rest.search(/\n {2}[a-z][a-z0-9-]*:\n/);
     const tarballJob = next === -1 ? rest : rest.slice(0, next);

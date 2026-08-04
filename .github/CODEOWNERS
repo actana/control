@@ -18,7 +18,7 @@
 
 # ---- The two halves of the product ----
 /packages/panel/            @actana/maintainers
-/packages/harness/          @actana/maintainers
+/packages/core/             @actana/maintainers
 
 # The wire contract both halves agree on. A change here is a compatibility
 # event — the Panel and its Cores are version-locked — never a local edit.

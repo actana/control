@@ -6,18 +6,18 @@
 // `useCliAvailability(coreId)` reads from an in-memory per-Core store hydrated
 // by (a) on first mount and refreshed by (b) on every change.
 //
-// The Panel carries no local probe: the Harness that owns the machine those
+// The Panel carries no local probe: the Core that owns the machine those
 // CLIs live on is the only process that can honestly answer availability for
 // its Core.
 
 import { useEffect, useSyncExternalStore } from "react";
 import { getPanelBridge } from "~/lib/panel-bridge";
-import { AGENT_REGISTRY, UI_AGENTS } from "@actana/shared/agents";
-import type { TaskAgent } from "@actana/shared/domain";
+import { HARNESS_REGISTRY, UI_HARNESSES } from "@actana/shared/harnesses";
+import type { Harness } from "@actana/shared/domain";
 import {
-  AGENTS_AVAILABILITY_EVENT_KIND,
-  type CoreLinkAgentAvailability,
-  type CoreLinkAgentAvailabilityMap,
+  HARNESSES_AVAILABILITY_EVENT_KIND,
+  type CoreLinkHarnessAvailability,
+  type CoreLinkHarnessAvailabilityMap,
 } from "@actana/shared/core-link-frames";
 import { createListenerSet } from "./listener-set";
 
@@ -34,11 +34,11 @@ export type CliAvailability = {
   updateCommands?: readonly string[];
 };
 
-export type CliAvailabilityMap = Partial<Record<TaskAgent, CliAvailability>>;
+export type CliAvailabilityMap = Partial<Record<Harness, CliAvailability>>;
 
 const UNKNOWN: CliAvailability = { status: "unknown" };
 const CHECKING_SEED: CliAvailabilityMap = Object.fromEntries(
-  UI_AGENTS.map((agent) => [agent, { status: "checking" } as CliAvailability]),
+  UI_HARNESSES.map((agent) => [agent, { status: "checking" } as CliAvailability]),
 ) as CliAvailabilityMap;
 
 /**
@@ -81,33 +81,33 @@ function setSnapshot(coreId: string, next: CliAvailabilityMap): void {
 
 export function availabilityFor(
   availability: CliAvailabilityMap,
-  agent: TaskAgent,
+  agent: Harness,
 ): CliAvailability {
   return availability[agent] ?? UNKNOWN;
 }
 
-export function isCliUnavailable(availability: CliAvailabilityMap, agent: TaskAgent): boolean {
+export function isCliUnavailable(availability: CliAvailabilityMap, agent: Harness): boolean {
   const status = availabilityFor(availability, agent).status;
   return status === "missing" || status === "outdated";
 }
 
-export function agentCanLaunch(availability: CliAvailabilityMap, agent: TaskAgent): boolean {
-  if (AGENT_REGISTRY[agent].disabled) return false;
+export function harnessCanLaunch(availability: CliAvailabilityMap, agent: Harness): boolean {
+  if (HARNESS_REGISTRY[agent].disabled) return false;
   const status = availabilityFor(availability, agent).status;
   if (status === "available") return true;
-  // With no link there is no Harness to probe — assume launchable so the picker
+  // With no link there is no Core to probe — assume launchable so the picker
   // isn't uniformly disabled on a page that hasn't connected yet.
   if (status === "unknown" && !getPanelBridge()) return true;
   return false;
 }
 
 /**
- * Convert the Harness-side {@link CoreLinkAgentAvailability} to the Panel's
+ * Convert the Core-side {@link CoreLinkHarnessAvailability} to the Panel's
  * {@link CliAvailability}. The shapes are identical apart from `unknown` (not
- * emitted by the Harness — only the local dev/web fallback needs it), so this
+ * emitted by the Core — only the local dev/web fallback needs it), so this
  * is a straight structural coerce.
  */
-function fromCoreLinkAvailability(entry: CoreLinkAgentAvailability): CliAvailability {
+function fromCoreLinkAvailability(entry: CoreLinkHarnessAvailability): CliAvailability {
   const next: CliAvailability = { status: entry.status };
   if (entry.path !== undefined) next.path = entry.path;
   if (entry.reason !== undefined) next.reason = entry.reason;
@@ -119,17 +119,17 @@ function fromCoreLinkAvailability(entry: CoreLinkAgentAvailability): CliAvailabi
   return next;
 }
 
-function fromCoreLinkMap(map: CoreLinkAgentAvailabilityMap): CliAvailabilityMap {
+function fromCoreLinkMap(map: CoreLinkHarnessAvailabilityMap): CliAvailabilityMap {
   const out: CliAvailabilityMap = {};
   for (const [agent, entry] of Object.entries(map)) {
     if (!entry) continue;
-    out[agent as TaskAgent] = fromCoreLinkAvailability(entry);
+    out[agent as Harness] = fromCoreLinkAvailability(entry);
   }
   return out;
 }
 
-export function firstAvailableAgent(availability: CliAvailabilityMap): TaskAgent | null {
-  return UI_AGENTS.find((agent) => agentCanLaunch(availability, agent)) ?? null;
+export function firstAvailableHarness(availability: CliAvailabilityMap): Harness | null {
+  return UI_HARNESSES.find((agent) => harnessCanLaunch(availability, agent)) ?? null;
 }
 
 /**
@@ -145,7 +145,7 @@ function hydrateOnce(coreId: string): void {
   if (!bridge) return;
   store.hydrating = true;
   bridge
-    .listAgentAvailability(coreId)
+    .listHarnessAvailability(coreId)
     .then((map) => {
       setSnapshot(coreId, fromCoreLinkMap(map));
       store.hydrating = false;
@@ -165,10 +165,10 @@ function subscribeAvailabilityEvents(coreId: string): () => void {
   if (!bridge) return () => {};
   const release = bridge.watchCore(coreId);
   const off = bridge.onEvent(({ coreId: owner, event }) => {
-    if (owner !== coreId || event.kind !== AGENTS_AVAILABILITY_EVENT_KIND) return;
+    if (owner !== coreId || event.kind !== HARNESSES_AVAILABILITY_EVENT_KIND) return;
     try {
       const payload = JSON.parse(event.payload) as {
-        availability?: CoreLinkAgentAvailabilityMap;
+        availability?: CoreLinkHarnessAvailabilityMap;
       };
       if (!payload.availability) return;
       setSnapshot(coreId, fromCoreLinkMap(payload.availability));

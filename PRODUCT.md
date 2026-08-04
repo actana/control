@@ -6,11 +6,11 @@ product
 
 ## Users
 
-Solo developers and small teams running multiple AI coding agents (Claude Code, Codex, Cursor CLI) across 5+ git repos a day. They live in the app for hours: dense terminal grids, quick context switches, keyboard-first. Ambient light varies but sessions are long — dark mode is the primary surface.
+Solo developers and small teams running multiple AI coding harnesses (Claude Code, Codex, Cursor CLI) across 5+ git repos a day. They live in the app for hours: dense terminal grids, quick context switches, keyboard-first. Ambient light varies but sessions are long — dark mode is the primary surface.
 
 ## Product Purpose
 
-Actana Control is a self-hosted web control surface for agentic coding work. It shows at a glance which projects/sessions need attention and lets the user pop into a project to drive its agents — a grid of live terminal sessions instead of a cluttered sidebar. Success = the tool disappears into the task; status is legible at a glance; nothing steals attention from the terminals.
+Actana Control is a self-hosted web control surface for agentic coding work. It shows at a glance which projects/sessions need attention and lets the user pop into a project to drive its harnesses — a grid of live terminal sessions instead of a cluttered sidebar. Success = the tool disappears into the task; status is legible at a glance; nothing steals attention from the terminals.
 
 ## Brand Personality
 

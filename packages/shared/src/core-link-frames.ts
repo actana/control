@@ -1,4 +1,4 @@
-// Core-link frame schema — the generalized protocol for Panel ↔ Harness
+// Core-link frame schema — the generalized protocol for Panel ↔ Core
 // communication.
 //
 // A single WebSocket (`ws://127.0.0.1`) carries multiplexed frames keyed by
@@ -7,22 +7,22 @@
 //
 // Issue 02 generalizes the seed PTY protocol into one that carries task,
 // session, and hook operations alongside PTY ops, and adds a monotonic
-// per-Harness event log with `lastEventId` reconnect replay. The frame shapes:
+// per-Core event log with `lastEventId` reconnect replay. The frame shapes:
 //
 // - Request/response frames carry a client-generated `reqId` for correlation.
 // - Unsolicited stream frames (`data`, `exit`) carry only `ptyId` — the Panel
 //   routes them via its pty-stream-router (demuxed by `ptyId`).
-// - `subscribe` (Panel → Harness) carries the Panel's `lastEventId` cursor so
-//   the Harness can stream the replay tail; `event` frames carry the
+// - `subscribe` (Panel → Core) carries the Panel's `lastEventId` cursor so
+//   the Core can stream the replay tail; `event` frames carry the
 //   sequential {@link CoreLinkEvent} envelope for every domain event; the
 //   `eventsReplayed` marker signals "caught up, live push resumes".
 //
 // This file is self-contained (no `~/` imports) so it compiles under both the
-// Vite (browser) and the Harness's CommonJS tsconfigs.
+// Vite (browser) and the Core's CommonJS tsconfigs.
 
 // ─── Shared payload types ─────────────────────────────────────────────────────
 
-export type CoreLinkPtySpawnAgent = "claude-code" | "codex" | "cursor-cli" | "opencode";
+export type CoreLinkPtySpawnHarness = "claude-code" | "codex" | "cursor-cli" | "opencode";
 
 export type CoreLinkBaseSpawnOptions = {
   taskId: string;
@@ -43,8 +43,8 @@ export type CoreLinkBaseSpawnOptions = {
   shellSession?: never;
 };
 
-export type CoreLinkAgentSpawnOptions = CoreLinkBaseSpawnOptions & {
-  agent: CoreLinkPtySpawnAgent;
+export type CoreLinkHarnessSpawnOptions = CoreLinkBaseSpawnOptions & {
+  agent: CoreLinkPtySpawnHarness;
   dangerouslySkipPermissions?: boolean;
   shell?: never;
   initialInput?: string;
@@ -59,9 +59,9 @@ export type CoreLinkShellSpawnOptions = CoreLinkBaseSpawnOptions & {
 
 /**
  * A VM Shell Session spawn (issue 06) — a free-form interactive shell on the
- * Harness's machine, distinct from agent workspaces. `shellSession: true` is
+ * Core's machine, distinct from agent workspaces. `shellSession: true` is
  * its own spawn mode: no `agent`, no `cwd`/project-root requirement (a VM shell
- * has no project folder). The Harness skips the project-root validation it
+ * has no project folder). The Core skips the project-root validation it
  * applies to agent spawns and starts a login shell at its own home. Gated by
  * core-link auth (mTLS + bearer), never auto-spawned — opened by an explicit
  * Panel gesture. Streamed back over the same multiplexed core-link; replayable
@@ -78,7 +78,7 @@ export type CoreLinkShellSessionSpawnOptions = {
 };
 
 export type CoreLinkPtySpawnOptions =
-  | CoreLinkAgentSpawnOptions
+  | CoreLinkHarnessSpawnOptions
   | CoreLinkShellSpawnOptions
   | CoreLinkShellSessionSpawnOptions;
 
@@ -108,16 +108,16 @@ export type CoreLinkLaunchProcessKillResult = {
 
 // ─── Event log envelope ─────────────────────────────────────────────────────
 //
-// A discrete thing that happened on a Harness — task status change, hook fired,
+// A discrete thing that happened on a Core — task status change, hook fired,
 // question menu appeared, run finished, PTY spawned/exited. Has a monotonic
-// `eventId` per Harness, persisted in the Harness's SQLite `event_log` table.
-// On Panel reconnect the Harness streams the tail past the Panel's
+// `eventId` per Core, persisted in the Core's SQLite `event_log` table.
+// On Panel reconnect the Core streams the tail past the Panel's
 // `lastEventId` as `event` frames, then resumes live push. See CONTEXT.md
 // "Event" / "Event cursor". PTY byte-stream replay stays in the in-memory ring
 // buffer (one category of replay); the structured lifecycle events live here.
 
 export type CoreLinkEvent = {
-  /** Sequential, monotonic, per-Harness. Never 0. */
+  /** Sequential, monotonic, per-Core. Never 0. */
   eventId: number;
   /** Wall-clock ms when the event was appended. */
   ts: number;
@@ -139,22 +139,22 @@ export type CoreLinkEvent = {
 //
 // The schema carries task/session/hook ops alongside PTY ops, keyed by the
 // same `ptyId`/`taskId` model. They use `reqId` correlation like the PTY RPCs.
-// Issue 04 (ADR 0004) makes task/project mutations real: the Harness process
+// Issue 04 (ADR 0004) makes task/project mutations real: the Core process
 // owns the write path directly against its SQLite (no sibling stateful server
 // on remote VMs), so `projectsMutate` / `tasksMutate` land rows via
-// `harness-mutation-store` and append `project:created` / `task:updated` etc.
+// `core-mutation-store` and append `project:created` / `task:updated` etc.
 // events to the same monotonic event log the PTY lifecycle events use.
 
 export type CoreLinkTaskStatus = string;
 
 /**
  * A task mutation — either `create` (a new task under an existing project) or
- * `update` (patch an existing task row). The discriminant lets the Harness
+ * `update` (patch an existing task row). The discriminant lets the Core
  * dispatch to `createTask` / `updateTask` without a nullable-id sniff.
  *
  * On `create`, `projectId`, `title`, and `agent` are required — everything
- * else defaults on the Harness (status → `ready`, pinned/archived → false).
- * `taskId` is optional; when omitted the Harness generates one.
+ * else defaults on the Core (status → `ready`, pinned/archived → false).
+ * `taskId` is optional; when omitted the Core generates one.
  *
  * On `update`, `taskId` is required and identifies the row; any of
  * `status`/`title`/`pinned`/`archived` may be set. Fields omitted are left
@@ -180,7 +180,7 @@ export type CoreLinkTaskMutation =
       archived?: boolean;
       /**
        * Session icon id (issue 09). `undefined` leaves the row untouched (partial
-       * patch); a string sets it; `null` clears it. Icon is Harness-owned
+       * patch); a string sets it; `null` clears it. Icon is Core-owned
        * metadata (ADR 0005) — the Panel never stores it and every icon change
        * routes through this frame.
        */
@@ -188,10 +188,10 @@ export type CoreLinkTaskMutation =
     };
 
 /**
- * A project mutation — `create`, `rename`, or `archive`. The Harness validates
+ * A project mutation — `create`, `rename`, or `archive`. The Core validates
  * the VM path on `create` (absolute, resolvable, not a file) and rejects with
  * an `error` frame if invalid — a Project's path is a VM path and only the
- * Harness can validate it (CONTEXT.md "Project").
+ * Core can validate it (CONTEXT.md "Project").
  *
  * `archive` deletes the project row (SQLite cascades tasks under
  * this project via ON DELETE CASCADE — that is the shared-DB shape). The word
@@ -212,7 +212,7 @@ export type CoreLinkProjectMutation =
   | { op: "rename"; projectId: string; name: string }
   | { op: "archive"; projectId: string }
   /**
-   * Pin / unpin a project (issue 10). Pin state is a Harness fact stored on
+   * Pin / unpin a project (issue 10). Pin state is a Core fact stored on
    * the project row; every Panel connected to the same Core sees the same
    * value. Dedicated op (rather than piggy-backing on a generic
    * `updateProject` patch) so the event kind can be `project:pinnedChanged`
@@ -228,7 +228,7 @@ export type CoreLinkHookOp =
 
 // ─── CLI availability (issue 11) ────────────────────────────────────────────
 //
-// The Harness probes for each managed agent CLI on PATH — startup, periodic
+// The Core probes for each managed Harness on PATH — startup, periodic
 // tick — and publishes the resulting map as (a) a live snapshot readable via
 // the `agentsAvailabilityList` request/response frames and (b) an
 // `agents:availabilityChanged` event appended to the monotonic event log
@@ -239,13 +239,13 @@ export type CoreLinkHookOp =
 // which Core answered.
 
 /**
- * Availability of one managed agent CLI on a single Core. `status` mirrors the
+ * Availability of one managed Harness on a single Core. `status` mirrors the
  * Panel's `CliAvailability` shape so no translation is needed at the store
  * boundary. `path` / `version` / `label` / `requiredVersion` / `packageUrl` /
  * `updateCommands` are copied from the probe's `CliCheckResult` where known so
  * the update-required and outdated flows keep working across every Core.
  */
-export type CoreLinkAgentAvailability = {
+export type CoreLinkHarnessAvailability = {
   status: "checking" | "available" | "missing" | "outdated";
   path?: string;
   reason?: string;
@@ -256,23 +256,23 @@ export type CoreLinkAgentAvailability = {
   updateCommands?: readonly string[];
 };
 
-/** Per-agent availability map. Keys are the `TaskAgent` id strings. */
-export type CoreLinkAgentAvailabilityMap = Record<string, CoreLinkAgentAvailability>;
+/** Per-agent availability map. Keys are the `Harness` id strings. */
+export type CoreLinkHarnessAvailabilityMap = Record<string, CoreLinkHarnessAvailability>;
 
 /**
  * The kind string appended to the event log when the availability map changes.
- * Payload is the JSON-serialized full {@link CoreLinkAgentAvailabilityMap}
+ * Payload is the JSON-serialized full {@link CoreLinkHarnessAvailabilityMap}
  * (self-contained; a Panel that misses N intermediate changes and replays only
  * the tail lands on the latest state without stitching).
  */
-export const AGENTS_AVAILABILITY_EVENT_KIND = "agents:availabilityChanged";
+export const HARNESSES_AVAILABILITY_EVENT_KIND = "agents:availabilityChanged";
 
 // ─── Directory browsing (web-panel issue 06) ────────────────────────────────
 //
 // Adding a Project means naming a folder on the Core's machine. The Panel runs
 // in a browser now, so it has no filesystem of its own to offer and the
 // operator's laptop is the wrong machine to browse — the only process that can
-// honestly answer "what folders exist here" is the Harness that owns the disk.
+// honestly answer "what folders exist here" is the Core that owns the disk.
 // These two frames are that answer: a listing walk (`dirList`) and the one
 // write the picker needs (`dirCreate`).
 //
@@ -289,7 +289,7 @@ export type CoreLinkDirEntry = {
 };
 
 /**
- * One directory's worth of listing, as the Harness sees its own disk. `path`
+ * One directory's worth of listing, as the Core sees its own disk. `path`
  * is the resolved absolute directory; `parent` is null at the filesystem root.
  * `roots` are shortcut chips (home plus the standard folders that exist on
  * that machine) so the picker opens somewhere useful on a VM whose layout the
@@ -305,7 +305,7 @@ export type CoreLinkDirListing = {
   truncated: boolean;
 };
 
-// ─── Client → Server (Panel → Harness) ──────────────────────────────────────
+// ─── Client → Server (Panel → Core) ──────────────────────────────────────
 
 export type CoreLinkRequestFrame =
   | { type: "spawn"; reqId: string; opts: CoreLinkPtySpawnOptions }
@@ -325,7 +325,7 @@ export type CoreLinkRequestFrame =
   // scrollback, which is what a first attach wants.
   | { type: "replay"; reqId: string; ptyId: string; sinceSeq?: number }
   // ─── Event-cursor replay (issue 02) ───
-  // Sent on (re)connect. The Panel's last-seen eventId per Core. The Harness
+  // Sent on (re)connect. The Panel's last-seen eventId per Core. The Core
   // streams the event_log tail past it as `event` frames, then sends
   // `eventsReplayed` and resumes live event push. `lastEventId: 0` requests
   // the full log (used on first connect).
@@ -333,12 +333,12 @@ export type CoreLinkRequestFrame =
   // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
   | { type: "tasksList"; reqId: string; projectId?: string }
   | { type: "tasksMutate"; reqId: string; mutation: CoreLinkTaskMutation }
-  // ─── Project ops (issue 07 — per-Core navigation: list the Harness's
+  // ─── Project ops (issue 07 — per-Core navigation: list the Core's
   // projects as live snapshots, no Panel-side persistence) ───
   | { type: "projectsList"; reqId: string }
   // ─── Project mutations (issue 04 — write path on remote Cores). The
-  // Harness owns the write against its SQLite (ADR 0004); path validation
-  // happens Harness-side because a Project's path is a VM path. ───
+  // Core owns the write against its SQLite (ADR 0004); path validation
+  // happens Core-side because a Project's path is a VM path. ───
   | { type: "projectsMutate"; reqId: string; mutation: CoreLinkProjectMutation }
   // ─── Session ops (observe a session's lifecycle / reattach) ───
   | { type: "sessionsList"; reqId: string; projectId?: string }
@@ -347,7 +347,7 @@ export type CoreLinkRequestFrame =
   // ─── Bearer auth (issue 04) ───
   // Sent by the Panel right after the mTLS handshake, before any other frame.
   // Carries the signed bearer `{coreId, exp, sig}` from the registration blob.
-  // The Harness verifies the signature + `exp`; on success it replies
+  // The Core verifies the signature + `exp`; on success it replies
   // `authOk`; on expiry or bad signature it sends `authError` and closes — the
   // Panel's existing reconnect path re-handshakes TLS and re-presents a fresh
   // bearer (reissuing is a VM-side op; see ADR 0002/0003). Loopback Cores
@@ -358,23 +358,23 @@ export type CoreLinkRequestFrame =
   // stream so a fresh Panel hydrates without waiting for the next probe tick.
   | { type: "agentsAvailabilityList"; reqId: string }
   // ─── Directory browsing (web-panel issue 06) ───
-  // `path` omitted or null means "start at the Harness's home directory" —
+  // `path` omitted or null means "start at the Core's home directory" —
   // the Panel cannot compute that itself for a machine it has never seen.
   | { type: "dirList"; reqId: string; path?: string | null }
   | { type: "dirCreate"; reqId: string; parent: string; name: string };
 
-// ─── Server → Client (Harness → Panel) ──────────────────────────────────────
+// ─── Server → Client (Core → Panel) ──────────────────────────────────────
 
-/** Unsolicited stream frame — pushed by the Harness whenever a PTY emits or exits. */
+/** Unsolicited stream frame — pushed by the Core whenever a PTY emits or exits. */
 export type CoreLinkStreamFrame =
   | { type: "data"; ptyId: string; data: string; seq: number }
   | { type: "exit"; ptyId: string; exitCode: number; signal?: number };
 
 /**
- * Unsolicited event frame — pushed by the Harness for every domain event in
+ * Unsolicited event frame — pushed by the Core for every domain event in
  * the monotonic event log (task status, hook, session finish, PTY spawn/exit).
  * Carries the sequential {@link CoreLinkEvent} envelope. During a replay the
- * Harness streams these back-to-back; live push uses the same frame shape.
+ * Core streams these back-to-back; live push uses the same frame shape.
  */
 export type CoreLinkEventFrame = { type: "event"; event: CoreLinkEvent };
 
@@ -382,7 +382,7 @@ export type CoreLinkEventFrame = { type: "event"; event: CoreLinkEvent };
  * End-of-replay marker. Sent once after the `subscribe` tail has been fully
  * streamed as `event` frames. `lastEventId` is the highest eventId the Panel
  * has now seen — it persists it as its new cursor. After this frame the
- * Harness resumes live `event` push for any events appended after the cursor.
+ * Core resumes live `event` push for any events appended after the cursor.
  */
 export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId: number };
 
@@ -429,7 +429,7 @@ export type CoreLinkResponseFrame =
   | {
       type: "agentsAvailabilityListResult";
       reqId: string;
-      availability: CoreLinkAgentAvailabilityMap;
+      availability: CoreLinkHarnessAvailabilityMap;
     }
   // ─── Directory browsing (web-panel issue 06) ───
   | { type: "dirListResult"; reqId: string; listing: CoreLinkDirListing }
@@ -438,18 +438,18 @@ export type CoreLinkResponseFrame =
 
 /**
  * A flattened project snapshot carried over the core-link (issue 07). The
- * Harness is the source of truth for projects; the Panel holds none. The shape
+ * Core is the source of truth for projects; the Panel holds none. The shape
  * mirrors the server's project row so the Panel can render per-Core navigation
  * without a separate HTTP round-trip per project.
  *
- * `path` is a VM path — only the Harness can validate it (CONTEXT.md
- * "Project": "A Project's path is a VM path. Only the Harness can validate
+ * `path` is a VM path — only the Core can validate it (CONTEXT.md
+ * "Project": "A Project's path is a VM path. Only the Core can validate
  * it."). The Panel renders it as-is and never assumes it exists locally.
  */
 export type CoreLinkProjectSnapshot = {
   projectId: string;
   name: string;
-  /** Absolute path on the Harness's machine (a VM path, not a Panel path). */
+  /** Absolute path on the Core's machine (a VM path, not a Panel path). */
   path: string;
   /** 2-letter monogram shown in the Panel (mirrors the projects table). */
   icon: string;
@@ -460,7 +460,7 @@ export type CoreLinkProjectSnapshot = {
 };
 
 /**
- * A flattened task snapshot carried over the core-link. The Harness is the
+ * A flattened task snapshot carried over the core-link. The Core is the
  * source of truth for tasks; the Panel holds none. The shape mirrors the
  * server's task row so the Panel can render a fleet view without a separate
  * HTTP round-trip per task.
@@ -477,7 +477,7 @@ export type CoreLinkTaskSnapshot = {
    * Session icon id — a stable string drawn from the {@link SESSION_ICON_OPTIONS}
    * list (issue 09). `null` means the row has no user- or generator-assigned
    * icon and the Panel should fall back to `DEFAULT_SESSION_ICON`. Icon is
-   * Harness-owned metadata (ADR 0005); the Panel never persists it.
+   * Core-owned metadata (ADR 0005); the Panel never persists it.
    */
   icon: string | null;
   updatedAt: number;
@@ -528,24 +528,24 @@ export type CoreLinkServerFrame =
  * `task:iconChanged` event kind so replays surface icon-only edits distinctly
  * from other task updates → 0.6.0. Issue 11 adds the `agentsAvailabilityList`
  * request/response + the `agents:availabilityChanged` event kind → 0.7.0.
- * Additive on both sides — a Harness that has not been upgraded ignores the
+ * Additive on both sides — a Core that has not been upgraded ignores the
  * new request frame (the outer `parseCoreLinkRequestFrame` rejects unknown
- * types), and a Panel hydrating from an older Harness sees an empty
+ * types), and a Panel hydrating from an older Core sees an empty
  * availability map and falls back to the same "checking…" affordance a fresh
  * boot shows. Issue 10 adds a dedicated `pin` op to
  * {@link CoreLinkProjectMutation} plus the `project:pinnedChanged` /
  * `task:pinnedChanged` event kinds (task pin-only updates now surface
  * distinctly, mirroring the icon-only path from issue 09) → 0.8.0. Web-panel
  * issue 06 adds the `dirList` / `dirCreate` request frames and their results,
- * so the browser's folder picker browses the Harness's disk instead of a
- * machine-local dialog that no longer exists → 0.9.0. Additive: a Harness that
+ * so the browser's folder picker browses the Core's disk instead of a
+ * machine-local dialog that no longer exists → 0.9.0. Additive: a Core that
  * has not been upgraded rejects the unknown request type, which the Panel
  * surfaces as the same actionable error any other failed listing produces.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.9.0";
 
 /**
- * Does a Harness advertising `reported` speak this build's core-link?
+ * Does a Core advertising `reported` speak this build's core-link?
  *
  * The rule is major.minor equality, and it is deliberately blunt: ADR 0005 says
  * the Panel carries no feature detection, so there is no "mostly compatible"
@@ -555,7 +555,7 @@ export const CORE_LINK_PROTOCOL_VERSION = "0.9.0";
  * reserving the patch segment for fixes that touch no frame keeps a
  * behaviour-only release from grounding a fleet.
  *
- * A missing or unparseable version is incompatible: every Harness that speaks
+ * A missing or unparseable version is incompatible: every Core that speaks
  * a version the Panel could accept says so in its `ready` frame, so silence is
  * evidence of something older than the frame that carries it.
  */

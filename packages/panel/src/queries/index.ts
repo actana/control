@@ -14,7 +14,7 @@ import type {
   CoreLinkTaskSnapshot,
 } from "@actana/shared/core-link-frames";
 import type { Task } from "~/db/schema";
-import { TASK_STATUSES, type TaskAgent, type TaskStatus } from "@actana/shared/domain";
+import { TASK_STATUSES, type Harness, type TaskStatus } from "@actana/shared/domain";
 import type { ProjectWithCounts } from "~/shared/projects";
 
 export const queryKeys = {
@@ -30,8 +30,8 @@ export const queryKeys = {
   usage: (days: number) => ["usage", days] as const,
   claudeUsageLimits: ["claude-usage-limits"] as const,
   providerUsage: (idsKey: string) => ["provider-usage", idsKey] as const,
-  agentAccounts: ["agent-launchers", "accounts"] as const,
-  agentLatestVersions: ["agent-launchers", "latest-versions"] as const,
+  harnessAccounts: ["harness-launchers", "accounts"] as const,
+  harnessLatestVersions: ["harness-launchers", "latest-versions"] as const,
 };
 
 export const projectsQueryOptions = () =>
@@ -43,7 +43,7 @@ export const projectsQueryOptions = () =>
 
 // A Core's snapshot → the UI's `Project` row. The core-link only carries
 // display metadata (name/path/icon/branch/pinned) — fields the Panel needs but
-// the Harness owns get safe defaults, and are read from the Panel's own
+// the Core owns get safe defaults, and are read from the Panel's own
 // mutation call sites when relevant.
 function remoteProjectFromSnapshot(snapshot: CoreLinkProjectSnapshot): ProjectWithCounts {
   return {
@@ -57,8 +57,8 @@ function remoteProjectFromSnapshot(snapshot: CoreLinkProjectSnapshot): ProjectWi
     pinned: snapshot.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberAgentSettings: false,
-    savedAgent: null,
+    rememberHarnessSettings: false,
+    savedHarness: null,
     savedSkipPermissions: false,
     savedBareSession: false,
     defaultGridView: false,
@@ -131,7 +131,7 @@ export function tasksCacheKey(
 // Flattened core-link snapshot → the UI's `Task` row. A Core's task only
 // travels the wire as a snapshot (see CoreLinkTaskSnapshot), but the Panel is
 // typed on its own DB shape. Fields the snapshot doesn't carry
-// get safe defaults; the Harness stays authoritative for the ones it does.
+// get safe defaults; the Core stays authoritative for the ones it does.
 export function remoteTaskFromSnapshot(snapshot: CoreLinkTaskSnapshot): Task {
   return {
     id: snapshot.taskId,
@@ -139,7 +139,7 @@ export function remoteTaskFromSnapshot(snapshot: CoreLinkTaskSnapshot): Task {
     title: snapshot.title,
     titleManuallySet: false,
     icon: snapshot.icon,
-    agent: snapshot.agent as TaskAgent,
+    agent: snapshot.agent as Harness,
     status: snapshot.status as Task["status"],
     branch: "main",
     preview: "",
@@ -166,7 +166,7 @@ export const tasksQueryOptions = (
     queryFn: async () => {
       if (coreId) {
         // Core task loading over the panel link (ADR-0005): the
-        // Harness on `coreId` owns the rows, so the query goes down that
+        // Core on `coreId` owns the rows, so the query goes down that
         // Core's core-link and its flattened snapshots map back into the UI's
         // `Task` shape. An unreachable Core surfaces the router's error as a
         // normal query error — the panel already knows how to render that.
@@ -197,11 +197,11 @@ export const settingsQueryOptions = () =>
     },
   });
 
-// The agent hook token. Owned by each Core's Harness — see server/hook-auth.ts
+// The agent hook token. Owned by each Core's Core — see server/hook-auth.ts
 // for the Panel's own verifier. Stays cached
 // indefinitely; only invalidated when ApiSettingsPage rotates it. It
 // authenticates spawned agents' hook callbacks, never the Operator.
-// The hook token is the Harness's business (each Core owns the env of the PTYs
+// The hook token is the Core's business (each Core owns the env of the PTYs
 // it spawns), so the browser has nothing to fetch. Kept as a query so the
 // existing `useHookToken()` call sites keep their shape.
 export const hookTokenQueryOptions = () =>
@@ -276,25 +276,25 @@ export const providerUsageQueryOptions = (
 };
 
 // Local auth files rarely change while the settings page is open.
-const AGENT_ACCOUNTS_STALE_MS = 300_000;
+const HARNESS_ACCOUNTS_STALE_MS = 300_000;
 // Aligned with the server-side npm registry cache TTL (1h). Mounting the
 // Providers page therefore performs the "check all on open" pass at most
-// once an hour; per-row refreshes go through api.getAgentLatestVersions
+// once an hour; per-row refreshes go through api.getHarnessLatestVersions
 // with refresh=true.
-const AGENT_LATEST_VERSIONS_STALE_MS = 3_600_000;
+const HARNESS_LATEST_VERSIONS_STALE_MS = 3_600_000;
 
-export const agentAccountsQueryOptions = () =>
+export const harnessAccountsQueryOptions = () =>
   queryOptions({
-    queryKey: queryKeys.agentAccounts,
-    queryFn: async () => (await api.getAgentAccounts()).accounts,
-    staleTime: AGENT_ACCOUNTS_STALE_MS,
+    queryKey: queryKeys.harnessAccounts,
+    queryFn: async () => (await api.getHarnessAccounts()).accounts,
+    staleTime: HARNESS_ACCOUNTS_STALE_MS,
   });
 
-export const agentLatestVersionsQueryOptions = () =>
+export const harnessLatestVersionsQueryOptions = () =>
   queryOptions({
-    queryKey: queryKeys.agentLatestVersions,
-    queryFn: async () => (await api.getAgentLatestVersions()).versions,
-    staleTime: AGENT_LATEST_VERSIONS_STALE_MS,
+    queryKey: queryKeys.harnessLatestVersions,
+    queryFn: async () => (await api.getHarnessLatestVersions()).versions,
+    staleTime: HARNESS_LATEST_VERSIONS_STALE_MS,
   });
 
 export const useProjects = () => useQuery(projectsQueryOptions());
@@ -325,5 +325,5 @@ export const useClaudeUsageLimits = (enabled: boolean) =>
   useQuery(claudeUsageLimitsQueryOptions(enabled));
 export const useProviderUsage = (enabled: boolean, providerIds: readonly string[]) =>
   useQuery(providerUsageQueryOptions(enabled, providerIds));
-export const useAgentAccounts = () => useQuery(agentAccountsQueryOptions());
-export const useAgentLatestVersions = () => useQuery(agentLatestVersionsQueryOptions());
+export const useHarnessAccounts = () => useQuery(harnessAccountsQueryOptions());
+export const useHarnessLatestVersions = () => useQuery(harnessLatestVersionsQueryOptions());

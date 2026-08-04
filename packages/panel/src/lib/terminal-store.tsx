@@ -12,19 +12,19 @@ import {
 import { getCorePtyBridge, getPanelBridge } from "./panel-bridge";
 import { markIntentionalSessionClose } from "./intentional-session-close";
 import { terminalSurfaceCache } from "./terminal-surface-cache";
-import { AGENT_REGISTRY } from "@actana/shared/agents";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
-  agentLaunchMode,
-  agentUsesPersistedSession,
-  buildAgentLaunchCommand,
+  harnessLaunchMode,
+  harnessUsesPersistedSession,
+  buildHarnessLaunchCommand,
   newSessionId,
-} from "./agent-command";
+} from "./harness-command";
 import { api, ApiError } from "./api";
-import type { TaskAgent } from "@actana/shared/domain";
+import type { Harness } from "@actana/shared/domain";
 import type { Task } from "~/db/schema";
 import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
 import { projectScopeKey, scopeKeyForProject, type ScopedProject } from "./scoped-project";
-import { getDefaultModelForAgent } from "./default-model-store";
+import { getDefaultModelForHarness } from "./default-model-store";
 import { peekPendingSessionModel } from "./session-model-overrides";
 
 // One-shot cleanup for post-removal builds: drop the renderer-side history
@@ -52,7 +52,7 @@ export type OpenTerminal = {
    *  and live ones get a fresh snapshot + rebuilt start command. */
   pendingValidation?: boolean;
   /** The Core that owns this session. Its PTY and its task row both live on
-   *  that Core's Harness, so spawn/write/resize/kill/replay and revalidation
+   *  that Core's Core, so spawn/write/resize/kill/replay and revalidation
    *  all ride the panel link to it. Null only for a Panel-local row. */
   coreId?: string | null;
 };
@@ -107,7 +107,7 @@ type Ctx = {
   closeForProject: (projectId: string) => Promise<void>;
   setPtyId: (taskId: string, ptyId: string | null, scopeKey?: string) => void;
   syncTask: (task: Task) => void;
-  startCommandFor: (agent: TaskAgent) => string;
+  startCommandFor: (agent: Harness) => string;
   /** Run an arbitrary command in the active PTY for this task. */
   runIn: (taskId: string, command: string) => Promise<void>;
   /** Whether the full-width "all sessions" grid view is active. */
@@ -181,8 +181,8 @@ type TerminalStoreBridge = {
 };
 const TerminalStoreBridgeContext = createContext<TerminalStoreBridge | null>(null);
 
-function commandFor(agent: TaskAgent): string {
-  return AGENT_REGISTRY[agent].startCommand();
+function commandFor(agent: Harness): string {
+  return HARNESS_REGISTRY[agent].startCommand();
 }
 
 /** Shallow field equality for two task rows. Task is a flat DB row of
@@ -209,7 +209,7 @@ function tasksEqual(a: Task, b: Task): boolean {
 export function commandForTask(task: Task): string {
   return baseCommandForTask(
     task,
-    peekPendingSessionModel(task.id) ?? getDefaultModelForAgent(task.agent),
+    peekPendingSessionModel(task.id) ?? getDefaultModelForHarness(task.agent),
   );
 }
 
@@ -230,7 +230,7 @@ export function commandForTask(task: Task): string {
  * remote-Core opens need a compatible object; missing columns default to the
  * the Panel DB's defaults. The `id` uses the Core-side projectId directly — the
  * Panel doesn't persist a separate id per remote project, and scope keys are
- * derived from it. `path` is the Harness's VM path (used as the pty `cwd`).
+ * derived from it. `path` is the Core's VM path (used as the pty `cwd`).
  */
 function remoteScopedProjectFromSnapshot(
   _coreId: string,
@@ -248,8 +248,8 @@ function remoteScopedProjectFromSnapshot(
     pinned: snap.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberAgentSettings: false,
-    savedAgent: null,
+    rememberHarnessSettings: false,
+    savedHarness: null,
     savedSkipPermissions: false,
     savedBareSession: false,
     defaultGridView: false,
@@ -268,7 +268,7 @@ function remoteTaskFromSnapshot(
     title: snapshot.title,
     titleManuallySet: false,
     icon: snapshot.icon,
-    agent: snapshot.agent as TaskAgent,
+    agent: snapshot.agent as Harness,
     status: snapshot.status as Task["status"],
     branch: "main",
     preview: "",
@@ -285,7 +285,7 @@ function remoteTaskFromSnapshot(
     ...base,
     // Server-authoritative fields — always overwrite from the fresh snapshot.
     title: snapshot.title,
-    agent: snapshot.agent as TaskAgent,
+    agent: snapshot.agent as Harness,
     status: snapshot.status as Task["status"],
     pinned: snapshot.pinned,
     archived: snapshot.archived,
@@ -295,8 +295,8 @@ function remoteTaskFromSnapshot(
 }
 
 function baseCommandForTask(task: Task, model: string | null): string {
-  if (!agentUsesPersistedSession(task.agent)) {
-    return AGENT_REGISTRY[task.agent].startCommand({
+  if (!harnessUsesPersistedSession(task.agent)) {
+    return HARNESS_REGISTRY[task.agent].startCommand({
       skipPermissions: task.claudeSkipPermissions,
     });
   }
@@ -304,7 +304,7 @@ function baseCommandForTask(task: Task, model: string | null): string {
   let sessionId = task.claudeSessionId;
   if (!sessionId && task.agent !== "codex" && task.agent !== "opencode") {
     sessionId = newSessionId();
-    // The row for a Core's task lives on that Harness, so the Panel's own
+    // The row for a Core's task lives on that Core, so the Panel's own
     // PATCH would 404. `tasksMutate` doesn't carry claudeSessionId today
     // (protocol gap) — the minted id still gets baked into the launch
     // command below, so the current spawn resumes with it; only cross-Panel-
@@ -314,16 +314,16 @@ function baseCommandForTask(task: Task, model: string | null): string {
     }
   }
 
-  const mode = agentLaunchMode({ ...task, claudeSessionId: sessionId });
+  const mode = harnessLaunchMode({ ...task, claudeSessionId: sessionId });
   if ((task.agent === "codex" || task.agent === "opencode") && mode === "new") {
-    return buildAgentLaunchCommand(task, sessionId ?? "", mode, { model });
+    return buildHarnessLaunchCommand(task, sessionId ?? "", mode, { model });
   }
 
   if (!sessionId) {
-    return buildAgentLaunchCommand(task, "", mode, { model });
+    return buildHarnessLaunchCommand(task, "", mode, { model });
   }
 
-  return buildAgentLaunchCommand(task, sessionId, mode, { model });
+  return buildHarnessLaunchCommand(task, sessionId, mode, { model });
 }
 
 const ACTIVE_BY_PROJECT_KEY = "mc.terminalActiveByProject";
@@ -345,7 +345,7 @@ function loadGridView(): boolean {
 // Tasks whose row lives on a Core rather than in the Panel's own DB. Populated
 // by `toggle` / `openSession` when they tag an OpenTerminal with a coreId, and
 // read by `baseCommandForTask` so it can skip the Panel-local
-// `PATCH /api/tasks/:id` that would 404 for a Harness-owned row. Stays a
+// `PATCH /api/tasks/:id` that would 404 for a Core-owned row. Stays a
 // module-level Set (not React state) because `commandForTask` is a top-level
 // export called from paths without access to the store's hooks.
 const remoteTaskIds = new Set<string>();
@@ -677,7 +677,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         }
         // Register remote-Core tasks BEFORE computing the start command,
         // so `baseCommandForTask` sees the marker and skips the Panel's own
-        // claudeSessionId PATCH for a Harness-owned row.
+        // claudeSessionId PATCH for a Core-owned row.
         markTaskRemote(task.id, opts?.coreId);
         const next: OpenTerminal = {
           taskId: task.id,
@@ -689,7 +689,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           task,
           awaitingCreate: opts?.awaitCreate,
           // Tag the session with its owning Core so TerminalPane addresses
-          // spawn/write/etc. to the right Harness.
+          // spawn/write/etc. to the right Core.
           coreId: opts?.coreId ?? null,
         };
         return [...prev, next];
@@ -946,7 +946,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   // row. Panes hold off spawning until their session's gate clears
   // (pendingValidation), so a dead task's agent never boots.
   //
-  // A Core-owned session's `taskId` lives on that Core's Harness, so
+  // A Core-owned session's `taskId` lives on that Core's Core, so
   // `api.getTask` would 404 for every one of them and drop live sessions on
   // reload. Revalidate those over the panel link with `listTasks(coreId)` and
   // match on `taskId`. Task metadata is refreshed from the returned
@@ -997,7 +997,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             const snapshots = remoteByCore.get(coreId);
             if (snapshots === null) {
               // Core unreachable — release the gate, keep the snapshot rather
-              // than dropping a session whose Harness is just briefly down.
+              // than dropping a session whose Core is just briefly down.
               return { taskId: session.taskId, task: undefined, remote: true as const };
             }
             const task = snapshots?.get(session.taskId) ?? null;

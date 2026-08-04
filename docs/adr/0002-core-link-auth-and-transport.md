@@ -1,5 +1,7 @@
 # Core-link authentication and transport security
 
+> _Written before the #33 rename. Read "Harness" as what is now a **Core**, and "agent"/"TaskAgent" as what is now a **Harness**; the wording is left as it was decided._
+
 The core-link uses `wss://` (TLS 1.3) with mutual certificate pinning for identity and confidentiality, and an app-layer bearer token with expiry for session lifetime. A custom crypto protocol (key-pair handshake → derived symmetric key → frame-level encryption) was considered and rejected because it reimplements TLS badly.
 
 ## Context

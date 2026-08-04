@@ -120,15 +120,15 @@ function touch(taskId: string): TaskSubagents {
   return entry;
 }
 
-export function noteSubagentStart(taskId: string, agentId: string | undefined): void {
+export function noteSubagentStart(taskId: string, harnessId: string | undefined): void {
   const entry = touch(taskId);
   const now = Date.now();
   // Fresh activity ends any drain grace in progress — the set is live again.
   const recheck = recheckTimers.get(taskId);
   if (recheck) recheck.idleSince = null;
-  if (agentId) {
-    entry.ids.delete(agentId);
-    entry.ids.set(agentId, now);
+  if (harnessId) {
+    entry.ids.delete(harnessId);
+    entry.ids.set(harnessId, now);
     while (entry.ids.size > MAX_IDS_PER_TASK) {
       const oldest = entry.ids.keys().next().value;
       if (oldest === undefined) break;
@@ -140,11 +140,11 @@ export function noteSubagentStart(taskId: string, agentId: string | undefined): 
   }
 }
 
-export function noteSubagentStop(taskId: string, agentId: string | undefined): void {
+export function noteSubagentStop(taskId: string, harnessId: string | undefined): void {
   const entry = activeByTask.get(taskId);
   if (!entry) return;
-  if (agentId) {
-    if (!entry.ids.delete(agentId) && entry.anonCount > 0) {
+  if (harnessId) {
+    if (!entry.ids.delete(harnessId) && entry.anonCount > 0) {
       // Cross-cancel payload-shape skew (keyed stop after an anonymous
       // start): any stop should cancel SOME start, biased toward finishing.
       entry.anonCount -= 1;

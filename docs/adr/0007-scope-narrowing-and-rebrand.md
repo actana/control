@@ -1,5 +1,7 @@
 # Narrow scope to a harness remote control; rename to Actana Control
 
+> _Written before the #33 rename. Read "Harness" as what is now a **Core**, and "agent"/"TaskAgent" as what is now a **Harness**; the wording is left as it was decided._
+
 The fork is repositioned as **Actana Control** — a harness remote control and nothing more. Peripheral features accumulated in the upstream (voice/Whisper, Tamagotchi-style pet with multiplayer relay, screenshot capture and annotator, semantic code graph indexing, proactive recall, per-project memory notes, bundled skills, scratch pad, custom scripts / launch commands, prompt search palette, file editor / finder / HTML preview, generic annotations) are removed. The retained surface is: session-finish notifications (cross-core), Focused Session Mode, theme onboarding and accent, the usage panel, keybindings and rebind UI (minus deleted-feature bindings), and the User Terminal panel.
 
 The rebrand from *Mission Control* to *Actana Control* accompanies the scope narrowing so that a slimmer product ships under a distinct name and update channel. The rename cascades through: display name (**Actana Control**), package name (**`actana-control`**), org/repo (**`qcentic/actana-control`**), update host (**`control.actana.ai`** — replaces `agentsystem.dev`), and the agent-bridge npm dependency (**`@qcentic/actana-control-agent`** — replaces `@agentsystemlabs/mission-control-agent`). The auto-update feed at the old host is disabled until `control.actana.ai` is stood up.

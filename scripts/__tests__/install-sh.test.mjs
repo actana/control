@@ -4,7 +4,7 @@
 // Releases, with a stub `bin/actana` in the tarball that records what the
 // bootstrapper handed it.
 //
-// What is deliberately NOT here: systemd, a real Harness, a real network. The
+// What is deliberately NOT here: systemd, a real Core, a real network. The
 // container e2e (`scripts/e2e-install-sh-linux.mjs`) runs the same script
 // against a real tarball on a real init system; this file covers the decisions
 // the bootstrapper itself makes — platform mapping, version resolution,
@@ -28,14 +28,14 @@ import {
   startFixtureReleaseServer,
   writeStubRelease,
 } from "../lib/fixture-release.mjs";
-import { tarballName } from "../lib/harness-tarball.mjs";
+import { tarballName } from "../lib/core-tarball.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const INSTALL_SH = path.join(repoRoot, "install.sh");
 
 /** The two releases the fixture serves. `--version` pins the older one. */
-const OLD_VERSION = "0.49.0";
-const NEW_VERSION = "0.50.0";
+const OLD_VERSION = "0.1.0";
+const NEW_VERSION = "0.2.0";
 
 /**
  * Stands in for the tarball's `bin/actana`: prints what it was called with and
@@ -323,10 +323,10 @@ describeOnPosix("install.sh", () => {
   describe("handing off to `actana setup`", () => {
     it("forwards every flag it does not own, in order", async () => {
       const run = await runInstaller({
-        args: withServer(["--yes", "--public-host", "10.0.0.7", "--label", "build-box", "--no-agents"]),
+        args: withServer(["--yes", "--public-host", "10.0.0.7", "--label", "build-box", "--no-harnesses"]),
       });
       expect(run.status, run.output).toBe(0);
-      expect(run.actanaArgs).toBe("setup --yes --public-host 10.0.0.7 --label build-box --no-agents");
+      expect(run.actanaArgs).toBe("setup --yes --public-host 10.0.0.7 --label build-box --no-harnesses");
     });
 
     it("hands setup an empty stdin when there is no terminal", async () => {

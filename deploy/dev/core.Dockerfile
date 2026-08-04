@@ -1,5 +1,5 @@
 # A dev Core-in-a-box: the systemd Ubuntu the installer e2es use
-# (scripts/lib/systemd-container.mjs), with the Harness tarball baked in and a
+# (scripts/lib/systemd-container.mjs), with the Core tarball baked in and a
 # first-boot unit that installs it as the operator. Build via
 # docker-compose.yml, which supplies the `tarball` context.
 #
@@ -20,7 +20,7 @@ RUN apt-get update \
  && rm -rf /var/lib/apt/lists/*
 
 # Node 24 (NodeSource) — what the agent CLIs (claude, opencode, …) run on.
-# The Harness itself needs none of this; its tarball bundles its own Node.
+# The Core itself needs none of this; its tarball bundles its own Node.
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
  && apt-get install -y --no-install-recommends nodejs \
  && rm -rf /var/lib/apt/lists/*
@@ -37,7 +37,7 @@ RUN useradd --create-home --shell /bin/bash --gid users operator \
 # only run while someone is shelled in.
 RUN mkdir -p /var/lib/systemd/linger && touch /var/lib/systemd/linger/operator
 
-COPY --from=tarball . /opt/harness/
+COPY --from=tarball . /opt/core/
 COPY core-provision.sh /usr/local/lib/core-provision.sh
 COPY core-provision.service /etc/systemd/system/core-provision.service
 RUN chmod +x /usr/local/lib/core-provision.sh \

@@ -25,7 +25,7 @@ export function hostTarget(arch, fail) {
  * The newest tarball in `fileNames` built for `target`.
  *
  * Newest by version rather than by mtime: a rehearsal is meant to exercise the
- * release about to go out, and `artifacts/harness` accumulates older builds.
+ * release about to go out, and `artifacts/core` accumulates older builds.
  */
 export function pickTarball(fileNames, target, fail) {
   const candidates = fileNames
@@ -35,7 +35,7 @@ export function pickTarball(fileNames, target, fail) {
 
   if (candidates.length === 0) {
     fail(
-      `no ${target} tarball to rehearse against — run \`pnpm harness:tarball\`, ` +
+      `no ${target} tarball to rehearse against — run \`pnpm core:tarball\`, ` +
         `or pass --tarball <file>`,
     );
     return null;
@@ -46,7 +46,7 @@ export function pickTarball(fileNames, target, fail) {
 /**
  * The one-liner to paste inside the rehearsal machine.
  *
- * Deliberately carries no `--yes`, no `--with-<agent>` and no `--no-agents`:
+ * Deliberately carries no `--yes`, no `--with-<harness>` and no `--no-harnesses`:
  * the prompts are the whole point of doing this by hand, and a rehearsal that
  * skips them rehearses the unattended path CI already covers.
  */

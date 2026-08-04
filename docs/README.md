@@ -8,14 +8,14 @@ Start with the task you actually have.
 | --- | --- |
 | Understand what this is before installing anything | [`../README.md`](../README.md) |
 | Deploy the **Panel** — the web service you drive everything from | [`../DEPLOY.md`](../DEPLOY.md) |
-| Turn a machine into a **Core** — install the Harness on it | [`../INSTALL.md`](../INSTALL.md) |
+| Turn a machine into a **Core** — install the Core bundle on it | [`../INSTALL.md`](../INSTALL.md) |
 | Get a Panel + Core pair running locally without provisioning anything | [`../deploy/dev/README.md`](../deploy/dev/README.md) |
 | Configure it — every environment variable | [`../DEPLOY.md#configuration`](../DEPLOY.md#configuration) |
 | Back it up, upgrade it, or restore it | [`../DEPLOY.md#backup`](../DEPLOY.md#backup) |
 | Fix an install that went wrong | [`../INSTALL.md#troubleshooting`](../INSTALL.md#troubleshooting) |
 | Drive it from another tool over HTTP | [`../README.md#external-api`](../README.md#external-api) |
 
-The order that works: **deploy a Panel first**, then install a Harness on each
+The order that works: **deploy a Panel first**, then install a Core on each
 machine, then paste that machine's pairing token into the Panel.
 
 ## I want to contribute
@@ -41,6 +41,7 @@ carries the invariants a reviewer will hold you to.
 | Set up the GitHub repo: secrets, rulesets, labels, teams | [`REPO_SETUP.md`](REPO_SETUP.md) |
 | Add Docker Hub publishing keys | [`REPO_SETUP.md#2-secrets-and-variables`](REPO_SETUP.md#2-secrets-and-variables) |
 | Cut a release | [`ci-cd.md#cutting-a-release`](ci-cd.md#cutting-a-release) |
+| Know why this repo has no tag before `v0.1.0` | [`REPO_SETUP.md#6-tag-history`](REPO_SETUP.md#6-tag-history) |
 
 ## Architecture decisions
 
@@ -50,10 +51,10 @@ routing around it.
 
 | ADR | Decision |
 | --- | --- |
-| [0001](adr/0001-detach-harness-from-panel.md) | Detach the Harness from the Panel |
+| [0001](adr/0001-detach-core-from-panel.md) | Detach the Core from the Panel |
 | [0002](adr/0002-core-link-auth-and-transport.md) | Core-link auth and transport |
-| [0003](adr/0003-harness-install-and-registration.md) | Harness install and registration |
-| [0004](adr/0004-harness-owns-write-path.md) | The Harness owns the write path |
+| [0003](adr/0003-core-install-and-registration.md) | Core install and registration |
+| [0004](adr/0004-core-owns-write-path.md) | The Core owns the write path |
 | [0005](adr/0005-singular-ui-across-cores.md) | Singular UI across Cores |
 | [0006](adr/0006-no-bundled-skills.md) | No bundled skills |
 | [0007](adr/0007-scope-narrowing-and-rebrand.md) | Scope narrowing and rebrand |
@@ -62,18 +63,20 @@ routing around it.
 | [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service |
 | [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth |
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
+| [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
+| [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows |
 
 ## Reference
 
 - [`domain-model.md`](domain-model.md) — product names, identifiers, and env-var prefixes
 - [`provider-usage.md`](provider-usage.md) — the multi-provider usage aggregator
-- [`agent-status-detection.md`](agent-status-detection.md) — how a Task's status is inferred
+- [`harness-status-detection.md`](harness-status-detection.md) — how a Task's status is inferred
 - [`skills/`](skills/) — skill files for external CLIs
 
 ## Release and platform checklists
 
-- [`harness-linux-rehearsal.md`](harness-linux-rehearsal.md) — rehearsing a Linux install
-- [`harness-macos-prerelease-checklist.md`](harness-macos-prerelease-checklist.md) — the macOS
+- [`core-linux-rehearsal.md`](core-linux-rehearsal.md) — rehearsing a Linux install
+- [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) — the macOS
   checks a CI runner cannot perform (reboot persistence, chiefly)
 - [`local-build-screen-recording.md`](local-build-screen-recording.md)
 
@@ -93,7 +96,7 @@ work does not go here (it goes in
 - [`refactor-plan.md`](refactor-plan.md),
   [`session-orchestrator-brief.md`](session-orchestrator-brief.md)
 
-## For agents
+## For harnesses
 
 [`agents/`](agents/) — configuration the engineering skills read:
 [`issue-tracker.md`](agents/issue-tracker.md) (where issues live),

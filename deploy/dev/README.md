@@ -16,27 +16,27 @@ it instead of building. The name looks production-ready and is not: systemd is
 PID 1 (hence `privileged: true` and the cgroup mount below), the `operator` user
 has passwordless sudo, and the provision script hardcodes `--public-host core`,
 so it only pairs when the Panel can reach it at the hostname `core`. Building
-locally is still the better path when you are changing the Harness, since the
+locally is still the better path when you are changing the Core, since the
 published image carries the tarball from whichever commit built it.
 
-## 1. Build a Linux Harness tarball
+## 1. Build a Linux Core tarball
 
 The Core installs the same tarball a release ships. On a Linux host:
 
 ```bash
-pnpm harness:tarball
+pnpm core:tarball
 ```
 
 On macOS, build it inside Linux (native modules don't cross-compile) — in a
 **throwaway clone**, since this rewrites `node_modules` with Linux binaries:
 
 ```bash
-docker run --rm -v "$PWD":/repo -w /repo node:24 bash -c 'apt-get update -qq && apt-get install -y -qq python3 make g++ && corepack enable && corepack pnpm@11.1.2 install && corepack pnpm@11.1.2 harness:tarball'
+docker run --rm -v "$PWD":/repo -w /repo node:24 bash -c 'apt-get update -qq && apt-get install -y -qq python3 make g++ && corepack enable && corepack pnpm@11.1.2 install && corepack pnpm@11.1.2 core:tarball'
 ```
 
-Either way the tarball lands in `artifacts/harness/`, where the compose build
+Either way the tarball lands in `artifacts/core/`, where the compose build
 picks it up. (From a throwaway clone, copy it into this repo's
-`artifacts/harness/` first.)
+`artifacts/core/` first.)
 
 ## 2. Up
 
@@ -46,7 +46,7 @@ docker compose up -d --build
 ```
 
 First boot takes a minute: the Core is a real systemd machine that installs
-the Harness through the same no-sudo, operator-session path the installer
+the Core through the same no-sudo, operator-session path the installer
 e2es exercise (`core-provision.service`).
 
 ## 3. Pair
@@ -69,7 +69,7 @@ docker compose exec core journalctl -u core-provision -f
   holds the Core (install, SQLite, certs, the provision marker).
   `docker compose down && up` keeps the pairing; `docker compose down -v`
   starts the world over.
-- **No agent CLIs are installed** (`--no-agents` — hermetic first boot).
+- **No harness CLIs are installed** (`--no-harnesses` — hermetic first boot).
   Re-run setup interactively to add them:
   `docker compose exec core machinectl shell operator@`
   then `actana setup` in that shell.

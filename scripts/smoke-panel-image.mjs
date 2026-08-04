@@ -24,7 +24,7 @@
 import { spawnSync } from "node:child_process";
 
 import { parseArgs } from "./lib/cli.mjs";
-import { makeDie, pickFreePort } from "./lib/harness-smoke.mjs";
+import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
 import { PANEL_PORT, repoRoot } from "./lib/panel-image.mjs";
 
 const die = makeDie("panel-image-smoke");

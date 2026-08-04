@@ -1,4 +1,4 @@
-// Node-side core-link socket factory — dials a Harness's `wss://` core-link
+// Node-side core-link socket factory — dials a Core's `wss://` core-link
 // with mutual TLS (ADR 0002).
 //
 // A Core requires mTLS with a pinned client cert + CA, which the browser
@@ -17,9 +17,9 @@ import type { WebSocket as WsWebSocket } from "ws";
 import type { WebSocketLike } from "./client";
 
 export type NodeTlsOptions = {
-  /** PEM CA cert that signed the Harness server cert. Pinned by the client. */
+  /** PEM CA cert that signed the Core server cert. Pinned by the client. */
   ca: string;
-  /** PEM client cert presented to the Harness in the mTLS handshake. */
+  /** PEM client cert presented to the Core in the mTLS handshake. */
   cert: string;
   /** PEM private key for {@link NodeTlsOptions.cert}. */
   key: string;
@@ -27,9 +27,9 @@ export type NodeTlsOptions = {
 
 /**
  * Dial a `ws://` or `wss://` core-link from the Panel service. When
- * `tls` is provided, the `wss://` handshake pins the Harness's CA and presents
+ * `tls` is provided, the `wss://` handshake pins the Core's CA and presents
  * the Panel's client cert (mTLS). `rejectUnauthorized: true` rejects unknown
- * CAs — a fake Harness presenting any other cert never gets past the handshake.
+ * CAs — a fake Core presenting any other cert never gets past the handshake.
  */
 export function createNodeCoreLinkSocket(url: string, tls?: NodeTlsOptions): WebSocketLike {
   // Lazy require so this module imports cleanly in tests without `ws`.

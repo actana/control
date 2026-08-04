@@ -26,7 +26,7 @@ export function list(): Response {
 
 /**
  * Register a Core. The dial starts here rather than waiting for a poll, so the
- * row the operator just added is already reaching for its Harness by the time
+ * row the operator just added is already reaching for its Core by the time
  * the response paints.
  *
  * A bad blob throws {@link RegistrationBlobError}, which the router turns into

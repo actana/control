@@ -67,7 +67,7 @@ function tomlMultilineString(value: string): string {
   return `"""\n${escaped}\n"""`;
 }
 
-export function convertAgentToCodexToml(
+export function convertHarnessToCodexToml(
   agentMdFile: string,
   outTomlFile: string,
   fallbackName: string,

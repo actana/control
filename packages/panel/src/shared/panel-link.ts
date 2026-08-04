@@ -1,14 +1,14 @@
 // The panel link — the one WebSocket a browser tab holds to the Panel service.
 //
 // One tab, one socket, however many Cores are registered (ADR 0012). Everything
-// live the browser sees arrives here: PTY output, Harness events, dial-status
+// live the browser sees arrives here: PTY output, Core events, dial-status
 // changes. Everything live it asks for goes out here: queries, mutations, PTY
 // input.
 //
 // The framing is deliberately thin. A panel-link frame is a core-link frame in
 // a `coreId` envelope — the Panel is a *router*, not a translator, so there is
-// no second vocabulary to keep in sync with the Harness. The only frames that
-// are not core-link frames are the ones describing facts the Harness has no
+// no second vocabulary to keep in sync with the Core. The only frames that
+// are not core-link frames are the ones describing facts the Core has no
 // opinion about: whether the Panel can currently reach a Core at all.
 //
 // This module is imported by both halves of the panel package — the service's
@@ -49,7 +49,7 @@ export const PANEL_LINK_PROTOCOL_VERSION = 1;
 export const PANEL_LINK_VERSION_PARAM = "v";
 
 /**
- * Frames the Harness pushes without being asked, forwarded verbatim under the
+ * Frames the Core pushes without being asked, forwarded verbatim under the
  * `coreId` envelope: PTY output, PTY exit, domain events, end-of-replay.
  */
 export type CoreLinkPushFrame =
@@ -77,7 +77,7 @@ export type PanelLinkClientFrame = {
  *
  * `core` carries a core-link response or push frame back under its `coreId`.
  * `dial` is the one panel-owned fact: whether the service can reach that Core
- * right now. The Harness cannot report its own unreachability, so this has no
+ * right now. The Core cannot report its own unreachability, so this has no
  * core-link equivalent to reuse.
  */
 export type PanelLinkServerFrame =

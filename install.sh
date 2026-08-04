@@ -6,7 +6,7 @@
 # This script is a bootstrapper and nothing more: detect the platform, resolve
 # the release, download the matching tarball, verify it against the release's
 # published SHA256SUMS, extract it, and hand over to `actana setup`. Every real
-# decision — where to install, the systemd unit, lingering, agent CLIs, the
+# decision — where to install, the systemd unit, lingering, Harnesses, the
 # pairing token — lives in that CLI, where it is unit-tested. Anything this
 # script grows beyond "fetch, verify, exec" belongs there instead.
 #
@@ -50,7 +50,7 @@ have() {
 
 usage() {
   cat <<'EOF'
-Install an Actana Control Harness and turn this machine into a Core.
+Install an Actana Control Core and turn this machine into a Core.
 
 Usage:
   curl -fsSL <install-script-url> | bash
@@ -64,15 +64,15 @@ Installer options:
 
 Every other option is passed through to `actana setup`, including:
   --yes                 Take the recommended answer to every prompt, which
-                        includes installing every missing agent CLI
-  --with-<agent>        Install this agent CLI without asking (repeatable)
-  --no-agents           Do not install or offer any agent CLI
+                        includes installing every missing Harness
+  --with-<harness>        Install this Harness without asking (repeatable)
+  --no-harnesses           Do not install or offer any Harness
   --port <n>            Port the daemon listens on
   --public-host <addr>  Address your Panel dials
   --label <name>        Alias shown in your Panel
 
-Piped into bash there is no terminal, so no agent CLI is installed unless one
-of the first two flags says to. Run `actana agents install <id>` later instead.
+Piped into bash there is no terminal, so no Harness is installed unless one
+of the first two flags says to. Run `actana harnesses install <id>` later instead.
 
 Environment: ACTANA_VERSION, ACTANA_REPO, ACTANA_BASE_URL set the same three
 installer options, for provisioning systems where flags are awkward.
@@ -104,12 +104,12 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case $1 in
       --version)
-        need_value --version "${2-}" " (e.g. --version 0.49.0)"
+        need_value --version "${2-}" " (e.g. --version 0.1.0)"
         VERSION=$2
         shift 2
         ;;
       --version=*)
-        need_value --version "${1#*=}" " (e.g. --version=0.49.0)"
+        need_value --version "${1#*=}" " (e.g. --version=0.1.0)"
         VERSION=${1#*=}
         shift
         ;;
@@ -185,7 +185,7 @@ fetch_url() {
   elif have wget; then
     wget -q -O "${2:--}" "$1"
   else
-    die "neither curl nor wget is installed — one of them is needed to download the Harness."
+    die "neither curl nor wget is installed — one of them is needed to download the Core."
   fi
 }
 
@@ -245,16 +245,16 @@ main() {
     DOWNLOAD_BASE="$DEFAULT_DOWNLOAD_BASE"
   fi
 
-  have tar || die "tar is not installed — it is needed to unpack the Harness."
+  have tar || die "tar is not installed — it is needed to unpack the Core."
 
   detect_target
   resolve_version
 
   tag="v$VERSION"
-  asset="actana-harness-$VERSION-$TARGET.tar.gz"
+  asset="actana-core-$VERSION-$TARGET.tar.gz"
   release_url="$DOWNLOAD_BASE/$REPO/releases/download/$tag"
 
-  say "Installing the Actana Harness $VERSION for $TARGET."
+  say "Installing the Actana Core $VERSION for $TARGET."
 
   work_dir=$(mktemp -d 2>/dev/null || mktemp -d -t actana-install)
   # Whatever happens next — a bad checksum, a failed setup, Ctrl-C — the
@@ -296,7 +296,7 @@ main() {
   say "Checksum verified against the release's $SHASUMS_ASSET."
 
   tar -xzf "$tarball" -C "$work_dir" || die "could not unpack $asset"
-  extracted="$work_dir/actana-harness-$VERSION-$TARGET"
+  extracted="$work_dir/actana-core-$VERSION-$TARGET"
   [ -x "$extracted/bin/actana" ] ||
     die "$asset does not contain bin/actana — the release asset looks wrong."
 

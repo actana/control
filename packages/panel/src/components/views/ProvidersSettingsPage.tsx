@@ -2,34 +2,34 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { AgentLogo } from "~/components/ui/AgentLogo";
+import { HarnessLogo } from "~/components/ui/HarnessLogo";
 import { Btn } from "~/components/ui/Btn";
 import { Icon } from "~/components/ui/Icon";
 import { Modal } from "~/components/ui/Modal";
 import { CodeBlock, SettingsSection, ToggleSwitch, useCopy } from "~/components/views/SettingsParts";
 import { api, type AppSettings } from "~/lib/api";
 import { useCliAvailability, type CliAvailability } from "~/lib/cli-availability";
-import { AGENT_META } from "~/lib/design-meta";
+import { HARNESS_META } from "~/lib/design-meta";
 import { useSelectedCoreId } from "~/lib/selected-core-store";
 import { reorderPinnedIds } from "~/lib/pinned-project-order";
-import { queryKeys, useAgentAccounts, useAgentLatestVersions, useSettings } from "~/queries";
-import { AGENT_REGISTRY } from "@actana/shared/agents";
-import { AGENT_CLI_CONFIG, allAgentCliUpdateCommands } from "@actana/shared/agent-cli-config";
-import { compareCliVersions } from "@actana/shared/agent-cli-version-compare";
+import { queryKeys, useHarnessAccounts, useHarnessLatestVersions, useSettings } from "~/queries";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
+import { HARNESS_CLI_CONFIG, allHarnessCliUpdateCommands } from "@actana/shared/harness-cli-config";
+import { compareCliVersions } from "@actana/shared/harness-cli-version-compare";
 import {
   DEFAULT_AGENT_LAUNCHER_CONFIG,
-  visibleLauncherAgents,
-  type AgentLauncherConfig,
-} from "~/shared/agent-launcher-config";
-import type { AgentLatestVersion } from "~/shared/agent-launchers";
-import type { TaskAgent } from "@actana/shared/domain";
+  visibleLauncherHarnesses,
+  type HarnessLauncherConfig,
+} from "~/shared/harness-launcher-config";
+import type { HarnessLatestVersion } from "~/shared/harness-launchers";
+import type { Harness } from "@actana/shared/domain";
 
 const DRAG_THRESHOLD_PX = 4;
 
 // What each agent's CLI looks like on the selected Core.
 //
 // The Panel has no machine of its own to probe (ADR 0010): "installed" is a
-// fact about the Harness that would run the agent, and only that Harness can
+// fact about the Core that would run the agent, and only that Core can
 // answer it. The per-Core availability store is that answer — hydrated over the
 // panel link and kept fresh by the Core's `agents:availabilityChanged` events —
 // so this page reads it instead of shelling out anywhere.
@@ -52,36 +52,36 @@ function installedStateFor(
 export function ProvidersSettingsPage() {
   const queryClient = useQueryClient();
   const { data: settings } = useSettings();
-  const config = settings?.agentLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG;
-  const { data: accounts } = useAgentAccounts();
-  const { data: latestVersions } = useAgentLatestVersions();
+  const config = settings?.harnessLauncherConfig ?? DEFAULT_AGENT_LAUNCHER_CONFIG;
+  const { data: accounts } = useHarnessAccounts();
+  const { data: latestVersions } = useHarnessLatestVersions();
   const { copied, copy } = useCopy();
-  const [refreshing, setRefreshing] = useState<Partial<Record<TaskAgent, boolean>>>({});
+  const [refreshing, setRefreshing] = useState<Partial<Record<Harness, boolean>>>({});
 
   const selectedCoreId = useSelectedCoreId();
   const coreAvailability = useCliAvailability(selectedCoreId);
 
-  const accountByAgent = useMemo(
+  const accountByHarness = useMemo(
     () => new Map((accounts ?? []).map((account) => [account.agent, account])),
     [accounts],
   );
-  const latestByAgent = useMemo(
+  const latestByHarness = useMemo(
     () => new Map((latestVersions ?? []).map((entry) => [entry.agent, entry])),
     [latestVersions],
   );
 
   const update = useCallback(
-    async (next: AgentLauncherConfig) => {
+    async (next: HarnessLauncherConfig) => {
       await queryClient.cancelQueries({ queryKey: queryKeys.settings });
       const previous = queryClient.getQueryData<AppSettings>(queryKeys.settings);
       if (previous) {
         queryClient.setQueryData<AppSettings>(queryKeys.settings, {
           ...previous,
-          agentLauncherConfig: next,
+          harnessLauncherConfig: next,
         });
       }
       try {
-        const saved = await api.updateSettings({ agentLauncherConfig: next });
+        const saved = await api.updateSettings({ harnessLauncherConfig: next });
         queryClient.setQueryData(queryKeys.settings, saved);
       } catch (e) {
         if (previous) queryClient.setQueryData(queryKeys.settings, previous);
@@ -92,11 +92,11 @@ export function ProvidersSettingsPage() {
   );
 
   // --- drag to reorder (pointer capture, no dnd library — same approach as ProjectBar) ---
-  const [dragOrder, setDragOrder] = useState<TaskAgent[] | null>(null);
-  const [draggingAgent, setDraggingAgent] = useState<TaskAgent | null>(null);
-  const dragOrderRef = useRef<TaskAgent[] | null>(null);
+  const [dragOrder, setDragOrder] = useState<Harness[] | null>(null);
+  const [draggingHarness, setDraggingHarness] = useState<Harness | null>(null);
+  const dragOrderRef = useRef<Harness[] | null>(null);
   const listRef = useRef<HTMLDivElement | null>(null);
-  const configOrderRef = useRef<TaskAgent[]>(config.order);
+  const configOrderRef = useRef<Harness[]>(config.order);
   configOrderRef.current = config.order;
 
   const displayOrder = dragOrder ?? config.order;
@@ -112,7 +112,7 @@ export function ProvidersSettingsPage() {
   }, []);
 
   const startReorder = useCallback(
-    (agent: TaskAgent, event: ReactPointerEvent<HTMLButtonElement>) => {
+    (agent: Harness, event: ReactPointerEvent<HTMLButtonElement>) => {
       if (event.button !== 0) return;
       const captureTarget = event.currentTarget;
       const pointerId = event.pointerId;
@@ -125,12 +125,12 @@ export function ProvidersSettingsPage() {
         if (moveEvent.pointerId !== pointerId) return;
         if (!moved && Math.abs(moveEvent.clientY - startY) < DRAG_THRESHOLD_PX) return;
         moved = true;
-        setDraggingAgent(agent);
+        setDraggingHarness(agent);
         const currentOrder = dragOrderRef.current ?? configOrderRef.current;
         const fromIndex = currentOrder.indexOf(agent);
         const toIndex = resolveDropIndex(moveEvent.clientY);
         if (fromIndex >= 0 && fromIndex !== toIndex) {
-          const nextOrder = reorderPinnedIds(currentOrder, fromIndex, toIndex) as TaskAgent[];
+          const nextOrder = reorderPinnedIds(currentOrder, fromIndex, toIndex) as Harness[];
           dragOrderRef.current = nextOrder;
           setDragOrder(nextOrder);
         }
@@ -144,7 +144,7 @@ export function ProvidersSettingsPage() {
         if (captureTarget.hasPointerCapture(pointerId)) {
           captureTarget.releasePointerCapture(pointerId);
         }
-        setDraggingAgent(null);
+        setDraggingHarness(null);
       };
 
       const onPointerUp = (upEvent: PointerEvent) => {
@@ -181,9 +181,9 @@ export function ProvidersSettingsPage() {
     [config.hidden, resolveDropIndex, update],
   );
 
-  const toggleVisibility = (agent: TaskAgent) => {
+  const toggleVisibility = (agent: Harness) => {
     const hidden = config.hidden.includes(agent);
-    if (!hidden && visibleLauncherAgents(config).length === 1) {
+    if (!hidden && visibleLauncherHarnesses(config).length === 1) {
       toast("At least one agent stays visible in the New Session dialog.");
       return;
     }
@@ -193,14 +193,14 @@ export function ProvidersSettingsPage() {
     void update({ order: config.order, hidden: nextHidden });
   };
 
-  const checkForUpdate = async (agent: TaskAgent) => {
+  const checkForUpdate = async (agent: Harness) => {
     setRefreshing((current) => ({ ...current, [agent]: true }));
     try {
-      const { versions } = await api.getAgentLatestVersions([agent], { refresh: true });
-      queryClient.setQueryData<AgentLatestVersion[]>(queryKeys.agentLatestVersions, (current) => {
-        const byAgent = new Map((current ?? []).map((entry) => [entry.agent, entry]));
-        for (const entry of versions) byAgent.set(entry.agent, entry);
-        return [...byAgent.values()];
+      const { versions } = await api.getHarnessLatestVersions([agent], { refresh: true });
+      queryClient.setQueryData<HarnessLatestVersion[]>(queryKeys.harnessLatestVersions, (current) => {
+        const byHarness = new Map((current ?? []).map((entry) => [entry.agent, entry]));
+        for (const entry of versions) byHarness.set(entry.agent, entry);
+        return [...byHarness.values()];
       });
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Could not check for updates");
@@ -221,10 +221,10 @@ export function ProvidersSettingsPage() {
             key={agent}
             agent={agent}
             hidden={config.hidden.includes(agent)}
-            dragging={draggingAgent === agent}
+            dragging={draggingHarness === agent}
             installed={installedStateFor(coreAvailability[agent], selectedCoreId)}
-            latest={latestByAgent.get(agent)}
-            account={accountByAgent.get(agent)}
+            latest={latestByHarness.get(agent)}
+            account={accountByHarness.get(agent)}
             refreshing={!!refreshing[agent]}
             copiedLabel={copied}
             onCopy={copy}
@@ -252,11 +252,11 @@ function ProviderRow({
   onToggleVisibility,
   onCheckForUpdate,
 }: {
-  agent: TaskAgent;
+  agent: Harness;
   hidden: boolean;
   dragging: boolean;
   installed: InstalledState;
-  latest: AgentLatestVersion | undefined;
+  latest: HarnessLatestVersion | undefined;
   account: { connected: boolean; identifier: string | null } | undefined;
   refreshing: boolean;
   copiedLabel: string | null;
@@ -265,9 +265,9 @@ function ProviderRow({
   onToggleVisibility: () => void;
   onCheckForUpdate: () => void;
 }) {
-  const meta = AGENT_META[agent];
-  const registry = AGENT_REGISTRY[agent];
-  const cliConfig = AGENT_CLI_CONFIG[agent];
+  const meta = HARNESS_META[agent];
+  const registry = HARNESS_REGISTRY[agent];
+  const cliConfig = HARNESS_CLI_CONFIG[agent];
   const [manualOpen, setManualOpen] = useState(false);
 
   const availability = installed.status === "ready" ? installed.availability : null;
@@ -278,7 +278,7 @@ function ProviderRow({
     compareCliVersions(latest.latestVersion, installedVersion, cliConfig.versionScheme) > 0;
   const updateCommands =
     availability?.updateCommands ??
-    allAgentCliUpdateCommands(cliConfig.updateCommands);
+    allHarnessCliUpdateCommands(cliConfig.updateCommands);
 
   return (
     <div
@@ -327,7 +327,7 @@ function ProviderRow({
             flexShrink: 0,
           }}
         >
-          <AgentLogo agent={agent} size={20} title={meta.label} />
+          <HarnessLogo agent={agent} size={20} title={meta.label} />
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>

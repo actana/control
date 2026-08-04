@@ -1,0 +1,180 @@
+name: Core Release
+
+# Builds the four per-platform Core tarballs on a tag push and attaches them,
+# plus a SHA256SUMS asset, to the GitHub Release. This is the distribution
+# channel the `curl | bash` installer and `actana update` pull from.
+#
+# No signing, no notarization, and no secrets beyond the automatic
+# `github.token` it needs to attach assets. Integrity comes from the published
+# checksums, verified by the installer and by `actana update`.
+#
+# Every target builds on a runner of its own architecture — the tarballs carry
+# prebuilt native modules (node-pty, better-sqlite3) copied from the build
+# host's own install, so a cross-compiled leg would be a guess, not a build.
+#
+# The upload path is create-or-upload idempotent, so it does not matter whether
+# the GitHub Release already exists when this runs.
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)build Core tarballs for (e.g. v0.1.0). Must already exist on origin."
+        required: true
+
+concurrency:
+  group: core-release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolve:
+    name: Resolve ref
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      version: ${{ steps.ref.outputs.version }}
+    steps:
+      - id: ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            ref="$INPUT_TAG"
+          else
+            ref="$REF_NAME"
+          fi
+          if [[ ! "$ref" =~ ^v[0-9]+([.][0-9]+){0,2}([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "release ref must be a version tag like v0.1.0" >&2
+            exit 1
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=${ref#v}" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Core tarball (${{ matrix.target }})
+    needs: resolve
+    strategy:
+      # Let every leg finish so one failure surfaces all of them in a single
+      # run. Publishing still requires all four: a SHA256SUMS covering three
+      # platforms is worse than no release, so `publish` needs `build` whole.
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            target: mac-arm64
+          - os: macos-15-intel
+            target: mac-x64
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the Core bundle
+        run: pnpm --filter @actana/core build
+
+      - name: Build the tarball
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          node scripts/build-core-tarball.mjs \
+            --target "${{ matrix.target }}" \
+            --version "$RELEASE_VERSION" \
+            --out-dir artifacts/core
+
+      # The acceptance criterion, run on the platform it is about: extract the
+      # tarball and boot it through its own launcher with no system Node.
+      - name: Smoke — extracted tarball boots a dialable Core
+        run: |
+          node scripts/smoke-core-tarball.mjs \
+            --tarball "artifacts/core/actana-core-${{ needs.resolve.outputs.version }}-${{ matrix.target }}.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-tarball-${{ matrix.target }}
+          path: artifacts/core/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    name: Attach tarballs + SHA256SUMS to the GitHub Release
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: core-tarball-*
+          path: core-tarballs
+          merge-multiple: true
+
+      # --expect 4 is the guard: a silently missing platform must be a red
+      # build, not a checksum file that quietly covers three of four.
+      - name: Compose SHA256SUMS
+        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 4
+
+      - name: Verify SHA256SUMS the way an operator would
+        working-directory: core-tarballs
+        run: sha256sum -c SHA256SUMS
+
+      - name: Attach to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_REF: ${{ needs.resolve.outputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find core-tarballs -maxdepth 1 -type f \( -name '*.tar.gz' -o -name 'SHA256SUMS' \) | sort)
+          echo "Attaching ${#files[@]} asset(s) to $RELEASE_REF:"
+          printf '  %s\n' "${files[@]}"
+
+          # The release may already exist; either order works.
+          if gh release view "$RELEASE_REF" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_REF" "${files[@]}" --clobber
+          else
+            gh release create "$RELEASE_REF" "${files[@]}" \
+              --title "$RELEASE_REF" \
+              --notes "Core tarballs for macOS and Linux Cores. Verify with \`sha256sum -c SHA256SUMS\`."
+          fi

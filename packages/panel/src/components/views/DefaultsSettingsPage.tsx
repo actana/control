@@ -7,15 +7,15 @@ import { Field, SettingsSection } from "~/components/views/SettingsParts";
 import { ApiError, api, type AppSettings } from "~/lib/api";
 import { syncDefaultRuntimeDefaults } from "~/lib/default-model-store";
 import { queryKeys, useSettings } from "~/queries";
-import { AGENT_REGISTRY } from "@actana/shared/agents";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
-  AI_RUNTIME_HARNESS_VALUES,
+  HARNESSES,
   isAiModelId,
   getAiRuntimeModelOptions,
   modelBelongsToHarnessCatalog,
   type AiModelOption,
   type AiModelId,
-  type AiRuntimeHarness,
+  type Harness,
   type AiRuntimeModelsResponse,
 } from "@actana/shared/ai-runtime-defaults";
 import { DEFAULT_SHIP_PROMPT } from "~/shared/ship-defaults";
@@ -37,7 +37,7 @@ const DEFAULTS_FEATURES: Array<{
 export function DefaultsSettingsPage() {
   const queryClient = useQueryClient();
   const { data: settings } = useSettings();
-  const currentShipAgent = settings?.shipAgent ?? "claude-code";
+  const currentShipHarness = settings?.shipHarness ?? "claude-code";
   const currentShipModel = settings?.shipModel ?? null;
   const currentShipPrompt = settings?.shipPrompt ?? DEFAULT_SHIP_PROMPT;
   const [activeFeature, setActiveFeature] = useState<DefaultsFeatureId>("ship");
@@ -54,9 +54,9 @@ export function DefaultsSettingsPage() {
     patch: Partial<
       Pick<
         AppSettings,
-        | "defaultAgent"
+        | "defaultHarness"
         | "defaultModel"
-        | "shipAgent"
+        | "shipHarness"
         | "shipModel"
         | "shipPrompt"
       >
@@ -132,12 +132,12 @@ export function DefaultsSettingsPage() {
                 }
               >
                 <RuntimeDefaultControl
-                  agent={currentShipAgent}
+                  agent={currentShipHarness}
                   model={currentShipModel}
                   disabled={runtimeUpdating}
-                  onAgentSelect={(agent) =>
+                  onHarnessSelect={(agent) =>
                     void updateRuntimeDefaults({
-                      shipAgent: agent,
+                      shipHarness: agent,
                       shipModel: modelForSelectedHarness(agent, currentShipModel),
                     })
                   }
@@ -218,7 +218,7 @@ export function DefaultsSettingsPage() {
 }
 
 export function modelForSelectedHarness(
-  agent: AiRuntimeHarness,
+  agent: Harness,
   model: AiModelId | null,
 ): AiModelId | null {
   return modelBelongsToHarnessCatalog(agent, model) ? model : null;
@@ -226,13 +226,13 @@ export function modelForSelectedHarness(
 
 function isStaleSettingsSchemaError(
   error: unknown,
-  patch: Partial<Pick<AppSettings, "defaultAgent" | "shipAgent">>,
+  patch: Partial<Pick<AppSettings, "defaultHarness" | "shipHarness">>,
 ): boolean {
   if (!(error instanceof ApiError) || error.status !== 400) return false;
   const message = error.message;
   return (
-    ("defaultAgent" in patch && message.includes('Unrecognized key: "defaultAgent"')) ||
-    ("shipAgent" in patch && message.includes('Unrecognized key: "shipAgent"'))
+    ("defaultHarness" in patch && message.includes('Unrecognized key: "defaultHarness"')) ||
+    ("shipHarness" in patch && message.includes('Unrecognized key: "shipHarness"'))
   );
 }
 
@@ -330,13 +330,13 @@ export function RuntimeDefaultControl({
   agent,
   model,
   disabled,
-  onAgentSelect,
+  onHarnessSelect,
   onModelSelect,
 }: {
-  agent: AiRuntimeHarness;
+  agent: Harness;
   model: AiModelId | null;
   disabled: boolean;
-  onAgentSelect: (agent: AiRuntimeHarness) => void;
+  onHarnessSelect: (agent: Harness) => void;
   onModelSelect: (model: AiModelId | null) => void;
 }) {
   const modelSelectId = useId();
@@ -349,19 +349,19 @@ export function RuntimeDefaultControl({
       ? liveModels.models
       : fallbackModels;
   const modelOptions = includeSavedModel(discoveredModels, model);
-  const focusHarness = (nextAgent: AiRuntimeHarness) => {
+  const focusHarness = (nextHarness: Harness) => {
     requestAnimationFrame(() => {
-      document.getElementById(harnessOptionId(nextAgent))?.focus();
+      document.getElementById(harnessOptionId(nextHarness))?.focus();
     });
   };
   const selectHarnessByOffset = (offset: number) => {
-    const index = AI_RUNTIME_HARNESS_VALUES.indexOf(agent);
+    const index = HARNESSES.indexOf(agent);
     const nextIndex =
-      (index + offset + AI_RUNTIME_HARNESS_VALUES.length) %
-      AI_RUNTIME_HARNESS_VALUES.length;
-    const nextAgent = AI_RUNTIME_HARNESS_VALUES[nextIndex]!;
-    onAgentSelect(nextAgent);
-    focusHarness(nextAgent);
+      (index + offset + HARNESSES.length) %
+      HARNESSES.length;
+    const nextHarness = HARNESSES[nextIndex]!;
+    onHarnessSelect(nextHarness);
+    focusHarness(nextHarness);
   };
 
   useEffect(() => {
@@ -408,27 +408,27 @@ export function RuntimeDefaultControl({
               selectHarnessByOffset(-1);
             } else if (event.key === "Home") {
               event.preventDefault();
-              const nextAgent = AI_RUNTIME_HARNESS_VALUES[0]!;
-              onAgentSelect(nextAgent);
-              focusHarness(nextAgent);
+              const nextHarness = HARNESSES[0]!;
+              onHarnessSelect(nextHarness);
+              focusHarness(nextHarness);
             } else if (event.key === "End") {
               event.preventDefault();
-              const nextAgent =
-                AI_RUNTIME_HARNESS_VALUES[AI_RUNTIME_HARNESS_VALUES.length - 1]!;
-              onAgentSelect(nextAgent);
-              focusHarness(nextAgent);
+              const nextHarness =
+                HARNESSES[HARNESSES.length - 1]!;
+              onHarnessSelect(nextHarness);
+              focusHarness(nextHarness);
             }
           }}
           style={{ display: "flex", flexDirection: "column", gap: 6 }}
         >
-          {AI_RUNTIME_HARNESS_VALUES.map((value) => (
+          {HARNESSES.map((value) => (
             <HarnessOption
               key={value}
               agent={value}
               selected={agent === value}
               disabled={disabled}
               tabIndex={agent === value ? 0 : -1}
-              onSelect={() => onAgentSelect(value)}
+              onSelect={() => onHarnessSelect(value)}
             />
           ))}
         </div>
@@ -456,7 +456,7 @@ export function RuntimeDefaultControl({
               fontSize: 12,
             }}
           >
-            <option value="">Use {AGENT_REGISTRY[agent].label} default</option>
+            <option value="">Use {HARNESS_REGISTRY[agent].label} default</option>
             {modelOptions.map((option) => (
               <option key={option.id} value={option.id}>
                 {option.label} ({option.id})
@@ -522,7 +522,7 @@ function selectedModelDescription(
 }
 
 function modelHelpText(
-  agent: AiRuntimeHarness,
+  agent: Harness,
   liveModels: AiRuntimeModelsResponse | null,
   loading: boolean,
 ): string {
@@ -549,13 +549,13 @@ function HarnessOption({
   tabIndex,
   onSelect,
 }: {
-  agent: AiRuntimeHarness;
+  agent: Harness;
   selected: boolean;
   disabled: boolean;
   tabIndex: number;
   onSelect: () => void;
 }) {
-  const meta = AGENT_REGISTRY[agent];
+  const meta = HARNESS_REGISTRY[agent];
   return (
     <button
       id={harnessOptionId(agent)}
@@ -613,6 +613,6 @@ function HarnessOption({
   );
 }
 
-function harnessOptionId(agent: AiRuntimeHarness): string {
+function harnessOptionId(agent: Harness): string {
   return `defaults-harness-option-${agent}`;
 }

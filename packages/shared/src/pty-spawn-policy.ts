@@ -1,14 +1,14 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { AGENT_SPAWN_COMMANDS } from "./agent-cli-config";
+import { HARNESS_SPAWN_COMMANDS } from "./harness-cli-config";
 import { isAiModelId } from "./ai-runtime-defaults";
-import type { TaskAgent } from "./domain";
+import type { Harness } from "./domain";
 import { buildCmdScriptCommand, isWindowsCommandScript } from "./windows-cmd";
 
-export type TaskAgentSpawn = TaskAgent;
+export type HarnessSpawn = Harness;
 
-/** @deprecated Import AGENT_SPAWN_COMMANDS from agent-cli-config instead. */
-export const AGENT_BINARIES = AGENT_SPAWN_COMMANDS;
+/** @deprecated Import HARNESS_SPAWN_COMMANDS from harness-cli-config instead. */
+export const HARNESS_BINARIES = HARNESS_SPAWN_COMMANDS;
 
 export type BaseSpawnRequest = {
   taskId: string;
@@ -29,8 +29,8 @@ export type BaseSpawnRequest = {
   shellSession?: never;
 };
 
-export type AgentSpawnRequest = BaseSpawnRequest & {
-  agent: TaskAgentSpawn;
+export type HarnessSpawnRequest = BaseSpawnRequest & {
+  agent: HarnessSpawn;
   dangerouslySkipPermissions?: boolean;
   shell?: never;
   // Optional programmatic starting prompt written to the agent's stdin once
@@ -59,25 +59,25 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
 
 /**
  * A VM Shell Session spawn (issue 06) — a free-form interactive shell on the
- * Harness's machine, distinct from agent workspaces and project-scoped shells.
+ * Core's machine, distinct from agent workspaces and project-scoped shells.
  * `shellSession: true` is its own spawn mode: no `agent`, no project-root
- * requirement (a VM shell has no project folder). The Harness skips the
+ * requirement (a VM shell has no project folder). The Core skips the
  * project-root validation it applies to agent spawns and starts a login shell
  * at its own home — the renderer never supplies a host filesystem path. Gated
  * by core-link auth (mTLS + bearer), never auto-spawned; opened by an explicit
  * Panel gesture. The "SSH-equivalent" escape hatch.
  *
  * `cwd` is optional/empty from the renderer; the spawn handler
- * ({@link PtyHarnessCore.spawn}) replaces it with its own `os.homedir()`
+ * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`
  * before calling {@link resolveSpawnPlan}, so the plan's `cwd` is the real
- * home path on the Harness machine.
+ * home path on the Core machine.
  */
 export type ShellSessionSpawnRequest = {
   taskId: string;
   /**
-   * Optional cwd on the Harness machine. The renderer never knows a host
+   * Optional cwd on the Core machine. The renderer never knows a host
    * path, so it sends "" (or omits); the spawn handler
-   * ({@link PtyHarnessCore.spawn}) replaces it with its own `os.homedir()`.
+   * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`.
    * A non-empty value (e.g. handler-supplied home) is passed through verbatim
    * — the project-root check is skipped for VM shells regardless.
    */
@@ -97,14 +97,14 @@ export type ShellSessionSpawnRequest = {
 };
 
 export type SpawnRequest =
-  | AgentSpawnRequest
+  | HarnessSpawnRequest
   | ShellSpawnRequest
   | ShellSessionSpawnRequest;
 
 export type SpawnPlan =
   | {
       mode: "agent";
-      agent: TaskAgentSpawn;
+      agent: HarnessSpawn;
       binary: string;       // resolved agent binary/shim
       argv: string[];        // already-tokenized agent arguments, no shell parsing
       spawnTarget: string;  // executable passed to node-pty
@@ -119,8 +119,8 @@ export type SpawnPlan =
       cwd: string;          // canonical (realpath'd) cwd — pass this to spawn, not the original request
     }
   | {
-      // A VM Shell Session (issue 06): a login shell on the Harness's machine
-      // with no project-root containment. cwd is the Harness's own home dir
+      // A VM Shell Session (issue 06): a login shell on the Core's machine
+      // with no project-root containment. cwd is the Core's own home dir
       // (handler-supplied); the command is passed to the login shell verbatim.
       // See CONTEXT.md "VM Shell Session".
       mode: "shell-session";
@@ -139,7 +139,7 @@ export type SpawnPolicyDeps = {
   projectRoots: () => string[];
   // Extra roots a *shell* terminal may start in beyond the project roots —
   // currently just the host's home directory, which enables project-less "home"
-  // terminals (req.home === true). Agent spawns ignore this list and stay
+  // terminals (req.home === true). Harness spawns ignore this list and stay
   // confined to project roots. Resolved through realpath like project roots.
   homeShellRoots?: () => string[];
   // Resolve a command name (claude/codex/cursor-agent) to an absolute path on PATH.
@@ -173,14 +173,14 @@ export type SpawnPolicyErrorCode =
 
 const SHELL_META = /[`$();&|<>"'\\\n\r\t*?{}[\]~#!]/;
 
-type AgentArgRule = {
+type HarnessArgRule = {
   value: false | { allowed?: readonly string[] };
   requiresDangerouslySkipPermissions?: boolean;
   /** When set, string arg values must start with this prefix (OpenCode session ids). */
   valuePrefix?: string;
 };
 
-const AGENT_ARG_RULES: Readonly<Record<TaskAgentSpawn, Readonly<Record<string, AgentArgRule>>>> = {
+const HARNESS_ARG_RULES: Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>> = {
   "claude-code": {
     "--bare": { value: false },
     "--session-id": { value: {} },
@@ -233,7 +233,7 @@ function withinRoot(real: string, root: string): boolean {
   return real.startsWith(root + path.sep);
 }
 
-function tokenizeAgentCommand(cmd: string): string[] {
+function tokenizeHarnessCommand(cmd: string): string[] {
   return cmd.trim().split(/\s+/).filter(Boolean);
 }
 
@@ -274,18 +274,18 @@ function validateCodexArgv(
         "pty:spawn rejected invalid value for codex resume session id",
       );
     }
-    validateAgentArgv("codex", argv.slice(2), opts);
+    validateHarnessArgv("codex", argv.slice(2), opts);
     return;
   }
-  validateAgentArgv("codex", argv, opts);
+  validateHarnessArgv("codex", argv, opts);
 }
 
-function validateAgentArgv(
-  agent: TaskAgentSpawn,
+function validateHarnessArgv(
+  agent: HarnessSpawn,
   argv: string[],
   opts: { dangerouslySkipPermissions: boolean },
 ): void {
-  const rules = AGENT_ARG_RULES[agent];
+  const rules = HARNESS_ARG_RULES[agent];
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const rule = rules[arg];
@@ -325,10 +325,10 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
   const realpath = deps.realpath ?? defaultRealpath;
 
   // ─── VM Shell Session (issue 06) ───
-  // A `shellSession: true` spawn is a free-form shell on the Harness's machine
+  // A `shellSession: true` spawn is a free-form shell on the Core's machine
   // with NO project-root requirement. It is gated by core-link auth (mTLS +
   // bearer), not by cwd containment, so the project-root check below is
-  // skipped entirely. The handler (PtyHarnessCore.spawn) supplies the real
+  // skipped entirely. The handler (PtyCore.spawn) supplies the real
   // cwd (its own os.homedir()); the renderer never sends a host path.
   if (req.shellSession === true) {
     // Mutually exclusive with the agent and shell modes — forces every
@@ -407,16 +407,16 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
 
   // 3. Branch: shell terminal vs. agent terminal. Exactly one must be true.
   const wantsShell = req.shell === true;
-  const hasAgent = typeof req.agent === "string" && req.agent.length > 0;
+  const hasHarness = typeof req.agent === "string" && req.agent.length > 0;
 
-  if (wantsShell && hasAgent) {
+  if (wantsShell && hasHarness) {
     throw new SpawnPolicyError(
       "shell-with-agent",
       "pty:spawn cannot set shell=true and agent at the same time",
     );
   }
 
-  if (!wantsShell && !hasAgent) {
+  if (!wantsShell && !hasHarness) {
     throw new SpawnPolicyError(
       "missing-agent-or-shell-flag",
       "pty:spawn requires either a known agent or shell=true",
@@ -437,9 +437,9 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
     };
   }
 
-  // 5. Agent mode: agent must be in the allow-list.
-  const agentKey = req.agent as TaskAgentSpawn;
-  const expectedBinary = AGENT_BINARIES[agentKey];
+  // 5. Harness mode: agent must be in the allow-list.
+  const harnessKey = req.agent as HarnessSpawn;
+  const expectedBinary = HARNESS_BINARIES[harnessKey];
   if (!expectedBinary) {
     throw new SpawnPolicyError(
       "unknown-agent",
@@ -448,7 +448,7 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
   }
 
   // 6. First token of `command` must match the agent's binary; the rest is argv.
-  const tokens = tokenizeAgentCommand(req.command ?? "");
+  const tokens = tokenizeHarnessCommand(req.command ?? "");
   if (tokens.length === 0) {
     throw new SpawnPolicyError(
       "empty-command",
@@ -476,10 +476,10 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
   }
 
   const spawnOpts = { dangerouslySkipPermissions: req.dangerouslySkipPermissions === true };
-  if (agentKey === "codex") {
+  if (harnessKey === "codex") {
     validateCodexArgv(argv, spawnOpts);
   } else {
-    validateAgentArgv(agentKey, argv, spawnOpts);
+    validateHarnessArgv(harnessKey, argv, spawnOpts);
   }
 
   const resolved = deps.resolveCommand(expectedBinary);
@@ -492,7 +492,7 @@ export function resolveSpawnPlan(req: SpawnRequest, deps: SpawnPolicyDeps): Spaw
 
   return {
     mode: "agent",
-    agent: agentKey,
+    agent: harnessKey,
     binary: resolved,
     argv,
     ...nodePtySpawnTarget(resolved, argv, deps),

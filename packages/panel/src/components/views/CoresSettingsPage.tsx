@@ -101,7 +101,7 @@ export function CoresSettingsPage() {
   return (
     <SettingsSection
       title="Cores"
-      subtitle="The machines this Panel manages. Pair one by pasting the token its Harness printed at install; the Panel keeps the link up from the server, so your fleet stays connected with no browser open. Credentials are encrypted in the Panel's data directory."
+      subtitle="The machines this Panel manages. Pair one by pasting the token its Core printed at install; the Panel keeps the link up from the server, so your fleet stays connected with no browser open. Credentials are encrypted in the Panel's data directory."
       headingLevel="h1"
     >
       {loading ? (
@@ -125,7 +125,7 @@ export function CoresSettingsPage() {
                   borderRadius: 7,
                 }}
               >
-                No Cores yet. Install the Harness on a machine and paste the token it prints below.
+                No Cores yet. Install the Core on a machine and paste the token it prints below.
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -154,7 +154,7 @@ export function CoresSettingsPage() {
               }}
             >
               <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-dim)" }}>
-                Run <code>harness install</code> on the machine and paste the single line it prints.
+                Run <code>core install</code> on the machine and paste the single line it prints.
                 It carries the endpoint, the pinned CA and client certificate, and the signed bearer
                 — everything the Panel needs to dial that Core, and nothing it can reach without.
               </div>
@@ -348,6 +348,6 @@ function badgeTitle(dial: CoreDialStatus): string {
     case "auth-error":
       return `This Core rejected the Panel's credentials (${dial.detail ?? "rejected"}). Reissue a pairing token on the machine and add it again.`;
     case "needs-update":
-      return `${dial.detail ?? "This Core speaks a different core-link protocol"}. Its data is suppressed until the Harness on that machine is updated.`;
+      return `${dial.detail ?? "This Core speaks a different core-link protocol"}. Its data is suppressed until the Core on that machine is updated.`;
   }
 }

@@ -75,7 +75,7 @@ anywhere Node 24 does:
 
 ```bash
 pnpm install
-pnpm build                                # builds the Harness bundle + the Panel
+pnpm build                                # builds the Core bundle + the Panel
 AC_PANEL_DATA_DIR=/var/lib/actana-panel pnpm start
 ```
 

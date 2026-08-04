@@ -1,7 +1,7 @@
 import { PanelLinkClient } from "./panel-link-client";
 import { corePtyBridgeFor, type CorePtyBridge } from "./core-pty-bridge";
 import type {
-  CoreLinkAgentAvailabilityMap,
+  CoreLinkHarnessAvailabilityMap,
   CoreLinkDirListing,
   CoreLinkEvent,
   CoreLinkProjectMutation,
@@ -22,7 +22,7 @@ import type { CoreDialStatus } from "~/shared/cores";
  *
  * Reads, terminals, and writes all ride the link. There is no second write
  * path: a mutation is a frame addressed to the Core that owns the row
- * (ADR 0004), so the Harness is the only process that ever touches its own
+ * (ADR 0004), so the Core is the only process that ever touches its own
  * database, and two tabs looking at the same Core see the same answer because
  * they asked the same machine.
  */
@@ -37,11 +37,11 @@ export type PanelBridge = {
   /** List a Core's active sessions, optionally scoped to one project. */
   listSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionSnapshot[]>;
   /** A Core's CLI availability snapshot; live changes arrive on {@link onEvent}. */
-  listAgentAvailability(coreId: string): Promise<CoreLinkAgentAvailabilityMap>;
+  listHarnessAvailability(coreId: string): Promise<CoreLinkHarnessAvailabilityMap>;
 
   /**
    * Create / rename / archive / pin a project on the Core that owns it.
-   * Rejects with the Harness's message when the write fails — an unreachable
+   * Rejects with the Core's message when the write fails — an unreachable
    * Core, or a path that machine says is not a folder. Resolves to `null` when
    * the mutation named a row that isn't there.
    */
@@ -93,7 +93,7 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
     listSessions: async (coreId, projectId) =>
       (await link.request<Answer<"sessionsListResult">>(coreId, { type: "sessionsList", projectId }))
         .sessions,
-    listAgentAvailability: async (coreId) =>
+    listHarnessAvailability: async (coreId) =>
       (
         await link.request<Answer<"agentsAvailabilityListResult">>(coreId, {
           type: "agentsAvailabilityList",
@@ -140,7 +140,7 @@ export function getPanelBridge(): PanelBridge | null {
  */
 export function getCorePtyBridge(coreId: string | null | undefined): CorePtyBridge | null {
   // No Core, no transport. A pane with no `coreId` has no machine to run on —
-  // there is no local Harness to fall back to (ADR 0010).
+  // there is no local Core to fall back to (ADR 0010).
   if (!coreId) return null;
   return getPanelBridge()?.pty(coreId) ?? null;
 }

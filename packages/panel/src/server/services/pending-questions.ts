@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentQuestion, PendingQuestion } from "~/shared/agent-questions";
+import type { HarnessQuestion, PendingQuestion } from "~/shared/harness-questions";
 import { events } from "../events";
 
 // In-memory on purpose: a pending question is only meaningful while its PTY
@@ -9,7 +9,7 @@ const pending = new Map<string, PendingQuestion>();
 export function setPendingQuestion(input: {
   taskId: string;
   projectId: string;
-  questions: AgentQuestion[];
+  questions: HarnessQuestion[];
   id?: string;
 }): PendingQuestion {
   const question: PendingQuestion = {

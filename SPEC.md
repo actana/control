@@ -10,15 +10,15 @@
 
 ## Vision
 
-A focused desktop app that helps developers manage agentic coding work across many projects without the cluttered sidebar of Cursor/Codex/etc. Each project gets a card on a single Actana Control surface. Click in, see exactly what your agents are doing, open multiple terminal sessions side-by-side, and get back to the home view in one click. The app is an Electron shell wrapping a TanStack Start app — Electron because we need a long-lived process that can expose local HTTP endpoints other CLI tools can post to (status updates, completion signals).
+A focused desktop app that helps developers manage agentic coding work across many projects without the cluttered sidebar of Cursor/Codex/etc. Each project gets a card on a single Actana Control surface. Click in, see exactly what your harnesses are doing, open multiple terminal sessions side-by-side, and get back to the home view in one click. The app is an Electron shell wrapping a TanStack Start app — Electron because we need a long-lived process that can expose local HTTP endpoints other CLI tools can post to (status updates, completion signals).
 
 ## Target User
 
-Solo developers and small teams running multiple AI coding agents (Claude Code, Codex, Cursor CLI) across multiple repos. The kind of person who context-switches across 5+ git repositories in a single day and is frustrated with Cursor/Codex's collapsable-tree sidebar UX.
+Solo developers and small teams running multiple AI coding harnesses (Claude Code, Codex, Cursor CLI) across multiple repos. The kind of person who context-switches across 5+ git repositories in a single day and is frustrated with Cursor/Codex's collapsable-tree sidebar UX.
 
 ## Core Job
 
-Show me at a glance which projects need my attention and let me pop into a project to drive its agents — preferably without ever scrolling a sidebar.
+Show me at a glance which projects need my attention and let me pop into a project to drive its harnesses — preferably without ever scrolling a sidebar.
 
 ## Goals & Non-Goals
 
@@ -28,9 +28,9 @@ Show me at a glance which projects need my attention and let me pop into a proje
 - Add/remove projects by working directory, pin to top, organize into groups
 - Project detail view with tasks broken into Needs-input / Running / Done columns
 - Multi-select tasks → opens a terminal panel that splits horizontally to show all selected sessions concurrently
-- "New agent" picker (Claude Code / Codex / Cursor CLI) that spawns a real PTY in the project's working directory and starts the chosen CLI
+- "New harness" picker (Claude Code / Codex / Cursor CLI) that spawns a real PTY in the project's working directory and starts the chosen CLI
 - Archive done tasks; restore from archive view
-- HTTP API exposed by Electron so external CLI agents can POST status updates back to the app (e.g. `running → needs-input → done`)
+- HTTP API exposed by Electron so external CLI harnesses can POST status updates back to the app (e.g. `running → needs-input → done`)
 - SQLite-backed local persistence (no cloud)
 - Dark + light theme matching the design tokens in `designs/`
 
@@ -38,12 +38,12 @@ Show me at a glance which projects need my attention and let me pop into a proje
 
 - No user accounts, no multi-user — local single-user app (the HTTP API is bearer-token gated; see Auth & Authorization below)
 - No cloud sync or remote storage
-- No in-app AI agent orchestration — we spawn the user's installed CLIs and act as a shell + status board
+- No in-app AI harness orchestration — we spawn the user's installed CLIs and act as a shell + status board
 - No built-in code editor or diff viewer (clicking a task opens its terminal; that's it)
 - No web mode — Electron only
 - No mobile
 - No analytics, no telemetry
-- No PR/commit creation flows beyond shelling out to the CLI agents
+- No PR/commit creation flows beyond shelling out to the CLI harnesses
 - No marketing site, no landing page
 
 ## Features
@@ -83,7 +83,7 @@ Show me at a glance which projects need my attention and let me pop into a proje
 - **Acceptance:**
   - [x] Project header shows icon, name, path, current branch
   - [x] Active tab shows three columns/sections: Needs input → Running → Done
-  - [x] Each task card shows status, agent (Claude Code/Codex/Cursor CLI with glyph), title, branch, +lines, last-updated, and a preview line
+  - [x] Each task card shows status, harness (Claude Code/Codex/Cursor CLI with glyph), title, branch, +lines, last-updated, and a preview line
   - [x] Task cards in "running" state show a shimmering top border and animated caret
   - [x] Task cards in "done" state show a "Commit & push" button (shells out via terminal) and "Archive" button
   - [x] Task cards in "needs-input" state show "Open terminal to reply"
@@ -98,7 +98,7 @@ Show me at a glance which projects need my attention and let me pop into a proje
 - **Acceptance:**
   - [x] Selecting a task card adds its terminal to a right-side panel
   - [x] Multiple selected tasks stack horizontally (split by `flex: 1` so they share height)
-  - [x] Each pane has a header showing project icon, task title, agent label, status indicator
+  - [x] Each pane has a header showing project icon, task title, harness label, status indicator
   - [x] Each pane has a close button; "Close all" closes all panes
   - [x] Each pane is a real `node-pty` PTY backed by xterm.js — actual interactive terminal, not a fake transcript
   - [x] Terminals persist their PTY across project navigation (closing a terminal pane kills the PTY; navigating away does not)
@@ -107,21 +107,21 @@ Show me at a glance which projects need my attention and let me pop into a proje
 - **Priority:** P0
 - **Status:** Done
 
-### Feature 5: New agent launcher
+### Feature 5: New harness launcher
 
 - **Story:** I want to start a new Claude Code / Codex / Cursor CLI session inside a project's working directory.
 - **Acceptance:**
-  - [x] Dialog shows the three agents with description and command preview
+  - [x] Dialog shows the three harnesses with description and command preview
   - [x] Lets me set a task title and target git branch (defaults to current branch)
   - [x] On submit: creates a Task row, spawns a PTY in the project's `path`, runs the chosen CLI command (`claude`, `codex`, `cursor-agent`), and auto-opens the new terminal in the panel
   - [x] Initial task status is `running`
   - [x] If the chosen CLI is not on PATH, show an inline error in the dialog
 - **Priority:** P0
-- **Status:** Done (also added a 4th `shell` agent variant for raw interactive sessions)
+- **Status:** Done (also added a 4th `shell` harness variant for raw interactive sessions)
 
 ### Feature 6: External status API
 
-- **Story:** When a CLI agent finishes its task, it should be able to POST back to the app to flip the task's status to `done` (or `needs-input` if it has a question).
+- **Story:** When a CLI harness finishes its task, it should be able to POST back to the app to flip the task's status to `done` (or `needs-input` if it has a question).
 - **Acceptance:**
   - [x] Electron main process exposes a localhost HTTP server (e.g. `http://127.0.0.1:<port>`) that hosts the TanStack Start app and an `/api` namespace
   - [x] `POST /api/tasks/:id/status` accepts `{ status: "running"|"needs-input"|"done", preview?: string, lines?: number }` and updates the task; the UI reflects the change live
@@ -165,7 +165,7 @@ Show me at a glance which projects need my attention and let me pop into a proje
 | -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
 | `groups`       | id (text, pk), name (text), color (text hex), createdAt (int, ms)                                                                                                                                                                                     | has many projects                  |
 | `projects`     | id (text, pk), name (text), path (text — absolute working dir), icon (text, 2 chars), iconColor (text hex), groupId (text, fk → groups.id, nullable), pinned (int 0/1), branch (text), createdAt, updatedAt                                            | belongs to group, has many tasks   |
-| `tasks`        | id (text, pk), projectId (text, fk → projects.id), title (text), agent (enum: claude-code/codex/cursor-cli), status (enum: running/needs-input/done), branch (text), preview (text), lines (int default 0), archived (int 0/1), updatedAt, createdAt | belongs to project                 |
+| `tasks`        | id (text, pk), projectId (text, fk → projects.id), title (text), harness (enum: claude-code/codex/cursor-cli), status (enum: running/needs-input/done), branch (text), preview (text), lines (int default 0), archived (int 0/1), updatedAt, createdAt | belongs to project                 |
 | `terminal_logs`| id (text, pk), taskId (text, fk → tasks.id), chunk (text), createdAt                                                                                                                                                                                  | belongs to task                    |
 | `app_settings` | key (text, pk), value (text)                                                                                                                                                                                                                          | singleton key/value (api token, theme) |
 
@@ -228,7 +228,7 @@ A `Group` has many `Projects`. A `Project` has many `Tasks`. A `Task` has zero o
 | **Language**         | TypeScript (strict)                                   | default                                                                    |
 | **UI**               | Tailwind + design tokens via global CSS               | matches the design system in `designs/`                                    |
 | **DB**               | SQLite via `better-sqlite3` + Drizzle ORM             | User-requested override (default was Postgres) — local desktop app, no cloud |
-| **Terminal**         | `node-pty` (main) + `xterm.js` + `xterm-addon-fit`    | Real PTY required for interactive CLI agents                               |
+| **Terminal**         | `node-pty` (main) + `xterm.js` + `xterm-addon-fit`    | Real PTY required for interactive CLI harnesses                               |
 | **API**              | TanStack Start server route handlers                  | Single server inside Electron main                                         |
 | **Live updates**     | Server-Sent Events                                    | Simpler than WebSockets and sufficient for state-change push               |
 | **Packaging**        | electron-builder                                      | Cross-platform installer support                                           |
@@ -282,7 +282,7 @@ The user wants both: (1) a desktop app that owns local resources (PTYs, SQLite, 
        │ IPC (PTY data, dialogs)          │ HTTP + bearer token
        │                                  │
 ┌──────┴──────────────┐         ┌─────────┴──────────────┐
-│ Renderer (React UI) │         │ External CLI agents    │
+│ Renderer (React UI) │         │ External CLI harnesses    │
 │  + xterm.js         │         │  curl /api/tasks/:id/  │
 └─────────────────────┘         └────────────────────────┘
 ```
@@ -321,7 +321,7 @@ The Electron main process is the only writer for SQLite. The TanStack Start serv
 
 ### Stage 2 — Core UI (M → L)
 
-- [x] **T5: Shared primitives** — port `Icon`, `StatusDot`, `StatusPill`, `ProjectIcon`, `AgentGlyph`, `Btn`, `TopBar`, `Modal`, `TextField`, `ShimmerBar` from `designs/components.jsx` to TypeScript React components under `src/components/ui/`.
+- [x] **T5: Shared primitives** — port `Icon`, `StatusDot`, `StatusPill`, `ProjectIcon`, `HarnessGlyph`, `Btn`, `TopBar`, `Modal`, `TextField`, `ShimmerBar` from `designs/components.jsx` to TypeScript React components under `src/components/ui/`.
   - Skills: `react-patterns`, `ui-design`
   - Complexity: M
   - Dependencies: T3
@@ -365,7 +365,7 @@ The Electron main process is the only writer for SQLite. The TanStack Start serv
   - Skills: `architecture`, `error-handling`
   - Complexity: L
   - Dependencies: T2
-  - Status: Done. Spawns `$SHELL -l -c "<cmd>; exec $SHELL -l"` so the chosen agent runs atomically inside a login shell with PATH and the user can keep working when it exits. 1MB FIFO ring buffer per PTY for replay-on-attach.
+  - Status: Done. Spawns `$SHELL -l -c "<cmd>; exec $SHELL -l"` so the chosen harness runs atomically inside a login shell with PATH and the user can keep working when it exits. 1MB FIFO ring buffer per PTY for replay-on-attach.
 
 - [x] **T12: xterm.js renderer** — `<TerminalPane>` React component using xterm.js + fit addon. Subscribes to `pty:data` IPC pushes; sends keystrokes via `pty:write`. Resize observer.
   - Skills: `react-patterns`, `performance`
@@ -379,9 +379,9 @@ The Electron main process is the only writer for SQLite. The TanStack Start serv
   - Dependencies: T12
   - Status: Done. State lifted into a `TerminalProvider` context at root so PTYs survive navigation. 4-pane cap actually `pty.kill()`s the dropped descriptor (no leaks).
 
-### Stage 5 — Agent launching + polish (M)
+### Stage 5 — Harness launching + polish (M)
 
-- [x] **T14: New agent dialog** — port `NewAgentDialog`. On submit: create task → spawn PTY in `project.path` → run `claude` / `codex` / `cursor-agent`. Validate the binary exists on PATH.
+- [x] **T14: New harness dialog** — port `NewHarnessDialog`. On submit: create task → spawn PTY in `project.path` → run `claude` / `codex` / `cursor-agent`. Validate the binary exists on PATH.
   - Skills: `ux`, `forms`, `error-handling`
   - Complexity: M
   - Dependencies: T11, T9
@@ -407,7 +407,7 @@ The Electron main process is the only writer for SQLite. The TanStack Start serv
 
 ### Stage 6 — Hardening (M)
 
-- [~] **T18: Tests** — Vitest unit tests for the Drizzle layer + API route handlers. Playwright Electron smoke tests: launch, add a project, open project, start an agent (mock the PTY by using `bash -c "echo hi"`).
+- [~] **T18: Tests** — Vitest unit tests for the Drizzle layer + API route handlers. Playwright Electron smoke tests: launch, add a project, open project, start a harness (mock the PTY by using `bash -c "echo hi"`).
   - Skills: `testing`
   - Complexity: M
   - Dependencies: all
@@ -420,7 +420,7 @@ The Electron main process is the only writer for SQLite. The TanStack Start serv
   - Status: `package.json#build` config + `pnpm package` script wired for mac / linux / win. Production-build path (vite ssr build → in-process server in Electron main) is scaffolded but unverified end-to-end; dev path is the supported path right now.
 
 - [x] **T20: README + skill file for external CLIs** — `README.md` covers install + first-run + API token. Optional: a small markdown skill the user can paste into Claude Code/Codex teaching them how to POST status back.
-  - Skills: `docs-agent`
+  - Skills: `docs-harness`
   - Complexity: S
   - Dependencies: all
   - Status: Done. `README.md` covers install / dev / API + endpoints. Skill file at `docs/skills/missioncontrol-notify.md`.
@@ -430,7 +430,7 @@ The Electron main process is the only writer for SQLite. The TanStack Start serv
 - [x] App launches into Actana Control view with seed empty state on first run
 - [x] I can add a project from a real folder on disk and it appears as a card
 - [x] I can pin/unpin and regroup the project; state persists across restart
-- [x] I can click a project, click "New agent", pick Claude Code, and a real `claude` PTY opens in a side panel
+- [x] I can click a project, click "New harness", pick Claude Code, and a real `claude` PTY opens in a side panel
 - [x] Multi-selecting 3 tasks shows 3 stacked terminals; "Close all" closes them
 - [x] An external `curl -H "Authorization: Bearer $TOKEN" -X POST http://127.0.0.1:$PORT/api/tasks/$TASK_ID/status -d '{"status":"done"}'` flips that task to Done in the UI within ~1s
 - [~] App matches the prototype design closely in dark and light themes — dark is pixel-close; light theme has one xterm-interior gap

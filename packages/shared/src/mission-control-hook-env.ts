@@ -5,11 +5,11 @@ export type PtyHookEnv = {
   token: string;
 };
 
-/** Hostname a Harness uses to reach its own loopback Actana Control API. */
+/** Hostname a Core uses to reach its own loopback Actana Control API. */
 export const LOCAL_HOOK_API_HOST = "127.0.0.1";
 
 /** Hostname agent hooks POST to — the agent's own loopback HTTP server. */
-export const AGENT_LOCAL_HOOK_API_HOST = LOCAL_HOOK_API_HOST;
+export const HARNESS_LOCAL_HOOK_API_HOST = LOCAL_HOOK_API_HOST;
 
 const ALLOWED_HOOK_HOSTS = new Set<string>([LOCAL_HOOK_API_HOST]);
 
@@ -26,14 +26,14 @@ export function buildMissionControlApiUrl(
   return `http://${host}:${port}`;
 }
 
-/** Host-side loopback API URL, as seen from the Harness itself. */
+/** Host-side loopback API URL, as seen from the Core itself. */
 export function buildLocalMissionControlApiUrl(port: number | null | undefined): string | null {
   return buildMissionControlApiUrl(LOCAL_HOOK_API_HOST, port);
 }
 
 /** Loopback URL for the agent's own hook HTTP endpoint. */
-export function buildAgentLocalHookApiUrl(port: number | null | undefined): string | null {
-  return buildMissionControlApiUrl(AGENT_LOCAL_HOOK_API_HOST, port);
+export function buildHarnessLocalHookApiUrl(port: number | null | undefined): string | null {
+  return buildMissionControlApiUrl(HARNESS_LOCAL_HOOK_API_HOST, port);
 }
 
 export function hookEndpointSlug(agent: string | undefined): string {

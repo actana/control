@@ -4,12 +4,12 @@ import {
   type WebSocketLike,
   type WebSocketServerLike,
   type EventLogPort,
-} from "@actana/harness/pty-core-link-server";
+} from "@actana/core/pty-core-link-server";
 import {
   PtyCoreLinkClient,
   type WebSocketLike as ClientWebSocketLike,
 } from "../client";
-import type { PtyHarnessCore, PtyHarnessEvent } from "@actana/harness/pty-manager";
+import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
@@ -93,13 +93,13 @@ class FakeWebSocket {
   }
 }
 
-// ─── Mock PtyHarnessCore ───────────────────────────────────────────────────
+// ─── Mock PtyCore ───────────────────────────────────────────────────
 
-function makeMockCore(): PtyHarnessCore & {
-  emitEvent: (e: PtyHarnessEvent) => void;
+function makeMockCore(): PtyCore & {
+  emitEvent: (e: PtyCoreEvent) => void;
 } {
   const core: Record<string, unknown> = {
-    setEmitTarget: vi.fn((fn: ((event: PtyHarnessEvent) => void) | null) => {
+    setEmitTarget: vi.fn((fn: ((event: PtyCoreEvent) => void) | null) => {
       (core as Record<string, unknown>)._emit = fn;
     }),
     spawn: vi.fn(async () => ({ ptyId: "pty-test-1" })),
@@ -115,12 +115,12 @@ function makeMockCore(): PtyHarnessCore & {
     replay: vi.fn(() => ({ data: "buffered", nextSeq: 42 })),
     killAll: vi.fn(),
     _emit: null,
-    emitEvent: (e: PtyHarnessEvent) => {
-      (core._emit as ((e: PtyHarnessEvent) => void) | null)?.(e);
+    emitEvent: (e: PtyCoreEvent) => {
+      (core._emit as ((e: PtyCoreEvent) => void) | null)?.(e);
     },
   };
-  return core as unknown as PtyHarnessCore & {
-    emitEvent: (e: PtyHarnessEvent) => void;
+  return core as unknown as PtyCore & {
+    emitEvent: (e: PtyCoreEvent) => void;
   };
 }
 
@@ -223,7 +223,7 @@ describe("PtyCoreLinkServer", () => {
     });
   });
 
-  it("passes a reattach cursor through to the Harness core", async () => {
+  it("passes a reattach cursor through to the Core", async () => {
     pair.server.receive({ type: "replay", reqId: "r3b", ptyId: "p1", sinceSeq: 40 });
     await vi.waitFor(() => expect(core.replay).toHaveBeenCalledWith("p1", 40));
   });
@@ -267,16 +267,16 @@ describe("PtyCoreLinkServer", () => {
   });
 });
 
-// ─── projectsList / tasksList via HarnessQueryPort (issue 07) ───────────────
+// ─── projectsList / tasksList via CoreQueryPort (issue 07) ───────────────
 
-import type { HarnessQueryPort } from "@actana/harness/pty-core-link-server";
+import type { CoreQueryPort } from "@actana/core/pty-core-link-server";
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
 } from "@actana/shared/core-link-frames";
 
-/** In-memory HarnessQueryPort for tests. */
-class FakeQueryPort implements HarnessQueryPort {
+/** In-memory CoreQueryPort for tests. */
+class FakeQueryPort implements CoreQueryPort {
   projects: CoreLinkProjectSnapshot[] = [];
   tasks: CoreLinkTaskSnapshot[] = [];
   listProjectsCalls = 0;
@@ -742,7 +742,7 @@ describe("PtyCoreLinkClient", () => {
   // ─── Issue 05: mutation + session RPCs ────────────────────────────────────
   // The client sends discriminant-typed mutation frames and resolves with the
   // result snapshot (or `null` when the mutation targeted a missing row). A
-  // Harness-side validation error comes back as an `error` frame and rejects.
+  // Core-side validation error comes back as an `error` frame and rejects.
 
   it("resolves projectsMutate with the returned project snapshot", async () => {
     const client = makeClient();
@@ -763,7 +763,7 @@ describe("PtyCoreLinkClient", () => {
     client.close();
   });
 
-  it("resolves projectsMutate with null when the Harness returned no row", async () => {
+  it("resolves projectsMutate with null when the Core returned no row", async () => {
     const client = makeClient();
     const p = client.projectsMutate({ op: "archive", projectId: "unknown" });
     const frame = pair.client.lastSent() as { type: string; reqId: string };
@@ -833,7 +833,7 @@ describe("PtyCoreLinkClient", () => {
     client.close();
   });
 
-  it("reports a Harness on an older protocol as incompatible", () => {
+  it("reports a Core on an older protocol as incompatible", () => {
     const client = makeClient();
     const cb = vi.fn();
     client.onProtocolVersion(cb);
@@ -856,7 +856,7 @@ describe("PtyCoreLinkClient", () => {
     const cb = vi.fn();
     client.onProtocolVersion(cb);
     pair.client.receive({ type: "ready", version: "0.1.0" });
-    // The Harness was updated and came back speaking this build's protocol.
+    // The Core was updated and came back speaking this build's protocol.
     pair.client.receive({ type: "ready", version: CORE_LINK_PROTOCOL_VERSION });
     expect(cb).toHaveBeenLastCalledWith({
       version: CORE_LINK_PROTOCOL_VERSION,
@@ -1063,7 +1063,7 @@ const AUTH_SECRET: BearerSecret = "auth-secret-32-bytes-0123456789ab";
 function makeAuthVerifier(
   secret: BearerSecret,
   now: () => number = Date.now,
-): import("@actana/harness/pty-core-link-server").AuthVerifier {
+): import("@actana/core/pty-core-link-server").AuthVerifier {
   return (bearer: string) => verifyBearer(bearer, secret, { now: now() });
 }
 
@@ -1225,21 +1225,21 @@ describe("PtyCoreLinkClient bearer auth", () => {
   });
 });
 
-// ─── projectsMutate / tasksMutate / sessionsList via HarnessMutationPort ────
-// Issue 04 (ADR 0004): the Harness process owns the write path against its
+// ─── projectsMutate / tasksMutate / sessionsList via CoreMutationPort ────
+// Issue 04 (ADR 0004): the Core process owns the write path against its
 // SQLite. The server dispatches these frames to the mutation port; a null
 // port keeps backward-compat stubs.
 
-import type { HarnessMutationPort } from "@actana/harness/pty-core-link-server";
+import type { CoreMutationPort } from "@actana/core/pty-core-link-server";
 import type {
   CoreLinkProjectMutation,
   CoreLinkSessionSnapshot,
   CoreLinkTaskMutation,
 } from "@actana/shared/core-link-frames";
 
-/** In-memory HarnessMutationPort for tests. Records every call so assertions
+/** In-memory CoreMutationPort for tests. Records every call so assertions
  *  can verify the server threaded the frame through unchanged. */
-class FakeMutationPort implements HarnessMutationPort {
+class FakeMutationPort implements CoreMutationPort {
   projects: CoreLinkProjectSnapshot[] = [];
   tasks: CoreLinkTaskSnapshot[] = [];
   sessions: CoreLinkSessionSnapshot[] = [];
@@ -1408,7 +1408,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
 
   it("translates a mutation-store throw into an error frame with the message", async () => {
     mutationPort.throwOnNextMutateProject =
-      "project path does not exist on the Harness: /nowhere";
+      "project path does not exist on the Core: /nowhere";
     pair.server.receive({
       type: "projectsMutate",
       reqId: "r1",
@@ -1418,7 +1418,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     expect(pair.server.lastSent()).toMatchObject({
       type: "error",
       reqId: "r1",
-      message: expect.stringContaining("does not exist on the Harness"),
+      message: expect.stringContaining("does not exist on the Core"),
     });
     expect(eventLog.readEventTail(0)).toEqual([]);
   });
@@ -1681,7 +1681,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     // sharing the same in-memory rows. Wire a query port that reads from the
     // fake mutation port's projects[] so the round-trip flows through both.
     server.close();
-    const queryPort: HarnessQueryPort = {
+    const queryPort: CoreQueryPort = {
       listProjects: () => mutationPort.projects,
       listTasks: (projectId?: string) =>
         projectId
@@ -1739,7 +1739,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
 //
 // A remote core-link crosses NATs and stateful firewalls that silently reap
 // idle flows, and an agent parked at its prompt is idle for minutes. Without a
-// heartbeat neither end notices: the Harness writes PTY output into a socket
+// heartbeat neither end notices: the Core writes PTY output into a socket
 // that will never deliver it, and the Panel's RPCs hang for the full 30s
 // timeout. These fakes add the ping/pong/terminate surface the real `ws`
 // transport has (the plain FakeWebSocket deliberately omits it, which is how

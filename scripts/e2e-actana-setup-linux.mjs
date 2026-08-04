@@ -11,7 +11,8 @@
 //     dials the core-link with it (the same dial the tarball smoke makes);
 //   • `status` / `token` / `start` / `stop` / `restart` / `logs` control and
 //     report the daemon;
-//   • re-running setup upgrades in place — one unit, same pairing credentials;
+//   • re-running setup upgrades in place — one unit, same pairing credentials,
+//     and a pre-rename `actana-harness.service` is taken out on the way;
 //   • lingering is on, and the daemon comes back after the machine reboots.
 //
 // It also carries issue 06's remaining lifecycle, on the same machine and in
@@ -35,7 +36,7 @@
 // Usage:
 //   node scripts/e2e-actana-setup-linux.mjs --tarball <file> [--distro <id>] [--keep]
 //
-// --tarball <file>  A linux-* tarball from scripts/build-harness-tarball.mjs.
+// --tarball <file>  A linux-* tarball from scripts/build-core-tarball.mjs.
 //                   Must match the Docker daemon's architecture.
 // --distro <id>     Which distribution to install on (scripts/lib/container-matrix.mjs).
 //                   Defaults to ubuntu; CI runs every one of them.
@@ -56,8 +57,8 @@ import {
   repackWithVersion,
   startFixtureServerProcess,
 } from "./lib/fixture-release.mjs";
-import { dialAndListProjects, extractToken, makeDie } from "./lib/harness-smoke.mjs";
-import { tarballName as releaseAssetName } from "./lib/harness-tarball.mjs";
+import { dialAndListProjects, extractToken, makeDie } from "./lib/core-smoke.mjs";
+import { tarballName as releaseAssetName } from "./lib/core-tarball.mjs";
 import {
   OPERATOR,
   pickHostPort,
@@ -117,11 +118,11 @@ async function main() {
     die("setup never used the words 'pairing token'", setup.stdout.split("\n"));
   }
 
-  const active = mustAsOperator("systemctl --user is-active actana-harness.service");
+  const active = mustAsOperator("systemctl --user is-active actana-core.service");
   if (active.stdout.trim() !== "active") {
     die(`unit is ${active.stdout.trim()}, expected active`, [setup.stdout]);
   }
-  const enabled = mustAsOperator("systemctl --user is-enabled actana-harness.service");
+  const enabled = mustAsOperator("systemctl --user is-enabled actana-core.service");
   if (enabled.stdout.trim() !== "enabled") {
     die(`unit is ${enabled.stdout.trim()}, expected enabled`);
   }
@@ -175,12 +176,45 @@ async function main() {
   log("stop / start / restart drive the daemon");
 
   const logs = mustAsOperator("actana logs -n 50");
-  if (!logs.stdout.includes("actana-harness")) {
+  if (!logs.stdout.includes("actana-core")) {
     die("`actana logs` showed nothing from the daemon's unit", logs.stdout.split("\n"));
   }
   log("`actana logs` shows the daemon's journal");
 
-  // ─── idempotent re-run ───
+  // ─── idempotent re-run, over a machine that predates the rename ───
+  //
+  // The whole migration this release has. A developer machine installed while
+  // the daemon was still called a Harness carries `actana-harness.service`
+  // as well, enabled and running out of the same tree on the same port — so a
+  // re-run that only installed `actana-core.service` would leave two daemons
+  // fighting over one socket. `sleep` stands in for the old daemon: what is
+  // being tested is that setup stops, disables and removes the unit, not what
+  // the unit ran.
+  log("planting a pre-rename actana-harness.service");
+  mustAsOperator(
+    [
+      "cat > ~/.config/systemd/user/actana-harness.service <<'UNIT'",
+      "[Unit]",
+      "Description=Actana Control Harness (pre-rename)",
+      "",
+      "[Service]",
+      "Type=simple",
+      "ExecStart=/bin/sleep 3600",
+      "",
+      "[Install]",
+      "WantedBy=default.target",
+      "UNIT",
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now actana-harness.service",
+    ].join("\n"),
+  );
+  // Asserted, not assumed: if planting ever silently failed, every check below
+  // would pass against a machine that never had the old unit at all.
+  const plantedState = mustAsOperator("systemctl --user is-active actana-harness.service");
+  if (plantedState.stdout.trim() !== "active") {
+    die(`the planted pre-rename unit is ${plantedState.stdout.trim()}, expected active`);
+  }
+
   log("re-running `actana setup` over the existing install");
   const again = mustAsOperator(`${extracted}/bin/actana setup --public-host 127.0.0.1 --yes`);
   // Not byte equality: the bearer inside carries a fresh expiry every time it
@@ -198,8 +232,17 @@ async function main() {
     die(`re-running setup left more than one unit file`, units.stdout.split("\n"));
   }
   const wants = mustAsOperator("ls -1 ~/.config/systemd/user/default.target.wants");
-  if (wants.stdout.trim() !== "actana-harness.service") {
+  if (wants.stdout.trim() !== "actana-core.service") {
     die(`unexpected enablement links: ${JSON.stringify(wants.stdout.trim())}`);
+  }
+  // Stopped as well as deleted: a unit file removed from under a running
+  // service leaves the old daemon on the port until something reloads systemd.
+  const legacyState = asOperator("systemctl --user is-active actana-harness.service");
+  if (legacyState.stdout.trim() === "active") {
+    die("the pre-rename unit is still running after setup — two daemons, one socket");
+  }
+  if (asOperator("test -e ~/.config/systemd/user/actana-harness.service").status === 0) {
+    die("setup left the pre-rename unit file on disk");
   }
   await waitForPort(hostPort, die);
   mustAsOperator("actana status");
@@ -211,7 +254,7 @@ async function main() {
   await waitForPort(hostPort, die);
   const afterReboot = mustAsOperator("actana status");
   if (!afterReboot.stdout.includes("healthy")) {
-    die("the Harness did not come back after a reboot", afterReboot.stdout.split("\n"));
+    die("the Core did not come back after a reboot", afterReboot.stdout.split("\n"));
   }
   // The identity must survive too — a Core that reboots into fresh certs is a
   // Core the operator has to re-pair.
@@ -221,9 +264,9 @@ async function main() {
     die,
   );
   if (afterRebootToken.blob.caCert !== blob.caCert) {
-    die("the Harness came back with different material — the Panel would be locked out");
+    die("the Core came back with different material — the Panel would be locked out");
   }
-  log("the Harness came back after reboot with the same identity");
+  log("the Core came back after reboot with the same identity");
 
   // ─── update ───
   //
@@ -364,7 +407,7 @@ async function main() {
   if (traces.stdout.trim() !== "") {
     die(`uninstall left files behind: ${traces.stdout.trim()}`);
   }
-  const unitState = asOperator("systemctl --user is-active actana-harness.service");
+  const unitState = asOperator("systemctl --user is-active actana-core.service");
   if (unitState.stdout.trim() === "active") die("uninstall left the unit running");
   if (asOperator(`ls -d ~/.local/share/actana/data`).status !== 0) {
     die("uninstall removed the data dir without --purge-data");

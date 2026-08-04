@@ -1,6 +1,6 @@
 import type { QueryClient } from "@tanstack/react-query";
 import type { Task } from "~/db/schema";
-import { DEFAULT_BRANCH, DEFAULT_TASK_STATUS, type TaskAgent } from "@actana/shared/domain";
+import { DEFAULT_BRANCH, DEFAULT_TASK_STATUS, type Harness } from "@actana/shared/domain";
 import { tasksCacheKey } from "~/queries";
 import { TITLE_WAITING } from "~/lib/task-sentinels";
 
@@ -21,7 +21,7 @@ export function newOptimisticTaskId(): string {
 export function buildOptimisticTask(input: {
   id?: string;
   projectId: string;
-  agent: TaskAgent;
+  agent: Harness;
   claudeSessionId?: string | null;
   claudeSkipPermissions?: boolean;
   claudeBareSession?: boolean;

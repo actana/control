@@ -171,7 +171,7 @@ if (typeof mod.attachPanelLink === "function") {
 server.listen(port, host, () => {
   console.log(`[panel] listening on http://${host}:${port}`);
   // Machine-readable readiness marker for anything supervising this process.
-  console.log("@@AC_LISTENING@@");
+  console.log("@@AC_CORE_LISTENING@@");
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

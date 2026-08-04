@@ -18,36 +18,36 @@ describe("hostTarget", () => {
 
 describe("pickTarball", () => {
   const files = [
-    "actana-harness-0.49.0-linux-x64.tar.gz",
-    "actana-harness-0.50.0-linux-x64.tar.gz",
-    "actana-harness-0.51.0-linux-arm64.tar.gz",
+    "actana-core-0.1.0-linux-x64.tar.gz",
+    "actana-core-0.2.0-linux-x64.tar.gz",
+    "actana-core-0.3.0-linux-arm64.tar.gz",
     "SHA256SUMS",
     "notes.txt",
   ];
 
   it("picks the newest release built for the machine running the rehearsal", () => {
     expect(pickTarball(files, "linux-x64", () => {})).toBe(
-      "actana-harness-0.50.0-linux-x64.tar.gz",
+      "actana-core-0.2.0-linux-x64.tar.gz",
     );
   });
 
   it("never hands back another architecture's tarball", () => {
     expect(pickTarball(files, "linux-arm64", () => {})).toBe(
-      "actana-harness-0.51.0-linux-arm64.tar.gz",
+      "actana-core-0.3.0-linux-arm64.tar.gz",
     );
   });
 
   it("compares versions numerically, not as strings", () => {
-    const numeric = ["actana-harness-0.9.0-linux-x64.tar.gz", "actana-harness-0.10.0-linux-x64.tar.gz"];
+    const numeric = ["actana-core-0.9.0-linux-x64.tar.gz", "actana-core-0.10.0-linux-x64.tar.gz"];
     expect(pickTarball(numeric, "linux-x64", () => {})).toBe(
-      "actana-harness-0.10.0-linux-x64.tar.gz",
+      "actana-core-0.10.0-linux-x64.tar.gz",
     );
   });
 
   it("says how to produce one when there is nothing to rehearse against", () => {
     const message = captureFailure((fail) => pickTarball(["SHA256SUMS"], "linux-x64", fail));
     expect(message).toMatch(/linux-x64/);
-    expect(message).toMatch(/harness:tarball/);
+    expect(message).toMatch(/core:tarball/);
   });
 });
 
@@ -61,6 +61,6 @@ describe("rehearsalOneLiner", () => {
 
   it("passes nothing that suppresses a prompt — the prompts are the rehearsal", () => {
     const command = rehearsalOneLiner(url);
-    expect(command).not.toMatch(/--yes|--no-agents|--with-/);
+    expect(command).not.toMatch(/--yes|--no-harnesses|--with-/);
   });
 });

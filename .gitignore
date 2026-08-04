@@ -23,7 +23,7 @@ packages/panel/src/routeTree.gen.ts
 dist-electron-out/
 artifacts/
 
-# Pinned Node runtimes downloaded by `pnpm harness:tarball`.
+# Pinned Node runtimes downloaded by `pnpm core:tarball`.
 .cache/
 
 .openai-key

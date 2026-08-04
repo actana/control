@@ -9,8 +9,8 @@ describe("session-warm-pool", () => {
   it("builds default payload from saved agent settings", () => {
     expect(
       defaultSessionPayload({
-        rememberAgentSettings: true,
-        savedAgent: "codex",
+        rememberHarnessSettings: true,
+        savedHarness: "codex",
         savedSkipPermissions: true,
       }),
     ).toEqual({
@@ -23,7 +23,7 @@ describe("session-warm-pool", () => {
   it("falls back to claude-code when nothing is saved", () => {
     expect(
       defaultSessionPayload({
-        rememberAgentSettings: false,
+        rememberHarnessSettings: false,
       }),
     ).toEqual({
       agent: "claude-code",
@@ -35,7 +35,7 @@ describe("session-warm-pool", () => {
   it("remembers skip permissions without remembered agent settings", () => {
     expect(
       defaultSessionPayload({
-        rememberAgentSettings: false,
+        rememberHarnessSettings: false,
         savedSkipPermissions: true,
       }),
     ).toEqual({
@@ -48,8 +48,8 @@ describe("session-warm-pool", () => {
   it("uses the last selected agent without remembered agent settings", () => {
     expect(
       defaultSessionPayload({
-        rememberAgentSettings: false,
-        savedAgent: "cursor-cli",
+        rememberHarnessSettings: false,
+        savedHarness: "cursor-cli",
         savedSkipPermissions: true,
       }),
     ).toEqual({

@@ -19,7 +19,7 @@ import { Z_INDEX } from "~/lib/z-index";
  * picker itself never conditions on `coreId`.
  *
  * `currentIcon` is the value from the Task snapshot the Core emits. `onPicked`
- * is invoked after the Harness confirms the write so the caller can refresh
+ * is invoked after the Core confirms the write so the caller can refresh
  * whatever view mirrors the row (e.g. invalidate the tasks query).
  */
 export function SessionIconPicker({

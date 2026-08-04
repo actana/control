@@ -60,8 +60,8 @@ volume and you have backed up the Panel. Schema migrations run on boot.
 
 ## You also need a Core
 
-The Panel bundles no agent runtime and runs nothing itself. Each machine you
-want to work on needs a **Harness** installed on it, which the Panel then
+The Panel bundles no harness runtime and runs nothing itself. Each machine you
+want to work on needs a **Core** installed on it, which the Panel then
 registers as a **Core**:
 
 ```bash
@@ -77,7 +77,7 @@ one machine — it is not how you host a real Core.
 | Tag | Moves |
 | --- | --- |
 | `latest` | every non-prerelease version tag |
-| `<version>`, e.g. `0.49.0` | never — pin deployments to this |
+| `<version>`, e.g. `0.1.0` | never — pin deployments to this |
 | `edge` | every push to `main` |
 | `sha-<short>` | never — an exact commit |
 

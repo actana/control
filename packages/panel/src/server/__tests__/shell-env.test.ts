@@ -9,7 +9,7 @@ import {
   resolveCommandOnPath,
   setCanonicalPathEnv,
   shellArgsForCommand,
-} from "../../../../harness/src/shell-env";
+} from "../../../../core/src/shell-env";
 
 function touch(file: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });
@@ -41,7 +41,7 @@ describe("shell environment helpers", () => {
     });
   });
 
-  it("adds common Windows agent CLI install directories before the packaged app PATH", () => {
+  it("adds common Windows Harness install directories before the packaged app PATH", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "mc-win-path-"));
     const home = path.join(root, "User");
     const appData = path.join(root, "AppData", "Roaming");

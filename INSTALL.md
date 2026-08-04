@@ -1,8 +1,8 @@
-# Harness Installation Guide
+# Core Installation Guide
 
 This guide covers turning a **Linux or macOS** machine into a **Core**:
-downloading the Harness bundle, running `actana setup`, and pairing the machine
-with your Panel. The Harness is the stateful daemon that runs agents and owns
+downloading the Core bundle, running `actana setup`, and pairing the machine
+with your Panel. The Core is the stateful daemon that runs harnesses and owns
 the PTY layer; the Panel is the web app you drive it from.
 
 Everything here runs **as your own user, without sudo** — a systemd *user* unit
@@ -30,7 +30,7 @@ automatic login, or leave the session open.
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
 ```
 
-That detects the machine's OS and CPU, downloads the matching Harness tarball
+That detects the machine's OS and CPU, downloads the matching Core tarball
 from the latest GitHub Release, **checks it against the release's `SHA256SUMS`
 before extracting or running anything**, and hands over to `actana setup` —
 which installs, writes the auto-start unit, starts the daemon, and prints your
@@ -38,7 +38,7 @@ pairing token.
 
 The checksum catches a corrupted or truncated download: it proves the tarball
 is the one that release's own checksum file describes. Releases are not signed
-(see [ADR 0003](docs/adr/0003-harness-install-and-registration.md) and the
+(see [ADR 0003](docs/adr/0003-core-install-and-registration.md) and the
 release workflow), so it is not a proof of origin — use `https` URLs, which the
 defaults do.
 
@@ -47,7 +47,7 @@ comes from a flag. Flags the installer does not own are passed straight through
 to `actana setup`:
 
 ```bash
-curl -fsSL <install-script-url> | bash -s -- --version 0.49.0 --public-host core1.example.com --yes
+curl -fsSL <install-script-url> | bash -s -- --version 0.1.0 --public-host core1.example.com --yes
 ```
 
 | Flag | Meaning |
@@ -60,7 +60,7 @@ curl -fsSL <install-script-url> | bash -s -- --version 0.49.0 --public-host core
 `ACTANA_VERSION`, `ACTANA_REPO` and `ACTANA_BASE_URL` set the same three
 options, for provisioning systems where flags are awkward.
 
-**Re-running the one-liner on a machine that already has a Harness upgrades it
+**Re-running the one-liner on a machine that already has a Core upgrades it
 in place** — same install, same pairing token, one unit. It is always safe to
 paste again.
 
@@ -79,7 +79,7 @@ Core afterwards.
   must work. WSL counts as Linux (with systemd enabled). Or **macOS on Apple
   silicon or Intel**, where `actana` uses launchd instead and needs nothing
   enabled first.
-- **A reachable port.** The Panel dials the Harness, so the port you choose
+- **A reachable port.** The Panel dials the Core, so the port you choose
   (default `8443`) must be open from the Panel's machine:
   ```bash
   sudo ufw allow 8443/tcp
@@ -116,11 +116,11 @@ That must print `OK`. If it does not, stop — do not extract or run anything.
 ### Step 2 — Extract and run setup
 
 ```bash
-tar -xzf actana-harness-0.49.0-linux-x64.tar.gz
+tar -xzf actana-core-0.1.0-linux-x64.tar.gz
 ```
 
 ```bash
-./actana-harness-0.49.0-linux-x64/bin/actana setup
+./actana-core-0.1.0-linux-x64/bin/actana setup
 ```
 
 `setup` does all of it:
@@ -131,10 +131,10 @@ tar -xzf actana-harness-0.49.0-linux-x64.tar.gz
   directory is not on your `PATH`),
 - generates the mTLS material and persists it to `~/.config/actana/material.json`,
 - writes the auto-start service — the systemd user unit
-  `~/.config/systemd/user/actana-harness.service` on Linux, or the LaunchAgent
-  `~/Library/LaunchAgents/com.actana.harness.plist` on macOS,
+  `~/.config/systemd/user/actana-core.service` on Linux, or the LaunchAgent
+  `~/Library/LaunchAgents/com.actana.core.plist` on macOS,
 - on Linux, offers to enable lingering so the daemon survives logout,
-- offers to install any agent CLI (Claude Code, Codex, Cursor CLI, OpenCode)
+- offers to install any harness CLI (Claude Code, Codex, Cursor CLI, OpenCode)
   that is not already on the machine, using each vendor's own installer,
 - registers and starts the service, then waits for the port to answer,
 - prints your **pairing token**.
@@ -147,32 +147,32 @@ Useful flags:
 | `--host <addr>` | Address the daemon binds (default `0.0.0.0`) |
 | `--public-host <addr>` | Address your Panel dials. Defaults to the machine's first routable IPv4 — set it explicitly if the machine is behind NAT or reached by DNS name. |
 | `--label <name>` | Alias shown in your Panel (default: the hostname) |
-| `--with-<agent>` | Install this agent CLI without asking. Repeatable; takes an id or its command — `--with-claude-code`, `--with-claude`, `--with-codex`, `--with-cursor-cli`, `--with-opencode` |
-| `--no-agents` | Do not install or offer any agent CLI |
-| `--yes` | Take the recommended answer to every prompt (for unattended installs). That includes installing every missing agent CLI. |
+| `--with-<harness>` | Install this harness CLI without asking. Repeatable; takes an id or its command — `--with-claude-code`, `--with-claude`, `--with-codex`, `--with-cursor-cli`, `--with-opencode` |
+| `--no-harnesses` | Do not install or offer any harness CLI |
+| `--yes` | Take the recommended answer to every prompt (for unattended installs). That includes installing every missing harness CLI. |
 
-### Agent CLIs
+### Harness CLIs
 
-Your Core runs agents, so it needs their CLIs. On a terminal, `setup` offers
+Your Core runs harnesses, so it needs their CLIs. On a terminal, `setup` offers
 each missing one in turn and installs the ones you accept with the vendor's
-official method — so the agent's own updater and `login` flow work normally
+official method — so the harness's own updater and `login` flow work normally
 afterwards.
 
 With **no terminal** (the piped one-liner, cloud-init, Ansible) `setup` never
-prompts and installs nothing unless you say so: use `--with-<agent>` for
-specific ones, `--yes` for all of them, or `--no-agents` to be explicit that
+prompts and installs nothing unless you say so: use `--with-<harness>` for
+specific ones, `--yes` for all of them, or `--no-harnesses` to be explicit that
 you want none.
 
 Declining is not permanent — install one later with:
 
 ```bash
-actana agents install opencode
+actana harnesses install opencode
 ```
 
-The id is the agent's name or its command (`claude-code` and `claude` both
+The id is the harness's name or its command (`claude-code` and `claude` both
 work). A vendor installer that fails is reported with the vendor's own docs
-URL and never fails your Harness install. After an install the Harness
-re-probes immediately, so a paired Panel sees the new agent without a restart.
+URL and never fails your Core install. After an install the Core
+re-probes immediately, so a paired Panel sees the new harness without a restart.
 
 Re-running `setup` is safe: it upgrades in place, keeps your existing pairing
 token, and leaves exactly one unit (or one LaunchAgent). It issues a new token only when
@@ -206,16 +206,16 @@ actana logs -f
 ```
 
 ```bash
-actana agents install <id>
+actana harnesses install <id>
 ```
 
 `start`, `stop` and `restart` control the daemon without you learning systemd or
 launchctl incantations; `logs` takes `-f` / `--follow` and `-n` / `--lines <n>`.
 On Linux `logs` reads the journal; on macOS it tails
-`~/Library/Logs/Actana/harness.log`, which is where the LaunchAgent sends both
+`~/Library/Logs/Actana/core.log`, which is where the LaunchAgent sends both
 of the daemon's streams.
 
-`actana status` exits non-zero when the Harness is not healthy, so it works as
+`actana status` exits non-zero when the Core is not healthy, so it works as
 a health check in scripts.
 
 ### Updating
@@ -228,12 +228,12 @@ actana update
 for this machine, **verifies it against the release's published `SHA256SUMS`**,
 installs it beside the running one, and repoints `current` at it before
 restarting the daemon. A download that fails its checksum aborts before
-anything is touched — the Harness keeps running the version it was on.
+anything is touched — the Core keeps running the version it was on.
 
 Pair a Panel that reports "needs update" with the exact version it wants:
 
 ```bash
-actana update --version 0.50.0
+actana update --version 0.2.0
 ```
 
 Old versions stay in `~/.local/share/actana/versions`, so going back is a
@@ -343,9 +343,9 @@ actana setup --public-host <new-address>
 | `~/.local/share/actana/data/missioncontrol.db` | SQLite: projects, tasks, sessions, event log. Never touched by setup. |
 | `~/.config/actana/material.json` | CA, server cert/key, client cert/key, bearer secret, coreId. `chmod 0600`. |
 | `~/.config/actana/actana.json` | What setup decided: version, port, host, public host, label. No secrets. |
-| `~/.config/systemd/user/actana-harness.service` | Linux: the auto-start user unit. |
-| `~/Library/LaunchAgents/com.actana.harness.plist` | macOS: the auto-start LaunchAgent. |
-| `~/Library/Logs/Actana/harness.log` | macOS: the daemon's output — what `actana logs` tails. |
+| `~/.config/systemd/user/actana-core.service` | Linux: the auto-start user unit. |
+| `~/Library/LaunchAgents/com.actana.core.plist` | macOS: the auto-start LaunchAgent. |
+| `~/Library/Logs/Actana/core.log` | macOS: the daemon's output — what `actana logs` tails. |
 | `~/.local/bin/actana` | Symlink to `current/bin/actana`. |
 
 The two service paths are fixed — systemd and launchd each read exactly one
@@ -358,8 +358,8 @@ slots.
 
 ## See also
 
-- [ADR 0001 — Detach harness from panel](docs/adr/0001-detach-harness-from-panel.md)
+- [ADR 0001 — Detach core from panel](docs/adr/0001-detach-core-from-panel.md)
 - [ADR 0002 — Core-link auth and transport](docs/adr/0002-core-link-auth-and-transport.md)
-- [ADR 0003 — Harness install and registration](docs/adr/0003-harness-install-and-registration.md)
-- [macOS pre-release checklist](docs/harness-macos-prerelease-checklist.md) — the
+- [ADR 0003 — Core install and registration](docs/adr/0003-core-install-and-registration.md)
+- [macOS pre-release checklist](docs/core-macos-prerelease-checklist.md) — the
   reboot and logout checks CI cannot run

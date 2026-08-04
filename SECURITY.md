@@ -31,14 +31,14 @@ The things this project actually controls:
   password path, its HTTP API and bearer-token surface.
 - The **core-link** — the mutual-TLS WebSocket between a Panel and a Core, and
   the registration blob that establishes it.
-- The **Harness** — the daemon, `actana setup`, the installer (`install.sh`),
+- The **Core** — the daemon, `actana setup`, the installer (`install.sh`),
   and the release tarballs and their checksums.
 - The **published container image**, `ghcr.io/actana/panel`.
 
 ## What is out of scope
 
 - **Anything reachable only by the Operator on their own machines.** A Core
-  runs agent CLIs with the operator's own privileges and gives them a shell on
+  runs harness CLIs with the operator's own privileges and gives them a shell on
   that machine — a VM Shell Session executing commands is the product working,
   not a sandbox escape. There is no privilege boundary between the Operator and
   the machines they have registered.
@@ -46,7 +46,7 @@ The things this project actually controls:
   and delegates TLS to a reverse proxy ([ADR 0010](docs/adr/0010-panel-becomes-a-self-hosted-web-service.md)).
   Running it on a public interface without a proxy is a deployment mistake, and
   [`DEPLOY.md`](DEPLOY.md) says so.
-- **The agent CLIs themselves** (claude, opencode, codex, …). Report those to
+- **The harness CLIs themselves** (claude, opencode, codex, …). Report those to
   their own vendors.
 - Findings from automated scanners with no demonstrated impact, and
   vulnerabilities in dependencies that are already flagged by Dependabot and

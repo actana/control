@@ -11,7 +11,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`conventions.yml`](../.github/workflows/conventions.yml) | every PR | nothing — it gates |
 | [`images-edge.yml`](../.github/workflows/images-edge.yml) | push to `main` | `:edge`, `:sha-<short>` |
 | [`images-release.yml`](../.github/workflows/images-release.yml) | `v*` tag | `:<version>`, `:latest` |
-| [`harness-release.yml`](../.github/workflows/harness-release.yml) | `v*` tag | Harness tarballs + checksums |
+| [`core-release.yml`](../.github/workflows/core-release.yml) | `v*` tag | Core tarballs + checksums |
 | [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | `docs/images/**` on `main` | each image's Docker Hub page |
 | [`stale.yml`](../.github/workflows/stale.yml) | daily cron | stale labels / closures |
 | [`react-doctor.yml`](../.github/workflows/react-doctor.yml) | see the file | a report |
@@ -41,7 +41,7 @@ pairs when it is reachable at the hostname `core`. It exists so you can try the
 real pairing flow on one machine with nothing but Docker. The image carries
 `ai.actana.image.role=development-fixture` and an OCI description saying so.
 
-**To run a real Core, install the Harness on a machine you own** — see
+**To run a real Core, install the Core on a machine you own** — see
 [`../INSTALL.md`](../INSTALL.md). There is no supported container deployment of
 a Core.
 
@@ -73,12 +73,12 @@ The product ships as three things, on two pipelines, from the same tag:
   (and Docker Hub, when configured). No installer, no signing — the image is
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
 - **The dev Core** is a container from the same workflow → `ghcr.io/actana/core`.
-- **The Harness** — the thing a real Core actually runs — is a per-platform
-  tarball. `harness-release.yml` → four targets (`mac-arm64`, `mac-x64`,
+- **The Core** — the thing a real Core actually runs — is a per-platform
+  tarball. `core-release.yml` → four targets (`mac-arm64`, `mac-x64`,
   `linux-x64`, `linux-arm64`) with published checksums, which `install.sh` and
   `actana update` verify against.
 
-The Panel and the Harness are version-locked at runtime: the core-link
+The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
 update" in the Panel. So tag both together — a `v*` tag fires both workflows.
 
@@ -87,7 +87,7 @@ update" in the Panel. So tag both together — a `v*` tag fires both workflows.
 | Tag | Moves | Use it for |
 | --- | --- | --- |
 | `:latest` | on every non-prerelease version tag | the default; what the reference compose pulls |
-| `:<version>` e.g. `:0.49.0` | never | pinning a deployment |
+| `:<version>` e.g. `:0.1.0` | never | pinning a deployment |
 | `:edge` | on every push to `main` | trying what is about to ship |
 | `:sha-<short>` | never | pinning to an exact commit, e.g. to bisect |
 
@@ -99,7 +99,7 @@ A prerelease tag (`v1.0.0-rc.1`) publishes `:1.0.0-rc.1` and deliberately does
 Every published image is a multi-arch manifest over `amd64` and `arm64`, and
 each architecture is built on a **native runner** of its own kind. Neither
 image could be cross-built honestly: the Panel compiles `better-sqlite3` during
-its build, and the Core bakes in the Harness tarball for that architecture.
+its build, and the Core bakes in the Core tarball for that architecture.
 Emulating either under QEMU is both slow and a test of the wrong machine.
 
 The PR build is `amd64` only. Paying for a second runner on every PR buys
@@ -120,7 +120,7 @@ claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 **Core** — systemd is PID 1 in that image, so CI cannot boot it without
 `--privileged` and a cgroup mount. The smoke overrides the command and checks
 the two things a build can actually get wrong: the *architecture-matched*
-Harness tarball landing in `/opt/harness`, and the first-boot provision unit
+Core tarball landing in `/opt/core`, and the first-boot provision unit
 being enabled. Booting it for real is what `deploy/dev/docker-compose.yml` is
 for, and the `E2E — Panel against Core-in-a-box` job in `ci.yml` covers that
 seam.
@@ -168,12 +168,16 @@ publishes under its own namespace with no edit to any workflow.
 ## Cutting a release
 
 ```bash
-git tag v0.50.0 && git push origin v0.50.0
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
-That fires `images-release.yml` and `harness-release.yml` in parallel. If a
+That fires `images-release.yml` and `core-release.yml` in parallel. If a
 release needs rebuilding, both workflows accept a `workflow_dispatch` with the
 tag name — the tag must already exist on origin.
+
+Push one tag deliberately, never `git push --tags` — a clone made from the fork
+parent carries tags that would fire both workflows for releases this repository
+never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
 
 ## Running CI locally
 
