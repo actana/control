@@ -41,6 +41,7 @@ carries the invariants a reviewer will hold you to.
 | Set up the GitHub repo: secrets, rulesets, labels, teams | [`REPO_SETUP.md`](REPO_SETUP.md) |
 | Add Docker Hub publishing keys | [`REPO_SETUP.md#2-secrets-and-variables`](REPO_SETUP.md#2-secrets-and-variables) |
 | Cut a release | [`ci-cd.md#cutting-a-release`](ci-cd.md#cutting-a-release) |
+| Know why this repo has no tag before `v0.1.0` | [`REPO_SETUP.md#6-tag-history`](REPO_SETUP.md#6-tag-history) |
 
 ## Architecture decisions
 

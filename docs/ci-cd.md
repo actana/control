@@ -168,12 +168,16 @@ publishes under its own namespace with no edit to any workflow.
 ## Cutting a release
 
 ```bash
-git tag v0.50.0 && git push origin v0.50.0
+git tag v0.1.0 && git push origin v0.1.0
 ```
 
 That fires `images-release.yml` and `harness-release.yml` in parallel. If a
 release needs rebuilding, both workflows accept a `workflow_dispatch` with the
 tag name — the tag must already exist on origin.
+
+Push one tag deliberately, never `git push --tags` — a clone made from the fork
+parent carries tags that would fire both workflows for releases this repository
+never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
 
 ## Running CI locally
 

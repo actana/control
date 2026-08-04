@@ -139,7 +139,51 @@ changelog is assembled from.
       the host cgroup, grants passwordless sudo, and only pairs at the hostname
       `core`. Docker Hub descriptions are set in its UI, not by this repo.
 
-## 6. Labels
+## 6. Tag history
+
+- [ ] `git tag -l` is empty in your clone, and every fork-parent remote is
+      configured not to re-import tags (see below)
+- [ ] Optional: a **tag ruleset** (Settings → Rules → Rulesets, target *Tags*)
+      restricting creation to `v*` and restricting deletions
+
+**This repository's tag history starts at `v0.1.0`.** `actana/control` carries
+zero tags and zero releases today, and that is deliberate — clause D27 of ADR
+0016, *The 0.1.0 shape*, tracked on
+[#23](https://github.com/actana/control/issues/23). The version resets to
+`0.1.0` because this repository has shipped zero times; the `0.49.0` that
+appears in the fork parent's manifests belongs to a different product.
+
+Clones made from the fork parent inherit **102 tags**, `v0.5.0` … `v0.49.0`,
+pointing at commits this repository has never contained — `main` here is a
+single squashed commit, and every one of those tags drags the upstream Electron
+history behind it. They are **deleted on sight, not merely left unpushed**,
+because leaving them in a clone is a loaded gun:
+
+- Two workflows trigger on `v*` —
+  [`harness-release.yml`](../.github/workflows/harness-release.yml) and
+  [`images-release.yml`](../.github/workflows/images-release.yml) — so a single
+  `git push --tags` would both re-import the upstream history into a repository
+  that was squashed on purpose **and** set 102 tags loose on two release
+  pipelines at once.
+- They sort above `0.1.0`, so `git describe` and any future mirror would report
+  a version this product has never released.
+
+Nothing is lost by deleting them: those tags are still on the fork parent
+(`AgentSystemLabs/mission-control`), where they belong.
+
+Deleting them once is not enough. `git fetch` follows tags by default, so any
+remote still pointing at the fork parent re-imports all 102 on the next fetch.
+A clone with such a remote needs both halves, and in that order:
+
+```bash
+git config remote.origin.tagOpt --no-tags   # repeat for every fork-parent remote
+git tag -l | xargs -r git tag -d            # then verify: git tag -l
+```
+
+A clone made from `actana/control` alone needs neither — there are no tags to
+inherit and no remote to inherit them from.
+
+## 7. Labels
 
 Two axes. **`type:`** says what a thing is; the bare words are the triage
 states the `/triage` skill reads (see
@@ -190,7 +234,7 @@ new "stale"               795548 "Inactive; scheduled for auto-close"
 ([`stale.yml`](../.github/workflows/stale.yml)) — an issue waiting on a
 maintainer's question should not be closed for the reporter's silence.
 
-## 7. Local hooks (optional, per clone)
+## 8. Local hooks (optional, per clone)
 
 The hooks in `.husky/` run under plain git — husky itself is not a dependency:
 
@@ -205,7 +249,7 @@ if commitlint is not installed locally; the install line is in
 [`ci-cd.md`](ci-cd.md#running-ci-locally) — it goes through a temp directory
 because npm cannot parse this pnpm workspace's root `package.json`.
 
-## 8. Org-level reuse
+## 9. Org-level reuse
 
 - [ ] Put shared community health files into a repo named **`.github`** in the
       actana org — repos without their own copies inherit them automatically
