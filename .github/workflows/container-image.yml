@@ -41,11 +41,11 @@ on:
         type: string
         required: true
       stage:
-        description: "Discriminator for the intermediate per-arch tags (e.g. 0.49.0, edge)."
+        description: "Discriminator for the intermediate per-arch tags (e.g. 0.1.0, edge)."
         type: string
         required: true
       tags:
-        description: "Space-separated final tags to publish (e.g. '0.49.0 latest'). Ignored when push is false."
+        description: "Space-separated final tags to publish (e.g. '0.1.0 latest'). Ignored when push is false."
         type: string
         default: ""
       push:

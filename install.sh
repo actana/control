@@ -104,12 +104,12 @@ parse_args() {
   while [ $# -gt 0 ]; do
     case $1 in
       --version)
-        need_value --version "${2-}" " (e.g. --version 0.49.0)"
+        need_value --version "${2-}" " (e.g. --version 0.1.0)"
         VERSION=$2
         shift 2
         ;;
       --version=*)
-        need_value --version "${1#*=}" " (e.g. --version=0.49.0)"
+        need_value --version "${1#*=}" " (e.g. --version=0.1.0)"
         VERSION=${1#*=}
         shift
         ;;

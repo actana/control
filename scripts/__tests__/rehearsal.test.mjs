@@ -18,22 +18,22 @@ describe("hostTarget", () => {
 
 describe("pickTarball", () => {
   const files = [
-    "actana-core-0.49.0-linux-x64.tar.gz",
-    "actana-core-0.50.0-linux-x64.tar.gz",
-    "actana-core-0.51.0-linux-arm64.tar.gz",
+    "actana-core-0.1.0-linux-x64.tar.gz",
+    "actana-core-0.2.0-linux-x64.tar.gz",
+    "actana-core-0.3.0-linux-arm64.tar.gz",
     "SHA256SUMS",
     "notes.txt",
   ];
 
   it("picks the newest release built for the machine running the rehearsal", () => {
     expect(pickTarball(files, "linux-x64", () => {})).toBe(
-      "actana-core-0.50.0-linux-x64.tar.gz",
+      "actana-core-0.2.0-linux-x64.tar.gz",
     );
   });
 
   it("never hands back another architecture's tarball", () => {
     expect(pickTarball(files, "linux-arm64", () => {})).toBe(
-      "actana-core-0.51.0-linux-arm64.tar.gz",
+      "actana-core-0.3.0-linux-arm64.tar.gz",
     );
   });
 

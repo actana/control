@@ -3,7 +3,7 @@ import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "..
 
 const healthy: ActanaStatusReport = {
   installed: true,
-  version: "0.49.0",
+  version: "0.1.0",
   protocolVersion: "3",
   target: "linux-x64",
   endpoint: "wss://10.0.0.5:8443",
@@ -65,7 +65,7 @@ describe("formatActanaStatus", () => {
 
   it("shows version, protocol version, endpoint, and pid", () => {
     const text = formatActanaStatus(healthy);
-    expect(text).toMatch(/0\.49\.0/);
+    expect(text).toMatch(/0\.1\.0/);
     expect(text).toMatch(/protocol.*\b3\b/i);
     expect(text).toContain("wss://10.0.0.5:8443");
     expect(text).toMatch(/4211/);

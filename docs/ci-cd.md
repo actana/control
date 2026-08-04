@@ -87,7 +87,7 @@ update" in the Panel. So tag both together — a `v*` tag fires both workflows.
 | Tag | Moves | Use it for |
 | --- | --- | --- |
 | `:latest` | on every non-prerelease version tag | the default; what the reference compose pulls |
-| `:<version>` e.g. `:0.49.0` | never | pinning a deployment |
+| `:<version>` e.g. `:0.1.0` | never | pinning a deployment |
 | `:edge` | on every push to `main` | trying what is about to ship |
 | `:sha-<short>` | never | pinning to an exact commit, e.g. to bisect |
 

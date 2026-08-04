@@ -70,7 +70,7 @@ docker compose up -d --build
 | Tag | Moves |
 | --- | --- |
 | `latest` | every non-prerelease version tag |
-| `<version>`, e.g. `0.49.0` | never |
+| `<version>`, e.g. `0.1.0` | never |
 | `edge` | every push to `main` |
 | `sha-<short>` | never |
 

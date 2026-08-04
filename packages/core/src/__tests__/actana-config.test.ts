@@ -13,12 +13,12 @@ import {
 let dir: string;
 
 const config: ActanaConfig = {
-  version: "0.49.0",
+  version: "0.1.0",
   port: 8443,
   host: "0.0.0.0",
   publicHost: "10.0.0.5",
   label: "prod-vm-1",
-  installDir: "/home/op/.local/share/actana/versions/0.49.0",
+  installDir: "/home/op/.local/share/actana/versions/0.1.0",
   dataDir: "/home/op/.local/share/actana/data",
 };
 
@@ -44,8 +44,8 @@ describe("writeActanaConfig / readActanaConfig", () => {
 
   it("overwrites on a re-run rather than appending a second install", () => {
     writeActanaConfig(dir, config);
-    writeActanaConfig(dir, { ...config, version: "0.50.0" });
-    expect(readActanaConfig(dir)?.version).toBe("0.50.0");
+    writeActanaConfig(dir, { ...config, version: "0.2.0" });
+    expect(readActanaConfig(dir)?.version).toBe("0.2.0");
   });
 
   it("is readable JSON — an operator can look at what setup decided", () => {

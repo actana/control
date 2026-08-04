@@ -34,8 +34,8 @@ const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const INSTALL_SH = path.join(repoRoot, "install.sh");
 
 /** The two releases the fixture serves. `--version` pins the older one. */
-const OLD_VERSION = "0.49.0";
-const NEW_VERSION = "0.50.0";
+const OLD_VERSION = "0.1.0";
+const NEW_VERSION = "0.2.0";
 
 /**
  * Stands in for the tarball's `bin/actana`: prints what it was called with and

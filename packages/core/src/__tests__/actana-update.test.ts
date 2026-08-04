@@ -19,7 +19,7 @@ import { fixtureFetcher, writeRelease, writeTarballTree } from "./release-fixtur
 
 const CHANNEL = releaseChannel({ baseUrl: "http://releases.test" });
 const TARGET = "linux-x64";
-const INSTALLED_VERSION = "0.49.0";
+const INSTALLED_VERSION = "0.1.0";
 
 let tmp: string;
 let home: string;
@@ -160,7 +160,7 @@ afterEach(() => {
 describe("landing a newer release", () => {
   beforeEach(() => {
     existingInstall();
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: TARGET });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: TARGET });
   });
 
   it("installs it beside the old one and repoints `current` at it", async () => {
@@ -168,20 +168,20 @@ describe("landing a newer release", () => {
 
     expect(result.updated).toBe(true);
     expect(result.previousVersion).toBe(INSTALLED_VERSION);
-    expect(result.version).toBe("0.50.0");
+    expect(result.version).toBe("0.2.0");
     expect(fs.realpathSync(layout.currentLink)).toBe(
-      fs.realpathSync(installDirFor(layout, "0.50.0")),
+      fs.realpathSync(installDirFor(layout, "0.2.0")),
     );
-    // The old tree stays: `actana update --version 0.49.0` is the way back.
+    // The old tree stays: `actana update --version 0.1.0` is the way back.
     expect(fs.existsSync(installDirFor(layout, INSTALLED_VERSION))).toBe(true);
-    expect(readCoreManifest(installDirFor(layout, "0.50.0"))?.version).toBe("0.50.0");
+    expect(readCoreManifest(installDirFor(layout, "0.2.0"))?.version).toBe("0.2.0");
   });
 
   it("records the new version so `status` and the next update agree with it", async () => {
     await update();
     const config = readActanaConfig(layout.configDir)!;
-    expect(config.version).toBe("0.50.0");
-    expect(config.installDir).toBe(installDirFor(layout, "0.50.0"));
+    expect(config.version).toBe("0.2.0");
+    expect(config.installDir).toBe(installDirFor(layout, "0.2.0"));
     // Everything the operator chose at setup survives the update.
     expect(config.port).toBe(8443);
     expect(config.publicHost).toBe("10.0.0.5");
@@ -218,19 +218,19 @@ describe("landing a newer release", () => {
 describe("a download that does not match its checksum", () => {
   beforeEach(() => {
     existingInstall();
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: TARGET });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: TARGET });
   });
 
   it("aborts, saying what was expected and what arrived", async () => {
     const fetcher = fixtureFetcher(releaseDir, CHANNEL, {
-      corrupt: [releaseAssetName("0.50.0", TARGET)],
+      corrupt: [releaseAssetName("0.2.0", TARGET)],
     });
     await expect(update({ fetcher })).rejects.toThrow(/checksum/i);
   });
 
   it("leaves the running install completely untouched", async () => {
     const fetcher = fixtureFetcher(releaseDir, CHANNEL, {
-      corrupt: [releaseAssetName("0.50.0", TARGET)],
+      corrupt: [releaseAssetName("0.2.0", TARGET)],
     });
     const service = fakeService();
     await expect(update({ fetcher, service })).rejects.toThrow();
@@ -238,7 +238,7 @@ describe("a download that does not match its checksum", () => {
     expect(fs.realpathSync(layout.currentLink)).toBe(
       fs.realpathSync(installDirFor(layout, INSTALLED_VERSION)),
     );
-    expect(fs.existsSync(installDirFor(layout, "0.50.0"))).toBe(false);
+    expect(fs.existsSync(installDirFor(layout, "0.2.0"))).toBe(false);
     expect(readActanaConfig(layout.configDir)!.version).toBe(INSTALLED_VERSION);
     // Nothing was stopped or restarted — the daemon never noticed.
     expect(service.verbs).toEqual([]);
@@ -249,34 +249,34 @@ describe("a download that does not match its checksum", () => {
 describe("choosing a version", () => {
   beforeEach(() => {
     existingInstall();
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: TARGET });
-    writeRelease({ dir: releaseDir, version: "0.51.0", target: TARGET });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: TARGET });
+    writeRelease({ dir: releaseDir, version: "0.3.0", target: TARGET });
   });
 
   it("takes the latest release when none is pinned", async () => {
-    expect((await update()).version).toBe("0.51.0");
+    expect((await update()).version).toBe("0.3.0");
   });
 
   it("installs exactly the pinned version, without asking what is latest", async () => {
     const fetcher = fixtureFetcher(releaseDir, CHANNEL);
-    const result = await update({ fetcher, requestedVersion: "0.50.0" });
+    const result = await update({ fetcher, requestedVersion: "0.2.0" });
 
-    expect(result.version).toBe("0.50.0");
+    expect(result.version).toBe("0.2.0");
     expect(fetcher.asked.some((url) => url.endsWith("/releases/latest"))).toBe(false);
   });
 
   it("accepts a pinned version spelled with a leading v", async () => {
-    expect((await update({ requestedVersion: "v0.50.0" })).version).toBe("0.50.0");
+    expect((await update({ requestedVersion: "v0.2.0" })).version).toBe("0.2.0");
   });
 
   it("downgrades on request — that is what recovering a version lock is", async () => {
-    await update({ requestedVersion: "0.51.0" });
+    await update({ requestedVersion: "0.3.0" });
     const result = await update({
       config: readActanaConfig(layout.configDir)!,
-      requestedVersion: "0.50.0",
+      requestedVersion: "0.2.0",
     });
-    expect(result.version).toBe("0.50.0");
-    expect(readActanaConfig(layout.configDir)!.version).toBe("0.50.0");
+    expect(result.version).toBe("0.2.0");
+    expect(readActanaConfig(layout.configDir)!.version).toBe("0.2.0");
   });
 
   it("does nothing when the installed version is already the one asked for", async () => {
@@ -306,19 +306,19 @@ describe("releases this machine cannot use", () => {
   });
 
   it("names the missing target when the release has no build for it", async () => {
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: "mac-arm64" });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
     await expect(update()).rejects.toThrow(/linux-x64/);
   });
 
   it("refuses on a platform the project publishes no Cores for", async () => {
-    writeRelease({ dir: releaseDir, version: "0.50.0", target: TARGET });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: TARGET });
     await expect(update({ platform: "win32", arch: "x64" })).rejects.toThrow(/win32/);
   });
 
   it("rejects a tarball whose manifest is not the release it was served as", async () => {
     writeRelease({
       dir: releaseDir,
-      version: "0.50.0",
+      version: "0.2.0",
       target: TARGET,
       manifest: { version: "9.9.9" },
     });
@@ -328,12 +328,12 @@ describe("releases this machine cannot use", () => {
   it("rejects a tarball that is not a complete Core build", async () => {
     writeRelease({
       dir: releaseDir,
-      version: "0.50.0",
+      version: "0.2.0",
       target: TARGET,
       omit: [path.join("node", "bin", "node")],
     });
     await expect(update()).rejects.toThrow(/node/);
-    expect(fs.existsSync(installDirFor(layout, "0.50.0"))).toBe(false);
+    expect(fs.existsSync(installDirFor(layout, "0.2.0"))).toBe(false);
   });
 
   it("explains a release channel it cannot reach", async () => {

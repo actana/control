@@ -166,11 +166,11 @@ describe("formatShasums", () => {
 
 describe("tarball naming", () => {
   it("names the archive after version and target", () => {
-    expect(tarballName("0.49.0", "mac-arm64")).toBe("actana-core-0.49.0-mac-arm64.tar.gz");
+    expect(tarballName("0.1.0", "mac-arm64")).toBe("actana-core-0.1.0-mac-arm64.tar.gz");
   });
 
   it("puts everything under one directory so extraction never litters the CWD", () => {
-    expect(tarballRootDirName("0.49.0", "mac-arm64")).toBe("actana-core-0.49.0-mac-arm64");
+    expect(tarballRootDirName("0.1.0", "mac-arm64")).toBe("actana-core-0.1.0-mac-arm64");
   });
 });
 
@@ -202,14 +202,14 @@ describe("buildManifest", () => {
   it("embeds version, protocol version, target and runtime", () => {
     expect(
       buildManifest({
-        version: "0.49.0",
+        version: "0.1.0",
         protocolVersion: "0.8.0",
         target: "linux-arm64",
         nodeVersion: BUNDLED_NODE_VERSION,
       }),
     ).toEqual({
       name: "actana-core",
-      version: "0.49.0",
+      version: "0.1.0",
       protocolVersion: "0.8.0",
       target: "linux-arm64",
       platform: "linux",
@@ -221,7 +221,7 @@ describe("buildManifest", () => {
   it("rejects an unknown target", () => {
     expect(() =>
       buildManifest({
-        version: "0.49.0",
+        version: "0.1.0",
         protocolVersion: "0.8.0",
         target: "solaris-sparc",
         nodeVersion: BUNDLED_NODE_VERSION,

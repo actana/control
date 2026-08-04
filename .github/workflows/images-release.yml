@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Tag to (re)build the images for (e.g. v0.49.0). Must already exist on origin."
+        description: "Tag to (re)build the images for (e.g. v0.1.0). Must already exist on origin."
         required: true
 
 concurrency:
@@ -49,7 +49,7 @@ jobs:
             ref="$REF_NAME"
           fi
           if [[ ! "$ref" =~ ^v[0-9]+([.][0-9]+){0,2}([-+][0-9A-Za-z.-]+)?$ ]]; then
-            echo "release ref must be a version tag like v0.49.0" >&2
+            echo "release ref must be a version tag like v0.1.0" >&2
             exit 1
           fi
           version="${ref#v}"

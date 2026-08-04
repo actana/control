@@ -103,8 +103,8 @@ describe("resolveActanaLayout", () => {
 describe("installDirFor", () => {
   it("gives each version its own directory so an update can swap atomically", () => {
     const l = resolveActanaLayout({}, HOME, "linux");
-    expect(installDirFor(l, "0.49.0")).toBe("/home/op/.local/share/actana/versions/0.49.0");
-    expect(installDirFor(l, "0.50.0")).toBe("/home/op/.local/share/actana/versions/0.50.0");
+    expect(installDirFor(l, "0.1.0")).toBe("/home/op/.local/share/actana/versions/0.1.0");
+    expect(installDirFor(l, "0.2.0")).toBe("/home/op/.local/share/actana/versions/0.2.0");
   });
 
   it("refuses a version that would escape the versions dir", () => {

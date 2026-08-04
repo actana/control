@@ -77,7 +77,7 @@ one machine — it is not how you host a real Core.
 | Tag | Moves |
 | --- | --- |
 | `latest` | every non-prerelease version tag |
-| `<version>`, e.g. `0.49.0` | never — pin deployments to this |
+| `<version>`, e.g. `0.1.0` | never — pin deployments to this |
 | `edge` | every push to `main` |
 | `sha-<short>` | never — an exact commit |
 
