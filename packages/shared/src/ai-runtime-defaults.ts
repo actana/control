@@ -1,7 +1,8 @@
-import { TASK_AGENTS, isTaskAgent, type TaskAgent } from "./domain";
+// Re-exported so a module that only cares about model defaults can name the
+// Harness type without reaching past this one into `domain`.
+export { HARNESSES, isHarness, type Harness } from "./domain";
+import type { Harness } from "./domain";
 
-export const AI_RUNTIME_HARNESS_VALUES = TASK_AGENTS;
-export type AiRuntimeHarness = TaskAgent;
 export type AiModelId = string;
 export type AiModelOption = {
   id: AiModelId;
@@ -10,7 +11,7 @@ export type AiModelOption = {
 };
 export type AiRuntimeModelSource = "catalog" | "cli";
 export type AiRuntimeModelsResponse = {
-  harness: AiRuntimeHarness;
+  harness: Harness;
   source: AiRuntimeModelSource;
   models: AiModelOption[];
   error?: string;
@@ -23,7 +24,7 @@ export const AI_MODEL_ID_HELP =
   "Use a model id without spaces or shell characters, e.g. sonnet, gpt-5.3-codex, or anthropic/claude-sonnet-4-5.";
 
 export const AI_RUNTIME_MODEL_OPTIONS: Record<
-  AiRuntimeHarness,
+  Harness,
   readonly AiModelOption[]
 > = {
   "claude-code": [
@@ -82,10 +83,6 @@ export const AI_RUNTIME_MODEL_OPTIONS: Record<
   ],
 };
 
-export function isAiRuntimeHarness(value: unknown): value is AiRuntimeHarness {
-  return isTaskAgent(value);
-}
-
 export function isAiModelId(value: unknown): value is AiModelId {
   return typeof value === "string" && AI_MODEL_ID_PATTERN.test(value);
 }
@@ -99,13 +96,13 @@ export function normalizeAiModelId(value: unknown): AiModelId | null {
 }
 
 export function getAiRuntimeModelOptions(
-  harness: AiRuntimeHarness,
+  harness: Harness,
 ): readonly AiModelOption[] {
   return AI_RUNTIME_MODEL_OPTIONS[harness];
 }
 
 export function modelBelongsToHarnessCatalog(
-  harness: AiRuntimeHarness,
+  harness: Harness,
   model: AiModelId | null,
 ): boolean {
   if (!model) return true;
@@ -113,7 +110,7 @@ export function modelBelongsToHarnessCatalog(
 }
 
 export function buildAiPrintInvocation(
-  harness: AiRuntimeHarness,
+  harness: Harness,
   prompt: string,
   model: AiModelId | null,
 ): { cmd: string; args: string[] } {

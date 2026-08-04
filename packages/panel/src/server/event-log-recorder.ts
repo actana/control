@@ -1,15 +1,15 @@
 // Event-log recorder — wires the stateful server's in-process AppEvent stream
-// into the monotonic per-Harness event log (the `event_log` SQLite table).
+// into the monotonic per-Core event log (the `event_log` SQLite table).
 //
 // The server emits task/session/hook/project events via the `events` emitter
 // (src/server/events.ts). This module subscribes for the life of the server
 // process and appends each as a row in `event_log`, so a reconnecting Panel
 // can replay the missed event/task timeline via the core-link's `subscribe`
-// path (served by the Harness / PTY-manager process, which shares the same
+// path (served by the Core / PTY-manager process, which shares the same
 // SQLite file).
 //
-// PTY lifecycle events (pty:spawn / pty:exit) are recorded by the Harness
-// process itself (packages/harness/src/pty-core-link-server.ts); this recorder owns the
+// PTY lifecycle events (pty:spawn / pty:exit) are recorded by the Core
+// process itself (packages/core/src/pty-core-link-server.ts); this recorder owns the
 // task/session/hook half. Both append to the same append-only table — SQLite's
 // WAL write lock serializes the commits and the kinds never overlap, so the
 // two writers stay out of each other's way.

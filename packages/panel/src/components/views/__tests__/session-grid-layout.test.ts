@@ -4,7 +4,7 @@ import {
   pourIdsIntoShape,
   reconcileLayout,
   reflowToColumns,
-  sortIdsByAgentFirst,
+  sortIdsByHarnessFirst,
 } from "../SessionGrid";
 
 /** Cell ids per row — the part of a layout these tests assert on. */
@@ -75,7 +75,7 @@ describe("pourIdsIntoShape", () => {
   });
 });
 
-describe("sortIdsByAgentFirst", () => {
+describe("sortIdsByHarnessFirst", () => {
   const cells = [
     { id: "s1", agent: "codex" },
     { id: "s2", agent: "claude-code" },
@@ -86,14 +86,14 @@ describe("sortIdsByAgentFirst", () => {
   const order = ["claude-code", "codex", "cursor-cli", "opencode"];
 
   it("puts the chosen agent first, then registry order, stably", () => {
-    expect(sortIdsByAgentFirst(cells, "codex", order)).toEqual([
+    expect(sortIdsByHarnessFirst(cells, "codex", order)).toEqual([
       "s1",
       "s5",
       "s2",
       "s4",
       "s3",
     ]);
-    expect(sortIdsByAgentFirst(cells, "opencode", order)).toEqual([
+    expect(sortIdsByHarnessFirst(cells, "opencode", order)).toEqual([
       "s3",
       "s2",
       "s4",
@@ -102,9 +102,9 @@ describe("sortIdsByAgentFirst", () => {
     ]);
   });
 
-  it("ranks unknown agents last without dropping them", () => {
+  it("ranks unknown harnesses last without dropping them", () => {
     expect(
-      sortIdsByAgentFirst([{ id: "x", agent: "mystery" }, ...cells], "claude-code", order),
+      sortIdsByHarnessFirst([{ id: "x", agent: "mystery" }, ...cells], "claude-code", order),
     ).toEqual(["s2", "s4", "s1", "s5", "s3", "x"]);
   });
 });

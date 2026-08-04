@@ -41,7 +41,7 @@ export interface CoreLinkClientLike {
   onAuthOk(cb: (msg: { coreId: string; exp: number }) => void): () => void;
   onAuthError(cb: (msg: { reason: "expired" | "bad-signature" | "malformed" }) => void): () => void;
   onDisconnected(cb: (msg: { error?: string }) => void): () => void;
-  /** Every connection's `ready` frame: which core-link the Harness speaks. */
+  /** Every connection's `ready` frame: which core-link the Core speaks. */
   onProtocolVersion(
     cb: (msg: { version: string | null; compatible: boolean }) => void,
   ): () => void;
@@ -55,7 +55,7 @@ export interface CoreLinkClientLike {
 
 /**
  * The Panel-owned replay position, handed to the client at construction. The
- * client reads it when it subscribes (so the Harness replays only the missed
+ * client reads it when it subscribes (so the Core replays only the missed
  * tail) and writes it back as events land.
  */
 export type CoreCursor = {
@@ -83,7 +83,7 @@ type Managed = {
    * cannot speak; `{ version }` is what it advertised (null if it advertised
    * none). Held apart from the status because the auth handshake arrives after
    * the `ready` frame and would otherwise call the Core connected — a Core that
-   * needs updating stays needing it until the Harness comes back speaking a
+   * needs updating stays needing it until the Core comes back speaking a
    * version we share.
    */
   drift: { version: string | null } | null;
@@ -169,7 +169,7 @@ export class CoreLinkManager {
       if (managed.drift) {
         this.set(coreId, this.needsUpdateStatus(coreId, managed.drift));
       } else if (managed.status.state === "needs-update") {
-        // The Harness was updated and reconnected: whatever it was, it is now
+        // The Core was updated and reconnected: whatever it was, it is now
         // a Core like any other. The auth handshake on this connection follows
         // and will move it to connected.
         this.set(coreId, { coreId, state: "connecting", lastSeenAt: this.lastSeenAt(coreId) });

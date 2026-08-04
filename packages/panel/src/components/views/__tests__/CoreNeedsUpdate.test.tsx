@@ -48,7 +48,7 @@ describe("CoreNeedsUpdateNotice", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith(CORE_UPDATE_COMMAND);
   });
 
-  it("names the Panel as the stale side when the Core is ahead, with no Harness command", () => {
+  it("names the Panel as the stale side when the Core is ahead, with no Core command", () => {
     render(
       <CoreNeedsUpdateNotice dial={needsUpdate({ coreVersion: "0.9.0", panelVersion: "0.8.0" })} />,
     );
@@ -57,7 +57,7 @@ describe("CoreNeedsUpdateNotice", () => {
     expect(screen.queryByText(CORE_UPDATE_COMMAND)).toBeNull();
   });
 
-  it("stays useful when the Harness advertised no version at all", () => {
+  it("stays useful when the Core advertised no version at all", () => {
     render(<CoreNeedsUpdateNotice dial={needsUpdate({ coreVersion: null })} />);
     expect(screen.getByText(CORE_UPDATE_COMMAND)).toBeTruthy();
     expect(document.body.textContent).toContain("unknown");

@@ -78,7 +78,7 @@ export type FleetMergeResult = {
  * Merge per-Core `tasksList` fan-out results into a single Fleet view model.
  *
  * - Online Cores contribute their tasks as {@link FleetTaskRow}s, keyed by
- *   `coreId/taskId`. Archived tasks are defensively dropped (the Harness
+ *   `coreId/taskId`. Archived tasks are defensively dropped (the Core
  *   should already omit them, but a stale Core never pollutes the active
  *   dashboard).
  * - Offline Cores contribute an {@link OfflineCore} entry with no rows.
@@ -100,7 +100,7 @@ export function mergeFleetTasks(results: CoreFanOutResult[]): FleetMergeResult {
     if (result.ok) {
       for (const task of result.tasks) {
         // The Fleet view is for active work; archived tasks stay on the
-        // Harness. Defensively drop any that slip through.
+        // Core. Defensively drop any that slip through.
         if (task.archived) continue;
         const key = `${result.coreId}/${task.taskId}`;
         if (rowsByKey.has(key)) continue;

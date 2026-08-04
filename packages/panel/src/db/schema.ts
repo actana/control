@@ -3,11 +3,11 @@ import { relations } from "drizzle-orm";
 import {
   DEFAULT_BRANCH,
   DEFAULT_TASK_STATUS,
-  TASK_AGENTS,
+  HARNESSES,
   TASK_STATUSES,
   isActiveStatus,
   isTerminalStatus,
-  type TaskAgent,
+  type Harness,
   type TaskStatus,
 } from "@actana/shared/domain";
 
@@ -35,10 +35,10 @@ export const projects = sqliteTable(
     pinned: integer("pinned", { mode: "boolean" }).notNull().default(false),
     pinnedOrder: integer("pinned_order"),
     launchUrl: text("launch_url"),
-    rememberAgentSettings: integer("remember_agent_settings", { mode: "boolean" })
+    rememberHarnessSettings: integer("remember_agent_settings", { mode: "boolean" })
       .notNull()
       .default(false),
-    savedAgent: text("saved_agent").$type<TaskAgent>(),
+    savedHarness: text("saved_agent").$type<Harness>(),
     savedSkipPermissions: integer("saved_skip_permissions", { mode: "boolean" })
       .notNull()
       .default(false),
@@ -70,7 +70,7 @@ export const tasks = sqliteTable(
     title: text("title").notNull(),
     titleManuallySet: integer("title_manually_set", { mode: "boolean" }).notNull().default(false),
     icon: text("icon"),
-    agent: text("agent").$type<TaskAgent>().notNull(),
+    agent: text("agent").$type<Harness>().notNull(),
     status: text("status").$type<TaskStatus>().notNull().default(DEFAULT_TASK_STATUS),
     branch: text("branch").notNull().default(DEFAULT_BRANCH),
     preview: text("preview").notNull().default(""),
@@ -188,7 +188,7 @@ export const tokenUsageSessionOffsets = sqliteTable(
 );
 
 
-// Monotonic per-Harness event log. Every domain event — task status change,
+// Monotonic per-Core event log. Every domain event — task status change,
 // hook fire, question menu, run finish, PTY spawn/exit — is appended here with
 // a sequential `eventId`. On Panel reconnect the server streams the tail past
 // the Panel's `lastEventId`; live push resumes once caught up. PTY byte-stream
@@ -256,9 +256,9 @@ export type NewEventLogRow = typeof eventLog.$inferInsert;
 export {
   DEFAULT_BRANCH,
   DEFAULT_TASK_STATUS,
-  TASK_AGENTS,
+  HARNESSES,
   TASK_STATUSES,
   isActiveStatus,
   isTerminalStatus,
 };
-export type { TaskAgent, TaskStatus };
+export type { Harness, TaskStatus };

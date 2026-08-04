@@ -1,5 +1,5 @@
 import type { Group, Project, Task, UserTerminal } from "~/db/schema";
-import type { TaskAgent, TaskStatus } from "@actana/shared/domain";
+import type { Harness, TaskStatus } from "@actana/shared/domain";
 import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
@@ -7,14 +7,10 @@ import type { Binding, BindingMap, HotkeyAction } from "~/lib/keybindings/types"
 import type { UsageSummary } from "~/shared/token-usage";
 import type { ClaudeUsageLimits } from "~/shared/claude-usage-limits";
 import type { ProviderUsageId, ProviderUsageResponse } from "~/shared/provider-usage";
-import type { AgentLauncherConfig } from "~/shared/agent-launcher-config";
-import type { AgentAccountStatus, AgentLatestVersion } from "~/shared/agent-launchers";
-import type { PendingQuestion } from "~/shared/agent-questions";
-import type {
-  AiModelId,
-  AiRuntimeHarness,
-  AiRuntimeModelsResponse,
-} from "@actana/shared/ai-runtime-defaults";
+import type { HarnessLauncherConfig } from "~/shared/harness-launcher-config";
+import type { HarnessAccountStatus, HarnessLatestVersion } from "~/shared/harness-launchers";
+import type { PendingQuestion } from "~/shared/harness-questions";
+import type { AiModelId, AiRuntimeModelsResponse } from "@actana/shared/ai-runtime-defaults";
 import type { ProjectsDashboardView } from "~/shared/ui-preferences";
 import type { TerminalZoomLevel } from "~/shared/terminal-zoom";
 import type { SessionHeaderButtonVisibility } from "~/shared/session-header-buttons";
@@ -57,16 +53,16 @@ export type AppSettings = {
    */
   headerButtons: HeaderButtonVisibility;
   /**
-   * Default harness/model for spawned agents when the caller doesn't name one.
+   * Default core/model for spawned agents when the caller doesn't name one.
    * `null` means "not set" — don't pass a model flag, so the CLI uses its own default.
    */
-  defaultAgent: AiRuntimeHarness;
+  defaultHarness: Harness;
   defaultModel: AiModelId | null;
   /**
-   * Harness/model/prompt for the Ship button, which opens an AI session to push
+   * Core/model/prompt for the Ship button, which opens an AI session to push
    * and sync with remote (pull/rebase/conflict fix when needed).
    */
-  shipAgent: AiRuntimeHarness;
+  shipHarness: Harness;
   shipModel: AiModelId | null;
   shipPrompt: string;
   /**
@@ -85,7 +81,7 @@ export type AppSettings = {
   providerUsageEnabled: boolean;
   providerUsageIds: ProviderUsageId[];
   /** New Session picker: agent display order + hidden agents (never all hidden). */
-  agentLauncherConfig: AgentLauncherConfig;
+  harnessLauncherConfig: HarnessLauncherConfig;
 };
 
 export class ApiError extends Error {
@@ -153,7 +149,7 @@ export const api = {
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**
-   * Register a Core. The blob is the whole base64 line `harness install`
+   * Register a Core. The blob is the whole base64 line `core install`
    * printed ("pairing token" in what the UI says); the service decodes it,
    * seals the credentials, and starts dialing. A bad paste comes back as an
    * ApiError whose message is what to show the operator.
@@ -176,8 +172,8 @@ export const api = {
     icon?: string;
     iconColor?: string;
     groupId?: string | null;
-    savedAgent?: Project["savedAgent"] | null;
-    rememberAgentSettings?: boolean;
+    savedHarness?: Project["savedHarness"] | null;
+    rememberHarnessSettings?: boolean;
     defaultGridView?: boolean;
     pinned?: boolean;
   }) =>
@@ -263,7 +259,7 @@ export const api = {
     body: {
       id?: string;
       title: string;
-      agent: TaskAgent;
+      agent: Harness;
       claudeSessionId?: string | null;
       claudeSkipPermissions?: boolean;
       claudeBareSession?: boolean;
@@ -369,9 +365,9 @@ export const api = {
         | "terminalZoomLevel"
         | "sessionHeaderButtons"
         | "headerButtons"
-        | "defaultAgent"
+        | "defaultHarness"
         | "defaultModel"
-        | "shipAgent"
+        | "shipHarness"
         | "shipModel"
         | "shipPrompt"
         | "claudeUsageLimitsEnabled"
@@ -379,7 +375,7 @@ export const api = {
         | "claudeUsageLimitsShowWeekly"
         | "providerUsageEnabled"
         | "providerUsageIds"
-        | "agentLauncherConfig"
+        | "harnessLauncherConfig"
       >
     >,
   ) =>
@@ -388,7 +384,7 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
-  listAiRuntimeModels: (agent: AiRuntimeHarness) =>
+  listAiRuntimeModels: (agent: Harness) =>
     req<AiRuntimeModelsResponse>(
       `/api/ai-runtime/models?agent=${encodeURIComponent(agent)}`,
     ),
@@ -404,14 +400,14 @@ export const api = {
         : "";
     return req<ProviderUsageResponse>(`/api/provider-usage${q}`);
   },
-  getAgentAccounts: () =>
-    req<{ accounts: AgentAccountStatus[] }>("/api/agent-launchers/accounts"),
-  getAgentLatestVersions: (agents?: readonly TaskAgent[], opts?: { refresh?: boolean }) => {
+  getHarnessAccounts: () =>
+    req<{ accounts: HarnessAccountStatus[] }>("/api/harness-launchers/accounts"),
+  getHarnessLatestVersions: (agents?: readonly Harness[], opts?: { refresh?: boolean }) => {
     const params = new URLSearchParams();
-    if (agents && agents.length > 0) params.set("agents", agents.join(","));
+    if (agents && agents.length > 0) params.set("harnesses", agents.join(","));
     if (opts?.refresh) params.set("refresh", "1");
     const q = params.size > 0 ? `?${params.toString()}` : "";
-    return req<{ versions: AgentLatestVersion[] }>(`/api/agent-launchers/latest-versions${q}`);
+    return req<{ versions: HarnessLatestVersion[] }>(`/api/harness-launchers/latest-versions${q}`);
   },
   getAuthState: () => req<AuthStateResponse>("/api/auth/state"),
   setupOperator: (body: { name: string; password: string }) =>

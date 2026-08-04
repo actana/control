@@ -1,5 +1,5 @@
-import { AGENT_REGISTRY } from "@actana/shared/agents";
-import type { TaskAgent } from "@actana/shared/domain";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
+import type { Harness } from "@actana/shared/domain";
 import { TITLE_GENERATING, TITLE_WAITING, isSentinelTitle } from "~/lib/task-sentinels";
 import { SESSION_ICON_OPTIONS, isSessionIcon } from "~/lib/session-icons";
 import { runCli } from "./claude-cli";
@@ -65,18 +65,18 @@ const META_PROMPT = buildMetaPrompt();
 
 // Spawning cursor-agent -p while an interactive cursor-agent PTY is active can
 // destabilize the running session and crash the Panel service (EPIPE).
-const CURSOR_TITLE_CLI_FALLBACKS: TaskAgent[] = ["claude-code", "codex"];
+const CURSOR_TITLE_CLI_FALLBACKS: Harness[] = ["claude-code", "codex"];
 
 export function resolveTitleInvocation(
-  agent: TaskAgent,
+  agent: Harness,
   prompt: string,
 ): { cmd: string; args: string[] } | undefined {
   const input = META_PROMPT + prompt;
   if (agent !== "cursor-cli") {
-    return AGENT_REGISTRY[agent].titleInvocation?.(input);
+    return HARNESS_REGISTRY[agent].titleInvocation?.(input);
   }
-  for (const fallbackAgent of CURSOR_TITLE_CLI_FALLBACKS) {
-    const invocation = AGENT_REGISTRY[fallbackAgent].titleInvocation?.(input);
+  for (const fallbackHarness of CURSOR_TITLE_CLI_FALLBACKS) {
+    const invocation = HARNESS_REGISTRY[fallbackHarness].titleInvocation?.(input);
     if (invocation) return invocation;
   }
   return undefined;

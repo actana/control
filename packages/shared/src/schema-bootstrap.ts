@@ -5,16 +5,16 @@
 // Two callers rely on this module:
 //   • src/db/client.ts — the stateful server's `getDb()` bootstrap on the
 //     loopback host, running under Vite (ESM).
-//   • packages/harness/src/harness-db-bootstrap.ts — the Harness process on a remote VM
+//   • packages/core/src/core-db-bootstrap.ts — the Core process on a remote VM
 //     where no sibling server exists
 //     (CommonJS).
 //
-// The two entry points share this DDL so the schema on a harness-only VM
+// The two entry points share this DDL so the schema on a core-only VM
 // matches the schema on a loopback host byte-for-byte. Migration replay and
 // drizzle bookkeeping stay in client.ts; this file is purely the shape.
 //
 // Kept self-contained (relative imports only, no `~/*` alias, no drizzle, no
-// native binding resolution, no Vite globs) so the Harness's tsc build can
+// native binding resolution, no Vite globs) so the Core's tsc build can
 // compile it against its own tsconfig.
 
 import type Database from "better-sqlite3";
@@ -222,7 +222,7 @@ export function repairProjectIndexes(sqlite: Database.Database): void {
 }
 
 /**
- * PTYs are owned by the Harness process and are not restored across app
+ * PTYs are owned by the Core process and are not restored across app
  * restarts, so on every launch any task the app left mid-session has a dead PTY
  * now: one that was actively `running`, or one blocked waiting on the user
  * (`needs-input`). Left as-is, a `needs-input` row never transitions on its own
@@ -410,9 +410,9 @@ export function ensureSchema(sqlite: Database.Database): void {
       updated_at INTEGER NOT NULL
     );
 
-    -- Monotonic per-Harness event log. See src/shared/event-log.ts for the
+    -- Monotonic per-Core event log. See src/shared/event-log.ts for the
     -- read/append helpers; the table is created here (idempotently) so both the
-    -- server process and the Harness (PTY manager) process share the same shape.
+    -- server process and the Core (PTY manager) process share the same shape.
     CREATE TABLE IF NOT EXISTS event_log (
       event_id INTEGER PRIMARY KEY AUTOINCREMENT,
       ts INTEGER NOT NULL,
@@ -446,7 +446,7 @@ export function ensureSchema(sqlite: Database.Database): void {
 
   // Legacy builds briefly modeled "shell" as a task agent even though shell
   // terminals are not persisted tasks. Normalize stale rows before the narrowed
-  // TaskAgent union reaches UI code that indexes AGENT_REGISTRY.
+  // Harness union reaches UI code that indexes HARNESS_REGISTRY.
   sqlite.exec(`
     UPDATE tasks SET agent = 'claude-code' WHERE agent = 'shell';
     UPDATE projects SET saved_agent = NULL WHERE saved_agent = 'shell';

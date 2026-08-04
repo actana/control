@@ -1,6 +1,6 @@
 # Upstream harvest
 
-This repo forked AgentSystemLabs/mission-control at tag `v0.49.0` (SHA `8dff848`) and rewrote the PTY/agent layer into a detached Harness process (see `CONTEXT.md`). Upstream is now a **read-only scouting target**, not a parent. Never merge, rebase, or blanket-cherry-pick from it.
+This repo forked AgentSystemLabs/mission-control at tag `v0.49.0` (SHA `8dff848`) and rewrote the PTY/harness layer into a detached Core process (see `CONTEXT.md`). Upstream is now a **read-only scouting target**, not a parent. Never merge, rebase, or blanket-cherry-pick from it.
 
 ## Where things live
 

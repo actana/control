@@ -5,7 +5,7 @@ import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
  * Save what the Edit-project dialog produced, to the two places a project
  * currently lives.
  *
- * The name is a Harness fact: it sits on the Core's project row, and every tab
+ * The name is a Core fact: it sits on the Core's project row, and every tab
  * watching that Core should converge on it, so it travels as a mutation frame
  * (ADR 0004/0005). The rest of the dialog's fields — group, image, launch URL —
  * are Panel-local presentation with no frame to carry them, and keep their

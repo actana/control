@@ -1,11 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { Server } from "node:net";
-import { PtyCoreLinkServer, type WebSocketServerLike, type WebSocketLike } from "@actana/harness/pty-core-link-server";
+import { PtyCoreLinkServer, type WebSocketServerLike, type WebSocketLike } from "@actana/core/pty-core-link-server";
 import { PtyCoreLinkClient } from "../client";
 import { createNodeCoreLinkSocket } from "../node-socket";
-import { generateCertMaterial } from "@actana/harness/harness-cert-material";
+import { generateCertMaterial } from "@actana/core/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import type { PtyHarnessCore, PtyHarnessEvent } from "@actana/harness/pty-manager";
+import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
 
 // End-to-end mTLS + bearer auth over a REAL `wss://` socket (issue 04). The
 // rest of the core-link suite uses in-memory fakes; this test exercises the
@@ -15,11 +15,11 @@ import type { PtyHarnessCore, PtyHarnessEvent } from "@actana/harness/pty-manage
 
 const SECRET = "mtls-integration-secret-32-bytes-xx";
 
-function makeMockCore(): PtyHarnessCore & {
-  emitEvent: (e: PtyHarnessEvent) => void;
+function makeMockCore(): PtyCore & {
+  emitEvent: (e: PtyCoreEvent) => void;
 } {
   const core: Record<string, unknown> = {
-    setEmitTarget: (_fn: ((event: PtyHarnessEvent) => void) | null) => {},
+    setEmitTarget: (_fn: ((event: PtyCoreEvent) => void) | null) => {},
     spawn: async () => ({ ptyId: "pty-real-1" }),
     write: () => true,
     resize: () => true,
@@ -30,8 +30,8 @@ function makeMockCore(): PtyHarnessCore & {
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   };
-  return core as unknown as PtyHarnessCore & {
-    emitEvent: (e: PtyHarnessEvent) => void;
+  return core as unknown as PtyCore & {
+    emitEvent: (e: PtyCoreEvent) => void;
   };
 }
 

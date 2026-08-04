@@ -9,16 +9,16 @@ import { api } from "~/lib/api";
  * Route a task mutation to whichever Core owns the row (ADR 0005).
  *
  * For a Core-owned row there is one transport: the mutation is a frame on this
- * tab's panel link, addressed to a `coreId`, and the Harness that answers is
+ * tab's panel link, addressed to a `coreId`, and the Core that answers is
  * the only process that writes its own database (ADR 0004). Callers name the
  * Core; they never learn how it is reached.
  *
- * Throws on transport failure or a Harness-side error frame so the caller can
+ * Throws on transport failure or a Core-side error frame so the caller can
  * surface it in the picker/dialog. Returns `null` when the mutation targeted a
  * missing row.
  *
  * A null `coreId` names a row in the Panel's own database — the last rows not
- * owned by a Harness — and is written over the Panel's HTTP API instead. That
+ * owned by a Core — and is written over the Panel's HTTP API instead. That
  * arm disappears with those rows.
  */
 export async function mutateTaskForCore(

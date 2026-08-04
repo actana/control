@@ -24,7 +24,7 @@
     "paths": {
       "~/*": ["./src/*"],
       "@actana/shared/*": ["../shared/src/*"],
-      "@actana/harness/*": ["../harness/src/*"]
+      "@actana/core/*": ["../core/src/*"]
     },
     "types": ["vite/client", "node"]
   },

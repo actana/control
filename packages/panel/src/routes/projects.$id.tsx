@@ -13,13 +13,13 @@ import { openExternal } from "~/lib/open-external";
 import { ProjectIcon } from "~/components/ui/ProjectIcon";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { TaskColumn } from "~/components/views/TaskColumn";
-import { NewAgentDialog } from "~/components/views/NewAgentDialog";
+import { NewHarnessDialog } from "~/components/views/NewHarnessDialog";
 import {
   CodexHooksNoticeDialog,
   hasSeenCodexHooksNotice,
   markCodexHooksNoticeSeen,
 } from "~/components/views/CodexHooksNoticeDialog";
-import { AgentUpdateRequiredDialog } from "~/components/views/AgentUpdateRequiredDialog";
+import { HarnessUpdateRequiredDialog } from "~/components/views/HarnessUpdateRequiredDialog";
 import { ProjectDialog } from "~/components/views/ProjectDialog";
 import { GridLayoutButton } from "~/components/views/GridLayoutButton";
 import { SessionGrid } from "~/components/views/SessionGrid";
@@ -27,7 +27,7 @@ import { archiveOpenSession, invalidateSessionQueries } from "~/lib/archive-sess
 import { consumeProjectOnboardIntent, type ProjectOnboardIntent } from "~/lib/project-onboard-intent";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
-import { NewAgentButton } from "~/components/views/NewAgentButton";
+import { NewHarnessButton } from "~/components/views/NewHarnessButton";
 import { CursorGlow } from "~/components/ui/CursorGlow";
 import { HotkeyTooltip, StaticHotkeyTooltip } from "~/components/ui/Tooltip";
 import { Modal } from "~/components/ui/Modal";
@@ -61,7 +61,7 @@ import {
 } from "~/lib/session-warm-pool";
 import { useServerEvents } from "~/lib/use-events";
 import { useDebouncedCallback } from "~/lib/use-debounced-callback";
-import { applyQuestionServerEvent } from "~/lib/agent-question-store";
+import { applyQuestionServerEvent } from "~/lib/harness-question-store";
 import {
   setPendingInitialInput,
   takePendingInitialInput,
@@ -82,10 +82,10 @@ import {
 } from "~/lib/task-display-order";
 import {
   DEFAULT_BRANCH,
-  type TaskAgent,
+  type Harness,
   STATUS_DISPLAY_ORDER,
 } from "@actana/shared/domain";
-import { agentSupportsSkipPermissions } from "@actana/shared/agents";
+import { harnessSupportsSkipPermissions } from "@actana/shared/harnesses";
 import {
   queryKeys,
   remoteTaskFromSnapshot,
@@ -185,7 +185,7 @@ function ProjectPage() {
       pathScopeRef.current = pathScopeKey;
       return;
     }
-    // Filesystem checks are Core-owned — the path lives on the Harness's
+    // Filesystem checks are Core-owned — the path lives on the Core's
     // machine. There's no core-link frame for it yet; treat a Core's path as
     // valid so launch controls & terminals unblock.
     if (coreId) {
@@ -231,8 +231,8 @@ function ProjectPage() {
   const defaultWarmPayload = useMemo(
     () => (project ? defaultSessionPayload(project) : null),
     [
-      project?.rememberAgentSettings,
-      project?.savedAgent,
+      project?.rememberHarnessSettings,
+      project?.savedHarness,
       project?.savedSkipPermissions,
       project?.savedBareSession,
     ],
@@ -253,12 +253,12 @@ function ProjectPage() {
     void prefetchTerminalModules();
     // No warm-slot pre-spawn any more: the pool spawned through the in-process
     // Core's core-link and persisted its task over the Panel's local HTTP
-    // API, and a session's row belongs to the Harness that runs it (ADR 0004).
+    // API, and a session's row belongs to the Core that runs it (ADR 0004).
     // Sessions take the one cold path, which is a mutation frame.
     // Depend only on warmPrepareKey (the stable logical key); inputs come from the ref.
   }, [warmPrepareKey]);
   const tasksQuery = useTasks(id, { coreId });
-  // A remote Core's projects and tasks change on the Harness, not in the
+  // A remote Core's projects and tasks change on the Core, not in the
   // Panel's own database, so the SSE stream that keeps the rest of this route
   // fresh says nothing about them. Core events over the panel link do.
   useCoreLiveQueries(coreId, id);
@@ -273,11 +273,11 @@ function ProjectPage() {
   );
   const groups = groupsQuery.data ?? [];
   useHookToken();
-  const [showNewAgent, setShowNewAgent] = useState(false);
-  // Where the session created from the New Agent dialog should land in the grid:
+  const [showNewHarness, setShowNewHarness] = useState(false);
+  // Where the session created from the New Harness dialog should land in the grid:
   // "newRow" is set by the grid's "New row" button so the result starts a fresh
   // row; "default" (the New session button / hotkey) uses the current row.
-  const [newAgentTarget, setNewAgentTarget] = useState<"default" | "newRow">("default");
+  const [newHarnessTarget, setNewHarnessTarget] = useState<"default" | "newRow">("default");
   const [showEdit, setShowEdit] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
   const [sessionView, setSessionView] = useState<SessionView>("active");
@@ -664,7 +664,7 @@ function ProjectPage() {
     setOverflowOpen(false);
     setPinning(true);
     try {
-      // Pin is Harness-owned state; the mutation goes over the coreId-
+      // Pin is Core-owned state; the mutation goes over the coreId-
       // parameterised core-link surface (issue 10, ADR-0005), never through
       // the local HTTP server. Every Core shares the same call
       // shape via {@link mutateProjectForCore}.
@@ -682,15 +682,15 @@ function ProjectPage() {
   }, [project, pinning, invalidateProject, invalidateProjects, coreId]);
 
   const [showCodexHooksNotice, setShowCodexHooksNotice] = useState(false);
-  const [agentUpdateRequired, setAgentUpdateRequired] = useState<{
+  const [harnessUpdateRequired, setHarnessUpdateRequired] = useState<{
     agent: Task["agent"];
     availability: CliAvailability;
   } | null>(null);
 
-  const showAgentUpdateRequired = useCallback(
+  const showHarnessUpdateRequired = useCallback(
     (agent: Task["agent"], availability?: CliAvailability) => {
-      setShowNewAgent(false);
-      setAgentUpdateRequired({
+      setShowNewHarness(false);
+      setHarnessUpdateRequired({
         agent,
         availability: availability ?? availabilityFor(cliAvailability, agent),
       });
@@ -706,11 +706,11 @@ function ProjectPage() {
       if (!project || !terminalProject) return;
       const selectedAvailability = availabilityFor(cliAvailability, payload.agent);
       if (selectedAvailability.status === "outdated") {
-        showAgentUpdateRequired(payload.agent, selectedAvailability);
+        showHarnessUpdateRequired(payload.agent, selectedAvailability);
         return;
       }
       if (selectedAvailability.status === "missing") {
-        setShowNewAgent(true);
+        setShowNewHarness(true);
         return;
       }
 
@@ -729,7 +729,7 @@ function ProjectPage() {
         projectId: project.id,
         agent: payload.agent,
         claudeSessionId,
-        claudeSkipPermissions: agentSupportsSkipPermissions(payload.agent)
+        claudeSkipPermissions: harnessSupportsSkipPermissions(payload.agent)
           ? payload.skipPermissions
           : undefined,
         claudeBareSession: payload.agent === "claude-code" ? payload.bareSession : undefined,
@@ -757,7 +757,7 @@ function ProjectPage() {
 
       void (async () => {
         try {
-          // The Harness owns the row (ADR-0004/0005), so starting a session is
+          // The Core owns the row (ADR-0004/0005), so starting a session is
           // a mutation frame to the Core the project lives on — there is no
           // Panel-side task table to write to instead. The frame doesn't carry
           // claudeSessionId / skipPermissions / bareSession today, so a session
@@ -813,7 +813,7 @@ function ProjectPage() {
       invalidateProjects,
       terminals,
       cliAvailability,
-      showAgentUpdateRequired,
+      showHarnessUpdateRequired,
     ]
   );
 
@@ -832,14 +832,14 @@ function ProjectPage() {
 
   const startWithSaved = useCallback(() => {
     if (!project) return;
-    if (!(project.rememberAgentSettings && project.savedAgent)) return;
-    const savedAvailability = availabilityFor(cliAvailability, project.savedAgent);
+    if (!(project.rememberHarnessSettings && project.savedHarness)) return;
+    const savedAvailability = availabilityFor(cliAvailability, project.savedHarness);
     if (savedAvailability.status === "outdated") {
-      showAgentUpdateRequired(project.savedAgent, savedAvailability);
+      showHarnessUpdateRequired(project.savedHarness, savedAvailability);
       return;
     }
     if (savedAvailability.status === "missing") {
-      setShowNewAgent(true);
+      setShowNewHarness(true);
       return;
     }
     // Drop the new session beside the active one and focus it, like Clone.
@@ -847,49 +847,49 @@ function ProjectPage() {
     if (anchor) terminals.requestCloneInsertAfter(anchor);
     createSession(
       {
-        agent: project.savedAgent,
+        agent: project.savedHarness,
         skipPermissions: !!project.savedSkipPermissions,
-        bareSession: project.savedAgent === "claude-code" ? !!project.savedBareSession : false,
+        bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
       },
       { focusOnCreate: true },
     );
-  }, [project, createSession, cliAvailability, showAgentUpdateRequired, anchorSessionId, terminals]);
+  }, [project, createSession, cliAvailability, showHarnessUpdateRequired, anchorSessionId, terminals]);
 
   const startWithSavedInNewRow = useCallback(() => {
     if (!project) return;
-    if (!(project.rememberAgentSettings && project.savedAgent)) return;
-    const savedAvailability = availabilityFor(cliAvailability, project.savedAgent);
+    if (!(project.rememberHarnessSettings && project.savedHarness)) return;
+    const savedAvailability = availabilityFor(cliAvailability, project.savedHarness);
     if (savedAvailability.status === "outdated") {
-      showAgentUpdateRequired(project.savedAgent, savedAvailability);
+      showHarnessUpdateRequired(project.savedHarness, savedAvailability);
       return;
     }
     if (savedAvailability.status === "missing") {
-      setShowNewAgent(true);
+      setShowNewHarness(true);
       return;
     }
     // Start session in a fresh grid row instead of beside the active one.
     terminals.requestNewRow();
     createSession(
       {
-        agent: project.savedAgent,
+        agent: project.savedHarness,
         skipPermissions: !!project.savedSkipPermissions,
-        bareSession: project.savedAgent === "claude-code" ? !!project.savedBareSession : false,
+        bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
       },
       { focusOnCreate: true },
     );
-  }, [project, createSession, cliAvailability, showAgentUpdateRequired, terminals]);
+  }, [project, createSession, cliAvailability, showHarnessUpdateRequired, terminals]);
 
-  const onNewAgentPrimary = useCallback(() => {
+  const onNewHarnessPrimary = useCallback(() => {
     if (!projectPathReady) return;
-    if (showNewAgent || showEdit) return;
-    if (project?.rememberAgentSettings && project.savedAgent) {
+    if (showNewHarness || showEdit) return;
+    if (project?.rememberHarnessSettings && project.savedHarness) {
       void startWithSaved();
       return;
     }
-    setShowNewAgent(true);
-  }, [project, projectPathReady, showNewAgent, showEdit, startWithSaved]);
+    setShowNewHarness(true);
+  }, [project, projectPathReady, showNewHarness, showEdit, startWithSaved]);
 
-  useHotkey("agent.new", onNewAgentPrimary, { ignoreEditable: true });
+  useHotkey("agent.new", onNewHarnessPrimary, { ignoreEditable: true });
 
   // Create-then-start onboarding: the Add-project flow hands off a one-shot
   // intent (see project-onboard-intent). On first render for the new project we
@@ -912,25 +912,25 @@ function ProjectPage() {
     if (!intent?.autoStart || onboardStartedRef.current) return;
     if (!project || !projectPathReady) return;
     onboardStartedRef.current = true;
-    onNewAgentPrimary();
-  }, [project, projectPathReady, onNewAgentPrimary]);
+    onNewHarnessPrimary();
+  }, [project, projectPathReady, onNewHarnessPrimary]);
 
   // New-row variant of agent.new: the session lands in a fresh grid row at the
   // bottom instead of beside the active one. Grid-only — rows don't exist
   // outside the grid.
   const onNewRowPrimary = useCallback(() => {
     if (!projectPathReady) return;
-    if (showNewAgent || showEdit) return;
-    if (project?.rememberAgentSettings && project.savedAgent) {
+    if (showNewHarness || showEdit) return;
+    if (project?.rememberHarnessSettings && project.savedHarness) {
       void startWithSavedInNewRow();
       return;
     }
-    setNewAgentTarget("newRow");
-    setShowNewAgent(true);
-  }, [project, projectPathReady, showNewAgent, showEdit, startWithSavedInNewRow]);
+    setNewHarnessTarget("newRow");
+    setShowNewHarness(true);
+  }, [project, projectPathReady, showNewHarness, showEdit, startWithSavedInNewRow]);
 
   useHotkey("project.edit", () => {
-    if (showNewAgent || projectPathIssue || projectPathCheck.state === "error") return;
+    if (showNewHarness || projectPathIssue || projectPathCheck.state === "error") return;
     setShowEdit((v) => !v);
   });
 
@@ -943,7 +943,7 @@ function ProjectPage() {
     void createSession(
       {
         ...payload,
-        agent: settings?.shipAgent ?? "claude-code",
+        agent: settings?.shipHarness ?? "claude-code",
         bareSession: false,
       },
       {
@@ -956,7 +956,7 @@ function ProjectPage() {
     project,
     projectPathReady,
     createSession,
-    settings?.shipAgent,
+    settings?.shipHarness,
     settings?.shipModel,
     settings?.shipPrompt,
     anchorSessionId,
@@ -964,14 +964,14 @@ function ProjectPage() {
   ]);
 
   const anyBlockingDialogOpen =
-    showNewAgent ||
+    showNewHarness ||
     showEdit ||
     confirmRemove ||
     confirmDeleteArchived ||
     !!projectPathIssue ||
     projectPathCheck.state === "error" ||
     showCodexHooksNotice ||
-    agentUpdateRequired !== null;
+    harnessUpdateRequired !== null;
 
   const cycleSession = useCallback(
     (direction: 1 | -1) => {
@@ -1321,7 +1321,7 @@ function ProjectPage() {
     setTaskPinnedInCache(queryClient, project.id, taskId, nextPinned);
 
     try {
-      // Task pin is Harness-owned state; the mutation goes over the coreId-
+      // Task pin is Core-owned state; the mutation goes over the coreId-
       // parameterised core-link surface (ADR-0005). For a Panel-owned row
       // this replaces the previous local-HTTP `api.updateTask({pinned})`
       // path — the DB row still moves, but the write travels through the
@@ -1605,14 +1605,14 @@ function ProjectPage() {
     })();
   };
 
-  const startAgent = (data: {
+  const startHarness = (data: {
     agent: Task["agent"];
     title: string;
     dangerouslySkipPermissions: boolean;
     bareSession: boolean;
   }) => {
-    setShowNewAgent(false);
-    if (newAgentTarget === "newRow") {
+    setShowNewHarness(false);
+    if (newHarnessTarget === "newRow") {
       // The "New row" button asked for this session to start a fresh grid row.
       terminals.requestNewRow();
     } else {
@@ -1620,7 +1620,7 @@ function ProjectPage() {
       const anchor = anchorSessionId();
       if (anchor) terminals.requestCloneInsertAfter(anchor);
     }
-    setNewAgentTarget("default");
+    setNewHarnessTarget("default");
     createSession(
       {
         agent: data.agent,
@@ -1919,13 +1919,13 @@ function ProjectPage() {
           >
             {headerButtons.gridView && gridViewToggle}
             {!showArchived && (
-              <NewAgentButton
+              <NewHarnessButton
                 project={project}
-                onPrimary={onNewAgentPrimary}
+                onPrimary={onNewHarnessPrimary}
                 onNewRow={showGrid ? onNewRowPrimary : undefined}
                 disabled={!projectPathReady}
                 onConfigure={() => {
-                  if (projectPathReady) setShowNewAgent(true);
+                  if (projectPathReady) setShowNewHarness(true);
                 }}
               />
             )}
@@ -2027,12 +2027,12 @@ function ProjectPage() {
               subtitle="Start a new session to begin working on this project."
               action={
                 <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                  <NewAgentButton
+                  <NewHarnessButton
                     project={project}
-                    onPrimary={onNewAgentPrimary}
+                    onPrimary={onNewHarnessPrimary}
                     disabled={!projectPathReady}
                     onConfigure={() => {
-                      if (projectPathReady) setShowNewAgent(true);
+                      if (projectPathReady) setShowNewHarness(true);
                     }}
                   />
                   {hasArchivedTasks && (
@@ -2155,11 +2155,11 @@ function ProjectPage() {
         }}
       />
 
-      <AgentUpdateRequiredDialog
-        open={agentUpdateRequired !== null}
-        agent={agentUpdateRequired?.agent ?? null}
-        availability={agentUpdateRequired?.availability ?? null}
-        onClose={() => setAgentUpdateRequired(null)}
+      <HarnessUpdateRequiredDialog
+        open={harnessUpdateRequired !== null}
+        agent={harnessUpdateRequired?.agent ?? null}
+        availability={harnessUpdateRequired?.availability ?? null}
+        onClose={() => setHarnessUpdateRequired(null)}
       />
 
       <Modal
@@ -2259,16 +2259,16 @@ function ProjectPage() {
         </div>
       </Modal>
 
-      <NewAgentDialog
-        open={showNewAgent}
+      <NewHarnessDialog
+        open={showNewHarness}
         project={project}
         coreId={coreId}
         onClose={() => {
-          setShowNewAgent(false);
-          setNewAgentTarget("default");
+          setShowNewHarness(false);
+          setNewHarnessTarget("default");
         }}
-        onStart={startAgent}
-        onAgentUpdateRequired={showAgentUpdateRequired}
+        onStart={startHarness}
+        onHarnessUpdateRequired={showHarnessUpdateRequired}
         onPersistRemember={async (patch) => {
           const previous = queryClient.getQueryData<typeof project>(queryKeys.project(project.id));
           queryClient.setQueryData(queryKeys.project(project.id), (prev: typeof project | undefined) =>
@@ -2276,7 +2276,7 @@ function ProjectPage() {
           );
           if (coreId) {
             // "Remember these settings" persists to the projects row, which
-            // lives on the Harness. The core-link `projectsMutate` frame
+            // lives on the Core. The core-link `projectsMutate` frame
             // doesn't cover arbitrary field patches yet (only create / rename /
             // archive / pin), so the write can't cross the wire today. Keep the
             // in-session optimistic patch — the user's choice sticks for this
@@ -2289,7 +2289,7 @@ function ProjectPage() {
             await refresh();
           } catch (error) {
             queryClient.setQueryData(queryKeys.project(project.id), previous);
-            // Callers `void` this promise (NewAgentDialog:166,171,195), so
+            // Callers `void` this promise (NewHarnessDialog:166,171,195), so
             // rethrowing would become an unhandled rejection. Surface it as
             // a toast and swallow.
             toast.error(

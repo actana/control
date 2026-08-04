@@ -6,17 +6,17 @@ Two pieces:
 
 - The **Panel** — one web service you open in a browser. It serves the UI, holds
   your operator login, and terminates a link to every Core.
-- A **Core** — a Harness daemon on a machine that actually has your code. It owns
+- A **Core** — a daemon on a machine that actually has your code. It owns
   the projects, the sessions, the SQLite database, and the PTYs (`node-pty`), and
   it is the only process that writes its own state.
 
-The Panel bundles no Harness and runs no agents of its own: install a Core on
+The Panel bundles no Core and runs no harnesses of its own: install a Core on
 each machine you want to work on — including your own laptop — and pair it
 (ADR 0010).
 
 ## Why this exists
 
-Cursor and Codex bury your projects in a collapsable left rail. Actana Control flips it: every project gets a card on a single home view, with at-a-glance counts of how many agents are running, awaiting input, or done. Click into a project, see its tasks split by status, toggle three of them on at once and three real terminals split horizontally on the right. External CLI tools can POST status back to the app over a localhost API.
+Cursor and Codex bury your projects in a collapsable left rail. Actana Control flips it: every project gets a card on a single home view, with at-a-glance counts of how many harnesses are running, awaiting input, or done. Click into a project, see its tasks split by status, toggle three of them on at once and three real terminals split horizontally on the right. External CLI tools can POST status back to the app over a localhost API.
 
 ## Features
 
@@ -25,7 +25,7 @@ Cursor and Codex bury your projects in a collapsable left rail. Actana Control f
 - Project grouping with colored dots
 - Project detail view: tasks split into Needs-input / Running / Done columns
 - Multi-select tasks → split-pane terminals (cap of 4)
-- New-agent launcher for Claude Code / Codex / Cursor CLI / plain shell
+- New-harness launcher for Claude Code / Codex / Cursor CLI / plain shell
 - External REST API + Server-Sent Events for live UI updates
 - Bearer-token auth for the writable endpoints
 - Terminals in the browser over one multiplexed WebSocket per tab
@@ -44,9 +44,9 @@ Cursor and Codex bury your projects in a collapsable left rail. Actana Control f
 ```
 control/
 ├── packages/
-│   ├── harness/            Standalone Node daemon — the Core
+│   ├── core/               Standalone Node daemon — the Core
 │   │   └── src/
-│   │       ├── harness-entry.ts        daemon entry
+│   │       ├── core-entry.ts           daemon entry
 │   │       ├── actana-cli.ts           the `actana` CLI (setup, status, token)
 │   │       ├── pty-manager.ts          PTY lifecycle
 │   │       └── pty-core-link-server.ts core-link WebSocket server
@@ -60,7 +60,7 @@ control/
 │   │       │   └── api.ts           typed fetch client for the Panel's own routes
 │   │       ├── server/
 │   │       │   ├── panel-link/      the browser's multiplexed WebSocket
-│   │       │   ├── core-link/       the service's link to each Harness
+│   │       │   ├── core-link/       the service's link to each Core
 │   │       │   └── controllers/     the `/api/*` surface
 │   │       └── db/         Drizzle schema + client
 │   └── shared/             core-link / panel-link frames, protocol types
@@ -102,7 +102,7 @@ pnpm dev                # Vite dev server; open the URL it prints
 Or serve a production build:
 
 ```bash
-pnpm build              # builds the Harness bundle + the Panel
+pnpm build              # builds the Core bundle + the Panel
 pnpm start              # serves the Panel on http://localhost:7420
 ```
 
@@ -131,10 +131,10 @@ second runtime to rebuild for. `pnpm dev`, `pnpm test`, and `pnpm db:*` ensure
 
 ## External API
 
-Each **Harness** binds an HTTP server on `127.0.0.1:<port>` of its own machine
-for the agents it runs. Run `actana status` on that machine for its address and
+Each **Core** binds an HTTP server on `127.0.0.1:<port>` of its own machine
+for the harnesses it runs. Run `actana status` on that machine for its address and
 token; `actana token regenerate` rotates them. The Panel never proxies this
-surface — an agent's hooks POST to the Harness that spawned it.
+surface — a harness's hooks POST to the Core that spawned it.
 
 ### Endpoints (writable — bearer token required)
 
@@ -156,8 +156,8 @@ The UI updates within ~1 second over its SSE connection.
 ### The Panel's own routes
 
 The Panel's `/api/*` surface is authenticated by the operator's session cookie,
-which the browser attaches on its own (ADR 0011). Agents never call it — they
-call the Harness that spawned them, with the bearer token it put in their env.
+which the browser attaches on its own (ADR 0011). Harnesses never call it — they
+call the Core that spawned them, with the bearer token it put in their env.
 `/api/events` (SSE) uses a short-lived ticket from `POST /api/events/ticket`
 because `EventSource` cannot send custom headers.
 
@@ -185,14 +185,14 @@ because `EventSource` cannot send custom headers.
 
 ## Observability
 
-The Panel service and each Harness both log to stdout/stderr, so whoever
+The Panel service and each Core both log to stdout/stderr, so whoever
 supervises the process owns the sink — `docker logs`, `journalctl --user -u
-actana-harness`, or the terminal you started it in. `actana status` on a Core
+actana-core`, or the terminal you started it in. `actana status` on a Core
 prints where its own daemon logs land.
 
 ## Skill file for external CLIs
 
-A drop-in skill for Claude Code / Codex / Cursor CLI lives in `docs/skills/missioncontrol-notify.md`. Paste it into the CLI's instructions or memory so the agent knows to POST its lifecycle events back to Actana Control.
+A drop-in skill for Claude Code / Codex / Cursor CLI lives in `docs/skills/missioncontrol-notify.md`. Paste it into the CLI's instructions or memory so the harness knows to POST its lifecycle events back to Actana Control.
 
 ## Documentation
 

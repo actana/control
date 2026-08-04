@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TASK_AGENTS } from "@actana/shared/domain";
+import { HARNESSES } from "@actana/shared/domain";
 import {
   createProject,
   deleteProject,
@@ -43,8 +43,8 @@ const createProjectBody = z.object({
   iconColor: z.string().optional(),
   groupId: z.string().nullable().optional(),
   // Create-time onboarding: default agent + layout for the new project.
-  savedAgent: z.enum(TASK_AGENTS).nullable().optional(),
-  rememberAgentSettings: z.boolean().optional(),
+  savedHarness: z.enum(HARNESSES).nullable().optional(),
+  rememberHarnessSettings: z.boolean().optional(),
   defaultGridView: z.boolean().optional(),
   pinned: z.boolean().optional(),
 });
@@ -59,8 +59,8 @@ const updateProjectBody = z
     groupId: z.string().nullable(),
     pinned: z.boolean(),
     launchUrl: z.string().nullable(),
-    rememberAgentSettings: z.boolean(),
-    savedAgent: z.enum(TASK_AGENTS).nullable(),
+    rememberHarnessSettings: z.boolean(),
+    savedHarness: z.enum(HARNESSES).nullable(),
     savedSkipPermissions: z.boolean(),
     savedBareSession: z.boolean(),
     togglePin: z.literal(true).optional(),

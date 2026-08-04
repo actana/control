@@ -1,5 +1,5 @@
-// Monotonic per-Harness event log — pure SQL helpers shared by the server
-// process (which records task/session/hook events) and the Harness / PTY-manager
+// Monotonic per-Core event log — pure SQL helpers shared by the server
+// process (which records task/session/hook events) and the Core / PTY-manager
 // process (which records PTY lifecycle events and serves the reconnect replay).
 //
 // Both processes open their own connection to the same SQLite file
@@ -9,7 +9,7 @@
 // committed rows immediately (WAL readers never block writers).
 //
 // This file is self-contained (no `~/` imports) so it compiles under both the
-// Vite (browser/server) and the Harness's CommonJS tsconfigs. It operates on a
+// Vite (browser/server) and the Core's CommonJS tsconfigs. It operates on a
 // minimal `EventLogSqlite` interface so tests can pass an in-memory
 // better-sqlite3 handle without dragging in the full db/client bootstrap.
 
@@ -36,7 +36,7 @@ export interface EventLogSqlite {
 /**
  * Idempotently create the `event_log` table + supporting indexes. Safe to call
  * from both the server bootstrap (src/db/client.ts ensureSchema creates it too)
- * and the Harness process, which opens its own connection. CREATE IF NOT EXISTS
+ * and the Core process, which opens its own connection. CREATE IF NOT EXISTS
  * makes the second call a no-op.
  */
 export function ensureEventsTable(sqlite: EventLogSqlite): void {
@@ -117,7 +117,7 @@ type EventLogRow = {
 /**
  * Read every event with `eventId > afterEventId`, in ascending `eventId` order.
  * This is the reconnect-replay tail: the Panel sends its `lastEventId`, the
- * Harness reads the tail past it, streams each as a `CoreLinkEvent`, then
+ * Core reads the tail past it, streams each as a `CoreLinkEvent`, then
  * resumes live push. `limit` caps the batch so a very-stale cursor doesn't try
  * to materialize the entire log in one shot.
  */

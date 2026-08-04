@@ -6,11 +6,11 @@ import { openSecret, sealSecret } from "./secrets-at-rest";
 import type { Core } from "~/shared/cores";
 
 /**
- * The Core registry — the Panel's list of Harnesses it can talk to, plus the
+ * The Core registry — the Panel's list of Cores it can talk to, plus the
  * sealed credentials it dials them with.
  *
  * Registration is one paste: the operator hands over the registration blob
- * that `harness install` printed ("pairing token" in what the UI says), the
+ * that `core install` printed ("pairing token" in what the UI says), the
  * endpoint and label land in `cores`, and the secret half is sealed into
  * `core_secrets`. There is no other way in; the Panel does not accept a
  * hand-typed endpoint, because a Core without pinned mTLS material is a Core
@@ -19,7 +19,7 @@ import type { Core } from "~/shared/cores";
 
 /** The secret half of a registration. Never leaves the service. */
 export type CoreSecrets = {
-  /** PEM CA that signed the Harness server cert — pinned by the dialer. */
+  /** PEM CA that signed the Core server cert — pinned by the dialer. */
   caCert: string;
   /** PEM client cert presented in the mTLS handshake. */
   clientCert: string;
@@ -107,7 +107,7 @@ export function getCore(id: string): Core | null {
  */
 export function registerCoreFromRegistrationBlob(raw: unknown): Core {
   if (typeof raw !== "string" || !raw.trim()) {
-    throw new RegistrationBlobError("Paste the pairing token from `harness install`.");
+    throw new RegistrationBlobError("Paste the pairing token from `core install`.");
   }
   const blob = decodeRegistrationBlob(raw);
   // The codec only type-checks its fields, so a blob with an empty cert or
@@ -116,7 +116,7 @@ export function registerCoreFromRegistrationBlob(raw: unknown): Core {
   // here, where the operator still has the paste in front of them.
   if (!blob || !blob.caCert.trim() || !blob.clientCert.trim() || !blob.clientKey.trim() || !blob.bearer.trim()) {
     throw new RegistrationBlobError(
-      "That isn't a valid pairing token. Copy the whole line `harness install` printed and paste it again.",
+      "That isn't a valid pairing token. Copy the whole line `core install` printed and paste it again.",
     );
   }
 
@@ -179,7 +179,7 @@ export function getCoreSecrets(id: string): CoreSecrets | null {
 /**
  * Move the Panel-owned replay cursor forward. Forward only: a reconnect can
  * arrive with a stale number (a client that missed a batch, a racing writer),
- * and rewinding would make the Harness replay a stretch the Panel already
+ * and rewinding would make the Core replay a stretch the Panel already
  * processed.
  */
 export function advanceCoreCursor(id: string, lastEventId: number): void {
@@ -198,7 +198,7 @@ export function getCoreCursor(id: string): number {
 
 /**
  * Forget a Core: registry row, sealed secrets, and cursor all go. Returns
- * false for an unknown id. Harness-side state is untouched — removing a Core
+ * false for an unknown id. Core-side state is untouched — removing a Core
  * is the Panel forgetting a machine, not the machine forgetting its work.
  */
 export function removeCore(id: string): boolean {

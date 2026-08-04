@@ -1,4 +1,4 @@
-import type { TaskAgent } from "@actana/shared/domain";
+import type { Harness } from "@actana/shared/domain";
 
 // Per-scope "sessions per row" lock for the session grid. Stored beside the
 // grid's layout blobs (same per-scope keying) so each project/runtime
@@ -22,7 +22,7 @@ export type GridPrefsEventDetail = { scopeKey: string };
 /** One-shot "sort the grid by agent" command from the header dropdown to the
  *  mounted SessionGrid (same window-event bridge as GRID_EXPAND_TOGGLE_EVENT). */
 export const GRID_SORT_EVENT = "mc:grid-sort";
-export type GridSortEventDetail = { scopeKey: string; firstAgent: TaskAgent };
+export type GridSortEventDetail = { scopeKey: string; firstHarness: Harness };
 
 function columnsStorageKey(scopeKey: string): string {
   return `${GRID_COLUMNS_PREFIX}:${scopeKey}`;
@@ -66,11 +66,11 @@ export function saveGridColumnLimit(scopeKey: string, limit: number | null): voi
   );
 }
 
-export function requestGridSort(scopeKey: string, firstAgent: TaskAgent): void {
+export function requestGridSort(scopeKey: string, firstHarness: Harness): void {
   if (typeof window === "undefined") return;
   window.dispatchEvent(
     new CustomEvent<GridSortEventDetail>(GRID_SORT_EVENT, {
-      detail: { scopeKey, firstAgent },
+      detail: { scopeKey, firstHarness },
     }),
   );
 }

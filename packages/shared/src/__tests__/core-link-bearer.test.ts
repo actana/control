@@ -7,13 +7,13 @@ import {
 } from "../core-link-bearer";
 
 // Bearer `{coreId, exp, sig}` — the Panel presents this in an `auth` frame
-// after the mTLS handshake (ADR 0002). The Harness validates `exp` and closes
+// after the mTLS handshake (ADR 0002). The Core validates `exp` and closes
 // on expiry; the Panel re-handshakes TLS and reconnects, replaying missed
 // events via `lastEventId` (the same path as Panel-sleep recovery).
 //
 // The bearer is a compact signed token: a base64url payload
 // `{coreId, exp}` joined to an HMAC-SHA256 signature over that payload, keyed
-// by a shared secret provisioned at Harness install (part of the registration
+// by a shared secret provisioned at Core install (part of the registration
 // blob). ~50 lines of app-layer code on top of TLS.
 
 const SECRET: BearerSecret = "test-secret-32-bytes-0123456789abcdef";

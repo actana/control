@@ -40,7 +40,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-function createHarness(opts: { selection?: string } = {}) {
+function createFixture(opts: { selection?: string } = {}) {
   let handler: ((e: KeyboardEvent) => boolean) | null = null;
   let selection = opts.selection ?? "";
   const term = {
@@ -82,7 +82,7 @@ describe("terminalExitTaskStatus", () => {
 describe("attachTerminalKeyHandler clipboard handling", () => {
   it("copies plain Ctrl+C only when the terminal has a selection", async () => {
     const clipboard = stubClipboard();
-    const { term, write, handler } = createHarness({ selection: "\x1b[32mhello\x1b[0m" });
+    const { term, write, handler } = createFixture({ selection: "\x1b[32mhello\x1b[0m" });
     const event = keyEvent({ ctrlKey: true, code: "KeyC", key: "c" });
 
     expect(handler(event)).toBe(false);
@@ -96,7 +96,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
   it("lets plain Ctrl+C pass through as SIGINT when there is no selection", () => {
     const clipboard = stubClipboard();
-    const { handler } = createHarness();
+    const { handler } = createFixture();
     const event = keyEvent({ ctrlKey: true, code: "KeyC", key: "c" });
 
     expect(handler(event)).toBe(true);
@@ -106,7 +106,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
   it("pastes plain Ctrl+V through xterm instead of writing directly to the PTY", async () => {
     const clipboard = stubClipboard();
-    const { term, write, handler } = createHarness();
+    const { term, write, handler } = createFixture();
     const event = keyEvent({ ctrlKey: true, code: "KeyV", key: "v" });
 
     expect(handler(event)).toBe(false);
@@ -120,7 +120,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
   it("keeps Ctrl+Shift+V on the same paste path", async () => {
     const clipboard = stubClipboard();
-    const { term, handler } = createHarness();
+    const { term, handler } = createFixture();
     const event = keyEvent({ ctrlKey: true, shiftKey: true, code: "KeyV", key: "V" });
 
     expect(handler(event)).toBe(false);
@@ -132,7 +132,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
   it("pastes nothing when the clipboard is empty", async () => {
     stubClipboard("");
-    const { term, handler } = createHarness();
+    const { term, handler } = createFixture();
     const event = keyEvent({ ctrlKey: true, code: "KeyV", key: "v" });
 
     expect(handler(event)).toBe(false);
@@ -143,7 +143,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
   it("still swallows the chord when the browser denies clipboard access", async () => {
     vi.stubGlobal("navigator", {});
-    const { term, write, handler } = createHarness();
+    const { term, write, handler } = createFixture();
     const event = keyEvent({ ctrlKey: true, code: "KeyV", key: "v" });
 
     // Returning false keeps xterm from also handling the key — a denied
@@ -157,7 +157,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 
   it("writes mapped key sequences to the PTY", () => {
     stubClipboard();
-    const { write, handler } = createHarness();
+    const { write, handler } = createFixture();
     // Shift+Enter is the canonical remap: xterm's default would send a bare CR.
     const event = keyEvent({ shiftKey: true, key: "Enter", code: "Enter" });
 
@@ -167,7 +167,7 @@ describe("attachTerminalKeyHandler clipboard handling", () => {
 });
 
 describe("wireTerminalFileDrop", () => {
-  function dropHarness() {
+  function dropFixture() {
     const listeners = new Map<string, EventListener>();
     const host = {
       addEventListener: vi.fn((type: string, listener: EventListener) => {
@@ -182,7 +182,7 @@ describe("wireTerminalFileDrop", () => {
   }
 
   it("pastes a project path dragged from the Panel's own rail", async () => {
-    const { listeners, write, onFocus } = dropHarness();
+    const { listeners, write, onFocus } = dropFixture();
     const event = {
       preventDefault: vi.fn(),
       dataTransfer: {
@@ -202,7 +202,7 @@ describe("wireTerminalFileDrop", () => {
   });
 
   it("ignores files dragged in from the operator's own machine", async () => {
-    const { listeners, write, onFocus } = dropHarness();
+    const { listeners, write, onFocus } = dropFixture();
     const file = new File([new Uint8Array([1, 2, 3])], "screenshot.png", {
       type: "image/png",
     });
@@ -227,7 +227,7 @@ describe("wireTerminalFileDrop", () => {
   });
 
   it("only claims the dragover for project-path drags", () => {
-    const { listeners } = dropHarness();
+    const { listeners } = dropFixture();
     const dataTransfer = { types: ["Files"], dropEffect: "none" };
     const fileDrag = {
       preventDefault: vi.fn(),

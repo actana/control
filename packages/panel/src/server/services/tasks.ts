@@ -1,5 +1,5 @@
-import { DEFAULT_BRANCH, DEFAULT_TASK_STATUS, isTaskAgent, isTaskStatus } from "@actana/shared/domain";
-import type { TaskAgent, TaskStatus } from "@actana/shared/domain";
+import { DEFAULT_BRANCH, DEFAULT_TASK_STATUS, isHarness, isTaskStatus } from "@actana/shared/domain";
+import type { Harness, TaskStatus } from "@actana/shared/domain";
 import type { Task } from "~/db/schema";
 import { events } from "../events";
 import { clearPendingQuestion } from "./pending-questions";
@@ -33,7 +33,7 @@ export function createTask(input: {
   id?: string;
   projectId: string;
   title: string;
-  agent: TaskAgent;
+  agent: Harness;
   status?: TaskStatus;
   preview?: string;
   claudeSessionId?: string | null;
@@ -42,7 +42,7 @@ export function createTask(input: {
 }): Task {
   if (!input.projectId) throw new Error("projectId required");
   if (!input.title?.trim()) throw new Error("title required");
-  if (!isTaskAgent(input.agent)) throw new Error("invalid agent");
+  if (!isHarness(input.agent)) throw new Error("invalid agent");
 
   const now = Date.now();
   const requestedId = input.id?.trim();

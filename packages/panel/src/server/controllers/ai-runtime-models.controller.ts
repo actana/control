@@ -1,18 +1,18 @@
 import { z } from "zod";
 import {
-  AI_RUNTIME_HARNESS_VALUES,
-  type AiRuntimeHarness,
+  HARNESSES,
+  type Harness,
 } from "@actana/shared/ai-runtime-defaults";
 import { listAiRuntimeModels } from "../services/ai-runtime-models";
 import { json, parseSearchParams } from "./_helpers";
 
 const listModelsParams = z.object({
-  agent: z.enum(AI_RUNTIME_HARNESS_VALUES),
+  agent: z.enum(HARNESSES),
 });
 
 export async function list(url: URL): Promise<Response> {
   const parsed = parseSearchParams(url, listModelsParams);
   if (!parsed.ok) return parsed.response;
-  const agent = parsed.data.agent as AiRuntimeHarness;
+  const agent = parsed.data.agent as Harness;
   return json(await listAiRuntimeModels(agent));
 }

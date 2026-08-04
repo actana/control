@@ -118,7 +118,7 @@ describe("waitForPanelListening", () => {
   it("rejects when the sentinel never comes", async () => {
     const child = fakeChild();
     await expect(waitForPanelListening(child, 20, { logLines: [] })).rejects.toThrow(
-      /@@AC_LISTENING@@/,
+      /@@AC_CORE_LISTENING@@/,
     );
   });
 });

@@ -7,7 +7,7 @@ import { queryKeys, tasksCacheKey } from "~/queries";
  * Keep the per-Core shell's queries honest while it is open.
  *
  * The Panel's own SSE stream carries what the Panel's database knows, and for a
- * Core that is nothing: projects, tasks and sessions live on the Harness. Their
+ * Core that is nothing: projects, tasks and sessions live on the Core. Their
  * changes arrive as core-link events over the panel link instead, and this is
  * what turns them into cache invalidations — so a task moving to `running` on a
  * VM moves the row on this screen, with nobody pressing refresh.

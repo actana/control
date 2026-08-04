@@ -163,7 +163,7 @@ export function TerminalPanel({
   }, [gridFocusRequest, consumeGridFocusRequest, activeTaskId]);
 
   const { size: width, onMouseDown: onResizeMouseDown } = useResizablePanel({
-    storageKey: "mc:agentsPanelWidth",
+    storageKey: "mc:harnessesPanelWidth",
     axis: "x",
     defaultSize: 560,
     minSize: MIN_WIDTH,

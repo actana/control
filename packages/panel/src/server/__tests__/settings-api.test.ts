@@ -116,7 +116,7 @@ describe("settings API", () => {
     const response = await handleApiRequest(authedRequest("http://localhost/api/settings"));
     expect(response?.status).toBe(200);
     expect(await jsonBody(response!)).toMatchObject({
-      agentLauncherConfig: {
+      harnessLauncherConfig: {
         order: ["claude-code", "codex", "cursor-cli", "opencode"],
         hidden: [],
       },
@@ -129,7 +129,7 @@ describe("settings API", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          agentLauncherConfig: {
+          harnessLauncherConfig: {
             order: ["codex", "made-up-agent", "claude-code"],
             hidden: ["opencode", "also-fake"],
           },
@@ -143,8 +143,8 @@ describe("settings API", () => {
       order: ["codex", "claude-code", "cursor-cli", "opencode"],
       hidden: ["opencode"],
     };
-    expect(await jsonBody(update!)).toMatchObject({ agentLauncherConfig: expected });
-    expect(await jsonBody(read!)).toMatchObject({ agentLauncherConfig: expected });
+    expect(await jsonBody(update!)).toMatchObject({ harnessLauncherConfig: expected });
+    expect(await jsonBody(read!)).toMatchObject({ harnessLauncherConfig: expected });
   });
 
   it("refuses to hide every launcher agent", async () => {
@@ -153,7 +153,7 @@ describe("settings API", () => {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          agentLauncherConfig: {
+          harnessLauncherConfig: {
             order: ["cursor-cli", "codex", "claude-code", "opencode"],
             hidden: ["claude-code", "codex", "cursor-cli", "opencode"],
           },
@@ -163,7 +163,7 @@ describe("settings API", () => {
 
     expect(update?.status).toBe(200);
     const body = await jsonBody(update!);
-    const config = body.agentLauncherConfig as { order: string[]; hidden: string[] };
+    const config = body.harnessLauncherConfig as { order: string[]; hidden: string[] };
     expect(config.hidden).not.toContain("cursor-cli");
     expect(config.order.filter((id) => !config.hidden.includes(id))).toEqual(["cursor-cli"]);
   });
@@ -173,7 +173,7 @@ describe("settings API", () => {
       authedRequest("http://localhost/api/settings", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ agentLauncherConfig: "codex-first" }),
+        body: JSON.stringify({ harnessLauncherConfig: "codex-first" }),
       }),
     );
     expect(update?.status).toBe(400);
@@ -305,7 +305,7 @@ describe("settings API", () => {
   it("defaults Ship to Claude Code with the sync prompt until customized", async () => {
     const response = await handleApiRequest(authedRequest("http://localhost/api/settings"));
     expect(await jsonBody(response!)).toMatchObject({
-      shipAgent: "claude-code",
+      shipHarness: "claude-code",
       shipModel: null,
       shipPrompt:
         "commit my changes, then push my latest branch changes to remote, and if upstream changes exist, pull them, fix conflict, and push when resolved.",

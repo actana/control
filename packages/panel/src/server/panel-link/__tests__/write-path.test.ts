@@ -10,13 +10,13 @@ import {
   type WebSocketServerLike,
   type WebSocketLike,
   type EventLogPort,
-  type HarnessMutationPort,
-} from "@actana/harness/pty-core-link-server";
-import { createDirectory, listDirectory } from "@actana/harness/directory-browse";
-import { generateCertMaterial } from "@actana/harness/harness-cert-material";
+  type CoreMutationPort,
+} from "@actana/core/pty-core-link-server";
+import { createDirectory, listDirectory } from "@actana/core/directory-browse";
+import { generateCertMaterial } from "@actana/core/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import type { PtyHarnessCore } from "@actana/harness/pty-manager";
+import type { PtyCore } from "@actana/core/pty-manager";
 import type {
   CoreLinkEvent,
   CoreLinkProjectSnapshot,
@@ -28,10 +28,10 @@ import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-
  * The write path, end to end: a browser tab creates a project, starts a
  * session, pins and renames and re-icons things, and browses folders — all as
  * frames on one panel link, across the router, down a real mTLS core-link, to
- * a Harness that owns the rows and the disk.
+ * a Core that owns the rows and the disk.
  *
  * Two claims are worth the setup. First, the Panel writes nothing: what comes
- * back is what the Harness recorded. Second, a second tab sees the same
+ * back is what the Core recorded. Second, a second tab sees the same
  * answers, because there is only one place the state lives.
  */
 
@@ -49,7 +49,7 @@ const { PANEL_LINK_PATH, PANEL_LINK_PROTOCOL_VERSION, PANEL_LINK_VERSION_PARAM }
 
 // Each test pairs a Core over real TLS and drives two WebSocket hops. That is
 // comfortably under a second idle, and several seconds on a machine running the
-// rest of the suite beside it — the default 5s budget is about the harness, not
+// rest of the suite beside it — the default 5s budget is about the core, not
 // about anything this file asserts.
 vi.setConfig({ testTimeout: 30_000 });
 
@@ -123,7 +123,7 @@ class Tab {
   }
 }
 
-// ─── A real Harness on a real wss:// port ────────────────────────────────────
+// ─── A real Core on a real wss:// port ────────────────────────────────────
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -140,7 +140,7 @@ function freePort(): Promise<number> {
   });
 }
 
-function mockCore(): PtyHarnessCore {
+function mockCore(): PtyCore {
   return {
     setEmitTarget: () => {},
     spawn: async () => ({ ptyId: "pty-1" }),
@@ -152,7 +152,7 @@ function mockCore(): PtyHarnessCore {
     findByTask: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
-  } as unknown as PtyHarnessCore;
+  } as unknown as PtyCore;
 }
 
 function tlsCreateServer(bound: { port: number }) {
@@ -233,11 +233,11 @@ function eventLog(): EventLogPort {
 }
 
 /**
- * A Harness's project/task tables, standing in for its SQLite. It validates the
+ * A Core's project/task tables, standing in for its SQLite. It validates the
  * project path against the real filesystem the same way the store does — that
  * is the point of the write living here rather than in the Panel.
  */
-function mutationPort(): HarnessMutationPort {
+function mutationPort(): CoreMutationPort {
   const projects = new Map<string, CoreLinkProjectSnapshot>();
   const tasks = new Map<string, CoreLinkTaskSnapshot>();
   let seq = 0;
@@ -315,10 +315,10 @@ function mutationPort(): HarnessMutationPort {
   };
 }
 
-type Harness = { server: PtyCoreLinkServer; blob: string; disk: string };
+type CoreFixture = { server: PtyCoreLinkServer; blob: string; disk: string };
 
-/** The folder tree this Harness owns — the one the picker will walk. */
-function harnessDisk(): string {
+/** The folder tree this Core owns — the one the picker will walk. */
+function coreDisk(): string {
   const home = fs.realpathSync(fs.mkdtempSync(path.join(tmpRoot, "vm-home-")));
   fs.mkdirSync(path.join(home, "Documents"));
   fs.mkdirSync(path.join(home, "projects", "warehouse"), { recursive: true });
@@ -327,7 +327,7 @@ function harnessDisk(): string {
 }
 
 /**
- * Cert material is generated once for the file. Every Harness here presents the
+ * Cert material is generated once for the file. Every Core here presents the
  * same CA and accepts the same client cert; what makes them distinct Cores is
  * the port they listen on and the disk they own. Regenerating keys per test is
  * seconds of CPU that prove nothing this suite is about.
@@ -338,10 +338,10 @@ async function certMaterial() {
   return sharedMaterial;
 }
 
-async function startHarness(label: string): Promise<Harness> {
+async function startCore(label: string): Promise<CoreFixture> {
   const material = await certMaterial();
   const bound = { port: await freePort() };
-  const disk = harnessDisk();
+  const disk = coreDisk();
   const server = new PtyCoreLinkServer(mockCore(), {
     eventLog: eventLog(),
     mutationPort: mutationPort(),
@@ -366,7 +366,7 @@ async function startHarness(label: string): Promise<Harness> {
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
-    bearer: signBearer({ coreId: "core_harness", exp: Date.now() + 600_000 }, BEARER_SECRET),
+    bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
   return { server, blob, disk };
 }
@@ -375,14 +375,14 @@ const running: PtyCoreLinkServer[] = [];
 const tabs: Tab[] = [];
 const paired: string[] = [];
 
-async function pair(label = "prod-vm-1"): Promise<{ coreId: string; harness: Harness }> {
-  const harness = await startHarness(label);
-  running.push(harness.server);
+async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFixture }> {
+  const core = await startCore(label);
+  running.push(core.server);
   const response = await handleApiRequest(
     new Request(`${ORIGIN}/api/cores`, {
       method: "POST",
       headers: { cookie: operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify({ registrationBlob: harness.blob }),
+      body: JSON.stringify({ registrationBlob: core.blob }),
     }),
   );
   const body = (await response!.json()) as { core: { id: string } };
@@ -396,7 +396,7 @@ async function pair(label = "prod-vm-1"): Promise<{ coreId: string; harness: Har
       .cores;
     expect(cores.find((c) => c.id === coreId)?.dial.state).toBe("connected");
   }, 10_000);
-  return { coreId, harness };
+  return { coreId, core };
 }
 
 async function openTab(): Promise<Tab> {
@@ -428,8 +428,8 @@ afterAll(async () => {
 });
 
 describe("writing to a Core from the browser", () => {
-  it("creates a project at a path the Harness accepts", async () => {
-    const { coreId, harness } = await pair();
+  it("creates a project at a path the Core accepts", async () => {
+    const { coreId, core } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
@@ -437,7 +437,7 @@ describe("writing to a Core from the browser", () => {
       mutation: {
         op: "create",
         name: "warehouse",
-        path: path.join(harness.disk, "projects", "warehouse"),
+        path: path.join(core.disk, "projects", "warehouse"),
       },
     });
 
@@ -447,20 +447,20 @@ describe("writing to a Core from the browser", () => {
     });
   });
 
-  it("refuses a path that machine says is not a folder, with the Harness's own words", async () => {
-    const { coreId, harness } = await pair();
+  it("refuses a path that machine says is not a folder, with the Core's own words", async () => {
+    const { coreId, core } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
       type: "projectsMutate",
-      mutation: { op: "create", name: "ghost", path: path.join(harness.disk, "nowhere") },
+      mutation: { op: "create", name: "ghost", path: path.join(core.disk, "nowhere") },
     });
 
     expect(answer.type).toBe("error");
     expect(String(answer.message)).toContain("Not a folder on this machine");
   });
 
-  it("starts a session and hands back the row the Harness recorded", async () => {
+  it("starts a session and hands back the row the Core recorded", async () => {
     const { coreId } = await pair();
     const tab = await openTab();
 
@@ -476,7 +476,7 @@ describe("writing to a Core from the browser", () => {
   });
 
   it("shows a pin, a rename and an icon made in one tab to a second tab", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const author = await openTab();
     const observer = await openTab();
 
@@ -486,7 +486,7 @@ describe("writing to a Core from the browser", () => {
         mutation: {
           op: "create",
           name: "warehouse",
-          path: path.join(harness.disk, "projects", "warehouse"),
+          path: path.join(core.disk, "projects", "warehouse"),
         },
       })
     ).project as CoreLinkProjectSnapshot;
@@ -534,7 +534,7 @@ describe("writing to a Core from the browser", () => {
   });
 
   it("tells a watching tab which kind of change happened", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab();
     tab.subscribe(coreId, 0);
 
@@ -544,7 +544,7 @@ describe("writing to a Core from the browser", () => {
         mutation: {
           op: "create",
           name: "warehouse",
-          path: path.join(harness.disk, "projects", "warehouse"),
+          path: path.join(core.disk, "projects", "warehouse"),
         },
       })
     ).project as CoreLinkProjectSnapshot;
@@ -562,37 +562,37 @@ describe("writing to a Core from the browser", () => {
 });
 
 describe("browsing the Core's filesystem from the browser", () => {
-  it("lists the Harness's home when the tab names no path", async () => {
-    const { coreId, harness } = await pair();
+  it("lists the Core's home when the tab names no path", async () => {
+    const { coreId, core } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, { type: "dirList", path: null });
 
     expect(answer.type).toBe("dirListResult");
     const listing = answer.listing as { path: string; entries: Array<{ name: string }> };
-    expect(listing.path).toBe(harness.disk);
+    expect(listing.path).toBe(core.disk);
     // The VM's own folders — dotfolders stay out of the picker.
     expect(listing.entries.map((e) => e.name)).toEqual(["Documents", "projects"]);
   });
 
   it("drills into a folder on that machine", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
       type: "dirList",
-      path: path.join(harness.disk, "projects"),
+      path: path.join(core.disk, "projects"),
     });
 
     const listing = answer.listing as { entries: Array<{ name: string }>; parent: string };
     expect(listing.entries.map((e) => e.name)).toEqual(["warehouse"]);
-    expect(listing.parent).toBe(harness.disk);
+    expect(listing.parent).toBe(core.disk);
   });
 
   it("creates a folder on that machine, then finds it in the next listing", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab();
-    const parent = path.join(harness.disk, "projects");
+    const parent = path.join(core.disk, "projects");
 
     const created = await tab.ask(coreId, { type: "dirCreate", parent, name: "atlas" });
     expect(created).toMatchObject({
@@ -607,28 +607,28 @@ describe("browsing the Core's filesystem from the browser", () => {
   });
 
   it("says why a listing failed, in words meant for the operator", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
       type: "dirList",
-      path: path.join(harness.disk, "nowhere"),
+      path: path.join(core.disk, "nowhere"),
     });
 
     expect(answer).toMatchObject({ type: "error", message: "Folder not found" });
   });
 
   it("refuses a folder name that would escape the parent", async () => {
-    const { coreId, harness } = await pair();
+    const { coreId, core } = await pair();
     const tab = await openTab();
 
     const answer = await tab.ask(coreId, {
       type: "dirCreate",
-      parent: path.join(harness.disk, "projects"),
+      parent: path.join(core.disk, "projects"),
       name: "../escaped",
     });
 
     expect(answer).toMatchObject({ type: "error", message: "Invalid folder name" });
-    expect(fs.existsSync(path.join(harness.disk, "escaped"))).toBe(false);
+    expect(fs.existsSync(path.join(core.disk, "escaped"))).toBe(false);
   });
 });

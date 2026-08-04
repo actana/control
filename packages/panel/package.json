@@ -68,7 +68,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@actana/harness": "workspace:*",
+    "@actana/core": "workspace:*",
     "@tailwindcss/vite": "4.3.0",
     "@tanstack/router-plugin": "1.168.19",
     "@testing-library/react": "16.3.2",

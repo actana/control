@@ -1,9 +1,9 @@
 import type { Task } from "~/db/schema";
-import type { TaskAgent } from "@actana/shared/domain";
+import type { Harness } from "@actana/shared/domain";
 import type { ScopedProject } from "~/lib/scoped-project";
-import { agentSupportsSkipPermissions } from "@actana/shared/agents";
+import { harnessSupportsSkipPermissions } from "@actana/shared/harnesses";
 import { newClientId } from "@actana/shared/client-id";
-import { newSessionId } from "~/lib/agent-command";
+import { newSessionId } from "~/lib/harness-command";
 import { buildOptimisticTask } from "~/lib/optimistic-task";
 import { commandForTask } from "~/lib/terminal-store";
 import { getCorePtyBridge } from "~/lib/panel-bridge";
@@ -13,7 +13,7 @@ import { TITLE_WAITING } from "~/lib/task-sentinels";
 import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "~/shared/pty-size";
 
 export type SessionCreatePayload = {
-  agent: TaskAgent;
+  agent: Harness;
   skipPermissions: boolean;
   bareSession: boolean;
 };
@@ -67,7 +67,7 @@ function buildDraftTask(
     projectId: project.id,
     agent: payload.agent,
     claudeSessionId,
-    claudeSkipPermissions: agentSupportsSkipPermissions(payload.agent)
+    claudeSkipPermissions: harnessSupportsSkipPermissions(payload.agent)
       ? payload.skipPermissions
       : false,
     claudeBareSession: payload.agent === "claude-code" ? payload.bareSession : false,
@@ -75,17 +75,17 @@ function buildDraftTask(
 }
 
 export function defaultSessionPayload(project: {
-  rememberAgentSettings?: boolean;
-  savedAgent?: TaskAgent | null;
+  rememberHarnessSettings?: boolean;
+  savedHarness?: Harness | null;
   savedSkipPermissions?: boolean;
   savedBareSession?: boolean;
 }): SessionCreatePayload {
-  const agent = project.savedAgent ?? "claude-code";
+  const agent = project.savedHarness ?? "claude-code";
   return {
     agent,
     skipPermissions: !!project.savedSkipPermissions,
     bareSession:
-      project.rememberAgentSettings && project.savedAgent === "claude-code"
+      project.rememberHarnessSettings && project.savedHarness === "claude-code"
         ? !!project.savedBareSession
         : false,
   };
@@ -212,7 +212,7 @@ export async function persistWarmSlotTask(
     claudeSessionId: slot.draftTask.claudeSessionId,
     claudeBareSession:
       slot.payload.agent === "claude-code" ? slot.payload.bareSession : undefined,
-    claudeSkipPermissions: agentSupportsSkipPermissions(slot.payload.agent)
+    claudeSkipPermissions: harnessSupportsSkipPermissions(slot.payload.agent)
       ? slot.payload.skipPermissions
       : undefined,
   });

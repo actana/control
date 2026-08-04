@@ -99,11 +99,11 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm scan:secrets
 
-  # The Harness smoke seam (web-panel-extraction issue 01): the standalone
-  # Harness bundle must boot under plain node with working standard-ABI
+  # The Core smoke seam (web-panel-extraction issue 01): the standalone
+  # Core bundle must boot under plain node with working standard-ABI
   # natives, bootstrap its schema, and accept an mTLS + bearer core-link dial.
-  harness-smoke:
-    name: Smoke — standalone Harness
+  core-smoke:
+    name: Smoke — standalone Core
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -127,15 +127,15 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build harness bundle
-        run: pnpm --filter @actana/harness build
+      - name: Build core bundle
+        run: pnpm --filter @actana/core build
 
-      - name: Smoke — standalone Harness boots clean under plain node
-        run: node scripts/smoke-standalone-harness.mjs
+      - name: Smoke — standalone Core boots clean under plain node
+        run: node scripts/smoke-standalone-core.mjs
 
   # The Panel service seam (web-panel-extraction issue 10) — the spec's primary
   # testing seam. Boots the built Panel as a plain node process against a temp
-  # data directory plus a real Harness, then drives it exactly as a browser
+  # data directory plus a real Core, then drives it exactly as a browser
   # would: setup → login → paste a pairing token → panel link → PTY frames →
   # killed link → replay from cursor, with the pre-login refusals and the
   # secrets-at-rest legs alongside. One command covers auth, the registry,
@@ -143,9 +143,9 @@ jobs:
   #
   # Both OSes, because this is where the deployable actually runs and the two
   # differ in the places that bite: node-pty and better-sqlite3 natives, and the
-  # login shell a VM Shell Session lands in. The Harness runs as a local process
+  # login shell a VM Shell Session lands in. The Core runs as a local process
   # here; the containerized Core-in-a-box slots into the same fixture interface
-  # when it lands (scripts/lib/harness-fixture.mjs).
+  # when it lands (scripts/lib/core-fixture.mjs).
   panel-e2e:
     name: E2E — Panel service seam (${{ matrix.os }})
     strategy:
@@ -167,7 +167,7 @@ jobs:
           version: 11.1.2
           cache: true
 
-      # node-gyp 9.x imports distutils; pin 3.11 like the harness smoke does.
+      # node-gyp 9.x imports distutils; pin 3.11 like the core smoke does.
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
           python-version: "3.11"
@@ -180,20 +180,20 @@ jobs:
       - name: E2E — the Panel service, driven as a browser
         run: pnpm panel:e2e
 
-  # The release-tarball seam (harness-installer issue 01): the artifact
+  # The release-tarball seam (core-installer issue 01): the artifact
   # operators actually download must extract and boot on its own — bundled Node,
   # bundled natives, no system Node, no network. Built here on every PR for the
   # runner's own platform so a broken tarball is caught before tag time;
-  # harness-release.yml builds and smokes all four targets on a tag push.
+  # core-release.yml builds and smokes all four targets on a tag push.
   #
   # Both Linux architectures, because everything downstream consumes these
-  # artifacts (harness-installer issue 07): the installer matrix and the
+  # artifacts (core-installer issue 07): the installer matrix and the
   # Core-in-a-box leg download them rather than rebuilding per leg, so one build
   # per architecture feeds every e2e job that needs it. arm64 builds natively on
   # an arm runner — the tarball carries prebuilt natives, and a cross-built one
   # would prove nothing about what operators download.
-  harness-tarball-smoke:
-    name: Smoke — Harness release tarball (${{ matrix.target }})
+  core-tarball-smoke:
+    name: Smoke — Core release tarball (${{ matrix.target }})
     strategy:
       fail-fast: false
       matrix:
@@ -221,30 +221,30 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build the tarball
-        run: pnpm harness:tarball
+        run: pnpm core:tarball
 
-      - name: Smoke — extracted tarball boots a dialable Harness
+      - name: Smoke — extracted tarball boots a dialable Core
         run: |
           set -euo pipefail
-          tarball="$(find artifacts/harness -name 'actana-harness-*-${{ matrix.target }}.tar.gz' | head -n1)"
-          node scripts/smoke-harness-tarball.mjs --tarball "$tarball"
+          tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
+          node scripts/smoke-core-tarball.mjs --tarball "$tarball"
 
       # The checksum asset is generated code too — a formatting slip only shows
       # up as an operator's failed `sha256sum -c`, so verify it here.
       - name: Compose and verify SHA256SUMS
         run: |
           set -euo pipefail
-          node scripts/compose-harness-shasums.mjs --dir artifacts/harness --expect 1
-          cd artifacts/harness && sha256sum -c SHA256SUMS
+          node scripts/compose-core-shasums.mjs --dir artifacts/core --expect 1
+          cd artifacts/core && sha256sum -c SHA256SUMS
 
       - name: Upload the tarball for the installer e2es
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: harness-tarball-${{ matrix.target }}
-          path: artifacts/harness/actana-harness-*-${{ matrix.target }}.tar.gz
+          name: core-tarball-${{ matrix.target }}
+          path: artifacts/core/actana-core-*-${{ matrix.target }}.tar.gz
           retention-days: 1
 
-  # The installer matrix (harness-installer issue 07) — the whole Linux install
+  # The installer matrix (core-installer issue 07) — the whole Linux install
   # story, crossed over the axes that can actually break it.
   #
   #   suite  — `actana-setup` is setup, the lifecycle verbs, update, token
@@ -269,7 +269,7 @@ jobs:
   # still agree — a distro added there and forgotten here fails the unit tests.
   installer-e2e:
     name: E2E — ${{ matrix.suite }} (${{ matrix.distro }}, ${{ matrix.arch }})
-    needs: harness-tarball-smoke
+    needs: core-tarball-smoke
     strategy:
       fail-fast: false
       matrix:
@@ -306,20 +306,20 @@ jobs:
       - name: Download the tarball
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: harness-tarball-${{ matrix.target }}
-          path: artifacts/harness
+          name: core-tarball-${{ matrix.target }}
+          path: artifacts/core
 
       - name: E2E — the installer on a fresh systemd machine
         run: |
           set -euo pipefail
-          tarball="$(find artifacts/harness -name 'actana-harness-*-${{ matrix.target }}.tar.gz' | head -n1)"
+          tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
           node scripts/e2e-${{ matrix.suite }}-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
 
-  # The Core-in-a-box leg (harness-installer issue 07, third criterion): the
-  # Panel e2e above pairs with a Harness this repo spawned; this one pairs with
+  # The Core-in-a-box leg (core-installer issue 07, third criterion): the
+  # Panel e2e above pairs with a Core this repo spawned; this one pairs with
   # the release tarball, installed by `actana setup` and started by systemd on a
   # container. Same script, same assertions — the fixture is the only thing that
-  # changes (scripts/lib/harness-fixture.mjs), which is what makes the image
+  # changes (scripts/lib/core-fixture.mjs), which is what makes the image
   # reusable as the Panel epic's canonical Core fixture rather than a second
   # test to keep in sync.
   #
@@ -329,7 +329,7 @@ jobs:
   panel-e2e-core-in-a-box:
     name: E2E — Panel against Core-in-a-box
     runs-on: ubuntu-24.04
-    needs: harness-tarball-smoke
+    needs: core-tarball-smoke
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -345,7 +345,7 @@ jobs:
           cache: true
 
       # node-gyp 9.x imports distutils; pin 3.11 like the other Panel jobs. The
-      # Panel is built here; the Harness is not, because the container installs
+      # Panel is built here; the Core is not, because the container installs
       # the tarball instead.
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6
         with:
@@ -357,32 +357,32 @@ jobs:
       - name: Download the tarball
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: harness-tarball-linux-x64
-          path: artifacts/harness
+          name: core-tarball-linux-x64
+          path: artifacts/core
 
       # `pnpm build`, not the `pnpm build:web` this used to call — that script
       # does not exist in package.json, so this job failed at the same step
-      # every run. Root `build` is Harness-then-Panel, the order the Panel's
-      # build needs (it imports the Harness's types).
+      # every run. Root `build` is Core-then-Panel, the order the Panel's
+      # build needs (it imports the Core's types).
       - name: Build the Panel
         run: pnpm build
 
       - name: E2E — the Panel service against a containerised Core
         run: |
           set -euo pipefail
-          tarball="$(find artifacts/harness -name 'actana-harness-*-linux-x64.tar.gz' | head -n1)"
-          node scripts/e2e-panel-smoke.mjs --harness-tarball "$tarball"
+          tarball="$(find artifacts/core -name 'actana-core-*-linux-x64.tar.gz' | head -n1)"
+          node scripts/e2e-panel-smoke.mjs --core-tarball "$tarball"
 
-  # The agent-offers seam (harness-installer issue 05): a fresh machine has no
-  # agent CLI on it, so this is where "detects missing agents, offers each, and
+  # The agent-offers seam (core-installer issue 05): a fresh machine has no
+  # Harness on it, so this is where "detects missing agents, offers each, and
   # an accepted offer leaves a working vendor-installed CLI on PATH" can
   # actually be checked. Unlike the other container e2es this one is NOT
   # hermetic — it runs a vendor's real installer, which is the only way to
   # prove the vendor's official method is what we invoke.
-  actana-agents-e2e:
-    name: E2E — agent CLI offers (systemd)
+  actana-harnesses-e2e:
+    name: E2E — Harness offers (systemd)
     runs-on: ubuntu-24.04
-    needs: harness-tarball-smoke
+    needs: core-tarball-smoke
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -403,16 +403,16 @@ jobs:
       - name: Download the tarball
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: harness-tarball-linux-x64
-          path: artifacts/harness
+          name: core-tarball-linux-x64
+          path: artifacts/core
 
-      - name: E2E — agent detection, offers, and `actana agents install`
+      - name: E2E — agent detection, offers, and `actana harnesses install`
         run: |
           set -euo pipefail
-          tarball="$(find artifacts/harness -name 'actana-harness-*-linux-x64.tar.gz' | head -n1)"
-          node scripts/e2e-actana-agents-linux.mjs --tarball "$tarball"
+          tarball="$(find artifacts/core -name 'actana-core-*-linux-x64.tar.gz' | head -n1)"
+          node scripts/e2e-actana-harnesses-linux.mjs --tarball "$tarball"
 
-  # The macOS half of the same seam (harness-installer issue 04): `actana setup`
+  # The macOS half of the same seam (core-installer issue 04): `actana setup`
   # must write and load a LaunchAgent, start the daemon, and give the lifecycle
   # verbs something to drive — with no sudo and no Gatekeeper interruption.
   #
@@ -424,7 +424,7 @@ jobs:
   # Both architectures run natively — the tarballs carry prebuilt natives, so a
   # cross-built leg would prove nothing about the artifact operators download.
   # Reboot persistence is the one criterion a runner cannot exercise; it lives
-  # on docs/harness-macos-prerelease-checklist.md.
+  # on docs/core-macos-prerelease-checklist.md.
   actana-setup-e2e-macos:
     name: E2E — actana setup (launchd, ${{ matrix.target }})
     strategy:
@@ -457,12 +457,12 @@ jobs:
       # per-platform, and this runner's own architecture is the only mac
       # tarball it can honestly build or run.
       - name: Build the tarball
-        run: pnpm harness:tarball
+        run: pnpm core:tarball
 
       - name: E2E — actana setup against launchd
         run: |
           set -euo pipefail
-          tarball="$(find artifacts/harness -name 'actana-harness-*-${{ matrix.target }}.tar.gz' | head -n1)"
+          tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
           node scripts/e2e-actana-setup-macos.mjs --tarball "$tarball"
 
   # The Panel image, built and smoked on every PR but never pushed. Until this

@@ -4,7 +4,7 @@
 # ../docker-compose.yml): this exists to try the real pairing flow on one
 # machine with nothing but Docker.
 #
-#   pnpm harness:tarball        # on Linux; see README.md for the macOS way
+#   pnpm core:tarball        # on Linux; see README.md for the macOS way
 #   docker compose up -d --build
 #   docker compose exec core cat /home/operator/registration-blob.txt
 #
@@ -24,9 +24,9 @@ services:
       context: .
       dockerfile: core.Dockerfile
       additional_contexts:
-        # Where `pnpm harness:tarball` writes; .dockerignore keeps artifacts/
+        # Where `pnpm core:tarball` writes; .dockerignore keeps artifacts/
         # out of the repo-root context, hence the named extra context.
-        tarball: ../../artifacts/harness
+        tarball: ../../artifacts/core
     # The standard systemd-in-Docker arrangement, mirrored from the e2e's
     # Core-in-a-box (scripts/lib/systemd-container.mjs) — systemd must manage
     # its own cgroups.

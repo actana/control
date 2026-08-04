@@ -66,7 +66,7 @@ const chipStyle = (active: boolean): CSSProperties => ({
  * Inline, keyboard-first directory picker for the Add/Edit-project flow.
  *
  * The tree it walks is the *Core's* filesystem, not this browser's machine and
- * not the Panel's: a Project's path is a VM path, and the Harness that owns
+ * not the Panel's: a Project's path is a VM path, and the Core that owns
  * that disk is the only process that can enumerate or validate it. Every
  * listing and every folder created here is a frame to `coreId`.
  *
@@ -160,7 +160,7 @@ export function FolderBrowser({
 
   // Filter-as-create: typed text that names no existing folder becomes a
   // "＋ Create folder" row after the matches (same pattern as the Group field).
-  // Names the Harness would reject (separators, hidden, reserved) don't offer
+  // Names the Core would reject (separators, hidden, reserved) don't offer
   // the row at all — it re-checks every one of them anyway.
   const createName = useMemo(() => {
     const typed = filter.trim();

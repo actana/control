@@ -76,7 +76,7 @@ function core(id: string, overrides: Partial<Core> = {}): Core {
   };
 }
 
-type Harness = {
+type Fixture = {
   manager: CoreLinkManager;
   clients: Map<string, FakeClient>;
   cores: Map<string, Core>;
@@ -84,7 +84,7 @@ type Harness = {
   cursors: Map<string, number>;
 };
 
-function harness(): Harness {
+function fixture(): Fixture {
   const clients = new Map<string, FakeClient>();
   const cores = new Map<string, Core>();
   const secrets = new Map<string, CoreSecrets | null>();
@@ -106,10 +106,10 @@ function harness(): Harness {
   return { manager, clients, cores, secrets, cursors };
 }
 
-let h: Harness;
+let h: Fixture;
 
 beforeEach(() => {
-  h = harness();
+  h = fixture();
   h.cores.set("core_a", core("core_a"));
 });
 
@@ -123,7 +123,7 @@ describe("core-link manager", () => {
     });
   });
 
-  it("reports connected once the Harness accepts the bearer", () => {
+  it("reports connected once the Core accepts the bearer", () => {
     h.manager.dial("core_a");
     h.clients.get("core_a")!.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
     const status = h.manager.status("core_a");
@@ -174,7 +174,7 @@ describe("core-link manager", () => {
   // The version gate (issue 07). A Core speaking a protocol this Panel does not
   // share is a chore with a command attached, not a link to half-use: the state
   // is its own, it survives the auth handshake that would otherwise call it
-  // connected, and it clears itself the moment the updated Harness reconnects.
+  // connected, and it clears itself the moment the updated Core reconnects.
   describe("the protocol version gate", () => {
     it("marks a Core on an older protocol as needing an update", () => {
       h.manager.dial("core_a");
@@ -202,12 +202,12 @@ describe("core-link manager", () => {
       expect(h.manager.status("core_a").state).toBe("needs-update");
     });
 
-    it("clears needs-update when the updated Harness reconnects", () => {
+    it("clears needs-update when the updated Core reconnects", () => {
       h.manager.dial("core_a");
       const client = h.clients.get("core_a")!;
       client.emit.protocolVersion({ version: "0.1.0", compatible: false });
       client.emit.disconnected({ error: "restarting" });
-      // Same link object, new connection: the updated Harness's ready frame.
+      // Same link object, new connection: the updated Core's ready frame.
       client.emit.protocolVersion({ version: "0.8.0", compatible: true });
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       expect(h.manager.status("core_a").state).toBe("connected");

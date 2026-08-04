@@ -1,6 +1,6 @@
 import { z } from "zod";
-import { AGENT_HOOK_EVENTS, mapHookEventToStatus } from "~/shared/agent-hook-events";
-import { ASK_USER_QUESTION_TOOL, parseAskUserQuestionInput } from "~/shared/agent-questions";
+import { HARNESS_HOOK_EVENTS, mapHookEventToStatus } from "~/shared/harness-hook-events";
+import { ASK_USER_QUESTION_TOOL, parseAskUserQuestionInput } from "~/shared/harness-questions";
 import { getTask, updateStatus, updateTask } from "../services/tasks";
 import {
   armDeferredFinish,
@@ -45,7 +45,7 @@ const hookPayload = z
     transcript_path: z.string(),
     // Stop / SubagentStop carry the turn's final assistant text directly.
     last_assistant_message: z.string(),
-    // Synthetic MissionControlSessionEnded (the Harness's pty-manager): the PTY
+    // Synthetic MissionControlSessionEnded (the Core's pty-manager): the PTY
     // process's exit code, used to pick finished vs terminated.
     exit_code: z.number(),
   })
@@ -63,17 +63,17 @@ function hookSessionId(payload: z.infer<typeof hookPayload>): string {
 
 function isSessionCaptureEvent(event: string): boolean {
   return (
-    event === AGENT_HOOK_EVENTS.userPromptSubmit ||
-    event === AGENT_HOOK_EVENTS.cursorBeforeSubmitPrompt ||
-    event === AGENT_HOOK_EVENTS.sessionStart ||
-    event === AGENT_HOOK_EVENTS.cursorSessionStart
+    event === HARNESS_HOOK_EVENTS.userPromptSubmit ||
+    event === HARNESS_HOOK_EVENTS.cursorBeforeSubmitPrompt ||
+    event === HARNESS_HOOK_EVENTS.sessionStart ||
+    event === HARNESS_HOOK_EVENTS.cursorSessionStart
   );
 }
 
 function isSubagentLifecycleEvent(event: string): boolean {
   return (
-    event === AGENT_HOOK_EVENTS.subagentStart ||
-    event === AGENT_HOOK_EVENTS.subagentStop
+    event === HARNESS_HOOK_EVENTS.subagentStart ||
+    event === HARNESS_HOOK_EVENTS.subagentStop
   );
 }
 
@@ -142,7 +142,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
     setTranscriptPath(taskId, payload.transcript_path.trim());
   }
 
-  if (event === AGENT_HOOK_EVENTS.sessionStart) {
+  if (event === HARNESS_HOOK_EVENTS.sessionStart) {
     // /clear kills background subagents but keeps the session id, so the
     // session-id-change clear below never fires for it.
     if (payload.source === "clear") {
@@ -184,7 +184,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
   // SubagentStop would otherwise hold the NEXT turn's Stop for the whole TTL.
   if (isSubagentLifecycleEvent(event)) {
     const staleFinished = task.status === "finished" && !taskFinishedRecently(taskId);
-    if (event === AGENT_HOOK_EVENTS.subagentStart) {
+    if (event === HARNESS_HOOK_EVENTS.subagentStart) {
       if (!staleFinished) noteSubagentStart(taskId, payload.agent_id);
     } else {
       noteSubagentStop(taskId, payload.agent_id);
@@ -196,12 +196,12 @@ export async function receive(url: URL, request: Request): Promise<Response> {
     return json({ ok: true, event });
   }
 
-  // Synthetic PTY-exit event (the Harness's pty-manager): the session process is
+  // Synthetic PTY-exit event (the Core's pty-manager): the session process is
   // gone, so a task still showing active work is wrong — settle it by exit
   // code. Tasks already in a settled state (finished, interrupted, ...) keep
   // it: the exit of an idle session isn't news. Dead process ⇒ its subagents
   // died with it.
-  if (event === AGENT_HOOK_EVENTS.sessionProcessExited) {
+  if (event === HARNESS_HOOK_EVENTS.sessionProcessExited) {
     clearSubagentActivity(taskId);
     // No re-invocation can follow a dead process: laggard subagent POSTs
     // still in flight must be ignored as stale, never heal to "running".
@@ -213,7 +213,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
     }
     return json({ ok: true, event });
   }
-  if (event === AGENT_HOOK_EVENTS.userPromptSubmit) {
+  if (event === HARNESS_HOOK_EVENTS.userPromptSubmit) {
     // A new user turn supersedes any held Stop; the next Stop re-evaluates.
     disarmDeferredFinish(taskId);
   }
@@ -231,7 +231,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
   // place when the task:updated event triggers renderer refetches. Malformed
   // tool_input is fail-soft: status still flips, just no native overlay.
   if (
-    event === AGENT_HOOK_EVENTS.preToolUse &&
+    event === HARNESS_HOOK_EVENTS.preToolUse &&
     payload.tool_name === ASK_USER_QUESTION_TOOL
   ) {
     const questions = parseAskUserQuestionInput(payload.tool_input);
@@ -251,7 +251,7 @@ export async function receive(url: URL, request: Request): Promise<Response> {
   // working. updateStatus clears any stale pending question, so the native
   // overlay stands down.
   if (
-    event === AGENT_HOOK_EVENTS.postToolUse &&
+    event === HARNESS_HOOK_EVENTS.postToolUse &&
     payload.tool_name !== ASK_USER_QUESTION_TOOL
   ) {
     if (task.status === "needs-input") {

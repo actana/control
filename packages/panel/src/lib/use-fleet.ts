@@ -16,7 +16,7 @@ import type { ProjectWithCounts } from "~/shared/projects";
 //
 // Nothing polls for *reachability*: the service is the one dialing, so it
 // pushes dial-status changes and these hooks act on them. The poll that remains
-// is for Harness-side content the event stream doesn't cover.
+// is for Core-side content the event stream doesn't cover.
 
 const FLEET_POLL_MS = 15_000;
 const CORES_POLL_MS = 15_000;
@@ -178,7 +178,7 @@ export function useFleetTasks(): {
 
 /**
  * One Core's projects, live. Refetches when that Core reports a project-list-
- * affecting event, so a project created on the Harness — by another Panel, or
+ * affecting event, so a project created on the Core — by another Panel, or
  * by a hand at the VM's own keyboard — appears here without a reload.
  */
 export function useCoreProjects(coreId: string | null): {
@@ -275,7 +275,7 @@ export function useCoreTasks(
 
 /**
  * The pinned projects across the fleet, for the project rail. Pin state is a
- * Harness fact, so this is a live read per Core rather than anything the Panel
+ * Core fact, so this is a live read per Core rather than anything the Panel
  * remembers — and it re-reads when a Core says a pin changed, so two Panels on
  * one Core agree.
  */
@@ -339,7 +339,7 @@ export function useRemotePinnedProjects(): {
 
 // Core-link snapshot → the row shape the rail renders. Matches
 // `remoteProjectFromSnapshot` in `queries/index.ts`; the fields a snapshot
-// doesn't carry take safe defaults rather than inventing Harness state.
+// doesn't carry take safe defaults rather than inventing Core state.
 function projectSnapshotAsRow(snapshot: CoreLinkProjectSnapshot): ProjectWithCounts {
   return {
     id: snapshot.projectId,
@@ -352,8 +352,8 @@ function projectSnapshotAsRow(snapshot: CoreLinkProjectSnapshot): ProjectWithCou
     pinned: snapshot.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberAgentSettings: false,
-    savedAgent: null,
+    rememberHarnessSettings: false,
+    savedHarness: null,
     savedSkipPermissions: false,
     savedBareSession: false,
     defaultGridView: false,

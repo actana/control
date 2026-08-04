@@ -8,14 +8,14 @@
 // output. Those live here so the two scripts differ only where the platforms
 // actually differ.
 //
-// `scripts/lib/harness-smoke.mjs` stays the home for the tarball smoke's own
-// helpers — spawning the Harness and dialling it. This module never spawns a
-// Harness; it drives an installed one.
+// `scripts/lib/core-smoke.mjs` stays the home for the tarball smoke's own
+// helpers — spawning the Core and dialling it. This module never spawns a
+// Core; it drives an installed one.
 
 import { spawnSync } from "node:child_process";
 import * as net from "node:net";
 
-import { decodeBlob } from "./harness-smoke.mjs";
+import { decodeBlob } from "./core-smoke.mjs";
 
 /** How long the daemon gets to answer on its port before a test gives up. */
 export const LISTEN_TIMEOUT_MS = 60_000;

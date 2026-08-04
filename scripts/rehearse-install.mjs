@@ -9,20 +9,20 @@
 // token to a live Panel, and work the Core the way an operator would.
 //
 // Usage:
-//   pnpm harness:rehearse
-//   pnpm harness:rehearse -- --distro debian --port 9443
+//   pnpm core:rehearse
+//   pnpm core:rehearse -- --distro debian --port 9443
 //
 // --tarball <file>  Which build to serve. Defaults to the newest tarball in
-//                   artifacts/harness for this machine's architecture.
+//                   artifacts/core for this machine's architecture.
 // --distro <id>     Which distribution the fake VM runs (see
 //                   scripts/lib/container-matrix.mjs). Defaults to ubuntu.
 // --port <n>        Host port the Core is published on. Defaults to 8443,
 //                   which is the port the printed pairing token names — pick
 //                   another only if something already holds it, and read
-//                   docs/harness-linux-rehearsal.md before you do.
+//                   docs/core-linux-rehearsal.md before you do.
 // --keep            Leave the machine running after you exit the shell.
 //
-// The step-by-step is docs/harness-linux-rehearsal.md; this script is the
+// The step-by-step is docs/core-linux-rehearsal.md; this script is the
 // "spin it up" half of it. Requires a Docker that can run a privileged
 // container.
 
@@ -33,7 +33,7 @@ import * as path from "node:path";
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { distroDockerfile, distroFlag, imageTag } from "./lib/container-matrix.mjs";
 import { startFixtureServerProcess } from "./lib/fixture-release.mjs";
-import { makeDie } from "./lib/harness-smoke.mjs";
+import { makeDie } from "./lib/core-smoke.mjs";
 import { hostTarget, pickTarball, rehearsalOneLiner } from "./lib/rehearsal.mjs";
 import { OPERATOR, pickHostPort, run, startSystemdContainer } from "./lib/systemd-container.mjs";
 
@@ -65,7 +65,7 @@ async function main() {
   // ─── which build is being rehearsed ───
   const target = hostTarget(process.arch, die);
   const explicit = stringFlag(args, "tarball", die);
-  const artifactDir = path.join(repoRoot, "artifacts", "harness");
+  const artifactDir = path.join(repoRoot, "artifacts", "core");
   const tarball = explicit
     ? path.resolve(explicit)
     : path.join(
@@ -150,7 +150,7 @@ async function main() {
       ? "  The pairing token it prints can be pasted into a Panel as-is."
       : `  NOTE: the printed token will say :${CONTAINER_PORT} — edit it to :${hostPort}`,
     "",
-    "  Walk-through:  docs/harness-linux-rehearsal.md",
+    "  Walk-through:  docs/core-linux-rehearsal.md",
     "  Type `exit` when you are done and this machine is destroyed.",
     "──────────────────────────────────────────────────────────────────────",
     "",

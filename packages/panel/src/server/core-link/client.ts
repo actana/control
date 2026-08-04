@@ -1,19 +1,19 @@
 // WebSocket client for one Core's core-link — the Panel service side.
 //
-// Connects to that Harness's `wss://` server and exposes a `pty` API
+// Connects to that Core's `wss://` server and exposes a `pty` API
 // (spawn/write/resize/kill/replay/findByTask/onData/onExit) that the panel-link
 // router forwards browser frames onto.
 //
 // Reconnection: the service holds one client per registered Core. If the
-// WebSocket drops (Harness restart, machine asleep), the client auto-reconnects
+// WebSocket drops (Core restart, machine asleep), the client auto-reconnects
 // with backoff. On reconnect `ready` fires and callers reattach via
-// `findByTask` + `replay` — the Harness's PTY buffer retains everything across
+// `findByTask` + `replay` — the Core's PTY buffer retains everything across
 // the gap.
 
 import {
   CORE_LINK_PROTOCOL_VERSION,
   coreLinkProtocolCompatible,
-  type CoreLinkAgentAvailabilityMap,
+  type CoreLinkHarnessAvailabilityMap,
   type CoreLinkEvent,
   type CoreLinkProjectMutation,
   type CoreLinkRequestFrame,
@@ -61,7 +61,7 @@ export type PtyCoreLinkClientOptions = {
    * Signed bearer `{coreId, exp, sig}` presented in the `auth` frame right
    * after every (re)connect (ADR 0002). Required for every Core — there is no
    * trusted transport left to omit it on (ADR 0010). When set, the client sends
-   * `auth` BEFORE `subscribe` so the Harness gates the event-cursor replay
+   * `auth` BEFORE `subscribe` so the Core gates the event-cursor replay
    * behind authentication.
    */
   bearer?: string;
@@ -112,7 +112,7 @@ const DEFAULT_RPC_TIMEOUT_MS = 30_000;
  * traffic pattern those boxes reap. Without a heartbeat the drop is invisible:
  * TCP has no keepalive here, so the Panel keeps `ready = true`, keystrokes are
  * written into a dead socket, and RPCs hang for the full 30s timeout while the
- * Harness happily streams output nobody receives. Pinging every 15s keeps the
+ * Core happily streams output nobody receives. Pinging every 15s keeps the
  * flow alive AND detects death within one window.
  */
 const HEARTBEAT_INTERVAL_MS = 15_000;
@@ -153,7 +153,7 @@ function resolveStorage(opts: PtyCoreLinkClientOptions): CoreLinkCursorStorage {
  * to. Auto-reconnects; exposes a promise-based + callback API.
  *
  * On every (re)connect it sends a `subscribe` frame carrying the persisted
- * `lastEventId` cursor so the Harness can stream the event-log tail; live
+ * `lastEventId` cursor so the Core can stream the event-log tail; live
  * `event` frames resume once `eventsReplayed` is received. The cursor is
  * persisted to the injected storage so killing the Panel and reopening it
  * restores the full event/task timeline from the gap.
@@ -270,7 +270,7 @@ export class PtyCoreLinkClient {
         this.sendAuth();
       } else {
         // No bearer configured (tests) — go straight to the event-cursor
-        // subscribe so the Harness streams the replay tail.
+        // subscribe so the Core streams the replay tail.
         this.sendSubscribe();
       }
       // Flush any RPCs that were queued while the WS wasn't open (e.g. the
@@ -313,7 +313,7 @@ export class PtyCoreLinkClient {
 
     socket.on("error", (err) => {
       // The close handler will trigger reconnect. Errors are expected during
-      // a Harness restart — we only keep the reason for the status report.
+      // a Core restart — we only keep the reason for the status report.
       lastError = err instanceof Error ? err.message : String(err);
     });
   }
@@ -423,7 +423,7 @@ export class PtyCoreLinkClient {
     }
 
     // Event-cursor frames (issue 02). `event` carries a CoreLinkEvent from the
-    // Harness's monotonic event log; `eventsReplayed` marks end-of-tail. Both
+    // Core's monotonic event log; `eventsReplayed` marks end-of-tail. Both
     // advance the persisted lastEventId cursor so a kill+reopen restores the
     // missed timeline.
     if (type === "event") {
@@ -449,7 +449,7 @@ export class PtyCoreLinkClient {
       for (const cb of this.eventsReplayedListeners) cb({ lastEventId: this.lastEventId });
       return;
     }
-    // The Harness's first frame on every connection: which core-link it
+    // The Core's first frame on every connection: which core-link it
     // speaks. The version gate (issue 07) hangs off this — a Core whose
     // vocabulary this build doesn't share is a chore to report, not a
     // connection to half-use (ADR 0005). Emitted on every `ready`, so a Core
@@ -474,7 +474,7 @@ export class PtyCoreLinkClient {
       const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
       const exp = typeof msg.exp === "number" ? msg.exp : 0;
       this.authenticated = true;
-      // Now that the Harness has accepted the bearer, send the event-cursor
+      // Now that the Core has accepted the bearer, send the event-cursor
       // `subscribe` so the replay tail + live events flow. Auth came first, so
       // the server's auth gate lets the subscribe through.
       this.subscribed = false;
@@ -515,7 +515,7 @@ export class PtyCoreLinkClient {
   }
 
   /**
-   * Send any core-link request frame and resolve with the Harness's raw
+   * Send any core-link request frame and resolve with the Core's raw
    * response frame — errors included, as frames rather than rejections.
    *
    * This is the seam the panel-link router forwards through. A router that had
@@ -561,7 +561,7 @@ export class PtyCoreLinkClient {
       return;
     }
     if (!this.socket || !this.ready) {
-      // The WS isn't open yet (Harness still booting, or reconnecting after a
+      // The WS isn't open yet (Core still booting, or reconnecting after a
       // drop). The frame is already registered in `pending` with a timeout —
       // it will be sent once `on("open")` fires and flushes the queue, or it
       // will time out. This avoids a hard rejection on the first call after a
@@ -580,7 +580,7 @@ export class PtyCoreLinkClient {
 
   /**
    * Send the `subscribe` frame carrying the persisted `lastEventId` cursor.
-   * Called on every (re)connect so the Harness streams the event-log tail the
+   * Called on every (re)connect so the Core streams the event-log tail the
    * Panel missed while away. Fire-and-forget — the response is the `event`
    * stream + `eventsReplayed` marker (handled in {@link onMessage}), not a
    * reqId-correlated RPC.
@@ -607,7 +607,7 @@ export class PtyCoreLinkClient {
    * Send the `auth` frame carrying the bearer. Called on every (re)connect
    * after the mTLS handshake. Fire-and-forget — the response is `authOk` /
    * `authError` (handled in {@link onMessage}), not a reqId-correlated RPC.
-   * The `subscribe` frame follows only after `authOk`, so the Harness's auth
+   * The `subscribe` frame follows only after `authOk`, so the Core's auth
    * gate lets the event-cursor replay through.
    */
   private sendAuth(): void {
@@ -626,7 +626,7 @@ export class PtyCoreLinkClient {
   }
 
   /**
-   * Notified once per (re)connect when the Harness accepts the bearer. `{ exp }`
+   * Notified once per (re)connect when the Core accepts the bearer. `{ exp }`
    * is the session expiry — the Panel can hint "session expires at". The event
    * replay (`subscribe`) is sent automatically right after.
    */
@@ -636,7 +636,7 @@ export class PtyCoreLinkClient {
   }
 
   /**
-   * Notified when the Harness rejects the bearer (expired / bad signature).
+   * Notified when the Core rejects the bearer (expired / bad signature).
    * The server closes on rejection; the reconnect path takes over. An expired
    * bearer will keep failing until a reissued blob is pasted (ADR 0003).
    */
@@ -648,7 +648,7 @@ export class PtyCoreLinkClient {
   }
 
   /**
-   * Notified whenever the socket goes down — a dropped connection, a Harness
+   * Notified whenever the socket goes down — a dropped connection, a Core
    * restart, a dial that never completed. Fires on every attempt, so a Core
    * that is simply off shows as unreachable rather than sitting at
    * "connecting" for as long as the backoff runs. `close()` does not fire it:
@@ -661,7 +661,7 @@ export class PtyCoreLinkClient {
 
   /**
    * Notified on every connection's `ready` frame with the protocol version the
-   * Harness advertises and whether this build can speak it. The manager turns
+   * Core advertises and whether this build can speak it. The manager turns
    * an incompatible answer into the Core's "needs update" dial state.
    */
   onProtocolVersion(
@@ -741,8 +741,8 @@ export class PtyCoreLinkClient {
 
   /**
    * List every project on this Core as a live snapshot (issue 07 — per-Core
-   * navigation). The Harness is the source of truth; the Panel holds none. The
-   * returned `path` is a VM path — only the Harness can validate it.
+   * navigation). The Core is the source of truth; the Panel holds none. The
+   * returned `path` is a VM path — only the Core can validate it.
    */
   projectsList(): Promise<CoreLinkProjectSnapshot[]> {
     return this.rpc({ type: "projectsList", reqId: "" }) as Promise<CoreLinkProjectSnapshot[]>;
@@ -751,7 +751,7 @@ export class PtyCoreLinkClient {
   /**
    * List every active (non-archived) task on this Core, optionally filtered to
    * one project (issue 07 — per-Core navigation + Fleet view fan-out). The
-   * Harness omits archived tasks; the Panel caches nothing.
+   * Core omits archived tasks; the Panel caches nothing.
    */
   tasksList(projectId?: string): Promise<CoreLinkTaskSnapshot[]> {
     return this.rpc({ type: "tasksList", reqId: "", projectId }) as Promise<CoreLinkTaskSnapshot[]>;
@@ -759,7 +759,7 @@ export class PtyCoreLinkClient {
 
   /**
    * Create / rename / archive a project on this Core (issue 04 write path).
-   * The Harness validates the VM path server-side; an invalid path comes back
+   * The Core validates the VM path server-side; an invalid path comes back
    * as an `error` frame that rejects this promise. Returns `null` when a
    * `rename`/`archive` targets a missing row.
    */
@@ -783,7 +783,7 @@ export class PtyCoreLinkClient {
 
   /**
    * List every active session on this Core (optionally filtered to one
-   * project). A session's `ptyId` is set when the Harness has a live PTY for
+   * project). A session's `ptyId` is set when the Core has a live PTY for
    * that task — the Panel uses this to know which sessions it can reattach to.
    */
   sessionsList(projectId?: string): Promise<CoreLinkSessionSnapshot[]> {
@@ -797,9 +797,9 @@ export class PtyCoreLinkClient {
    * to hydrate the per-Core availability store without waiting for the next
    * `agents:availabilityChanged` event. Live updates arrive via `onEvent`.
    */
-  agentsAvailabilityList(): Promise<CoreLinkAgentAvailabilityMap> {
+  agentsAvailabilityList(): Promise<CoreLinkHarnessAvailabilityMap> {
     return this.rpc({ type: "agentsAvailabilityList", reqId: "" }) as Promise<
-      CoreLinkAgentAvailabilityMap
+      CoreLinkHarnessAvailabilityMap
     >;
   }
 
@@ -814,7 +814,7 @@ export class PtyCoreLinkClient {
   }
 
   /**
-   * Subscribe to domain events from the Harness's monotonic event log (task
+   * Subscribe to domain events from the Core's monotonic event log (task
    * status, hook, session finish, PTY spawn/exit lifecycle). The callback
    * receives one `{ event: CoreLinkEvent }` per replayed or live event. The
    * client dedupes by eventId and persists the cursor, so on a kill+reopen the
@@ -826,7 +826,7 @@ export class PtyCoreLinkClient {
   }
 
   /**
-   * Notified once after each (re)connect when the Harness finishes streaming
+   * Notified once after each (re)connect when the Core finishes streaming
    * the replay tail and live event push resumes. `{ lastEventId }` is the new
    * caught-up cursor.
    */

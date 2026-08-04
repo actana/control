@@ -95,7 +95,7 @@ const PROTECTED_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "GET", pathname: "/api/keybindings" },
   { method: "PUT", pathname: "/api/keybindings" },
   { method: "DELETE", pathname: "/api/keybindings" },
-  // Hooks — the slugs production actually emits (see the Harness's
+  // Hooks — the slugs production actually emits (see the Core's
   // pty-hook-env / pty-manager) plus a synthetic one to cover the route
   // shape independently of the production slug set.
   // Usage

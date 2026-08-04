@@ -29,9 +29,9 @@ importers:
 
   .:
     dependencies:
-      '@actana/harness':
+      '@actana/core':
         specifier: workspace:*
-        version: link:packages/harness
+        version: link:packages/core
       '@actana/panel':
         specifier: workspace:*
         version: link:packages/panel
@@ -82,7 +82,7 @@ importers:
         specifier: 4.1.6
         version: 4.1.6(@types/node@25.8.0)(jsdom@30.0.1)(vite@8.1.0(@types/node@25.8.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.0))
 
-  packages/harness:
+  packages/core:
     dependencies:
       '@actana/shared':
         specifier: workspace:*
@@ -263,9 +263,9 @@ importers:
         specifier: 4.4.3
         version: 4.4.3
     devDependencies:
-      '@actana/harness':
+      '@actana/core':
         specifier: workspace:*
-        version: link:../harness
+        version: link:../core
       '@tailwindcss/vite':
         specifier: 4.3.0
         version: 4.3.0(vite@8.1.0(@types/node@25.8.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.0))

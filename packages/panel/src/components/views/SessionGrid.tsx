@@ -19,7 +19,7 @@ import { SessionIcon } from "~/components/ui/SessionIcon";
 import { StatusDot } from "~/components/ui/StatusDot";
 import { Tooltip } from "~/components/ui/Tooltip";
 import { archiveOpenSession } from "~/lib/archive-session";
-import { AGENT_META, GRID_EXPAND_TOGGLE_EVENT, STATUS_META } from "~/lib/design-meta";
+import { HARNESS_META, GRID_EXPAND_TOGGLE_EVENT, STATUS_META } from "~/lib/design-meta";
 import {
   GRID_PREFS_EVENT,
   GRID_SORT_EVENT,
@@ -37,7 +37,7 @@ import { useTerminals, type OpenTerminal } from "~/lib/terminal-store";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import { queryKeys, useSettings, useTasks } from "~/queries";
-import type { TaskAgent } from "@actana/shared/domain";
+import type { Harness } from "@actana/shared/domain";
 import { scopeKeyForProject } from "~/lib/scoped-project";
 import { GridLayoutQuickPicker } from "./GridLayoutQuickPicker";
 import { TerminalPane } from "./TerminalPane";
@@ -274,18 +274,18 @@ export function pourIdsIntoShape(layout: GridLayout, orderedIds: string[]): Grid
   return next;
 }
 
-/** Stable agent-grouped order: `firstAgent`'s sessions lead, the rest follow
+/** Stable agent-grouped order: `firstHarness`'s sessions lead, the rest follow
  *  grouped by agent in the given registry order, each group keeping the cells'
  *  current reading order. */
-export function sortIdsByAgentFirst(
+export function sortIdsByHarnessFirst(
   cells: Array<{ id: string; agent: string }>,
-  firstAgent: string,
-  agentOrder: readonly string[],
+  firstHarness: string,
+  harnessOrder: readonly string[],
 ): string[] {
   const rank = (agent: string): number => {
-    if (agent === firstAgent) return -1;
-    const idx = agentOrder.indexOf(agent);
-    return idx === -1 ? agentOrder.length : idx;
+    if (agent === firstHarness) return -1;
+    const idx = harnessOrder.indexOf(agent);
+    return idx === -1 ? harnessOrder.length : idx;
   };
   return cells
     .map((cell, i) => ({ cell, i }))
@@ -693,7 +693,7 @@ function HiddenSessionsBar({
         {sessions.map((session) => {
           const live = liveTasks?.find((t) => t.id === session.taskId) ?? session.task;
           const icon = isSessionIcon(live.icon) ? live.icon : DEFAULT_SESSION_ICON;
-          const agentMeta = AGENT_META[live.agent];
+          const harnessMeta = HARNESS_META[live.agent];
           const statusMeta = STATUS_META[live.status];
           return (
             <Tooltip
@@ -731,7 +731,7 @@ function HiddenSessionsBar({
                         fontSize: 11,
                       }}
                     >
-                      <span style={{ color: agentMeta.color }}>{agentMeta.label}</span>
+                      <span style={{ color: harnessMeta.color }}>{harnessMeta.label}</span>
                       <span style={{ color: "var(--text-dim)" }}>·</span>
                       <span style={{ color: statusMeta.color }}>{statusMeta.label}</span>
                     </div>
@@ -1097,17 +1097,17 @@ export function SessionGrid({
       return next;
     });
   };
-  const onGridSortRef = useRef<(scope: string, firstAgent: string) => void>(() => {});
-  onGridSortRef.current = (scope: string, firstAgent: string) => {
+  const onGridSortRef = useRef<(scope: string, firstHarness: string) => void>(() => {});
+  onGridSortRef.current = (scope: string, firstHarness: string) => {
     if (scope !== scopeKey) return;
-    // Agents never change over a session's life, so the open-time snapshot on
+    // Harnesses never change over a session's life, so the open-time snapshot on
     // the store's session is safe to sort by.
-    const agentById = new Map(allScopedSessions.map((s) => [s.taskId, s.task.agent]));
+    const harnessById = new Map(allScopedSessions.map((s) => [s.taskId, s.task.agent]));
     setLayout((prev) => {
       const cells = prev.rows
         .flatMap((r) => r.cells)
-        .map((id) => ({ id, agent: agentById.get(id) ?? "" }));
-      const order = sortIdsByAgentFirst(cells, firstAgent, Object.keys(AGENT_META));
+        .map((id) => ({ id, agent: harnessById.get(id) ?? "" }));
+      const order = sortIdsByHarnessFirst(cells, firstHarness, Object.keys(HARNESS_META));
       const next = pourIdsIntoShape(prev, order);
       if (layoutSig(next) === layoutSig(prev)) return prev;
       saveGridLayout(scopeKey, next);
@@ -1119,7 +1119,7 @@ export function SessionGrid({
       onGridPrefsRef.current((e as CustomEvent<GridPrefsEventDetail>).detail.scopeKey);
     const onSort = (e: Event) => {
       const detail = (e as CustomEvent<GridSortEventDetail>).detail;
-      onGridSortRef.current(detail.scopeKey, detail.firstAgent);
+      onGridSortRef.current(detail.scopeKey, detail.firstHarness);
     };
     window.addEventListener(GRID_PREFS_EVENT, onPrefs);
     window.addEventListener(GRID_SORT_EVENT, onSort);
@@ -1549,12 +1549,12 @@ export function SessionGrid({
   useHotkey("session.cycleNext", () => cycleFocusedSession(1), { capture: true });
   useHotkey("session.cyclePrev", () => cycleFocusedSession(-1), { capture: true });
 
-  // Agents with open sessions in this scope (registry order) — the quick
+  // Harnesses with open sessions in this scope (registry order) — the quick
   // picker's sort options. Snapshot agents are safe: they never change over a
   // session's life.
-  const agentsPresent = useMemo(() => {
+  const harnessesPresent = useMemo(() => {
     const present = new Set(allScopedSessions.map((s) => s.task.agent));
-    return (Object.keys(AGENT_META) as TaskAgent[]).filter((a) => present.has(a));
+    return (Object.keys(HARNESS_META) as Harness[]).filter((a) => present.has(a));
   }, [allScopedSessions]);
 
   // Cmd/Ctrl+Shift+L (session.gridLayout): toggle the layout quick picker.
@@ -2529,7 +2529,7 @@ export function SessionGrid({
         onClose={() => setQuickPickerOpen(false)}
         scopeKey={scopeKey}
         currentLimit={columnLimit}
-        agents={agentsPresent}
+        agents={harnessesPresent}
       />
       <ConfirmDialog
         open={!!pendingArchive}

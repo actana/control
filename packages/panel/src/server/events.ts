@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import type { AgentQuestion } from "~/shared/agent-questions";
+import type { HarnessQuestion } from "~/shared/harness-questions";
 
 export type AppEvent =
   | { type: "project:created"; id: string }
@@ -25,7 +25,7 @@ export type AppEvent =
       taskId: string;
       projectId: string;
       questionId: string;
-      questions: AgentQuestion[];
+      questions: HarnessQuestion[];
     }
   | { type: "task:question-cleared"; taskId: string; projectId: string }
   | { type: "prompt:submitted"; taskId: string; projectId: string; snippet: string };

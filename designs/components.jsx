@@ -95,9 +95,9 @@ const ProjectIcon = ({ project, size = 36 }) => {
   );
 };
 
-// ── Agent glyph ─────────────────────────────────────────────────────────────
-const AgentGlyph = ({ agent, showLabel = false, size = 11 }) => {
-  const meta = AGENT_META[agent];
+// ── Harness glyph ─────────────────────────────────────────────────────────────
+const HarnessGlyph = ({ agent, showLabel = false, size = 11 }) => {
+  const meta = HARNESS_META[agent];
   return (
     <span style={{
       display: "inline-flex", alignItems: "center", gap: 5,
@@ -329,5 +329,5 @@ const ShimmerBar = ({ active, color }) => {
 };
 
 Object.assign(window, {
-  Icon, StatusDot, StatusPill, ProjectIcon, AgentGlyph, Btn, TopBar, Modal, TextField, ShimmerBar,
+  Icon, StatusDot, StatusPill, ProjectIcon, HarnessGlyph, Btn, TopBar, Modal, TextField, ShimmerBar,
 });

@@ -1,8 +1,8 @@
 // The Panel's Core registry, as the browser sees it.
 //
-// A Core is the Panel's handle for "this Harness I can talk to": an endpoint,
+// A Core is the Panel's handle for "this Core I can talk to": an endpoint,
 // an alias, and a replay cursor. Everything else about a Core — its projects,
-// tasks, sessions, events — lives on the Harness and is read over the
+// tasks, sessions, events — lives on the Core and is read over the
 // core-link. The registry is the only Core state the Panel persists.
 //
 // The secret half of a registration (CA, client cert/key, bearer) never
@@ -14,7 +14,7 @@
 export type Core = {
   /** Stable Panel-side handle, `core_<hex>`. Not a secret. */
   id: string;
-  /** `wss://host:port` — the Harness's core-link endpoint (mTLS, ADR 0002). */
+  /** `wss://host:port` — the Core's core-link endpoint (mTLS, ADR 0002). */
   endpoint: string;
   /** Human-friendly alias shown in the UI ("mac-mini", "prod-vm-1"). */
   label: string;
@@ -34,12 +34,12 @@ export type Core = {
  * - `connecting` — dialing, or backing off between attempts.
  * - `connected` — mTLS handshake and bearer both accepted; frames flow.
  * - `unreachable` — the socket is down. `lastSeenAt` says how stale that is.
- * - `auth-error` — the Harness rejected the bearer. Reconnecting won't fix it;
+ * - `auth-error` — the Core rejected the bearer. Reconnecting won't fix it;
  *   the operator has to re-pair.
- * - `needs-update` — the link is up, but the Harness speaks a core-link
+ * - `needs-update` — the link is up, but the Core speaks a core-link
  *   protocol this Panel does not. There is no degraded mode (ADR 0005): the
  *   Core's data paths are suppressed and the operator is handed the command
- *   that fixes it. It clears itself when the updated Harness reconnects.
+ *   that fixes it. It clears itself when the updated Core reconnects.
  */
 export type CoreDialState =
   | "connecting"
@@ -55,7 +55,7 @@ export type CoreDialStatus = {
   lastSeenAt: number | null;
   /** Why we're unreachable / which auth failure. Operator-facing, never a secret. */
   detail?: string;
-  /** On `needs-update`: the protocol version the Harness advertised, if any. */
+  /** On `needs-update`: the protocol version the Core advertised, if any. */
   coreVersion?: string | null;
   /** On `needs-update`: the protocol version this Panel speaks. */
   panelVersion?: string;
@@ -63,7 +63,7 @@ export type CoreDialStatus = {
 
 /**
  * The command that brings a Core up to date — the same one-liner that installed
- * it. Re-running it on that machine upgrades the Harness in place, keeping the
+ * it. Re-running it on that machine upgrades the Core in place, keeping the
  * pairing (INSTALL.md, "Re-running the one-liner … upgrades it in place"), so
  * "needs update" is one paste on the Core rather than a re-pair in the Panel.
  *
@@ -79,11 +79,11 @@ export const CORE_UPDATE_COMMAND =
  *
  * A gate that always says "update the Core" is wrong half the time: a Panel
  * that has not been upgraded while its fleet has is drift in the other
- * direction, and pasting the Harness installer on a machine that is already
+ * direction, and pasting the Core installer on a machine that is already
  * ahead fixes nothing. Both sides read as `needs-update` — there is still no
  * degraded mode — but the remedy named is the one that closes the gap.
  *
- * An unparseable or absent Core version means an older Harness (versions have
+ * An unparseable or absent Core version means an older Core (versions have
  * been in the `ready` frame from the start), so it reads as the Core being
  * behind.
  */

@@ -160,7 +160,7 @@ history behind it. They are **deleted on sight, not merely left unpushed**,
 because leaving them in a clone is a loaded gun:
 
 - Two workflows trigger on `v*` —
-  [`harness-release.yml`](../.github/workflows/harness-release.yml) and
+  [`core-release.yml`](../.github/workflows/core-release.yml) and
   [`images-release.yml`](../.github/workflows/images-release.yml) — so a single
   `git push --tags` would both re-import the upstream history into a repository
   that was squashed on purpose **and** set 102 tags loose on two release

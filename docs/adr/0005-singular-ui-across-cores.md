@@ -1,5 +1,7 @@
 # Singular Panel UI across Loopback and remote Cores
 
+> _Written before the #33 rename. Read "Harness" as what is now a **Core**, and "agent"/"TaskAgent" as what is now a **Harness**; the wording is left as it was decided._
+
 The Panel renders every Core through the same components — `ProjectBar`, `SessionGrid`, `NewAgentDialog`, `TerminalPane`, notification surface — with `coreId` threaded through as a parameter. Loopback is not a special case in the UI; it is a Core with an in-process transport. Every affordance available for a local Session (icon, pin, availability check, rename, status states, notifications) is available for a remote Session by construction, because there is only one code path. The Fleet view is reduced to a strict aggregate; the Per-Core work surface is the same shell you see for a Loopback Core.
 
 ## Considered Options

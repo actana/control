@@ -4,9 +4,9 @@
  * authenticates with a session cookie the browser attaches on its own.
  *
  * Nothing in the browser resolves it any more: a session runs on a Core, and
- * that Core's Harness owns the hook env for the PTYs it spawns. This cache
+ * that Core's Core owns the hook env for the PTYs it spawns. This cache
  * exists only for callers that were handed a token explicitly via
- * {@link setHookToken}; everyone else gets `null` and lets the Harness decide.
+ * {@link setHookToken}; everyone else gets `null` and lets the Core decide.
  */
 let cached: string | null = null;
 

@@ -313,7 +313,7 @@ const EmptyState = ({ title, subtitle, action, icon = "sparkles" }) => (
 
 // ── Task Card ───────────────────────────────────────────────────────────────
 const TaskCard = ({ task, selected, onToggle, onArchive }) => {
-  const meta = AGENT_META[task.agent];
+  const meta = HARNESS_META[task.agent];
   const statusMeta = STATUS_META[task.status];
   const isRunning = task.status === "running";
 
@@ -346,7 +346,7 @@ const TaskCard = ({ task, selected, onToggle, onArchive }) => {
                 {statusMeta.label}
               </span>
               <span style={{ color: "var(--text-faint)", fontSize: 10, fontFamily: "var(--mono)" }}>·</span>
-              <AgentGlyph agent={task.agent} showLabel={true} size={10.5} />
+              <HarnessGlyph agent={task.agent} showLabel={true} size={10.5} />
             </div>
             <div style={{
               fontSize: 13.5, fontWeight: 500, lineHeight: 1.35,

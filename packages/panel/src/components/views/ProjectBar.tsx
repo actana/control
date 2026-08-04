@@ -80,7 +80,7 @@ export const ProjectBar = memo(function ProjectBar({
   const router = useRouter();
   const queryClient = useQueryClient();
   const { data: panelProjects } = useProjects();
-  // A Core's pinned projects live on its own Harness — pull them via a small
+  // A Core's pinned projects live on its own Core — pull them via a small
   // per-Core fetch (see `useRemotePinnedProjects`) and merge them into the pin
   // bar's `projects` list, tagged with `coreId` so clicking one routes to the
   // Core that owns it. The Panel's own rows are the untagged remainder.
@@ -1315,7 +1315,7 @@ export const ProjectBar = memo(function ProjectBar({
                 setMenu(null);
                 // Route the pin through the coreId-parameterised mutation
                 // surface. Every Panel connected to that Core sees the same
-                // pin state (Harness-owned fact, ADR-0005).
+                // pin state (Core-owned fact, ADR-0005).
                 //
                 // Use the *target project's* coreId (pin rows carry their
                 // owning Core on `.coreId`), not the ProjectBar's own `coreId`

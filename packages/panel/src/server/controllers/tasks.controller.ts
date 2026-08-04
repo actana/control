@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { TASK_AGENTS, TASK_STATUSES } from "@actana/shared/domain";
+import { HARNESSES, TASK_STATUSES } from "@actana/shared/domain";
 import {
   archiveTask,
   createTask,
@@ -26,7 +26,7 @@ import { generateTitleForTask } from "../services/title-generator";
 const createTaskBody = z.object({
   id: z.string().min(1).optional(),
   title: z.string().min(1, "title required"),
-  agent: z.enum(TASK_AGENTS),
+  agent: z.enum(HARNESSES),
   status: z.enum(TASK_STATUSES).optional(),
   preview: z.string().optional(),
   claudeSessionId: z.string().nullable().optional(),

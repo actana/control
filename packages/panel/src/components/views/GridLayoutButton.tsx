@@ -6,7 +6,7 @@ import { DropdownMenuItem, DropdownMenuSeparator } from "~/components/ui/Dropdow
 import { GridLayoutIcon } from "~/components/ui/GridLayoutIcon";
 import { MenuLabel } from "~/components/ui/MenuLabel";
 import { HotkeyTooltip } from "~/components/ui/Tooltip";
-import { AGENT_META } from "~/lib/design-meta";
+import { HARNESS_META } from "~/lib/design-meta";
 import {
   GRID_COLUMN_OPTIONS,
   GRID_PREFS_EVENT,
@@ -18,7 +18,7 @@ import {
 } from "~/lib/grid-layout-prefs";
 import { useTerminals } from "~/lib/terminal-store";
 import { Z_INDEX } from "~/lib/z-index";
-import type { TaskAgent } from "@actana/shared/domain";
+import type { Harness } from "@actana/shared/domain";
 import { scopeKeyFor } from "./SessionGrid";
 
 // Fixed menu width: the width chips lay out as one 7-column row (Auto + 1–6),
@@ -110,14 +110,14 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
     };
   }, [open]);
 
-  // Agents with at least one open session in this scope, in registry order —
+  // Harnesses with at least one open session in this scope, in registry order —
   // the sort actions offered. Sorting a single-agent grid is a no-op, so the
   // section only shows once two kinds of sessions coexist.
-  const agentsPresent = useMemo(() => {
+  const harnessesPresent = useMemo(() => {
     const present = new Set(
       sessions.filter((s) => scopeKeyFor(s) === scopeKey).map((s) => s.task.agent),
     );
-    return (Object.keys(AGENT_META) as TaskAgent[]).filter((a) => present.has(a));
+    return (Object.keys(HARNESS_META) as Harness[]).filter((a) => present.has(a));
   }, [sessions, scopeKey]);
 
   const pickLimit = (limit: number | null) => {
@@ -127,7 +127,7 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
     saveGridColumnLimit(scopeKey, limit);
   };
 
-  const sortBy = (agent: TaskAgent) => {
+  const sortBy = (agent: Harness) => {
     setOpen(false);
     requestGridSort(scopeKey, agent);
   };
@@ -262,11 +262,11 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
                 ? "Rows grow freely; new sessions join the current row."
                 : `Full rows overflow into the next row with space, or a new one.`}
             </div>
-            {agentsPresent.length > 1 && (
+            {harnessesPresent.length > 1 && (
               <>
                 <DropdownMenuSeparator />
                 <MenuLabel>Sort sessions</MenuLabel>
-                {agentsPresent.map((agent) => (
+                {harnessesPresent.map((agent) => (
                   <DropdownMenuItem
                     key={agent}
                     leading={
@@ -276,15 +276,15 @@ export function GridLayoutButton({ scopeKey }: { scopeKey: string }) {
                           width: 8,
                           height: 8,
                           borderRadius: "50%",
-                          background: AGENT_META[agent].color,
+                          background: HARNESS_META[agent].color,
                           flexShrink: 0,
                         }}
                       />
                     }
                     onClick={() => sortBy(agent)}
-                    title={`Group the grid with ${AGENT_META[agent].label} sessions first`}
+                    title={`Group the grid with ${HARNESS_META[agent].label} sessions first`}
                   >
-                    {AGENT_META[agent].label} first
+                    {HARNESS_META[agent].label} first
                   </DropdownMenuItem>
                 ))}
               </>

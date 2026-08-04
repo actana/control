@@ -3,19 +3,19 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Server } from "node:net";
-import { PtyCoreLinkServer, type WebSocketServerLike, type WebSocketLike } from "@actana/harness/pty-core-link-server";
-import { generateCertMaterial } from "@actana/harness/harness-cert-material";
+import { PtyCoreLinkServer, type WebSocketServerLike, type WebSocketLike } from "@actana/core/pty-core-link-server";
+import { generateCertMaterial } from "@actana/core/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import type { PtyHarnessCore } from "@actana/harness/pty-manager";
-import type { EventLogPort } from "@actana/harness/pty-core-link-server";
+import type { PtyCore } from "@actana/core/pty-manager";
+import type { EventLogPort } from "@actana/core/pty-core-link-server";
 import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
 
 /**
  * The Cores surface, driven the way a browser drives it: pair a Core by pasting
- * a token, watch the Panel service reach a real Harness over mTLS, remove it.
+ * a token, watch the Panel service reach a real Core over mTLS, remove it.
  *
- * The Harness here is the real core-link server behind a real TLS socket, so
+ * The Core here is the real core-link server behind a real TLS socket, so
  * "the dial reached it" means the handshake, the pinned CA, the client cert,
  * and the bearer all actually worked — not that a fake resolved a promise.
  */
@@ -53,7 +53,7 @@ async function call(
   return response;
 }
 
-// ─── A real Harness on a real wss:// port ────────────────────────────────────
+// ─── A real Core on a real wss:// port ────────────────────────────────────
 
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -70,7 +70,7 @@ function freePort(): Promise<number> {
   });
 }
 
-function mockCore(): PtyHarnessCore {
+function mockCore(): PtyCore {
   return {
     setEmitTarget: () => {},
     spawn: async () => ({ ptyId: "pty-1" }),
@@ -82,7 +82,7 @@ function mockCore(): PtyHarnessCore {
     findByTask: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
-  } as unknown as PtyHarnessCore;
+  } as unknown as PtyCore;
 }
 
 function tlsCreateServer(bound: { port: number }) {
@@ -144,9 +144,9 @@ function adapt(ws: import("ws").WebSocket): WebSocketLike {
 }
 
 /**
- * A Harness event log holding a fixed set of events, which records the cursor
+ * A Core event log holding a fixed set of events, which records the cursor
  * every `subscribe` arrives with. That recording is how a test can see the
- * Panel's stored cursor being *used* — the Harness replays from whatever
+ * Panel's stored cursor being *used* — the Core replays from whatever
  * number the Panel sent it.
  */
 function fakeEventLog(count: number): EventLogPort & { subscribedFrom: number[] } {
@@ -170,17 +170,17 @@ function fakeEventLog(count: number): EventLogPort & { subscribedFrom: number[] 
   };
 }
 
-type Harness = {
+type CoreFixture = {
   server: PtyCoreLinkServer;
   registrationBlob: string;
   authAttempts: () => number;
   eventLog: ReturnType<typeof fakeEventLog>;
 };
 
-async function startHarness(label: string, eventCount = 0): Promise<Harness> {
+async function startCore(label: string, eventCount = 0): Promise<CoreFixture> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
   const bound = { port: await freePort() };
-  // Counted on the Harness side: this is what "the Panel actually reached this
+  // Counted on the Core side: this is what "the Panel actually reached this
   // machine" looks like from the machine, rather than from the Panel's own
   // bookkeeping.
   let authAttempts = 0;
@@ -207,7 +207,7 @@ async function startHarness(label: string, eventCount = 0): Promise<Harness> {
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
-    bearer: signBearer({ coreId: "core_harness", exp: Date.now() + 600_000 }, BEARER_SECRET),
+    bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
   return { server, registrationBlob, authAttempts: () => authAttempts, eventLog };
 }
@@ -230,13 +230,13 @@ afterAll(() => {
 async function pair(
   label = "prod-vm-1",
   eventCount = 0,
-): Promise<{ id: string; blob: string; harness: Harness }> {
-  const harness = await startHarness(label, eventCount);
-  running.push(harness.server);
-  const response = await call("/api/cores", { method: "POST", json: { registrationBlob: harness.registrationBlob } });
+): Promise<{ id: string; blob: string; core: CoreFixture }> {
+  const core = await startCore(label, eventCount);
+  running.push(core.server);
+  const response = await call("/api/cores", { method: "POST", json: { registrationBlob: core.registrationBlob } });
   expect(response.status).toBe(201);
   const body = (await response.json()) as { core: { id: string; label: string } };
-  return { id: body.core.id, blob: harness.registrationBlob, harness };
+  return { id: body.core.id, blob: core.registrationBlob, core };
 }
 
 async function dialOf(id: string): Promise<{ state: string; lastSeenAt: number | null }> {
@@ -259,7 +259,7 @@ describe("Cores API", () => {
     expect((await call("/api/cores/core_x", { method: "DELETE", anonymous: true })).status).toBe(401);
   });
 
-  it("pairs a Core from a token and reaches its Harness over mTLS", async () => {
+  it("pairs a Core from a token and reaches its Core over mTLS", async () => {
     const { id } = await pair();
     await vi.waitFor(async () => expect((await dialOf(id)).state).toBe("connected"), {
       timeout: 10_000,
@@ -285,7 +285,7 @@ describe("Cores API", () => {
     expect(raw).toContain(id);
   }, 20_000);
 
-  it("shows a Core whose Harness is gone as unreachable, with a last-seen time", async () => {
+  it("shows a Core whose Core is gone as unreachable, with a last-seen time", async () => {
     const { id } = await pair();
     await vi.waitFor(async () => expect((await dialOf(id)).state).toBe("connected"), {
       timeout: 10_000,
@@ -299,21 +299,21 @@ describe("Cores API", () => {
   }, 30_000);
 
   it("dials its Cores at boot with no browser in the picture", async () => {
-    const { harness } = await pair();
-    await vi.waitFor(() => expect(harness.authAttempts()).toBeGreaterThan(0), { timeout: 10_000 });
-    const before = harness.authAttempts();
+    const { core } = await pair();
+    await vi.waitFor(() => expect(core.authAttempts()).toBeGreaterThan(0), { timeout: 10_000 });
+    const before = core.authAttempts();
 
     // The service restarts. Nobody logs in, no request is made, no tab is open
-    // — and the Harness still gets dialed.
+    // — and the Core still gets dialed.
     resetCoreLinkManagerForTests();
     coreLinkManager().start();
-    await vi.waitFor(() => expect(harness.authAttempts()).toBeGreaterThan(before), {
+    await vi.waitFor(() => expect(core.authAttempts()).toBeGreaterThan(before), {
       timeout: 10_000,
     });
   }, 30_000);
 
   describe("the Panel-owned cursor", () => {
-    it("advances in the registry as the Harness replays its events", async () => {
+    it("advances in the registry as the Core replays its events", async () => {
       const { id } = await pair("prod-vm-1", 3);
       await vi.waitFor(
         () =>
@@ -328,9 +328,9 @@ describe("Cores API", () => {
       );
     }, 30_000);
 
-    it("is what the Harness replays from on the next connection", async () => {
-      const { id, harness } = await pair("prod-vm-1", 3);
-      await vi.waitFor(() => expect(harness.eventLog.subscribedFrom).toEqual([0]), {
+    it("is what the Core replays from on the next connection", async () => {
+      const { id, core } = await pair("prod-vm-1", 3);
+      await vi.waitFor(() => expect(core.eventLog.subscribedFrom).toEqual([0]), {
         timeout: 10_000,
       });
       await vi.waitFor(
@@ -345,11 +345,11 @@ describe("Cores API", () => {
         { timeout: 10_000 },
       );
 
-      // The service restarts. The Harness must be asked for the tail after 3,
+      // The service restarts. The Core must be asked for the tail after 3,
       // not for the whole log again.
       resetCoreLinkManagerForTests();
       coreLinkManager().start();
-      await vi.waitFor(() => expect(harness.eventLog.subscribedFrom).toEqual([0, 3]), {
+      await vi.waitFor(() => expect(core.eventLog.subscribedFrom).toEqual([0, 3]), {
         timeout: 10_000,
       });
     }, 30_000);

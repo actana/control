@@ -25,7 +25,7 @@ export function CoreNeedsUpdateNotice({
   const [copied, setCopied] = useState(false);
   // Which side is behind decides what the operator is told to do. A Panel that
   // has not been upgraded while its fleet has is the same gate in the other
-  // direction, and handing over the Harness installer there fixes nothing.
+  // direction, and handing over the Core installer there fixes nothing.
   const panelBehind = coreDriftDirection(dial) === "panel-behind";
 
   const copy = () => {
@@ -73,7 +73,7 @@ export function CoreNeedsUpdateNotice({
       <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.45 }}>
         {panelBehind
           ? "This Core is ahead of this Panel. Its sessions stay hidden until the Panel itself is upgraded — pull a newer Panel and restart it."
-          : "Its sessions stay hidden until the Harness on that machine is updated. Run this there — it upgrades in place and keeps the pairing:"}
+          : "Its sessions stay hidden until the Core on that machine is updated. Run this there — it upgrades in place and keeps the pairing:"}
       </div>
       {!panelBehind && (
       <div
