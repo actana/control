@@ -1,0 +1,152 @@
+# The third of ADR 0016 D10's three rebuild mechanisms, plus a backstop for the
+# second. Which pin is whose job, and why a checker exists alongside the
+# Dependabot config at all, is written up once in
+# docs/ci-cd.md § "The image bases, and what moves them" — this file implements
+# that split rather than re-arguing it:
+#
+#   opens PRs for   `ARG NODE_VERSION`, which is a nodejs.org tarball (D8) and
+#                   so invisible to Dependabot's docker ecosystem
+#   reports only    the two base digests, which are Dependabot's to open PRs
+#                   for; two bots racing on one PR is worse than one bot
+#   not here        the weekly rebuild-and-republish, which is #51's
+#                   `housekeeping.yml`
+#
+# One correction worth carrying, because the wording is easy to repeat: D10
+# calls the NODE_VERSION bump "the only thing that clears the Node-attributed
+# findings", and D10's own amendment measured that false — no released Node 24
+# ships a clean bundled npm, and D11's amendment scopes that tree out of the
+# gate. The bump is worth making for Node's own security fixes, not the gate.
+
+name: Base pins
+
+on:
+  schedule:
+    # Mondays at 07:00 UTC, which is after the 06:00 Europe/Berlin the `docker`
+    # entry in .github/dependabot.yml is scheduled for (05:00 UTC in winter,
+    # 04:00 in summer). Ordering matters only for the reporting: a
+    # digest Dependabot has just opened a PR for should not also be listed here
+    # as one nobody has moved.
+    - cron: "0 7 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: base-pins
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check the image bases and NODE_VERSION
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # No `pnpm install`: the checker is dependency-free on purpose, so a
+      # broken lockfile cannot be the reason nobody hears about a stale base.
+      #
+      # Exactly one invocation, and it does all three jobs — prints the table,
+      # writes this step's outputs, and applies the NODE_VERSION bump to the
+      # working tree. A second invocation would re-resolve every pin over the
+      # network and could disagree with the first if a digest moved in between.
+      # `--fix-node` runs unconditionally because it is a no-op when nothing has
+      # drifted, and the tree is thrown away with the runner if no PR follows.
+      #
+      # Deciding what "drifted" means, and whose job each pin is, stays inside
+      # the checker where it is tested — re-deriving it from the JSON in shell
+      # would give it a second, untested definition.
+      - name: Resolve every pin against its upstream
+        id: check
+        run: |
+          set -euo pipefail
+
+          {
+            echo "### Pins"
+            echo ""
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          node scripts/check-base-pins.mjs \
+            --fix-node \
+            --github-output "$GITHUB_OUTPUT" \
+            | tee -a "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Report-only, and the wording matters: this is not a failure, it is
+      # Dependabot's PR being late or absent. Someone reading the run should
+      # know which of those to go and check.
+      - name: Note any digest Dependabot has not moved
+        if: steps.check.outputs.digest-drift != ''
+        env:
+          DRIFTED: ${{ steps.check.outputs.digest-drift }}
+        run: |
+          set -euo pipefail
+          {
+            echo ""
+            echo "### Digests behind upstream"
+            echo ""
+            echo "\`$DRIFTED\` — these are Dependabot's to bump (.github/dependabot.yml, \`docker\`)."
+            echo "If no PR is open for them, check the updater's own log at"
+            echo "\`https://github.com/$GITHUB_REPOSITORY/network/updates\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open the NODE_VERSION bump
+        if: steps.check.outputs.node-drifted == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LATEST: ${{ steps.check.outputs.node-latest }}
+          CURRENT: ${{ steps.check.outputs.node-current }}
+        run: |
+          set -euo pipefail
+
+          # `chore/`, not `build/`: the branch-name check in conventions.yml
+          # does not list `build` as a branch type, and a bot cannot retitle
+          # its own branch after the fact. The *commit* is still `build(...)`,
+          # which is the part commitlint reads.
+          branch="chore/node-version-${LATEST//./-}"
+
+          if [ -n "$(gh pr list --head "$branch" --state open --json number --jq '.[].number')" ]; then
+            echo "A PR for $branch is already open — nothing to do."
+            exit 0
+          fi
+
+          # The bump itself is already in the working tree — the check step
+          # applied it. This step only turns it into a branch and a PR.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$branch"
+          git commit -am "build(core-image): bump NODE_VERSION to ${LATEST}"
+          git push --force-with-lease origin "$branch"
+
+          # --body-file rather than an inline heredoc: this block is already
+          # inside a YAML block scalar, and nesting a heredoc's terminator
+          # inside one is the kind of thing that survives review and then
+          # breaks on the first run nobody is watching.
+          {
+            echo "Node ${CURRENT} → ${LATEST} in \`deploy/core.Dockerfile\`."
+            echo ""
+            echo "Opened by \`.github/workflows/base-pins.yml\`, which owns this pin because it is"
+            echo "a nodejs.org tarball rather than an image reference, so Dependabot's \`docker\`"
+            echo "ecosystem cannot see it (ADR 0016 D8, D10)."
+            echo ""
+            echo "The tarball is SHA-256 verified against that release's own \`SHASUMS256.txt\`"
+            echo "inside the build, so a wrong version fails the image build rather than shipping."
+            echo ""
+            echo "**Checks do not run on this PR.** It is pushed with \`GITHUB_TOKEN\`, and GitHub"
+            echo "deliberately does not trigger workflows from it. Close and reopen the PR to get a"
+            echo "full run before merging."
+          } > "$RUNNER_TEMP/pr-body.md"
+
+          gh pr create \
+            --base "${GITHUB_REF_NAME}" \
+            --head "$branch" \
+            --title "build(core-image): bump NODE_VERSION to ${LATEST}" \
+            --label "type: dependencies" \
+            --body-file "$RUNNER_TEMP/pr-body.md"
