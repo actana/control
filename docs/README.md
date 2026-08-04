@@ -9,7 +9,7 @@ Start with the task you actually have.
 | Understand what this is before installing anything | [`../README.md`](../README.md) |
 | Deploy the **Panel** — the web service you drive everything from | [`../DEPLOY.md`](../DEPLOY.md) |
 | Turn a machine into a **Core** — install the Core bundle on it | [`../INSTALL.md`](../INSTALL.md) |
-| Get a Panel + Core pair running locally without provisioning anything | [`../deploy/dev/README.md`](../deploy/dev/README.md) |
+| Get a Panel + Core pair running locally without provisioning anything | [`../deploy/docker-compose.yml`](../deploy/docker-compose.yml) |
 | Configure it — every environment variable | [`../DEPLOY.md#configuration`](../DEPLOY.md#configuration) |
 | Back it up, upgrade it, or restore it | [`../DEPLOY.md#backup`](../DEPLOY.md#backup) |
 | Fix an install that went wrong | [`../INSTALL.md#troubleshooting`](../INSTALL.md#troubleshooting) |

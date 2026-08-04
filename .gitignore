@@ -49,3 +49,9 @@ Temp/
 
 # Local git worktrees created by Mission Control
 .worktree/
+
+# Checkouts the reference compose bind-mounts into the Core (deploy/docker-compose.yml).
+# The directory is checked in so a clean checkout can `docker compose up` with
+# no root-owned mountpoint appearing under it; its contents are yours.
+deploy/repos/*
+!deploy/repos/.gitkeep

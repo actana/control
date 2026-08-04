@@ -1,21 +1,35 @@
-# Reference deployment: the Panel behind Caddy, which terminates TLS with
-# automatic Let's Encrypt certificates (ADR 0010 — the Panel itself speaks
-# plain HTTP and never grows certificate code).
+# The reference deployment: one Panel, one Core, one network (ADR 0016 D41).
 #
-#   cp .env.example .env    # set AC_PANEL_DOMAIN (and optionally AC_SECRETS_KEY)
 #   docker compose up -d
+#   docker compose logs core        # copy the registration blob it printed
 #
-# then open https://<your domain>. DNS for the domain must already point at
-# this machine, with ports 80 and 443 reachable, or Let's Encrypt issuance
-# fails. For plain-localhost use skip this file entirely — see DEPLOY.md.
+# then open http://localhost:7420, create the Operator, and paste the blob into
+# "Add Core". The Panel dials wss://core:8443 over this network — which is why
+# ACTANA_PUBLIC_HOST below is the compose *service name* and not a real DNS
+# name. Both images are published, so a clean checkout needs nothing built.
 #
-# Caddy forwards WebSocket upgrades (the panel link) and sets
-# X-Forwarded-Proto out of the box, which is what makes the Panel mark its
-# session cookie Secure behind the proxy.
+# There is no TLS terminator here and none is coming. The Panel speaks plain
+# HTTP by design (ADR 0010 — "the Panel itself never grows certificate code"),
+# so the job of this file is to name the port your nginx / Traefik / Caddy
+# points at: 7420, published on loopback below. Two requirements on whatever
+# you put in front: forward WebSocket upgrades (the panel link), and set
+# `X-Forwarded-Proto: https` — without it the Panel issues a session cookie the
+# browser will happily send over plain HTTP. See DEPLOY.md.
+#
+# None of that touches the core-link. The Core presents a self-signed server
+# certificate from its own CA and requires the Panel's client certificate
+# (ADR 0002); that material is minted by the Core, travels in the registration
+# blob, and is never something you supply or renew.
 services:
   panel:
     image: ghcr.io/actana/panel:latest
     restart: unless-stopped
+    ports:
+      # Loopback on purpose: this is plain HTTP. `localhost` is a secure
+      # context without TLS, so a single-machine setup works as it stands.
+      # Change this to "7420:7420" only once a TLS proxy is the thing in
+      # front of it.
+      - "127.0.0.1:7420:7420"
     environment:
       # Optional: hold the secrets key outside the data volume so a copied
       # volume alone can't open the Core credentials. Empty means the Panel
@@ -26,22 +40,52 @@ services:
       # backing up the Panel.
       - panel-data:/data
 
-  caddy:
-    image: caddy:2.10
+  # No published ports, deliberately: the Panel reaches this Core over the
+  # compose network and nothing else needs to. Nor `privileged`, `cgroup:
+  # host`, `tmpfs:` or `init:` — all four belonged to the systemd fixture this
+  # replaced, and tini is PID 1 inside the image itself (ADR 0016 D14).
+  core:
+    image: ghcr.io/actana/core:latest
     restart: unless-stopped
-    ports:
-      - "80:80"
-      - "443:443"
     environment:
-      - AC_PANEL_DOMAIN=${AC_PANEL_DOMAIN:?set AC_PANEL_DOMAIN to the hostname this Panel is served at}
+      # The address the Panel dials, and therefore the SAN in this Core's
+      # server certificate and the endpoint in every pairing token it prints.
+      # It lives here, in the file you edit, rather than in the image — the
+      # image never guesses it, because a container's default hostname is its
+      # container ID and would change the certificate on every recreation.
+      - ACTANA_PUBLIC_HOST=core
+      # What the Panel shows this Core as. Defaults to the public host.
+      - ACTANA_LABEL=core
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      # Certificates and ACME account state — losing these only means
-      # re-issuance, but keeping them avoids Let's Encrypt rate limits.
-      - caddy-data:/data
-      - caddy-config:/config
+      # The Core's whole home: the pairing identity, the SQLite database, and
+      # each Harness's own credentials (~/.claude, ~/.codex, …). One mount,
+      # one backup target, and the only thing `docker compose down -v`
+      # destroys. Restarts and image upgrades keep it.
+      - core-home:/home/core
+      # Your checkouts, where the Panel's "Add project" will find them.
+      # Swappable for a named volume — `core-repos:/home/core/repos`, with
+      # `core-repos:` added under `volumes:` — if you would rather the Core
+      # own them: files the Core writes here are owned by uid 1000, which is
+      # your own uid only on a host whose login user was the first created.
+      - ./repos:/home/core/repos
+
+# A second Core is the block above again with three things changed: the
+# service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
+# here is a singleton. Uncomment, add `core2-home:` under `volumes:`, and pair
+# it the same way — its blob is in `docker compose logs core2`.
+#
+# >>> second Core
+#   core2:
+#     image: ghcr.io/actana/core:latest
+#     restart: unless-stopped
+#     environment:
+#       - ACTANA_PUBLIC_HOST=core2
+#       - ACTANA_LABEL=core2
+#     volumes:
+#       - core2-home:/home/core
+#       - ./repos2:/home/core/repos
+# <<< second Core
 
 volumes:
   panel-data:
-  caddy-data:
-  caddy-config:
+  core-home:

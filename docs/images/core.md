@@ -11,6 +11,21 @@ service unit and no `actana setup`: the image tag is the version, the entrypoint
 [INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md) — remains fully supported and
 is unrelated to this image.
 
+## Quick start
+
+The reference [`deploy/docker-compose.yml`](https://github.com/actana/control/blob/main/deploy/docker-compose.yml)
+brings this image up beside a Panel on one network:
+
+```bash
+docker compose up -d
+docker compose logs core        # copy the registration blob it printed
+```
+
+Then open the Panel and paste that blob into **Add Core**. The Panel dials this
+container by its compose service name, so the Core publishes no port at all. A
+second Core is the same service block again with a different name, host and
+volume — nothing here is a singleton.
+
 ## Configuration
 
 Three variables, and only the first is required.

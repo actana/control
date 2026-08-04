@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   CORE_APP_ROOT,
   CORE_HOME,
+  CORE_IMAGE,
   CORE_PACKAGES,
   CORE_PORT,
   PANEL_DATA_DIR,
@@ -19,16 +20,18 @@ import {
   dockerfileFacts,
   readRepoFile,
   repoRoot,
+  secondCoreBlock,
 } from "../lib/panel-image.mjs";
 
-// The one-deployable contract (web-panel-extraction issue 09): the Dockerfile,
-// the reference compose, the Caddyfile, and the release workflow are separate
-// files that must agree on the image name, the port, and the single data
-// directory. These tests are the agreement.
+// The one-deployable contract (web-panel-extraction issue 09): the two
+// Dockerfiles, the one reference compose, and the release workflow are
+// separate files that must agree on the image names, the ports, and the
+// single data directory each side keeps its state in. These tests are the
+// agreement.
 
 const dockerfile = dockerfileFacts(readRepoFile(PANEL_DOCKERFILE));
-const compose = composeFacts(readRepoFile("deploy/docker-compose.yml"));
-const caddyfile = readRepoFile("deploy/Caddyfile");
+const composeText = readRepoFile("deploy/docker-compose.yml");
+const compose = composeFacts(composeText);
 const workflow = readRepoFile(".github/workflows/images-release.yml");
 // The build/smoke/push machinery moved into one reusable workflow so the PR,
 // edge, and release paths share a single implementation; images-release.yml is
@@ -49,9 +52,10 @@ describe("Dockerfile", () => {
     // Miss one and it looks for a root Dockerfile that is not there.
     expect(imageWorkflow).toContain(`--file ${PANEL_DOCKERFILE}`);
     expect(readRepoFile("scripts/smoke-panel-image.mjs")).toContain(PANEL_DOCKERFILE);
-    expect(readRepoFile("deploy/dev/docker-compose.yml")).toContain(
-      `dockerfile: ${PANEL_DOCKERFILE}`,
-    );
+    // The reference compose used to be a third builder. It pulls now, so it
+    // names an image rather than a Dockerfile — and nothing else in the tree
+    // may quietly go back to building one that isn't there.
+    expect(composeText).not.toContain("dockerfile:");
   });
 
   // ADR 0016 D24 replaced four assertions here rather than patching them to
@@ -175,19 +179,41 @@ describe("Dockerfile", () => {
   });
 });
 
+// ADR 0016 D41: one compose file, a Panel and a Core on one network, and no
+// TLS terminator. The Caddy service and its Caddyfile are gone — operators
+// bring their own edge, so the reference's job is to name the port to point it
+// at. What replaced those assertions is the Core half.
 describe("reference compose", () => {
   const panel = compose.services.panel;
-  const caddy = compose.services.caddy;
+  const coreService = compose.services.core;
 
-  it("runs the published Panel image", () => {
+  it("runs the published images, so a clean checkout builds nothing", () => {
     expect(panel.image).toBe(`${PANEL_IMAGE}:latest`);
+    expect(coreService.image).toBe(`${CORE_IMAGE}:latest`);
+    expect(Object.keys(compose.services)).toEqual(["panel", "core"]);
   });
 
-  it("publishes no Panel port — the proxy is the only way in from outside", () => {
-    expect(panel.ports).toEqual([]);
+  it("publishes the Panel on loopback, and names no TLS terminator at all", () => {
+    expect(panel.ports).toEqual([`127.0.0.1:${PANEL_PORT}:${PANEL_PORT}`]);
+    // The two services above are the whole file, so there is no terminator to
+    // find; the Caddyfile it used to read went with it. Prose still names
+    // nginx/Traefik/Caddy, because pointing one at 7420 is what an operator
+    // does next — that is the only place those words may appear now.
+    expect(fs.existsSync(path.join(repoRoot, "deploy/Caddyfile"))).toBe(false);
+    expect(composeText).not.toMatch(/^\s+image:.*caddy/im);
   });
 
-  it("mounts exactly one named volume, at the image's data directory", () => {
+  it("publishes no Core port — only the Panel reaches it, over the network", () => {
+    expect(coreService.ports).toEqual([]);
+  });
+
+  it("keeps both services up across a host reboot", () => {
+    for (const service of [panel, coreService]) {
+      expect(service.scalars.restart).toBe("unless-stopped");
+    }
+  });
+
+  it("mounts exactly one named volume on the Panel, at its data directory", () => {
     expect(panel.volumes).toEqual([`panel-data:${PANEL_DATA_DIR}`]);
     expect(compose.volumes).toContain("panel-data");
   });
@@ -196,22 +222,66 @@ describe("reference compose", () => {
     expect(panel.environment.some((e) => e.startsWith("AC_SECRETS_KEY="))).toBe(true);
   });
 
-  it("terminates TLS in Caddy on 80/443 with persistent cert storage", () => {
-    expect(caddy.ports).toEqual(expect.arrayContaining(["80:80", "443:443"]));
-    expect(caddy.volumes.some((v) => v.includes("Caddyfile"))).toBe(true);
-    expect(caddy.volumes.some((v) => v.startsWith("caddy-data:"))).toBe(true);
-    expect(compose.volumes).toContain("caddy-data");
+  // D41. The image never guesses the public host — a container's default
+  // hostname is its container ID, so a guessed one would re-mint the
+  // certificate SAN on every recreation. `core` is the compose service name,
+  // which is exactly what the Panel dials over this network.
+  it("sets the public host to the service name, in the file the operator edits", () => {
+    expect(coreService.environment).toContain("ACTANA_PUBLIC_HOST=core");
+    // A baked default in the image would make this line decorative; the image
+    // contract (D15) is that the variable is required and never guessed.
+    expect(core.env.ACTANA_PUBLIC_HOST).toBeUndefined();
   });
 
-  it("proxies to the port the image exposes, for the domain the operator sets", () => {
-    expect(caddyfile).toContain("{$AC_PANEL_DOMAIN}");
-    expect(caddyfile).toContain(`reverse_proxy panel:${PANEL_PORT}`);
+  // All four died with systemd, and the image carries tini as PID 1 (D14), so
+  // `init:` would be a second reaper nobody asked for.
+  it("carries none of the systemd fixture's container privileges", () => {
+    for (const dead of ["privileged", "cgroup", "tmpfs", "init"]) {
+      expect(coreService.scalars[dead]).toBeUndefined();
+    }
+    expect(coreService.volumes.some((v) => v.includes("/sys/fs/cgroup"))).toBe(false);
   });
 
-  it("documents the two env knobs the compose path needs", () => {
+  // D19 — the home is the state, because Harnesses write all over $HOME. The
+  // repos bind mount is the one other mount, and it is the one an operator is
+  // expected to change.
+  it("gives the Core one named volume — its home — plus a swappable repos mount", () => {
+    expect(coreService.volumes).toEqual([`core-home:${CORE_HOME}`, `./repos:${CORE_HOME}/repos`]);
+    expect(compose.volumes).toEqual(["panel-data", "core-home"]);
+    expect(composeText).toMatch(/Swappable for a named volume/);
+    // The bind mount's host side has to exist in a clean checkout, or Docker
+    // creates it root-owned and uid 1000 cannot write to its own repos.
+    expect(fs.existsSync(path.join(repoRoot, "deploy/repos"))).toBe(true);
+  });
+
+  it("documents the env knob the compose path still has", () => {
     const example = readRepoFile("deploy/.env.example");
-    expect(example).toContain("AC_PANEL_DOMAIN");
     expect(example).toContain("AC_SECRETS_KEY");
+    expect(example).not.toContain("AC_PANEL_DOMAIN");
+  });
+
+  // D41's "nothing here is a singleton", tested rather than asserted: the
+  // block an operator would paste is parsed as a service and compared with
+  // the one it was copied from. Three things differ and nothing else does.
+  describe("the second Core an operator pastes in", () => {
+    const block = secondCoreBlock(composeText);
+    const second = composeFacts(`services:\n${block}`).services.core2;
+
+    it("is uncommentable into a real service", () => {
+      expect(block).toBeTruthy();
+      expect(second).toBeTruthy();
+    });
+
+    it("differs from the first Core in its name, its host and its volume", () => {
+      expect(second.image).toBe(coreService.image);
+      expect(second.scalars.restart).toBe(coreService.scalars.restart);
+      expect(second.ports).toEqual([]);
+      expect(second.environment).toContain("ACTANA_PUBLIC_HOST=core2");
+      expect(second.volumes[0]).toBe(`core2-home:${CORE_HOME}`);
+      // Its own volume, not a second mount of the first Core's — which would
+      // put two Cores' identities and databases in one directory.
+      expect(second.volumes).not.toContain(coreService.volumes[0]);
+    });
   });
 });
 
@@ -287,11 +357,13 @@ describe("edge workflow", () => {
 // never runs (ADR 0016 D13). These tests are the clauses of §B and §C that a
 // well-meaning cleanup would otherwise quietly undo.
 describe("core image", () => {
-  it("is built from deploy/core.Dockerfile, not the dev fixture", () => {
-    // deploy/dev/ still exists until T45 deletes it; what matters here is that
-    // the published image stopped coming from it.
+  it("is built from deploy/core.Dockerfile, and the dev fixture is gone", () => {
     expect(imageWorkflow).toContain("deploy/core.Dockerfile");
-    expect(imageWorkflow).not.toContain("deploy/dev/core.Dockerfile");
+    // D40 deleted deploy/dev/ outright rather than leaving it beside the real
+    // image — it existed to fake a systemd machine for the tarball to install
+    // on, which is the design this replaced, and it is what a newcomer would
+    // otherwise copy.
+    expect(fs.existsSync(path.join(repoRoot, "deploy/dev"))).toBe(false);
   });
 
   it("takes the Core tarball from a named build context, without a layer", () => {

@@ -176,9 +176,10 @@ jobs:
       # one, because artifacts/ is excluded by .dockerignore. The main context
       # is deploy/ and the Dockerfile reads nothing from it.
       #
-      # This is a real Core, not the deploy/dev fixture it replaced (ADR 0016
-      # D40): no init system, no --privileged, no host cgroup, and no provision
-      # script hardcoding a hostname. The labels say so.
+      # This is a real Core, not the systemd fixture `deploy/dev/` used to
+      # hold (ADR 0016 D40, which deleted it): no init system, no
+      # --privileged, no host cgroup, and no provision script hardcoding a
+      # hostname. The labels say so.
       - name: Build the Core image
         if: inputs.image == 'core'
         env:

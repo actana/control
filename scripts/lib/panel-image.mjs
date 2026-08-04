@@ -71,6 +71,13 @@ export const PANEL_TABLES = Object.freeze([
 /** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */
 export const CORE_PORT = 8443;
 
+/**
+ * The published Core image, tag-less — the counterpart to `PANEL_IMAGE`. The
+ * reference compose pulls `:latest` so a clean checkout brings the pair up
+ * without building either one.
+ */
+export const CORE_IMAGE = "ghcr.io/actana/core";
+
 /** Where the Core image extracts the release tarball (ADR 0016 D13). */
 export const CORE_APP_ROOT = "/opt/actana";
 
@@ -208,10 +215,32 @@ export function aptPackages(run) {
 }
 
 /**
+ * The copy-paste block for a second Core, lifted out of the reference
+ * compose's comments and uncommented.
+ *
+ * D41's "nothing here is a singleton" is only worth writing down if the block
+ * an operator would actually paste is a working service — so the block is
+ * fenced in the file and read back here, rather than eyeballed. Returns the
+ * YAML as if it had been uncommented in place, indentation intact.
+ */
+export function secondCoreBlock(text) {
+  const fenced = text.match(/^# >>> second Core\n([\s\S]*?)^# <<< second Core$/m);
+  if (!fenced) return null;
+  return fenced[1]
+    .split("\n")
+    .filter((line) => line.startsWith("#"))
+    .map((line) => line.replace(/^#[ ]?/, ""))
+    .join("\n");
+}
+
+/**
  * Extract services and top-level volumes from the reference compose file.
  * Understands exactly the shape we write: two-space indents, `services:` and
- * `volumes:` at the top level, scalar `image:`, and list-form `ports:` /
- * `volumes:` / `environment:` under each service.
+ * `volumes:` at the top level, scalar keys such as `image:` and `restart:`,
+ * and list-form `ports:` / `volumes:` / `environment:` under each service.
+ *
+ * Scalars land in `scalars` as well, unparsed. That is what lets a test say
+ * `privileged` is absent — a key nobody models cannot be asserted missing.
  */
 export function composeFacts(text) {
   const services = {};
@@ -240,17 +269,18 @@ export function composeFacts(text) {
 
     if (indent === 2) {
       service = body.replace(/:$/, "");
-      services[service] = { image: null, ports: [], volumes: [], environment: [] };
+      services[service] = { image: null, ports: [], volumes: [], environment: [], scalars: {} };
       field = null;
     } else if (indent === 4 && service) {
       const [key, ...rest] = body.split(":");
       const value = rest.join(":").trim();
-      if (key === "image") {
-        services[service].image = value;
-        field = null;
-      } else if (key === "ports" || key === "volumes" || key === "environment") {
+      if (key === "ports" || key === "volumes" || key === "environment") {
         field = key;
       } else {
+        // Everything else this file uses is a scalar. `image` keeps its own
+        // named slot because every caller already reads it there.
+        if (key === "image") services[service].image = value;
+        services[service].scalars[key] = value;
         field = null;
       }
     } else if (indent >= 6 && service && field && body.startsWith("- ")) {
