@@ -59,7 +59,11 @@ async function main(): Promise<void> {
     out: (line) => console.log(line),
     err: (line) => console.error(line),
     probeHarnesses,
-    runDaemon: async () => {
+    runDaemon: async (env) => {
+      // `core-entry` reads its configuration from `process.env`, so whatever
+      // the CLI resolved for it (the container contract; nothing on metal)
+      // is merged in before the module is loaded.
+      Object.assign(process.env, env);
       // Requiring rather than importing keeps the daemon out of this bundle:
       // both files ship side by side in `app/`, and duplicating the Core
       // into the CLI would double the tarball's JavaScript for no gain.

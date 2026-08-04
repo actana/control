@@ -16,12 +16,33 @@
 //
 // Operator-facing strings say "pairing token" (CONTEXT.md's UI note); the code
 // underneath keeps the domain name "Registration blob".
+//
+// The same binary ships inside the Core image, where the lifecycle belongs to
+// the container runtime instead: `setup`, `start`, `stop`, `restart`, `update`,
+// `uninstall` and `logs` refuse and name the Docker command that does the job,
+// and the verbs that are still this CLI's own — `status`, `token`,
+// `harnesses`, `daemon` — read their config from the environment contract
+// rather than from what setup wrote (ADR 0016 D13/D15/D16). `actana-container.ts`
+// owns that reading; this file only asks it which world it is in.
 
 import * as fs from "node:fs";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
-import { loadMaterial, materialFilePath, persistMaterial } from "./core-material-store";
+import {
+  loadMaterialFromFile,
+  materialFilePath,
+  persistMaterialToFile,
+} from "./core-material-store";
+import {
+  CONTAINER_LABEL_ENV,
+  CONTAINER_PORT_ENV,
+  CONTAINER_PUBLIC_HOST_ENV,
+  containerRefusal,
+  DEFAULT_CONTAINER_PORT,
+  inContainer,
+  readContainerContract,
+} from "./actana-container";
 import { endpointFor, readActanaConfig, type ActanaConfig } from "./actana-config";
 import { binDirOnPath, resolveActanaLayout, type ActanaLayout } from "./actana-layout";
 import { readCoreManifest, type CoreManifest } from "./actana-manifest";
@@ -42,7 +63,7 @@ import {
   supportedHarnessIdsSentence,
 } from "./actana-harnesses";
 import type { Harness } from "@actana/shared/domain";
-import { formatActanaStatus, summarizeHealth } from "./actana-status";
+import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./actana-status";
 import type { ActanaSystem } from "./actana-system";
 import { runActanaUninstall } from "./actana-uninstall";
 import { runActanaUpdate } from "./actana-update";
@@ -83,8 +104,16 @@ export type ActanaCliDeps = {
   err: (line: string) => void;
   /** The Core's own PATH probe — the source of truth for agent availability. */
   probeHarnesses: () => CoreLinkHarnessAvailabilityMap;
-  /** Run the Core daemon in the foreground. What the systemd unit execs. */
-  runDaemon: () => Promise<void>;
+  /**
+   * Run the Core daemon in the foreground. What the systemd unit execs, and
+   * what the image's `CMD` runs.
+   *
+   * The env bag is what the daemon needs on top of what it already inherits.
+   * On metal it is empty — the unit's `Environment=` lines carry everything.
+   * In a container there is no unit, so the `ACTANA_*` contract is translated
+   * into the `AC_*` variables the daemon reads and handed over here.
+   */
+  runDaemon: (env: Record<string, string>) => Promise<void>;
 };
 
 const USAGE = `actana — install and operate an Actana Control Core.
@@ -139,6 +168,28 @@ Global options:
 
 \`actana status\` exits non-zero when the Core is not healthy, so it works
 as a health check in scripts.
+`;
+
+/**
+ * The extra page `actana --help` prints inside the Core image.
+ *
+ * It replaces nothing: the verbs that still work are the same verbs, and an
+ * operator reading this has usually just been refused by one of the others.
+ * The three variables are the whole operator-facing contract (ADR 0016 D15) —
+ * everything else the image sets is a private constant, and documenting it
+ * here would invite operators to override it.
+ */
+const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to Docker:
+
+  setup, start, stop, restart, update, uninstall, logs
+                        not available here — run the Docker command each one
+                        names (\`docker compose up -d\`, \`docker compose logs -f\`, …)
+
+The image reads three variables:
+  ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials. Never guessed:
+                        it is baked into this Core's certificate and its pairing token
+  ${CONTAINER_PORT_ENV}           port the daemon listens on (default ${DEFAULT_CONTAINER_PORT})
+  ${CONTAINER_LABEL_ENV}          alias shown in your Panel (default: the public host)
 `;
 
 // ─── flag parsing ───────────────────────────────────────────────────────────
@@ -260,12 +311,55 @@ function requireService(
   }
 }
 
+/**
+ * The container's equivalent of what setup recorded, or null after saying what
+ * is wrong with the environment.
+ *
+ * There is no `actana.json` in the image and there never will be — nothing ran
+ * setup to write one. The three variables the operator sets are the whole of
+ * it, and the rest is either the image's own private constants or a fact of
+ * the running tree.
+ */
+function containerInstall(deps: ActanaCliDeps): InstalledCore | null {
+  const contract = readContainerContract(deps.env);
+  if ("error" in contract) {
+    deps.err(contract.error);
+    return null;
+  }
+  const layout = resolveActanaLayout(deps.env, deps.home, deps.platform);
+  return {
+    layout,
+    config: {
+      version: readCoreManifest(deps.installRoot)?.version ?? "unknown",
+      port: contract.port,
+      host: deps.env.AC_CORE_LINK_HOST ?? "0.0.0.0",
+      publicHost: contract.publicHost,
+      label: contract.label,
+      installDir: deps.installRoot,
+      dataDir: deps.env.AC_USER_DATA_DIR ?? layout.dataDir,
+    },
+  };
+}
+
 function requireInstall(deps: ActanaCliDeps): InstalledCore | null {
+  if (inContainer(deps.env)) return containerInstall(deps);
   const installed = findInstall(deps);
   if (!installed) {
     deps.err("No Core is installed for this user. Run `actana setup` first.");
   }
   return installed;
+}
+
+/**
+ * Where this Core's material lives.
+ *
+ * In the image it is in the mounted volume, named by the same
+ * `AC_CORE_MATERIAL_FILE` the daemon loads from — so the CLI and the daemon
+ * cannot end up disagreeing about which identity this Core has.
+ */
+function materialPathFor(deps: ActanaCliDeps, layout: ActanaLayout): string {
+  const fromImage = inContainer(deps.env) ? deps.env.AC_CORE_MATERIAL_FILE : undefined;
+  return fromImage || materialFilePath(layout.configDir);
 }
 
 /** Read the manifest of the installed tree, falling back to the running tree. */
@@ -283,8 +377,8 @@ function manifestFor(deps: ActanaCliDeps, config: ActanaConfig | null): CoreMani
  * daemon loads verify it, and a freshly signed one carries a full lease
  * instead of whatever was left of the original.
  */
-function pairingToken(config: ActanaConfig, layout: ActanaLayout): string | null {
-  const material = loadMaterial(layout.configDir);
+function pairingToken(config: ActanaConfig, materialPath: string): string | null {
+  const material = loadMaterialFromFile(materialPath);
   if (!material) return null;
   return encodeRegistrationBlob({
     endpoint: endpointFor(config),
@@ -431,12 +525,50 @@ async function cmdSetup(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   return 0;
 }
 
-function cmdStatus(deps: ActanaCliDeps, argv: string[]): number {
+/**
+ * `actana status` inside the image.
+ *
+ * Same report, two rows answered differently: there is no unit to ask whether
+ * the daemon is up, so the core-link port is asked instead, and there is no
+ * unit to name as the auto-start mechanism, so the report says what actually
+ * restarts this Core (ADR 0016 D16). The image is the install, so `installed`
+ * is true by construction — a container running this binary at all is one.
+ */
+async function containerStatus(deps: ActanaCliDeps): Promise<number> {
+  const installed = containerInstall(deps);
+  if (!installed) return 1;
+  const { layout, config } = installed;
+  const manifest = readCoreManifest(deps.installRoot);
+
+  // A zero timeout is one connect attempt: `status` reports what is true now,
+  // and the daemon it is asking about is a process in the same container.
+  const listening = await deps.system.waitForPort(config.port, 0);
+
+  const report: ActanaStatusReport = {
+    installed: true,
+    version: manifest?.version ?? null,
+    protocolVersion: manifest?.protocolVersion ?? null,
+    target: manifest?.target ?? null,
+    endpoint: endpointFor(config),
+    serviceName: null,
+    service: null,
+    persistence: null,
+    container: { listening, port: config.port },
+    paired: fs.existsSync(materialPathFor(deps, layout)),
+    agents: deps.probeHarnesses(),
+  };
+
+  deps.out(formatActanaStatus(report).trimEnd());
+  return summarizeHealth(report) === "healthy" ? 0 : 1;
+}
+
+async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   const parsed = parseFlags(argv, {});
   if ("error" in parsed) {
     deps.err(parsed.error);
     return EXIT_USAGE;
   }
+  if (inContainer(deps.env)) return containerStatus(deps);
 
   const installed = findInstall(deps);
   const layout = installed?.layout ?? resolveActanaLayout(deps.env, deps.home, deps.platform);
@@ -454,6 +586,7 @@ function cmdStatus(deps: ActanaCliDeps, argv: string[]): number {
     serviceName: service.name,
     service: service.state(),
     persistence: service.persistence(),
+    container: null,
     paired: fs.existsSync(materialFilePath(layout.configDir)),
     agents: config ? deps.probeHarnesses() : {},
   };
@@ -473,9 +606,17 @@ async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   const installed = requireInstall(deps);
   if (!installed) return 1;
 
-  const token = pairingToken(installed.config, installed.layout);
+  const token = pairingToken(
+    installed.config,
+    materialPathFor(deps, installed.layout),
+  );
   if (!token) {
-    deps.err("No pairing material found. Re-run `actana setup` to reissue it.");
+    deps.err(
+      inContainer(deps.env)
+        ? "This Core has no pairing material yet — it is minted on first boot. Check " +
+            "`docker compose logs` for why the daemon did not start."
+        : "No pairing material found. Re-run `actana setup` to reissue it.",
+    );
     return 1;
   }
 
@@ -507,8 +648,13 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   const installed = requireInstall(deps);
   if (!installed) return 1;
   const { layout, config } = installed;
-  const service = requireService(deps, layout);
-  if (!service) return 1;
+  const materialPath = materialPathFor(deps, layout);
+  // A container has no unit to restart and this CLI is not the daemon's
+  // parent, so the restart below is the operator's to make. Everything up to
+  // it is identical.
+  const container = inContainer(deps.env);
+  const service = container ? null : requireService(deps, layout);
+  if (!container && !service) return 1;
 
   if (deps.interactive && parsed.values.yes !== true) {
     const yes = await deps.system.confirm(
@@ -522,7 +668,26 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     }
   }
 
-  persistMaterial(layout.configDir, await mintFreshMaterial(config.publicHost));
+  persistMaterialToFile(materialPath, await mintFreshMaterial(config.publicHost));
+
+  if (!service) {
+    const token = pairingToken(config, materialPath);
+    if (!token) {
+      deps.err(`The new pairing material could not be read back from ${materialPath}.`);
+      return 1;
+    }
+    // Said before the token, and said as a restart the operator still owes:
+    // the daemon holds the old identity in memory until the container comes
+    // back, so "invalidated" is not true yet and must not be printed as if it
+    // were.
+    deps.err(
+      "New pairing credentials are written. This Core is still serving the old ones " +
+        "until you restart the container — `docker compose restart` — and the token " +
+        "below only works after that. Re-pair every Panel with it:",
+    );
+    deps.out(token);
+    return 0;
+  }
 
   const restarted = service.verb("restart");
   if (restarted.status !== 0) {
@@ -536,7 +701,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   }
   const listening = await deps.system.waitForPort(config.port, LISTEN_TIMEOUT_MS);
 
-  const token = pairingToken(config, layout);
+  const token = pairingToken(config, materialPath);
   if (!token) {
     deps.err("The new pairing material could not be read back. Re-run `actana setup`.");
     return 1;
@@ -685,6 +850,32 @@ function cmdServiceVerb(deps: ActanaCliDeps, verb: ServiceVerb, argv: string[]):
 }
 
 /**
+ * The running daemon's pid, or null when nothing can tell us.
+ *
+ * Only the init system knows it, and in a container there is not one: the
+ * daemon is a sibling process this CLI did not start and cannot identify, so
+ * the re-probe timer is the whole answer there.
+ */
+function runningDaemonPid(deps: ActanaCliDeps): number | null {
+  if (inContainer(deps.env)) return null;
+  const installed = findInstall(deps);
+  if (!installed) return null;
+  try {
+    return (
+      createServiceManager({
+        platform: deps.platform,
+        layout: installed.layout,
+        system: deps.system,
+        user: deps.user,
+        uid: deps.uid,
+      }).state()?.mainPid ?? null
+    );
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Tell a running daemon to re-probe now.
  *
  * Best effort by design: the Core re-probes on its own timer regardless, so
@@ -692,21 +883,7 @@ function cmdServiceVerb(deps: ActanaCliDeps, verb: ServiceVerb, argv: string[]):
  * all mean "the Panel notices a minute later" rather than "this failed".
  */
 function refreshAvailability(deps: ActanaCliDeps): void {
-  const installed = findInstall(deps);
-  if (!installed) return;
-  let pid: number | null = null;
-  try {
-    pid =
-      createServiceManager({
-        platform: deps.platform,
-        layout: installed.layout,
-        system: deps.system,
-        user: deps.user,
-        uid: deps.uid,
-      }).state()?.mainPid ?? null;
-  } catch {
-    return;
-  }
+  const pid = runningDaemonPid(deps);
   if (pid !== null && deps.system.signal(pid, "SIGHUP")) {
     deps.out("The Core re-probed its Harnesses — your Panel sees them now.");
     return;
@@ -759,6 +936,34 @@ async function cmdHarnesses(deps: ActanaCliDeps, argv: string[]): Promise<number
     : 1;
 }
 
+/**
+ * `actana daemon` — the Core in the foreground.
+ *
+ * On metal the unit carries the daemon's whole environment, so there is
+ * nothing to add. In a container there is no unit: the operator's `ACTANA_*`
+ * contract is translated into the `AC_*` variables `core-entry` reads, and a
+ * missing public host stops the boot here rather than letting the Core come up
+ * with a certificate for a container id (ADR 0016 D15).
+ */
+async function cmdDaemon(deps: ActanaCliDeps): Promise<number> {
+  if (!inContainer(deps.env)) {
+    await deps.runDaemon({});
+    return 0;
+  }
+
+  const contract = readContainerContract(deps.env);
+  if ("error" in contract) {
+    deps.err(contract.error);
+    return 1;
+  }
+
+  await deps.runDaemon({
+    AC_CORE_LINK_PORT: String(contract.port),
+    AC_CORE_PUBLIC_HOST: contract.publicHost,
+  });
+  return 0;
+}
+
 const LOGS_FLAGS: FlagSpec = {
   follow: { type: "boolean", alias: "f" },
   lines: { type: "string", alias: "n" },
@@ -792,6 +997,7 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
 
   if (verb === undefined || verb === "help" || verb === "--help" || verb === "-h") {
     deps.out(USAGE.trimEnd());
+    if (inContainer(deps.env)) deps.out("\n" + CONTAINER_USAGE.trimEnd());
     return 0;
   }
   if (verb === "--version" || verb === "-v") {
@@ -802,6 +1008,17 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
     }
     deps.out(`actana ${manifest.version} (core-link protocol ${manifest.protocolVersion})`);
     return 0;
+  }
+
+  // Checked before dispatch, not inside each verb: the answer is a property of
+  // where this Core is running, and a verb that got as far as parsing its own
+  // flags would be a verb an operator could believe was about to run.
+  if (inContainer(deps.env)) {
+    const refusal = containerRefusal(verb);
+    if (refusal) {
+      deps.err(refusal);
+      return EXIT_USAGE;
+    }
   }
 
   switch (verb) {
@@ -823,11 +1040,11 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
       return cmdHarnesses(deps, rest);
     case "uninstall":
       return cmdUninstall(deps, rest);
-    // Not in the usage text: `daemon` is what the unit / LaunchAgent execs,
-    // not something an operator runs. `start`/`stop` are their handles.
+    // Not in the usage text: `daemon` is what the unit / LaunchAgent execs —
+    // and what the image's `CMD` runs — not something an operator types.
+    // `start`/`stop` are their handles on metal; Docker is in a container.
     case "daemon":
-      await deps.runDaemon();
-      return 0;
+      return cmdDaemon(deps);
     default:
       deps.err(`unknown command: ${verb}`);
       deps.err("Run `actana --help` for the list of commands.");

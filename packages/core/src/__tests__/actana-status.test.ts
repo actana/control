@@ -10,6 +10,7 @@ const healthy: ActanaStatusReport = {
   serviceName: "actana-core.service",
   service: { loadState: "loaded", activeState: "active", subState: "running", mainPid: 4211 },
   persistence: { label: "Linger", value: "yes" },
+  container: null,
   paired: true,
   agents: {
     claude: { status: "available", version: "2.1.0" },
@@ -126,6 +127,7 @@ describe("formatActanaStatus", () => {
       serviceName: "actana-core.service",
       service: null,
       persistence: null,
+      container: null,
       paired: false,
       agents: {},
     });
@@ -139,5 +141,49 @@ describe("formatActanaStatus", () => {
 
   it("ends with a newline so shell output does not run together", () => {
     expect(formatActanaStatus(healthy).endsWith("\n")).toBe(true);
+  });
+});
+
+// In the image there is no unit and no linger — the thing that restarts this
+// Core is the container's restart policy, which lives on the host (ADR 0016
+// D16). Status says so rather than naming a unit that does not exist.
+describe("in a container", () => {
+  const inContainer: ActanaStatusReport = {
+    ...healthy,
+    serviceName: null,
+    service: null,
+    persistence: null,
+    container: { listening: true, port: 8443 },
+  };
+
+  it("is healthy when the daemon answers and the Core is paired", () => {
+    expect(summarizeHealth(inContainer)).toBe("healthy");
+  });
+
+  it("is stopped when nothing answers on the core-link port", () => {
+    expect(summarizeHealth({ ...inContainer, container: { listening: false, port: 8443 } })).toBe(
+      "stopped",
+    );
+  });
+
+  it("is degraded when the daemon answers but has minted no material yet", () => {
+    expect(summarizeHealth({ ...inContainer, paired: false })).toBe("degraded");
+  });
+
+  it("reports the restart policy as the auto-start row, not a unit file", () => {
+    const text = formatActanaStatus(inContainer);
+    expect(text).toMatch(/Auto-start\s+.*restart policy/i);
+    expect(text).not.toMatch(/actana-core\.service|systemd|Linger/i);
+  });
+
+  it("points the operator at where the restart policy actually lives", () => {
+    expect(formatActanaStatus(inContainer)).toMatch(/docker inspect/);
+  });
+
+  it("reports the daemon's state as whether its port answers", () => {
+    expect(formatActanaStatus(inContainer)).toMatch(/State\s+running/);
+    expect(
+      formatActanaStatus({ ...inContainer, container: { listening: false, port: 9443 } }),
+    ).toMatch(/State\s+not running.*9443/);
   });
 });
