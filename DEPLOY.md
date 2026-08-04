@@ -68,6 +68,21 @@ Open `http://localhost:7420`. Binding `127.0.0.1` keeps the plain-HTTP port
 off the network; anything reaching the Panel from another machine should come
 through a TLS proxy instead.
 
+### If you bind-mount the data directory instead of using a volume
+
+The container runs as uid **65532** (the distroless `nonroot` account), so a
+host directory mounted at `/data` has to be writable by it — `sudo chown -R
+65532:65532 <dir>` before the first start. A *named* volume, as above, needs
+none of this: Docker seeds a fresh volume with the ownership the image
+carries, which is already 65532. Under rootless Docker or Podman the engine
+maps container uids to host subuids, so use `podman unshare chown` or
+`--userns=keep-id` rather than a plain `chown`.
+
+There is also no shell in the image — it is distroless, which is what takes it
+from 192 known CVEs to 14. `docker exec actana-panel sh` will not work; reach
+for `docker exec actana-panel /nodejs/bin/node -e '…'`, `docker cp`, or a
+debugging sidecar sharing the container's namespaces.
+
 ## The bare `node` path
 
 The image's entry is an ordinary Node program, so the same build runs

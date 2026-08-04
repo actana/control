@@ -336,6 +336,7 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           IMAGES: ${{ needs.resolve.outputs.images }}
+          IMAGE_KIND: ${{ inputs.image }}
           MATRIX: ${{ inputs.matrix }}
           STAGE: ${{ inputs.stage }}
           TAGS: ${{ inputs.tags }}
@@ -373,7 +374,44 @@ jobs:
             tag_args=()
             for tag in $TAGS; do tag_args+=(--tag "$image:$tag"); done
             docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
-            docker buildx imagetools inspect "$image:${TAGS%% *}"
+            primary="$image:${TAGS%% *}"
+            docker buildx imagetools inspect "$primary"
+
+            # The Panel's HEALTHCHECK is a Docker extension to the OCI image
+            # config, and a builder is free to drop it: podman does exactly
+            # that, silently, without --format docker (ADR 0016 D23). The
+            # build job already proved it on the per-arch image *before* that
+            # image was pushed, which is the gate that can actually stop a
+            # publish. This second check covers what that one cannot see —
+            # the stitched manifest is a different artifact, assembled after
+            # the per-arch tags exist — so it fails the run loudly rather
+            # than leaving a healthcheck-less image tagged :latest unnoticed.
+            if [[ "$IMAGE_KIND" == panel ]]; then
+              config="$(docker buildx imagetools inspect "$primary" --format '{{json .Image}}')"
+              # Multi-platform inspect keys the config by platform; a
+              # single-platform one returns the config itself. Accept both.
+              platforms="$(
+                echo "$config" | jq -r '
+                  if has("config") then {"(single)": .} else . end
+                  | to_entries
+                  | map(.key + "\t" + (
+                      if ((.value.config.Healthcheck.Test // []) | join(" ")
+                           | contains("/nodejs/bin/node"))
+                      then "ok" else "MISSING" end))[]'
+              )"
+              # An empty map would otherwise satisfy "no platform is missing
+              # it" without a single platform having been looked at.
+              if [[ -z "$platforms" ]]; then
+                echo "::error title=Could not read the published image config::imagetools inspect returned no platforms for $primary, so the healthcheck could not be confirmed either way." >&2
+                exit 1
+              fi
+              if grep -q MISSING <<<"$platforms"; then
+                echo "::error title=Published image has no healthcheck::$primary is missing the /nodejs/bin/node HEALTHCHECK. The builder dropped it between the per-arch build and the manifest. Per platform:%0A$(sed 's/$/%0A/' <<<"$platforms" | tr -d '\n')" >&2
+                exit 1
+              fi
+              echo "$primary carries its healthcheck on every platform:"
+              echo "$platforms"
+            fi
           done
 
           # Configured but broken is a failure — just not one that costs GHCR.
