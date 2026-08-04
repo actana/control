@@ -42,6 +42,7 @@ function fakeService(overrides: Partial<ActanaServiceManager> = {}) {
     },
     install() {},
     uninstall() {},
+    removeLegacyUnit: () => null,
     async ensurePersistence() {
       return { survivesLogout: true, summary: "enabled, lingering" };
     },

@@ -22,6 +22,16 @@ export const UNIT_NAME = "actana-core.service";
 /** Journal identifier the unit tags its output with — what `actana logs` filters on. */
 export const SYSLOG_IDENTIFIER = "actana-core";
 
+/**
+ * The unit setup wrote when the machine was called a Harness.
+ *
+ * Cleanup, not a compatibility shim: no release ever shipped under this name,
+ * so the only machines carrying it are developer ones installed before the
+ * Harness → Core rename. It is deletable — with `removeLegacyUnit` and its
+ * caller in `actana-setup.ts` — one release after 0.1.0.
+ */
+export const LEGACY_UNIT_NAME = "actana-harness.service";
+
 /** Seconds systemd waits before restarting a daemon that died. */
 const RESTART_SEC = 5;
 
