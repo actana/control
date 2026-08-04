@@ -358,7 +358,7 @@ jobs:
   #            this test is about: PAM, polkit and the logind rules that decide
   #            whether a sudo-less `systemctl --user` and `loginctl
   #            enable-linger` work at all.
-  #   arch   — x64 here, arm64 on the tag run (core-release.yml). The
+  #   arch   — x64 here, arm64 on the tag run (release.yml). The
   #            arch-sensitive risk is prebuilt native modules, and
   #            `core-tarball-smoke` above already boots the arm64 tarball on an
   #            arm64 runner on every PR.
@@ -418,6 +418,14 @@ jobs:
           set -euo pipefail
           tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
           node scripts/e2e-actana-setup-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
+
+  # There is no macOS counterpart to the jobs above, and now two reasons for
+  # it. `mac-arm64` and `mac-x64` are no longer release targets (ADR 0016 D28),
+  # so there is no mac tarball to build and nothing for a launchd e2e to
+  # install — that job could only ever be red. D35 had already taken the leg
+  # off the PR gate as most of the bill. `e2e-actana-setup-macos.mjs` went with
+  # it; docs/core-macos-prerelease-checklist.md is what remains, for anyone
+  # running a Core off a local build on a Mac.
 
   # The Panel image, built and smoked on every PR but never pushed. Until this
   # existed, a Dockerfile or build-stage break stayed invisible until someone

@@ -347,7 +347,10 @@ describe("release workflow", () => {
   // D28. Two legs, not four: the darwin targets are dropped, so a release is
   // two tarballs and a SHA256SUMS over exactly those two.
   it("builds the two Linux tarballs on native runners and nothing on macOS", () => {
-    const tarball = workflow.slice(workflow.indexOf("  tarball:"), workflow.indexOf("  panel:"));
+    const tarball = workflow.slice(
+      workflow.indexOf("  tarball:"),
+      workflow.indexOf("  installer-e2e:"),
+    );
     expect(tarball).toContain("target: linux-x64");
     expect(tarball).toContain("target: linux-arm64");
     expect(tarball).toContain("ubuntu-24.04-arm");

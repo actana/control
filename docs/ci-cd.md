@@ -95,6 +95,10 @@ deliberately **not** one of them: it is served from `main`, so a broken
 installer is fixable without cutting a release
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D29).
 
+The three are Linux-only because the macOS Core targets were dropped
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D28): a Mac runs the Panel and
+hosts its Cores on Linux.
+
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
 update" in the Panel. So tag both together — one `v*` tag builds both.

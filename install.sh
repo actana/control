@@ -148,19 +148,24 @@ parse_args() {
 
 # ─── platform ────────────────────────────────────────────────────────────────
 
-# Maps this machine to one of the four release targets, or explains why there
-# is no build for it. Windows is not an omission: Windows operators run the web
-# Panel and host their Cores on macOS/Linux (WSL counts as Linux).
+# Maps this machine to one of the two release targets, or explains why there
+# is no build for it. macOS and Windows are not omissions: their operators run
+# the web Panel and host their Cores on Linux (WSL counts as Linux).
+#
+# Darwin dies here, at detection, rather than later against the release's
+# checksum file. Mapping it to `mac-*` and letting the download fail produced
+# "release v0.1.0 has no build for mac-arm64" — which reads as a broken
+# release, when the truth is a platform Cores do not run on.
 detect_target() {
   uname_s=$(uname -s)
   uname_m=$(uname -m)
 
   case $uname_s in
     Linux) platform="linux" ;;
-    Darwin) platform="mac" ;;
     *)
-      die "unsupported operating system: $uname_s. Cores run on macOS and Linux
-  (WSL counts as Linux); on Windows, use the web Panel and host Cores elsewhere."
+      die "unsupported operating system: $uname_s. Cores run on Linux
+  (WSL counts as Linux); on macOS and Windows, use the web Panel and host your
+  Cores on a Linux machine."
       ;;
   esac
 
