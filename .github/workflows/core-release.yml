@@ -1,8 +1,14 @@
 name: Core Release
 
-# Builds the four per-platform Core tarballs on a tag push and attaches them,
-# plus a SHA256SUMS asset, to the GitHub Release. This is the distribution
-# channel the `curl | bash` installer and `actana update` pull from.
+# Builds the two per-platform Core tarballs on a tag push and attaches them,
+# plus a SHA256SUMS asset, to the GitHub Release — three assets in total (ADR
+# 0016 D28). This is the distribution channel the `curl | bash` installer and
+# `actana update` pull from.
+#
+# Linux only. A Core is a Linux machine; macOS and Windows operators run the
+# web Panel and host their Cores on Linux. The matrix, `CORE_TARGETS` in
+# `scripts/lib/core-tarball.mjs`, and `install.sh`'s `detect_target` all say
+# the same thing, and the `--expect` guard below is what keeps them saying it.
 #
 # No signing, no notarization, and no secrets beyond the automatic
 # `github.token` it needs to attach assets. Integrity comes from the published
@@ -67,15 +73,11 @@ jobs:
     needs: resolve
     strategy:
       # Let every leg finish so one failure surfaces all of them in a single
-      # run. Publishing still requires all four: a SHA256SUMS covering three
-      # platforms is worse than no release, so `publish` needs `build` whole.
+      # run. Publishing still requires both: a SHA256SUMS covering one
+      # architecture is worse than no release, so `publish` needs `build` whole.
       fail-fast: false
       matrix:
         include:
-          - os: macos-15
-            target: mac-arm64
-          - os: macos-15-intel
-            target: mac-x64
           - os: ubuntu-24.04
             target: linux-x64
           - os: ubuntu-24.04-arm
@@ -149,10 +151,12 @@ jobs:
           path: core-tarballs
           merge-multiple: true
 
-      # --expect 4 is the guard: a silently missing platform must be a red
-      # build, not a checksum file that quietly covers three of four.
+      # --expect is the guard: a silently missing architecture must be a red
+      # build, not a checksum file that quietly covers half the release. It
+      # tracks the matrix above and `CORE_TARGETS` — 2 since the two macOS
+      # targets were dropped (ADR 0016 D28). Change it only alongside them.
       - name: Compose SHA256SUMS
-        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 4
+        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 2
 
       - name: Verify SHA256SUMS the way an operator would
         working-directory: core-tarballs
@@ -176,5 +180,5 @@ jobs:
           else
             gh release create "$RELEASE_REF" "${files[@]}" \
               --title "$RELEASE_REF" \
-              --notes "Core tarballs for macOS and Linux Cores. Verify with \`sha256sum -c SHA256SUMS\`."
+              --notes "Core tarballs for Linux (x64 and arm64). Verify with \`sha256sum -c SHA256SUMS\`."
           fi

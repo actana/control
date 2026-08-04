@@ -14,7 +14,7 @@
 // operator's fresh VM.
 //
 // The criterion's "no network fetches" half is not enforced here — sandboxing
-// egress portably across the four targets is more machinery than it is worth,
+// egress portably across both targets is more machinery than it is worth,
 // and the build is what guarantees it: everything the Core loads is copied
 // into the tarball, and nothing in the boot path fetches.
 //

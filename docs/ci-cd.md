@@ -74,9 +74,11 @@ The product ships as three things, on two pipelines, from the same tag:
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
 - **The Core, as a container** comes from the same workflow → `ghcr.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
-  tarball. `core-release.yml` → four targets (`mac-arm64`, `mac-x64`,
-  `linux-x64`, `linux-arm64`) with published checksums, which `install.sh` and
-  `actana update` verify against.
+  tarball. `core-release.yml` → two targets (`linux-x64`, `linux-arm64`) with
+  published checksums, which `install.sh` and `actana update` verify against.
+  Three assets in total, Linux only: macOS Core targets were dropped
+  ([ADR 0016](adr/0016-the-0-1-0-shape.md) D28), so a Mac runs the Panel and
+  hosts its Cores on Linux.
 
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs

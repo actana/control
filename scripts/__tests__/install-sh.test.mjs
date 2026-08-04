@@ -33,9 +33,18 @@ import { tarballName } from "../lib/core-tarball.mjs";
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const INSTALL_SH = path.join(repoRoot, "install.sh");
 
-/** The two releases the fixture serves. `--version` pins the older one. */
+/** The two good releases the fixture serves. `--version` pins the older one. */
 const OLD_VERSION = "0.1.0";
 const NEW_VERSION = "0.2.0";
+
+/**
+ * A deliberately broken third release: it carries `linux-x64` only, and that
+ * one asset is served corrupted. Both download failure paths — "this release
+ * has no build for my platform" and "checksum mismatch" — pin to it, which
+ * leaves the two good releases good and lets every platform-mapping case
+ * assert a clean install rather than tolerating a known-bad target.
+ */
+const BROKEN_VERSION = "0.0.9";
 
 /**
  * Stands in for the tarball's `bin/actana`: prints what it was called with and
@@ -65,27 +74,27 @@ describeOnPosix("install.sh", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "actana-install-sh-"));
     releaseDir = path.join(root, "releases");
 
-    // Every target, both versions: the mapping tests need a real asset to
-    // download for each, and the pinning test needs two releases to choose
-    // between.
+    // Both release targets, both good versions: the mapping tests need a real
+    // asset to download for each, and the pinning test needs two releases to
+    // choose between.
     for (const version of [OLD_VERSION, NEW_VERSION]) {
-      for (const target of ["linux-x64", "linux-arm64", "mac-arm64"]) {
+      for (const target of ["linux-x64", "linux-arm64"]) {
         writeStubRelease({ dir: releaseDir, version, target, script: stubActana(version, target) });
       }
     }
-    // mac-x64 exists in the older release only — that gap is what the
-    // "release has no build for this platform" case is about.
+    // The broken release: half a release (no linux-arm64) whose one asset is
+    // also served corrupted.
     writeStubRelease({
       dir: releaseDir,
-      version: OLD_VERSION,
-      target: "mac-x64",
-      script: stubActana(OLD_VERSION, "mac-x64"),
+      version: BROKEN_VERSION,
+      target: "linux-x64",
+      script: stubActana(BROKEN_VERSION, "linux-x64"),
     });
 
     server = await startFixtureReleaseServer({
       dir: releaseDir,
       scriptPath: INSTALL_SH,
-      corruptAssets: [tarballName(OLD_VERSION, "mac-arm64")],
+      corruptAssets: [tarballName(BROKEN_VERSION, "linux-x64")],
     });
   });
 
@@ -242,9 +251,12 @@ describeOnPosix("install.sh", () => {
     });
 
     it("fails cleanly when the release has no build for this platform", async () => {
-      const run = await runInstaller({ args: withServer([]), uname: ["Darwin", "x86_64"] });
+      const run = await runInstaller({
+        args: withServer(["--version", BROKEN_VERSION]),
+        uname: ["Linux", "aarch64"],
+      });
       expect(run.status).not.toBe(0);
-      expect(run.output).toContain("mac-x64");
+      expect(run.output).toContain("linux-arm64");
       expect(run.actanaArgs).toBeNull();
     });
   });
@@ -255,21 +267,16 @@ describeOnPosix("install.sh", () => {
       { uname: ["Linux", "amd64"], target: "linux-x64" },
       { uname: ["Linux", "aarch64"], target: "linux-arm64" },
       { uname: ["Linux", "arm64"], target: "linux-arm64" },
-      { uname: ["Darwin", "arm64"], target: "mac-arm64" },
     ];
 
     for (const { uname, target } of cases) {
       it(`maps ${uname.join("/")} to ${target}`, async () => {
         const run = await runInstaller({ args: withServer(["--version", OLD_VERSION]), uname });
-        // mac-arm64 is the corrupted asset; every other target installs. Both
-        // outcomes prove the mapping, since the request names the target.
+        expect(run.status, run.output).toBe(0);
+        expect(run.stdout).toContain(`target=${target}`);
         expect(traffic()).toContain(
           `/${DEFAULT_REPO}/releases/download/v${OLD_VERSION}/${tarballName(OLD_VERSION, target)}`,
         );
-        if (target !== "mac-arm64") {
-          expect(run.status, run.output).toBe(0);
-          expect(run.stdout).toContain(`target=${target}`);
-        }
       });
     }
 
@@ -277,10 +284,29 @@ describeOnPosix("install.sh", () => {
       const run = await runInstaller({ args: withServer([]), uname: ["FreeBSD", "x86_64"] });
       expect(run.status).not.toBe(0);
       expect(run.output).toContain("FreeBSD");
-      expect(run.output).toMatch(/macOS and Linux/i);
+      expect(run.output).toMatch(/Cores run on Linux/i);
       expect(traffic()).toEqual([]);
       expect(run.actanaArgs).toBeNull();
     });
+
+    // The whole point of the Darwin case: a Mac is not an unlucky release, it
+    // is an unsupported platform, and it has to read that way. Before this, the
+    // script mapped Darwin to `mac-*` and the operator met a late
+    // "release v0.1.0 has no build for mac-arm64" — which describes a broken
+    // release, not a machine Cores do not run on.
+    for (const machine of ["arm64", "x86_64"]) {
+      it(`aborts on macOS (${machine}) at detection, before any download`, async () => {
+        const run = await runInstaller({ args: withServer([]), uname: ["Darwin", machine] });
+        expect(run.status).not.toBe(0);
+        expect(run.output).toContain("Darwin");
+        expect(run.output).toMatch(/Cores run on Linux/i);
+        // Not the late, misleading shape this replaced.
+        expect(run.output).not.toMatch(/no build for/i);
+        expect(run.output).not.toContain("mac-");
+        expect(traffic()).toEqual([]);
+        expect(run.actanaArgs).toBeNull();
+      });
+    }
 
     it("aborts on an unsupported architecture without downloading anything", async () => {
       const run = await runInstaller({ args: withServer([]), uname: ["Linux", "i686"] });
@@ -293,13 +319,10 @@ describeOnPosix("install.sh", () => {
 
   describe("verifying the download", () => {
     it("refuses to extract or run a tarball whose checksum does not match", async () => {
-      const run = await runInstaller({
-        args: withServer(["--version", OLD_VERSION]),
-        uname: ["Darwin", "arm64"],
-      });
+      const run = await runInstaller({ args: withServer(["--version", BROKEN_VERSION]) });
       expect(run.status).not.toBe(0);
       expect(run.output).toMatch(/checksum/i);
-      expect(run.output).toContain(tarballName(OLD_VERSION, "mac-arm64"));
+      expect(run.output).toContain(tarballName(BROKEN_VERSION, "linux-x64"));
       // The whole point of the check: nothing from the tarball ran.
       expect(run.actanaArgs).toBeNull();
       // And the download it refused is not left on disk to be found later.
@@ -307,7 +330,10 @@ describeOnPosix("install.sh", () => {
     });
 
     it("leaves nothing behind when the release has no build for this platform", async () => {
-      const run = await runInstaller({ args: withServer([]), uname: ["Darwin", "x86_64"] });
+      const run = await runInstaller({
+        args: withServer(["--version", BROKEN_VERSION]),
+        uname: ["Linux", "aarch64"],
+      });
       expect(run.status).not.toBe(0);
       expect(fs.readdirSync(run.tmpDir)).toEqual([]);
     });

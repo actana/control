@@ -77,7 +77,8 @@ routing around it.
 
 - [`core-linux-rehearsal.md`](core-linux-rehearsal.md) — rehearsing a Linux install
 - [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) — the macOS
-  checks a CI runner cannot perform (reboot persistence, chiefly)
+  checks a runner cannot perform (reboot persistence, chiefly). Not a release
+  gate: a release ships Linux Cores only
 - [`local-build-screen-recording.md`](local-build-screen-recording.md)
 
 ## Historical record

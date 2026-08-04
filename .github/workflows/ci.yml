@@ -184,7 +184,7 @@ jobs:
   # operators actually download must extract and boot on its own — bundled Node,
   # bundled natives, no system Node, no network. Built here on every PR for the
   # runner's own platform so a broken tarball is caught before tag time;
-  # core-release.yml builds and smokes all four targets on a tag push.
+  # core-release.yml builds and smokes both targets on a tag push.
   #
   # Both Linux architectures, because everything downstream consumes these
   # artifacts (core-installer issue 07): the installer matrix downloads them
@@ -354,58 +354,12 @@ jobs:
           tarball="$(find artifacts/core -name 'actana-core-*-linux-x64.tar.gz' | head -n1)"
           node scripts/e2e-actana-harnesses-linux.mjs --tarball "$tarball"
 
-  # The macOS half of the same seam (core-installer issue 04): `actana setup`
-  # must write and load a LaunchAgent, start the daemon, and give the lifecycle
-  # verbs something to drive — with no sudo and no Gatekeeper interruption.
-  #
-  # No container, unlike the Linux leg: a Mac's launchd IS the host's launchd,
-  # and an agent bootstrapped anywhere but the runner's own domain would not be
-  # the thing under test. The e2e uses a scratch HOME and boots the agent out
-  # again, so the runner is left as it was found.
-  #
-  # Both architectures run natively — the tarballs carry prebuilt natives, so a
-  # cross-built leg would prove nothing about the artifact operators download.
-  # Reboot persistence is the one criterion a runner cannot exercise; it lives
-  # on docs/core-macos-prerelease-checklist.md.
-  actana-setup-e2e-macos:
-    name: E2E — actana setup (launchd, ${{ matrix.target }})
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: macos-15
-            target: mac-arm64
-          - os: macos-15-intel
-            target: mac-x64
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 40
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
-        with:
-          node-version: 24.15.0
-          package-manager-cache: false
-
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        with:
-          version: 11.1.2
-          cache: true
-
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
-
-      # Built here rather than downloaded from the linux job: the tarball is
-      # per-platform, and this runner's own architecture is the only mac
-      # tarball it can honestly build or run.
-      - name: Build the tarball
-        run: pnpm core:tarball
-
-      - name: E2E — actana setup against launchd
-        run: |
-          set -euo pipefail
-          tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
-          node scripts/e2e-actana-setup-macos.mjs --tarball "$tarball"
+  # There is no macOS counterpart to the jobs above. `mac-arm64` and `mac-x64`
+  # are no longer release targets (ADR 0016 D28), so there is no mac tarball to
+  # build and nothing for a launchd e2e to install — the job that used to live
+  # here could only ever be red. `scripts/e2e-actana-setup-macos.mjs` and the
+  # macOS prerelease checklist are still in the tree for anyone running a Core
+  # off a local build on a Mac; neither is on the release path any more.
 
   # The Panel image, built and smoked on every PR but never pushed. Until this
   # existed, a Dockerfile or build-stage break stayed invisible until someone

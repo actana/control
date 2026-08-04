@@ -13,9 +13,10 @@ green matrix cannot — a prompt that reads badly, a token that is awkward to
 copy out of a terminal, an instruction that is technically true and practically
 useless.
 
-Fifteen minutes. Run it alongside
-[the macOS checklist](core-macos-prerelease-checklist.md), which covers the
-same ground on the platform where reboot persistence has to be checked by hand.
+Fifteen minutes, and the only install rehearsal a release needs — Linux is the
+only platform a release publishes a Core for. [The macOS
+checklist](core-macos-prerelease-checklist.md) covers the same ground for a
+Mac Core built from source, and gates nothing.
 
 ---
 
