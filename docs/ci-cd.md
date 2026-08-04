@@ -10,9 +10,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR, push to `main` | nothing — it gates |
 | [`conventions.yml`](../.github/workflows/conventions.yml) | every PR | nothing — it gates |
 | [`images-edge.yml`](../.github/workflows/images-edge.yml) | push to `main` | `:edge`, `:sha-<short>` |
-| [`images-release.yml`](../.github/workflows/images-release.yml) | `v*` tag | `:<version>`, `:latest` |
-| [`core-release.yml`](../.github/workflows/core-release.yml) | `v*` tag | Core tarballs + checksums |
-| [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | `docs/images/**` on `main` | each image's Docker Hub page |
+| [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
 | [`base-pins.yml`](../.github/workflows/base-pins.yml) | weekly cron | a `NODE_VERSION` bump PR, or nothing |
 | [`stale.yml`](../.github/workflows/stale.yml) | daily cron | stale labels / closures |
 | [`react-doctor.yml`](../.github/workflows/react-doctor.yml) | see the file | a report |
@@ -57,30 +55,43 @@ its own:
   `org.opencontainers.image.description` label. Both images set these labels at
   build time.
 - **Docker Hub** ignores those labels and stores its own per-repository
-  description, set through its API. [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml)
-  pushes one file per image — [`docs/images/panel.md`](images/panel.md) and
-  [`docs/images/core.md`](images/core.md) — whenever either changes on `main`.
+  description, set through its API. The `descriptions` job in
+  [`release.yml`](../.github/workflows/release.yml) pushes one file per image —
+  [`docs/images/panel.md`](images/panel.md) and
+  [`docs/images/core.md`](images/core.md) — after a release publishes, so the
+  page never describes a version nobody can pull yet.
 
-Edit those two files to change what Docker Hub shows. The sync needs its own
-credential (`DOCKERHUB_DESCRIPTION_*`), because the API endpoint it uses
-rejects organization access tokens; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+Edit those two files to change what Docker Hub shows. A typo is fixable without
+cutting a release: merge the fix to `main`, then
+`gh workflow run release.yml -f tag=<the current tag>`. That job is the one
+place the workflow does *not* check out the tag — it syncs the branch you
+dispatch from, which is what makes the fix reach Docker Hub. The
+sync authenticates with the same `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` the
+image push uses, which is why that token must be a *personal* access token —
+the API endpoint rejects organization ones; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
 ## The release artifacts
 
-The product ships as three things, on two pipelines, from the same tag:
+The product ships as three things, on one pipeline, from the same tag:
 
-- **The Panel** is a container. `images-release.yml` → `ghcr.io/actana/panel`
+- **The Panel** is a container. `release.yml` → `ghcr.io/actana/panel`
   (and Docker Hub, when configured). No installer, no signing — the image is
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
 - **The Core, as a container** comes from the same workflow → `ghcr.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
-  tarball. `core-release.yml` → four targets (`mac-arm64`, `mac-x64`,
-  `linux-x64`, `linux-arm64`) with published checksums, which `install.sh` and
-  `actana update` verify against.
+  tarball. `release.yml` → `linux-x64` and `linux-arm64` with published
+  checksums, which `install.sh` and `actana update` verify against.
+
+A tag therefore publishes exactly three release assets —
+`actana-core-<version>-linux-x64.tar.gz`,
+`actana-core-<version>-linux-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
+deliberately **not** one of them: it is served from `main`, so a broken
+installer is fixable without cutting a release
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D29).
 
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
-update" in the Panel. So tag both together — a `v*` tag fires both workflows.
+update" in the Panel. So tag both together — one `v*` tag builds both.
 
 ## Container image tags
 
@@ -386,13 +397,15 @@ Three registries are therefore in play, doing three different jobs:
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-That fires `images-release.yml` and `core-release.yml` in parallel. If a
-release needs rebuilding, both workflows accept a `workflow_dispatch` with the
-tag name — the tag must already exist on origin.
+That fires `release.yml`: the two tarball legs and the two image builds run in
+parallel, then the GitHub Release is created and each image's Docker Hub page is
+rewritten. A release lands in under six minutes. If one needs rebuilding, the
+workflow accepts a `workflow_dispatch` with the tag name — the tag must already
+exist on origin.
 
 Push one tag deliberately, never `git push --tags` — a clone made from the fork
-parent carries tags that would fire both workflows for releases this repository
-never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
+parent carries tags that would fire a release run each for versions this
+repository never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
 
 ## Running CI locally
 

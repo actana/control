@@ -33,9 +33,9 @@ import {
 const dockerfile = dockerfileFacts(readRepoFile(PANEL_DOCKERFILE));
 const composeText = readRepoFile("deploy/docker-compose.yml");
 const compose = composeFacts(composeText);
-const workflow = readRepoFile(".github/workflows/images-release.yml");
+const workflow = readRepoFile(".github/workflows/release.yml");
 // The build/smoke/push machinery moved into one reusable workflow so the PR,
-// edge, and release paths share a single implementation; images-release.yml is
+// edge, and release paths share a single implementation; release.yml is
 // now only the version-tag half. Assertions follow the code.
 const imageWorkflow = readRepoFile(".github/workflows/container-image.yml");
 const edgeWorkflow = readRepoFile(".github/workflows/images-edge.yml");
@@ -304,6 +304,101 @@ describe("release workflow", () => {
   it("publishes :latest alongside the version, but never for a prerelease", () => {
     expect(workflow).toContain("$version latest");
     expect(workflow).toMatch(/version.*==.*\*-\*/);
+  });
+
+  // D30 lives in the tag regex as much as in the tag list: `v0` and `v0.1`
+  // would publish the moving `:0` / `:0.1` ladder the clause forbids, and
+  // `v0.1.0+abc` is neither a legal Docker tag nor a prerelease by the `*-*`
+  // test below it, so it would move :latest.
+  it("accepts a three-component version tag and nothing else", () => {
+    const pattern = workflow.match(/=~ \^(v\[0-9\].*?)\$ \]\]/)?.[1];
+    expect(pattern).toBeTruthy();
+    const accepts = new RegExp(`^${pattern.replace(/\[\.\]/g, "\\.")}$`);
+    for (const tag of ["v0.1.0", "v1.0.0-rc.1", "v10.20.30"]) {
+      expect(accepts.test(tag)).toBe(true);
+    }
+    for (const tag of ["v0", "v0.1", "v0.1.0+abc", "0.1.0", "vlatest"]) {
+      expect(accepts.test(tag)).toBe(false);
+    }
+  });
+
+  // D33's "fix a typo without cutting a release" only works if the sync reads
+  // the branch it was dispatched from. Every other job pins the tag.
+  it("syncs descriptions from the dispatched ref, not the tag", () => {
+    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    expect(descriptions).toContain("actions/checkout@");
+    expect(descriptions).not.toContain("ref: ${{ needs.resolve.outputs.ref }}");
+  });
+
+  // D34: one file for the whole tag, not four that have to be kept in step.
+  it("is the only release entry point — the three it replaced are gone", () => {
+    for (const gone of [
+      "core-release.yml",
+      "images-release.yml",
+      "dockerhub-description.yml",
+    ]) {
+      expect(fs.existsSync(path.join(repoRoot, ".github/workflows", gone))).toBe(false);
+    }
+  });
+
+  // D28. Two legs, not four: the darwin targets are dropped, so a release is
+  // two tarballs and a SHA256SUMS over exactly those two.
+  it("builds the two Linux tarballs on native runners and nothing on macOS", () => {
+    const tarball = workflow.slice(workflow.indexOf("  tarball:"), workflow.indexOf("  panel:"));
+    expect(tarball).toContain("target: linux-x64");
+    expect(tarball).toContain("target: linux-arm64");
+    expect(tarball).toContain("ubuntu-24.04-arm");
+    expect(tarball).not.toContain("macos");
+    expect(tarball).not.toContain("mac-arm64");
+  });
+
+  // The guard that makes a silently missing architecture a red build rather
+  // than a checksum file covering half the release.
+  it("composes SHA256SUMS with --expect 2", () => {
+    expect(workflow).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 2");
+  });
+
+  // D29: the installer's contract is the two asset names and bin/actana. The
+  // installer itself is not an asset — it is fetched from main.
+  it("attaches the tarballs and SHA256SUMS, and never install.sh", () => {
+    const publish = workflow.slice(workflow.indexOf("  github-release:"));
+    expect(publish).toMatch(/-name '\*\.tar\.gz' -o -name 'SHA256SUMS'/);
+    // Prose about install.sh is the point of the header; a *step* that touched
+    // it would be the asset D29 forbids.
+    const steps = publish
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(steps).not.toContain("install.sh");
+  });
+
+  // The rule belongs "in any future release review verbatim" (D29), which
+  // means the release workflow's own header — the file a reviewer has open.
+  it("quotes ADR 0016 D29's installer-contract rule verbatim in its header", () => {
+    const adr = readRepoFile("docs/adr/0016-the-0-1-0-shape.md");
+    // The blockquote D29 introduces, not every blockquote in the ADR.
+    const afterD29 = adr.slice(adr.indexOf("**D29 —")).split("\n");
+    const first = afterD29.findIndex((line) => line.startsWith("> "));
+    const quote = afterD29
+      .slice(first)
+      .slice(
+        0,
+        afterD29.slice(first).findIndex((line) => !line.startsWith("> ")),
+      )
+      .join(" ");
+    // Markdown emphasis and comment markers differ; the words must not.
+    const words = (text) => text.replace(/[>#*`]/g, " ").replace(/\s+/g, " ").trim();
+    expect(words(quote)).not.toBe("");
+    expect(words(workflow)).toContain(words(quote));
+  });
+
+  // D31. Skipping everywhere is right for a fork and wrong for the repo that
+  // tells people to pull from Docker Hub: a release that never reached the
+  // primary registry must not report success.
+  it("fails a missing Docker Hub credential on the canonical repo only", () => {
+    expect(workflow).toContain("actana/control");
+    expect(workflow).toMatch(/DOCKERHUB_TOKEN/);
+    expect(workflow).toContain("::error title=Missing Docker Hub credential");
   });
 
   it("pushes the image name the compose file pulls", () => {
@@ -577,19 +672,37 @@ describe("docker hub descriptions", () => {
   }
 
   it("syncs both images, and each short description fits in 100 bytes", () => {
-    const sync = readRepoFile(".github/workflows/dockerhub-description.yml");
-    expect(sync).toContain("sync panel docs/images/panel.md");
-    expect(sync).toContain("sync core docs/images/core.md");
-    for (const [, short] of sync.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
+    expect(workflow).toContain("sync panel docs/images/panel.md");
+    expect(workflow).toContain("sync core docs/images/core.md");
+    for (const [, short] of workflow.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
       expect(Buffer.byteLength(short, "utf8")).toBeLessThanOrEqual(100);
     }
   });
 
-  it("uses a credential distinct from the image-push token", () => {
-    // The push token is an org access token; the Hub API refuses org accounts.
-    const sync = readRepoFile(".github/workflows/dockerhub-description.yml");
-    expect(sync).toContain("DOCKERHUB_DESCRIPTION_TOKEN");
-    expect(sync).not.toContain("secrets.DOCKERHUB_TOKEN");
+  // D31/D33. One PAT does both jobs: an OAT can push images but answers
+  // "Cannot log into an organization account" on /v2/users/login, so choosing
+  // an OAT would mean paying for Team or Business *and still* making a PAT.
+  it("authenticates the sync with the same PAT the image push uses", () => {
+    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    expect(descriptions).toContain("secrets.DOCKERHUB_TOKEN");
+    expect(descriptions).toContain("secrets.DOCKERHUB_USERNAME");
+    // The second credential is deleted, everywhere — a secret nothing reads is
+    // a secret nobody rotates.
+    for (const file of [
+      ".github/workflows/release.yml",
+      ".github/workflows/container-image.yml",
+      "docs/REPO_SETUP.md",
+      "docs/ci-cd.md",
+    ]) {
+      expect(readRepoFile(file)).not.toContain("DOCKERHUB_DESCRIPTION_");
+    }
+  });
+
+  // The token belongs to a person and dies with that account (D31). That is a
+  // documented rotation step, not a design flaw — but only if it is documented.
+  it("documents PAT rotation in the repo setup guide", () => {
+    const setup = readRepoFile("docs/REPO_SETUP.md");
+    expect(setup.toLowerCase()).toContain("rotat");
   });
 
   it("links the GHCR packages back to this repository", () => {
