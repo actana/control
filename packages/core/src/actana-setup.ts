@@ -189,6 +189,14 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
   const source = realpathOrNull(opts.sourceRoot) ?? opts.sourceRoot;
   const replacingTree = source !== realpathOrNull(installDir);
 
+  // A machine installed before the Harness → Core rename has a second service
+  // under the old name, running out of this same tree and binding this same
+  // port — so it goes first, before the tree is swapped under it and long
+  // before the new unit tries to claim the socket. Temporary cleanup, deleted
+  // with `removeLegacyUnit` itself; `LEGACY_UNIT_NAME` says when.
+  const legacy = service.removeLegacyUnit();
+  if (legacy) opts.out(`Removed ${legacy}, left by an install from before the rename.`);
+
   // Swapping the tree under a running daemon works on both platforms (the open
   // inodes survive) but leaves it executing a version that no longer exists on
   // disk. Stop first so the restart below is the only thing that brings it back.

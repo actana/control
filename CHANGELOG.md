@@ -2,6 +2,23 @@
 
 All notable changes to this project, newest first.
 
+## 0.1.0 — unreleased
+
+Core tarballs are published as `actana-core-<version>-<target>.tar.gz`. This is
+the first published release of the Core tarball; no earlier asset name was ever
+released, so no download URL changes.
+
+If you installed a Harness from a locally built tarball before this release, run
+`actana setup` once — it removes the old `actana-harness.service` user unit and
+installs `actana-core.service`. Your data in `~/.local/share/actana` and
+`~/.config/actana` is untouched; those paths do not change. Re-pairing with the
+Panel is not required.
+
+## Before 0.1.0
+
+The fork this repository started from, kept because it explains the state a
+working clone is in. None of it was released under a version number from here.
+
 - 🏷️ **rebrand to Actana Control** — the app, the package (`actana-control`),
   the macOS bundle id (`ai.actana.control`), and the packaged artifacts all
   carry the new name. The userData directory moves to `Actana Control`, so an

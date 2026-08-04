@@ -28,6 +28,7 @@ import {
   serviceTarget,
 } from "./actana-launchd";
 import {
+  LEGACY_UNIT_NAME,
   parseLingerEnabled,
   renderActanaUnit,
   systemdStateFromShow,
@@ -111,6 +112,12 @@ export type ActanaServiceManager = {
    * nothing here throws on "there was nothing to do".
    */
   uninstall(): void;
+  /**
+   * Remove the service a pre-rename install left behind, returning its name,
+   * or null when there was nothing to do. See {@link LEGACY_UNIT_NAME} for why
+   * this exists and when it goes.
+   */
+  removeLegacyUnit(): string | null;
   /** Make the daemon survive logout as far as this platform allows. */
   ensurePersistence(context: PersistenceContext): Promise<PersistenceOutcome>;
   /** Start at boot/login from now on, and start now. Throws when it cannot. */
@@ -199,6 +206,20 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     return true;
   }
 
+  /** Stop a unit, unlink it from boot, delete it, and leave no failed entry. */
+  function removeUnit(name: string, filePath: string): void {
+    systemctl("stop", name);
+    // `disable` removes the `default.target.wants` link that starts the unit
+    // at boot. Doing it before the file is deleted is what lets systemd find
+    // the unit it is unlinking.
+    systemctl("disable", name);
+    fs.rmSync(filePath, { force: true });
+    systemctl("daemon-reload");
+    // A unit that died is remembered as failed until this, and a leftover
+    // failed entry is exactly the kind of trace an uninstall should not leave.
+    systemctl("reset-failed", name);
+  }
+
   return {
     kind: "systemd",
     name: UNIT_NAME,
@@ -217,16 +238,25 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     },
 
     uninstall() {
-      systemctl("stop", UNIT_NAME);
-      // `disable` removes the `default.target.wants` link that starts the unit
-      // at boot. Doing it before the file is deleted is what lets systemd find
-      // the unit it is unlinking.
-      systemctl("disable", UNIT_NAME);
-      fs.rmSync(layout.servicePath, { force: true });
-      systemctl("daemon-reload");
-      // A unit that died is remembered as failed until this, and a leftover
-      // failed entry is exactly the kind of trace an uninstall should not leave.
-      systemctl("reset-failed", UNIT_NAME);
+      removeUnit(UNIT_NAME, layout.servicePath);
+    },
+
+    removeLegacyUnit() {
+      // Two places, because deleting a unit file does not disable the unit:
+      // systemd reads a user's own units from `$XDG_CONFIG_HOME/systemd/user`,
+      // and `enable` leaves a symlink in `default.target.wants` beside it that
+      // still starts the daemon at boot on its own.
+      const legacyPath = path.join(layout.serviceDir, LEGACY_UNIT_NAME);
+      const enabledLink = path.join(layout.serviceDir, "default.target.wants", LEGACY_UNIT_NAME);
+      // Asked of the filesystem rather than of systemd, so a machine that never
+      // had one runs no commands at all and cannot fail. `lstat` for the link,
+      // because once the unit file is gone the link dangles and `existsSync`
+      // follows it to nothing — which is exactly the case being caught.
+      if (!fs.existsSync(legacyPath) && !fs.lstatSync(enabledLink, { throwIfNoEntry: false })) {
+        return null;
+      }
+      removeUnit(LEGACY_UNIT_NAME, legacyPath);
+      return LEGACY_UNIT_NAME;
     },
 
     async ensurePersistence(context) {
@@ -354,6 +384,13 @@ function launchdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
       // turning a reinstall into a puzzle.
       system.run("launchctl", ["bootout", target()]);
       fs.rmSync(layout.servicePath, { force: true });
+    },
+
+    removeLegacyUnit() {
+      // Nothing to clean up: the pre-rename `com.actana.harness` agent only
+      // ever existed on a machine that built its own tarball, and the macOS
+      // Core targets are being dropped rather than migrated (ADR 0016 D28).
+      return null;
     },
 
     async ensurePersistence() {

@@ -432,6 +432,60 @@ describe("runActanaSetup — re-running over an existing install", () => {
   });
 });
 
+describe("runActanaSetup — a Core installed before the rename", () => {
+  /** The unit `actana setup` wrote when the machine was called a Harness. */
+  const LEGACY_UNIT = "actana-harness.service";
+
+  /** Put a pre-rename unit where the old setup left it. */
+  function plantLegacyUnit(): string {
+    fs.mkdirSync(layout.serviceDir, { recursive: true });
+    const legacyPath = path.join(layout.serviceDir, LEGACY_UNIT);
+    fs.writeFileSync(legacyPath, "[Unit]\nDescription=Actana Control Harness\n");
+    return legacyPath;
+  }
+
+  it("removes the old unit before the new one is enabled — never two daemons", async () => {
+    const legacyPath = plantLegacyUnit();
+    const system = fakeSystem();
+
+    await runActanaSetup(options(system));
+
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    const commands = system.calls.map((c) => c.join(" "));
+    expect(commands).toContain(`systemctl --user stop ${LEGACY_UNIT}`);
+    expect(commands).toContain(`systemctl --user disable ${LEGACY_UNIT}`);
+    // The old unit runs out of the same `current` tree and binds the same
+    // port, so it has to be gone before the new one is enabled and started.
+    expect(commands.indexOf(`systemctl --user stop ${LEGACY_UNIT}`)).toBeLessThan(
+      commands.indexOf("systemctl --user enable actana-core.service"),
+    );
+  });
+
+  it("leaves one unit behind, and it is the Core's", async () => {
+    plantLegacyUnit();
+    await runActanaSetup(options(fakeSystem()));
+
+    expect(fs.readdirSync(layout.serviceDir)).toEqual(["actana-core.service"]);
+  });
+
+  it("tells the operator what it removed rather than doing it silently", async () => {
+    plantLegacyUnit();
+    const lines: string[] = [];
+
+    await runActanaSetup(options(fakeSystem(), { out: (line) => lines.push(line) }));
+
+    expect(lines.some((line) => line.includes(LEGACY_UNIT))).toBe(true);
+  });
+
+  it("does nothing at all on a machine that never had one", async () => {
+    const system = fakeSystem();
+    await runActanaSetup(options(system));
+    await runActanaSetup(options(system));
+
+    expect(system.calls.some((c) => c.join(" ").includes(LEGACY_UNIT))).toBe(false);
+  });
+});
+
 describe("runActanaSetup — refusals", () => {
   it("refuses a platform whose manifest does not match the machine", async () => {
     await expect(

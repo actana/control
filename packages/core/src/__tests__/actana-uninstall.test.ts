@@ -29,6 +29,7 @@ function fakeService() {
       service.uninstalls += 1;
       fs.rmSync(service.filePath, { force: true });
     },
+    removeLegacyUnit: () => null,
     async ensurePersistence() {
       return { survivesLogout: true, summary: "enabled, lingering" };
     },

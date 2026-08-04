@@ -185,6 +185,80 @@ describe("uninstalling the service", () => {
   );
 });
 
+describe("removing the pre-rename unit", () => {
+  /** The unit `actana setup` wrote when the machine was called a Harness. */
+  const LEGACY_UNIT = "actana-harness.service";
+
+  function plantLegacyUnit(layout: ActanaLayout): string {
+    fs.mkdirSync(layout.serviceDir, { recursive: true });
+    const legacyPath = path.join(layout.serviceDir, LEGACY_UNIT);
+    fs.writeFileSync(legacyPath, "[Unit]\nDescription=Actana Control Harness\n");
+    return legacyPath;
+  }
+
+  it("stops it, disables it, removes it, and names what it removed", () => {
+    const system = fakeSystem();
+    const { manager, layout } = managerFor("linux", system);
+    const legacyPath = plantLegacyUnit(layout);
+
+    expect(manager.removeLegacyUnit()).toBe(LEGACY_UNIT);
+
+    const commands = system.calls.map((c) => c.join(" "));
+    expect(commands).toContain(`systemctl --user stop ${LEGACY_UNIT}`);
+    expect(commands).toContain(`systemctl --user disable ${LEGACY_UNIT}`);
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    // Same ordering rule as uninstall: the reload only sticks once the file is
+    // gone, or systemd keeps the unit it just re-read.
+    expect(commands.lastIndexOf("systemctl --user daemon-reload")).toBeGreaterThan(
+      commands.indexOf(`systemctl --user disable ${LEGACY_UNIT}`),
+    );
+  });
+
+  it("disables it even when only the enablement link is left", () => {
+    const system = fakeSystem();
+    const { manager, layout } = managerFor("linux", system);
+    const legacyPath = plantLegacyUnit(layout);
+    // What a hand-deleted unit file leaves: a dangling symlink that still
+    // starts the old daemon at boot, and a running daemon systemd has not
+    // been told to forget.
+    const wants = path.join(layout.serviceDir, "default.target.wants");
+    fs.mkdirSync(wants, { recursive: true });
+    fs.symlinkSync(legacyPath, path.join(wants, LEGACY_UNIT));
+    fs.rmSync(legacyPath);
+
+    expect(manager.removeLegacyUnit()).toBe(LEGACY_UNIT);
+    expect(system.calls.map((c) => c.join(" "))).toContain(
+      `systemctl --user disable ${LEGACY_UNIT}`,
+    );
+  });
+
+  it("runs nothing on a machine that never had one, however often it is called", () => {
+    const system = fakeSystem();
+    const { manager } = managerFor("linux", system);
+
+    expect(manager.removeLegacyUnit()).toBeNull();
+    expect(manager.removeLegacyUnit()).toBeNull();
+    expect(system.calls).toEqual([]);
+  });
+
+  it("never touches the unit setup just installed", () => {
+    const system = fakeSystem();
+    const { manager, layout } = managerFor("linux", system);
+    manager.install(DEFINITION);
+
+    expect(manager.removeLegacyUnit()).toBeNull();
+    expect(fs.existsSync(layout.servicePath)).toBe(true);
+  });
+
+  it("has nothing to remove on macOS — no released build ever wrote a plist", () => {
+    const system = fakeSystem();
+    const { manager } = managerFor("darwin", system);
+
+    expect(manager.removeLegacyUnit()).toBeNull();
+    expect(system.calls).toEqual([]);
+  });
+});
+
 describe("launchd manager — state", () => {
   /** An installed agent: `state()` reads the plist off disk before launchctl. */
   function installed(system: ActanaSystem) {
