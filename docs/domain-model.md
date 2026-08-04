@@ -21,8 +21,8 @@ Explicit non-goals:
   store, no recall panel. The Panel holds no knowledge about project
   contents.
 - **Not a skill installer.** The Panel never writes into the user's
-  `.claude/`, `.codex/`, `.cursor/`, or any other core skill directory.
-  Injecting behavior into the user's core biases results and collides
+  `.claude/`, `.codex/`, `.cursor/`, or any other harness skill directory.
+  Injecting behavior into the user's harness biases results and collides
   with their own setup, especially for git operations. See ADR 0006.
 - **Not a voice interface.** Speech-to-text belongs in the operator's own
   toolchain, not the remote control.
@@ -55,18 +55,12 @@ break with no dual-read window. `MC_TASK_ID` / `MC_API_URL` / `MC_API_TOKEN` /
 `MC_THEME` never made the rename — spec 05 deleted the harness-injection
 surface first.
 
-## Core
+## Harness
 
-Definition per `CONTEXT.md`. Under Actana Control, the core family is
-**open** — new harnesses will be added over time (initially: `claude-code`,
-`codex`, `cursor-cli`; planned additions: `opencode`, `pi`, `hermes`).
-
-- **Rule.** Any table or dispatch keyed by core type must be
-  extensible. No `if core === 'claude-code'` branches in feature code;
-  add a capability entry to the core registry instead.
-- **Rule.** The Panel treats every core the same over core-link.
-  Differences between harnesses live inside the Core process, not in
-  the Panel.
+Definition per `CONTEXT.md`; the family is open per ADR 0013, which
+carries the two rules that follow from it. The delta this file records is
+only the roster: `claude-code`, `codex`, `cursor-cli` and `opencode` are
+current; `pi` and `hermes` are planned additions.
 
 ## Core
 
@@ -128,7 +122,7 @@ one in code, it is dead:
 | Concern                        | Belongs to           |
 | ------------------------------ | -------------------- |
 | Which harness runs, with what    | The Core          |
-| Skills, MCPs, hooks config     | The user's core   |
+| Skills, MCPs, hooks config     | The user's harness   |
 | Where code executes            | The Core machine  |
 | Editing / previewing files     | The user's editor    |
 | Saved prompts                  | The user's toolchain |

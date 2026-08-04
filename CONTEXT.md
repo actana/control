@@ -27,12 +27,12 @@ The single multiplexed WebSocket between a Panel session and the Panel. Carries 
 _Avoid_: socket, channel, API connection
 
 **Core**:
-One machine (typically a VM) turned into a member of the fleet by installing the Core bundle on it. Carries the Harnesses (opencode, claude, …), the PTY manager, and the stateful server (SQLite, hooks API, project registry), and is the single source of truth for all work hosted on that machine. The Panel's registry is a list of Cores, each a registered endpoint — one word for the installed thing and the Panel's handle on it, because they are the same unit seen from two sides.
-_Avoid_: harness, agent, server, backend, node, instance, host
+A machine running the Actana Control daemon. Hosts projects, tasks and sessions; owns its own SQLite; the single source of truth for all work on that machine. A Panel drives zero-or-more Cores over the core-link.
+_Avoid_: harness, server, backend, node, agent host
 
 **Harness**:
-The agentic CLI a Session drives — `claude-code`, `codex`, `cursor-cli`, or `opencode`. Installed on a Core, spawned into a PTY by it, and never touched by the Panel except as an id and an availability status. A Harness is a vendor's program that Actana runs, not a part of Actana.
-_Avoid_: agent, task agent, tool, model
+The agentic coding CLI a session drives — `claude-code`, `codex`, `cursor-cli`, `opencode`. Installed on a Core, spawned into a PTY by it, and never touched by the Panel except as an id and an availability status. A Harness is a vendor's program that Actana runs, not a part of Actana. The family is **open**; any table or dispatch keyed by harness type must be extensible, and differences between harnesses live inside the Core process, never in the Panel.
+_Avoid_: agent, task agent, AI runtime, tool, model
 
 **Core link**:
 The persistent bidirectional WebSocket connection between a Panel and a Core. Carries PTY streams, task mutations, hook events, and notifications as framed JSON messages. Long-lived; survives Panel sleep; replays missed events on reconnect via a monotonic event cursor.
@@ -50,7 +50,7 @@ _Avoid_: run, job, session (a session is a sub-part of a Task)
 _UI note_: user-facing strings label a Task as "Session" (e.g. "Start a new session", the grid cells). This is a legacy UI convention retained for continuity — it collides with the domain **Session** below (the conversation stream). Code, types, DB columns, and core-link messages keep the name **Task**; only rendered strings say "Session".
 
 **Session** (Core-scoped):
-The live or replayable harness conversation backing a Task — the PTY stream plus the harness's own session id. Replayable after Panel reconnect via the Core's event log.
+The live or replayable conversation backing a Task — the PTY stream plus the harness's own session id. A Core runs many sessions; each session drives exactly one Harness. Replayable after Panel reconnect via the Core's event log.
 _Avoid_: conversation, thread
 
 **VM Shell Session** (Core-scoped):
