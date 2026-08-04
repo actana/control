@@ -85,6 +85,26 @@ export const CORE_APP_ROOT = "/opt/actana";
 export const CORE_HOME = "/home/core";
 
 /**
+ * The lifecycle verbs the image owns, which refuse in a container and name the
+ * Docker command that does the same job instead (ADR 0016 D16).
+ *
+ * A copy of `DOCKER_EQUIVALENT`'s keys in
+ * `packages/core/src/actana-container.ts`, and deliberately a copy: the image
+ * smoke runs `actana <verb>` inside a container and cannot import the Core's
+ * TypeScript. The list is held to the original by a test, so a verb added
+ * there without being added here fails in CI rather than going unsmoked.
+ */
+export const CORE_REFUSED_VERBS = Object.freeze([
+  "setup",
+  "start",
+  "stop",
+  "restart",
+  "update",
+  "uninstall",
+  "logs",
+]);
+
+/**
  * The Core image's apt set, exactly (ADR 0016 D6) — this list is where the
  * CVE number actually moves, so it is asserted element-for-element rather
  * than as a subset. `zip`, `wget`, `gnupg` and every systemd package are out;

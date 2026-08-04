@@ -116,12 +116,21 @@ container and recreates it on the same volume** and proves the Panel still
 knows its Operator. That last step is the whole "all state in one directory"
 claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 
-**Core** — the smoke overrides the entrypoint and checks what a *build* can get
-wrong: the identity is `core` at 1000:1000, `tini` is at the path the baked
-`ENTRYPOINT` names, `actana` runs, and the Core tree in `/opt/actana` is the
-*architecture-matched* one. Booting the daemon and pairing a Panel against it
-is a separate seam, covered by the `E2E — Panel against Core-in-a-box` job in
-`ci.yml`.
+**Core** — [`scripts/smoke-core-image.mjs`](../scripts/smoke-core-image.mjs)
+boots the image with a plain `docker run` — nothing privileged, no host cgroup,
+one volume — and then pairs a real Panel with it end to end. Along the way it
+proves what a *build* can get wrong (the identity is `core` at 1000:1000,
+`tini` is PID 1 and the daemon PID 2, and the Core tree in `/opt/actana` is the
+*architecture-matched* one) and what the *contract* can get wrong: the
+lifecycle verbs refuse and name their Docker equivalent, `docker restart` is a
+no-op for pairing, and destroying the volume is the one thing that unpairs.
+
+It replaced `panel-e2e-core-in-a-box`, which needed `--privileged` and the host
+cgroup to boot a systemd fixture and asserted against bytes no operator ever
+received. It does **not** replace the installer e2e — that is a different
+arrival, a different PID 1 and a different install location
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D36). The Trivy gate below runs in the
+same job, on the same built image.
 
 ## Dependency and CVE policy
 
@@ -265,6 +274,8 @@ The container build:
 
 ```bash
 pnpm panel:image:smoke      # builds deploy/panel.Dockerfile, then smokes it
+pnpm core:tarball           # the Core image bakes this in, so build it first
+pnpm core:image:smoke       # builds deploy/core.Dockerfile, then pairs a Panel with it
 ```
 
 Commit conventions, without installing anything permanently:

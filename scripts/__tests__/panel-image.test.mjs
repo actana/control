@@ -7,6 +7,7 @@ import {
   CORE_HOME,
   CORE_IMAGE,
   CORE_PACKAGES,
+  CORE_REFUSED_VERBS,
   CORE_PORT,
   PANEL_DATA_DIR,
   PANEL_DOCKERFILE,
@@ -488,9 +489,56 @@ describe("core image", () => {
   });
 
   it("is smoked before it is pushed", () => {
-    expect(imageWorkflow.indexOf("core image smoke OK")).toBeLessThan(
+    expect(imageWorkflow.indexOf("smoke-core-image.mjs")).toBeLessThan(
       imageWorkflow.indexOf("Push the per-arch tags"),
     );
+  });
+
+  // D36. The image smoke replaced `panel-e2e-core-in-a-box`, which needed
+  // --privileged and the host cgroup to boot a systemd fixture. Nothing that
+  // boots this image may reach for either again.
+  it("is smoked by booting it, with no privileged container anywhere", () => {
+    // The code, not the prose: the header names both on purpose, to say what
+    // this replaced and why it needs neither.
+    const smoke = readRepoFile("scripts/smoke-core-image.mjs")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    expect(smoke).not.toContain("--privileged");
+    expect(smoke).not.toContain("cgroup");
+    // The job is gone, not renamed. Matched as a job key so the prose that
+    // records what replaced it can go on saying the name.
+    expect(readRepoFile(".github/workflows/ci.yml")).not.toMatch(/^ {2}panel-e2e-core-in-a-box:/m);
+    // …and so is the fixture behind it. `systemd-container.mjs` stays: the
+    // installer e2es are a different seam and D36 keeps them.
+    expect(readRepoFile("scripts/lib/core-fixture.mjs")).not.toContain(
+      "export async function startContainerCore",
+    );
+    expect(fs.existsSync(path.join(repoRoot, "scripts/lib/systemd-container.mjs"))).toBe(true);
+  });
+
+  // The smoke runs `actana <verb>` inside the container, so its verb list is a
+  // copy of the Core's own refusal table. A copy that drifts is a verb that
+  // silently stops being smoked — so the copy is checked against the original.
+  it("smokes every verb the Core actually refuses in a container", () => {
+    const table = readRepoFile("packages/core/src/actana-container.ts");
+    const body = table.slice(table.indexOf("const DOCKER_EQUIVALENT"));
+    const verbs = [...body.matchAll(/^ {2}(\w+): \{/gm)].map((m) => m[1]);
+    expect(verbs.length).toBeGreaterThan(0);
+    expect([...CORE_REFUSED_VERBS]).toEqual(verbs);
+  });
+
+  // The Trivy gate and the boot-and-pair smoke are the same job on purpose
+  // (T46): an image that fails either must not reach a registry, and splitting
+  // them across jobs means the scanned bytes and the booted bytes are two
+  // builds rather than one.
+  it("scans and boots the same built image in one job", () => {
+    const build = imageWorkflow.slice(
+      imageWorkflow.indexOf("  build:"),
+      imageWorkflow.indexOf("  publish:"),
+    );
+    expect(build).toContain("smoke-core-image.mjs");
+    expect(build).toContain("scan-core-image.mjs");
   });
 });
 
