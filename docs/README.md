@@ -63,6 +63,7 @@ routing around it.
 | [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service |
 | [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth |
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
+| [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
 | [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows |
 
 ## Reference
