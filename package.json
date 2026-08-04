@@ -30,8 +30,6 @@
     "prepanel:image:smoke": "node scripts/require-node-24.mjs",
     "precore:image:smoke": "node scripts/require-node-24.mjs",
     "precore:setup:e2e": "node scripts/require-node-24.mjs",
-    "precore:setup:e2e:macos": "node scripts/require-node-24.mjs",
-    "precore:install:e2e": "node scripts/require-node-24.mjs",
     "precore:harnesses:e2e": "node scripts/require-node-24.mjs",
     "precore:rehearse": "node scripts/require-node-24.mjs",
     "prefixture:release": "node scripts/require-node-24.mjs",
@@ -56,12 +54,9 @@
     "core:image:scan": "node scripts/scan-core-image.mjs",
     "bases:check": "node scripts/check-base-pins.mjs",
     "core:setup:e2e": "node scripts/e2e-actana-setup-linux.mjs",
-    "core:setup:e2e:macos": "node scripts/e2e-actana-setup-macos.mjs",
-    "core:install:e2e": "node scripts/e2e-install-sh-linux.mjs",
     "core:harnesses:e2e": "node scripts/e2e-actana-harnesses-linux.mjs",
     "core:rehearse": "node scripts/rehearse-install.mjs",
-    "fixture:release": "node scripts/fixture-release-server.mjs",
-    "doctor": "npx react-doctor@latest"
+    "fixture:release": "node scripts/fixture-release-server.mjs"
   },
   "dependencies": {
     "@actana/core": "workspace:*",

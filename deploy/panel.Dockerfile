@@ -74,7 +74,7 @@ FROM gcr.io/distroless/nodejs24@sha256:2e3b3a96d1d7286c3e4727f9c84b4dc32b6b33e7d
 # it the package page has no README and no provenance. An ARG rather than a
 # literal so a fork's build links to the fork; CI passes its own values.
 # Docker Hub ignores all of this and reads its description from the API
-# instead (.github/workflows/dockerhub-description.yml).
+# instead (the `descriptions` job in .github/workflows/release.yml).
 ARG IMAGE_SOURCE=https://github.com/actana/control
 ARG IMAGE_REVISION=
 LABEL org.opencontainers.image.title="Actana Panel" \

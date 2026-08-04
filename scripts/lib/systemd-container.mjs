@@ -3,9 +3,9 @@
 // The installer e2es need something no unit test can stand in for: a real init
 // system, a real logind session, a real user with no sudo. This is that
 // machine — a privileged systemd container, driven as an operator would drive
-// a VM — shared by `e2e-actana-setup-linux.mjs` (issue 02) and
-// `e2e-install-sh-linux.mjs` (issue 03) so the two tests are honestly
-// comparable and the container details are debugged once.
+// a VM — shared by `e2e-actana-setup-linux.mjs` (the one-liner and the
+// lifecycle verbs, issues 02, 03 and 06) and `e2e-actana-harnesses-linux.mjs`
+// (issue 05), so the container details are debugged once.
 //
 // Two details are load-bearing and easy to lose:
 //

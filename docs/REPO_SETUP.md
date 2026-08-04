@@ -28,61 +28,71 @@ Set under **Settings → Secrets and variables → Actions**.
 
 | Name | Kind | Needed for |
 | --- | --- | --- |
-| `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub |
-| `DOCKERHUB_TOKEN` | Secret | Same — a Docker Hub **access token**, not the account password |
+| `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
+| `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read & Write`, not the account password |
 | `DOCKERHUB_NAMESPACE` | Variable | Docker Hub org to publish under. Optional; defaults to the GitHub owner (`actana`) |
-| `DOCKERHUB_DESCRIPTION_USERNAME` | Secret | Syncing each image's README to Docker Hub — a **personal** account with Admin on the org |
-| `DOCKERHUB_DESCRIPTION_TOKEN` | Secret | Same — a **personal** access token, `read/write/delete` scope |
 
 With these set, both images publish to `docker.io/actana/panel` and
-`docker.io/actana/core` alongside their GHCR copies.
+`docker.io/actana/core` alongside their GHCR copies, and each image's Docker Hub
+page is rewritten from `docs/images/`.
 
 Nothing else is required: GHCR authenticates with the workflow's own
-`github.token`. If `DOCKERHUB_TOKEN` is unset, every Docker Hub step is skipped
-and releases still publish to GHCR — which is what makes forks and pre-key
-builds work. See [`ci-cd.md`](ci-cd.md).
+`github.token`. On a **fork**, leave the pair unset: every Docker Hub step is
+skipped and releases still publish to GHCR. On **`actana/control`** the same
+gap fails the release before it builds anything — Docker Hub is the registry the
+docs tell operators to pull from, so a release that reached GHCR alone is not a
+release ([ADR 0016](adr/0016-the-0-1-0-shape.md) D31). See [`ci-cd.md`](ci-cd.md).
 
-Create the token with **Read & Write** scope. Which username goes with it
-depends on the kind of token — this is the single most common way to get a
-`unauthorized: incorrect username or password` from an otherwise correct setup:
+### It must be a *personal* access token, and one token does both jobs
 
-- **Organization access token** (`app.docker.com/accounts/<org>` → Identity &
-  authentication) authenticates *as the organisation*, so
-  `DOCKERHUB_USERNAME` must be the **org name** (`actana`). Requires a Docker
-  Team or Business subscription.
-- **Personal access token** (your Account settings → Personal access tokens)
-  authenticates as you, so `DOCKERHUB_USERNAME` is your **own username** and
-  that account needs push rights on the org's repos.
-
-Then:
-
-```bash
-gh secret set DOCKERHUB_USERNAME --repo actana/control
-gh secret set DOCKERHUB_TOKEN    --repo actana/control
-gh variable set DOCKERHUB_NAMESPACE --repo actana/control --body actana
-```
-
-### The description sync needs a *second*, different credential
-
-`DOCKERHUB_DESCRIPTION_*` cannot reuse the token above, and this trips
-everyone once. Pushing an image and editing a repository's description go
-through different systems: the image push authenticates to the **registry**,
-where an OAT is fine; the description is set through the **Hub API**, whose
-`/v2/users/login` endpoint refuses organization accounts outright —
+Pushing an image and editing a repository's description go through different
+systems: the image push authenticates to the **registry**, where an
+organization access token is fine; the description is set through the **Hub
+API**, whose `/v2/users/login` endpoint refuses organization accounts outright —
 
 ```
 {"detail":"Cannot log into an organization account"}
 ```
 
-So the sync needs a **personal access token** (`read/write/delete`) from an
-account with **Admin** on the org, paired with that account's own username:
+So an OAT would mean paying for a Docker Team or Business subscription **and
+still** provisioning a PAT. One PAT does both instead: create it under your
+**Account settings → Personal access tokens** with **Read & Write** scope, from
+an account with **Admin** on the org, and set `DOCKERHUB_USERNAME` to that
+account's own username (not the org — the org goes in `DOCKERHUB_NAMESPACE`).
 
 ```bash
-gh secret set DOCKERHUB_DESCRIPTION_USERNAME --repo actana/control   # e.g. qcenticadm
-gh secret set DOCKERHUB_DESCRIPTION_TOKEN    --repo actana/control
+gh secret set DOCKERHUB_USERNAME --repo actana/control   # e.g. qcenticadm
+gh secret set DOCKERHUB_TOKEN    --repo actana/control
+gh variable set DOCKERHUB_NAMESPACE --repo actana/control --body actana
 ```
 
-Leave them unset and the sync no-ops with a notice; the images still publish.
+A wrong pairing is the single most common way to get
+`unauthorized: incorrect username or password` from an otherwise correct setup.
+
+### Rotating it — the token belongs to a person
+
+That is the honest cost of one PAT: it is scoped to an individual Docker Hub
+account, and it dies with that account. Nobody notices until a release fails at
+the push, which is the worst moment to find out.
+
+- [ ] Record **whose** account owns the token, next to the org's other
+      break-glass credentials
+- [ ] Rotate on a schedule — Docker Hub PATs can be given an expiry, so set one
+- [ ] Rotate immediately when that person's access to the org changes, and treat
+      an account that leaves as a compromised credential: revoke first,
+      re-provision second
+
+To rotate, create the new token first — overwriting the secret is atomic, so
+nothing is unpublishable in between:
+
+```bash
+gh secret set DOCKERHUB_USERNAME --repo actana/control
+gh secret set DOCKERHUB_TOKEN    --repo actana/control
+gh workflow run release.yml --repo actana/control -f tag=<the latest tag>
+```
+
+The dispatch re-runs the whole tag, which is what proves the new token pushes
+images **and** updates descriptions. Then delete the old token in Docker Hub.
 
 ## 3. Branch ruleset for `main` (Settings → Rules → Rulesets)
 
@@ -94,10 +104,8 @@ Leave them unset and the sync no-ops with a notice; the images still publish.
   - [ ] Require approval of the most recent reviewable push
   - [ ] **Require conversation resolution** before merging
 - [ ] **Require status checks to pass** (and require branches to be up to date):
-  - [ ] `PR title (Conventional Commits)`
-  - [ ] `Commit messages (commitlint)`
-  - [ ] `Branch name convention`
-  - [ ] `Typecheck`, `Unit Tests`, `Lint`, `Secret Scan`
+  - [ ] `Conventions` — PR title, commit messages, and branch name, in one job
+  - [ ] `Typecheck`, `Unit Tests`, `Lint`, `Secret Scan`, `Dependency Audit`
   - [ ] `Panel image` and `Core image` — the PR container builds
   - [ ] The E2E legs you want blocking. They are slow; a common split is to
         require the fast four plus both image builds, and let the installer
@@ -107,7 +115,8 @@ Leave them unset and the sync no-ops with a notice; the images still publish.
 
 Optional: a second ruleset on branch **creation** restricting new branch names
 to the allowed prefixes. GitHub enforces that natively, which turns the
-`Branch name convention` job into a friendly error rather than the only gate.
+`Conventions` job's branch-name step into a friendly error rather than the only
+gate.
 
 ## 4. Merge settings (Settings → General)
 
@@ -117,7 +126,7 @@ to the allowed prefixes. GitHub enforces that natively, which turns the
 - [ ] ✅ Automatically delete head branches
 - [ ] ✅ Always suggest updating pull request branches
 
-Squash-with-PR-title is what makes the `PR title (Conventional Commits)` check
+Squash-with-PR-title is what makes the `Conventions` job's PR-title check
 load-bearing: the title becomes the commit message on `main`, which is what the
 changelog is assembled from.
 
@@ -132,12 +141,14 @@ changelog is assembled from.
 - [ ] Enable secret scanning + push protection
 - [ ] Set the GHCR packages `panel` and `core` to **public** once the repo is public,
       or `docker pull` fails for everyone but org members
-- [ ] **⚠ before public** — set the **Docker Hub description on `actana/core`**.
-      The image carries OCI labels marking it a development fixture, but nobody
-      reads labels before pulling. Paste the warning from
-      [`ci-cd.md`](ci-cd.md#the-published-images): it needs `--privileged` and
-      the host cgroup, grants passwordless sudo, and only pairs at the hostname
-      `core`. Docker Hub descriptions are set in its UI, not by this repo.
+- [ ] After the first release, check that **both Docker Hub pages render** —
+      `actana/panel` and `actana/core`. Nothing here is manual: `release.yml`'s
+      `descriptions` job PATCHes each page from [`docs/images/`](images/) as
+      soon as both images are published ([ADR
+      0016](adr/0016-the-0-1-0-shape.md) D33), and a
+      typo is fixed by editing the file and dispatching that workflow rather
+      than by cutting a release. Neither page has ever been published, so the
+      first release is the first time either is seen.
 
 ## 6. Tag history
 
@@ -159,12 +170,10 @@ single squashed commit, and every one of those tags drags the upstream Electron
 history behind it. They are **deleted on sight, not merely left unpushed**,
 because leaving them in a clone is a loaded gun:
 
-- Two workflows trigger on `v*` —
-  [`core-release.yml`](../.github/workflows/core-release.yml) and
-  [`images-release.yml`](../.github/workflows/images-release.yml) — so a single
-  `git push --tags` would both re-import the upstream history into a repository
-  that was squashed on purpose **and** set 102 tags loose on two release
-  pipelines at once.
+- [`release.yml`](../.github/workflows/release.yml) triggers on `v*`, so a
+  single `git push --tags` would both re-import the upstream history into a
+  repository that was squashed on purpose **and** fire 102 release runs —
+  each one publishing tarballs, two images and a GitHub Release.
 - They sort above `0.1.0`, so `git describe` and any future mirror would report
   a version this product has never released.
 
@@ -231,7 +240,7 @@ new "stale"               795548 "Inactive; scheduled for auto-close"
 ```
 
 `pinned`, `security`, `blocked`, and `needs-info` are exempt from the stale bot
-([`stale.yml`](../.github/workflows/stale.yml)) — an issue waiting on a
+([`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `stale` job) — an issue waiting on a
 maintainer's question should not be closed for the reporter's silence.
 
 ## 8. Local hooks (optional, per clone)
@@ -243,7 +252,8 @@ git config core.hooksPath .husky
 ```
 
 `commit-msg` checks the message against `commitlint.config.mjs`; `pre-push`
-checks the branch name. Both mirror the Conventions workflow, so they only tell
+checks the branch name. Both mirror the `Conventions` job in
+[`ci.yml`](../.github/workflows/ci.yml), so they only tell
 you earlier what CI would have told you later. `commit-msg` no-ops with a hint
 if commitlint is not installed locally; the install line is in
 [`ci-cd.md`](ci-cd.md#running-ci-locally) — it goes through a temp directory

@@ -92,7 +92,7 @@ _Avoid_: harness status, tool check, capability
 ### Install and onboarding
 
 **Core bundle**:
-The single distributable placed on a target machine (Linux or macOS) to turn it into a Core — a per-platform tarball carrying a pinned Node runtime, the Core daemon, its native modules, and the `actana` launcher. Four targets: mac-arm64, mac-x64, linux-x64, linux-arm64. Verified against published checksums, extracted under the operator's home, and run without sudo or Docker. Not a single binary: the native modules rule that out.
+The single distributable placed on a target machine to turn it into a Core — a per-platform tarball carrying a pinned Node runtime, the Core daemon, its native modules, and the `actana` launcher. Two targets, both Linux: linux-x64 and linux-arm64. Verified against published checksums, extracted under the operator's home, and run without sudo or Docker. Not a single binary: the native modules rule that out.
 _Avoid_: installer, package, image, binary
 
 **`actana`**:

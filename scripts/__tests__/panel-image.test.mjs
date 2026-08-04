@@ -33,12 +33,23 @@ import {
 const dockerfile = dockerfileFacts(readRepoFile(PANEL_DOCKERFILE));
 const composeText = readRepoFile("deploy/docker-compose.yml");
 const compose = composeFacts(composeText);
-const workflow = readRepoFile(".github/workflows/images-release.yml");
+const workflow = readRepoFile(".github/workflows/release.yml");
 // The build/smoke/push machinery moved into one reusable workflow so the PR,
-// edge, and release paths share a single implementation; images-release.yml is
+// edge, and release paths share a single implementation; release.yml is
 // now only the version-tag half. Assertions follow the code.
 const imageWorkflow = readRepoFile(".github/workflows/container-image.yml");
-const edgeWorkflow = readRepoFile(".github/workflows/images-edge.yml");
+// The same file with every comment line dropped — YAML's and the shell blocks'
+// alike, both `#`. For assertions that must not be satisfiable by a comment,
+// and for the negative ones, where a comment explaining why something is *not*
+// done would otherwise read as the thing being done.
+const imageWorkflowCode = imageWorkflow
+  .split("\n")
+  .filter((line) => !line.trimStart().startsWith("#"))
+  .join("\n");
+// The edge publish is a push-to-`main` condition inside ci.yml, not a workflow
+// of its own — ADR 0016 D30 deleted images-edge.yml for being a fourth entry
+// point to jobs that differ only in which tags come out the other end.
+const ciWorkflow = readRepoFile(".github/workflows/ci.yml");
 const coreDockerfile = readRepoFile("deploy/core.Dockerfile");
 // Named apart from `compose.services.core`: one is the image's instructions,
 // the other is the service that runs it, and the two are asserted side by side.
@@ -143,9 +154,20 @@ describe("Dockerfile", () => {
     expect(smoke).toContain(`"image", "inspect"`);
     expect(smoke).toContain("config?.Healthcheck?.Test");
     // And again on the published multi-arch manifest, which is a different
-    // artifact from the per-arch image the smoke ran against.
-    expect(imageWorkflow).toContain(".value.config.Healthcheck.Test");
-    expect(imageWorkflow).toContain(PANEL_NODE_BIN);
+    // artifact from the per-arch image the smoke ran against. Same reader as
+    // the smoke — the daemon's own — applied per platform.
+    expect(imageWorkflowCode).toContain("{{json .Config.Healthcheck}}");
+    expect(imageWorkflowCode).toContain('docker pull --quiet --platform "linux/$arch"');
+    expect(imageWorkflowCode).toContain(PANEL_NODE_BIN);
+  });
+
+  // Regression guard, not style. `imagetools inspect --format '{{json .Image}}'`
+  // renders a Go struct that need not carry Healthcheck at all, and reading the
+  // gate through it reported MISSING on both platforms of an image that had the
+  // healthcheck — a red run on a healthy publish. The property worth keeping is
+  // "this gate is never read through that format again".
+  it("does not read the healthcheck back through imagetools' Go struct", () => {
+    expect(imageWorkflowCode).not.toContain("{{json .Image}}");
   });
 
   // The native module compiled in the build stage has to dlopen under a
@@ -306,6 +328,104 @@ describe("release workflow", () => {
     expect(workflow).toMatch(/version.*==.*\*-\*/);
   });
 
+  // D30 lives in the tag regex as much as in the tag list: `v0` and `v0.1`
+  // would publish the moving `:0` / `:0.1` ladder the clause forbids, and
+  // `v0.1.0+abc` is neither a legal Docker tag nor a prerelease by the `*-*`
+  // test below it, so it would move :latest.
+  it("accepts a three-component version tag and nothing else", () => {
+    const pattern = workflow.match(/=~ \^(v\[0-9\].*?)\$ \]\]/)?.[1];
+    expect(pattern).toBeTruthy();
+    const accepts = new RegExp(`^${pattern.replace(/\[\.\]/g, "\\.")}$`);
+    for (const tag of ["v0.1.0", "v1.0.0-rc.1", "v10.20.30"]) {
+      expect(accepts.test(tag)).toBe(true);
+    }
+    for (const tag of ["v0", "v0.1", "v0.1.0+abc", "0.1.0", "vlatest"]) {
+      expect(accepts.test(tag)).toBe(false);
+    }
+  });
+
+  // D33's "fix a typo without cutting a release" only works if the sync reads
+  // the branch it was dispatched from. Every other job pins the tag.
+  it("syncs descriptions from the dispatched ref, not the tag", () => {
+    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    expect(descriptions).toContain("actions/checkout@");
+    expect(descriptions).not.toContain("ref: ${{ needs.resolve.outputs.ref }}");
+  });
+
+  // D34: one file for the whole tag, not four that have to be kept in step.
+  it("is the only release entry point — the three it replaced are gone", () => {
+    for (const gone of [
+      "core-release.yml",
+      "images-release.yml",
+      "dockerhub-description.yml",
+    ]) {
+      expect(fs.existsSync(path.join(repoRoot, ".github/workflows", gone))).toBe(false);
+    }
+  });
+
+  // D28. Two legs, not four: the darwin targets are dropped, so a release is
+  // two tarballs and a SHA256SUMS over exactly those two.
+  it("builds the two Linux tarballs on native runners and nothing on macOS", () => {
+    const tarball = workflow.slice(
+      workflow.indexOf("  tarball:"),
+      workflow.indexOf("  installer-e2e:"),
+    );
+    expect(tarball).toContain("target: linux-x64");
+    expect(tarball).toContain("target: linux-arm64");
+    expect(tarball).toContain("ubuntu-24.04-arm");
+    expect(tarball).not.toContain("macos");
+    expect(tarball).not.toContain("mac-arm64");
+  });
+
+  // The guard that makes a silently missing architecture a red build rather
+  // than a checksum file covering half the release.
+  it("composes SHA256SUMS with --expect 2", () => {
+    expect(workflow).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 2");
+  });
+
+  // D29: the installer's contract is the two asset names and bin/actana. The
+  // installer itself is not an asset — it is fetched from main.
+  it("attaches the tarballs and SHA256SUMS, and never install.sh", () => {
+    const publish = workflow.slice(workflow.indexOf("  github-release:"));
+    expect(publish).toMatch(/-name '\*\.tar\.gz' -o -name 'SHA256SUMS'/);
+    // Prose about install.sh is the point of the header; a *step* that touched
+    // it would be the asset D29 forbids.
+    const steps = publish
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(steps).not.toContain("install.sh");
+  });
+
+  // The rule belongs "in any future release review verbatim" (D29), which
+  // means the release workflow's own header — the file a reviewer has open.
+  it("quotes ADR 0016 D29's installer-contract rule verbatim in its header", () => {
+    const adr = readRepoFile("docs/adr/0016-the-0-1-0-shape.md");
+    // The blockquote D29 introduces, not every blockquote in the ADR.
+    const afterD29 = adr.slice(adr.indexOf("**D29 —")).split("\n");
+    const first = afterD29.findIndex((line) => line.startsWith("> "));
+    const quote = afterD29
+      .slice(first)
+      .slice(
+        0,
+        afterD29.slice(first).findIndex((line) => !line.startsWith("> ")),
+      )
+      .join(" ");
+    // Markdown emphasis and comment markers differ; the words must not.
+    const words = (text) => text.replace(/[>#*`]/g, " ").replace(/\s+/g, " ").trim();
+    expect(words(quote)).not.toBe("");
+    expect(words(workflow)).toContain(words(quote));
+  });
+
+  // D31. Skipping everywhere is right for a fork and wrong for the repo that
+  // tells people to pull from Docker Hub: a release that never reached the
+  // primary registry must not report success.
+  it("fails a missing Docker Hub credential on the canonical repo only", () => {
+    expect(workflow).toContain("actana/control");
+    expect(workflow).toMatch(/DOCKERHUB_TOKEN/);
+    expect(workflow).toContain("::error title=Missing Docker Hub credential");
+  });
+
   it("pushes the image name the compose file pulls", () => {
     expect(imageWorkflow).toContain(PANEL_IMAGE.split("/").pop());
     expect(imageWorkflow).toContain("ghcr.io");
@@ -337,22 +457,44 @@ describe("release workflow", () => {
   });
 });
 
-describe("edge workflow", () => {
-  it("publishes from main through the same shared image workflow", () => {
-    expect(edgeWorkflow).toContain("./.github/workflows/container-image.yml");
-    expect(edgeWorkflow).toMatch(/branches:\s*\n\s*- main/);
+describe("the edge publish", () => {
+  it("lives in ci.yml rather than a workflow of its own", () => {
+    expect(fs.existsSync(path.join(repoRoot, ".github/workflows/images-edge.yml"))).toBe(false);
+    expect(ciWorkflow).toContain("./.github/workflows/container-image.yml");
+    expect(ciWorkflow).toMatch(/branches:\s*\n\s*- main/);
+  });
+
+  it("publishes from a push to main, and a pull request never pushes", () => {
+    // The two sets of image jobs are mutually exclusive on the event, which is
+    // what stops a push to `main` building each image twice.
+    // The edge jobs read `!= 'pull_request'` rather than `== 'push'` so a
+    // workflow_dispatch republishes :edge, the way images-edge.yml's own
+    // dispatch trigger did.
+    for (const [job, condition] of [
+      ["panel-image:", "== 'pull_request'"],
+      ["core-image:", "== 'pull_request'"],
+      ["panel-image-edge:", "!= 'pull_request'"],
+      ["core-image-edge:", "!= 'pull_request'"],
+    ]) {
+      const start = ciWorkflow.indexOf(`\n  ${job}`);
+      expect(start, `ci.yml has no ${job} job`).toBeGreaterThan(-1);
+      expect(ciWorkflow.slice(start, start + 200)).toContain(
+        `github.event_name ${condition}`,
+      );
+    }
+    expect(ciWorkflow).toContain("push: false");
   });
 
   it("tags :edge and an immutable per-commit tag, and never moves :latest", () => {
     // Assert on the tags the workflow actually emits, not on the file text —
     // the prose above the trigger says the word "latest" on purpose.
-    const tags = edgeWorkflow.match(/^\s*run: echo "tags=(.*?)"/m)?.[1];
+    const tags = ciWorkflow.match(/^\s*run: echo "tags=(.*?)"/m)?.[1];
     expect(tags).toBe("edge sha-${SHA:0:7}");
     expect(tags).not.toContain("latest");
   });
 
   it("publishes the Core image alongside the Panel", () => {
-    for (const wf of [workflow, edgeWorkflow]) {
+    for (const wf of [workflow, ciWorkflow]) {
       expect(wf).toContain("image: panel");
       expect(wf).toContain("image: core");
     }
@@ -577,19 +719,83 @@ describe("docker hub descriptions", () => {
   }
 
   it("syncs both images, and each short description fits in 100 bytes", () => {
-    const sync = readRepoFile(".github/workflows/dockerhub-description.yml");
-    expect(sync).toContain("sync panel docs/images/panel.md");
-    expect(sync).toContain("sync core docs/images/core.md");
-    for (const [, short] of sync.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
+    expect(workflow).toContain("sync panel docs/images/panel.md");
+    expect(workflow).toContain("sync core docs/images/core.md");
+    for (const [, short] of workflow.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
       expect(Buffer.byteLength(short, "utf8")).toBeLessThanOrEqual(100);
     }
   });
 
-  it("uses a credential distinct from the image-push token", () => {
-    // The push token is an org access token; the Hub API refuses org accounts.
-    const sync = readRepoFile(".github/workflows/dockerhub-description.yml");
-    expect(sync).toContain("DOCKERHUB_DESCRIPTION_TOKEN");
-    expect(sync).not.toContain("secrets.DOCKERHUB_TOKEN");
+  // D31/D33. One PAT does both jobs: an OAT can push images but answers
+  // "Cannot log into an organization account" on /v2/users/login, so choosing
+  // an OAT would mean paying for Team or Business *and still* making a PAT.
+  it("authenticates the sync with the same PAT the image push uses", () => {
+    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    expect(descriptions).toContain("secrets.DOCKERHUB_TOKEN");
+    expect(descriptions).toContain("secrets.DOCKERHUB_USERNAME");
+    // The second credential is deleted, everywhere — a secret nothing reads is
+    // a secret nobody rotates.
+    for (const file of [
+      ".github/workflows/release.yml",
+      ".github/workflows/container-image.yml",
+      "docs/REPO_SETUP.md",
+      "docs/ci-cd.md",
+    ]) {
+      expect(readRepoFile(file)).not.toContain("DOCKERHUB_DESCRIPTION_");
+    }
+  });
+
+  // The token belongs to a person and dies with that account (D31). That is a
+  // documented rotation step, not a design flaw — but only if it is documented.
+  it("documents PAT rotation in the repo setup guide", () => {
+    const setup = readRepoFile("docs/REPO_SETUP.md");
+    expect(setup.toLowerCase()).toContain("rotat");
+  });
+
+  // D33. What the page waits for is the image being pullable, and that is the
+  // two publish jobs. Gating on `github-release` instead would let a red
+  // installer leg — which is about a tarball, not an image — leave both images
+  // published and both pages describing whatever was there before.
+  it("waits for the two publish jobs and nothing else", () => {
+    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    const needs = /^\s+needs: (.+)$/m.exec(descriptions);
+    expect(needs, "the descriptions job declares no needs").not.toBeNull();
+    expect(needs[1]).toBe("[panel, core]");
+  });
+
+  // D33. `actana/core` was a systemd fixture that needed --privileged, the host
+  // cgroup and a hardcoded `--public-host core`, and both the page and the
+  // label said so. That design is gone (D40), and these pages are the public
+  // face of the two images — they are also the one place the old text can
+  // survive unnoticed, because nothing builds them.
+  it("describes the Core image as the product, not as a development fixture", () => {
+    for (const file of [
+      "docs/images/core.md",
+      "docs/images/panel.md",
+      ".github/workflows/container-image.yml",
+      ".github/workflows/release.yml",
+      "docs/REPO_SETUP.md",
+      "docs/ci-cd.md",
+    ]) {
+      const body = readRepoFile(file).toLowerCase();
+      expect(body, `${file} still calls the Core image a fixture`).not.toMatch(
+        /development[ -]fixture/,
+      );
+    }
+  });
+
+  // The page has to describe the image that exists: tini rather than systemd,
+  // one required variable, one volume, and Harnesses arriving at runtime.
+  it("documents the Core image's actual process model and contract", () => {
+    const core = readRepoFile("docs/images/core.md");
+    expect(core).toContain("`tini` is PID 1");
+    expect(core).toContain("ACTANA_PUBLIC_HOST");
+    expect(core).toContain("/home/core");
+    expect(core).toContain("docker compose");
+    expect(core).toContain("actana harnesses install");
+    // The refused verbs of the old fixture, and the systemd it needed.
+    expect(core).not.toContain("--privileged");
+    expect(core).not.toContain("--public-host core");
   });
 
   it("links the GHCR packages back to this repository", () => {

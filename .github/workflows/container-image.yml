@@ -6,12 +6,12 @@ name: Container image
 #   panel → the Panel web service, from deploy/panel.Dockerfile
 #   core  → the Core daemon, from deploy/core.Dockerfile
 #
-# and three callers reuse it, so the bytes a PR validates are built exactly the
-# way the bytes a release publishes are:
+# and two workflows reuse it across three paths, so the bytes a PR validates
+# are built exactly the way the bytes a release publishes are:
 #
-#   ci.yml             → build + smoke, amd64 only, no push  (every PR)
-#   images-edge.yml    → :edge and :sha-<short>              (every push to main)
-#   images-release.yml → :<version> and :latest              (every v* tag)
+#   ci.yml      → build + smoke, amd64 only, no push  (every PR)
+#   ci.yml      → :edge and :sha-<short>              (every push to main)
+#   release.yml → :<version> and :latest              (every v* tag)
 #
 # Each architecture builds natively on a runner of its own kind. The Panel
 # image compiles better-sqlite3 during the build and the Core image bakes in a
@@ -211,7 +211,7 @@ jobs:
 
       # The acceptance criterion for the Core image (ADR 0016 D36), against the
       # exact bytes being released: boot it unprivileged, prove tini is PID 1
-      # and the daemon PID 2, prove the refused verbs refuse and name their
+      # and the daemon its child, prove the refused verbs refuse and name their
       # Docker equivalent, then pair a real Panel with it — and prove a restart
       # keeps that pairing while destroying the volume ends it.
       #
@@ -401,31 +401,39 @@ jobs:
             # the stitched manifest is a different artifact, assembled after
             # the per-arch tags exist — so it fails the run loudly rather
             # than leaving a healthcheck-less image tagged :latest unnoticed.
+            #
+            # Read back by pulling each platform and asking the *daemon* for
+            # the config, which is the same reader `smoke-panel-image.mjs` uses
+            # before the push and the only one proven to answer this question.
+            #
+            # Not `imagetools inspect --format '{{json .Image}}'`, which is what
+            # this gate used and what made it red on run 30912583589: it
+            # reported MISSING for linux/amd64 and linux/arm64 on an image that
+            # had the healthcheck. It had it before the push — the per-arch
+            # smoke asserts exactly this and was green on both arches — and
+            # `imagetools create` stitches an index over the existing per-arch
+            # manifests without rewriting a config blob, so nothing between the
+            # two could have removed it. What that format renders is a Go
+            # struct, and the field is a Docker extension the struct need not
+            # carry. A reader that cannot represent the answer is not evidence
+            # of a missing healthcheck; it is a broken question.
+            #
+            # Second reason to leave that path, observed locally against the
+            # published image but not in CI: `{{json}}` there emitted the
+            # backtick in the HEALTHCHECK's template literal as `\``, which is
+            # not a valid JSON escape, and jq rejected the document outright.
+            # The daemon's own encoder emits the backtick literally.
             if [[ "$IMAGE_KIND" == panel ]]; then
-              config="$(docker buildx imagetools inspect "$primary" --format '{{json .Image}}')"
-              # Multi-platform inspect keys the config by platform; a
-              # single-platform one returns the config itself. Accept both.
-              platforms="$(
-                echo "$config" | jq -r '
-                  if has("config") then {"(single)": .} else . end
-                  | to_entries
-                  | map(.key + "\t" + (
-                      if ((.value.config.Healthcheck.Test // []) | join(" ")
-                           | contains("/nodejs/bin/node"))
-                      then "ok" else "MISSING" end))[]'
-              )"
-              # An empty map would otherwise satisfy "no platform is missing
-              # it" without a single platform having been looked at.
-              if [[ -z "$platforms" ]]; then
-                echo "::error title=Could not read the published image config::imagetools inspect returned no platforms for $primary, so the healthcheck could not be confirmed either way." >&2
-                exit 1
-              fi
-              if grep -q MISSING <<<"$platforms"; then
-                echo "::error title=Published image has no healthcheck::$primary is missing the /nodejs/bin/node HEALTHCHECK. The builder dropped it between the per-arch build and the manifest. Per platform:%0A$(sed 's/$/%0A/' <<<"$platforms" | tr -d '\n')" >&2
-                exit 1
-              fi
-              echo "$primary carries its healthcheck on every platform:"
-              echo "$platforms"
+              for arch in $arches; do
+                docker pull --quiet --platform "linux/$arch" "$primary" >/dev/null
+                healthcheck="$(docker image inspect --format '{{json .Config.Healthcheck}}' "$primary")"
+                if ! jq -e '(.Test // []) | join(" ") | contains("/nodejs/bin/node")' \
+                     >/dev/null <<<"$healthcheck"; then
+                  echo "::error title=Published image has no healthcheck::$primary at linux/$arch is missing the /nodejs/bin/node HEALTHCHECK. The builder dropped it between the per-arch build and the manifest. Config.Healthcheck was $healthcheck" >&2
+                  exit 1
+                fi
+                echo "  $primary at linux/$arch carries its healthcheck"
+              done
             fi
           done
 

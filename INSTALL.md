@@ -76,9 +76,12 @@ Core afterwards.
 ## Prerequisites
 
 - **Linux x86_64 or arm64** with systemd user units available — `systemctl --user`
-  must work. WSL counts as Linux (with systemd enabled). Or **macOS on Apple
-  silicon or Intel**, where `actana` uses launchd instead and needs nothing
-  enabled first.
+  must work. WSL counts as Linux (with systemd enabled). A release publishes
+  these two builds and nothing else — on a Mac or on Windows, run the Panel and
+  host your Cores on a Linux machine. (The `actana` CLI still knows how to set
+  itself up under launchd, but nothing builds it a macOS bundle any more; see
+  [the macOS checklist](docs/core-macos-prerelease-checklist.md) if you intend
+  to make one anyway.)
 - **A reachable port.** The Panel dials the Core, so the port you choose
   (default `8443`) must be open from the Panel's machine:
   ```bash
@@ -97,9 +100,9 @@ you already have, or work on a machine with no outbound network to GitHub.
 
 ### Step 1 — Download and verify the bundle
 
-Pick the tarball matching the machine's platform and architecture from the
-GitHub Release — `linux-x64`, `linux-arm64`, `mac-arm64`, or `mac-x64` — plus
-the `SHA256SUMS` asset from the same release.
+Pick the tarball matching the machine's architecture from the GitHub Release —
+`linux-x64` or `linux-arm64` — plus the `SHA256SUMS` asset from the same
+release. Those three files are the whole release.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -361,5 +364,5 @@ slots.
 - [ADR 0001 — Detach core from panel](docs/adr/0001-detach-core-from-panel.md)
 - [ADR 0002 — Core-link auth and transport](docs/adr/0002-core-link-auth-and-transport.md)
 - [ADR 0003 — Core install and registration](docs/adr/0003-core-install-and-registration.md)
-- [macOS pre-release checklist](docs/core-macos-prerelease-checklist.md) — the
-  reboot and logout checks CI cannot run
+- [macOS checklist](docs/core-macos-prerelease-checklist.md) — the reboot and
+  logout checks for a Mac Core built from source

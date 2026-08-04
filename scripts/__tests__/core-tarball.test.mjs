@@ -25,17 +25,12 @@ import {
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
 describe("CORE_TARGETS", () => {
-  it("covers exactly the four supported Cores", () => {
-    expect(CORE_TARGETS.map((t) => t.target)).toEqual([
-      "mac-arm64",
-      "mac-x64",
-      "linux-x64",
-      "linux-arm64",
-    ]);
+  it("covers exactly the two supported Cores", () => {
+    expect(CORE_TARGETS.map((t) => t.target)).toEqual(["linux-x64", "linux-arm64"]);
   });
 
-  it("carries no Windows target", () => {
-    expect(CORE_TARGETS.some((t) => t.platform === "win32")).toBe(false);
+  it("is Linux-only — no macOS target, no Windows target", () => {
+    expect(CORE_TARGETS.every((t) => t.platform === "linux")).toBe(true);
   });
 });
 
@@ -51,14 +46,14 @@ describe("findTarget", () => {
 
 describe("hostTarget", () => {
   it("maps a build host to the target it can legitimately produce", () => {
-    expect(hostTarget("darwin", "arm64")?.target).toBe("mac-arm64");
-    expect(hostTarget("darwin", "x64")?.target).toBe("mac-x64");
     expect(hostTarget("linux", "x64")?.target).toBe("linux-x64");
     expect(hostTarget("linux", "arm64")?.target).toBe("linux-arm64");
   });
 
   it("has no target for an unsupported host", () => {
     expect(hostTarget("win32", "x64")).toBeUndefined();
+    expect(hostTarget("darwin", "arm64")).toBeUndefined();
+    expect(hostTarget("darwin", "x64")).toBeUndefined();
   });
 });
 
@@ -85,7 +80,7 @@ describe("CORE_RUNTIME_DEPENDENCIES", () => {
 
 describe("prebuildDirName", () => {
   it("names the one node-pty prebuild directory the target needs", () => {
-    expect(prebuildDirName(findTarget("mac-arm64"))).toBe("darwin-arm64");
+    expect(prebuildDirName(findTarget("linux-arm64"))).toBe("linux-arm64");
     expect(prebuildDirName(findTarget("linux-x64"))).toBe("linux-x64");
   });
 });
@@ -96,8 +91,8 @@ describe("node dist locations", () => {
   });
 
   it("builds the runtime tarball URL", () => {
-    expect(nodeDistTarballUrl("24.15.0", "darwin-arm64")).toBe(
-      "https://nodejs.org/dist/v24.15.0/node-v24.15.0-darwin-arm64.tar.gz",
+    expect(nodeDistTarballUrl("24.15.0", "linux-arm64")).toBe(
+      "https://nodejs.org/dist/v24.15.0/node-v24.15.0-linux-arm64.tar.gz",
     );
   });
 
@@ -138,14 +133,14 @@ describe("formatShasums", () => {
   it("renders digest, two spaces, name — sorted by name", () => {
     const text = formatShasums(
       new Map([
-        ["actana-core-1.0.0-mac-x64.tar.gz", "b".repeat(64)],
-        ["actana-core-1.0.0-linux-x64.tar.gz", "a".repeat(64)],
+        ["actana-core-1.0.0-linux-x64.tar.gz", "b".repeat(64)],
+        ["actana-core-1.0.0-linux-arm64.tar.gz", "a".repeat(64)],
       ]),
     );
 
     expect(text).toBe(
-      `${"a".repeat(64)}  actana-core-1.0.0-linux-x64.tar.gz\n` +
-        `${"b".repeat(64)}  actana-core-1.0.0-mac-x64.tar.gz\n`,
+      `${"a".repeat(64)}  actana-core-1.0.0-linux-arm64.tar.gz\n` +
+        `${"b".repeat(64)}  actana-core-1.0.0-linux-x64.tar.gz\n`,
     );
   });
 
@@ -166,11 +161,11 @@ describe("formatShasums", () => {
 
 describe("tarball naming", () => {
   it("names the archive after version and target", () => {
-    expect(tarballName("0.1.0", "mac-arm64")).toBe("actana-core-0.1.0-mac-arm64.tar.gz");
+    expect(tarballName("0.1.0", "linux-arm64")).toBe("actana-core-0.1.0-linux-arm64.tar.gz");
   });
 
   it("puts everything under one directory so extraction never litters the CWD", () => {
-    expect(tarballRootDirName("0.1.0", "mac-arm64")).toBe("actana-core-0.1.0-mac-arm64");
+    expect(tarballRootDirName("0.1.0", "linux-arm64")).toBe("actana-core-0.1.0-linux-arm64");
   });
 });
 

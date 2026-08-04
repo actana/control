@@ -18,8 +18,15 @@ import path from "node:path";
 export const BUNDLED_NODE_VERSION = "24.15.0";
 
 /**
- * The four Core release targets. No Windows Core: Windows operators run the
- * web Panel and host Cores on macOS/Linux (or WSL, which is `linux-*`).
+ * The two Core release targets — Linux only. A tag publishes exactly three
+ * assets: these two tarballs and the `SHA256SUMS` covering them (ADR 0016
+ * D28). macOS and Windows operators run the web Panel and host their Cores on
+ * a Linux machine; WSL counts as Linux and is `linux-*`.
+ *
+ * Adding a row here is not a local edit. The release matrix in
+ * `.github/workflows/release.yml` needs a leg that can build it, and that
+ * workflow's `compose-core-shasums.mjs --expect` has to grow to match — or the
+ * release ships a `SHA256SUMS` covering less than the release does.
  *
  * `nodeDistId` is the Node.org tarball's platform slug; `platform`/`arch` are
  * the `process.platform`/`process.arch` values a build host must report, since
@@ -27,8 +34,6 @@ export const BUNDLED_NODE_VERSION = "24.15.0";
  * cross-compiled).
  */
 export const CORE_TARGETS = Object.freeze([
-  Object.freeze({ target: "mac-arm64", platform: "darwin", arch: "arm64", nodeDistId: "darwin-arm64" }),
-  Object.freeze({ target: "mac-x64", platform: "darwin", arch: "x64", nodeDistId: "darwin-x64" }),
   Object.freeze({ target: "linux-x64", platform: "linux", arch: "x64", nodeDistId: "linux-x64" }),
   Object.freeze({ target: "linux-arm64", platform: "linux", arch: "arm64", nodeDistId: "linux-arm64" }),
 ]);

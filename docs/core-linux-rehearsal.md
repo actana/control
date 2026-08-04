@@ -1,9 +1,11 @@
 # Linux Core — the one-liner rehearsal
 
-CI installs a Core on Linux many times per pull request: `.github/workflows/ci.yml`'s
-`installer-e2e` job runs `scripts/e2e-install-sh-linux.mjs` and
-`scripts/e2e-actana-setup-linux.mjs` across Ubuntu and Debian, on x64 and arm64,
-and the `core-image` job pairs a Panel with the containerised Core.
+CI installs a Core on Linux several times per pull request: `.github/workflows/ci.yml`'s
+`installer-e2e` job runs `scripts/e2e-actana-setup-linux.mjs` — the real
+one-liner, then the lifecycle verbs on the machine it produced — across Ubuntu
+and Debian at x64, and the `core-image` job pairs a Panel with the containerised
+Core. arm64 runs the same script on the release tag
+(`.github/workflows/release.yml`).
 
 All of it runs with the prompts suppressed and nobody watching. That is the
 gap this fills: **once per release, a person pastes the real one-liner into a
@@ -13,9 +15,10 @@ green matrix cannot — a prompt that reads badly, a token that is awkward to
 copy out of a terminal, an instruction that is technically true and practically
 useless.
 
-Fifteen minutes. Run it alongside
-[the macOS checklist](core-macos-prerelease-checklist.md), which covers the
-same ground on the platform where reboot persistence has to be checked by hand.
+Fifteen minutes, and the only install rehearsal a release needs — Linux is the
+only platform a release publishes a Core for. [The macOS
+checklist](core-macos-prerelease-checklist.md) covers the same ground for a
+Mac Core built from source, and gates nothing.
 
 ---
 

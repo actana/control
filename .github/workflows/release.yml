@@ -1,0 +1,489 @@
+name: Release
+
+# Everything a `v*` tag publishes: the two Core tarballs and their SHA256SUMS,
+# the Panel and Core images, the GitHub Release, and each image's Docker Hub
+# page. One file rather than four, because they are one event (ADR 0016 D34).
+#
+#   resolve ─┬─ tarball ─── installer-e2e ──┐
+#            ├─ panel ─┐                    ├── github-release
+#            └─ core ──┴─ descriptions      ┘
+#
+# `panel` and `core` go through the reusable container-image.yml with
+# push: true, and both they and the tarball legs feed `github-release`.
+# `descriptions` is a leaf hanging off those two alone (D33): it describes an
+# image, so what it waits for is the image being pullable — nothing else.
+#
+# Exactly three assets (D28): actana-core-<version>-linux-x64.tar.gz,
+# actana-core-<version>-linux-arm64.tar.gz, SHA256SUMS. No macOS legs, no
+# signing, no notarization, and no secrets beyond `github.token` for the assets
+# and the Docker Hub PAT for the mirror. Integrity is the published checksums,
+# verified by `install.sh` and by `actana update`.
+#
+# ── The installer contract (ADR 0016 D29), quoted verbatim ───────────────────
+#
+# > `install.sh` on `main` must work against **every published release**. Its
+# > contract with a release is three things: the `SHA256SUMS` asset name, the
+# > `actana-core-<version>-<target>.tar.gz` asset name, and `bin/actana` inside
+# > the extracted directory. Changing any of them is a breaking change to the
+# > installer contract requiring a major bump plus a documented migration — not
+# > a patch-level edit to a shell script.
+#
+# `install.sh` itself is deliberately **not** an asset: it stays on
+# raw.githubusercontent.com/actana/control/main/install.sh, so a broken
+# installer is fixable without cutting a release.
+#
+# ── Two things that must not be "fixed" later ────────────────────────────────
+#
+# 1. GHCR is pushed first and must complete, even though Docker Hub is the
+#    "primary" registry (D32). Primary means the canonical place a user is told
+#    to pull from, not the publish order. GHCR authenticates with the
+#    workflow's own `github.token` and therefore *cannot* fail on credentials,
+#    which is exactly why it goes first. Do not reorder the pushes to match the
+#    word.
+#
+# 2. Present-but-broken Docker Hub credentials publish GHCR completely — per-arch
+#    tags *and* manifest — and then fail the run at the very end (D31, and see
+#    container-image.yml, which is where that happens). Failing early would
+#    strand GHCR with per-arch tags and no manifest.
+#
+# A *missing* credential is the other case, and it is decided here in `resolve`
+# before anything is built: fatal on actana/control, skipped on a fork.
+
+on:
+  push:
+    tags:
+      - "v*"
+  # Re-runs a whole tag: rebuilds the tarballs and images, re-attaches the
+  # assets, re-syncs the descriptions. Also how a description typo is fixed
+  # without cutting a release (D33).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to (re)release (e.g. v0.1.0). Must already exist on origin."
+        required: true
+
+concurrency:
+  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolve:
+    name: Resolve ref
+    runs-on: ubuntu-24.04
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+      version: ${{ steps.ref.outputs.version }}
+      tags: ${{ steps.ref.outputs.tags }}
+    steps:
+      - id: ref
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            ref="$INPUT_TAG"
+          else
+            ref="$REF_NAME"
+          fi
+          # All three components, and no `+build` metadata. `v0` and `v0.1`
+          # would publish exactly the moving `:0` / `:0.1` tags D30 forbids,
+          # and `+` is not a legal character in a Docker tag — nor would
+          # `v0.1.0+abc` read as a prerelease below, so it would move :latest.
+          if [[ ! "$ref" =~ ^v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "release ref must be a version tag like v0.1.0 or v1.0.0-rc.1 — all three components, no +build metadata" >&2
+            exit 1
+          fi
+          version="${ref#v}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          # `<version>` and `latest`, and no `0` / `0.1` ladder (D30): under
+          # semver a `0.x` minor bump *is* the breaking change, so a moving `:0`
+          # tag is a lie by construction. A prerelease (v1.0.0-rc.1) publishes
+          # its own version and must not move :latest.
+          if [[ "$version" == *-* ]]; then
+            echo "tags=$version" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=$version latest" >> "$GITHUB_OUTPUT"
+          fi
+
+      # D31. A fork has no Docker Hub account and must still be able to cut a
+      # release to GHCR alone — but on the repo whose docs tell people to
+      # `docker pull docker.io/actana/…`, a release that never reached the
+      # primary registry must not report success. Same one PAT serves both the
+      # `docker login` in container-image.yml and the description API below:
+      # an organization access token can push images but answers "Cannot log
+      # into an organization account" on POST /v2/users/login, so it would mean
+      # paying for Team or Business *and still* provisioning a PAT.
+      #
+      # Checked before anything is built, deliberately — unlike a *broken*
+      # credential, a missing one costs nothing to catch early.
+      - name: Require Docker Hub credentials on the canonical repo
+        env:
+          REPO: ${{ github.repository }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]; then
+            exit 0
+          fi
+          if [[ "$REPO" != "actana/control" ]]; then
+            echo "::notice title=Docker Hub skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set on $REPO. Publishing to GHCR only."
+            exit 0
+          fi
+          echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set on actana/control — Docker Hub is the registry the docs tell operators to pull from, so a release that reaches GHCR alone is not a release. One personal access token (Read & Write, from an account with Admin on the org) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
+          exit 1
+
+  tarball:
+    name: Core tarball (${{ matrix.target }})
+    needs: resolve
+    strategy:
+      # Let both legs finish so one failure surfaces both in a single run.
+      # Publishing still requires the pair: a SHA256SUMS covering one
+      # architecture is worse than no release, so `github-release` needs this
+      # job whole.
+      fail-fast: false
+      matrix:
+        # Two legs, not four — macOS Core targets are dropped (D28). Every
+        # target builds on a runner of its own architecture: the tarballs carry
+        # prebuilt native modules (node-pty, better-sqlite3) copied from the
+        # build host's own install, so a cross-compiled leg would be a guess,
+        # not a build.
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the Core bundle
+        run: pnpm --filter @actana/core build
+
+      - name: Build the tarball
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          node scripts/build-core-tarball.mjs \
+            --target "$TARGET" \
+            --version "$RELEASE_VERSION" \
+            --out-dir artifacts/core
+
+      # The acceptance criterion, run on the platform it is about: extract the
+      # tarball and boot it through its own launcher with no system Node.
+      - name: Smoke — extracted tarball boots a dialable Core
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          node scripts/smoke-core-tarball.mjs \
+            --tarball "artifacts/core/actana-core-$RELEASE_VERSION-$TARGET.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-tarball-${{ matrix.target }}
+          path: artifacts/core/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # The arm64 half of the installer matrix (ADR 0016 D36). Ubuntu and Debian at
+  # x64 run on every pull request in ci.yml; arm64 runs here, once per release,
+  # because what only this matrix can catch — PAM, polkit, the logind rules
+  # behind a sudo-less `systemctl --user` and `loginctl enable-linger` — varies
+  # by distro rather than by architecture, and the arch-sensitive risk (prebuilt
+  # native modules) is already covered by the tarball smoke on every PR.
+  #
+  # It gates `github-release` on purpose: an arm64 tarball that cannot be
+  # installed by the one-liner is not a release asset worth attaching.
+  #
+  # The axes are declared in scripts/lib/container-matrix.mjs, and
+  # scripts/__tests__/container-matrix.test.mjs reads this file to check the two
+  # still agree.
+  installer-e2e:
+    name: E2E — installer (${{ matrix.distro }}, ${{ matrix.arch }})
+    needs: [resolve, tarball]
+    strategy:
+      fail-fast: false
+      matrix:
+        distro: [ubuntu, debian]
+        arch: [arm64]
+        include:
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      # Only `ws` is needed — the e2e's core-link dial is the sole dependency it
+      # has on the repo's own node_modules.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Download the tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: core-tarball-${{ matrix.target }}
+          path: artifacts/core
+
+      - name: E2E — the one-liner and the lifecycle on a fresh systemd machine
+        run: |
+          set -euo pipefail
+          node scripts/e2e-actana-setup-linux.mjs \
+            --tarball "artifacts/core/actana-core-${{ needs.resolve.outputs.version }}-${{ matrix.target }}.tar.gz" \
+            --distro ${{ matrix.distro }}
+
+  # The images do not wait on the tarball job: container-image.yml builds the
+  # Core tarball it bakes in itself, on the runner that will ship it. They are
+  # the long pole (~3½ min for both images, both arches, both registries), so
+  # running them beside the tarball legs is what keeps a release under six
+  # minutes.
+  panel:
+    name: Panel image
+    needs: resolve
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+    with:
+      image: panel
+      ref: ${{ needs.resolve.outputs.ref }}
+      stage: ${{ needs.resolve.outputs.version }}
+      tags: ${{ needs.resolve.outputs.tags }}
+      push: true
+
+  core:
+    name: Core image
+    needs: resolve
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+      packages: write
+    secrets: inherit
+    with:
+      image: core
+      ref: ${{ needs.resolve.outputs.ref }}
+      stage: ${{ needs.resolve.outputs.version }}
+      tags: ${{ needs.resolve.outputs.tags }}
+      push: true
+
+  github-release:
+    name: Attach tarballs + SHA256SUMS to the GitHub Release
+    # The Release is the last thing to appear, after both images are published:
+    # it is the announcement, and an announcement that precedes the images
+    # sends operators to tags that are not there yet. `installer-e2e` is in
+    # here for a different reason (D36): an arm64 tarball the one-liner cannot
+    # install is not an asset worth attaching.
+    needs: [resolve, tarball, installer-e2e, panel, core]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: core-tarball-*
+          path: core-tarballs
+          merge-multiple: true
+
+      # --expect 2 is the guard, and the 2 is deliberate (D28): a silently
+      # missing architecture must be a red build, not a checksum file that
+      # quietly covers half the release. It was 4 while macOS was a target.
+      - name: Compose SHA256SUMS
+        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 2
+
+      - name: Verify SHA256SUMS the way an operator would
+        working-directory: core-tarballs
+        run: sha256sum -c SHA256SUMS
+
+      # Exactly three assets. `install.sh` is not among them by design (D29) —
+      # it is served from `main`, and adding it here would make a broken
+      # installer fixable only by cutting a release.
+      #
+      # The upload path is create-or-upload idempotent, so it does not matter
+      # whether the GitHub Release already exists when this runs.
+      - name: Attach to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_REF: ${{ needs.resolve.outputs.ref }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(find core-tarballs -maxdepth 1 -type f \( -name '*.tar.gz' -o -name 'SHA256SUMS' \) | sort)
+          if (( ${#files[@]} != 3 )); then
+            echo "::error title=Wrong asset count::expected 3 assets (two tarballs + SHA256SUMS), found ${#files[@]}" >&2
+            printf '  %s\n' "${files[@]}" >&2
+            exit 1
+          fi
+          echo "Attaching ${#files[@]} asset(s) to $RELEASE_REF:"
+          printf '  %s\n' "${files[@]}"
+
+          if gh release view "$RELEASE_REF" >/dev/null 2>&1; then
+            gh release upload "$RELEASE_REF" "${files[@]}" --clobber
+          else
+            gh release create "$RELEASE_REF" "${files[@]}" \
+              --title "$RELEASE_REF" \
+              --notes "Core tarballs for Linux Cores. Verify with \`sha256sum -c SHA256SUMS\`."
+          fi
+
+  # Docker Hub does not pull a README from GitHub on its own — the repository
+  # description is a field you PATCH through its API. This syncs one file per
+  # image, so `actana/panel` and `actana/core` each get their own page rather
+  # than sharing the source repo's README (which is what GHCR shows, and which
+  # describes the project rather than either image).
+  #
+  #   docs/images/panel.md → docker.io/<ns>/panel
+  #   docs/images/core.md  → docker.io/<ns>/core
+  #
+  # Done with curl rather than a third-party action on purpose: this step
+  # handles a credential that can rewrite the public face of both images, and
+  # the repo pins every action it does trust by SHA.
+  #
+  # Gated on the two publish jobs and on nothing else (D33). The page describes
+  # an *image*, and the version it names has to be pullable when someone reads
+  # it — which is exactly what `panel` and `core` completing means. Hanging it
+  # off `github-release` instead would have been a stronger condition for the
+  # wrong reason: a red arm64 installer leg would then leave both images
+  # published and both pages describing whatever was there before, over a
+  # failure that has nothing to do with either image.
+  descriptions:
+    name: Docker Hub descriptions
+    needs: [panel, core]
+    runs-on: ubuntu-24.04
+    steps:
+      # Deliberately no `ref:` — the only job here that does not pin the tag.
+      # A description is a living page, not a versioned artifact: a tag push
+      # syncs that tag's files, and a `workflow_dispatch` from `main` syncs
+      # `main`'s, which is what makes "fix a typo without cutting a release"
+      # (D33) actually reach Docker Hub. Pinning the tag here would republish
+      # the typo.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Push each image's README to Docker Hub
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          OWNER: ${{ github.repository_owner }}
+          # The same one PAT the image push uses. `resolve` has already failed
+          # the run if it is missing on actana/control, so reaching the skip
+          # below means this is a fork.
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$DOCKERHUB_TOKEN" || -z "$DOCKERHUB_USERNAME" ]]; then
+            echo "::notice title=Docker Hub descriptions skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set. See docs/REPO_SETUP.md section 2."
+            exit 0
+          fi
+
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          namespace="${namespace,,}"
+
+          # A JWT, not the token itself — the /v2/repositories/ endpoints do not
+          # accept a raw PAT.
+          jwt="$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' -d @- \
+                https://hub.docker.com/v2/users/login/ \
+            | jq -r '.token // empty')"
+
+          if [[ -z "$jwt" ]]; then
+            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read & Write scope, from an account with Admin on the org. That one token serves the image push as well."
+            exit 1
+          fi
+
+          # short: what shows in search results. full: the page body.
+          # Docker Hub caps these at 100 and 25000 bytes; overflowing is a 400,
+          # so fail with the length rather than a bare API error.
+          sync() {
+            local repo="$1" file="$2" short="$3"
+            if [[ ! -f "$file" ]]; then
+              echo "::error title=Missing description file::$file"
+              return 1
+            fi
+            # Byte length, not ${#short}: that counts characters, and these
+            # strings contain multibyte punctuation. Docker's limit is bytes.
+            local short_bytes bytes
+            short_bytes="$(printf '%s' "$short" | wc -c)"
+            if (( short_bytes > 100 )); then
+              echo "::error title=Short description too long::$repo is $short_bytes bytes, max 100"
+              return 1
+            fi
+            bytes="$(wc -c < "$file")"
+            if (( bytes > 25000 )); then
+              echo "::error title=README too long::$file is $bytes bytes, max 25000"
+              return 1
+            fi
+
+            local status
+            status="$(jq -n --rawfile full "$file" --arg short "$short" \
+                        '{full_description:$full, description:$short}' \
+              | curl -sS -o /tmp/resp.json -w '%{http_code}' \
+                  -X PATCH \
+                  -H "Authorization: JWT $jwt" \
+                  -H 'Content-Type: application/json' \
+                  -d @- \
+                  "https://hub.docker.com/v2/repositories/${namespace}/${repo}/")"
+
+            if [[ "$status" != "200" ]]; then
+              echo "::error title=Failed to update $repo::HTTP $status — $(cat /tmp/resp.json)"
+              return 1
+            fi
+            echo "✅ ${namespace}/${repo} — $bytes bytes of README, short description set"
+          }
+
+          rc=0
+          sync panel docs/images/panel.md \
+            "Self-hosted web Panel for driving agentic coding work across your machines." || rc=1
+          sync core docs/images/core.md \
+            "The Actana Core daemon: the machine your agentic coding sessions actually run on." || rc=1
+          exit "$rc"

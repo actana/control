@@ -7,22 +7,31 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
-| [`ci.yml`](../.github/workflows/ci.yml) | every PR, push to `main` | nothing — it gates |
-| [`conventions.yml`](../.github/workflows/conventions.yml) | every PR | nothing — it gates |
-| [`images-edge.yml`](../.github/workflows/images-edge.yml) | push to `main` | `:edge`, `:sha-<short>` |
-| [`images-release.yml`](../.github/workflows/images-release.yml) | `v*` tag | `:<version>`, `:latest` |
-| [`core-release.yml`](../.github/workflows/core-release.yml) | `v*` tag | Core tarballs + checksums |
-| [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | `docs/images/**` on `main` | each image's Docker Hub page |
-| [`base-pins.yml`](../.github/workflows/base-pins.yml) | weekly cron | a `NODE_VERSION` bump PR, or nothing |
-| [`stale.yml`](../.github/workflows/stale.yml) | daily cron | stale labels / closures |
-| [`react-doctor.yml`](../.github/workflows/react-doctor.yml) | see the file | a report |
+| [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing — it gates |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` | `:edge`, `:sha-<short>` |
+| [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a rebuilt-and-republished Core image, a `NODE_VERSION` bump PR, and an issue for anything the dev-tree audit or the Harness canary found |
+
+`ci.yml` is one file doing two jobs, and the trigger is the difference. On a
+PR it gates and pushes nothing; on a push to `main` it publishes `:edge` and
+`:sha-<short>` from the same reusable build. That fold is [ADR
+0016](adr/0016-the-0-1-0-shape.md) D30 — an edge publish that differs from the
+PR build only in which tags come out the other end does not need a workflow
+file of its own. The repo conventions — PR title, commit messages, branch name
+— are the `Conventions` job inside it (D34).
+
+`housekeeping.yml` is everything on a clock and nothing that gates. Its five
+chores share no subject; what they share is that **none of them can be caused or
+fixed by a pull request**, which is why they are not in `ci.yml`. It is
+described in full under [Housekeeping](#housekeeping).
 
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
-workflow called by the PR, edge, and release paths with `image: panel` or
-`image: core`. That is deliberate — the bytes a PR validates are built exactly
-the way the bytes a release publishes are, rather than by a lookalike pipeline
-that drifts.
+workflow called by the PR, edge, release, and weekly-rebuild paths with
+`image: panel` or `image: core`. That is deliberate — the bytes a PR validates
+are built exactly the way the bytes a release publishes are, rather than by a
+lookalike pipeline that drifts.
 
 ## The published images
 
@@ -57,30 +66,47 @@ its own:
   `org.opencontainers.image.description` label. Both images set these labels at
   build time.
 - **Docker Hub** ignores those labels and stores its own per-repository
-  description, set through its API. [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml)
-  pushes one file per image — [`docs/images/panel.md`](images/panel.md) and
-  [`docs/images/core.md`](images/core.md) — whenever either changes on `main`.
+  description, set through its API. The `descriptions` job in
+  [`release.yml`](../.github/workflows/release.yml) pushes one file per image —
+  [`docs/images/panel.md`](images/panel.md) and
+  [`docs/images/core.md`](images/core.md) — gated on the two publish jobs, so
+  the page never describes a version nobody can pull yet.
 
-Edit those two files to change what Docker Hub shows. The sync needs its own
-credential (`DOCKERHUB_DESCRIPTION_*`), because the API endpoint it uses
-rejects organization access tokens; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+Edit those two files to change what Docker Hub shows. A typo is fixable without
+cutting a release: merge the fix to `main`, then
+`gh workflow run release.yml -f tag=<the current tag>`. That job is the one
+place the workflow does *not* check out the tag — it syncs the branch you
+dispatch from, which is what makes the fix reach Docker Hub. The
+sync authenticates with the same `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` the
+image push uses, which is why that token must be a *personal* access token —
+the API endpoint rejects organization ones; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
 ## The release artifacts
 
-The product ships as three things, on two pipelines, from the same tag:
+The product ships as three things, on one pipeline, from the same tag:
 
-- **The Panel** is a container. `images-release.yml` → `ghcr.io/actana/panel`
+- **The Panel** is a container. `release.yml` → `ghcr.io/actana/panel`
   (and Docker Hub, when configured). No installer, no signing — the image is
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
 - **The Core, as a container** comes from the same workflow → `ghcr.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
-  tarball. `core-release.yml` → four targets (`mac-arm64`, `mac-x64`,
-  `linux-x64`, `linux-arm64`) with published checksums, which `install.sh` and
-  `actana update` verify against.
+  tarball. `release.yml` → `linux-x64` and `linux-arm64` with published
+  checksums, which `install.sh` and `actana update` verify against.
+
+A tag therefore publishes exactly three release assets —
+`actana-core-<version>-linux-x64.tar.gz`,
+`actana-core-<version>-linux-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
+deliberately **not** one of them: it is served from `main`, so a broken
+installer is fixable without cutting a release
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D29).
+
+The three are Linux-only because the macOS Core targets were dropped
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D28): a Mac runs the Panel and
+hosts its Cores on Linux.
 
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
-update" in the Panel. So tag both together — a `v*` tag fires both workflows.
+update" in the Panel. So tag both together — one `v*` tag builds both.
 
 ## Container image tags
 
@@ -133,6 +159,58 @@ arrival, a different PID 1 and a different install location
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36). The Trivy gate below runs in the
 same job, on the same built image.
 
+### What no longer runs on a PR, and what picks it up
+
+Two seams came off the PR gate. One moved; the other has no automation at all,
+which is written down here rather than discovered:
+
+- **`actana harnesses install <id>`** — that a vendor's official installer
+  still leaves a CLI on `PATH`. Deliberately non-hermetic, so no PR can cause
+  its failure and no PR author can fix it; gating on it is how a team learns
+  that red means nothing ([ADR 0016](adr/0016-the-0-1-0-shape.md) D38). It runs
+  weekly as `housekeeping.yml`'s `harness-canary` job — `pnpm
+  core:harnesses:e2e` against four vendors' real installers — and a failure
+  arrives as an issue rather than a red check. It is failing on `opencode`
+  today ([#31](https://github.com/actana/control/issues/31)).
+- **The macOS install path** — `actana setup` against launchd. Nothing
+  automated covers it at all now; [the manual pre-release
+  checklist](core-macos-prerelease-checklist.md) is the whole of it.
+
+## The installer e2e, and why it is one job on two triggers
+
+There is **one** installer e2e — `scripts/e2e-actana-setup-linux.mjs` — and it
+is entered at the real `curl … | bash` one-liner. Install, the lifecycle verbs,
+in-place upgrade, `update`, `token regenerate` and `uninstall` all run against
+the machine the one-liner produced, rather than against a second machine that a
+duplicated install phase set up ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36).
+
+install-sh's negative cases — bad checksum, unknown platform, `--version`
+pinning, non-TTY behaviour, exit codes — are covered hermetically, in under a
+second, by `scripts/__tests__/install-sh.test.mjs`, so the container leg does
+not repeat them. Each one would cost a whole extra one-liner run on a real
+container to prove something already proven.
+
+Its axes are `distro × arch`, and they split across two triggers:
+
+| Trigger | Workflow | Legs |
+| --- | --- | --- |
+| every PR | [`ci.yml`](../.github/workflows/ci.yml) `installer-e2e` | ubuntu, debian — **x64** |
+| `v*` tag | [`release.yml`](../.github/workflows/release.yml) `installer-e2e` | ubuntu, debian — **arm64** |
+
+Distro is the axis that earns its place on every PR: PAM, polkit and the logind
+rules that decide whether a sudo-less `systemctl --user` and `loginctl
+enable-linger` work at all are exactly what differs between distributions.
+Architecture is not — the arch-sensitive risk is prebuilt native modules, and
+`core-tarball-smoke` already boots the arm64 tarball on an arm64 runner on every
+PR. So arm64's installer leg is paid for once per release instead of once per
+push, and it **gates `github-release`**: an arm64 tarball the one-liner cannot install
+is not a release asset worth attaching.
+
+Both jobs are declared once, in `scripts/lib/container-matrix.mjs`.
+`scripts/__tests__/container-matrix.test.mjs` reads that module *and* both
+workflow files, so a distro added to one and forgotten in the other is a failing
+unit test rather than a leg nobody notices is missing.
+
 ## Dependency and CVE policy
 
 Three populations, three owners, one gate each. They are written out separately
@@ -146,13 +224,11 @@ for the other ([ADR 0016](adr/0016-the-0-1-0-shape.md) D37).
 | Dev-tree packages | `pnpm audit --audit-level high` — opens an issue, does not gate | weekly |
 | The image: OS layer + the `node_modules` it ships | Trivy, fails on **fixable** CRITICAL/HIGH | every PR, on the built image |
 
-Only the third row is live as written. `dependency-audit` in
-[`ci.yml`](../.github/workflows/ci.yml) still runs without `--prod`, which is
-[#47](https://github.com/actana/control/issues/47)'s change and needs
-`pnpm update -r postcss @babel/core` alongside it (D39); the weekly dev-tree
-audit arrives with `housekeeping.yml`
-([#51](https://github.com/actana/control/issues/51)). The table is the policy,
-not a description of today's workflow files.
+All three rows are live as written. The weekly dev-tree audit is
+`housekeeping.yml`'s `dev-audit` job; a finding there opens an issue labelled
+`needs-triage` rather than failing anything, and it files at most one at a time
+— a recurrence while the first is still open is silent, because the run link on
+that issue already leads to the newest output.
 
 The Trivy leg is [`scripts/scan-core-image.mjs`](../scripts/scan-core-image.mjs),
 run from `container-image.yml` against the image that was just built and before
@@ -220,7 +296,7 @@ mechanisms, because they catch different drift".
 | --- | --- | --- |
 | `ubuntu:24.04@sha256:…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | Dependabot, `docker` ecosystem |
 | `gcr.io/distroless/nodejs24@sha256:…` | [`panel.Dockerfile`](../deploy/panel.Dockerfile) | Dependabot, `docker` ecosystem |
-| `ARG NODE_VERSION=…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | [`base-pins.yml`](../.github/workflows/base-pins.yml) |
+| `ARG NODE_VERSION=…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | [`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `base-pins` job |
 | everything `apt` installs | `core.Dockerfile`'s one `RUN` | the weekly rebuild, via D5's in-layer `apt-get upgrade` |
 
 The last row is why the digest pin and the upgrade are *both* load-bearing:
@@ -251,7 +327,8 @@ pin carries one:
 `pnpm bases:check` ([`check-base-pins.mjs`](../scripts/check-base-pins.mjs))
 resolves all three pins against their real upstreams — the registry HTTP API
 and `nodejs.org/dist/index.json` — using the same tag Dependabot would use for
-each, and prints what has moved. `base-pins.yml` runs it weekly.
+each, and prints what has moved. `housekeeping.yml`'s `base-pins` job runs it
+weekly.
 
 It exists because two of the three have failure modes a config file cannot
 rule out:
@@ -263,7 +340,7 @@ rule out:
 - `ARG NODE_VERSION` is a nodejs.org tarball (D8), not an image reference.
   Dependabot's `docker` ecosystem cannot see it at all, so without this nothing
   bumps it and the Core's system Node drifts a patch release at a time.
-  `base-pins.yml` opens that PR itself.
+  the `base-pins` job opens that PR itself.
 
   What the bump buys is Node's own security fixes, and **not** a greener CVE
   gate. D10 calls it "the only thing that clears the Node-attributed findings";
@@ -380,26 +457,86 @@ Three registries are therefore in play, doing three different jobs:
 | Docker Hub | pulls `ubuntu` and `node`; publishes both images (primary) | no Core image can be built; publishing is skipped if credentials are absent |
 | GHCR | publishes both images (always) | release fails — there is no fallback for the primary publish target |
 
+## Housekeeping
+
+[`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the third and
+last workflow ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34) and the only one
+that is not a check. Five chores on two crons:
+
+| Job | Cron | What it does |
+| --- | --- | --- |
+| `stale` | daily, 03:17 UTC | labels and closes inactive issues and PRs |
+| `base-pins` | Mondays, 07:00 UTC | opens the `NODE_VERSION` bump PR, reports digest drift |
+| `core-rebuild` | Mondays, 07:00 UTC | rebuilds the newest release's Core image and republishes `:<version>` and `:latest` |
+| `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
+| `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
+
+A sixth job, `release-ref`, resolves the newest published release for
+`core-rebuild`; it is a job rather than a step only because a `uses:` job cannot
+compute its own inputs.
+
+One file, because a workflow file's unit is not a subject but a relationship to
+a pull request, and these five share one: no PR causes them and no PR fixes
+them. Jobs are gated on `github.event.schedule`, which is how one file carries
+two cadences; `workflow_dispatch` takes a `chore` input naming one of them, or
+`weekly` for the four that share the Monday tick.
+`scripts/__tests__/workflows.test.mjs` reads the file and asserts each job is on
+the cron it claims — and that the directory still holds exactly three entry
+points plus `container-image.yml`.
+
+**The weekly rebuild is what makes the digest pin honest.** `apt-get upgrade`
+runs inside the Core image's own layer (D5), so it resolves `noble-security` at
+*build* time: a rebuild on an unchanged base digest still collects every fix
+Canonical has shipped since the last one. Without it, pinning a digest means
+shipping the security state of the day it was pinned. It rebuilds the newest
+published non-prerelease release rather than `main`, and republishes that
+release's own tags — a rebuild that pushed nothing would prove the base still
+builds and ship none of what it collected. T9's Trivy gate comes for free:
+`container-image.yml` runs it before anything is pushed, so a base that has
+rotted past fixable CRITICAL/HIGH fails the rebuild rather than republishing
+over a good tag.
+
+Weekly rather than nightly (D10): Canonical does not ship security updates
+nightly, and a nightly rebuild is a property of a vendor's build farm, not
+something worth imitating here. The Panel is not rebuilt — it is distroless, has
+no apt at all, and its findings move only when Chainguard moves the base, which
+is Dependabot's job.
+
+**Two chores end in `gh issue create` rather than a red run.** `dev-audit` (D37)
+is red for advisories in packages that never ship; `harness-canary` (D38) is red
+when a vendor changes their installer. Neither is payable by the person whose PR
+happens to be open, and a permanently red scheduled workflow is how a team
+learns that red means nothing. Both file at most one open issue at a time: a
+recurrence while the first is still open is silent, and a closed issue means
+someone decided it was handled, so the next recurrence earns a fresh one.
+
 ## Cutting a release
 
 ```bash
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-That fires `images-release.yml` and `core-release.yml` in parallel. If a
-release needs rebuilding, both workflows accept a `workflow_dispatch` with the
-tag name — the tag must already exist on origin.
+That fires `release.yml`: the two tarball legs and the two image builds run in
+parallel, then the GitHub Release is created and each image's Docker Hub page is
+rewritten. A release lands in under six minutes. If one needs rebuilding, the
+workflow accepts a `workflow_dispatch` with the tag name — the tag must already
+exist on origin.
+
+`release.yml` attaches nothing until its arm64 installer legs are green
+(see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
+so a tag takes a few minutes longer than the tarball builds alone.
 
 Push one tag deliberately, never `git push --tags` — a clone made from the fork
-parent carries tags that would fire both workflows for releases this repository
-never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
+parent carries tags that would fire a release run each for versions this
+repository never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
 
 ## Running CI locally
 
-The four checks that gate every PR:
+The five checks that gate every PR:
 
 ```bash
 pnpm typecheck && pnpm lint && pnpm test && pnpm scan:secrets
+pnpm audit --prod --audit-level high
 ```
 
 The container build:
@@ -423,7 +560,7 @@ The detour through a temp directory is not ceremony: this is a pnpm workspace,
 and the root `package.json` declares `workspace:*` dependencies that npm
 refuses to parse (`EUNSUPPORTEDPROTOCOL`). Installing outside the checkout —
 with the config copied alongside, so `extends` still resolves — is what the
-Conventions workflow itself does.
+`Conventions` job itself does.
 
 ## Notes for forks
 

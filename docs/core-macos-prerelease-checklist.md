@@ -1,23 +1,40 @@
-# macOS Core — manual pre-release checklist
+# macOS Core — manual checklist
 
-CI covers almost all of the macOS install story: `.github/workflows/ci.yml`'s
-`actana-setup-e2e-macos` job runs `scripts/e2e-actana-setup-macos.mjs` on both
-`mac-arm64` and `mac-x64` runners and walks setup, the loaded LaunchAgent, a
-core-link dial with the printed pairing token, every lifecycle verb, and two
-idempotent re-installs.
+> **No longer a gate on a release.** `mac-arm64` and `mac-x64` were dropped as
+> release targets (ADR 0016 D28): a tag publishes two Linux tarballs and their
+> `SHA256SUMS`, and there is no macOS tarball to download — so nothing on this
+> page can hold up a release that contains no macOS asset. It stays for the
+> people running a Core on a Mac from a local build, and because
+> [#55](https://github.com/actana/control/issues/55) has not yet promoted its
+> one load-bearing fact — the Gatekeeper blocker in section 1, which is a
+> blocker on *any* Mac Core, released or not — into `docs/ci-cd.md`. This page
+> goes when that lands.
 
-What it **cannot** cover is anything that needs a machine to be rebooted and
-logged back into. A GitHub runner is destroyed rather than restarted, and a
-LaunchAgent is by definition tied to a login session — so "does the Core come
-back?" has to be answered by a person, on a real Mac, before a release.
+**Nothing automated covers this any more**, so what follows is the whole macOS
+install story rather than the tail of it. An `actana-setup-e2e-macos` job used
+to walk setup, the loaded LaunchAgent, a core-link dial with the printed
+pairing token, every lifecycle verb, and two idempotent re-installs, on both
+`mac-arm64` and `mac-x64` runners. [ADR 0016](adr/0016-the-0-1-0-shape.md) D35
+deleted it — macOS runners bill at 10×, and those two legs plus the macOS
+`panel-e2e` were 72% of the CI bill for a platform
+[#6](https://github.com/actana/control/issues/6) descoped — and D28 then
+removed the tarball it would have installed. `scripts/e2e-actana-setup-macos.mjs`
+went with them.
 
-Run this once per release on **one Apple-silicon Mac** and, when the release
-touches the install path, **one Intel Mac**. Ten minutes.
+Two of the sections below were always going to be manual whatever CI did: a
+GitHub runner is destroyed rather than restarted, and a LaunchAgent is by
+definition tied to a login session, so "does the Core come back?" can only be
+answered by a person on a real Mac. The rest is here because nothing else
+checks it at all.
 
-Its Linux counterpart is [the one-liner rehearsal](core-linux-rehearsal.md) —
-`pnpm core:rehearse` for a throwaway machine to paste the real one-liner
-into. Run both before a release: this one protects reboot and logout, that one
-protects the prompts and the pairing token.
+Run this on **one Apple-silicon Mac** and, when the install path changed,
+**one Intel Mac**. Ten minutes.
+
+The Linux path — the one that actually ships — is covered by
+[the one-liner rehearsal](core-linux-rehearsal.md): `pnpm core:rehearse` for a
+throwaway machine to paste the real one-liner into. That one is a release gate
+and protects the prompts and the pairing token; this one is not a gate, and is
+the only check the macOS install path gets at all.
 
 ---
 
@@ -27,17 +44,14 @@ protects the prompts and the pairing token.
 - No Actana Core installed yet (`launchctl print gui/$(id -u)/com.actana.core`
   should fail). If one is installed, this is an upgrade rehearsal instead —
   note that in the results.
-- The release's `mac-arm64` / `mac-x64` tarball and its `SHA256SUMS`.
+- A `mac-arm64` / `mac-x64` tarball. No release carries one, so build it on the
+  Mac itself with `pnpm core:tarball` — from a checkout that has put a `darwin`
+  row back into `CORE_TARGETS` (`scripts/lib/core-tarball.mjs`), since the
+  shipped one has none.
 
 ---
 
-## 1 — Install, the way an operator does
-
-```bash
-shasum -a 256 --ignore-missing -c SHA256SUMS
-```
-
-- [ ] Prints `OK`.
+## 1 — Install, the way an operator would
 
 ```bash
 tar -xzf actana-core-<version>-mac-arm64.tar.gz && ./actana-core-<version>-mac-arm64/bin/actana setup
@@ -66,7 +80,7 @@ actana status
 
 ---
 
-## 3 — Reboot persistence — the part CI cannot do
+## 3 — Reboot persistence — the part a runner cannot do
 
 ```bash
 sudo shutdown -r now
@@ -122,6 +136,9 @@ rm -rf ~/Library/Logs/Actana
 
 ## Recording the result
 
-Note in the release PR: macOS version, chip (M-series or Intel), and which
-boxes did not tick. An unticked box in section 3 or 4 is a release blocker —
-those are the two properties this checklist exists to protect.
+Note wherever the work is being tracked: macOS version, chip (M-series or
+Intel), and which boxes did not tick. Sections 3 and 4 are the two properties
+this checklist exists to protect, and an unticked box in either means the Mac
+Core in front of you is not fit to run — as does the Gatekeeper box in section
+1. What has changed is only who that blocks: a release ships no macOS asset, so
+it is the operator of that machine, not a release, that this stops.

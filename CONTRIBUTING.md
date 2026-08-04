@@ -63,10 +63,11 @@ Heavier suites, worth running when you have touched their seam:
 | `pnpm panel:image:smoke` | the Panel image boots, sets up, and survives container recreation |
 | `pnpm core:image:smoke` | the Core image boots unprivileged and a Panel pairs with it (needs `pnpm core:tarball` first) |
 | `pnpm core:tarball:smoke` | the release tarball unpacks and runs |
-| `pnpm core:setup:e2e` | `actana setup` against systemd (Linux) |
+| `pnpm core:setup:e2e` | the `curl \| bash` one-liner and the lifecycle verbs against systemd (Linux) |
 
-CI runs all of these plus an installer matrix across distros and
-architectures. See [`docs/ci-cd.md`](docs/ci-cd.md) for what runs when.
+CI runs all of these plus the installer e2e across Ubuntu and Debian at x64 on
+every PR, and at arm64 on a release tag. See [`docs/ci-cd.md`](docs/ci-cd.md)
+for what runs when.
 
 ## The rules a reviewer will hold you to
 
@@ -110,7 +111,7 @@ Allowed types: `feat` `feature` `fix` `bugfix` `hotfix` `release` `chore`
 `docs` `refactor` `perf` `test` `ci` `revert`. Lowercase only, hyphen-separated,
 no leading/trailing/doubled separators.
 
-CI checks this (`Branch name convention`). To be told before you push instead
+CI checks this (the `Conventions` job in `ci.yml`). To be told before you push instead
 of after, enable the local hooks once per clone:
 
 ```bash
@@ -142,6 +143,11 @@ commit you want, not as a description of your branch.
 Subjects may open with a ticket id (`E10 — black-box Panel service e2e`); the
 lint does not force a lowercase first letter. Subject limit is 120 characters,
 body lines 100.
+
+Footers (`Refs #39`, `Co-authored-by:`, `BREAKING CHANGE:`) go last, separated
+from the body by a blank line. Only those known tokens start a footer, so a
+body sentence that wraps onto `that: it is absent under Podman…` stays prose —
+see the `trailer-leading-blank` note in `commitlint.config.mjs`.
 
 - Keep PRs to one reviewable idea.
 - Fill in the PR template. The "how was this tested?" section is the one
