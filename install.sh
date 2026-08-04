@@ -16,8 +16,9 @@
 #
 # POSIX sh: runs under bash, dash and ash. Tested by
 # `scripts/__tests__/install-sh.test.mjs` (the real script against a fixture
-# release server) and by `scripts/e2e-install-sh-linux.mjs` (the real one-liner
-# on a real systemd machine).
+# release server) and by `scripts/e2e-actana-setup-linux.mjs`, which enters at
+# the real one-liner on a real systemd machine and carries on into the
+# lifecycle verbs.
 
 set -eu
 

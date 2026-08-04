@@ -63,10 +63,11 @@ Heavier suites, worth running when you have touched their seam:
 | `pnpm panel:image:smoke` | the Panel image boots, sets up, and survives container recreation |
 | `pnpm core:image:smoke` | the Core image boots unprivileged and a Panel pairs with it (needs `pnpm core:tarball` first) |
 | `pnpm core:tarball:smoke` | the release tarball unpacks and runs |
-| `pnpm core:setup:e2e` | `actana setup` against systemd (Linux) |
+| `pnpm core:setup:e2e` | the `curl \| bash` one-liner and the lifecycle verbs against systemd (Linux) |
 
-CI runs all of these plus an installer matrix across distros and
-architectures. See [`docs/ci-cd.md`](docs/ci-cd.md) for what runs when.
+CI runs all of these plus the installer e2e across Ubuntu and Debian at x64 on
+every PR, and at arm64 on a release tag. See [`docs/ci-cd.md`](docs/ci-cd.md)
+for what runs when.
 
 ## The rules a reviewer will hold you to
 

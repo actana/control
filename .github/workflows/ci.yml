@@ -244,45 +244,47 @@ jobs:
           path: artifacts/core/actana-core-*-${{ matrix.target }}.tar.gz
           retention-days: 1
 
-  # The installer matrix (core-installer issue 07) — the whole Linux install
-  # story, crossed over the axes that can actually break it.
+  # The installer matrix (core-installer issue 07, ADR 0016 D36) — the whole
+  # Linux install story in one script, crossed over the axes that can actually
+  # break it.
   #
-  #   suite  — `actana-setup` is setup, the lifecycle verbs, update, token
-  #            regenerate and uninstall (issues 02 and 06); `install-sh` is the
-  #            real `curl … | bash` one-liner (issue 03). Together they are the
-  #            complete e2e the spec asks for.
+  # One suite, not two: the `curl … | bash` one-liner is the *entry point* of
+  # `e2e-actana-setup-linux.mjs` rather than a job of its own, so the lifecycle
+  # verbs, update, token regenerate and uninstall all run on the machine the
+  # one-liner produced. Strictly more coverage at roughly the cost of one, and
+  # one fewer container boot per leg. install-sh's negative cases beyond the two
+  # the container leg makes are covered hermetically, in under a second, by
+  # scripts/__tests__/install-sh.test.mjs.
+  #
   #   distro — Ubuntu and Debian. What differs between them is precisely what
   #            this test is about: PAM, polkit and the logind rules that decide
   #            whether a sudo-less `systemctl --user` and `loginctl
   #            enable-linger` work at all.
-  #   arch   — linux-x64 and linux-arm64, each on its own hardware. The tarball
-  #            ships prebuilt native modules, so an architecture that is never
-  #            booted is an architecture nobody has tested.
+  #   arch   — x64 here, arm64 on the tag run (core-release.yml). The
+  #            arch-sensitive risk is prebuilt native modules, and
+  #            `core-tarball-smoke` above already boots the arm64 tarball on an
+  #            arm64 runner on every PR.
   #
-  # Eight legs, all parallel, each downloading a tarball built once above rather
-  # than building its own — so the matrix costs one container boot of wall clock,
-  # not eight builds. `fail-fast: false` because "Debian arm64 only" is exactly
+  # Two legs, both parallel, each downloading a tarball built once above rather
+  # than building its own — so the matrix costs one container boot of wall
+  # clock, not two builds. `fail-fast: false` because "Debian only" is exactly
   # the signal this job exists to produce.
   #
   # The axes are declared in scripts/lib/container-matrix.mjs, and
   # scripts/__tests__/container-matrix.test.mjs reads this file to check the two
   # still agree — a distro added there and forgotten here fails the unit tests.
   installer-e2e:
-    name: E2E — ${{ matrix.suite }} (${{ matrix.distro }}, ${{ matrix.arch }})
+    name: E2E — installer (${{ matrix.distro }}, ${{ matrix.arch }})
     needs: core-tarball-smoke
     strategy:
       fail-fast: false
       matrix:
-        suite: [actana-setup, install-sh]
         distro: [ubuntu, debian]
-        arch: [x64, arm64]
+        arch: [x64]
         include:
           - arch: x64
             runner: ubuntu-24.04
             target: linux-x64
-          - arch: arm64
-            runner: ubuntu-24.04-arm
-            target: linux-arm64
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 30
     steps:
@@ -309,11 +311,11 @@ jobs:
           name: core-tarball-${{ matrix.target }}
           path: artifacts/core
 
-      - name: E2E — the installer on a fresh systemd machine
+      - name: E2E — the one-liner and the lifecycle on a fresh systemd machine
         run: |
           set -euo pipefail
           tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
-          node scripts/e2e-${{ matrix.suite }}-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
+          node scripts/e2e-actana-setup-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
 
   # The agent-offers seam (core-installer issue 05): a fresh machine has no
   # Harness on it, so this is where "detects missing agents, offers each, and

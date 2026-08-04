@@ -11,7 +11,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`conventions.yml`](../.github/workflows/conventions.yml) | every PR | nothing — it gates |
 | [`images-edge.yml`](../.github/workflows/images-edge.yml) | push to `main` | `:edge`, `:sha-<short>` |
 | [`images-release.yml`](../.github/workflows/images-release.yml) | `v*` tag | `:<version>`, `:latest` |
-| [`core-release.yml`](../.github/workflows/core-release.yml) | `v*` tag | Core tarballs + checksums |
+| [`core-release.yml`](../.github/workflows/core-release.yml) | `v*` tag | Core tarballs + checksums, gated on the arm64 installer e2e |
 | [`dockerhub-description.yml`](../.github/workflows/dockerhub-description.yml) | `docs/images/**` on `main` | each image's Docker Hub page |
 | [`base-pins.yml`](../.github/workflows/base-pins.yml) | weekly cron | a `NODE_VERSION` bump PR, or nothing |
 | [`stale.yml`](../.github/workflows/stale.yml) | daily cron | stale labels / closures |
@@ -132,6 +132,41 @@ received. It does **not** replace the installer e2e — that is a different
 arrival, a different PID 1 and a different install location
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36). The Trivy gate below runs in the
 same job, on the same built image.
+
+## The installer e2e, and why it is one job on two triggers
+
+There is **one** installer e2e — `scripts/e2e-actana-setup-linux.mjs` — and it
+is entered at the real `curl … | bash` one-liner. Install, the lifecycle verbs,
+in-place upgrade, `update`, `token regenerate` and `uninstall` all run against
+the machine the one-liner produced, rather than against a second machine that a
+duplicated install phase set up ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36).
+
+install-sh's negative cases — bad checksum, unknown platform, `--version`
+pinning, non-TTY behaviour, exit codes — are covered hermetically, in under a
+second, by `scripts/__tests__/install-sh.test.mjs`, so the container leg does
+not repeat them. Each one would cost a whole extra one-liner run on a real
+container to prove something already proven.
+
+Its axes are `distro × arch`, and they split across two triggers:
+
+| Trigger | Workflow | Legs |
+| --- | --- | --- |
+| every PR | [`ci.yml`](../.github/workflows/ci.yml) `installer-e2e` | ubuntu, debian — **x64** |
+| `v*` tag | [`core-release.yml`](../.github/workflows/core-release.yml) `installer-e2e` | ubuntu, debian — **arm64** |
+
+Distro is the axis that earns its place on every PR: PAM, polkit and the logind
+rules that decide whether a sudo-less `systemctl --user` and `loginctl
+enable-linger` work at all are exactly what differs between distributions.
+Architecture is not — the arch-sensitive risk is prebuilt native modules, and
+`core-tarball-smoke` already boots the arm64 tarball on an arm64 runner on every
+PR. So arm64's installer leg is paid for once per release instead of once per
+push, and it **gates `publish`**: an arm64 tarball the one-liner cannot install
+is not a release asset worth attaching.
+
+Both jobs are declared once, in `scripts/lib/container-matrix.mjs`.
+`scripts/__tests__/container-matrix.test.mjs` reads that module *and* both
+workflow files, so a distro added to one and forgotten in the other is a failing
+unit test rather than a leg nobody notices is missing.
 
 ## Dependency and CVE policy
 
@@ -389,6 +424,10 @@ git tag v0.1.0 && git push origin v0.1.0
 That fires `images-release.yml` and `core-release.yml` in parallel. If a
 release needs rebuilding, both workflows accept a `workflow_dispatch` with the
 tag name — the tag must already exist on origin.
+
+`core-release.yml` attaches nothing until its arm64 installer legs are green
+(see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
+so a tag takes a few minutes longer than the tarball builds alone.
 
 Push one tag deliberately, never `git push --tags` — a clone made from the fork
 parent carries tags that would fire both workflows for releases this repository
