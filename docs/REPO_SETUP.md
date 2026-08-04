@@ -238,7 +238,7 @@ new "stale"               795548 "Inactive; scheduled for auto-close"
 ```
 
 `pinned`, `security`, `blocked`, and `needs-info` are exempt from the stale bot
-([`stale.yml`](../.github/workflows/stale.yml)) — an issue waiting on a
+([`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `stale` job) — an issue waiting on a
 maintainer's question should not be closed for the reporter's silence.
 
 ## 8. Local hooks (optional, per clone)

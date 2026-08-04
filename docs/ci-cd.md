@@ -10,8 +10,8 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing — it gates |
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `main` | `:edge`, `:sha-<short>` |
 | [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
-| [`base-pins.yml`](../.github/workflows/base-pins.yml) | weekly cron | a `NODE_VERSION` bump PR, or nothing |
-| [`stale.yml`](../.github/workflows/stale.yml) | daily cron | stale labels / closures |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a rebuilt-and-republished Core image, a `NODE_VERSION` bump PR, and an issue for anything the dev-tree audit or the Harness canary found |
 
 `ci.yml` is one file doing two jobs, and the trigger is the difference. On a
 PR it gates and pushes nothing; on a push to `main` it publishes `:edge` and
@@ -21,12 +21,17 @@ PR build only in which tags come out the other end does not need a workflow
 file of its own. The repo conventions — PR title, commit messages, branch name
 — are the `Conventions` job inside it (D34).
 
+`housekeeping.yml` is everything on a clock and nothing that gates. Its five
+chores share no subject; what they share is that **none of them can be caused or
+fixed by a pull request**, which is why they are not in `ci.yml`. It is
+described in full under [Housekeeping](#housekeeping).
+
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
-workflow called by the PR, edge, and release paths with `image: panel` or
-`image: core`. That is deliberate — the bytes a PR validates are built exactly
-the way the bytes a release publishes are, rather than by a lookalike pipeline
-that drifts.
+workflow called by the PR, edge, release, and weekly-rebuild paths with
+`image: panel` or `image: core`. That is deliberate — the bytes a PR validates
+are built exactly the way the bytes a release publishes are, rather than by a
+lookalike pipeline that drifts.
 
 ## The published images
 
@@ -154,20 +159,19 @@ arrival, a different PID 1 and a different install location
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36). The Trivy gate below runs in the
 same job, on the same built image.
 
-### What no longer runs on a PR, and what is meant to pick it up
+### What no longer runs on a PR, and what picks it up
 
-Two seams were taken off the PR gate ahead of the workflow that replaces them,
-so the gap is written down rather than discovered:
+Two seams came off the PR gate. One moved; the other has no automation at all,
+which is written down here rather than discovered:
 
 - **`actana harnesses install <id>`** — that a vendor's official installer
   still leaves a CLI on `PATH`. Deliberately non-hermetic, so no PR can cause
   its failure and no PR author can fix it; gating on it is how a team learns
-  that red means nothing ([ADR 0016](adr/0016-the-0-1-0-shape.md) D38).
-  `scripts/e2e-actana-harnesses-linux.mjs` and `pnpm core:harnesses:e2e` are
-  kept for the weekly vendor canary in
-  [#51](https://github.com/actana/control/issues/51). Until it lands, nothing
-  watches this — and it is failing on `opencode` today
-  ([#31](https://github.com/actana/control/issues/31)).
+  that red means nothing ([ADR 0016](adr/0016-the-0-1-0-shape.md) D38). It runs
+  weekly as `housekeeping.yml`'s `harness-canary` job — `pnpm
+  core:harnesses:e2e` against four vendors' real installers — and a failure
+  arrives as an issue rather than a red check. It is failing on `opencode`
+  today ([#31](https://github.com/actana/control/issues/31)).
 - **The macOS install path** — `actana setup` against launchd. Nothing
   automated covers it at all now; [the manual pre-release
   checklist](core-macos-prerelease-checklist.md) is the whole of it.
@@ -220,11 +224,11 @@ for the other ([ADR 0016](adr/0016-the-0-1-0-shape.md) D37).
 | Dev-tree packages | `pnpm audit --audit-level high` — opens an issue, does not gate | weekly |
 | The image: OS layer + the `node_modules` it ships | Trivy, fails on **fixable** CRITICAL/HIGH | every PR, on the built image |
 
-The first and third rows are live as written. The weekly dev-tree audit
-arrives with `housekeeping.yml`
-([#51](https://github.com/actana/control/issues/51)); until it does, the
-dev tree is unwatched by CI and `pnpm audit --audit-level high` locally is the
-only thing that looks at it.
+All three rows are live as written. The weekly dev-tree audit is
+`housekeeping.yml`'s `dev-audit` job; a finding there opens an issue labelled
+`needs-triage` rather than failing anything, and it files at most one at a time
+— a recurrence while the first is still open is silent, because the run link on
+that issue already leads to the newest output.
 
 The Trivy leg is [`scripts/scan-core-image.mjs`](../scripts/scan-core-image.mjs),
 run from `container-image.yml` against the image that was just built and before
@@ -292,7 +296,7 @@ mechanisms, because they catch different drift".
 | --- | --- | --- |
 | `ubuntu:24.04@sha256:…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | Dependabot, `docker` ecosystem |
 | `gcr.io/distroless/nodejs24@sha256:…` | [`panel.Dockerfile`](../deploy/panel.Dockerfile) | Dependabot, `docker` ecosystem |
-| `ARG NODE_VERSION=…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | [`base-pins.yml`](../.github/workflows/base-pins.yml) |
+| `ARG NODE_VERSION=…` | [`core.Dockerfile`](../deploy/core.Dockerfile) | [`housekeeping.yml`](../.github/workflows/housekeeping.yml)'s `base-pins` job |
 | everything `apt` installs | `core.Dockerfile`'s one `RUN` | the weekly rebuild, via D5's in-layer `apt-get upgrade` |
 
 The last row is why the digest pin and the upgrade are *both* load-bearing:
@@ -323,7 +327,8 @@ pin carries one:
 `pnpm bases:check` ([`check-base-pins.mjs`](../scripts/check-base-pins.mjs))
 resolves all three pins against their real upstreams — the registry HTTP API
 and `nodejs.org/dist/index.json` — using the same tag Dependabot would use for
-each, and prints what has moved. `base-pins.yml` runs it weekly.
+each, and prints what has moved. `housekeeping.yml`'s `base-pins` job runs it
+weekly.
 
 It exists because two of the three have failure modes a config file cannot
 rule out:
@@ -335,7 +340,7 @@ rule out:
 - `ARG NODE_VERSION` is a nodejs.org tarball (D8), not an image reference.
   Dependabot's `docker` ecosystem cannot see it at all, so without this nothing
   bumps it and the Core's system Node drifts a patch release at a time.
-  `base-pins.yml` opens that PR itself.
+  the `base-pins` job opens that PR itself.
 
   What the bump buys is Node's own security fixes, and **not** a greener CVE
   gate. D10 calls it "the only thing that clears the Node-attributed findings";
@@ -451,6 +456,55 @@ Three registries are therefore in play, doing three different jobs:
 | `gcr.io` | pulls the Panel's runtime base | no Panel image can be built |
 | Docker Hub | pulls `ubuntu` and `node`; publishes both images (primary) | no Core image can be built; publishing is skipped if credentials are absent |
 | GHCR | publishes both images (always) | release fails — there is no fallback for the primary publish target |
+
+## Housekeeping
+
+[`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the third and
+last workflow ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34) and the only one
+that is not a check. Five chores on two crons:
+
+| Job | Cron | What it does |
+| --- | --- | --- |
+| `stale` | daily, 03:17 UTC | labels and closes inactive issues and PRs |
+| `base-pins` | Mondays, 07:00 UTC | opens the `NODE_VERSION` bump PR, reports digest drift |
+| `core-rebuild` | Mondays, 07:00 UTC | rebuilds the newest release's Core image and republishes `:<version>` and `:latest` |
+| `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
+| `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
+
+One file, because a workflow file's unit is not a subject but a relationship to
+a pull request, and these five share one: no PR causes them and no PR fixes
+them. Jobs are gated on `github.event.schedule`, which is how one file carries
+two cadences; `workflow_dispatch` takes a `chore` input naming one of them, or
+`weekly` for the four that share the Monday tick.
+`scripts/__tests__/workflows.test.mjs` reads the file and asserts each job is on
+the cron it claims — and that the directory still holds exactly three entry
+points plus `container-image.yml`.
+
+**The weekly rebuild is what makes the digest pin honest.** `apt-get upgrade`
+runs inside the Core image's own layer (D5), so it resolves `noble-security` at
+*build* time: a rebuild on an unchanged base digest still collects every fix
+Canonical has shipped since the last one. Without it, pinning a digest means
+shipping the security state of the day it was pinned. It rebuilds the newest
+published non-prerelease release rather than `main`, and republishes that
+release's own tags — a rebuild that pushed nothing would prove the base still
+builds and ship none of what it collected. T9's Trivy gate comes for free:
+`container-image.yml` runs it before anything is pushed, so a base that has
+rotted past fixable CRITICAL/HIGH fails the rebuild rather than republishing
+over a good tag.
+
+Weekly rather than nightly (D10): Canonical does not ship security updates
+nightly, and a nightly rebuild is a property of a vendor's build farm, not
+something worth imitating here. The Panel is not rebuilt — it is distroless, has
+no apt at all, and its findings move only when Chainguard moves the base, which
+is Dependabot's job.
+
+**Two chores end in `gh issue create` rather than a red run.** `dev-audit` (D37)
+is red for advisories in packages that never ship; `harness-canary` (D38) is red
+when a vendor changes their installer. Neither is payable by the person whose PR
+happens to be open, and a permanently red scheduled workflow is how a team
+learns that red means nothing. Both file at most one open issue at a time: a
+recurrence while the first is still open is silent, and a closed issue means
+someone decided it was handled, so the next recurrence earns a fresh one.
 
 ## Cutting a release
 

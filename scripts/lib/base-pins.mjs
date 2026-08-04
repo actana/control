@@ -11,7 +11,7 @@
 // The last row is the one no registry can help with: it is a tarball fetched
 // from nodejs.org (D8), so it is not an image reference and Dependabot's
 // docker ecosystem cannot see it. It is bumped by scripts/check-base-pins.mjs,
-// run weekly from base-pins.yml.
+// run weekly from housekeeping.yml's `base-pins` job.
 //
 // What that bump does and does not buy, stated the way D10's own amendment
 // corrects it: it collects Node's security fixes, and it does **not** clear
