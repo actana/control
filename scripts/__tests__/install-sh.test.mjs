@@ -5,7 +5,7 @@
 // bootstrapper handed it.
 //
 // What is deliberately NOT here: systemd, a real Core, a real network. The
-// container e2e (`scripts/e2e-install-sh-linux.mjs`) runs the same script
+// container e2e (`scripts/e2e-actana-setup-linux.mjs`) runs the same script
 // against a real tarball on a real init system; this file covers the decisions
 // the bootstrapper itself makes — platform mapping, version resolution,
 // checksum verification, flag passthrough, exit codes — in under a second, on

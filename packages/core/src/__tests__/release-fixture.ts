@@ -7,7 +7,7 @@
 // {@link ReleaseFetcher} that resolves URLs against a directory instead of a
 // socket, which keeps these unit tests hermetic and instant.
 //
-// The container e2e (`scripts/e2e-install-sh-linux.mjs`) runs the same shapes
+// The container e2e (`scripts/e2e-actana-setup-linux.mjs`) runs the same shapes
 // over http against `scripts/fixture-release-server.mjs`; this is that server's
 // in-process cousin, and the two must agree on the URL layout.
 

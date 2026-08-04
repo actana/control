@@ -168,6 +168,41 @@ so the gap is written down rather than discovered:
   automated covers it at all now; [the manual pre-release
   checklist](core-macos-prerelease-checklist.md) is the whole of it.
 
+## The installer e2e, and why it is one job on two triggers
+
+There is **one** installer e2e — `scripts/e2e-actana-setup-linux.mjs` — and it
+is entered at the real `curl … | bash` one-liner. Install, the lifecycle verbs,
+in-place upgrade, `update`, `token regenerate` and `uninstall` all run against
+the machine the one-liner produced, rather than against a second machine that a
+duplicated install phase set up ([ADR 0016](adr/0016-the-0-1-0-shape.md) D36).
+
+install-sh's negative cases — bad checksum, unknown platform, `--version`
+pinning, non-TTY behaviour, exit codes — are covered hermetically, in under a
+second, by `scripts/__tests__/install-sh.test.mjs`, so the container leg does
+not repeat them. Each one would cost a whole extra one-liner run on a real
+container to prove something already proven.
+
+Its axes are `distro × arch`, and they split across two triggers:
+
+| Trigger | Workflow | Legs |
+| --- | --- | --- |
+| every PR | [`ci.yml`](../.github/workflows/ci.yml) `installer-e2e` | ubuntu, debian — **x64** |
+| `v*` tag | [`release.yml`](../.github/workflows/release.yml) `installer-e2e` | ubuntu, debian — **arm64** |
+
+Distro is the axis that earns its place on every PR: PAM, polkit and the logind
+rules that decide whether a sudo-less `systemctl --user` and `loginctl
+enable-linger` work at all are exactly what differs between distributions.
+Architecture is not — the arch-sensitive risk is prebuilt native modules, and
+`core-tarball-smoke` already boots the arm64 tarball on an arm64 runner on every
+PR. So arm64's installer leg is paid for once per release instead of once per
+push, and it **gates `github-release`**: an arm64 tarball the one-liner cannot install
+is not a release asset worth attaching.
+
+Both jobs are declared once, in `scripts/lib/container-matrix.mjs`.
+`scripts/__tests__/container-matrix.test.mjs` reads that module *and* both
+workflow files, so a distro added to one and forgotten in the other is a failing
+unit test rather than a leg nobody notices is missing.
+
 ## Dependency and CVE policy
 
 Three populations, three owners, one gate each. They are written out separately
@@ -424,6 +459,10 @@ parallel, then the GitHub Release is created and each image's Docker Hub page is
 rewritten. A release lands in under six minutes. If one needs rebuilding, the
 workflow accepts a `workflow_dispatch` with the tag name — the tag must already
 exist on origin.
+
+`release.yml` attaches nothing until its arm64 installer legs are green
+(see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
+so a tag takes a few minutes longer than the tarball builds alone.
 
 Push one tag deliberately, never `git push --tags` — a clone made from the fork
 parent carries tags that would fire a release run each for versions this

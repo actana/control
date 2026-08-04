@@ -1,37 +1,54 @@
 #!/usr/bin/env node
-// End-to-end test — `actana setup` on a fresh systemd machine.
+// End-to-end test — the whole Linux install story on a fresh systemd machine,
+// entered the way an operator enters it: the real `curl … | bash` one-liner.
 //
-// This is issue 02's acceptance criteria run as a test, against the real
-// artifact in a real init system rather than a mock of one:
+// This is the *only* installer e2e (ADR 0016 D36). The one-liner is the entry
+// point rather than a suite of its own, so the lifecycle assertions run on the
+// machine the one-liner produced instead of on a second machine that a
+// duplicated install phase set up:
 //
-//   • extracting the tarball and running `actana setup` leaves an active user
-//     unit, a running daemon, and a printed pairing token — with no sudo,
-//     which the image guarantees by not containing sudo at all;
-//   • the printed token decodes as a Registration blob and a test client
-//     dials the core-link with it (the same dial the tarball smoke makes);
+//   • the one-liner ends with a running Core and a printed pairing token that a
+//     test client can dial the core-link with — with no `--yes` passed, because
+//     a piped (non-TTY) run must prompt for nothing;
+//   • `--version` installs that exact release; with no flag, the latest;
 //   • `status` / `token` / `start` / `stop` / `restart` / `logs` control and
 //     report the daemon;
-//   • re-running setup upgrades in place — one unit, same pairing credentials,
-//     and a pre-rename `actana-harness.service` is taken out on the way;
-//   • lingering is on, and the daemon comes back after the machine reboots.
-//
-// It also carries issue 06's remaining lifecycle, on the same machine and in
-// the order an operator would meet it:
-//
+//   • re-running the one-liner upgrades in place — one unit, same pairing
+//     credentials, and a pre-rename `actana-harness.service` is taken out on
+//     the way;
+//   • lingering is on, and the daemon comes back after the machine reboots;
 //   • `update` lands a newer release from a fixture release channel, restarts
-//     the daemon on it, and `status` reports the new version — while a
-//     tampered download aborts and leaves the old install running;
+//     the daemon on it, and `status` reports the new version — while a tampered
+//     download aborts and leaves the old install running;
 //   • `update --version` installs exactly that release (the Panel↔Core
 //     version-lock recovery);
-//   • after `token regenerate`, a client dialling with the old blob is
-//     rejected and the new blob works;
+//   • after `token regenerate`, a client dialling with the old blob is rejected
+//     and the new blob works;
 //   • `uninstall` leaves no unit, launcher or install files and keeps the data
 //     dir; `--purge-data` removes that too.
 //
+// install-sh's negative cases — a bad checksum, an unknown platform,
+// `--version` pinning, non-TTY behaviour, flag passthrough, exit codes — are
+// covered hermetically and in under a second by
+// `scripts/__tests__/install-sh.test.mjs`, and are deliberately not repeated
+// here: each one costs a whole extra one-liner run on a real container. What
+// only a real machine can prove is that the script works against a real init
+// system with a real tarball, and that is the install below.
+//
+// The one negative case that does run here is the tampered *update*, and it is
+// here for the assertion rather than for the checksum: what has to hold is that
+// a refused download leaves the Core that was running still running.
+//
 // The machine itself — a privileged systemd container driven through a real
-// logind session — comes from `scripts/lib/systemd-container.mjs`, which
-// issue 03's one-liner e2e shares. The release channel is the same fixture
-// server that e2e shares too, reached over `host.docker.internal`.
+// logind session — comes from `scripts/lib/systemd-container.mjs`. The release
+// channel is `scripts/fixture-release-server.mjs`, which serves `install.sh`
+// and the tarballs over `host.docker.internal`; until the repo is public it is
+// the only way to exercise the installer at all.
+//
+// Only one tarball is ever built. The other releases are the same verified
+// bytes repacked with a bumped manifest version — genuinely different releases
+// as far as resolution, install directory and `status` are concerned, without a
+// second twenty-minute build.
 //
 // Usage:
 //   node scripts/e2e-actana-setup-linux.mjs --tarball <file> [--distro <id>] [--keep]
@@ -71,7 +88,7 @@ const log = (message) => console.log(`[setup-e2e] ${message}`);
 
 const CONTAINER_PORT = 8443;
 
-/** How the container reaches the fixture release server on the host. */
+/** How the container reaches the fixture release servers on the host. */
 const HOST_ALIAS = "host.docker.internal";
 
 async function main() {
@@ -83,44 +100,92 @@ async function main() {
   if (!tarballFlag) die("--tarball <file> is required");
   const tarball = path.resolve(tarballFlag);
   if (!fs.existsSync(tarball)) die(`no tarball at ${tarball}`);
-  if (!path.basename(tarball).includes("-linux-")) {
-    die(`${path.basename(tarball)} is not a linux tarball — this test runs Linux containers`);
+  const parsed = parseAssetName(path.basename(tarball));
+  if (!parsed) die(`${path.basename(tarball)} is not a Core release tarball`);
+  if (!parsed.target.startsWith("linux-")) {
+    die(`${parsed.target} is not a linux target — this test runs Linux containers`);
   }
 
+  const repoRoot = path.resolve(import.meta.dirname, "..");
+  const installSh = path.join(repoRoot, "install.sh");
+  if (!fs.existsSync(installSh)) die(`no install.sh at ${installSh}`);
+
+  // ─── two release channels, four releases, one build ───
+  //
+  // Split in two on purpose: "the latest release" has to mean v${firstLatest}
+  // while the one-liner is being re-run and v${latestVersion} once `update` is
+  // the thing under test, and a channel cannot serve two answers to the same
+  // question.
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-installer-e2e-"));
+  process.on("exit", () => fs.rmSync(workDir, { recursive: true, force: true }));
+
+  const pinnedVersion = parsed.version;
+  const firstLatest = bumpPatch(pinnedVersion);
+  const nextVersion = bumpPatch(firstLatest);
+  const latestVersion = bumpPatch(nextVersion);
+
+  const installDir = path.join(workDir, "install-channel");
+  fs.mkdirSync(installDir, { recursive: true });
+  fs.copyFileSync(tarball, path.join(installDir, path.basename(tarball)));
+  repackWithVersion(path.join(installDir, path.basename(tarball)), firstLatest, workDir, die);
+
+  const updateDir = path.join(workDir, "update-channel");
+  fs.mkdirSync(updateDir, { recursive: true });
+  const updateSeed = path.join(updateDir, path.basename(tarball));
+  fs.copyFileSync(tarball, updateSeed);
+  repackWithVersion(updateSeed, nextVersion, workDir, die);
+  repackWithVersion(updateSeed, latestVersion, workDir, die);
+  fs.rmSync(updateSeed);
+
+  const startChannel = async (dir) => {
+    const server = await startFixtureServerProcess({ dir, port: await pickHostPort(), die });
+    return { url: `http://${HOST_ALIAS}:${server.port}`, stop: server.stop };
+  };
+
+  const installChannel = await startChannel(installDir);
+  log(`install channel serving v${pinnedVersion} (pinned) and v${firstLatest} (latest)`);
+
+  // ─── the machine ───
   log(`installing on ${distro.label}`);
   const hostPort = await pickHostPort();
   const machine = await startSystemdContainer({
-    tag: imageTag("setup", distro.id),
-    name: `actana-e2e-${distro.id}-${process.pid}`,
+    tag: imageTag("installer", distro.id),
+    name: `actana-installer-e2e-${distro.id}-${process.pid}`,
     containerPort: CONTAINER_PORT,
     hostPort,
-    dockerfile: distroDockerfile(distro.id, { fail: die }),
+    // curl is the first word of the one-liner; without it the test would be
+    // measuring the image, not the installer.
+    dockerfile: distroDockerfile(distro.id, { packages: ["curl", "ca-certificates"], fail: die }),
     extraRunArgs: ["--add-host", `${HOST_ALIAS}:host-gateway`],
     keep: args.keep === true,
     die,
     log,
   });
-  const { mustAsOperator, asOperator } = machine;
+  const { asOperator, mustAsOperator } = machine;
 
-  const tarballName = path.basename(tarball);
-  machine.copyToOperator(tarball);
-  const extracted = `/home/${OPERATOR}/${path.basename(tarballName, ".tar.gz")}`;
+  /** The one-liner, exactly as the docs print it. */
+  const oneLiner = (url, flags) =>
+    `curl -fsSL ${url}/install.sh | bash -s -- --base-url ${url} ${flags}`;
 
-  // ─── setup ───
-  log("running `actana setup`");
-  const setup = mustAsOperator(
-    `cd ~ && tar -xzf ${tarballName} && ${extracted}/bin/actana setup --public-host 127.0.0.1 --yes`,
+  // ─── the real thing, pinned, with no flag that suppresses prompts ───
+  log(`running the one-liner pinned to v${pinnedVersion}`);
+  const install = mustAsOperator(
+    oneLiner(installChannel.url, `--version ${pinnedVersion} --public-host 127.0.0.1`),
   );
-  const { blob } = extractToken(setup.stdout, "actana setup", die);
-  log("setup printed a decodable pairing token");
-
-  if (!/pairing token/i.test(setup.stdout)) {
-    die("setup never used the words 'pairing token'", setup.stdout.split("\n"));
+  const { blob } = extractToken(install.stdout, "the one-liner", die);
+  if (!/pairing token/i.test(install.stdout)) {
+    die("the install never used the words 'pairing token'", install.stdout.split("\n"));
   }
+  // Nothing asked the operator anything: no `--yes` was passed, and the run
+  // still finished. A prompt would have hung until the session timed out.
+  if (/\[Y\/n\]|\(y\/n\)/i.test(install.stdout)) {
+    die("a piped install prompted for input", install.stdout.split("\n"));
+  }
+  log("the one-liner installed unattended and printed a pairing token");
 
   const active = mustAsOperator("systemctl --user is-active actana-core.service");
   if (active.stdout.trim() !== "active") {
-    die(`unit is ${active.stdout.trim()}, expected active`, [setup.stdout]);
+    die(`unit is ${active.stdout.trim()}, expected active`, install.stdout.split("\n"));
   }
   const enabled = mustAsOperator("systemctl --user is-enabled actana-core.service");
   if (enabled.stdout.trim() !== "enabled") {
@@ -130,33 +195,38 @@ async function main() {
 
   // ─── the token actually works ───
   await waitForPort(hostPort, die);
-  const dialed = { ...blob, endpoint: `wss://127.0.0.1:${hostPort}` };
   let projects;
   try {
-    projects = await dialAndListProjects(dialed);
+    projects = await dialAndListProjects({ ...blob, endpoint: `wss://127.0.0.1:${hostPort}` });
   } catch (err) {
-    die(`core-link dial with the pairing token failed: ${err.message}`, [setup.stdout]);
+    die(`core-link dial with the pairing token failed: ${err.message}`, install.stdout.split("\n"));
   }
   if (!Array.isArray(projects) || projects.length !== 0) {
     die(`projectsList did not return []: got ${JSON.stringify(projects)}`);
   }
-  log("a test client dialled the core-link with the pairing token");
+  log("a test client dialled the core-link with the printed pairing token");
 
   // ─── linger ───
   const linger = mustAsOperator(`loginctl show-user ${OPERATOR} --property=Linger`);
   if (!linger.stdout.includes("Linger=yes")) {
-    die(`lingering was not enabled: ${linger.stdout.trim()}`, [setup.stdout]);
+    die(`lingering was not enabled: ${linger.stdout.trim()}`, install.stdout.split("\n"));
   }
   log("lingering is enabled — the daemon survives logout");
 
   // ─── status / token ───
-  const status = mustAsOperator("actana status");
+  //
+  // Read once the port is up, not straight off the back of the install: a
+  // status taken before the daemon is listening would be reporting on a race.
+  const afterInstall = mustAsOperator("actana status");
   for (const expected of ["healthy", "wss://127.0.0.1:8443", "Linger"]) {
-    if (!status.stdout.includes(expected)) {
-      die(`actana status is missing ${JSON.stringify(expected)}`, status.stdout.split("\n"));
+    if (!afterInstall.stdout.includes(expected)) {
+      die(`actana status is missing ${JSON.stringify(expected)}`, afterInstall.stdout.split("\n"));
     }
   }
-  log("`actana status` reports a healthy Core");
+  if (!afterInstall.stdout.includes(pinnedVersion)) {
+    die(`--version ${pinnedVersion} did not install that version`, afterInstall.stdout.split("\n"));
+  }
+  log(`\`actana status\` reports a healthy Core on the pinned v${pinnedVersion}`);
 
   const reprint = mustAsOperator("actana token");
   if (extractToken(reprint.stdout, "actana token", die).blob.caCert !== blob.caCert) {
@@ -181,11 +251,11 @@ async function main() {
   }
   log("`actana logs` shows the daemon's journal");
 
-  // ─── idempotent re-run, over a machine that predates the rename ───
+  // ─── re-running the one-liner upgrades in place, over a pre-rename machine ───
   //
   // The whole migration this release has. A developer machine installed while
-  // the daemon was still called a Harness carries `actana-harness.service`
-  // as well, enabled and running out of the same tree on the same port — so a
+  // the daemon was still called a Harness carries `actana-harness.service` as
+  // well, enabled and running out of the same tree on the same port — so a
   // re-run that only installed `actana-core.service` would leave two daemons
   // fighting over one socket. `sleep` stands in for the old daemon: what is
   // being tested is that setup stops, disables and removes the unit, not what
@@ -215,21 +285,28 @@ async function main() {
     die(`the planted pre-rename unit is ${plantedState.stdout.trim()}, expected active`);
   }
 
-  log("re-running `actana setup` over the existing install");
-  const again = mustAsOperator(`${extracted}/bin/actana setup --public-host 127.0.0.1 --yes`);
+  log("re-running the one-liner with no version pinned");
+  const upgrade = mustAsOperator(oneLiner(installChannel.url, "--public-host 127.0.0.1"));
   // Not byte equality: the bearer inside carries a fresh expiry every time it
   // is signed. What must not change is the material the Panel pinned — a new
   // CA or client cert means the paired Panel is locked out.
-  const reissued = extractToken(again.stdout, "the second actana setup", die).blob;
+  const reissued = extractToken(upgrade.stdout, "the second one-liner", die).blob;
   if (reissued.caCert !== blob.caCert || reissued.clientCert !== blob.clientCert) {
-    die("re-running setup replaced the pairing credentials — a paired Panel would break");
+    die("the upgrade replaced the pairing credentials — a paired Panel would break");
+  }
+  const afterUpgrade = mustAsOperator("actana status");
+  if (!afterUpgrade.stdout.includes(firstLatest)) {
+    die(
+      `the unpinned re-run did not resolve the latest release (v${firstLatest})`,
+      afterUpgrade.stdout.split("\n"),
+    );
   }
   // One unit file, and one enablement link pointing at it. `default.target.wants`
   // is systemd's own bookkeeping and belongs there; a second unit or a second
   // link would be the duplicate the criterion is about.
   const units = mustAsOperator("ls -1 ~/.config/systemd/user/*.service");
   if (units.stdout.trim().split("\n").length !== 1) {
-    die(`re-running setup left more than one unit file`, units.stdout.split("\n"));
+    die("the upgrade left more than one unit file", units.stdout.split("\n"));
   }
   const wants = mustAsOperator("ls -1 ~/.config/systemd/user/default.target.wants");
   if (wants.stdout.trim() !== "actana-core.service") {
@@ -246,7 +323,7 @@ async function main() {
   }
   await waitForPort(hostPort, die);
   mustAsOperator("actana status");
-  log("re-running setup upgraded in place: one unit, same token, still healthy");
+  log(`upgraded in place to v${firstLatest}: one unit, same credentials, still healthy`);
 
   // ─── survives a reboot ───
   log("restarting the machine");
@@ -268,88 +345,80 @@ async function main() {
   }
   log("the Core came back after reboot with the same identity");
 
+  installChannel.stop();
+
   // ─── update ───
-  //
-  // Two more releases from the one tarball that was built: the same verified
-  // bytes with a bumped manifest version, which is a genuinely different
-  // release as far as resolution, install directory and `status` are concerned.
-  const parsed = parseAssetName(path.basename(tarball));
-  const installedVersion = parsed.version;
-  const nextVersion = bumpPatch(installedVersion);
-  const latestVersion = bumpPatch(nextVersion);
+  const updateChannel = await startChannel(updateDir);
+  log(`update channel serving v${nextVersion} and v${latestVersion} (latest)`);
 
-  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-update-e2e-"));
-  process.on("exit", () => fs.rmSync(workDir, { recursive: true, force: true }));
-  const releaseDir = path.join(workDir, "releases");
-  fs.mkdirSync(releaseDir, { recursive: true });
-  const seed = path.join(releaseDir, path.basename(tarball));
-  fs.copyFileSync(tarball, seed);
-  repackWithVersion(seed, nextVersion, workDir, die);
-  repackWithVersion(seed, latestVersion, workDir, die);
-  fs.rmSync(seed);
-  log(`serving releases v${nextVersion} and v${latestVersion} (latest)`);
-
-  // Two views of the same releases: one honest, one that corrupts every
-  // tarball it serves. Same assets, so the only difference `update` can see is
-  // the one the checksum is there to catch.
-  const server = await startFixtureServerProcess({
-    dir: releaseDir,
-    port: await pickHostPort(),
-    die,
-  });
+  // The same releases, served by a second process that flips one byte of every
+  // tarball it hands out. The checksums stay truthful, so the only difference
+  // `update` can see is the one integrity checking exists to catch.
   const tamperedServer = await startFixtureServerProcess({
-    dir: releaseDir,
+    dir: updateDir,
     port: await pickHostPort(),
-    corrupt: [
-      releaseAssetName(nextVersion, parsed.target),
-      releaseAssetName(latestVersion, parsed.target),
-    ],
+    corrupt: [nextVersion, latestVersion].map((version) =>
+      releaseAssetName(version, parsed.target),
+    ),
     die,
   });
-  const baseUrl = `http://${HOST_ALIAS}:${server.port}`;
-  const tamperedUrl = `http://${HOST_ALIAS}:${tamperedServer.port}`;
 
   // A tampered download first, so the "leaves the old install untouched"
-  // assertion is made against a Core that is still the one setup installed.
-  const tampered = asOperator(`actana update --base-url ${tamperedUrl}`);
-  if (tampered.status === 0) die("`actana update` accepted a download that failed its checksum");
-  if (!/checksum/i.test(tampered.stdout + tampered.stderr)) {
-    die("the aborted update never mentioned the checksum", [tampered.stdout, tampered.stderr]);
+  // assertion is made against the Core the one-liner installed.
+  const tamperedUpdate = asOperator(
+    `actana update --base-url http://${HOST_ALIAS}:${tamperedServer.port}`,
+  );
+  if (tamperedUpdate.status === 0) {
+    die("`actana update` accepted a download that failed its checksum");
+  }
+  if (!/checksum/i.test(tamperedUpdate.stdout + tamperedUpdate.stderr)) {
+    die("the aborted update never mentioned the checksum", [
+      tamperedUpdate.stdout,
+      tamperedUpdate.stderr,
+    ]);
   }
   await waitForPort(hostPort, die);
   const afterTampered = mustAsOperator("actana status");
-  if (!afterTampered.stdout.includes(installedVersion)) {
+  if (!afterTampered.stdout.includes(firstLatest)) {
     die(
-      `a failed update changed the running version — expected ${installedVersion} still`,
+      `a failed update changed the running version — expected ${firstLatest} still`,
       afterTampered.stdout.split("\n"),
     );
   }
+  // Not "exactly one version dir": the in-place upgrade above legitimately left
+  // the release it replaced behind. What a failed update must not do is leave a
+  // directory for the release it failed to install.
   const versionsAfterTampered = mustAsOperator("ls -1 ~/.local/share/actana/versions");
-  if (versionsAfterTampered.stdout.trim() !== installedVersion) {
-    die(
-      "a failed update left a new version directory behind",
-      versionsAfterTampered.stdout.split("\n"),
-    );
+  for (const version of [nextVersion, latestVersion]) {
+    if (versionsAfterTampered.stdout.split("\n").some((line) => line.trim() === version)) {
+      die(
+        `a failed update left a v${version} directory behind`,
+        versionsAfterTampered.stdout.split("\n"),
+      );
+    }
   }
   log("a tampered download aborted and left the old install untouched");
 
   // Pinned, so the version-lock recovery path is what runs: the newest release
   // is v${latestVersion}, and this must install the other one.
   const pinnedUpdate = mustAsOperator(
-    `actana update --base-url ${baseUrl} --version ${nextVersion}`,
+    `actana update --base-url ${updateChannel.url} --version ${nextVersion}`,
   );
   if (!pinnedUpdate.stdout.includes(nextVersion)) {
-    die("`actana update --version` did not report the pinned version", pinnedUpdate.stdout.split("\n"));
+    die(
+      "`actana update --version` did not report the pinned version",
+      pinnedUpdate.stdout.split("\n"),
+    );
   }
   await waitForPort(hostPort, die);
-  const pinnedStatus = mustAsOperator("actana status");
-  if (!pinnedStatus.stdout.includes(nextVersion) || !pinnedStatus.stdout.includes("healthy")) {
-    die(`status does not report a healthy v${nextVersion}`, pinnedStatus.stdout.split("\n"));
+  const afterPinnedUpdate = mustAsOperator("actana status");
+  if (!afterPinnedUpdate.stdout.includes(nextVersion) || !afterPinnedUpdate.stdout.includes("healthy")) {
+    die(`status does not report a healthy v${nextVersion}`, afterPinnedUpdate.stdout.split("\n"));
   }
   log(`\`actana update --version ${nextVersion}\` installed exactly that release`);
 
   // Unpinned: the latest release, and the daemon running on it.
-  mustAsOperator(`actana update --base-url ${baseUrl}`);
+  mustAsOperator(`actana update --base-url ${updateChannel.url}`);
   await waitForPort(hostPort, die);
   const latestStatus = mustAsOperator("actana status");
   if (!latestStatus.stdout.includes(latestVersion) || !latestStatus.stdout.includes("healthy")) {
@@ -363,9 +432,6 @@ async function main() {
   }
   await dialAndListProjects({ ...afterUpdateToken.blob, endpoint: `wss://127.0.0.1:${hostPort}` });
   log("`actana update` landed the latest release, restarted, and stayed paired");
-
-  server.stop();
-  tamperedServer.stop();
 
   // ─── token regenerate ───
   const regenerated = mustAsOperator("actana token regenerate --yes");
@@ -409,21 +475,30 @@ async function main() {
   }
   const unitState = asOperator("systemctl --user is-active actana-core.service");
   if (unitState.stdout.trim() === "active") die("uninstall left the unit running");
-  if (asOperator(`ls -d ~/.local/share/actana/data`).status !== 0) {
+  if (asOperator("ls -d ~/.local/share/actana/data").status !== 0) {
     die("uninstall removed the data dir without --purge-data");
   }
   log("`actana uninstall` removed the unit, launcher and install, and kept the data");
 
-  // The launcher is gone, so this runs the CLI out of the extracted tarball —
-  // which is also how an operator who uninstalled and changed their mind does it.
-  mustAsOperator(`${extracted}/bin/actana uninstall --purge-data --yes`);
+  // The launcher is gone, so getting a CLI back means running the one-liner
+  // again — which is also what an operator who uninstalled and changed their
+  // mind does, and the only route left once nothing is extracted on the disk.
+  mustAsOperator(oneLiner(updateChannel.url, "--public-host 127.0.0.1"));
+  await waitForPort(hostPort, die);
+  log("the one-liner reinstalled onto a machine that had been uninstalled");
+
+  mustAsOperator("actana uninstall --purge-data --yes");
   const dataTraces = asOperator("ls -d ~/.local/share/actana ~/.config/actana 2>/dev/null; true");
   if (dataTraces.stdout.trim() !== "") {
     die(`--purge-data left data behind: ${dataTraces.stdout.trim()}`);
   }
   log("`actana uninstall --purge-data` removed the data dir and the credentials too");
 
-  log(`OK — actana setup and the lifecycle verbs work on a fresh ${distro.label} machine`);
+  updateChannel.stop();
+  tamperedServer.stop();
+  log(
+    `OK — on ${distro.label} the one-liner installs, pins, upgrades in place, and the lifecycle verbs work`,
+  );
   process.exit(0);
 }
 
