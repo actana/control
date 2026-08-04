@@ -4,7 +4,7 @@ name: Container image
 # publish it". Callers pick which image via the `image` input:
 #
 #   panel → the Panel web service, from the root Dockerfile
-#   core  → the dev Core-in-a-box, from deploy/dev/core.Dockerfile
+#   core  → the Core daemon, from deploy/core.Dockerfile
 #
 # and three callers reuse it, so the bytes a PR validates are built exactly the
 # way the bytes a release publishes are:
@@ -171,15 +171,13 @@ jobs:
         if: inputs.image == 'core'
         run: pnpm core:tarball
 
-      # `additional_contexts: tarball` in deploy/dev/docker-compose.yml, as a
-      # plain build flag: artifacts/ is excluded by .dockerignore, so the
-      # tarball has to arrive as a named context rather than in the main one.
+      # The tarball arrives as a named build context rather than in the main
+      # one, because artifacts/ is excluded by .dockerignore. The main context
+      # is deploy/ and the Dockerfile reads nothing from it.
       #
-      # The labels are load-bearing. This image is the development fixture from
-      # deploy/dev — passwordless sudo for the operator, linger baked in, a
-      # provision script that hardcodes `--public-host core`, and systemd as
-      # PID 1 (so it needs --privileged and the host cgroup). Anyone who pulls
-      # it should be able to find that out from the image itself.
+      # This is a real Core, not the deploy/dev fixture it replaced (ADR 0016
+      # D40): no init system, no --privileged, no host cgroup, and no provision
+      # script hardcoding a hostname. The labels say so.
       - name: Build the Core image
         if: inputs.image == 'core'
         env:
@@ -191,22 +189,21 @@ jobs:
         run: |
           set -euo pipefail
           docker build \
-            --file deploy/dev/core.Dockerfile \
+            --file deploy/core.Dockerfile \
             --build-context tarball=artifacts/core \
-            --label "org.opencontainers.image.title=Actana Core (development fixture)" \
-            --label "org.opencontainers.image.description=Dev Core-in-a-box: systemd Ubuntu with the Core baked in. NOT a production deployment — requires --privileged and the host cgroup, grants the operator passwordless sudo, and its provision script hardcodes the hostname 'core'. To run a real Core, install the Core on a machine you own (INSTALL.md)." \
+            --label "org.opencontainers.image.title=Actana Core" \
+            --label "org.opencontainers.image.description=The Actana Control Core: the daemon a Panel pairs with, and the machine your sessions run on. Set ACTANA_PUBLIC_HOST to the host your Panel will dial, mount a volume at /home/core, and the first boot prints the registration blob you paste into the Panel. Harnesses (claude-code, codex, cursor-cli, opencode) install at runtime into that volume, not into the image." \
             --label "org.opencontainers.image.source=https://github.com/$REPO" \
             --label "org.opencontainers.image.revision=$SHA" \
             --label "org.opencontainers.image.licenses=MIT" \
-            --label "ai.actana.image.role=development-fixture" \
             --tag "$IMAGE:$STAGE-$ARCH" \
-            deploy/dev
+            deploy
 
-      # systemd is PID 1 here, so the image cannot be booted without
-      # --privileged and a cgroup mount. Overriding the command checks the two
-      # things a build can actually get wrong — the architecture-matched
-      # tarball landing in /opt/core, and the first-boot unit being enabled.
-      - name: Smoke — the tarball is baked in and the provision unit is enabled
+      # Booting the daemon and pairing a Panel against it is T46's smoke. This
+      # one covers what a *build* can get wrong: the wrong-architecture tarball
+      # landing in /opt/actana, the identity drifting off 1000:1000, and tini
+      # not being at the path the baked ENTRYPOINT names.
+      - name: Smoke — the Core runs, as core:1000, under tini
         if: inputs.image == 'core'
         env:
           IMAGE: ${{ needs.resolve.outputs.ghcr }}
@@ -220,10 +217,12 @@ jobs:
             *) echo "unmapped arch $ARCH" >&2; exit 1 ;;
           esac
           docker run --rm --entrypoint /bin/bash "$IMAGE:$STAGE-$ARCH" -euo pipefail -c "
-            ls /opt/core/actana-core-*-${target}.tar.gz >/dev/null
-            test -L /etc/systemd/system/multi-user.target.wants/core-provision.service
-            test -x /usr/local/lib/core-provision.sh
-            test -f /var/lib/systemd/linger/operator
+            test \"\$(id -u):\$(id -g)\" = '1000:1000'
+            test \"\$(id -un)\" = 'core'
+            test -x /usr/bin/tini
+            command -v actana >/dev/null
+            actana --version
+            grep -q '\"target\": \"${target}\"' /opt/actana/core-manifest.json
             echo 'core image smoke OK (${target})'
           "
 

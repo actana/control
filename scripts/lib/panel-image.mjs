@@ -27,6 +27,41 @@ export const PANEL_IMAGE = "ghcr.io/actana/panel";
 /** The single directory inside the container that must be a mounted volume. */
 export const PANEL_DATA_DIR = "/data";
 
+/** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */
+export const CORE_PORT = 8443;
+
+/** Where the Core image extracts the release tarball (ADR 0016 D13). */
+export const CORE_APP_ROOT = "/opt/actana";
+
+/** The single directory the Core image keeps all of its state under (D19). */
+export const CORE_HOME = "/home/core";
+
+/**
+ * The Core image's apt set, exactly (ADR 0016 D6) — this list is where the
+ * CVE number actually moves, so it is asserted element-for-element rather
+ * than as a subset. `zip`, `wget`, `gnupg` and every systemd package are out;
+ * `lsof` is in because `pty-manager.ts`'s port-conflict probe is silently a
+ * no-op without it.
+ */
+export const CORE_PACKAGES = Object.freeze([
+  "bash",
+  "sudo",
+  "ca-certificates",
+  "curl",
+  "git",
+  "openssh-client",
+  "build-essential",
+  "python3",
+  "ripgrep",
+  "jq",
+  "less",
+  "vim-tiny",
+  "unzip",
+  "lsof",
+  "xz-utils",
+  "tini",
+]);
+
 export function readRepoFile(relative) {
   return fs.readFileSync(path.join(repoRoot, relative), "utf8");
 }
@@ -41,9 +76,15 @@ export function dockerfileFacts(text) {
   const facts = {
     froms: [],
     exposes: [],
+    // `EXPOSE ${ACTANA_PORT}` is the point of D15, so the unresolved text has
+    // to survive alongside the number `exposes` would turn into NaN.
+    exposesRaw: [],
     env: {},
+    args: {},
+    runs: [],
     volumes: [],
     users: [],
+    entrypoint: null,
     cmd: null,
   };
   for (const raw of folded.split("\n")) {
@@ -58,12 +99,24 @@ export function dockerfileFacts(text) {
         break;
       }
       case "EXPOSE":
+        facts.exposesRaw.push(...rest.split(/\s+/).map((p) => p.split("/")[0]));
         facts.exposes.push(...rest.split(/\s+/).map((p) => Number(p.split("/")[0])));
         break;
       case "ENV":
         for (const match of rest.matchAll(/([A-Z0-9_]+)=(\S+)/g)) {
           facts.env[match[1]] = match[2];
         }
+        break;
+      case "ARG": {
+        const [, name, value = null] = rest.trim().match(/^([A-Za-z0-9_]+)(?:=(.*))?$/s) ?? [];
+        if (name) facts.args[name] = value;
+        break;
+      }
+      case "RUN":
+        facts.runs.push(rest.replace(/\s+/g, " ").trim());
+        break;
+      case "ENTRYPOINT":
+        facts.entrypoint = rest.trim();
         break;
       case "VOLUME":
         facts.volumes.push(...rest.replace(/[[\]",]/g, " ").split(/\s+/).filter(Boolean));
@@ -77,6 +130,21 @@ export function dockerfileFacts(text) {
     }
   }
   return facts;
+}
+
+/**
+ * The packages a folded `RUN` installs with apt, in the order it names them.
+ *
+ * Reads the operands between `apt-get install` and the next `&&`, dropping
+ * flags. Returns `null` for a RUN that installs nothing, so a caller can tell
+ * "no install here" from "installs an empty set".
+ */
+export function aptPackages(run) {
+  const install = run.match(/apt-get\s+install\s+(.*?)(?:&&|$)/s)?.[1];
+  if (install === undefined) return null;
+  return install
+    .split(/\s+/)
+    .filter((token) => token && !token.startsWith("-"));
 }
 
 /**
