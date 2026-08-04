@@ -184,7 +184,7 @@ jobs:
   # operators actually download must extract and boot on its own — bundled Node,
   # bundled natives, no system Node, no network. Built here on every PR for the
   # runner's own platform so a broken tarball is caught before tag time;
-  # core-release.yml builds and smokes all four targets on a tag push.
+  # release.yml builds and smokes both released targets on a tag push.
   #
   # Both Linux architectures, because everything downstream consumes these
   # artifacts (core-installer issue 07): the installer matrix downloads them

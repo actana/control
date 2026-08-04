@@ -9,9 +9,9 @@ name: Container image
 # and three callers reuse it, so the bytes a PR validates are built exactly the
 # way the bytes a release publishes are:
 #
-#   ci.yml             → build + smoke, amd64 only, no push  (every PR)
-#   images-edge.yml    → :edge and :sha-<short>              (every push to main)
-#   images-release.yml → :<version> and :latest              (every v* tag)
+#   ci.yml          → build + smoke, amd64 only, no push  (every PR)
+#   images-edge.yml → :edge and :sha-<short>              (every push to main)
+#   release.yml     → :<version> and :latest              (every v* tag)
 #
 # Each architecture builds natively on a runner of its own kind. The Panel
 # image compiles better-sqlite3 during the build and the Core image bakes in a
