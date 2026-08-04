@@ -11,6 +11,7 @@ import {
   PANEL_DOCKERFILE,
   PANEL_IMAGE,
   PANEL_PORT,
+  PANEL_RUNTIME_USER,
   aptPackages,
   composeFacts,
   dockerfileFacts,
@@ -51,17 +52,84 @@ describe("Dockerfile", () => {
     );
   });
 
-  it("builds and runs on the exact Node CI tests against", () => {
+  // ADR 0016 D24 replaced four assertions here rather than patching them to
+  // green: the runtime is no longer a Node image at all, so "both stages are
+  // the CI Node", "slim runtime", "runs as `node`", and "starts the entry the
+  // bare-node path documents" were each about a shape that stopped existing.
+  // The five that follow are D20–D23 stated as tests.
+
+  // D20/D25. The build stage — and only the build stage — is the exact Node CI
+  // tests against. The runtime's Node ships with the distroless base and is
+  // deliberately a different patch release; asserting they match would be
+  // asserting something we do not control and do not want.
+  it("builds on the exact Node CI tests against, on the same Debian as the runtime", () => {
     const ciNode = readRepoFile(".github/workflows/ci.yml").match(/node-version:\s*(\S+)/)?.[1];
     expect(ciNode).toBeTruthy();
-    for (const { image } of dockerfile.froms) {
-      expect(image).toMatch(new RegExp(`^node:${ciNode.replace(/\./g, "\\.")}-`));
-    }
+    const build = dockerfile.froms.find(({ alias }) => alias === "build");
+    // trixie, not bookworm: a better-sqlite3 built against the older glibc
+    // happens to load on the newer one, and the reverse does not. D25 removes
+    // the reliance on that asymmetry rather than documenting it.
+    expect(build.image).toBe(`node:${ciNode}-trixie`);
   });
 
-  it("is multi-stage with a slim runtime — build toolchains stay out of the shipped image", () => {
+  // D20. The runtime carries no shell, no package manager and no build
+  // toolchain — which is where 174 of the 192 CVEs went. Pinned by digest
+  // because the repository's 6,980 tags contain no version number anywhere:
+  // four mutable names plus opaque build SHAs, so a tag is not a pin.
+  it("ships a digest-pinned distroless runtime, with the full build stage left behind", () => {
     expect(dockerfile.froms.length).toBeGreaterThan(1);
-    expect(dockerfile.froms.at(-1).image).toContain("-slim");
+    expect(dockerfile.froms.at(-1).image).toMatch(
+      /^gcr\.io\/distroless\/nodejs24(:[\w.-]+)?@sha256:[0-9a-f]{64}$/,
+    );
+  });
+
+  // D21. Numeric is load-bearing, not style: Kubernetes' runAsNonRoot
+  // admission check cannot resolve a username, and fails the pod rather than
+  // the check. The `node` user (uid 1000) does not exist in this base.
+  it("runs as an unprivileged numeric uid:gid, never a username", () => {
+    expect(dockerfile.users.at(-1)).toBe(PANEL_RUNTIME_USER);
+    expect(PANEL_RUNTIME_USER).toMatch(/^\d+:\d+$/);
+  });
+
+  // D22. The single clause most likely to break a real deployment if it is
+  // skimmed. COPY recreates the *destination* directory as root:root 0755 and
+  // discards the staged directory's ownership and mode; only entries inside a
+  // copied tree keep theirs. Docker seeds a fresh named volume from the
+  // image's content *and* mode, so a staged `chown` yields a /data the Panel
+  // cannot write to on every new deployment.
+  it("creates /data with COPY --chown, never with a staged chown", () => {
+    const data = dockerfile.copies.find((copy) => copy.dest === PANEL_DATA_DIR);
+    expect(data).toBeTruthy();
+    expect(data.from).toBe("build");
+    expect(data.chown).toBe(PANEL_RUNTIME_USER);
+    // A `chown /data` anywhere in the build stage would be the discarded form
+    // wearing the right words.
+    expect(dockerfile.runs.join("\n")).not.toMatch(/chown\s+\S+\s+\/data\b/);
+  });
+
+  // D23. HEALTHCHECK argv bypasses ENTRYPOINT and distroless's PATH does not
+  // contain /nodejs/bin, so the naive ["node", …] form reports UNHEALTHY even
+  // for a script that cannot fail.
+  it("names node by absolute path in the healthcheck, since argv bypasses ENTRYPOINT", () => {
+    expect(dockerfile.healthcheck).toContain("/nodejs/bin/node");
+    expect(dockerfile.healthcheck).toMatch(/CMD\s*\[/);
+    expect(dockerfile.healthcheck).toContain("/api/healthz");
+  });
+
+  // D23. node *is* the ENTRYPOINT, so CMD is argv to node. Leaving "node" in
+  // the array makes node try to run a file literally named `node`.
+  it("starts the Panel with the script path alone — node is the ENTRYPOINT", () => {
+    expect(JSON.parse(dockerfile.cmd)).toEqual(["bin/panel.mjs"]);
+  });
+
+  // D23. podman drops HEALTHCHECK silently without --format docker, and a
+  // builder that does the same would ship an image with no healthcheck while
+  // every local build looks fine. Confirmed on the built bytes, not assumed.
+  it("confirms the built image actually carries the healthcheck", () => {
+    expect(readRepoFile("scripts/smoke-panel-image.mjs")).toContain("Config.Healthcheck");
+    // And again on the published multi-arch manifest, which is a different
+    // artifact from the per-arch image the smoke ran against.
+    expect(imageWorkflow).toContain("Healthcheck");
   });
 
   it("installs the pinned pnpm from package.json's packageManager field", () => {
@@ -77,14 +145,6 @@ describe("Dockerfile", () => {
   it("keeps all state in the one volume-backed data directory", () => {
     expect(dockerfile.env.AC_PANEL_DATA_DIR).toBe(PANEL_DATA_DIR);
     expect(dockerfile.volumes).toEqual([PANEL_DATA_DIR]);
-  });
-
-  it("runs as the unprivileged node user", () => {
-    expect(dockerfile.users.at(-1)).toBe("node");
-  });
-
-  it("starts the same entry the bare-node path documents", () => {
-    expect(dockerfile.cmd).toContain("bin/panel.mjs");
   });
 
   it("ships no Electron leftovers into the build context", () => {

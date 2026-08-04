@@ -10,6 +10,12 @@
 // That is issue 09's acceptance criterion "all persistent state survives
 // container recreation via the single volume" stated as a test.
 //
+// It also inspects the built image's config for the two things a builder can
+// silently drop rather than fail on — the HEALTHCHECK and the non-root USER
+// (ADR 0016 D21, D23). Booting on a fresh named volume is itself the check
+// for D22: Docker seeds the volume from the image's mode at /data, so a
+// root-owned /data fails here and nowhere else.
+//
 // Needs a Docker daemon. Everything it creates (container, volume) carries a
 // unique suffix and is removed on exit; the built image is left behind on
 // purpose — CI pushes the very bytes that passed.
@@ -26,7 +32,12 @@ import { spawnSync } from "node:child_process";
 
 import { parseArgs } from "./lib/cli.mjs";
 import { makeDie, pickFreePort } from "./lib/core-smoke.mjs";
-import { PANEL_DOCKERFILE, PANEL_PORT, repoRoot } from "./lib/panel-image.mjs";
+import {
+  PANEL_DOCKERFILE,
+  PANEL_PORT,
+  PANEL_RUNTIME_USER,
+  repoRoot,
+} from "./lib/panel-image.mjs";
 
 const die = makeDie("panel-image-smoke");
 const log = (message) => console.log(`[panel-image-smoke] ${message}`);
@@ -127,6 +138,27 @@ if (!args["skip-build"]) {
     stdio: "inherit",
   });
   if (build.status !== 0) die(`docker build exited ${build.status}`);
+}
+
+// HEALTHCHECK is a Docker-schema config field, and a builder is free to drop
+// it: podman does exactly that, silently, unless told `--format docker`. So
+// the Dockerfile saying so is not evidence — the built bytes are (ADR 0016
+// D23). USER rides along for the same reason: it is the whole of D21, and an
+// image that lost it would still pass every functional check below as root.
+log("verifying the built image carries its healthcheck and drops privilege …");
+const config = JSON.parse(
+  docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout || "null",
+);
+const healthcheckTest = (config?.Healthcheck?.Test ?? []).join(" ");
+if (!healthcheckTest.includes("/nodejs/bin/node")) {
+  die(
+    `${image} carries no healthcheck naming /nodejs/bin/node — the builder dropped it, ` +
+      `or the Dockerfile used the bare "node" form that distroless's PATH cannot find. ` +
+      `Config.Healthcheck was ${JSON.stringify(config?.Healthcheck ?? null)}`,
+  );
+}
+if (config?.User !== PANEL_RUNTIME_USER) {
+  die(`${image} runs as ${JSON.stringify(config?.User)}, expected ${PANEL_RUNTIME_USER}`);
 }
 
 docker(["volume", "create", volumeName]);

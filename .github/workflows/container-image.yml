@@ -287,6 +287,7 @@ jobs:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           IMAGES: ${{ needs.resolve.outputs.images }}
+          IMAGE_KIND: ${{ inputs.image }}
           MATRIX: ${{ inputs.matrix }}
           STAGE: ${{ inputs.stage }}
           TAGS: ${{ inputs.tags }}
@@ -325,6 +326,32 @@ jobs:
             for tag in $TAGS; do tag_args+=(--tag "$image:$tag"); done
             docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
             docker buildx imagetools inspect "$image:${TAGS%% *}"
+
+            # The Panel's HEALTHCHECK is a Docker-schema config field that a
+            # builder may drop — podman does, silently, without --format
+            # docker (ADR 0016 D23). The smoke job proved it on the per-arch
+            # image; this proves it survived being stitched into the manifest
+            # operators actually pull, which is a different artifact.
+            if [[ "$IMAGE_KIND" == panel ]]; then
+              config="$(docker buildx imagetools inspect "$image:${TAGS%% *}" --format '{{json .Image}}')"
+              # Multi-platform inspect keys the config by platform; a
+              # single-platform one returns the config itself. Accept both,
+              # and require every platform present to carry the healthcheck.
+              missing="$(
+                echo "$config" | jq -r '
+                  (if has("config") then {"(single)": .} else . end)
+                  | to_entries
+                  | map(select(
+                      (.value.config.Healthcheck.Test // [] | join(" "))
+                        | contains("/nodejs/bin/node") | not))
+                  | map(.key)[]'
+              )"
+              if [[ -n "$missing" ]]; then
+                echo "::error title=Published image has no healthcheck::$image:${TAGS%% *} is missing the /nodejs/bin/node HEALTHCHECK on: $missing. The builder dropped it between the per-arch build and the manifest." >&2
+                exit 1
+              fi
+              echo "$image:${TAGS%% *} carries its healthcheck on every platform."
+            fi
           done
 
           # Configured but broken is a failure — just not one that costs GHCR.

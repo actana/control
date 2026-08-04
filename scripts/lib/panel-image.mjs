@@ -35,6 +35,16 @@ export const PANEL_IMAGE = "ghcr.io/actana/panel";
 /** The single directory inside the container that must be a mounted volume. */
 export const PANEL_DATA_DIR = "/data";
 
+/**
+ * The uid:gid the Panel container runs as, and the owner `/data` is copied in
+ * with (ADR 0016 D21). 65532 is distroless's `nonroot`, which every variant
+ * carries in `/etc/passwd` — so the default tag drops privilege without
+ * needing `:nonroot`. Numeric rather than a name because Kubernetes'
+ * `runAsNonRoot` admission check cannot resolve a username and fails the pod
+ * rather than the check.
+ */
+export const PANEL_RUNTIME_USER = "65532:65532";
+
 /** The Core's default core-link port — `EXPOSE` and `ACTANA_PORT` share it. */
 export const CORE_PORT = 8443;
 
@@ -92,8 +102,13 @@ export function dockerfileFacts(text) {
     runs: [],
     volumes: [],
     users: [],
+    // `{ from, chown, sources, dest }` per COPY. `/data`'s ownership is
+    // carried by the COPY's own --chown and nothing else (D22), so the flags
+    // have to survive parsing rather than be dropped as noise.
+    copies: [],
     entrypoint: null,
     cmd: null,
+    healthcheck: null,
   };
   for (const raw of folded.split("\n")) {
     const line = raw.trim();
@@ -132,8 +147,27 @@ export function dockerfileFacts(text) {
       case "USER":
         facts.users.push(rest.trim());
         break;
+      case "COPY": {
+        const flags = [...rest.matchAll(/(?:^|\s)--([a-z-]+)=(\S+)/g)];
+        const operands = rest
+          .replace(/(?:^|\s)--[a-z-]+=\S+/g, " ")
+          .trim()
+          .split(/\s+/)
+          .filter(Boolean);
+        const flag = (name) => flags.find(([, key]) => key === name)?.[2] ?? null;
+        facts.copies.push({
+          from: flag("from"),
+          chown: flag("chown"),
+          sources: operands.slice(0, -1),
+          dest: operands.at(-1) ?? null,
+        });
+        break;
+      }
       case "CMD":
         facts.cmd = rest.trim();
+        break;
+      case "HEALTHCHECK":
+        facts.healthcheck = rest.replace(/\s+/g, " ").trim();
         break;
     }
   }
