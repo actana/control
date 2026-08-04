@@ -57,7 +57,7 @@
 # bundled in the Core tarball exits 127 for a missing ELF interpreter.
 #
 # ubuntu:24.04 == noble-20260730.1 at the time of writing.
-FROM ubuntu:24.04@sha256:561618e2c15bf2397621dd04f96926663a3b5616c189cf7e38db7e82f5c538ea
+FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
 
 # ARG, not ENV: `noninteractive` is right for this build and wrong for the
 # interactive shells a Harness opens later, so it must not survive the build.
