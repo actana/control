@@ -38,6 +38,14 @@ const workflow = readRepoFile(".github/workflows/release.yml");
 // edge, and release paths share a single implementation; release.yml is
 // now only the version-tag half. Assertions follow the code.
 const imageWorkflow = readRepoFile(".github/workflows/container-image.yml");
+// The same file with every comment line dropped — YAML's and the shell blocks'
+// alike, both `#`. For assertions that must not be satisfiable by a comment,
+// and for the negative ones, where a comment explaining why something is *not*
+// done would otherwise read as the thing being done.
+const imageWorkflowCode = imageWorkflow
+  .split("\n")
+  .filter((line) => !line.trimStart().startsWith("#"))
+  .join("\n");
 // The edge publish is a push-to-`main` condition inside ci.yml, not a workflow
 // of its own — ADR 0016 D30 deleted images-edge.yml for being a fourth entry
 // point to jobs that differ only in which tags come out the other end.
@@ -146,9 +154,20 @@ describe("Dockerfile", () => {
     expect(smoke).toContain(`"image", "inspect"`);
     expect(smoke).toContain("config?.Healthcheck?.Test");
     // And again on the published multi-arch manifest, which is a different
-    // artifact from the per-arch image the smoke ran against.
-    expect(imageWorkflow).toContain(".value.config.Healthcheck.Test");
-    expect(imageWorkflow).toContain(PANEL_NODE_BIN);
+    // artifact from the per-arch image the smoke ran against. Same reader as
+    // the smoke — the daemon's own — applied per platform.
+    expect(imageWorkflowCode).toContain("{{json .Config.Healthcheck}}");
+    expect(imageWorkflowCode).toContain('docker pull --quiet --platform "linux/$arch"');
+    expect(imageWorkflowCode).toContain(PANEL_NODE_BIN);
+  });
+
+  // Regression guard, not style. `imagetools inspect --format '{{json .Image}}'`
+  // renders a Go struct that need not carry Healthcheck at all, and reading the
+  // gate through it reported MISSING on both platforms of an image that had the
+  // healthcheck — a red run on a healthy publish. The property worth keeping is
+  // "this gate is never read through that format again".
+  it("does not read the healthcheck back through imagetools' Go struct", () => {
+    expect(imageWorkflowCode).not.toContain("{{json .Image}}");
   });
 
   // The native module compiled in the build stage has to dlopen under a
