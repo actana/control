@@ -19,6 +19,10 @@ name: Housekeeping
 # is payable by the person whose PR happens to be open, and a permanently red
 # scheduled workflow is how a team learns that red means nothing.
 #
+# Six jobs, five chores: `release-ref` is `core-rebuild`'s resolver rather than a
+# chore of its own — it is a separate job only because a `uses:` job cannot run
+# a step to work out its own inputs.
+#
 # `base-pins` was `base-pins.yml`; `stale` was `stale.yml`. Both are folded in
 # here rather than kept as files of their own, because D34's count is entry
 # points: `ci`, `release`, `housekeeping`, plus `container-image.yml` as a
@@ -423,6 +427,11 @@ jobs:
             echo '```'
           } > "$RUNNER_TEMP/issue.md"
 
+          # `needs-triage` and nothing else. `gh issue create` fails outright on a
+          # label the repo does not have, which would turn "open an issue" into
+          # the red run this job exists to avoid — and the repo's live label set
+          # and the bootstrap in docs/REPO_SETUP.md do not agree on much beyond
+          # this one.
           gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
             --label needs-triage
 
@@ -520,5 +529,10 @@ jobs:
             echo '```'
           } > "$RUNNER_TEMP/issue.md"
 
+          # `needs-triage` and nothing else. `gh issue create` fails outright on a
+          # label the repo does not have, which would turn "open an issue" into
+          # the red run this job exists to avoid — and the repo's live label set
+          # and the bootstrap in docs/REPO_SETUP.md do not agree on much beyond
+          # this one.
           gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
-            --label bug --label needs-triage
+            --label needs-triage

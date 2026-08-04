@@ -143,8 +143,9 @@ changelog is assembled from.
       or `docker pull` fails for everyone but org members
 - [ ] After the first release, check that **both Docker Hub pages render** —
       `actana/panel` and `actana/core`. Nothing here is manual: `release.yml`'s
-      `descriptions` job PATCHes each page from [`docs/images/`](images/) once
-      the release exists ([ADR 0016](adr/0016-the-0-1-0-shape.md) D33), and a
+      `descriptions` job PATCHes each page from [`docs/images/`](images/) as
+      soon as both images are published ([ADR
+      0016](adr/0016-the-0-1-0-shape.md) D33), and a
       typo is fixed by editing the file and dispatching that workflow rather
       than by cutting a release. Neither page has ever been published, so the
       first release is the first time either is seen.

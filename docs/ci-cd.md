@@ -471,6 +471,10 @@ that is not a check. Five chores on two crons:
 | `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
 | `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
 
+A sixth job, `release-ref`, resolves the newest published release for
+`core-rebuild`; it is a job rather than a step only because a `uses:` job cannot
+compute its own inputs.
+
 One file, because a workflow file's unit is not a subject but a relationship to
 a pull request, and these five share one: no PR causes them and no PR fixes
 them. Jobs are gated on `github.event.schedule`, which is how one file carries

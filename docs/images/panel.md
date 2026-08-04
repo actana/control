@@ -59,27 +59,15 @@ volume and you have backed up the Panel. Schema migrations run on boot.
 ## You also need a Core
 
 The Panel runs nothing itself — it is a connection broker. The work happens on a
-**Core**, and every machine you want to work on needs one. There are two
-supported ways to get one, and neither is more real than the other:
+**Core**, and every machine you want to work on needs one:
 
 ```bash
-# on a machine you own, as a user service
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
 ```
 
-```bash
-# or as a container, beside this one
-docker run -d --name actana-core \
-  -e ACTANA_PUBLIC_HOST=core \
-  -v actana-core-home:/home/core \
-  actana/core:latest
-```
-
-The reference [`deploy/docker-compose.yml`](https://github.com/actana/control/blob/main/deploy/docker-compose.yml)
-brings both up together, which is the whole product in one command. See
-[INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md) for the
-installed path and [`actana/core`](https://hub.docker.com/r/actana/core) for the
-image.
+See [INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md). The
+`actana/core` image is the other supported way to run one, and the reference
+compose above brings both up together.
 
 ## Tags
 
