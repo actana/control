@@ -69,8 +69,8 @@ its own:
   description, set through its API. The `descriptions` job in
   [`release.yml`](../.github/workflows/release.yml) pushes one file per image —
   [`docs/images/panel.md`](images/panel.md) and
-  [`docs/images/core.md`](images/core.md) — after a release publishes, so the
-  page never describes a version nobody can pull yet.
+  [`docs/images/core.md`](images/core.md) — gated on the two publish jobs, so
+  the page never describes a version nobody can pull yet.
 
 Edit those two files to change what Docker Hub shows. A typo is fixable without
 cutting a release: merge the fix to `main`, then

@@ -4,10 +4,14 @@ name: Release
 # the Panel and Core images, the GitHub Release, and each image's Docker Hub
 # page. One file rather than four, because they are one event (ADR 0016 D34).
 #
-#   resolve ──┬── tarball (linux-x64, linux-arm64, native runners)
-#             ├── panel ─┐ via the reusable container-image.yml, push: true
-#             └── core  ─┘
-#                          └── github-release ── descriptions
+#   resolve ─┬─ tarball ─── installer-e2e ──┐
+#            ├─ panel ─┐                    ├── github-release
+#            └─ core ──┴─ descriptions      ┘
+#
+# `panel` and `core` go through the reusable container-image.yml with
+# push: true, and both they and the tarball legs feed `github-release`.
+# `descriptions` is a leaf hanging off those two alone (D33): it describes an
+# image, so what it waits for is the image being pullable — nothing else.
 #
 # Exactly three assets (D28): actana-core-<version>-linux-x64.tar.gz,
 # actana-core-<version>-linux-arm64.tar.gz, SHA256SUMS. No macOS legs, no
@@ -385,11 +389,16 @@ jobs:
   # handles a credential that can rewrite the public face of both images, and
   # the repo pins every action it does trust by SHA.
   #
-  # Last, and only after the release exists: the description points at a
-  # version that must already be pullable.
+  # Gated on the two publish jobs and on nothing else (D33). The page describes
+  # an *image*, and the version it names has to be pullable when someone reads
+  # it — which is exactly what `panel` and `core` completing means. Hanging it
+  # off `github-release` instead would have been a stronger condition for the
+  # wrong reason: a red arm64 installer leg would then leave both images
+  # published and both pages describing whatever was there before, over a
+  # failure that has nothing to do with either image.
   descriptions:
     name: Docker Hub descriptions
-    needs: github-release
+    needs: [panel, core]
     runs-on: ubuntu-24.04
     steps:
       # Deliberately no `ref:` — the only job here that does not pin the tag.

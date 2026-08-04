@@ -733,6 +733,52 @@ describe("docker hub descriptions", () => {
     expect(setup.toLowerCase()).toContain("rotat");
   });
 
+  // D33. What the page waits for is the image being pullable, and that is the
+  // two publish jobs. Gating on `github-release` instead would let a red
+  // installer leg — which is about a tarball, not an image — leave both images
+  // published and both pages describing whatever was there before.
+  it("waits for the two publish jobs and nothing else", () => {
+    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    const needs = /^\s+needs: (.+)$/m.exec(descriptions);
+    expect(needs, "the descriptions job declares no needs").not.toBeNull();
+    expect(needs[1]).toBe("[panel, core]");
+  });
+
+  // D33. `actana/core` was a systemd fixture that needed --privileged, the host
+  // cgroup and a hardcoded `--public-host core`, and both the page and the
+  // label said so. That design is gone (D40), and these pages are the public
+  // face of the two images — they are also the one place the old text can
+  // survive unnoticed, because nothing builds them.
+  it("describes the Core image as the product, not as a development fixture", () => {
+    for (const file of [
+      "docs/images/core.md",
+      "docs/images/panel.md",
+      ".github/workflows/container-image.yml",
+      ".github/workflows/release.yml",
+      "docs/REPO_SETUP.md",
+      "docs/ci-cd.md",
+    ]) {
+      const body = readRepoFile(file).toLowerCase();
+      expect(body, `${file} still calls the Core image a fixture`).not.toMatch(
+        /development[ -]fixture/,
+      );
+    }
+  });
+
+  // The page has to describe the image that exists: tini rather than systemd,
+  // one required variable, one volume, and Harnesses arriving at runtime.
+  it("documents the Core image's actual process model and contract", () => {
+    const core = readRepoFile("docs/images/core.md");
+    expect(core).toContain("`tini` is PID 1");
+    expect(core).toContain("ACTANA_PUBLIC_HOST");
+    expect(core).toContain("/home/core");
+    expect(core).toContain("docker compose");
+    expect(core).toContain("actana harnesses install");
+    // The refused verbs of the old fixture, and the systemd it needed.
+    expect(core).not.toContain("--privileged");
+    expect(core).not.toContain("--public-host core");
+  });
+
   it("links the GHCR packages back to this repository", () => {
     // Without image.source the package page has no README at all.
     expect(readRepoFile(PANEL_DOCKERFILE)).toContain("org.opencontainers.image.source");
