@@ -192,7 +192,7 @@ jobs:
             --file deploy/core.Dockerfile \
             --build-context tarball=artifacts/core \
             --label "org.opencontainers.image.title=Actana Core" \
-            --label "org.opencontainers.image.description=The Actana Control Core: the daemon a Panel pairs with, and the machine your sessions run on. Set ACTANA_PUBLIC_HOST to the host your Panel will dial, mount a volume at /home/core, and the first boot prints the registration blob you paste into the Panel. Harnesses (claude-code, codex, cursor-cli, opencode) install at runtime into that volume, not into the image." \
+            --label "org.opencontainers.image.description=The Actana Control Core: the daemon a Panel pairs with, and the machine your agentic coding sessions run on. Set ACTANA_PUBLIC_HOST to the host your Panel will dial and mount a volume at /home/core, which holds the pairing identity, the database and each Harness's credentials. Harnesses (claude-code, codex, cursor-cli, opencode) install at runtime into that volume, not into the image." \
             --label "org.opencontainers.image.source=https://github.com/$REPO" \
             --label "org.opencontainers.image.revision=$SHA" \
             --label "org.opencontainers.image.licenses=MIT" \

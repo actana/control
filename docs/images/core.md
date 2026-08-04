@@ -48,7 +48,7 @@ Install them into the volume instead, where they persist across image upgrades a
 place:
 
 ```bash
-docker compose exec core actana harnesses install claude
+docker compose exec core actana harnesses install claude-code
 ```
 
 ## What is inside

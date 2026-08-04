@@ -8,14 +8,15 @@
 # update. The metal path — install.sh, `actana setup`, a user service — is
 # untouched and unrelated; this is a second distribution, not a replacement.
 #
-# CVE posture, stated accurately (D6). This image measures ~38 distinct CVEs
-# at ~190 MB, against 1248 at 751 MB for the dev Core-in-a-box it replaces.
-# The base did change — but the base is NOT the mechanism, and anyone
-# summarising it that way will mislead the next reader. The package set is:
+# CVE posture, stated accurately (D6) — measured on this file, on 2026-08-04,
+# and written up in docs/research/core-base-measure/core-image-2026-08-04.md.
+#
+# The base did change, but the base is NOT the mechanism, and anyone
+# summarising it that way will mislead the next reader. The base contributes
+# **6** distinct CVEs. The package set is where the number lives:
 # `build-essential` pulls `libc6-dev` pulls `linux-libc-dev`, and
-# `linux-libc-dev` alone accounts for 1200 of the 1328 OS findings. Dropping
-# that one package takes an otherwise unchanged `ubuntu:24.04` build from
-# 1248 to 38.
+# `linux-libc-dev` alone accounts for **1200 of the 1227** distinct findings
+# in this image. Take that one package out and the same build measures 15.
 #
 # The toolchain stays anyway (D7), because it is what the product is: a Core
 # exists to run Harnesses against real repos, and `npm install` on any project
@@ -23,9 +24,21 @@
 # This repo is the proof — it depends on better-sqlite3 and node-pty, so a
 # Core without the toolchain cannot even `pnpm install` Actana Control. Those
 # findings are kernel headers under /usr/include with no executable code, on a
-# kernel that belongs to the host; they are suppressed by a single justified
-# entry in the checked-in `.trivyignore`, and nothing else is suppressed
-# anywhere.
+# kernel that belongs to the host. D7 suppresses them with a single justified
+# entry in a checked-in `.trivyignore` — which #38 lands, along with the gate
+# that reads it. There is no `.trivyignore` in the tree yet, so the raw
+# number a scan of this image reports today is 1246, not the 46 that survive
+# the suppression.
+#
+# Two figures from D6 do NOT survive measurement, and this file is the wrong
+# place to repeat them:
+#
+#   ~38 distinct  → measured 46 after suppression. The extra rows are Node and
+#                   npm, which the D6 baseline did not carry.
+#   ~190 MB       → measured 805 MB, and ~190 MB is not reachable with the
+#                   toolchain in: it is the toolchain-free row. build-essential
+#                   and python3 are +272 MB, Node and the Core tarball +330 MB.
+#                   ADR 0016 records the correction.
 
 # Both halves of this pin are load-bearing and they do different jobs (D5).
 #
@@ -136,6 +149,9 @@ RUN echo "core ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/core \
 # `versions/<v>` + `current` layout `actana setup` builds on metal: in a
 # container the image tag is the version, so a `current` symlink would point
 # at exactly one tree for the life of the image.
+#
+# It has to arrive as a named context: the build context is `deploy/`, and the
+# tarball is built into `artifacts/` at the repo root, which is outside it.
 #
 # Bind-mounted rather than COPYed, and that is worth 47 MB: a COPY of the
 # tarball is its own layer, so `rm`ing it in the next instruction deletes it

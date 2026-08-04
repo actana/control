@@ -134,17 +134,12 @@ export function dockerfileFacts(text) {
 
 /**
  * The packages a folded `RUN` installs with apt, in the order it names them.
- *
  * Reads the operands between `apt-get install` and the next `&&`, dropping
- * flags. Returns `null` for a RUN that installs nothing, so a caller can tell
- * "no install here" from "installs an empty set".
+ * flags. A RUN that installs nothing yields an empty list.
  */
 export function aptPackages(run) {
-  const install = run.match(/apt-get\s+install\s+(.*?)(?:&&|$)/s)?.[1];
-  if (install === undefined) return null;
-  return install
-    .split(/\s+/)
-    .filter((token) => token && !token.startsWith("-"));
+  const install = run.match(/apt-get\s+install\s+(.*?)(?:&&|$)/s)?.[1] ?? "";
+  return install.split(/\s+/).filter((token) => token && !token.startsWith("-"));
 }
 
 /**

@@ -191,15 +191,18 @@ describe("edge workflow", () => {
 // never runs (ADR 0016 D13). These tests are the clauses of §B and §C that a
 // well-meaning cleanup would otherwise quietly undo.
 describe("core image", () => {
-  it("is built from deploy/core.Dockerfile, not the deleted dev fixture", () => {
+  it("is built from deploy/core.Dockerfile, not the dev fixture", () => {
+    // deploy/dev/ still exists until T45 deletes it; what matters here is that
+    // the published image stopped coming from it.
     expect(imageWorkflow).toContain("deploy/core.Dockerfile");
     expect(imageWorkflow).not.toContain("deploy/dev/core.Dockerfile");
   });
 
   it("takes the Core tarball from a named build context, without a layer", () => {
-    // artifacts/ is excluded by .dockerignore, so the tarball cannot ride in
-    // on the main context. Bind-mounted rather than COPYed because a COPY is
-    // its own layer, and deleting the file afterwards would not shrink it.
+    // artifacts/ is at the repo root and the build context is deploy/, so the
+    // tarball cannot ride in on the main context. Bind-mounted rather than
+    // COPYed because a COPY is its own layer, and deleting the file in the
+    // next instruction would not shrink it.
     expect(coreDockerfile).toContain("--mount=type=bind,from=tarball");
     expect(coreDockerfile).not.toContain("COPY --from=tarball actana-core");
     expect(imageWorkflow).toContain("--build-context tarball=artifacts/core");
@@ -226,11 +229,13 @@ describe("core image", () => {
     expect(aptPackages(install)).toEqual([...CORE_PACKAGES]);
   });
 
-  it("says accurately why the CVE number moved", () => {
+  it("names the package set, not the base, as why the CVE number moved", () => {
     // "we changed the base" is the wrong summary and would mislead the next
-    // reader — the package set is the mechanism.
+    // reader. Asserted on the mechanism rather than on a count, because the
+    // counts move with every scan and a stale number in a comment is exactly
+    // the failure this clause exists to prevent.
     expect(coreDockerfile).toContain("linux-libc-dev");
-    expect(coreDockerfile).toMatch(/1200 of the 1328/);
+    expect(coreDockerfile).toMatch(/the base is NOT the mechanism/);
   });
 
   // D8 — nodejs.org tarball, verified against that release's own SHASUMS.
