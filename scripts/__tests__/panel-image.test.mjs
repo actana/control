@@ -523,6 +523,23 @@ describe("core image", () => {
     expect(fs.existsSync(path.join(repoRoot, "scripts/lib/systemd-container.mjs"))).toBe(true);
   });
 
+  // Docker publishes the port at container start and `docker-proxy` answers a
+  // handshake before anything inside is listening, so a TCP probe against the
+  // published port returns immediately and every leg that "waits" for a boot
+  // reads a volume the daemon has not written yet. The daemon's own sentinel
+  // is the only readiness signal here, and it is printed after the material is
+  // persisted — so this guards against the probe drifting back to the port.
+  it("waits for the daemon's own listening sentinel, not for the published port", () => {
+    const smoke = readRepoFile("scripts/smoke-core-image.mjs")
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("//"))
+      .join("\n");
+    expect(smoke).toContain("LISTENING_SENTINEL");
+    // `net.connect` against `container.port` was that probe. Nothing in this
+    // script should be dialling the published port to decide readiness.
+    expect(smoke).not.toContain("net.connect");
+  });
+
   // The smoke runs `actana <verb>` inside the container, so its verb list is a
   // copy of the Core's own refusal table. A copy that drifts is a verb that
   // silently stops being smoked — so the copy is checked against the original.

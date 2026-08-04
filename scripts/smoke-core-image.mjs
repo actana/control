@@ -48,12 +48,11 @@
 
 import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
-import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
-import { decodeBlob, makeDie, pickFreePort } from "./lib/core-smoke.mjs";
+import { LISTENING_SENTINEL, decodeBlob, makeDie, pickFreePort } from "./lib/core-smoke.mjs";
 import {
   PANEL_SESSION_COOKIE,
   PanelLink,
@@ -134,6 +133,8 @@ async function bootCore(name, { port } = {}) {
     volume: volumeName,
     port,
     endpoint: `wss://127.0.0.1:${port}`,
+    /** Boots this container has announced and `waitForCoreLink` has consumed. */
+    boots: 0,
     /**
      * The container's output. `tail: "all"` is not a nicety — the
      * "a restart prints no second token" assertion counts notices across the
@@ -173,29 +174,53 @@ async function bootCore(name, { port } = {}) {
   return container;
 }
 
-/** Wait until the core-link port accepts a TCP connection. */
+/**
+ * Wait until the *daemon* says it is listening — never until the published
+ * port answers.
+ *
+ * Docker binds `127.0.0.1:${port}` on the host when the container starts, and
+ * `docker-proxy` completes the handshake whether or not anything inside is
+ * listening yet. A TCP probe therefore returns on its first iteration, before
+ * `loadOrMintMaterial()` has written the blob this script then reads, and the
+ * same vacuous wait is used by the restart and second-boot legs too.
+ *
+ * `core-entry` prints `@@AC_CORE_LISTENING@@` once `PtyCoreLinkServer` is
+ * actually listening, and it prints it *after* minting and persisting — so a
+ * wait that ends on the sentinel guarantees the blob is on disk. `docker logs`
+ * survives a restart, so each boot is counted rather than merely looked for:
+ * `container.boots` is the number of sentinels this container has already
+ * announced, and the wait ends only on the next one.
+ */
 async function waitForCoreLink(container) {
   const deadline = Date.now() + timeoutMs;
+  const expected = container.boots + 1;
   for (;;) {
-    const open = await new Promise((resolve) => {
-      const socket = net.connect({ host: "127.0.0.1", port: container.port });
-      const settle = (value) => {
-        socket.destroy();
-        resolve(value);
-      };
-      socket.once("connect", () => settle(true));
-      socket.once("error", () => settle(false));
-      socket.setTimeout(2_000, () => settle(false));
-    });
-    if (open) return;
+    const logs = container.logs("all");
+    if (logs.split(LISTENING_SENTINEL).length - 1 >= expected) {
+      container.boots = expected;
+      return;
+    }
+    // A container that died has nothing left to announce, so waiting out the
+    // full timeout would only delay the same failure and bury the reason.
+    if (!isRunning(container)) {
+      die(`${container.name} exited before it announced boot ${expected}:\n${logs}`);
+    }
     if (Date.now() >= deadline) {
       die(
-        `${container.name} never accepted a core-link connection within ${timeoutMs}ms. ` +
-          `Container logs:\n${container.logs()}`,
+        `${container.name} never announced boot ${expected} (${LISTENING_SENTINEL}) ` +
+          `within ${timeoutMs}ms. Container logs:\n${logs}`,
       );
     }
     await delay(500);
   }
+}
+
+/** Whether Docker still considers the container running. */
+function isRunning(container) {
+  const result = docker(["inspect", "--format", "{{.State.Running}}", container.name], {
+    allowFailure: true,
+  });
+  return result.status === 0 && result.stdout.trim() === "true";
 }
 
 /** The pairing token this Core minted, as an operator would copy it. */

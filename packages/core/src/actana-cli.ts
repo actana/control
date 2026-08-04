@@ -956,7 +956,8 @@ async function cmdHarnesses(deps: ActanaCliDeps, argv: string[]): Promise<number
  *
  * On metal the unit carries the daemon's whole environment, so there is
  * nothing to add. In a container there is no unit: the operator's `ACTANA_*`
- * contract is translated into the `AC_*` variables `core-entry` reads, and a
+ * contract is resolved here — translated into the `AC_*` variables
+ * `core-entry` reads, plus `ACTANA_LABEL` defaulted to the public host — and a
  * missing public host stops the boot here rather than letting the Core come up
  * with a certificate for a container id (ADR 0016 D15).
  */
@@ -975,6 +976,12 @@ async function cmdDaemon(deps: ActanaCliDeps): Promise<number> {
   await deps.runDaemon({
     AC_CORE_LINK_PORT: String(contract.port),
     AC_CORE_PUBLIC_HOST: contract.publicHost,
+    // The label is the one contract variable `core-entry` reads under its own
+    // name rather than an `AC_*` translation, and it is handed over even when
+    // the operator set it — the contract's default (the public host) only
+    // exists here, and without it a first-boot blob would carry `label: ""`
+    // while `actana token` carried the host, for the same Core.
+    [CONTAINER_LABEL_ENV]: contract.label,
   });
   return 0;
 }

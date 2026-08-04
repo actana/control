@@ -1167,7 +1167,38 @@ describe("in a container", () => {
     expect(handed).toMatchObject({
       AC_CORE_LINK_PORT: "9443",
       AC_CORE_PUBLIC_HOST: "core1.example.com",
+      ACTANA_LABEL: "core1.example.com",
     });
+  });
+
+  // The default lives in `readContainerContract`, and `core-entry` has its own
+  // `process.env.ACTANA_LABEL || ""` fallback — so a daemon handed everything
+  // but the label boots with an empty one, and the blob it prints on first run
+  // disagrees with the one `actana token` prints for the same Core.
+  it("hands the daemon the label default when the operator named none", async () => {
+    let handed: Record<string, string> | undefined;
+    await runActanaCli(
+      deps(["daemon"], fakeSystem(), {
+        env: containerEnv(),
+        runDaemon: async (daemonEnv) => {
+          handed = daemonEnv;
+        },
+      }),
+    );
+    expect(handed?.ACTANA_LABEL).toBe("core1.example.com");
+  });
+
+  it("hands the daemon the operator's label when they named one", async () => {
+    let handed: Record<string, string> | undefined;
+    await runActanaCli(
+      deps(["daemon"], fakeSystem(), {
+        env: containerEnv({ ACTANA_LABEL: "build-box" }),
+        runDaemon: async (daemonEnv) => {
+          handed = daemonEnv;
+        },
+      }),
+    );
+    expect(handed?.ACTANA_LABEL).toBe("build-box");
   });
 
   it("leaves the daemon's env alone on metal — the unit already set it", async () => {
