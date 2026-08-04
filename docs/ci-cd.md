@@ -36,7 +36,7 @@ Both are published to GHCR (`ghcr.io/actana/…`) and Docker Hub
 
 `actana/core` is built from [`../deploy/core.Dockerfile`](../deploy/core.Dockerfile)
 and is a Core you run rather than a machine you install one on: `tini` is PID 1
-and `actana daemon` is PID 2, there is no init system inside, and it needs
+and `actana daemon` is its child, there is no init system inside, and it needs
 neither `--privileged` nor a host cgroup. The image is the install — the tag is
 the version, the entrypoint is the unit, and `docker compose pull && up -d` is
 the upgrade ([ADR 0016](adr/0016-the-0-1-0-shape.md) §C).
@@ -121,7 +121,7 @@ claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 boots the image with a plain `docker run` — nothing privileged, no host cgroup,
 one volume — and then pairs a real Panel with it end to end. Along the way it
 proves what a *build* can get wrong (the identity is `core` at 1000:1000,
-`tini` is PID 1 and the daemon PID 2, and the Core tree in `/opt/actana` is the
+`tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is the
 *architecture-matched* one) and what the *contract* can get wrong: the
 lifecycle verbs refuse and name their Docker equivalent, `docker restart` is a
 no-op for pairing, and destroying the volume is the one thing that unpairs.

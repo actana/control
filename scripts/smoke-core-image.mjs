@@ -19,7 +19,7 @@
 //   • the built image's config carries tini as ENTRYPOINT and drops to `core`;
 //   • a plain `docker run` — no privileges, no host mounts — boots the daemon,
 //     mints an identity on the empty volume and prints its pairing token;
-//   • tini is PID 1 and the daemon is PID 2 (D14), read out of /proc;
+//   • tini is PID 1 and the daemon is a child of PID 1 (D14), read out of /proc;
 //   • the lifecycle verbs the image owns refuse, and each names its Docker
 //     equivalent rather than just saying no (D16);
 //   • a real Panel, booted as the deployable it is, pastes that token into
@@ -223,6 +223,44 @@ function isRunning(container) {
   return result.status === 0 && result.stdout.trim() === "true";
 }
 
+/**
+ * Every process in the container, as `{pid, ppid, comm}`.
+ *
+ * Read out of `/proc` by a shell loop rather than with `ps`: the Core image
+ * installs no `procps`, and a smoke that needs a package the image does not
+ * ship would be asserting against something other than the shipped bytes.
+ * `ppid` is field 4 of `/proc/<pid>/stat`, counted after the `)` that closes
+ * the comm field — a comm containing a space or a bracket makes every
+ * field-number-from-the-left answer wrong, which is the classic way to read
+ * this file incorrectly.
+ */
+const PROC_TABLE_SH = [
+  "for p in /proc/[0-9]*; do",
+  '  [ -r "$p/stat" ] || continue;',
+  `  printf '%s %s %s\\n' "\${p#/proc/}" "$(sed -e 's/.*) //' "$p/stat" | cut -d' ' -f2)" "$(cat "$p/comm" 2>/dev/null)";`,
+  "done",
+].join("\n");
+
+function processTable(container) {
+  const read = container.exec(["sh", "-c", PROC_TABLE_SH]);
+  return read.stdout
+    .split("\n")
+    .map((line) => line.trim().split(/\s+/))
+    .filter(([pid, ppid, comm]) => pid && ppid && comm)
+    .map(([pid, ppid, comm]) => ({ pid: Number(pid), ppid: Number(ppid), comm }));
+}
+
+/** The process table as a failure message reads it — `ps`-shaped, pid order. */
+function formatProcesses(processes) {
+  return ["  PID  PPID COMMAND"]
+    .concat(
+      [...processes]
+        .sort((a, b) => a.pid - b.pid)
+        .map((p) => `${String(p.pid).padStart(5)} ${String(p.ppid).padStart(5)} ${p.comm}`),
+    )
+    .join("\n");
+}
+
 /** The pairing token this Core minted, as an operator would copy it. */
 function readBlob(container) {
   const read = container.exec(["cat", BLOB_FILE], { allowFailure: true });
@@ -319,13 +357,31 @@ if (identity !== "1000:1000") die(`the Core runs as ${identity}, expected 1000:1
 // D14 — node-pty forks a shell and the shell forks a Harness, so a Harness
 // whose shell exited first reparents to PID 1. libuv only reaps children Node
 // spawned itself, so a Core at PID 1 accumulates zombies until the PID table
-// fills. `comm` rather than the full cmdline: bin/actana is a shell wrapper
-// that `exec`s the bundled Node, so PID 2 is that Node and not a second shell.
-const pid1 = core.exec(["cat", "/proc/1/comm"]).stdout.trim();
-const pid2 = core.exec(["cat", "/proc/2/comm"]).stdout.trim();
-if (pid1 !== "tini") die(`PID 1 is ${JSON.stringify(pid1)}, expected tini`);
-if (pid2 !== "node") die(`PID 2 is ${JSON.stringify(pid2)}, expected the daemon's node`);
-log("tini is PID 1 and the daemon is PID 2");
+// fills.
+//
+// What that needs is a topology, not an integer: tini at PID 1, and the daemon
+// as tini's child rather than PID 1 itself. The daemon's own number is not the
+// launcher's to promise — `bin/actana` is `#!/bin/sh` and runs `command -v`,
+// `readlink` and a `cd -P` subshell before it `exec`s, each forking a PID that
+// exits again, so `core-tarball.mjs` gaining or losing one `$(…)` would move
+// it. Asserting PPID 1 fails in the case D14 is actually about (a daemon that
+// *is* PID 1, reaping nothing) and in no other.
+//
+// `comm` rather than the full cmdline: the launcher `exec`s the bundled Node
+// in place, so the daemon reads as `node` and not as a second shell.
+const processes = processTable(core);
+const pid1 = processes.find((process) => process.pid === 1);
+if (pid1?.comm !== "tini") {
+  die(`PID 1 is ${JSON.stringify(pid1?.comm)}, expected tini:\n${formatProcesses(processes)}`);
+}
+const daemon = processes.find((process) => process.comm === "node" && process.ppid === 1);
+if (!daemon) {
+  die(
+    `no node process is a child of PID 1, so nothing is reaping the Harnesses ` +
+      `node-pty orphans:\n${formatProcesses(processes)}`,
+  );
+}
+log(`tini is PID 1 and the daemon (pid ${daemon.pid}) is its child`);
 
 if (target) {
   // A cross-architecture tarball surfaces as `exec format error` at first boot

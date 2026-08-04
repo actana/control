@@ -90,7 +90,7 @@ A system Node 24, taken from nodejs.org and SHA-256 verified against that releas
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
 its own release tarball.
 
-`tini` is PID 1 and the daemon is PID 2. That is baked into the image rather than left to
+`tini` is PID 1 and the daemon runs as its child. That is baked into the image rather than left to
 `--init` / `init: true`, because a Core forks shells that fork agents, and a Node process running as
 PID 1 does not reap the ones that get reparented to it.
 

@@ -249,8 +249,15 @@ jobs:
       # the reason this is not `curl … install.sh | sh`. Pinning the version
       # also pins the *scanner*, so a finding count only moves when a
       # deliberate bump moves it.
+      #
+      # `always()` reports the gate even when the smoke above failed, which is
+      # not the same as blessing an image that did not boot: `Push the per-arch
+      # tags` carries a bare `if: inputs.push`, so a failed step earlier in the
+      # job keeps it skipped whatever the scanner says. Without it, D11's
+      # measurement is hostage to an unrelated leg — a red smoke means nobody
+      # sees the finding count at all.
       - name: Trivy — fixable CRITICAL/HIGH gate
-        if: inputs.image == 'core'
+        if: always() && inputs.image == 'core'
         env:
           IMAGE: ${{ needs.resolve.outputs.ghcr }}
           STAGE: ${{ inputs.stage }}
