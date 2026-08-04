@@ -1,9 +1,16 @@
-# The one vulnerability suppression in this repository. There is no other, and
-# adding a second is a spec change (ADR 0016 D7, D37), not a build fix.
+# The repository's only vulnerability *allowlist*: one file, one entry, and
+# growing it is a spec change (ADR 0016 D7, D37), not a build fix.
 #
-# It suppresses every finding attributed to `linux-libc-dev`, and the honest
-# word for that is suppression — about 1200 findings in the Core image, which
-# is 1200 of the 1246 distinct CVEs a scan of the shipped image reports.
+# It is not, on its own, the only suppression. The gate also scopes the system
+# Node's bundled npm tree out by path — that one lives in
+# scripts/lib/image-cve-gate.mjs, deliberately not in here, so "one file, one
+# entry" stays literally true and the two stay different in kind. Two in
+# total, both written down, and D7/D11 must be amended before there is a
+# third.
+#
+# This file suppresses every finding attributed to `linux-libc-dev`, and the
+# honest word for that is suppression — ~1200 of the 1323 findings a raw scan
+# of the shipped image reports, taking it from 1246 distinct CVEs to 46.
 #
 # Why the toolchain that drags them in stays (D7):
 #

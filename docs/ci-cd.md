@@ -164,7 +164,8 @@ other.
 
 **One suppression, one file, one entry:
 [`.trivyignore.rego`](../.trivyignore.rego).** It suppresses `linux-libc-dev`,
-which is ~1200 of the ~1246 distinct findings in the Core image, and the
+which is ~1200 of the 1323 findings a raw scan of the Core image reports —
+1246 distinct before the suppression, 46 after — and the
 justification is written beside the rule: the package is kernel headers, 1008 of
 its 1015 files are under `/usr/include`, it contains no executable code, and the
 kernel a Core runs is the *host's*. The toolchain that pulls it in stays because

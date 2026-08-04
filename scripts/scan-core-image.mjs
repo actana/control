@@ -92,7 +92,7 @@ console.log(formatSummary(report));
 if (report.gating.length > 0) fail(formatGateFailure(report));
 
 log(
-  report.ungated.length > 0
-    ? `gate passed — nothing fixable and CRITICAL/HIGH outside ${report.ungated.length} reported-only finding(s).`
+  report.reportedOnly.length > 0
+    ? `gate passed — nothing fixable and CRITICAL/HIGH outside ${report.reportedOnly.length} reported-only finding(s).`
     : "gate passed — no fixable CRITICAL or HIGH findings.",
 );
