@@ -32,7 +32,7 @@ _Avoid_: harness, agent, server, backend, node, instance, host
 
 **Harness**:
 The agentic CLI a Session drives — `claude-code`, `codex`, `cursor-cli`, or `opencode`. Installed on a Core, spawned into a PTY by it, and never touched by the Panel except as an id and an availability status. A Harness is a vendor's program that Actana runs, not a part of Actana.
-_Avoid_: agent, task agent, AI runtime, tool, model
+_Avoid_: agent, task agent, tool, model
 
 **Core link**:
 The persistent bidirectional WebSocket connection between a Panel and a Core. Carries PTY streams, task mutations, hook events, and notifications as framed JSON messages. Long-lived; survives Panel sleep; replays missed events on reconnect via a monotonic event cursor.

@@ -170,14 +170,14 @@ function fakeEventLog(count: number): EventLogPort & { subscribedFrom: number[] 
   };
 }
 
-type Core = {
+type CoreFixture = {
   server: PtyCoreLinkServer;
   registrationBlob: string;
   authAttempts: () => number;
   eventLog: ReturnType<typeof fakeEventLog>;
 };
 
-async function startCore(label: string, eventCount = 0): Promise<Core> {
+async function startCore(label: string, eventCount = 0): Promise<CoreFixture> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
   const bound = { port: await freePort() };
   // Counted on the Core side: this is what "the Panel actually reached this
@@ -207,7 +207,7 @@ async function startCore(label: string, eventCount = 0): Promise<Core> {
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
-    bearer: signBearer({ coreId: "core_harness", exp: Date.now() + 600_000 }, BEARER_SECRET),
+    bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
   return { server, registrationBlob, authAttempts: () => authAttempts, eventLog };
 }
@@ -230,7 +230,7 @@ afterAll(() => {
 async function pair(
   label = "prod-vm-1",
   eventCount = 0,
-): Promise<{ id: string; blob: string; core: Core }> {
+): Promise<{ id: string; blob: string; core: CoreFixture }> {
   const core = await startCore(label, eventCount);
   running.push(core.server);
   const response = await call("/api/cores", { method: "POST", json: { registrationBlob: core.registrationBlob } });

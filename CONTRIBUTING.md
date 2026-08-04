@@ -16,8 +16,8 @@ Actana Control is two programs that talk over one WebSocket:
   event log, the project registry.
 - `packages/shared` — the types and wire contracts both sides agree on.
 
-A **Core** is the Panel's name for a registered Core. If that vocabulary is
-new, read [`CONTEXT.md`](CONTEXT.md) before you write code — it is the
+A **Core** is one machine in the fleet; a **Harness** is the agentic CLI it
+runs. If that vocabulary is new, read [`CONTEXT.md`](CONTEXT.md) before you write code — it is the
 project's glossary, and reviewers use its terms.
 
 ## Setup

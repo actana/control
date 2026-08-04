@@ -733,7 +733,7 @@ async function cmdHarnesses(deps: ActanaCliDeps, argv: string[]): Promise<number
   for (const token of rest) {
     const agent = resolveHarnessId(token);
     if (!agent) {
-      deps.err(`unknown agent: ${token}`);
+      deps.err(`unknown harness: ${token}`);
       deps.err(supportedHarnessIdsSentence());
       return EXIT_USAGE;
     }

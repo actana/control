@@ -1,7 +1,7 @@
 // The macOS LaunchAgent `actana setup` writes, and the parsers for the
 // `launchctl` output the lifecycle verbs read back.
 //
-// An *Harness* is the whole point, exactly as the systemd side installs a *user*
+// A *LaunchAgent* is the whole point, exactly as the systemd side installs a *user*
 // unit: it lands in `~/Library/LaunchAgents`, runs as the installing operator,
 // and needs no sudo. The trade macOS makes in return is that a LaunchAgent is
 // bound to the operator's session — it starts at login and stops at logout.

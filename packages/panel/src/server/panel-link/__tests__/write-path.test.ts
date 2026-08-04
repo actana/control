@@ -315,7 +315,7 @@ function mutationPort(): CoreMutationPort {
   };
 }
 
-type Core = { server: PtyCoreLinkServer; blob: string; disk: string };
+type CoreFixture = { server: PtyCoreLinkServer; blob: string; disk: string };
 
 /** The folder tree this Core owns — the one the picker will walk. */
 function coreDisk(): string {
@@ -338,7 +338,7 @@ async function certMaterial() {
   return sharedMaterial;
 }
 
-async function startCore(label: string): Promise<Core> {
+async function startCore(label: string): Promise<CoreFixture> {
   const material = await certMaterial();
   const bound = { port: await freePort() };
   const disk = coreDisk();
@@ -366,7 +366,7 @@ async function startCore(label: string): Promise<Core> {
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
-    bearer: signBearer({ coreId: "core_harness", exp: Date.now() + 600_000 }, BEARER_SECRET),
+    bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
   return { server, blob, disk };
 }
@@ -375,7 +375,7 @@ const running: PtyCoreLinkServer[] = [];
 const tabs: Tab[] = [];
 const paired: string[] = [];
 
-async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: Core }> {
+async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFixture }> {
   const core = await startCore(label);
   running.push(core.server);
   const response = await handleApiRequest(

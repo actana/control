@@ -102,7 +102,7 @@ describe("sortIdsByHarnessFirst", () => {
     ]);
   });
 
-  it("ranks unknown agents last without dropping them", () => {
+  it("ranks unknown harnesses last without dropping them", () => {
     expect(
       sortIdsByHarnessFirst([{ id: "x", agent: "mystery" }, ...cells], "claude-code", order),
     ).toEqual(["s2", "s4", "s1", "s5", "s3", "x"]);

@@ -339,14 +339,14 @@ function eventLog(): EventLogPort & { all(): CoreLinkEvent[] } {
   } as EventLogPort & { all(): CoreLinkEvent[] };
 }
 
-type Core = {
+type CoreFixture = {
   server: PtyCoreLinkServer;
   blob: string;
   core: ScriptedCore;
   log: ReturnType<typeof eventLog>;
 };
 
-async function startCore(label: string): Promise<Core> {
+async function startCore(label: string): Promise<CoreFixture> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
   const bound = { port: await freePort() };
   const core = scriptedCore();
@@ -370,7 +370,7 @@ async function startCore(label: string): Promise<Core> {
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
-    bearer: signBearer({ coreId: "core_harness", exp: Date.now() + 600_000 }, BEARER_SECRET),
+    bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
   return { server, blob, core, log };
 }
@@ -379,7 +379,7 @@ const running: PtyCoreLinkServer[] = [];
 const tabs: Tab[] = [];
 const paired: string[] = [];
 
-async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: Core }> {
+async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFixture }> {
   const core = await startCore(label);
   running.push(core.server);
   const response = await handleApiRequest(

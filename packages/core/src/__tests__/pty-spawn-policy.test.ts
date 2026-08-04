@@ -167,7 +167,7 @@ describe("resolveSpawnPlan — agent allow-list", () => {
     );
   });
 
-  it("rejects an unknown agent slug", () => {
+  it("rejects an unknown harness slug", () => {
     expectRejected(
       spawnReq({ agent: "evil-cli", command: "evil-cli" }),
       depsFor(),

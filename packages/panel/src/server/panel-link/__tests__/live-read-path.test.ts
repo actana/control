@@ -258,9 +258,9 @@ function queryPort(): CoreQueryPort {
   };
 }
 
-type Core = { server: PtyCoreLinkServer; blob: string; log: ReturnType<typeof growableEventLog> };
+type CoreFixture = { server: PtyCoreLinkServer; blob: string; log: ReturnType<typeof growableEventLog> };
 
-async function startCore(label: string, protocolVersion?: string): Promise<Core> {
+async function startCore(label: string, protocolVersion?: string): Promise<CoreFixture> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
   const bound = { port: await freePort() };
   const log = growableEventLog();
@@ -285,7 +285,7 @@ async function startCore(label: string, protocolVersion?: string): Promise<Core>
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
-    bearer: signBearer({ coreId: "core_harness", exp: Date.now() + 600_000 }, BEARER_SECRET),
+    bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
   return { server, blob, log };
 }
@@ -298,7 +298,7 @@ const paired: string[] = [];
 async function pair(
   label = "prod-vm-1",
   opts: { protocolVersion?: string; settlesAt?: string } = {},
-): Promise<{ coreId: string; core: Core }> {
+): Promise<{ coreId: string; core: CoreFixture }> {
   const core = await startCore(label, opts.protocolVersion);
   running.push(core.server);
   const response = await handleApiRequest(

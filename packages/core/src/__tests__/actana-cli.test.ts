@@ -1172,7 +1172,7 @@ describe("actana harnesses install", () => {
     expect(
       await runActanaCli(deps(["harnesses", "install", "gemini"], fakeSystem())),
     ).toBe(EXIT_USAGE);
-    expect(err.join("\n")).toContain("unknown agent: gemini");
+    expect(err.join("\n")).toContain("unknown harness: gemini");
     expect(err.join("\n")).toContain("opencode");
   });
 
