@@ -28,22 +28,21 @@ that drifts.
 | Image | What it is |
 | --- | --- |
 | `actana/panel` | The Panel web service. **This is the one you deploy.** |
-| `actana/core` | The dev Core-in-a-box. **A development fixture, not a deployment.** |
+| `actana/core` | The Core daemon. **A second, supported way to run a Core.** |
 
 Both are published to GHCR (`ghcr.io/actana/…`) and Docker Hub
 (`docker.io/actana/…`) under the same tags.
 
-`actana/core` deserves the warning it carries. It is `deploy/dev`'s
-Core-in-a-box: systemd as PID 1 (so it needs `--privileged` and the host
-cgroup), passwordless sudo for the `operator` user, linger baked into the
-image, and a first-boot script that hardcodes `--public-host core` — it only
-pairs when it is reachable at the hostname `core`. It exists so you can try the
-real pairing flow on one machine with nothing but Docker. The image carries
-`ai.actana.image.role=development-fixture` and an OCI description saying so.
+`actana/core` is built from [`../deploy/core.Dockerfile`](../deploy/core.Dockerfile)
+and is a Core you run rather than a machine you install one on: `tini` is PID 1
+and `actana daemon` is PID 2, there is no init system inside, and it needs
+neither `--privileged` nor a host cgroup. The image is the install — the tag is
+the version, the entrypoint is the unit, and `docker compose pull && up -d` is
+the upgrade ([ADR 0016](adr/0016-the-0-1-0-shape.md) §C).
 
-**To run a real Core, install the Core on a machine you own** — see
-[`../INSTALL.md`](../INSTALL.md). There is no supported container deployment of
-a Core.
+Installing on a machine you own — `install.sh` plus `actana setup` plus a user
+service, see [`../INSTALL.md`](../INSTALL.md) — is untouched and equally
+supported. The container is a second distribution, not a replacement.
 
 ### Where each registry's description comes from
 
@@ -72,7 +71,7 @@ The product ships as three things, on two pipelines, from the same tag:
 - **The Panel** is a container. `images-release.yml` → `ghcr.io/actana/panel`
   (and Docker Hub, when configured). No installer, no signing — the image is
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
-- **The dev Core** is a container from the same workflow → `ghcr.io/actana/core`.
+- **The Core, as a container** comes from the same workflow → `ghcr.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
   tarball. `core-release.yml` → four targets (`mac-arm64`, `mac-x64`,
   `linux-x64`, `linux-arm64`) with published checksums, which `install.sh` and
@@ -117,13 +116,12 @@ container and recreates it on the same volume** and proves the Panel still
 knows its Operator. That last step is the whole "all state in one directory"
 claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 
-**Core** — systemd is PID 1 in that image, so CI cannot boot it without
-`--privileged` and a cgroup mount. The smoke overrides the command and checks
-the two things a build can actually get wrong: the *architecture-matched*
-Core tarball landing in `/opt/core`, and the first-boot provision unit
-being enabled. Booting it for real is what `deploy/dev/docker-compose.yml` is
-for, and the `E2E — Panel against Core-in-a-box` job in `ci.yml` covers that
-seam.
+**Core** — the smoke overrides the entrypoint and checks what a *build* can get
+wrong: the identity is `core` at 1000:1000, `tini` is at the path the baked
+`ENTRYPOINT` names, `actana` runs, and the Core tree in `/opt/actana` is the
+*architecture-matched* one. Booting the daemon and pairing a Panel against it
+is a separate seam, covered by the `E2E — Panel against Core-in-a-box` job in
+`ci.yml`.
 
 ## Registries
 

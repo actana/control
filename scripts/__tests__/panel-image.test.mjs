@@ -3,9 +3,14 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  CORE_APP_ROOT,
+  CORE_HOME,
+  CORE_PACKAGES,
+  CORE_PORT,
   PANEL_DATA_DIR,
   PANEL_IMAGE,
   PANEL_PORT,
+  aptPackages,
   composeFacts,
   dockerfileFacts,
   readRepoFile,
@@ -26,7 +31,8 @@ const workflow = readRepoFile(".github/workflows/images-release.yml");
 // now only the version-tag half. Assertions follow the code.
 const imageWorkflow = readRepoFile(".github/workflows/container-image.yml");
 const edgeWorkflow = readRepoFile(".github/workflows/images-edge.yml");
-const coreDockerfile = readRepoFile("deploy/dev/core.Dockerfile");
+const coreDockerfile = readRepoFile("deploy/core.Dockerfile");
+const core = dockerfileFacts(coreDockerfile);
 
 describe("Dockerfile", () => {
   it("builds and runs on the exact Node CI tests against", () => {
@@ -180,29 +186,140 @@ describe("edge workflow", () => {
   });
 });
 
-// The Core image is deploy/dev's Core-in-a-box — a development fixture, now
-// published under a production-looking name. These tests are what keeps that
-// distinction from quietly eroding.
+// The Core image is a Core you run, not a machine you install one on: the
+// image tag is the version, the ENTRYPOINT is the unit, and `actana setup`
+// never runs (ADR 0016 D13). These tests are the clauses of §B and §C that a
+// well-meaning cleanup would otherwise quietly undo.
 describe("core image", () => {
-  it("is built from the dev Core-in-a-box Dockerfile", () => {
-    expect(imageWorkflow).toContain("deploy/dev/core.Dockerfile");
+  it("is built from deploy/core.Dockerfile, not the dev fixture", () => {
+    // deploy/dev/ still exists until T45 deletes it; what matters here is that
+    // the published image stopped coming from it.
+    expect(imageWorkflow).toContain("deploy/core.Dockerfile");
+    expect(imageWorkflow).not.toContain("deploy/dev/core.Dockerfile");
   });
 
-  it("supplies the Core tarball as a named build context", () => {
-    // artifacts/ is excluded by .dockerignore, so the tarball cannot ride in
-    // on the main context — core.Dockerfile COPYs it `--from=tarball`.
-    expect(coreDockerfile).toContain("COPY --from=tarball");
+  it("takes the Core tarball from a named build context, without a layer", () => {
+    // artifacts/ is at the repo root and the build context is deploy/, so the
+    // tarball cannot ride in on the main context. Bind-mounted rather than
+    // COPYed because a COPY is its own layer, and deleting the file in the
+    // next instruction would not shrink it.
+    expect(coreDockerfile).toContain("--mount=type=bind,from=tarball");
+    expect(coreDockerfile).not.toContain("COPY --from=tarball actana-core");
     expect(imageWorkflow).toContain("--build-context tarball=artifacts/core");
     expect(imageWorkflow).toContain("pnpm core:tarball");
   });
 
-  it("labels itself a development fixture", () => {
-    expect(imageWorkflow).toContain("ai.actana.image.role=development-fixture");
-    expect(imageWorkflow).toMatch(/org\.opencontainers\.image\.description=.*NOT a production deployment/);
+  // D5. The tag is rolling, so only the digest is a pin; and apt resolves
+  // noble-security at build time, so the in-layer upgrade is what makes the
+  // weekly rebuild collect anything at all.
+  it("pins the base by digest, on a single Ubuntu 24.04 stage", () => {
+    expect(core.froms).toHaveLength(1);
+    expect(core.froms[0].image).toMatch(/^ubuntu:24\.04@sha256:[0-9a-f]{64}$/);
   });
 
-  it("is smoked for the tarball and the first-boot unit before it is pushed", () => {
-    expect(imageWorkflow).toContain("core-provision.service");
+  it("upgrades in the same RUN layer that installs, not a later one", () => {
+    const install = core.runs.filter((run) => run.includes("apt-get install"));
+    expect(install).toHaveLength(1);
+    expect(install[0]).toMatch(/apt-get update.*apt-get upgrade -y.*apt-get install/s);
+  });
+
+  // D6 — the package set is the whole CVE story, so it is asserted exactly.
+  it("installs the agreed package set and nothing else", () => {
+    const install = core.runs.find((run) => run.includes("apt-get install"));
+    expect(aptPackages(install)).toEqual([...CORE_PACKAGES]);
+  });
+
+  it("names the package set, not the base, as why the CVE number moved", () => {
+    // "we changed the base" is the wrong summary and would mislead the next
+    // reader. Asserted on the mechanism rather than on a count, because the
+    // counts move with every scan and a stale number in a comment is exactly
+    // the failure this clause exists to prevent.
+    expect(coreDockerfile).toContain("linux-libc-dev");
+    expect(coreDockerfile).toMatch(/the base is NOT the mechanism/);
+  });
+
+  // D8 — nodejs.org tarball, verified against that release's own SHASUMS.
+  it("takes Node 24 from nodejs.org, sha256-verified", () => {
+    expect(core.args.NODE_VERSION).toMatch(/^24\./);
+    const install = core.runs.find((run) => run.includes("nodejs.org"));
+    expect(install).toContain("https://nodejs.org/dist/v${NODE_VERSION}");
+    expect(install).toContain("SHASUMS256.txt");
+    expect(install).toContain("sha256sum -c");
+  });
+
+  it("warns against 'simplifying' the Node install to apt", () => {
+    // noble ships Node 18, and `nodejs` is in universe — whose security
+    // updates are Ubuntu Pro-gated. Both regressions in one edit.
+    expect(coreDockerfile).toMatch(/apt-get install nodejs/);
+    expect(coreDockerfile).toMatch(/universe/);
+  });
+
+  // D12 — 1000:1000 explicitly, because useradd's own pick is 1001:100 and
+  // that breaks every bind-mounted repo.
+  it("removes the stock ubuntu user and pins core to 1000:1000", () => {
+    const account = core.runs.find((run) => run.includes("useradd"));
+    expect(account).toContain("userdel");
+    expect(account).toMatch(/groupadd --gid 1000 core/);
+    expect(account).toMatch(/useradd --uid 1000 --gid 1000/);
+    expect(core.users.at(-1)).toBe("core");
+  });
+
+  it("gives NOPASSWD sudo to core and to nobody else", () => {
+    const sudoers = core.runs.filter((run) => run.includes("NOPASSWD"));
+    expect(sudoers).toHaveLength(1);
+    expect(sudoers[0]).toContain("core ALL=(ALL) NOPASSWD:ALL");
+    expect(sudoers[0]).toContain("/etc/sudoers.d/core");
+  });
+
+  // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
+  // `--init` is opt-in and a bare `docker run` would skip it.
+  it("runs the daemon under tini as PID 1", () => {
+    expect(core.entrypoint).toBe('["/usr/bin/tini", "--"]');
+    expect(core.cmd).toBe('["actana", "daemon"]');
+  });
+
+  // D15 — the operator contract is three ACTANA_* variables; everything here
+  // is a private image constant the container mode depends on.
+  it("bakes the container-mode environment", () => {
+    expect(core.env).toMatchObject({
+      ACTANA_CONTAINER: "1",
+      AC_CORE_REMOTE: "1",
+      AC_CORE_LINK_HOST: "0.0.0.0",
+      AC_APP_PATH: `${CORE_APP_ROOT}/app`,
+      AC_USER_DATA_DIR: `${CORE_HOME}/.local/share/actana/data`,
+      AC_CORE_MATERIAL_FILE: `${CORE_HOME}/.config/actana/material.json`,
+      NPM_CONFIG_PREFIX: `${CORE_HOME}/.local`,
+    });
+    expect(core.env.PATH).toContain(`${CORE_APP_ROOT}/bin`);
+    expect(core.env.PATH).toContain(`${CORE_HOME}/.local/bin`);
+  });
+
+  it("exposes the port from the same ARG as ACTANA_PORT", () => {
+    expect(core.args.ACTANA_PORT).toBe(String(CORE_PORT));
+    expect(core.env.ACTANA_PORT).toBe("${ACTANA_PORT}");
+    expect(core.exposesRaw).toEqual(["${ACTANA_PORT}"]);
+  });
+
+  // D9 — ~1.15 GB of the ~1.4 GB a baked image would weigh, stale within days
+  // of a build, and four vendors' binaries nobody has licence-cleared.
+  // Asserted against the instructions, not the file text: the comments name
+  // every one of these on purpose, to say why it is absent.
+  it("bakes no Harnesses", () => {
+    const built = core.runs.join("\n");
+    for (const harness of ["@anthropic-ai/claude-code", "@openai/codex", "opencode", "cursor"]) {
+      expect(built).not.toContain(harness);
+    }
+    expect(built).not.toMatch(/npm (install|i) -g/);
+  });
+
+  it("keeps systemd, and the machine-shaped install, out entirely", () => {
+    const built = core.runs.join("\n");
+    for (const dead of ["systemd", "loginctl", "linger", "core-provision", "actana setup"]) {
+      expect(built).not.toContain(dead);
+    }
+  });
+
+  it("is smoked before it is pushed", () => {
     expect(imageWorkflow.indexOf("core image smoke OK")).toBeLessThan(
       imageWorkflow.indexOf("Push the per-arch tags"),
     );
