@@ -744,6 +744,7 @@ async function cmdAgents(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     availability: deps.probeAgents(),
     platform: deps.platform,
     system: deps.system,
+    homeDir: deps.home,
     out: deps.out,
   });
 

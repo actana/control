@@ -25,12 +25,14 @@
 import { AGENT_REGISTRY, UI_AGENTS } from "../../shared/src/agents";
 import {
   AGENT_CLI_CONFIG,
+  agentHomePathSuffixes,
   resolveAgentCliInstallCommand,
   type AgentCliConfig,
 } from "../../shared/src/agent-cli-config";
 import type { TaskAgent } from "../../shared/src/domain";
 import type { CoreLinkAgentAvailabilityMap } from "../../shared/src/core-link-frames";
 import type { ActanaSystem } from "./actana-system";
+import { ensureOperatorLoginPathOnDisk } from "./operator-login-path";
 
 /** What became of one agent during an offer round. */
 export type AgentInstallStatus =
@@ -73,6 +75,21 @@ export type AgentOfferOptions = {
   interactive: boolean;
   platform: NodeJS.Platform;
   system: ActanaSystem;
+  /**
+   * The operator's home directory, for the managed PATH block written after a
+   * successful install (see `operator-login-path.ts`).
+   *
+   * Optional, and absent means "write nothing": this is the one part of an
+   * offer round that touches the operator's dotfiles, so a caller has to name
+   * the home it means rather than getting the real one by default.
+   */
+  homeDir?: string;
+  /**
+   * The operator's login shell, which decides *which* profile is written.
+   * Production leaves it unset and lets `resolveShell()` answer; tests set it
+   * so their assertions do not depend on the developer's own `$SHELL`.
+   */
+  shell?: string;
   /** Progress and warnings for the operator. */
   out: (line: string) => void;
 };
@@ -248,13 +265,62 @@ export async function offerAgentInstalls(
     );
   }
 
+  linkOperatorPath(outcomes, opts);
   return outcomes;
+}
+
+/**
+ * Put the directories the CLIs live in on the operator's login PATH.
+ *
+ * `already-installed` counts, not just `installed`: a CLI the vendor put there
+ * directly, or one from an Actana old enough to predate this, is exactly the
+ * case whose login PATH is broken, and re-running `actana agents install
+ * opencode` is the obvious thing an operator tries. Making that repair it
+ * costs one idempotent write. A round that declined or skipped everything
+ * still touches nothing.
+ *
+ * See `operator-login-path.ts` for why the vendors' own PATH edits are not
+ * enough on their own.
+ */
+function linkOperatorPath(
+  outcomes: readonly AgentInstallOutcome[],
+  opts: AgentOfferOptions,
+): void {
+  if (!opts.homeDir) return;
+  const present = outcomes.some(
+    (outcome) => outcome.status === "installed" || outcome.status === "already-installed",
+  );
+  if (!present) return;
+
+  const { written, failed } = ensureOperatorLoginPathOnDisk({
+    homeDir: opts.homeDir,
+    platform: opts.platform,
+    shell: opts.shell,
+  });
+
+  if (written.length > 0) {
+    const files = written.map((profile) => `~/${profile}`).join(" and ");
+    opts.out(
+      `Added the agent CLI directories to your PATH in ${files}. ` +
+        `Open a new shell to pick them up.`,
+    );
+  }
+  // Loud, but not fatal, for the same reason a failed vendor installer is: the
+  // CLI is installed and the Harness's own probe finds it either way. Only the
+  // operator's shell is short, and they can fix that in one line.
+  if (failed.length > 0) {
+    opts.out(
+      `Warning: could not write ${failed.map((profile) => `~/${profile}`).join(", ")}. ` +
+        `Add this to your shell profile by hand: ` +
+        `export PATH="$HOME/${agentHomePathSuffixes(opts.platform).join(':$HOME/')}:$PATH"`,
+    );
+  }
 }
 
 /** What `installAgentsNow` needs that is not the list of agents. */
 export type AgentInstallContext = Pick<
   AgentOfferOptions,
-  "availability" | "platform" | "system" | "out"
+  "availability" | "platform" | "system" | "out" | "homeDir" | "shell"
 >;
 
 /**

@@ -74,9 +74,11 @@ async function main() {
     name: `actana-agents-e2e-${distro.id}-${process.pid}`,
     containerPort: CONTAINER_PORT,
     hostPort,
-    // `curl` and `unzip` are what the vendor installers themselves need;
-    // `util-linux` carries `script(1)`, which is how this test gives the CLI a
-    // terminal to prompt on while still feeding it scripted answers.
+    // `curl` and `unzip` are what the vendor installers themselves need — bar
+    // `tar`, which OpenCode's Linux path uses and the base image already has
+    // as an Essential package. `util-linux` carries `script(1)`, which is how
+    // this test gives the CLI a terminal to prompt on while still feeding it
+    // scripted answers.
     dockerfile: distroDockerfile(distro.id, {
       packages: ["curl", "ca-certificates", "unzip", "util-linux"],
       fail: die,
