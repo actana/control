@@ -42,6 +42,7 @@ import {
   DEFAULT_CONTAINER_PORT,
   inContainer,
   readContainerContract,
+  refusedContainerVerbs,
 } from "./actana-container";
 import { endpointFor, readActanaConfig, type ActanaConfig } from "./actana-config";
 import { binDirOnPath, resolveActanaLayout, type ActanaLayout } from "./actana-layout";
@@ -181,7 +182,7 @@ as a health check in scripts.
  */
 const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to Docker:
 
-  setup, start, stop, restart, update, uninstall, logs
+  ${refusedContainerVerbs().join(", ")}
                         not available here — run the Docker command each one
                         names (\`docker compose up -d\`, \`docker compose logs -f\`, …)
 
@@ -659,7 +660,9 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   if (deps.interactive && parsed.values.yes !== true) {
     const yes = await deps.system.confirm(
       "Issue fresh pairing credentials? Every Panel paired with this Core will be " +
-        "locked out until you re-pair it.",
+        (container
+          ? "locked out — as soon as you restart the container — until you re-pair it."
+          : "locked out until you re-pair it."),
       false,
     );
     if (!yes) {
@@ -670,7 +673,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
 
   persistMaterialToFile(materialPath, await mintFreshMaterial(config.publicHost));
 
-  if (!service) {
+  if (container) {
     const token = pairingToken(config, materialPath);
     if (!token) {
       deps.err(`The new pairing material could not be read back from ${materialPath}.`);
@@ -688,6 +691,8 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     deps.out(token);
     return 0;
   }
+  // Already handled above — `requireService` either answered or returned.
+  if (!service) return 1;
 
   const restarted = service.verb("restart");
   if (restarted.status !== 0) {
@@ -996,8 +1001,10 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   const [verb, ...rest] = deps.argv;
 
   if (verb === undefined || verb === "help" || verb === "--help" || verb === "-h") {
+    // The container page goes first: half the verb list below does not work
+    // here, and an operator should read that before the list, not after it.
+    if (inContainer(deps.env)) deps.out(CONTAINER_USAGE.trimEnd() + "\n");
     deps.out(USAGE.trimEnd());
-    if (inContainer(deps.env)) deps.out("\n" + CONTAINER_USAGE.trimEnd());
     return 0;
   }
   if (verb === "--version" || verb === "-v") {
