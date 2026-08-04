@@ -38,6 +38,16 @@ every `docker compose up`. One mount, one backup target.
 `docker compose down -v` destroys the pairing. Nothing else does — restarts, upgrades and host
 changes all keep it.
 
+Changing `ACTANA_PUBLIC_HOST` re-signs the server certificate for the new address, from the CA
+already in the volume. The Core ID, the CA, the bearer secret and your Panel's client certificate
+are untouched, so a Panel paired before the change still trusts this Core — but it is still dialling
+the old address, so point it at the new one. `registration-blob.txt` in the volume is rewritten with
+a token for the new address if you would rather re-pair:
+
+```bash
+docker compose exec core cat /home/core/.config/actana/registration-blob.txt
+```
+
 ## Harness CLIs
 
 Not baked in, on purpose. `claude-code`, `codex`, `cursor-cli` and `opencode` are about 1.15 GB

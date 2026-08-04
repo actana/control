@@ -14,7 +14,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
-import { generateCertMaterial } from "./core-cert-material";
+import { generateCertMaterial, issueServerCert } from "./core-cert-material";
 import log from "./log";
 
 /**
@@ -40,6 +40,13 @@ export type PersistedMaterial = {
   bearerSecret: string;
   /** The coreId embedded in the bearer. */
   coreId: string;
+  /**
+   * The public host `serverCert`'s SAN was signed for. This is what makes a
+   * moved Core detectable without parsing the certificate back out of the PEM
+   * (ADR 0016 D18). Empty for material written before the field existed —
+   * treated as "unknown", which re-issues the server cert once and records it.
+   */
+  serverHost: string;
 };
 
 /** The filename inside the config dir. */
@@ -80,6 +87,60 @@ export async function mintFreshMaterial(publicHost: string): Promise<PersistedMa
     clientKey: generated.client.key,
     bearerSecret: randomBytes(32).toString("hex"),
     coreId: `core_${randomBytes(8).toString("hex")}`,
+    serverHost: publicHost,
+  };
+}
+
+/**
+ * What `material`'s server cert says about `host`:
+ *
+ * - `covered` — it was signed for exactly this host; a Panel dialling it gets
+ *   past TLS hostname verification.
+ * - `moved` — it was signed for a different one, and that Panel would not.
+ * - `unrecorded` — the material predates `serverHost` and nothing on disk says
+ *   either way.
+ *
+ * `fallbackHost` is what the caller knows independently, for material that
+ * predates the record: `actana setup` wrote the host into the config beside the
+ * material, which is as good as the record would have been. A daemon booting in
+ * a container has no such config, which is why `unrecorded` stays a third
+ * answer rather than collapsing into `moved` — re-signing is safe, but telling
+ * an operator their Core moved when it did not is not.
+ */
+export function checkServerCertHost(
+  material: PersistedMaterial,
+  host: string,
+  fallbackHost?: string,
+): "covered" | "moved" | "unrecorded" {
+  const signedFor = material.serverHost || fallbackHost || "";
+  if (signedFor === "") return "unrecorded";
+  return signedFor === host ? "covered" : "moved";
+}
+
+/**
+ * Sign a fresh server cert for `publicHost` against the material's own CA,
+ * keeping everything else byte-for-byte.
+ *
+ * This is what a changed public host does now (ADR 0016 D18). The CA key, the
+ * bearer secret, the `coreId` and the Panel's client cert all survive, so a
+ * Panel paired before the move still validates this Core against the CA it
+ * pinned — where the re-mint this replaced locked that Panel out for what is
+ * usually a typo'd env var. Revoking a leaked pairing token stays the
+ * deliberate act it was: {@link mintFreshMaterial} via `actana token regenerate`.
+ */
+export async function reissueServerCert(
+  material: PersistedMaterial,
+  publicHost: string,
+): Promise<PersistedMaterial> {
+  const server = await issueServerCert({
+    ca: { cert: material.caCert, key: material.caKey },
+    host: publicHost,
+  });
+  return {
+    ...material,
+    serverCert: server.cert,
+    serverKey: server.key,
+    serverHost: publicHost,
   };
 }
 
@@ -167,5 +228,9 @@ export function loadMaterialFromFile(filePath: string): PersistedMaterial | null
     clientKey: o.clientKey,
     bearerSecret: o.bearerSecret,
     coreId: o.coreId,
+    // Absent in material written before D18. Not a validation failure — the
+    // identity is intact and only the SAN's provenance is unknown, so it loads
+    // as "unknown host" and {@link serverCertCoversHost} takes it from there.
+    serverHost: typeof o.serverHost === "string" ? o.serverHost : "",
   };
 }

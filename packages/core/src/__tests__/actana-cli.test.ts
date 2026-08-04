@@ -220,6 +220,22 @@ describe("setup", () => {
     expect(out.join("\n")).toMatch(/stays paired/i);
   });
 
+  it("tells an operator who moved the Core to re-address their Panel, not re-pair blind", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    await setup(fakeSystem(), ["--public-host", "core.example"]);
+
+    const text = out.join("\n");
+    // The credentials survived the move (ADR 0016 D18) — the address did not,
+    // and that is the half the Panel holds.
+    expect(text).toMatch(/unchanged/i);
+    expect(text).toContain("core.example");
+    expect(text).not.toMatch(/stays paired/i);
+    expect(decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)?.endpoint)
+      .toBe("wss://core.example:8443");
+  });
+
   it("defaults the public host to the machine's routable address", async () => {
     await setup(fakeSystem());
     expect(out.join("\n")).toContain("wss://10.0.0.5:8443");

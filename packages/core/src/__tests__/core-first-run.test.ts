@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
+import { X509Certificate, createPublicKey } from "node:crypto";
 import {
   REGISTRATION_BLOB_FILENAME,
   buildRegistrationBlob,
@@ -28,6 +29,7 @@ const sample: PersistedMaterial = {
   clientKey: "-----BEGIN PRIVATE KEY-----\nCLIENTKEY\n-----END PRIVATE KEY-----",
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
+  serverHost: "core.example.test",
 };
 
 let dir: string;
@@ -44,6 +46,7 @@ afterEach(() => {
 
 const options = {
   publicHost: "core.example.test",
+  publicHostDeclared: true,
   port: 8443,
   label: "workshop",
   bearerDays: 365,
@@ -153,6 +156,112 @@ describe("loadOrMintMaterial — the file is present", () => {
     await expect(loadOrMintMaterial({ materialFile, ...options })).rejects.toThrow(
       materialFile,
     );
+  });
+});
+
+describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
+  // In a container the public host is an env var, so a typo fires this path.
+  // Re-minting here (the old behaviour) unpaired every Panel over that typo;
+  // only the server cert may change now (ADR 0016 D18).
+  it("re-issues only the server cert and keeps the identity", async () => {
+    const first = await loadOrMintMaterial({ materialFile, ...options });
+
+    const moved = await loadOrMintMaterial({
+      materialFile,
+      ...options,
+      publicHost: "core2.example.test",
+    });
+
+    expect(moved.certAction).toBe("moved");
+    expect(moved.material.coreId).toBe(first.material.coreId);
+    expect(moved.material.bearerSecret).toBe(first.material.bearerSecret);
+    expect(moved.material.caCert).toBe(first.material.caCert);
+    expect(moved.material.caKey).toBe(first.material.caKey);
+    expect(moved.material.clientCert).toBe(first.material.clientCert);
+    expect(moved.material.clientKey).toBe(first.material.clientKey);
+    expect(moved.material.serverCert).not.toBe(first.material.serverCert);
+    // Nothing to print: this is not a pairing event.
+    expect(moved.blob).toBeNull();
+  });
+
+  it("signs the new cert for the new host with the CA the Panel pinned", async () => {
+    const first = await loadOrMintMaterial({ materialFile, ...options });
+    const pinnedCa = decodeRegistrationBlob(first.blob ?? "")!.caCert;
+
+    const moved = await loadOrMintMaterial({
+      materialFile,
+      ...options,
+      publicHost: "core2.example.test",
+    });
+
+    const server = new X509Certificate(moved.material.serverCert);
+    expect(server.verify(createPublicKey(pinnedCa))).toBe(true);
+    expect(server.subjectAltName).toContain("core2.example.test");
+  });
+
+  it("persists the re-issued cert so the next boot is a plain load", async () => {
+    await loadOrMintMaterial({ materialFile, ...options });
+    const moved = await loadOrMintMaterial({
+      materialFile,
+      ...options,
+      publicHost: "core2.example.test",
+    });
+
+    const again = await loadOrMintMaterial({
+      materialFile,
+      ...options,
+      publicHost: "core2.example.test",
+    });
+
+    expect(again.certAction).toBe("unchanged");
+    expect(again.material.serverCert).toBe(moved.material.serverCert);
+  });
+
+  it("refreshes the blob file so `cat` yields a token for the new address", async () => {
+    await loadOrMintMaterial({ materialFile, ...options });
+
+    await loadOrMintMaterial({ materialFile, ...options, publicHost: "core2.example.test" });
+
+    const onDisk = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
+    // The Panel holds the old endpoint and re-issuing cannot reach it, so the
+    // one token the operator can act on has to point at where the Core is now.
+    expect(decodeRegistrationBlob(onDisk)?.endpoint).toBe("wss://core2.example.test:8443");
+  });
+
+  it("re-issues quietly for material written before the host was recorded", async () => {
+    const minted = await loadOrMintMaterial({ materialFile, ...options });
+    const { serverHost: _recorded, ...legacy } = minted.material;
+    fs.writeFileSync(materialFile, JSON.stringify(legacy));
+    const blobBefore = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
+
+    // An unrecorded host is an unknown one, not a moved one: the SAN is
+    // re-signed once for the host in hand and recorded, but the boot after an
+    // upgrade must not tell an operator their Core moved when it did not.
+    const boot = await loadOrMintMaterial({ materialFile, ...options });
+
+    expect(boot.certAction).toBe("backfilled");
+    expect(boot.material.coreId).toBe(minted.material.coreId);
+    expect(boot.material.serverHost).toBe(options.publicHost);
+    expect(fs.readFileSync(registrationBlobPath(materialFile), "utf8")).toBe(blobBefore);
+  });
+
+  it("leaves the cert alone when the public host was never declared", async () => {
+    const first = await loadOrMintMaterial({ materialFile, ...options });
+    const blobBefore = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
+
+    // A daemon started without `ACTANA_PUBLIC_HOST` falls back to its bind
+    // address. That is a guess, and re-signing the SAN with a guess would take
+    // a working Core off its own address and onto 127.0.0.1.
+    const boot = await loadOrMintMaterial({
+      materialFile,
+      ...options,
+      publicHost: "127.0.0.1",
+      publicHostDeclared: false,
+    });
+
+    expect(boot.certAction).toBe("unchanged");
+    expect(boot.material.serverCert).toBe(first.material.serverCert);
+    expect(fs.readFileSync(registrationBlobPath(materialFile), "utf8")).toBe(blobBefore);
   });
 });
 

@@ -13,10 +13,11 @@
 //
 // The install is versioned — `versions/<v>` with a `current` symlink — so
 // re-running over an existing install lands the new tree beside the old one
-// and swaps by repointing one link. Re-running with the same publicHost
-// deliberately REUSES the existing material: regenerating would invalidate the
-// pairing token an operator already pasted into their Panel. Minting fresh
-// credentials is `actana token regenerate` (issue 06), an explicit act.
+// and swaps by repointing one link. Re-running deliberately REUSES the existing
+// material: regenerating would invalidate the pairing token an operator already
+// pasted into their Panel. A changed publicHost re-signs the server cert from
+// that same CA and nothing else (ADR 0016 D18). Minting fresh credentials is
+// `actana token regenerate` (issue 06), an explicit act.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -25,8 +26,10 @@ import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
   loadMaterial,
   materialFilePath,
+  checkServerCertHost,
   mintFreshMaterial,
   persistMaterial,
+  reissueServerCert,
   type PersistedMaterial,
 } from "./core-material-store";
 import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses";
@@ -76,6 +79,9 @@ export type SetupOptions = {
   out: (line: string) => void;
 };
 
+/** What `actana setup` did to this machine's pairing material. */
+export type MaterialOutcome = "minted" | "reused" | "reissued";
+
 export type SetupResult = {
   /** The pairing token — base64 of the Registration blob. */
   blob: string;
@@ -88,8 +94,16 @@ export type SetupResult = {
   serviceSummary: string;
   /** Whether the daemon will survive logout. */
   survivesLogout: boolean;
-  /** True when the existing pairing material was kept (a paired Panel stays paired). */
-  reusedMaterial: boolean;
+  /**
+   * What this run did to the pairing material:
+   *
+   * - `minted` — a new identity; there was nothing to keep.
+   * - `reused` — the existing one, untouched; a paired Panel stays paired.
+   * - `reissued` — the existing identity, with a server cert re-signed for a
+   *   public host that moved. A paired Panel still trusts this Core but is
+   *   dialling the address it paired with.
+   */
+  materialOutcome: MaterialOutcome;
   /** Whether the daemon's port answered before the timeout. */
   listening: boolean;
   /** What became of each managed Harness during the offer round. */
@@ -124,26 +138,43 @@ export function choosePublicHost(
  * Load the existing pairing material, or mint fresh material.
  *
  * Reuse is the default and the point: an operator who re-runs setup must not
- * have to re-pair. Material is only reissued when it cannot be reused — no
- * material yet, or a public host the existing server cert's SAN does not
- * cover, which would fail TLS hostname verification on the Panel's next dial.
+ * have to re-pair. A public host the existing server cert's SAN does not cover
+ * would fail TLS hostname verification on the Panel's next dial, so that cert
+ * is re-issued from the CA already on disk — and only that cert. The CA, the
+ * bearer secret, the `coreId` and the Panel's client cert survive, so the Panel
+ * still validates this Core against the CA it pinned (ADR 0016 D18). Minting a
+ * whole new identity is what `actana token regenerate` is for.
+ *
+ * Material written before D18 does not record the host its cert was signed for;
+ * the config setup wrote alongside it does, so that stands in for it.
  */
 async function resolveMaterial(
   opts: SetupOptions,
-): Promise<{ material: PersistedMaterial; reused: boolean }> {
+): Promise<{ material: PersistedMaterial; outcome: MaterialOutcome }> {
   const existing = loadMaterial(opts.layout.configDir);
-  const previous = readActanaConfig(opts.layout.configDir);
-  if (existing && previous && previous.publicHost === opts.publicHost) {
-    return { material: existing, reused: true };
-  }
-  if (existing) {
-    opts.out(
-      `Public host changed to ${opts.publicHost} — issuing a new pairing token. ` +
-        "Re-pair this Core in your Panel.",
-    );
+  if (!existing) {
+    return { material: await mintFreshMaterial(opts.publicHost), outcome: "minted" };
   }
 
-  return { material: await mintFreshMaterial(opts.publicHost), reused: false };
+  const previous = readActanaConfig(opts.layout.configDir);
+  const check = checkServerCertHost(existing, opts.publicHost, previous?.publicHost);
+  if (check === "covered") {
+    // Backfilled for material that predates the record: the config setup wrote
+    // beside it is what proved the cert covers this host, so record the answer.
+    return { material: { ...existing, serverHost: opts.publicHost }, outcome: "reused" };
+  }
+
+  opts.out(
+    check === "moved"
+      ? `Public host changed to ${opts.publicHost} — re-issuing this Core's server ` +
+          "certificate from its own CA."
+      : "This Core's material does not record which host its certificate was signed " +
+          `for — re-issuing it for ${opts.publicHost} from its own CA.`,
+  );
+  return {
+    material: await reissueServerCert(existing, opts.publicHost),
+    outcome: "reissued",
+  };
 }
 
 /** Install, register, start, and pair this machine. */
@@ -186,7 +217,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
   pointSymlink(layout.binLink, path.join(layout.currentLink, "bin", "actana"));
   fs.mkdirSync(layout.dataDir, { recursive: true });
 
-  const { material, reused } = await resolveMaterial(opts);
+  const { material, outcome } = await resolveMaterial(opts);
   persistMaterial(layout.configDir, material);
 
   const config = {
@@ -260,7 +291,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     serviceName: service.name,
     serviceSummary: persistence.summary,
     survivesLogout: persistence.survivesLogout,
-    reusedMaterial: reused,
+    materialOutcome: outcome,
     listening,
     agents,
   };

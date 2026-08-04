@@ -8,7 +8,8 @@
 //
 //   material file absent  → mint, persist, write `registration-blob.txt`
 //                           beside it, hand the blob back to be printed once
-//   material file present → load it, print nothing
+//   material file present → load it, print nothing; re-sign only the server
+//                           cert if `ACTANA_PUBLIC_HOST` moved (D18)
 //
 // That asymmetry is the whole pairing contract for a containerised Core:
 // `docker compose restart` re-enters the second branch and is a no-op for
@@ -38,6 +39,8 @@ import {
   loadMaterialFromFile,
   mintFreshMaterial,
   persistMaterialToFile,
+  checkServerCertHost,
+  reissueServerCert,
   type PersistedMaterial,
 } from "./core-material-store";
 
@@ -98,6 +101,13 @@ export function buildRegistrationBlob(
 export type LoadOrMintOptions = BlobAddressing & {
   /** Full path from `AC_CORE_MATERIAL_FILE`. */
   materialFile: string;
+  /**
+   * Whether `publicHost` is the operator's answer (`ACTANA_PUBLIC_HOST`) or the
+   * bind address standing in for one. Only the operator's answer may re-sign an
+   * existing Core's cert: the stand-in is a guess, and a guess that rewrote the
+   * SAN would take a working Core off its own address to put it on `127.0.0.1`.
+   */
+  publicHostDeclared: boolean;
 };
 
 export type LoadOrMintResult = {
@@ -105,6 +115,13 @@ export type LoadOrMintResult = {
   material: PersistedMaterial;
   /** The pairing blob, to print once. `null` on every boot after the first. */
   blob: string | null;
+  /**
+   * What this boot did to the server cert. `moved` is the one the operator
+   * hears about: `ACTANA_PUBLIC_HOST` changed under a paired Core. `backfilled`
+   * re-signs material that never recorded which host it was signed for, which
+   * says nothing about whether anything moved and so says nothing at all.
+   */
+  certAction: "unchanged" | "moved" | "backfilled";
 };
 
 /**
@@ -113,6 +130,14 @@ export type LoadOrMintResult = {
  *
  * Named for both paths because it runs on every boot, and after the first one
  * the load is all that happens.
+ *
+ * The one thing a load may change is the server cert, and only when the
+ * operator declared the public host: `ACTANA_PUBLIC_HOST` is an env var, so it
+ * moves far more easily in a container than on metal, and the cert's SAN has to
+ * follow it or the Panel's next dial fails hostname verification. Re-signing it
+ * from the CA already in the volume keeps the CA, the bearer secret, the
+ * `coreId` and the Panel's client cert exactly as they were — a typo'd env var
+ * costs a certificate, not the pairing (ADR 0016 D18).
  *
  * Throws when the file exists but cannot be parsed — the operator decides
  * whether to discard a corrupt identity, not the daemon.
@@ -127,21 +152,46 @@ export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadO
           "every paired Panel has to re-pair.",
       );
     }
-    return { material: existing, blob: null };
+    const check = checkServerCertHost(existing, opts.publicHost);
+    if (check === "covered" || !opts.publicHostDeclared) {
+      return { material: existing, blob: null, certAction: "unchanged" };
+    }
+
+    const reissued = await reissueServerCert(existing, opts.publicHost);
+    persistMaterialToFile(opts.materialFile, reissued);
+    if (check === "unrecorded") {
+      // Nothing moved as far as anyone knows — the record simply did not exist
+      // before D18. Re-signing for the host in hand fills it in; announcing a
+      // move here, or handing out a new token for one, would be a fiction.
+      return { material: reissued, blob: null, certAction: "backfilled" };
+    }
+    // The blob on disk still points a Panel at the address this Core just left,
+    // and that address is the one thing re-issuing cannot fix from here — the
+    // Panel holds it. Rewriting the file means the documented `cat` hands the
+    // operator a token for where the Core actually is.
+    writeBlobFile(opts.materialFile, buildRegistrationBlob(reissued, opts));
+    return { material: reissued, blob: null, certAction: "moved" };
   }
 
   const material = await mintFreshMaterial(opts.publicHost);
   persistMaterialToFile(opts.materialFile, material);
 
   const blob = buildRegistrationBlob(material, opts);
-  // The blob file holds the blob and nothing else: the documented way to get
-  // it is `cat`, and its output has to be pasteable without editing.
-  fs.writeFileSync(registrationBlobPath(opts.materialFile), `${blob}\n`, {
+  writeBlobFile(opts.materialFile, blob);
+
+  return { material, blob, certAction: "unchanged" };
+}
+
+/**
+ * Write the blob beside the material file. It holds the blob and nothing else:
+ * the documented way to get it is `cat`, and its output has to be pasteable
+ * without editing.
+ */
+function writeBlobFile(materialFile: string, blob: string): void {
+  fs.writeFileSync(registrationBlobPath(materialFile), `${blob}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
-
-  return { material, blob };
 }
 
 /**
