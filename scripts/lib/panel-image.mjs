@@ -18,6 +18,14 @@ export const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 export const PANEL_PORT = 7420;
 
 /**
+ * The Panel image's Dockerfile, repo-relative. It lives in `deploy/` beside
+ * the Core's rather than at the repo root: two container images should not
+ * mean finding one at the root and one two directories down. The build
+ * context stays the repo root — only the file moved.
+ */
+export const PANEL_DOCKERFILE = "deploy/panel.Dockerfile";
+
+/**
  * The published image, tag-less. The compose file pins `:latest`, the release
  * workflow pushes the version tag and `latest`, and the smoke script builds a
  * local tag — all against this one name.

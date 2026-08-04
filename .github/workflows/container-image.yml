@@ -3,7 +3,7 @@ name: Container image
 # The single implementation of "build a container image, prove it works,
 # publish it". Callers pick which image via the `image` input:
 #
-#   panel → the Panel web service, from the root Dockerfile
+#   panel → the Panel web service, from deploy/panel.Dockerfile
 #   core  → the Core daemon, from deploy/core.Dockerfile
 #
 # and three callers reuse it, so the bytes a PR validates are built exactly the
@@ -138,6 +138,7 @@ jobs:
           SHA: ${{ github.sha }}
         run: |
           docker build \
+            --file deploy/panel.Dockerfile \
             --build-arg "IMAGE_SOURCE=https://github.com/$REPO" \
             --build-arg "IMAGE_REVISION=$SHA" \
             --tag "$IMAGE:$STAGE-$ARCH" .
