@@ -32,6 +32,7 @@ import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-fr
 import {
   loadMaterialFromFile,
   materialFilePath,
+  mintFreshMaterial,
   persistMaterialToFile,
 } from "./core-material-store";
 import {
@@ -53,7 +54,7 @@ import {
   type ActanaServiceManager,
   type ServiceVerb,
 } from "./actana-service";
-import { choosePublicHost, mintFreshMaterial, runActanaSetup } from "./actana-setup";
+import { choosePublicHost, runActanaSetup } from "./actana-setup";
 import {
   harnessFlagNames,
   harnessFromFlagName,

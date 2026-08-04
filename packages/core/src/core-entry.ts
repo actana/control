@@ -17,17 +17,28 @@
 //   AC_CORE_BEARER_SECRET=<hex> — HMAC key for the bearer (default: random)
 //   AC_CORE_ID=<id>        — coreId in the bearer (default: random)
 //   AC_CORE_BEARER_DAYS=<n>     — bearer validity in days (default: 365)
-//   AC_CORE_MATERIAL_FILE=<path> — load persisted cert material + bearer
-//                                     secret from this file (issue 05). When
-//                                     set, the daemon restarts with the same
-//                                     CA + certs + bearer secret + coreId —
-//                                     required for the auto-start reboot path
-//                                     (ADR 0003). The blob is NOT printed in
-//                                     this mode; the operator already has it
-//                                     from `core install`.
+//   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
+//                                     When set, the daemon restarts with the
+//                                     same CA + certs + bearer secret + coreId
+//                                     — required for the auto-start reboot
+//                                     path (ADR 0003). Present: load, print
+//                                     nothing (on metal the operator already
+//                                     has the blob from `actana setup`).
+//                                     Absent: mint, persist and print the blob
+//                                     once — first run in a container, where
+//                                     `actana setup` never runs (ADR 0016
+//                                     D13/D17).
 //
-// Container mode (ADR 0016 D15): the image bakes `ACTANA_CONTAINER=1` and the
-// operator sets `ACTANA_PUBLIC_HOST`, which `actana daemon` hands down as
+// Container mode (ADR 0016 D15/D16 — baked into the Core image):
+//   ACTANA_CONTAINER=1  — this Core is a container. Two effects here: the
+//                            first-run blob prints human-readably instead of
+//                            behind the sentinel, because the reader is an
+//                            operator tailing `docker compose logs` rather
+//                            than a supervising parent parsing stdout; and
+//                            the public host becomes required, below.
+//   ACTANA_LABEL=<text> — human-friendly alias carried in the blob.
+//
+// The operator sets `ACTANA_PUBLIC_HOST`, which `actana daemon` hands down as
 // `AC_CORE_PUBLIC_HOST`. Missing, the boot stops here rather than defaulting to
 // the bind address — a Core with a guessed SAN pairs with nothing.
 //
@@ -67,9 +78,14 @@ import {
 } from "./core-mutation-store";
 import type { PtyHookEnv } from "./pty-hook-env";
 import { generateCertMaterial } from "./core-cert-material";
-import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import { loadMaterialFromFile } from "./core-material-store";
+import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
+import {
+  buildRegistrationBlob,
+  formatRegistrationBlobNotice,
+  loadOrMintMaterial,
+  registrationBlobPath,
+  type LoadOrMintResult,
+} from "./core-first-run";
 import { CONTAINER_PUBLIC_HOST_ENV, inContainer } from "./actana-container";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "./harness-availability-store";
@@ -92,6 +108,9 @@ async function startCore(): Promise<void> {
   const port = Number(requiredEnv("AC_CORE_LINK_PORT"));
   const host = process.env.AC_CORE_LINK_HOST || "127.0.0.1";
   const remoteMode = process.env.AC_CORE_REMOTE === "1";
+  // Baked into the Core image, never sniffed from `/.dockerenv` (ADR 0016 D16).
+  // Read through `actana-container`, which owns the marker for the whole Core.
+  const containerMode = inContainer(process.env);
 
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     console.error(`[core-entry] invalid AC_CORE_LINK_PORT: ${port}`);
@@ -215,7 +234,7 @@ async function startCore(): Promise<void> {
     // `ACTANA_PUBLIC_HOST` into `AC_CORE_PUBLIC_HOST` before it gets here; this
     // is the same refusal one layer down, for anything that execs the daemon
     // bundle directly.
-    if (inContainer(process.env) && !process.env.AC_CORE_PUBLIC_HOST) {
+    if (containerMode && !process.env.AC_CORE_PUBLIC_HOST) {
       console.error(
         `[core-entry] ${CONTAINER_PUBLIC_HOST_ENV} is not set, and this Core will not ` +
           "guess the address a Panel dials. Set it to the host or IP your Panel reaches " +
@@ -225,18 +244,31 @@ async function startCore(): Promise<void> {
     }
     const publicHost = process.env.AC_CORE_PUBLIC_HOST || host;
     const materialFile = process.env.AC_CORE_MATERIAL_FILE;
+    const bearerDays = Number(process.env.AC_CORE_BEARER_DAYS ?? 365);
+    const label = process.env.ACTANA_LABEL || "";
 
     if (materialFile) {
-      // Persisted-material path (issue 05): the daemon was started by the
-      // auto-start unit (or `core install`) with a material file written
-      // by the install command. Load it so the CA + certs + bearer secret +
-      // coreId match what the operator pasted into the Panel — a rebooted VM
-      // must resume the same identity, not generate fresh certs.
-      const material = loadMaterialFromFile(materialFile);
-      if (!material) {
-        console.error(`[core-entry] failed to load material from ${materialFile}`);
+      // Persisted-material path: the daemon was started by the auto-start unit
+      // (or the container's ENTRYPOINT) with a material file. Present, it is
+      // loaded so the CA + certs + bearer secret + coreId match what the
+      // operator pasted into the Panel — a rebooted machine must resume the
+      // same identity, not generate fresh certs. Absent, this is a first run
+      // with no `actana setup` behind it (ADR 0016 D17) and the daemon mints,
+      // persists and prints the blob itself.
+      let resolved: LoadOrMintResult;
+      try {
+        resolved = await loadOrMintMaterial({
+          materialFile,
+          publicHost,
+          port,
+          label,
+          bearerDays,
+        });
+      } catch (err) {
+        console.error(`[core-entry] ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
+      const { material, blob } = resolved;
       const secret: BearerSecret = material.bearerSecret;
 
       serverOpts.tls = {
@@ -245,9 +277,17 @@ async function startCore(): Promise<void> {
         serverKey: material.serverKey,
       };
       serverOpts.authVerifier = (b) => verifyBearer(b, secret);
-      // Do NOT print the registration blob — the operator already has it
-      // from `core install`. The daemon just starts with the persisted
-      // identity.
+
+      // Printed only when this boot minted the identity. On every later boot
+      // `blob` is null: the operator has already paired, and a second blob in
+      // the log reads as "this Core moved".
+      if (blob !== null) {
+        console.log(
+          containerMode
+            ? formatRegistrationBlobNotice(blob, registrationBlobPath(materialFile))
+            : `${REGISTRATION_BLOB_SENTINEL}${blob}`,
+        );
+      }
     } else {
       // Fresh-material path (issue 04 backward-compat): generate new certs +
       // bearer, print the registration blob for the operator to capture. Used
@@ -256,9 +296,6 @@ async function startCore(): Promise<void> {
       const secretHex = process.env.AC_CORE_BEARER_SECRET ?? randomBytes(32).toString("hex");
       const secret: BearerSecret = secretHex;
       const coreId = process.env.AC_CORE_ID ?? `core_${randomBytes(8).toString("hex")}`;
-      const bearerDays = Number(process.env.AC_CORE_BEARER_DAYS ?? 365);
-      const exp = Date.now() + bearerDays * 24 * 60 * 60 * 1000;
-      const bearer = signBearer({ coreId, exp }, secret);
 
       serverOpts.tls = {
         caCert: mat.ca.cert,
@@ -269,14 +306,16 @@ async function startCore(): Promise<void> {
 
       // Print the registration blob first so the operator can capture it
       // before the "listening" line resolves boot readiness.
-      const blob = encodeRegistrationBlob({
-        endpoint: `wss://${publicHost}:${port}`,
-        label: "",
-        caCert: mat.ca.cert,
-        clientCert: mat.client.cert,
-        clientKey: mat.client.key,
-        bearer,
-      });
+      const blob = buildRegistrationBlob(
+        {
+          caCert: mat.ca.cert,
+          clientCert: mat.client.cert,
+          clientKey: mat.client.key,
+          coreId,
+          bearerSecret: secretHex,
+        },
+        { publicHost, port, label, bearerDays },
+      );
       console.log(`${REGISTRATION_BLOB_SENTINEL}${blob}`);
     }
   }

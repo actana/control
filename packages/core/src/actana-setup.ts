@@ -20,13 +20,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomBytes } from "node:crypto";
-import { generateCertMaterial } from "./core-cert-material";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
   loadMaterial,
   materialFilePath,
+  mintFreshMaterial,
   persistMaterial,
   type PersistedMaterial,
 } from "./core-material-store";
@@ -119,29 +118,6 @@ export function choosePublicHost(
     }
   }
   return hostname || "localhost";
-}
-
-/**
- * Mint a brand-new Core identity: a fresh CA, fresh certs, a fresh bearer
- * secret and a fresh coreId, all valid for `publicHost`.
- *
- * Everything a paired Panel pinned is replaced, so whoever calls this is
- * choosing to lock that Panel out until it re-pairs. Setup calls it only when
- * there is nothing to reuse; `actana token regenerate` calls it deliberately,
- * which is how a leaked pairing token is revoked.
- */
-export async function mintFreshMaterial(publicHost: string): Promise<PersistedMaterial> {
-  const generated = await generateCertMaterial({ host: publicHost });
-  return {
-    caCert: generated.ca.cert,
-    caKey: generated.ca.key,
-    serverCert: generated.server.cert,
-    serverKey: generated.server.key,
-    clientCert: generated.client.cert,
-    clientKey: generated.client.key,
-    bearerSecret: randomBytes(32).toString("hex"),
-    coreId: `core_${randomBytes(8).toString("hex")}`,
-  };
 }
 
 /**
