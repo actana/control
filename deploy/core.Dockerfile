@@ -92,6 +92,13 @@ RUN apt-get update \
 # out for the same reason the tarball is in — this is a download we verify,
 # not a publisher we trust.
 ARG NODE_VERSION=24.19.0
+# npm newer than the one Node bundles, because that is where the image's only
+# fixable CRITICAL/HIGH live: npm's vendored tar/undici/brace-expansion under
+# /usr/local/lib/node_modules/npm. 12.0.2 clears four of the seven measured on
+# 2026-08-04, including the lone CRITICAL (tar). Pinned exactly, and bumped on
+# the same weekly cadence as NODE_VERSION (#51) — no released npm clears all
+# seven, so this pays findings down; it does not green a raw scan.
+ARG NPM_VERSION=12.0.2
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
       amd64) node_arch=x64 ;; \
@@ -107,8 +114,11 @@ RUN set -eux; \
     tar -xJf "${archive}" -C /usr/local --strip-components=1 \
         --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
     rm -f "${archive}" SHASUMS256.txt; \
+    npm install -g "npm@${NPM_VERSION}"; \
+    npm cache clean --force; \
+    rm -rf /root/.npm; \
     node --version; \
-    npm --version
+    [ "$(npm --version)" = "${NPM_VERSION}" ]
 
 # uid 1000 and gid 1000, by number, always (D12).
 #

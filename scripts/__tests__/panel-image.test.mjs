@@ -626,7 +626,11 @@ describe("core image", () => {
     for (const harness of ["@anthropic-ai/claude-code", "@openai/codex", "opencode", "cursor"]) {
       expect(built).not.toContain(harness);
     }
-    expect(built).not.toMatch(/npm (install|i) -g/);
+    // One global install is not a Harness: npm replacing its own bundled copy
+    // (the NPM_VERSION pin, where the image's only fixable CRITICAL/HIGH
+    // live). Strip that exact form; anything else that matches still fails.
+    const withoutNpmItself = built.replace('npm install -g "npm@${NPM_VERSION}"', "");
+    expect(withoutNpmItself).not.toMatch(/npm (install|i) -g/);
   });
 
   it("keeps systemd, and the machine-shaped install, out entirely", () => {
