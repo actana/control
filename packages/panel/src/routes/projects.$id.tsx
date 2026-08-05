@@ -1536,6 +1536,15 @@ function ProjectPage() {
     }
 
     setTasksArchivedInCache(queryClient, project.id, ids, true, coreId);
+    // Bump the count the Archived tab is gated on, so the tab appears with the
+    // row rather than one refetch later — the mirror of what restore does when
+    // it takes a row back out (ADR 0019). A Panel-owned project counts its own
+    // rows and needs no bucket.
+    const countKey = coreId ? queryKeys.coreArchivedTaskCount(project.id, coreId) : null;
+    const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
+    if (countKey) {
+      queryClient.setQueryData<number>(countKey, (current) => (current ?? 0) + ids.size);
+    }
 
     void (async () => {
       try {
@@ -1560,6 +1569,9 @@ function ProjectPage() {
       } catch (e: unknown) {
         if (previousTasks) {
           restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        }
+        if (countKey && previousCount !== undefined) {
+          queryClient.setQueryData<number>(countKey, previousCount);
         }
         toast.error(e instanceof Error ? e.message : "Could not archive session");
       }
