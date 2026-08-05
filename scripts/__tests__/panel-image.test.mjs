@@ -628,8 +628,9 @@ describe("core image", () => {
     }
     // One global install is not a Harness: npm replacing its own bundled copy
     // (the NPM_VERSION pin, where the image's only fixable CRITICAL/HIGH
-    // live). Strip that exact form; anything else that matches still fails.
-    const withoutNpmItself = built.replace('npm install -g "npm@${NPM_VERSION}"', "");
+    // live), installed from the SHA-512-checked local tarball. Strip that
+    // exact form; anything else that matches still fails.
+    const withoutNpmItself = built.replace('npm install -g "${npm_tgz}"', "");
     expect(withoutNpmItself).not.toMatch(/npm (install|i) -g/);
   });
 
