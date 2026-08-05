@@ -25,6 +25,12 @@ import {
   type SpawnRequest,
 } from "@actana/shared/pty-spawn-policy";
 import { type PtyHookEnv } from "./pty-hook-env";
+import {
+  HOOK_TASK_ID_ENV,
+  HOOK_TOKEN_ENV,
+  HOOK_URL_ENV,
+  installHarnessHooks,
+} from "./harness-hooks";
 import { checkHarnessCliVersionCached, harnessVersionErrorMessage } from "./harness-cli-version";
 import {
   HARNESS_CLI_CONFIG,
@@ -134,6 +140,20 @@ export function hasCodexHookReviewPrompt(text: string): boolean {
   );
 }
 
+/** Deliver an output-derived status signal without letting it break the stream. */
+function reportOutputSignal(
+  deps: PtyCoreDeps,
+  taskId: string,
+  signal: "interrupted" | "hooks-need-review",
+): void {
+  if (!taskId) return;
+  try {
+    deps.onSessionOutputSignal?.({ taskId, signal });
+  } catch (err) {
+    log.warn("pty.output-signal.failed", { signal, error: String(err) });
+  }
+}
+
 const ptys = new Map<string, Pty>();
 const RING_LIMIT_BYTES = 1_000_000;
 
@@ -149,6 +169,24 @@ export type PtyCoreDeps = {
   getHookEnv: () => PtyHookEnv | null;
   /** Ports the port-kill path must never touch (the runtime's own port). */
   getProtectedPorts: () => Iterable<number | null | undefined>;
+  /**
+   * A harness PTY exited (issue 84). Called for every agent PTY on every exit
+   * — crash, kill, the operator closing the pane — regardless of whether a
+   * Panel is connected, because the emit target is null while the link is
+   * down and a Session that died then must still settle on this Core.
+   */
+  onSessionExit?: (info: { taskId: string; exitCode: number }) => void;
+  /**
+   * A harness's own output said something its hooks do not (issue 84).
+   * Claude has no `UserInterrupt` settings hook, and Codex refuses to run
+   * newly-installed hooks until the operator reviews them with `/hooks` — the
+   * one moment its hooks provably cannot report. Both are read off the PTY
+   * stream; each fires once per occurrence, not once per chunk.
+   */
+  onSessionOutputSignal?: (info: {
+    taskId: string;
+    signal: "interrupted" | "hooks-need-review";
+  }) => void;
 };
 
 /** Event emitted by the Core for a PTY — `data` (output) or `exit`. */
@@ -416,7 +454,7 @@ export class PtyCore {
     emitTarget = fn;
   }
 
-  async spawn(opts: SpawnRequest): Promise<{ ptyId: string }> {
+  async spawn(opts: SpawnRequest): Promise<{ ptyId: string; hooksInstalled: boolean }> {
     // Harness cold-boots are throttled; shells are not. A login shell is cheap
     // and is almost always an explicit gesture by one operator, while a grid of
     // agents arrives all at once and each one is a full Node process.
@@ -439,7 +477,7 @@ export class PtyCore {
   private async spawnUnthrottled(
     opts: SpawnRequest,
     releaseSpawnHold: () => void,
-  ): Promise<{ ptyId: string }> {
+  ): Promise<{ ptyId: string; hooksInstalled: boolean }> {
     const pty = loadNodePty();
     const platform = os.platform();
     const { userDataDir, appPath, getHookEnv } = this.deps;
@@ -501,8 +539,24 @@ export class PtyCore {
 
     // Harness-workspace-only setup; a VM Shell Session (and a plain user shell)
     // has no agent config to touch.
+    let hooksInstalled = false;
     if (plan.mode === "agent") {
       if (plan.agent === "claude-code") ensureStatuslineTap(plan.cwd);
+      // Lifecycle hooks, pointed at THIS Core's loopback receiver (issue 84).
+      // Without them nothing ever moves the Session's status off `ready`. The
+      // env carries the URL and token so the file on disk holds no secret and
+      // survives a restart that mints a new one; without a hook env there is
+      // no receiver to report to, so the install is skipped and the Panel is
+      // told the truth by `hooksInstalled: false`.
+      const hookEnv = getHookEnv();
+      if (hookEnv) {
+        hooksInstalled = installHarnessHooks(plan.agent, plan.cwd);
+        if (hooksInstalled) {
+          env[HOOK_URL_ENV] = hookEnv.apiUrl;
+          env[HOOK_TOKEN_ENV] = hookEnv.token;
+          env[HOOK_TASK_ID_ENV] = opts.taskId;
+        }
+      }
     }
 
     const appTheme =
@@ -589,8 +643,29 @@ export class PtyCore {
     // whoever is queued behind it. The timeout is the backstop for an agent
     // that boots silently and would otherwise pin its slot forever.
     const settleTimer = setTimeout(releaseSpawnHold, SPAWN_SETTLE_MS);
+    // Latched so a prompt that stays on screen across many output chunks
+    // reports once. Re-armed as soon as it is no longer being shown.
+    let interruptReported = false;
+    let hookReviewReported = false;
+    const watchOutput = plan.mode === "agent" && !opts.shell && !opts.shellSession;
     proc.onData((data: string) => {
       releaseSpawnHold();
+      if (watchOutput) {
+        const interrupted = hasClaudeInterruptPrompt(data);
+        if (interrupted && !interruptReported) {
+          interruptReported = true;
+          reportOutputSignal(this.deps, p.taskId, "interrupted");
+        } else if (!interrupted) {
+          interruptReported = false;
+        }
+        const hooksNeedReview = hasCodexHookReviewPrompt(data);
+        if (hooksNeedReview && !hookReviewReported) {
+          hookReviewReported = true;
+          reportOutputSignal(this.deps, p.taskId, "hooks-need-review");
+        } else if (!hooksNeedReview) {
+          hookReviewReported = false;
+        }
+      }
       const seq = appendBuffer(p, data);
       outputBatcher.push(id, seq, data, Date.now() - p.lastInputAt < PTY_INTERACTIVE_WINDOW_MS);
       if (initialInput) scheduleInitialInput(INITIAL_INPUT_SETTLE_MS);
@@ -605,10 +680,20 @@ export class PtyCore {
       if (initialInputFallback) clearTimeout(initialInputFallback);
       outputBatcher.flush(id);
       sendToEmitTarget({ type: "exit", ptyId: id, exitCode, signal });
+      // The Session's process is gone; its row has to settle whether or not a
+      // Panel is watching (issue 84). Shells carry a taskId for routing but
+      // are not agent work, so they settle nothing.
+      if (!p.shell && !p.shellSession && p.agent && p.taskId) {
+        try {
+          this.deps.onSessionExit?.({ taskId: p.taskId, exitCode });
+        } catch (err) {
+          log.warn("pty.exit.settle-failed", { error: String(err) });
+        }
+      }
       ptys.delete(id);
     });
 
-    return { ptyId: id };
+    return { ptyId: id, hooksInstalled };
   }
 
   write(ptyId: string, data: string): boolean {

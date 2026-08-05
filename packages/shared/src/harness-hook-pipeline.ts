@@ -1,0 +1,296 @@
+// One harness-hook state machine, two hosts.
+//
+// A hook fired by a harness says what just happened — a prompt was submitted, a
+// turn ended, a permission was asked for, a subagent started. Turning that into
+// the Session's status is not a table lookup: a `Stop` while background
+// subagents are still working is not a finish, a subagent event moments after a
+// finish is a raced POST rather than resumed work, and a `Notification` is only
+// `needs-input` when it is a permission prompt. Those rules were tuned against
+// real failure modes (see `docs/harness-status-detection.md`).
+//
+// Until issue 84 they lived in the Panel's hook controller, which is where a
+// Core-owned Session's hooks never arrive — the Core spawns the harness, so the
+// Core is what a hook on that machine can reach. Rather than grow a second copy
+// of the tuned machine on the Core and watch the two drift, the decisions live
+// here and each host supplies its own writes through {@link HookPipelinePorts}.
+//
+// The subagent bookkeeping this reads is module state in
+// `subagent-activity.ts` — per process, so a Panel and a Core each track their
+// own Sessions and neither can see the other's.
+
+import { HARNESS_HOOK_EVENTS, mapHookEventToStatus } from "./harness-hook-events";
+import { ASK_USER_QUESTION_TOOL, parseAskUserQuestionInput } from "./harness-questions";
+import {
+  armDeferredFinish,
+  clearSubagentActivity,
+  clearTaskFinished,
+  disarmDeferredFinish,
+  hasActiveSubagents,
+  noteSubagentStart,
+  noteSubagentStop,
+  noteTaskFinished,
+  taskFinishedRecently,
+} from "./subagent-activity";
+import type { TaskStatus } from "./domain";
+
+/**
+ * The hook body a harness pipes on stdin, as far as this pipeline reads it.
+ * Every field is optional: the shape differs per harness and per event, and a
+ * payload is agent-produced input arriving over an authenticated-yet-open local
+ * endpoint, so nothing here may assume a field is present or well-typed.
+ */
+export type HarnessHookBody = {
+  hook_event_name?: string;
+  prompt?: string;
+  notification_type?: string;
+  message?: string;
+  title?: string;
+  session_id?: string;
+  conversation_id?: string;
+  tool_name?: string;
+  tool_use_id?: string;
+  /** SubagentStart/SubagentStop: the subagent instance, for pairing a stop with its start. */
+  agent_id?: string;
+  tool_input?: unknown;
+  tool_response?: unknown;
+  /** SessionStart's trigger: "startup" | "resume" | "clear" | "compact". */
+  source?: string;
+  /** Absolute path to the session's JSONL transcript (Claude Code). */
+  transcript_path?: string;
+  last_assistant_message?: string;
+  /** Synthetic session-exited event: the PTY process's exit code. */
+  exit_code?: number;
+};
+
+/** What the pipeline needs to know about a task before it decides anything. */
+export type HookTaskFacts = {
+  status: string;
+  /** The harness session id already captured for this task, or `null`. */
+  claudeSessionId: string | null;
+};
+
+/**
+ * The host's writes. `getTask` and `updateStatus` are required — without them
+ * there is no row to move. The rest are the side effects one host has and the
+ * other does not, so each is optional and skipped when absent.
+ */
+export type HookPipelinePorts = {
+  getTask(taskId: string): HookTaskFacts | null;
+  /** Write the task's status. `false` means the row went away mid-flight. */
+  updateStatus(taskId: string, status: TaskStatus): boolean;
+  /** Persist a newly observed harness session id for this task. */
+  setSessionId(taskId: string, sessionId: string): void;
+  /** Stash the session's transcript path (Panel-side auto-distill reads it). */
+  onTranscriptPath?(taskId: string, transcriptPath: string): void;
+  /** An AskUserQuestion menu is open; the host may raise its own overlay. */
+  onQuestion?(taskId: string, toolUseId: string | undefined, questions: unknown): void;
+  /** A user prompt was submitted — the trigger for naming an unnamed Session. */
+  onPrompt?(taskId: string, prompt: string): void;
+};
+
+export type HookPipelineResult =
+  | { outcome: "ok"; event: string; status?: TaskStatus }
+  | { outcome: "ignored"; event: string }
+  | { outcome: "foreign-session"; event: string }
+  | { outcome: "task-not-found"; event: string };
+
+function hookSessionId(payload: HarnessHookBody): string {
+  if (typeof payload.session_id === "string" && payload.session_id.trim()) {
+    return payload.session_id.trim();
+  }
+  if (typeof payload.conversation_id === "string" && payload.conversation_id.trim()) {
+    return payload.conversation_id.trim();
+  }
+  return "";
+}
+
+function isSessionCaptureEvent(event: string): boolean {
+  return (
+    event === HARNESS_HOOK_EVENTS.userPromptSubmit ||
+    event === HARNESS_HOOK_EVENTS.cursorBeforeSubmitPrompt ||
+    event === HARNESS_HOOK_EVENTS.sessionStart ||
+    event === HARNESS_HOOK_EVENTS.cursorSessionStart
+  );
+}
+
+function isSubagentLifecycleEvent(event: string): boolean {
+  return (
+    event === HARNESS_HOOK_EVENTS.subagentStart || event === HARNESS_HOOK_EVENTS.subagentStop
+  );
+}
+
+function reconcileSessionId(
+  task: HookTaskFacts,
+  taskId: string,
+  incomingSessionId: string,
+  event: string,
+  ports: HookPipelinePorts,
+): "ok" | "foreign-session" {
+  if (!incomingSessionId) return "ok";
+  if (!task.claudeSessionId) {
+    if (isSessionCaptureEvent(event)) ports.setSessionId(taskId, incomingSessionId);
+    return "ok";
+  }
+  if (incomingSessionId === task.claudeSessionId) return "ok";
+  if (isSessionCaptureEvent(event)) {
+    ports.setSessionId(taskId, incomingSessionId);
+    return "ok";
+  }
+  return "foreign-session";
+}
+
+/**
+ * Apply one hook event to one task. Every early return is a decision, not a
+ * shortcut — see the comments at each. The caller turns the result into
+ * whatever its transport answers with; nothing here formats a response.
+ */
+export function handleHarnessHookEvent(
+  taskId: string,
+  payload: HarnessHookBody,
+  ports: HookPipelinePorts,
+  eventNameFallback = "",
+): HookPipelineResult {
+  const event = payload.hook_event_name || eventNameFallback || "";
+  let status = mapHookEventToStatus({ ...payload, hook_event_name: event });
+  const incomingSessionId = hookSessionId(payload);
+
+  const task = ports.getTask(taskId);
+  if (!task) return { outcome: "task-not-found", event };
+
+  // Stash the transcript path (present on most Claude hooks incl. Stop) so a
+  // host that reads whole sessions can. Latest wins; stable per session.
+  // Subagent lifecycle hooks are excluded: they carry the SUBAGENT's own
+  // transcript path, which would point the reader at a child transcript.
+  if (
+    !isSubagentLifecycleEvent(event) &&
+    typeof payload.transcript_path === "string" &&
+    payload.transcript_path.trim()
+  ) {
+    ports.onTranscriptPath?.(taskId, payload.transcript_path.trim());
+  }
+
+  if (event === HARNESS_HOOK_EVENTS.sessionStart && payload.source === "clear") {
+    // /clear kills background subagents but keeps the session id, so the
+    // session-id-change clear below never fires for it.
+    clearSubagentActivity(taskId);
+  }
+
+  const sessionResult = reconcileSessionId(task, taskId, incomingSessionId, event, {
+    ...ports,
+    setSessionId: (id, sessionId) => {
+      ports.setSessionId(id, sessionId);
+      // A new session id means a new harness process; the old session's
+      // subagents died with it, so they must not hold this task on "running".
+      clearSubagentActivity(id);
+    },
+  });
+  if (sessionResult === "foreign-session") return { outcome: "foreign-session", event };
+
+  // Sub-agent lifecycle bookkeeping. Claude fires the top-level Stop when the
+  // FOREGROUND turn ends — background subagents keep running, then their
+  // completion re-invokes the main harness, whose own Stop follows. Track which
+  // subagents are active so the Stop mapping below can hold the session on
+  // "running" until the last one is done. These events carry no status, but a
+  // subagent event arriving MOMENTS after a task finished means the Stop won
+  // the race against the turn's own subagent lifecycle POST — work is still
+  // happening, so heal to running, and arm the drain backstop in case no
+  // further Stop follows.
+  //
+  // Beyond that window, a subagent event on a finished task is one of Claude
+  // Code's post-turn internal helpers (away-summary generation fires
+  // SubagentStart/Stop when the user refocuses a finished session, with no
+  // Stop after). Healing on those wedges tasks on "running" forever; ignore
+  // them for status, and don't record their starts either — a lost helper
+  // SubagentStop would otherwise hold the NEXT turn's Stop for the whole TTL.
+  if (isSubagentLifecycleEvent(event)) {
+    const staleFinished = task.status === "finished" && !taskFinishedRecently(taskId);
+    if (event === HARNESS_HOOK_EVENTS.subagentStart) {
+      if (!staleFinished) noteSubagentStart(taskId, payload.agent_id);
+    } else {
+      noteSubagentStop(taskId, payload.agent_id);
+    }
+    if (task.status === "finished" && !staleFinished) {
+      ports.updateStatus(taskId, "running");
+      armDeferredFinish(taskId, (id) => finishQuietTask(id, ports));
+    }
+    return { outcome: "ok", event };
+  }
+
+  // Synthetic PTY-exit event: the session process is gone, so a task still
+  // showing active work is wrong — settle it by exit code. Tasks already in a
+  // settled state (finished, interrupted, …) keep it: the exit of an idle
+  // session isn't news. Dead process ⇒ its subagents died with it.
+  if (event === HARNESS_HOOK_EVENTS.sessionProcessExited) {
+    clearSubagentActivity(taskId);
+    // No re-invocation can follow a dead process: laggard subagent POSTs still
+    // in flight must be ignored as stale, never heal to "running".
+    clearTaskFinished(taskId);
+    if (task.status === "running" || task.status === "needs-input") {
+      ports.updateStatus(taskId, payload.exit_code === 0 ? "finished" : "terminated");
+    }
+    // No `status` on the result: the settle is conditional, and a host that
+    // echoed one would be claiming a transition that may not have happened.
+    return { outcome: "ok", event };
+  }
+
+  if (event === HARNESS_HOOK_EVENTS.userPromptSubmit) {
+    // A new user turn supersedes any held Stop; the next Stop re-evaluates.
+    disarmDeferredFinish(taskId);
+  }
+
+  if (status === "finished" && hasActiveSubagents(taskId)) {
+    // Only the foreground turn ended; subagents are still working. The real
+    // finish — with the ding — lands on the next Stop that arrives with no
+    // active subagents left. The armed backstop only fires if the remaining
+    // subagents EXPIRE (their SubagentStop never arrived), so a lost POST
+    // can't wedge the task on "running" forever.
+    status = "running";
+    armDeferredFinish(taskId, (id) => finishQuietTask(id, ports));
+  }
+
+  // Hand the question over before the status write so a host's overlay data is
+  // already in place when the status change triggers its refetches. Malformed
+  // tool_input is fail-soft: status still flips, just no overlay.
+  if (event === HARNESS_HOOK_EVENTS.preToolUse && payload.tool_name === ASK_USER_QUESTION_TOOL) {
+    const questions = parseAskUserQuestionInput(payload.tool_input);
+    if (questions) ports.onQuestion?.(taskId, payload.tool_use_id, questions);
+  }
+
+  // The AskUserQuestion-matched PostToolUse is the AskUserQuestion status
+  // signal, handled below; every other PostToolUse only exists to heal a stale
+  // needs-input state — a tool just ran, so the harness is provably working.
+  if (event === HARNESS_HOOK_EVENTS.postToolUse && payload.tool_name !== ASK_USER_QUESTION_TOOL) {
+    if (task.status === "needs-input") ports.updateStatus(taskId, "running");
+    // Conditional like the exit settle above — the answer names the event, not
+    // a status the heal may not have written.
+    return { outcome: "ok", event };
+  }
+
+  if (!status) return { outcome: "ignored", event };
+
+  if (!ports.updateStatus(taskId, status)) return { outcome: "task-not-found", event };
+  // Timestamp real finishes so the subagent branch above can tell a raced
+  // lifecycle POST (heal) from a post-turn helper event (ignore).
+  if (status === "finished") noteTaskFinished(taskId);
+
+  if (
+    isSessionCaptureEvent(event) &&
+    typeof payload.prompt === "string" &&
+    payload.prompt.trim()
+  ) {
+    ports.onPrompt?.(taskId, payload.prompt);
+  }
+
+  return { outcome: "ok", event, status };
+}
+
+/**
+ * Deferred-finish backstop: fires when a held or healed "running" drained its
+ * subagents and no main-harness Stop landed within the grace. Guarded so it
+ * cannot stomp a state the operator or a later event moved the task into.
+ */
+function finishQuietTask(taskId: string, ports: HookPipelinePorts): void {
+  if (ports.getTask(taskId)?.status !== "running") return;
+  ports.updateStatus(taskId, "finished");
+  noteTaskFinished(taskId);
+}

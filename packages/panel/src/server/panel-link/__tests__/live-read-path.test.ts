@@ -248,6 +248,8 @@ const TASK: CoreLinkTaskSnapshot = {
   taskId: "task_1",
   projectId: "proj_1",
   title: "restock the shelves",
+  titleManuallySet: false,
+  claudeSessionId: null,
   icon: null,
   agent: "claude-code",
   status: "running",

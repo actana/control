@@ -16,7 +16,9 @@ import type { CoreLinkPtyReplay, CoreLinkPtySpawnOptions } from "@actana/shared/
 import type { CoreLinkAnswer as Answer } from "~/shared/panel-link";
 
 export type CorePtyBridge = {
-  spawn: (opts: CoreLinkPtySpawnOptions) => Promise<{ ptyId: string }>;
+  spawn: (
+    opts: CoreLinkPtySpawnOptions,
+  ) => Promise<{ ptyId: string; hooksInstalled: boolean }>;
   write: (ptyId: string, data: string) => Promise<boolean>;
   resize: (ptyId: string, cols: number, rows: number) => Promise<boolean>;
   kill: (ptyId: string) => Promise<boolean>;
@@ -65,8 +67,15 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
   link.watch(coreId);
   return {
     async spawn(opts) {
-      const { ptyId } = await link.request<Answer<"spawned">>(coreId, { type: "spawn", opts });
-      return { ptyId };
+      const { ptyId, hooksInstalled } = await link.request<Answer<"spawned">>(coreId, {
+        type: "spawn",
+        opts,
+      });
+      // A Core that predates issue 84 answers without the field. Reading that
+      // as "no hooks" keeps the terminal-input fallback armed, which is the
+      // safe direction: a redundant `running` write, never a Session with no
+      // status signal at all.
+      return { ptyId, hooksInstalled: hooksInstalled === true };
     },
     write: async (ptyId, data) =>
       (await link.request<Answer<"writeResult">>(coreId, { type: "write", ptyId, data })).ok,

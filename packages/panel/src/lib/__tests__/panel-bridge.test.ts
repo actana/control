@@ -123,6 +123,8 @@ describe("panel bridge — writes", () => {
           taskId: "task_9",
           projectId: "proj_1",
           title: "restock",
+          titleManuallySet: false,
+          claudeSessionId: null,
           agent: "claude-code",
           status: "ready",
           pinned: false,

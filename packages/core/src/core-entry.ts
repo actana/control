@@ -77,6 +77,10 @@ import {
   setLivePtyProbe,
 } from "./core-mutation-store";
 import type { PtyHookEnv } from "./pty-hook-env";
+import { CoreTaskWriter } from "./core-task-writer";
+import { CoreHarnessStatus } from "./core-harness-status";
+import { CoreTitleGenerator } from "./core-title-generator";
+import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
 import { generateCertMaterial } from "./core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
@@ -153,12 +157,46 @@ async function startCore(): Promise<void> {
   // 04, ADR 0004). WAL absorbs coexistence with the event-log writer.
   configureCoreMutationStore(userDataDir);
 
+  // ─── Harness status detection (issue 84) ───
+  // The Core owns its task rows, so the Core is what a harness's hooks report
+  // to and what settles a Session whose process died. One writer underneath
+  // all of it, so every change appends the event the Panel's card re-renders
+  // from — and does so whether or not a Panel is connected.
+  const taskWriter = new CoreTaskWriter({
+    mutationPort: coreMutationStore,
+    queryPort: coreQueryStore,
+    eventLog: { appendEvent, readEventTail, getLastEventId },
+  });
+  const titleGenerator = new CoreTitleGenerator({ writer: taskWriter });
+  const harnessStatus = new CoreHarnessStatus({
+    writer: taskWriter,
+    generateTitle: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+  });
+
+  // Loopback only, ephemeral port, token minted here — see the decisions
+  // recorded at the top of harness-hook-receiver.ts. A receiver that cannot
+  // start is not fatal: hooks go uninstalled, the Panel is told so, and its
+  // terminal-input fallback carries the `running` signal instead.
+  let hookReceiver: HarnessHookReceiver | null = null;
+  try {
+    hookReceiver = await startHarnessHookReceiver((taskId, payload) =>
+      harnessStatus.receiveHook(taskId, payload),
+    );
+  } catch (err) {
+    console.error(`[core-entry] hook-receiver.start-failed: ${err}`);
+  }
+
   const deps: PtyCoreDeps = {
     userDataDir,
     appPath,
-    getHookEnv: (): PtyHookEnv | null => null,
-    // Protect the core-link WS port so killLaunchProcesses never touches it.
-    getProtectedPorts: () => [port],
+    getHookEnv: (): PtyHookEnv | null =>
+      hookReceiver ? { apiUrl: hookReceiver.url, token: hookReceiver.token } : null,
+    // Protect the core-link WS port so killLaunchProcesses never touches it —
+    // and the hook receiver's, for the same reason: killing it would silently
+    // strand every running Session's status.
+    getProtectedPorts: () => [port, hookReceiver?.port],
+    onSessionExit: ({ taskId, exitCode }) => harnessStatus.sessionExited(taskId, exitCode),
+    onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
@@ -210,6 +248,9 @@ async function startCore(): Promise<void> {
     // process is the sole VM-side writer; WAL keeps the event-log writer
     // and this writer coexisting on one DB.
     mutationPort: coreMutationStore,
+    // One write seam for the Panel's `tasksMutate` and the Core's own hook /
+    // exit / title writes (issue 84).
+    taskWriter,
     // Issue 11: back the `agentsAvailabilityList` frame with the current
     // snapshot from the Core's own PATH probe. The event stream carries
     // deltas; this snapshot answers the fresh-Panel hydration path.
@@ -342,6 +383,7 @@ async function startCore(): Promise<void> {
   const shutdown = () => {
     core.killAll();
     server.close();
+    hookReceiver?.close();
     availabilityStore.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();

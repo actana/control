@@ -287,6 +287,8 @@ function mutationPort(): CoreMutationPort {
           taskId,
           projectId: mutation.projectId,
           title: mutation.title,
+          titleManuallySet: false,
+          claudeSessionId: null,
           agent: mutation.agent,
           status: mutation.status ?? "ready",
           pinned: false,
@@ -506,6 +508,8 @@ describe("writing to a Core from the browser", () => {
           op: "create",
           projectId: created.projectId,
           title: "restock",
+          titleManuallySet: false,
+          claudeSessionId: null,
           agent: "claude-code",
         },
       })

@@ -135,7 +135,10 @@ export function remoteTaskFromSnapshot(snapshot: CoreLinkTaskSnapshot): Task {
     id: snapshot.taskId,
     projectId: snapshot.projectId,
     title: snapshot.title,
-    titleManuallySet: false,
+    // The Core owns this flag (issue 84). Synthesizing `false` told the card
+    // that every Core-owned Session was un-renamed, so an operator's rename
+    // read as generator fair game again on the next reload.
+    titleManuallySet: snapshot.titleManuallySet,
     icon: snapshot.icon,
     agent: snapshot.agent as Harness,
     status: snapshot.status as Task["status"],
@@ -144,7 +147,7 @@ export function remoteTaskFromSnapshot(snapshot: CoreLinkTaskSnapshot): Task {
     lines: 0,
     archived: snapshot.archived,
     pinned: snapshot.pinned,
-    claudeSessionId: null,
+    claudeSessionId: snapshot.claudeSessionId,
     claudeSkipPermissions: false,
     claudeBareSession: false,
     createdAt: snapshot.updatedAt,

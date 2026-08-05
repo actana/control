@@ -388,6 +388,12 @@ export function createTask(
     taskId: id,
     projectId,
     title,
+    // A fresh row's title is whatever the create frame carried — the sentinel
+    // for a Session the Core is about to name, or a title typed into the
+    // new-session dialog. Neither is a rename of an existing name, so the
+    // column keeps its `0` default and the snapshot says so.
+    titleManuallySet: false,
+    claudeSessionId: null,
     agent,
     status,
     pinned: false,
@@ -432,10 +438,22 @@ export function updateTask(
     if (!trimmed) throw new Error("task title cannot be empty");
     sets.push("title = ?");
     params.push(trimmed);
-    // Mirror the local server controller (tasks.controller.ts): any title
-    // present on an update is a manual rename, so pin the flag that stops
-    // the auto title-generator from clobbering it.
-    sets.push("title_manually_set = 1");
+    // Mirror the local server controller (tasks.controller.ts): a title on an
+    // update is a manual rename unless the caller says otherwise, so pin the
+    // flag that stops the auto title-generator from clobbering it. The Core's
+    // own generator is the one caller that says otherwise (issue 84) — its
+    // write must leave the row nameable again by an operator, and must not
+    // make the NEXT generated title look like a rename to protect.
+    sets.push("title_manually_set = ?");
+    params.push(input.titleManuallySet === false ? 0 : 1);
+  }
+  if (input.claudeSessionId !== undefined) {
+    // The harness's own session id is Core state like every other column on
+    // the row (issue 84) — a Panel that wrote it to its own database left the
+    // Core's row blank and the reattach guessed.
+    const trimmed = input.claudeSessionId?.trim();
+    sets.push("claude_session_id = ?");
+    params.push(trimmed ? trimmed : null);
   }
   if (input.pinned !== undefined) {
     sets.push("pinned = ?");
@@ -500,7 +518,8 @@ function readTaskSnapshot(
 ): CoreLinkTaskSnapshot | null {
   const row = sqlite
     .prepare(
-      `SELECT id, project_id, title, agent, status, pinned, archived, icon, updated_at
+      `SELECT id, project_id, title, title_manually_set, claude_session_id, agent, status,
+              pinned, archived, icon, updated_at
        FROM tasks WHERE id = ?`,
     )
     .get(taskId) as
@@ -508,6 +527,8 @@ function readTaskSnapshot(
         id: string;
         project_id: string;
         title: string;
+        title_manually_set: number;
+        claude_session_id: string | null;
         agent: string;
         status: string;
         pinned: number;
@@ -521,6 +542,8 @@ function readTaskSnapshot(
     taskId: row.id,
     projectId: row.project_id,
     title: row.title,
+    titleManuallySet: row.title_manually_set === 1,
+    claudeSessionId: row.claude_session_id,
     agent: row.agent,
     status: row.status,
     pinned: row.pinned === 1,

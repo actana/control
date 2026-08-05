@@ -353,6 +353,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         taskId: "t1",
         projectId: "p1",
         title: "fix bug",
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: "claude-code",
         status: "running",
         pinned: false,
@@ -364,6 +366,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         taskId: "t2",
         projectId: "p2",
         title: "ship",
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: "codex",
         status: "needs-input",
         pinned: false,
@@ -383,8 +387,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
 
   it("forwards the projectId filter on tasksList to the query port", async () => {
     queryPort.tasks = [
-      { taskId: "t1", projectId: "p1", title: "a", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
-      { taskId: "t2", projectId: "p2", title: "b", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+      { taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+      { taskId: "t2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
     ];
     pair.server.receive({ type: "tasksList", reqId: "r3", projectId: "p1" });
     await vi.waitFor(() => expect(queryPort.listTasksCalls).toEqual(["p1"]));
@@ -1323,6 +1327,8 @@ class FakeMutationPort implements CoreMutationPort {
         taskId: mutation.taskId ?? `t-${this.tasks.length + 1}`,
         projectId: mutation.projectId,
         title: mutation.title,
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: mutation.agent,
         status: mutation.status ?? "ready",
         pinned: false,
@@ -1449,6 +1455,8 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
         op: "create",
         projectId: "p1",
         title: "fix bug",
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: "claude-code",
       },
     });
@@ -1537,7 +1545,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     pair.server.receive({
@@ -1555,7 +1563,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     // Icon-only patch → dedicated kind.
@@ -1573,7 +1581,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     // Pin-only patch → dedicated kind so consumers that only track pinned
@@ -1592,7 +1600,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     pair.server.receive({
@@ -1609,7 +1617,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     pair.server.receive({

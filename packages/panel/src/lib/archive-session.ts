@@ -1,7 +1,7 @@
 import type { QueryClient } from "@tanstack/react-query";
 import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import type { OpenTerminal } from "~/lib/terminal-store";
-import { queryKeys } from "~/queries";
+import { queryKeys, tasksCacheKey } from "~/queries";
 
 type CloseSessionFn = (
   taskId: string,
@@ -55,8 +55,10 @@ export async function invalidateSessionQueries(
 ): Promise<void> {
   const keys = new Map<string, readonly unknown[]>();
   const add = (queryKey: readonly unknown[]) => keys.set(JSON.stringify(queryKey), queryKey);
-  for (const { project } of sessions) {
-    add(queryKeys.tasks(project.id));
+  for (const { project, coreId } of sessions) {
+    // The card reads from the owning Core's bucket (issue 84); invalidating
+    // the untagged key refreshes a list no Core-owned cell renders from.
+    add(tasksCacheKey(project.id, coreId));
     add(queryKeys.project(project.id));
   }
   if (sessions.length > 0) add(queryKeys.projects);

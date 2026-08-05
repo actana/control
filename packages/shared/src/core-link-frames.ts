@@ -182,6 +182,24 @@ export type CoreLinkTaskMutation =
       taskId: string;
       status?: CoreLinkTaskStatus;
       title?: string;
+      /**
+       * Whether the `title` on this patch is an operator's rename (issue 84).
+       * Omitted, a title reads as a rename and pins the row's
+       * manually-set-title flag — the shape every Panel-driven rename has
+       * always had. The Core's own title generator is the one caller that
+       * sends `false`, so a generated name never claims to be a rename and a
+       * rename is never overwritten by a generator that finished after it.
+       * Meaningless without `title`; ignored there.
+       */
+      titleManuallySet?: boolean;
+      /**
+       * The harness's own session id for this Task (issue 84). Captured by the
+       * Core when a hook reports one, and by the Panel when a resumed session
+       * hands back a fresh id — a Core-owned row's session id is Core state
+       * like every other column, and writing it to the Panel's database left
+       * the Core's row blank. `null` clears it.
+       */
+      claudeSessionId?: string | null;
       pinned?: boolean;
       archived?: boolean;
       /**
@@ -429,7 +447,20 @@ export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId:
 /** Response frame — correlates to a request via `reqId`. */
 export type CoreLinkResponseFrame =
   | { type: "ready"; version: string }
-  | { type: "spawned"; reqId: string; ptyId: string }
+  | {
+      type: "spawned";
+      reqId: string;
+      ptyId: string;
+      /**
+       * Did this spawn install lifecycle hooks that report to this Core's hook
+       * receiver (issue 84)? The Panel's terminal-input fallback stands down
+       * only for a Session whose hooks are actually reporting — not for a
+       * harness family that supports them in principle, which is how a harness
+       * with no installed hooks used to end up with no `running` signal at all.
+       * Absent from an older Core's answer, which reads as "no hooks".
+       */
+      hooksInstalled?: boolean;
+    }
   | { type: "spawnError"; reqId: string; message: string }
   | { type: "writeResult"; reqId: string; ok: boolean }
   | { type: "resizeResult"; reqId: string; ok: boolean }
@@ -524,6 +555,22 @@ export type CoreLinkTaskSnapshot = {
   taskId: string;
   projectId: string;
   title: string;
+  /**
+   * True once an operator has renamed this Session (issue 84). The Core's
+   * title generator refuses to write over a row carrying it, and the flag
+   * lives on the row rather than in Panel memory so the protection survives a
+   * Panel reload and a generator that finishes after the rename. The Panel
+   * renders from this field instead of synthesizing `false`, which made every
+   * Core-owned Session look un-renamed.
+   */
+  titleManuallySet: boolean;
+  /**
+   * The harness's own session id for this Task, or `null` before one has been
+   * observed (issue 84). The Core's hook pipeline reads it to tell a hook from
+   * this Session apart from one belonging to a session that has since been
+   * replaced.
+   */
+  claudeSessionId: string | null;
   agent: string;
   status: string;
   pinned: boolean;
@@ -611,8 +658,20 @@ export type CoreLinkServerFrame =
  * through to the Panel's own endpoint and 404'd. Same rule as above: the minor
  * moved, so a Core on 0.10.0 is "needs update" rather than a Core that accepts
  * the frame and silently drops the op.
+ * Issue 84 adds `titleManuallySet` and `claudeSessionId` to
+ * {@link CoreLinkTaskSnapshot} and to the `update` variant of
+ * {@link CoreLinkTaskMutation}, plus `hooksInstalled` on the `spawned`
+ * response → 0.12.0. The snapshot field is the load-bearing one:
+ * a Core that grew it without this bump would hand a Panel that predates it a
+ * snapshot whose rename protection is silently absent, and a Panel that
+ * predates the Core would keep synthesizing `false` — both render a Session
+ * the generator is free to rename out from under its operator. Same rule as
+ * above: the minor moved, so either side on 0.11.0 is "needs update" rather
+ * than a partial snapshot nobody notices. No migration rides along — the
+ * column (`title_manually_set`) has been in the shared schema bootstrap since
+ * the fork; only the wire and the Core's readers/writers of it are new.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.11.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.12.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?

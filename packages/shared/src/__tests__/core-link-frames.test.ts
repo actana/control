@@ -205,6 +205,8 @@ describe("core-link-frames", () => {
             taskId: "t1",
             projectId: "p1",
             title: "fix bug",
+            titleManuallySet: false,
+            claudeSessionId: null,
             agent: "claude-code",
             status: "running",
             pinned: false,

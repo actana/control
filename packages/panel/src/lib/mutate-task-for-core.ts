@@ -84,6 +84,8 @@ async function mutatePanelLocalTask(
     taskId: task.id,
     projectId: task.projectId,
     title: task.title,
+    titleManuallySet: task.titleManuallySet,
+    claudeSessionId: task.claudeSessionId,
     icon: task.icon,
     agent: task.agent,
     status: task.status,
