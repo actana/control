@@ -415,6 +415,23 @@ export function ProjectDialog({
     setFolderBrowserOpen(false);
   };
 
+  // Changing the Core changes machines. A path names a directory on the
+  // previous one, so neither it nor anything derived from it may follow the
+  // switch: not the field, not the snapshot Esc restores from, and not a name
+  // auto-filled from a folder over there. A name the Operator typed is theirs
+  // and describes no machine, so it stays.
+  const selectCore = (id: string) => {
+    if (id === coreId) return;
+    setCoreId(id);
+    setPath("");
+    folderSnapshotRef.current = { path: "", name: nameTouched ? name : "" };
+    if (!nameTouched) setName("");
+    // The remount below re-runs the browser's focus effect, which would pull
+    // focus out of the Core selector the operator is still on — fatal for the
+    // keyboard, where a native select fires change on every arrow key.
+    setFolderBrowserAutoFocus(false);
+  };
+
   const toggleFolderBrowser = () => {
     if (folderBrowserOpen) {
       cancelFolderBrowse();
@@ -871,6 +888,11 @@ export function ProjectDialog({
       )}
       {folderBrowserOpen && !!coreId && (
         <FolderBrowser
+          // Remount on the Core: the browser seeds its listing once, on mount,
+          // so a new Core needs a new instance — which also drops the old
+          // machine's error, filter, highlight and seed together, and leaves
+          // any in-flight listing for the previous Core with nothing to paint.
+          key={coreId}
           coreId={coreId}
           initialPath={path.trim() || null}
           autoFocus={folderBrowserAutoFocus}
@@ -1281,7 +1303,7 @@ export function ProjectDialog({
         <Icon name="globe" size={12} style={{ color: "var(--text-faint)", marginRight: 6 }} />
         <select
           value={coreId}
-          onChange={(e) => setCoreId(e.target.value)}
+          onChange={(e) => selectCore(e.target.value)}
           aria-label="Core to create the project on"
           disabled={submitting}
           style={{
