@@ -14,6 +14,10 @@ const PROJECT_EVENT_KINDS = new Set([
   // this dedicated kind. Every mounted `useCoreProjects` refetches so two
   // Panels on the same Core end up with the same pin state.
   "project:pinnedChanged",
+  // Remembered session settings and the grid-view default are Core facts too
+  // (issue 22), and they change what the New session button does — a Panel
+  // that missed the change would keep opening the dialog it should skip.
+  "project:settingsChanged",
 ]);
 
 /**

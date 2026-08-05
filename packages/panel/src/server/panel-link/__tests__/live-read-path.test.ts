@@ -236,6 +236,11 @@ const PROJECT: CoreLinkProjectSnapshot = {
   icon: "folder",
   iconColor: "#3b6ea5",
   pinned: false,
+  rememberHarnessSettings: false,
+  savedHarness: null,
+  savedSkipPermissions: false,
+  savedBareSession: false,
+  defaultGridView: false,
   updatedAt: 1,
 };
 

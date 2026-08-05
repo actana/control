@@ -74,3 +74,19 @@ export const UI_HARNESSES = Object.entries(HARNESS_REGISTRY)
 
 export const harnessSupportsSkipPermissions = (agent: Harness) =>
   HARNESS_REGISTRY[agent].supportsSkipPermissions;
+
+/**
+ * Does a session launched for this Harness carry its skip-permissions flag?
+ *
+ * Auto-mode is unconditional (issue 22): the New session dialog no longer asks,
+ * and no project or task field feeds this. Having a flag at all is the only
+ * condition — OpenCode has none, and passing it one would be an argument the
+ * spawn policy rejects.
+ *
+ * This is the single decision point on purpose. The command builder (which
+ * puts the argument in the command string) and the spawn descriptor (which
+ * declares the intent the policy checks that argument against) must agree, or
+ * `assertSpawnAllowed` rejects the spawn and nothing starts. Both read this.
+ */
+export const harnessLaunchesWithSkipPermissions = (agent: Harness) =>
+  harnessSupportsSkipPermissions(agent);

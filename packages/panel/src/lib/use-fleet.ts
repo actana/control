@@ -3,6 +3,7 @@ import { api } from "./api";
 import { getPanelBridge } from "./panel-bridge";
 import { mergeFleetTasks, type CoreFanOutResult, type FleetMergeResult } from "~/shared/fleet-merge";
 import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
+import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
 import type { ProjectWithCounts } from "~/shared/projects";
@@ -352,11 +353,12 @@ function projectSnapshotAsRow(snapshot: CoreLinkProjectSnapshot): ProjectWithCou
     pinned: snapshot.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberHarnessSettings: false,
-    savedHarness: null,
-    savedSkipPermissions: false,
-    savedBareSession: false,
-    defaultGridView: false,
+    // Remembered session settings are Core facts on the project row (issue 22).
+    rememberHarnessSettings: snapshot.rememberHarnessSettings,
+    savedHarness: (snapshot.savedHarness as Harness | null) ?? null,
+    savedSkipPermissions: snapshot.savedSkipPermissions,
+    savedBareSession: snapshot.savedBareSession,
+    defaultGridView: snapshot.defaultGridView,
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
     taskCounts: {

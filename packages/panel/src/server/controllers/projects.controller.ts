@@ -63,6 +63,7 @@ const updateProjectBody = z
     savedHarness: z.enum(HARNESSES).nullable(),
     savedSkipPermissions: z.boolean(),
     savedBareSession: z.boolean(),
+    defaultGridView: z.boolean(),
     togglePin: z.literal(true).optional(),
   })
   .partial();

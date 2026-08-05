@@ -12,7 +12,7 @@ import {
 import { getCorePtyBridge, getPanelBridge } from "./panel-bridge";
 import { markIntentionalSessionClose } from "./intentional-session-close";
 import { terminalSurfaceCache } from "./terminal-surface-cache";
-import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
+import { HARNESS_REGISTRY, harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import {
   harnessLaunchMode,
   harnessUsesPersistedSession,
@@ -248,11 +248,13 @@ function remoteScopedProjectFromSnapshot(
     pinned: snap.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberHarnessSettings: false,
-    savedHarness: null,
-    savedSkipPermissions: false,
-    savedBareSession: false,
-    defaultGridView: false,
+    // Remembered session settings are Core facts on the project row (issue 22),
+    // so they come off the snapshot rather than defaulting to empty.
+    rememberHarnessSettings: snap.rememberHarnessSettings,
+    savedHarness: (snap.savedHarness as Harness | null) ?? null,
+    savedSkipPermissions: snap.savedSkipPermissions,
+    savedBareSession: snap.savedBareSession,
+    defaultGridView: snap.defaultGridView,
     createdAt: now,
     updatedAt: now,
   };
@@ -297,7 +299,7 @@ function remoteTaskFromSnapshot(
 function baseCommandForTask(task: Task, model: string | null): string {
   if (!harnessUsesPersistedSession(task.agent)) {
     return HARNESS_REGISTRY[task.agent].startCommand({
-      skipPermissions: task.claudeSkipPermissions,
+      skipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
     });
   }
 
@@ -683,7 +685,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           taskId: task.id,
           ptyId: null,
           startCommand: commandForTask(task),
-          dangerouslySkipPermissions: !!task.claudeSkipPermissions,
+          dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
           cwd: project.path,
           project,
           task,
@@ -726,7 +728,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
                   task,
                   ptyId: opts?.ptyId ?? p.ptyId ?? null,
                   startCommand: commandForTask(task),
-                  dangerouslySkipPermissions: !!task.claudeSkipPermissions,
+                  dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
                   awaitingCreate: false,
                   // The caller holds a live task row — no revalidation needed.
                   pendingValidation: undefined,
@@ -741,7 +743,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             taskId: task.id,
             ptyId: opts?.ptyId ?? null,
             startCommand: commandForTask(task),
-            dangerouslySkipPermissions: !!task.claudeSkipPermissions,
+            dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
             cwd: project.path,
             project,
             task,
@@ -784,7 +786,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             taskId: task.id,
             ptyId: null,
             startCommand: commandForTask(task),
-            dangerouslySkipPermissions: !!task.claudeSkipPermissions,
+            dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
             cwd: project.path,
             project,
             task,
@@ -856,7 +858,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           taskId: task.id,
           task,
           startCommand: commandForTask(task),
-          dangerouslySkipPermissions: !!task.claudeSkipPermissions,
+          dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
           awaitingCreate: false,
         };
       });
@@ -951,8 +953,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   // reload. Revalidate those over the panel link with `listTasks(coreId)` and
   // match on `taskId`. Task metadata is refreshed from the returned
   // {@link CoreLinkTaskSnapshot}, but the persisted `startCommand` is kept —
-  // the snapshot doesn't carry the fields (`claudeSessionId`,
-  // `claudeSkipPermissions`, ...) that `commandForTask` needs to rebuild it.
+  // the snapshot doesn't carry the fields (`claudeSessionId`, ...) that
+  // `commandForTask` needs to rebuild it.
   const validationRanRef = useRef(false);
   useEffect(() => {
     if (validationRanRef.current) return;
@@ -1048,7 +1050,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             ...p,
             task: fresh.task,
             startCommand: fresh.startCommand ?? p.startCommand,
-            dangerouslySkipPermissions: !!fresh.task.claudeSkipPermissions,
+            dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(fresh.task.agent),
             pendingValidation: undefined,
           };
         }),

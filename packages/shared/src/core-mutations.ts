@@ -122,13 +122,31 @@ export function createProject(
   const icon = input.icon?.trim() || DEFAULT_PROJECT_ICON;
   const iconColor = input.iconColor?.trim() || DEFAULT_PROJECT_ICON_COLOR;
   const pinned = input.pinned === true ? 1 : 0;
+  const settings = normalizeProjectSettings(input);
   sqlite
     .prepare(
       `INSERT INTO projects (
-         id, name, path, icon, icon_color, pinned, created_at, updated_at
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+         id, name, path, icon, icon_color, pinned,
+         remember_agent_settings, saved_agent, saved_skip_permissions,
+         saved_bare_session, default_grid_view,
+         created_at, updated_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     )
-    .run(id, trimmedName, validatedPath, icon, iconColor, pinned, now, now);
+    .run(
+      id,
+      trimmedName,
+      validatedPath,
+      icon,
+      iconColor,
+      pinned,
+      settings.rememberHarnessSettings ? 1 : 0,
+      settings.savedHarness,
+      settings.savedSkipPermissions ? 1 : 0,
+      settings.savedBareSession ? 1 : 0,
+      settings.defaultGridView ? 1 : 0,
+      now,
+      now,
+    );
   return {
     projectId: id,
     name: trimmedName,
@@ -136,8 +154,98 @@ export function createProject(
     icon,
     iconColor,
     pinned: pinned === 1,
+    ...settings,
     updatedAt: now,
   };
+}
+
+/**
+ * The remembered session settings (issue 22) a project row carries, resolved
+ * against the column defaults. Shared by `create` (which needs a value for
+ * every column it inserts) and the snapshot it echoes back, so the returned
+ * snapshot cannot drift from the row that was just written.
+ */
+type ProjectSettings = Pick<
+  CoreLinkProjectSnapshot,
+  | "rememberHarnessSettings"
+  | "savedHarness"
+  | "savedSkipPermissions"
+  | "savedBareSession"
+  | "defaultGridView"
+>;
+
+function normalizeProjectSettings(input: {
+  rememberHarnessSettings?: boolean;
+  savedHarness?: string | null;
+  savedSkipPermissions?: boolean;
+  savedBareSession?: boolean;
+  defaultGridView?: boolean;
+}): ProjectSettings {
+  return {
+    rememberHarnessSettings: input.rememberHarnessSettings === true,
+    savedHarness: normalizeSavedHarness(input.savedHarness),
+    savedSkipPermissions: input.savedSkipPermissions === true,
+    savedBareSession: input.savedBareSession === true,
+    defaultGridView: input.defaultGridView === true,
+  };
+}
+
+/** `undefined`/`null`/blank all mean "no remembered Harness" — one `NULL` column value. */
+function normalizeSavedHarness(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
+type ProjectSettingsPatch = Extract<CoreLinkProjectMutation, { op: "settings" }>;
+
+/**
+ * Patch a project's remembered session settings. Fields omitted from `input`
+ * are left untouched (partial patch, mirroring `updateTask`); `savedHarness:
+ * null` clears the remembered Harness. Returns the updated snapshot, or `null`
+ * when the row is missing — the Panel rolls its optimistic patch back on both
+ * a `null` and a thrown error.
+ */
+export function updateProjectSettings(
+  sqlite: CoreMutationSqlite,
+  input: ProjectSettingsPatch,
+  now: number,
+): CoreLinkProjectSnapshot | null {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  if (input.rememberHarnessSettings !== undefined) {
+    sets.push("remember_agent_settings = ?");
+    params.push(input.rememberHarnessSettings ? 1 : 0);
+  }
+  if (input.savedHarness !== undefined) {
+    sets.push("saved_agent = ?");
+    params.push(normalizeSavedHarness(input.savedHarness));
+  }
+  if (input.savedSkipPermissions !== undefined) {
+    sets.push("saved_skip_permissions = ?");
+    params.push(input.savedSkipPermissions ? 1 : 0);
+  }
+  if (input.savedBareSession !== undefined) {
+    sets.push("saved_bare_session = ?");
+    params.push(input.savedBareSession ? 1 : 0);
+  }
+  if (input.defaultGridView !== undefined) {
+    sets.push("default_grid_view = ?");
+    params.push(input.defaultGridView ? 1 : 0);
+  }
+  if (sets.length === 0) {
+    // An empty patch is not an error — the dialog can fire one when nothing
+    // changed. Read the row back rather than bumping `updated_at` for nothing.
+    return readProjectSnapshot(sqlite, input.projectId);
+  }
+  sets.push("updated_at = ?");
+  params.push(now);
+  params.push(input.projectId);
+  const result = sqlite
+    .prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`)
+    .run(...params);
+  if (result.changes === 0) return null;
+  return readProjectSnapshot(sqlite, input.projectId);
 }
 
 /**
@@ -204,7 +312,9 @@ function readProjectSnapshot(
 ): CoreLinkProjectSnapshot | null {
   const row = sqlite
     .prepare(
-      `SELECT id, name, path, icon, icon_color, pinned, updated_at
+      `SELECT id, name, path, icon, icon_color, pinned,
+              remember_agent_settings, saved_agent, saved_skip_permissions,
+              saved_bare_session, default_grid_view, updated_at
        FROM projects WHERE id = ?`,
     )
     .get(projectId) as
@@ -215,6 +325,11 @@ function readProjectSnapshot(
         icon: string;
         icon_color: string;
         pinned: number;
+        remember_agent_settings: number;
+        saved_agent: string | null;
+        saved_skip_permissions: number;
+        saved_bare_session: number;
+        default_grid_view: number;
         updated_at: number;
       }
     | undefined;
@@ -226,6 +341,11 @@ function readProjectSnapshot(
     icon: row.icon,
     iconColor: row.icon_color,
     pinned: row.pinned === 1,
+    rememberHarnessSettings: row.remember_agent_settings === 1,
+    savedHarness: row.saved_agent,
+    savedSkipPermissions: row.saved_skip_permissions === 1,
+    savedBareSession: row.saved_bare_session === 1,
+    defaultGridView: row.default_grid_view === 1,
     updatedAt: row.updated_at,
   };
 }

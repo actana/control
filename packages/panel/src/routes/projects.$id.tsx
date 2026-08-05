@@ -85,7 +85,7 @@ import {
   type Harness,
   STATUS_DISPLAY_ORDER,
 } from "@actana/shared/domain";
-import { harnessSupportsSkipPermissions } from "@actana/shared/harnesses";
+import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import {
   queryKeys,
   remoteTaskFromSnapshot,
@@ -729,9 +729,7 @@ function ProjectPage() {
         projectId: project.id,
         agent: payload.agent,
         claudeSessionId,
-        claudeSkipPermissions: harnessSupportsSkipPermissions(payload.agent)
-          ? payload.skipPermissions
-          : undefined,
+        claudeSkipPermissions: harnessLaunchesWithSkipPermissions(payload.agent),
         claudeBareSession: payload.agent === "claude-code" ? payload.bareSession : undefined,
       });
       appendOptimisticTask(queryClient, project.id, optimisticTask, coreId);
@@ -760,10 +758,11 @@ function ProjectPage() {
           // The Core owns the row (ADR-0004/0005), so starting a session is
           // a mutation frame to the Core the project lives on — there is no
           // Panel-side task table to write to instead. The frame doesn't carry
-          // claudeSessionId / skipPermissions / bareSession today, so a session
-          // creates as a plain agent task without those fields: no
-          // persisted-claude-session resume and no skip-perms propagation until
-          // the protocol grows them.
+          // claudeSessionId / bareSession today, so a session creates as a
+          // plain Harness task without those fields: no persisted-claude-session
+          // resume until the protocol grows them. Skip-permissions is not a row
+          // field any launch path reads — it is derived from the Harness
+          // (issue 22).
           const snapshot = await mutateTaskForCore(coreId, {
             op: "create",
             taskId: clientTaskId,
@@ -848,7 +847,6 @@ function ProjectPage() {
     createSession(
       {
         agent: project.savedHarness,
-        skipPermissions: !!project.savedSkipPermissions,
         bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
       },
       { focusOnCreate: true },
@@ -872,7 +870,6 @@ function ProjectPage() {
     createSession(
       {
         agent: project.savedHarness,
-        skipPermissions: !!project.savedSkipPermissions,
         bareSession: project.savedHarness === "claude-code" ? !!project.savedBareSession : false,
       },
       { focusOnCreate: true },
@@ -899,14 +896,31 @@ function ProjectPage() {
   const onboardConsumedForRef = useRef<string | null>(null);
   const onboardIntentRef = useRef<ProjectOnboardIntent | null>(null);
   const onboardStartedRef = useRef(false);
+  const gridDefaultAppliedForRef = useRef<string | null>(null);
   useEffect(() => {
     if (onboardConsumedForRef.current === id) return;
     onboardConsumedForRef.current = id;
     onboardStartedRef.current = false;
     const intent = consumeProjectOnboardIntent(id);
     onboardIntentRef.current = intent;
-    if (intent) terminals.setGridView(intent.gridView);
+    if (intent) {
+      terminals.setGridView(intent.gridView);
+      // The intent already carries the layout for this first navigation; don't
+      // re-apply the stored default on top of it.
+      gridDefaultAppliedForRef.current = id;
+    }
   }, [id, terminals]);
+  // The layout the project was created with is a Core fact on the project row
+  // (issue 22), so it applies on every later visit too — the one-shot onboard
+  // intent above only covers the navigation that created the project. Applied
+  // once per project, not on every render, so toggling the grid off during a
+  // visit sticks.
+  useEffect(() => {
+    if (!project) return;
+    if (gridDefaultAppliedForRef.current === id) return;
+    gridDefaultAppliedForRef.current = id;
+    if (project.defaultGridView) terminals.setGridView(true);
+  }, [id, project, terminals]);
   useEffect(() => {
     const intent = onboardIntentRef.current;
     if (!intent?.autoStart || onboardStartedRef.current) return;
@@ -1053,7 +1067,6 @@ function ProjectPage() {
       void createSession(
         {
           agent: sourceTask.agent,
-          skipPermissions: !!sourceTask.claudeSkipPermissions,
           bareSession: sourceTask.agent === "claude-code" ? !!sourceTask.claudeBareSession : false,
         },
         { focusOnCreate: true },
@@ -1608,7 +1621,6 @@ function ProjectPage() {
   const startHarness = (data: {
     agent: Task["agent"];
     title: string;
-    dangerouslySkipPermissions: boolean;
     bareSession: boolean;
   }) => {
     setShowNewHarness(false);
@@ -1624,7 +1636,6 @@ function ProjectPage() {
     createSession(
       {
         agent: data.agent,
-        skipPermissions: data.dangerouslySkipPermissions,
         bareSession: data.bareSession,
       },
       { focusOnCreate: true },
@@ -2274,18 +2285,25 @@ function ProjectPage() {
           queryClient.setQueryData(queryKeys.project(project.id), (prev: typeof project | undefined) =>
             prev ? { ...prev, ...patch } : prev
           );
-          if (coreId) {
-            // "Remember these settings" persists to the projects row, which
-            // lives on the Core. The core-link `projectsMutate` frame
-            // doesn't cover arbitrary field patches yet (only create / rename /
-            // archive / pin), so the write can't cross the wire today. Keep the
-            // in-session optimistic patch — the user's choice sticks for this
-            // Panel run — but skip the PATCH that would 404 on the Panel's own
-            // rows and unhandled-reject.
-            return;
-          }
           try {
-            await api.updateProject(project.id, patch);
+            if (coreId) {
+              // "Remember these settings" persists to the projects row, which
+              // lives on the Core that owns it (ADR 0004/0005) — so the write
+              // is a `settings` mutation frame to that Core, not a PATCH that
+              // would 404 on the Panel's own rows. Every Panel connected to
+              // that Core converges on the result, as it does for pinning.
+              const updated = await mutateProjectForCore(coreId, {
+                op: "settings",
+                projectId: project.id,
+                rememberHarnessSettings: patch.rememberHarnessSettings,
+                savedHarness: patch.savedHarness,
+                savedSkipPermissions: patch.savedSkipPermissions,
+                savedBareSession: patch.savedBareSession,
+              });
+              if (!updated) throw new Error("The Core did not save the session settings.");
+            } else {
+              await api.updateProject(project.id, patch);
+            }
             await refresh();
           } catch (error) {
             queryClient.setQueryData(queryKeys.project(project.id), previous);

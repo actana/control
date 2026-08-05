@@ -25,6 +25,11 @@ function openDb(): Database.Database {
       icon TEXT NOT NULL,
       icon_color TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0,
+      remember_agent_settings INTEGER NOT NULL DEFAULT 0,
+      saved_agent TEXT,
+      saved_skip_permissions INTEGER NOT NULL DEFAULT 0,
+      saved_bare_session INTEGER NOT NULL DEFAULT 0,
+      default_grid_view INTEGER NOT NULL DEFAULT 0,
       updated_at INTEGER NOT NULL
     );
     CREATE TABLE tasks (
@@ -53,7 +58,11 @@ function insertProject(
   p: Partial<CoreLinkProjectSnapshot> & Pick<CoreLinkProjectSnapshot, "projectId" | "name" | "path">,
 ): void {
   db.prepare(
-    "INSERT INTO projects (id, name, path, icon, icon_color, pinned, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+    `INSERT INTO projects (
+       id, name, path, icon, icon_color, pinned,
+       remember_agent_settings, saved_agent, saved_skip_permissions,
+       saved_bare_session, default_grid_view, updated_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   ).run(
     p.projectId,
     p.name,
@@ -61,6 +70,11 @@ function insertProject(
     p.icon ?? "MC",
     p.iconColor ?? "#7ce58a",
     p.pinned ? 1 : 0,
+    p.rememberHarnessSettings ? 1 : 0,
+    p.savedHarness ?? null,
+    p.savedSkipPermissions ? 1 : 0,
+    p.savedBareSession ? 1 : 0,
+    p.defaultGridView ? 1 : 0,
     p.updatedAt ?? 1,
   );
 }
@@ -102,6 +116,11 @@ describe("queryProjects", () => {
       icon: "MC",
       iconColor: "#7ce58a",
       pinned: true,
+      rememberHarnessSettings: false,
+      savedHarness: null,
+      savedSkipPermissions: false,
+      savedBareSession: false,
+      defaultGridView: false,
       updatedAt: 100,
     });
     expect(projects).toContainEqual({
@@ -111,7 +130,33 @@ describe("queryProjects", () => {
       icon: "SC",
       iconColor: "#e5484d",
       pinned: false,
+      rememberHarnessSettings: false,
+      savedHarness: null,
+      savedSkipPermissions: false,
+      savedBareSession: false,
+      defaultGridView: false,
       updatedAt: 200,
+    });
+  });
+
+  it("carries the remembered session settings off the project row", () => {
+    insertProject(db, {
+      projectId: "p1",
+      name: "mission-control",
+      path: "/home/op/mc",
+      rememberHarnessSettings: true,
+      savedHarness: "codex",
+      savedSkipPermissions: true,
+      savedBareSession: true,
+      defaultGridView: true,
+    });
+    const [project] = queryProjects(asQuery(db));
+    expect(project).toMatchObject({
+      rememberHarnessSettings: true,
+      savedHarness: "codex",
+      savedSkipPermissions: true,
+      savedBareSession: true,
+      defaultGridView: true,
     });
   });
 

@@ -6,16 +6,14 @@ afterEach(() => {
 });
 
 describe("session-warm-pool", () => {
-  it("builds default payload from saved agent settings", () => {
+  it("builds default payload from saved harness settings", () => {
     expect(
       defaultSessionPayload({
         rememberHarnessSettings: true,
         savedHarness: "codex",
-        savedSkipPermissions: true,
       }),
     ).toEqual({
       agent: "codex",
-      skipPermissions: true,
       bareSession: false,
     });
   });
@@ -27,34 +25,41 @@ describe("session-warm-pool", () => {
       }),
     ).toEqual({
       agent: "claude-code",
-      skipPermissions: false,
       bareSession: false,
     });
   });
 
-  it("remembers skip permissions without remembered agent settings", () => {
-    expect(
-      defaultSessionPayload({
-        rememberHarnessSettings: false,
-        savedSkipPermissions: true,
-      }),
-    ).toEqual({
-      agent: "claude-code",
-      skipPermissions: true,
-      bareSession: false,
-    });
-  });
-
-  it("uses the last selected agent without remembered agent settings", () => {
+  it("uses the last selected harness without remembered settings", () => {
     expect(
       defaultSessionPayload({
         rememberHarnessSettings: false,
         savedHarness: "cursor-cli",
-        savedSkipPermissions: true,
       }),
     ).toEqual({
       agent: "cursor-cli",
-      skipPermissions: true,
+      bareSession: false,
+    });
+  });
+
+  it("carries a remembered bare session only for claude-code", () => {
+    expect(
+      defaultSessionPayload({
+        rememberHarnessSettings: true,
+        savedHarness: "claude-code",
+        savedBareSession: true,
+      }),
+    ).toEqual({
+      agent: "claude-code",
+      bareSession: true,
+    });
+    expect(
+      defaultSessionPayload({
+        rememberHarnessSettings: true,
+        savedHarness: "codex",
+        savedBareSession: true,
+      }),
+    ).toEqual({
+      agent: "codex",
       bareSession: false,
     });
   });
@@ -68,7 +73,6 @@ describe("session-warm-pool", () => {
         coreId: null,
         payload: {
           agent: "claude-code",
-          skipPermissions: false,
           bareSession: false,
         },
       }),

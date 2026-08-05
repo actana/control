@@ -426,7 +426,8 @@ export class PtyCoreLinkServer {
    * about the change via the same `subscribe` / `event` / `eventsReplayed`
    * replay path the PTY lifecycle events use (issue 04). Kinds mirror the
    * server's AppEvent names (`project:created`, `project:updated`,
-   * `project:archived`) so the Panel can route by kind without a translation
+   * `project:archived`, plus the dedicated `project:pinnedChanged` /
+   * `project:settingsChanged`) so the Panel can route by kind without a translation
    * layer. Only successful mutations are recorded — a `null` result (row
    * missing) does not append.
    */
@@ -442,7 +443,9 @@ export class PtyCoreLinkServer {
           ? "project:renamed"
           : mutation.op === "pin"
             ? "project:pinnedChanged"
-            : "project:archived";
+            : mutation.op === "settings"
+              ? "project:settingsChanged"
+              : "project:archived";
     const payload = JSON.stringify({ projectId: project.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: null, ptyId: null });
   }

@@ -255,6 +255,11 @@ function mutationPort(): CoreMutationPort {
           icon: mutation.icon ?? "PR",
           iconColor: mutation.iconColor ?? "#3b6ea5",
           pinned: mutation.pinned ?? false,
+          rememberHarnessSettings: false,
+          savedHarness: null,
+          savedSkipPermissions: false,
+          savedBareSession: false,
+          defaultGridView: false,
           updatedAt: ++seq,
         };
         projects.set(projectId, snapshot);

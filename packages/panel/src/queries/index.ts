@@ -57,11 +57,14 @@ function remoteProjectFromSnapshot(snapshot: CoreLinkProjectSnapshot): ProjectWi
     pinned: snapshot.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberHarnessSettings: false,
-    savedHarness: null,
-    savedSkipPermissions: false,
-    savedBareSession: false,
-    defaultGridView: false,
+    // Remembered session settings are Core facts on the project row (issue 22),
+    // so they come off the snapshot rather than defaulting to empty. Every
+    // Panel connected to this Core therefore reads the same values.
+    rememberHarnessSettings: snapshot.rememberHarnessSettings,
+    savedHarness: (snapshot.savedHarness as Harness | null) ?? null,
+    savedSkipPermissions: snapshot.savedSkipPermissions,
+    savedBareSession: snapshot.savedBareSession,
+    defaultGridView: snapshot.defaultGridView,
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
     // Task counts / preview / githubUrl are decorated by the Panel's own DB —

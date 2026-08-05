@@ -42,7 +42,7 @@ describe("commandForTask", () => {
     } satisfies Task;
 
     expect(commandForTask(task)).toBe(
-      "claude --session-id 00000000-0000-4000-8000-000000000000",
+      "claude --session-id 00000000-0000-4000-8000-000000000000 --dangerously-skip-permissions",
     );
   });
 
@@ -55,7 +55,7 @@ describe("commandForTask", () => {
     } satisfies Task;
 
     expect(commandForTask(task)).toBe(
-      "claude --resume 00000000-0000-4000-8000-000000000000",
+      "claude --resume 00000000-0000-4000-8000-000000000000 --dangerously-skip-permissions",
     );
   });
 
@@ -113,7 +113,7 @@ describe("commandForTask", () => {
       status: "ready",
     } satisfies Task;
 
-    expect(commandForTask(task)).toBe("codex --enable hooks");
+    expect(commandForTask(task)).toBe("codex --enable hooks --yolo");
   });
 
   it("resumes Codex after the first prompt captured a session id", () => {
@@ -125,7 +125,7 @@ describe("commandForTask", () => {
     } satisfies Task;
 
     expect(commandForTask(task)).toBe(
-      "codex resume 019d7a0f-432a-7fa1-a821-b7841f983967 --enable hooks",
+      "codex resume 019d7a0f-432a-7fa1-a821-b7841f983967 --enable hooks --yolo",
     );
   });
 });
