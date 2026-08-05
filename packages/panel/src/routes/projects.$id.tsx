@@ -37,6 +37,7 @@ import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { api } from "~/lib/api";
 import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
 import { saveProjectEdits } from "~/lib/save-project-edits";
+import { removeProject } from "~/lib/remove-project";
 import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import { newSessionId } from "~/lib/claude-command";
 import { TITLE_WAITING } from "~/lib/task-sentinels";
@@ -1463,8 +1464,14 @@ function ProjectPage() {
     setConfirmRemove(false);
     try {
       await terminals.closeForProject(project.id);
-      await api.deleteProject(project.id);
+      // Route to the Core that owns the row (ADR 0005) — the Panel's own
+      // delete endpoint only knows Panel-owned rows.
+      await removeProject(coreId, project.id);
       router.navigate({ to: "/" });
+    } catch (e: unknown) {
+      // Without this catch the rejection was unhandled: the dialog closed, no
+      // toast appeared, and the project was still there (issue 97).
+      toast.error(e instanceof Error ? e.message : "Could not remove project");
     } finally {
       setCleanupStatus(null);
     }
@@ -1477,7 +1484,7 @@ function ProjectPage() {
     setCleanupStatus("Removing this project from Actana Control.");
     try {
       await terminals.closeForProject(project.id);
-      await api.deleteProject(project.id);
+      await removeProject(coreId, project.id);
       router.navigate({ to: "/" });
     } catch (e: unknown) {
       const message = e instanceof Error ? e.message : "Could not remove project";
@@ -2333,8 +2340,13 @@ function ProjectPage() {
           <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
             {projectPathIssue?.message ?? "Actana Control cannot find this project folder."}
             {" "}
-            Point the project at its new location from Edit project, or remove it from Actana
-            Control.
+            {/* Repointing is only an option where the Panel owns the row. A
+                Core-owned project's path is set at create and immutable
+                afterwards (ADR 0022), so offering Edit project here would send
+                the operator to a field they cannot change. */}
+            {coreId
+              ? "This project's folder is on its Core and cannot be repointed from here — remove it from Actana Control and add it again at the new path."
+              : "Point the project at its new location from Edit project, or remove it from Actana Control."}
           </div>
           {projectPathActionError && (
             <div
@@ -2454,6 +2466,7 @@ function ProjectPage() {
         // Editing browses the folders of the Core that owns this project —
         // the dialog has no other way to know whose disk to walk.
         initialCoreId={coreId}
+        projectCoreId={coreId}
         onCreateGroup={createGroupForSelection}
         onClose={() => setShowEdit(false)}
         onSave={async (data) => {

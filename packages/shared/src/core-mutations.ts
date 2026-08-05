@@ -248,6 +248,50 @@ export function updateProjectSettings(
   return readProjectSnapshot(sqlite, input.projectId);
 }
 
+type ProjectAppearancePatch = Extract<CoreLinkProjectMutation, { op: "appearance" }>;
+
+/**
+ * Patch a project's icon and icon colour (issue 98). Fields omitted from
+ * `input` are left untouched, mirroring {@link updateProjectSettings}. Both
+ * columns are NOT NULL, so a blank string reads as "nothing to set here"
+ * rather than an erase — the Edit-project dialog always sends both fields, and
+ * an empty icon box must not blank a row that has one.
+ *
+ * Returns the updated snapshot, or `null` when the row is missing.
+ */
+export function updateProjectAppearance(
+  sqlite: CoreMutationSqlite,
+  input: ProjectAppearancePatch,
+  now: number,
+): CoreLinkProjectSnapshot | null {
+  const sets: string[] = [];
+  const params: unknown[] = [];
+  const icon = input.icon?.trim();
+  if (icon) {
+    sets.push("icon = ?");
+    params.push(icon);
+  }
+  const iconColor = input.iconColor?.trim();
+  if (iconColor) {
+    sets.push("icon_color = ?");
+    params.push(iconColor);
+  }
+  if (sets.length === 0) {
+    // An empty patch is not an error — the dialog fires one when the operator
+    // changed nothing. Read the row back rather than bumping `updated_at` for
+    // nothing.
+    return readProjectSnapshot(sqlite, input.projectId);
+  }
+  sets.push("updated_at = ?");
+  params.push(now);
+  params.push(input.projectId);
+  const result = sqlite
+    .prepare(`UPDATE projects SET ${sets.join(", ")} WHERE id = ?`)
+    .run(...params);
+  if (result.changes === 0) return null;
+  return readProjectSnapshot(sqlite, input.projectId);
+}
+
 /**
  * Set a project's `pinned` flag. Returns the updated snapshot, or `null`
  * when the row is missing. Pin state is a Core fact — two Panels

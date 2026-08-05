@@ -1366,11 +1366,21 @@ export const ProjectBar = memo(function ProjectBar({
         // Folder browsing walks the disk of the Core that owns the row, so the
         // dialog is told whose it is (remote pins carry their own `coreId`).
         initialCoreId={editingProject.coreId ?? coreId ?? ""}
+        // Ownership, not browsing: a Panel-owned pin edited while a Core is
+        // open must keep its editable path, and `initialCoreId` above falls
+        // back to the open Core precisely when ownership does not.
+        projectCoreId={editingProject.coreId ?? null}
         onCreateGroup={createGroupForSelection}
         onClose={() => setEditingProject(null)}
         onSave={async (data) => {
           const projectId = editingProject.id;
-          await saveProjectEdits(editingProject.coreId ?? coreId ?? null, editingProject, data);
+          // The row itself says who owns it, with no fall back to the bar's own
+          // Core: the pin bar mixes this Panel's rows (untagged) with every
+          // Core's pins (tagged), so a fallback would route a Panel-local
+          // project's edits at whichever Core happens to be open — a rename
+          // that no-ops against a row that isn't there, and a group filed as
+          // presentation for a project the Panel owns outright.
+          await saveProjectEdits(editingProject.coreId ?? null, editingProject, data);
           setEditingProject(null);
           await Promise.all([invalidateProjects(), invalidateProject(projectId)]);
         }}

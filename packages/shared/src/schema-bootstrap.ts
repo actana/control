@@ -278,6 +278,23 @@ export function ensureSchema(sqlite: Database.Database): void {
     CREATE INDEX IF NOT EXISTS projects_group_idx ON projects(group_id);
     CREATE INDEX IF NOT EXISTS projects_pinned_idx ON projects(pinned);
 
+    -- Panel-local presentation for a project the Panel does not own (issue 98):
+    -- group membership, card image and launch URL for a Core-owned Project,
+    -- keyed to the Core's project id and joined onto the Core's snapshot on
+    -- read. Deliberately no foreign key to projects — the point of the row is
+    -- that no project row exists here. Unused on a Core, which owns its rows
+    -- outright; the bootstrap is shared, so the table is created either way.
+    CREATE TABLE IF NOT EXISTS project_presentation (
+      project_id TEXT PRIMARY KEY,
+      core_id TEXT NOT NULL,
+      image_path TEXT,
+      group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
+      launch_url TEXT,
+      updated_at INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS project_presentation_core_idx ON project_presentation(core_id);
+    CREATE INDEX IF NOT EXISTS project_presentation_group_idx ON project_presentation(group_id);
+
     CREATE TABLE IF NOT EXISTS tasks (
       id TEXT PRIMARY KEY,
       project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,

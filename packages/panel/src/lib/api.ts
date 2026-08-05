@@ -1,4 +1,4 @@
-import type { Group, Project, Task, UserTerminal } from "~/db/schema";
+import type { Group, Project, ProjectPresentation, Task, UserTerminal } from "~/db/schema";
 import type { Harness, TaskStatus } from "@actana/shared/domain";
 import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
@@ -145,6 +145,11 @@ async function req<T>(url: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+/** `?coreId=…` for the routes that address a Core-owned project, or nothing. */
+function coreIdQuery(coreId?: string | null): string {
+  return coreId ? `?coreId=${encodeURIComponent(coreId)}` : "";
+}
+
 export const api = {
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
@@ -186,25 +191,68 @@ export const api = {
       method: "PATCH",
       body: JSON.stringify(body),
     }),
-  /** Upload a project's card image. The Panel service stores the bytes and
-   *  returns the updated row. */
-  uploadProjectImage: async (id: string, file: File) => {
-    const { project } = await req<{ project: Project }>(
-      `/api/projects/${id}/image`,
+  /**
+   * Upload a project's card image. The Panel service stores the bytes and
+   * answers with where the image now lives. `coreId` is required the first time
+   * a Core-owned project gets one — the Panel has no row for it, so the image
+   * needs a presentation row keyed to its Core (issue 98).
+   */
+  uploadProjectImage: async (id: string, file: File, coreId?: string | null) => {
+    const { imagePath } = await req<{ imagePath: string | null }>(
+      `/api/projects/${id}/image${coreIdQuery(coreId)}`,
       {
         method: "PUT",
         headers: { "content-type": file.type },
         body: file,
       },
     );
-    return project;
+    return imagePath;
   },
-  deleteProjectImage: (id: string) =>
-    req<{ project: Project }>(`/api/projects/${id}/image`, { method: "DELETE" }),
-  updateProjectLaunchUrl: (id: string, launchUrl: string | null) =>
-    req<{ project: Project }>(`/api/projects/${id}`, {
+  deleteProjectImage: (id: string, coreId?: string | null) =>
+    req<{ imagePath: string | null }>(
+      `/api/projects/${id}/image${coreIdQuery(coreId)}`,
+      { method: "DELETE" },
+    ),
+  updateProjectLaunchUrl: (id: string, launchUrl: string | null, coreId?: string | null) =>
+    coreId
+      ? req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ coreId, launchUrl }),
+        })
+      : req<{ project: Project }>(`/api/projects/${id}`, {
+          method: "PATCH",
+          body: JSON.stringify({ launchUrl }),
+        }),
+
+  /**
+   * Panel-local presentation for Core-owned projects (issue 98) — the group,
+   * card image and launch URL the Panel keeps for a project whose row lives on
+   * its Core. Read as one list and joined onto Core snapshots client-side; the
+   * Panel server has no transport of its own to a Core to join them for us.
+   */
+  listProjectPresentation: () =>
+    req<{ presentation: ProjectPresentation[] }>("/api/project-presentation"),
+  updateProjectPresentation: (
+    id: string,
+    coreId: string,
+    patch: { groupId?: string | null; imagePath?: string | null; launchUrl?: string | null },
+  ) =>
+    req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
       method: "PATCH",
-      body: JSON.stringify({ launchUrl }),
+      body: JSON.stringify({ coreId, ...patch }),
+    }),
+  deleteProjectPresentation: (id: string) =>
+    req<void>(`/api/project-presentation/${id}`, { method: "DELETE" }),
+  /**
+   * Forget the filing for every project on `coreId` outside `projectIds`. The
+   * client posts the list it just read from the Core because the Panel server
+   * has no way to ask — projects deleted on a Core, including deletes this
+   * Panel never witnessed, would otherwise leave rows nothing collects.
+   */
+  pruneProjectPresentation: (coreId: string, projectIds: string[]) =>
+    req<{ removed: number }>("/api/project-presentation/prune", {
+      method: "POST",
+      body: JSON.stringify({ coreId, projectIds }),
     }),
   togglePin: (id: string) =>
     req<{ project: Project }>(`/api/projects/${id}`, {

@@ -29,12 +29,28 @@ tab, Restore returns one to the active list, and "Delete all archived" works.
 They travel on a read path of their own, used only while that view is open — the
 Fleet and active lists still carry none of them.
 
-The core-link protocol moves to 0.13.0 so a Session's manually-set-title flag
+Editing and removing a project that lives on a Core both work now. Removing one
+never did: every remove path asked the Panel to delete a row only its Core has,
+and the confirm dialog closed without a word while the project stayed put.
+Editing half-worked — the name was saved, and the icon, colour, group and card
+image were thrown away with an error nobody saw. Renames, re-icons and
+re-colours now travel to the Core that owns the project, so every Panel watching
+it converges on them. The group, card image and launch URL stay with the Panel:
+they are your own filing over someone else's project, and two Panels on one Core
+are meant to disagree about them. A failed save now says so, instead of leaving
+half of one behind.
+
+A project's folder is fixed when the project is created on a Core, and the Edit
+dialog now says so rather than accepting a new path and discarding it on save.
+
+The core-link protocol moves to 0.15.0 so a Session's manually-set-title flag
 and harness session id can cross the wire, so archived Sessions on a Core can be
-listed and restored, so a project's remembered session settings can cross, and
-so a Session that lives on a Core can be deleted at all. The Panel and its Cores
-are version-locked, so every Core needs updating alongside the Panel — an older
-one renders as "needs update" rather than degrading.
+listed and restored, so a project's remembered session settings can cross, so a
+Session that lives on a Core can be deleted at all, so a missing Harness can be
+installed from the session picker, and so a project's icon and colour can be
+changed after it is created. The Panel and its Cores are version-locked, so
+every Core needs updating alongside the Panel — an older one renders as "needs
+update" rather than degrading.
 
 Deleting a Session on a Core used to fail. The task-mutation frame carried no
 delete operation, so every delete fell through to the Panel's own endpoint,

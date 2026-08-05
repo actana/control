@@ -1,0 +1,58 @@
+import { eq, and, notInArray } from "drizzle-orm";
+import { getDb } from "~/db/client";
+import { projectPresentation } from "~/db/schema";
+import type { ProjectPresentation } from "~/db/schema";
+
+export function findAllProjectPresentation(): ProjectPresentation[] {
+  return getDb().select().from(projectPresentation).all();
+}
+
+export function findProjectPresentationById(projectId: string): ProjectPresentation | null {
+  return (
+    getDb()
+      .select()
+      .from(projectPresentation)
+      .where(eq(projectPresentation.projectId, projectId))
+      .get() ?? null
+  );
+}
+
+export function insertProjectPresentation(row: ProjectPresentation): void {
+  getDb().insert(projectPresentation).values(row).run();
+}
+
+export function updateProjectPresentationRow(
+  projectId: string,
+  patch: Partial<ProjectPresentation>,
+): void {
+  getDb()
+    .update(projectPresentation)
+    .set(patch)
+    .where(eq(projectPresentation.projectId, projectId))
+    .run();
+}
+
+export function deleteProjectPresentationRow(projectId: string): number {
+  return getDb()
+    .delete(projectPresentation)
+    .where(eq(projectPresentation.projectId, projectId))
+    .run().changes;
+}
+
+/**
+ * Every presentation row for `coreId` whose project is not in `liveProjectIds`
+ * — the orphan set for projects deleted on the Core, including deletes this
+ * Panel never witnessed. Scoped to one Core because that is the scope of the
+ * list that proves a project is gone.
+ */
+export function findProjectPresentationOrphans(
+  coreId: string,
+  liveProjectIds: readonly string[],
+): ProjectPresentation[] {
+  const scoped = eq(projectPresentation.coreId, coreId);
+  const where =
+    liveProjectIds.length === 0
+      ? scoped
+      : and(scoped, notInArray(projectPresentation.projectId, [...liveProjectIds]));
+  return getDb().select().from(projectPresentation).where(where).all();
+}

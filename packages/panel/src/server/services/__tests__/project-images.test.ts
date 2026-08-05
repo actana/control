@@ -10,12 +10,17 @@ const { createProject, deleteProject, getProject } = await import("../projects")
 const {
   setProjectImage,
   clearProjectImage,
+  findProjectImageOwner,
+  writeProjectImage,
   projectImagesDir,
   projectImageAbsolutePath,
   deleteAllProjectImagesFor,
 } = await import("../project-images");
+const { getProjectPresentation } = await import("../project-presentation");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups } = await import("~/db/schema");
+const { projectPresentation, projects, tasks, groups } = await import("~/db/schema");
+
+const PNG_BYTES = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 
 function workdir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "mc-img-proj-"));
@@ -33,6 +38,7 @@ describe("project-images service", () => {
   beforeEach(() => {
     const db = getDb();
     db.delete(tasks).run();
+    db.delete(projectPresentation).run();
     db.delete(projects).run();
     db.delete(groups).run();
   });
@@ -84,6 +90,47 @@ describe("project-images service", () => {
       .readdirSync(projectImagesDir())
       .filter((n) => n.startsWith(`${c.id}.`));
     expect(remaining).toEqual([]);
+  });
+
+  // A Core-owned project has no row in the Panel's database (issue 98), so the
+  // image record lives on its presentation row instead. Everything about the
+  // files on disk is the same.
+  it("records a Core-owned project's image on its presentation row", () => {
+    const owner = writeProjectImage("core-project", "png", PNG_BYTES, "core-a");
+
+    expect(owner?.imagePath).toBe("core-project.png");
+    expect(getProjectPresentation("core-project")).toMatchObject({
+      coreId: "core-a",
+      imagePath: "core-project.png",
+    });
+    expect(findProjectImageOwner("core-project")?.imagePath).toBe("core-project.png");
+  });
+
+  it("refuses an image for a project neither owner knows, before writing it", () => {
+    // No Panel row, no coreId to key a presentation row by: writing the file
+    // and reporting success would leave bytes nothing ever points at. The
+    // refusal has to come first, or the file outlives it as an orphan.
+    expect(writeProjectImage("nobodys-project", "png", PNG_BYTES)).toBeNull();
+    expect(fs.existsSync(path.join(projectImagesDir(), "nobodys-project.png"))).toBe(false);
+  });
+
+  // The stale-extension sweep runs on the way to writing, so a refusal that
+  // happened after it would take the project's existing image down with it.
+  it("leaves an existing image intact when a later write is refused", () => {
+    const filename = touchImage("nobodys-project", "png");
+
+    expect(writeProjectImage("nobodys-project", "jpg", PNG_BYTES)).toBeNull();
+    expect(fs.existsSync(path.join(projectImagesDir(), filename))).toBe(true);
+  });
+
+  it("finds the Core it already knows when a later call omits the coreId", () => {
+    writeProjectImage("core-project", "png", PNG_BYTES, "core-a");
+
+    const cleared = clearProjectImage("core-project");
+
+    expect(cleared?.imagePath).toBeNull();
+    expect(getProjectPresentation("core-project")?.imagePath).toBeNull();
+    expect(fs.existsSync(path.join(projectImagesDir(), "core-project.png"))).toBe(false);
   });
 
   it("projectImageAbsolutePath rejects path-traversal attempts", () => {

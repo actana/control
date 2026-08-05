@@ -6,7 +6,11 @@ import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shar
 import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
-import { projectSettingsFromSnapshot, type ProjectWithCounts } from "~/shared/projects";
+import {
+  projectPresentationById,
+  projectRowFromSnapshot,
+  type ProjectWithCounts,
+} from "~/shared/projects";
 
 // The fleet, as the browser sees it.
 //
@@ -298,13 +302,26 @@ export function useRemotePinnedProjects(): {
     }
     let cancelled = false;
     void (async () => {
+      // The rail clusters by group and draws card images, and both are
+      // Panel-local presentation for a Core-owned project (issue 98) — read
+      // once for the whole fan-out rather than per Core. A failed read only
+      // costs the filing, so the pins still render.
+      const presentation = projectPresentationById(
+        await api
+          .listProjectPresentation()
+          .then((r) => r.presentation)
+          .catch(() => []),
+      );
       const perCore = await Promise.all(
         cores.map(async (core) => {
           try {
             const projects = await bridge.listProjects(core.id);
             return projects
               .filter((p) => p.pinned)
-              .map((p) => ({ ...projectSnapshotAsRow(p), coreId: core.id }));
+              .map((p) => ({
+                ...projectRowFromSnapshot(p, presentation.get(p.projectId)),
+                coreId: core.id,
+              }));
           } catch {
             return [] as ProjectWithCounts[];
           }
@@ -338,39 +355,3 @@ export function useRemotePinnedProjects(): {
   return { projects: pinned, refresh };
 }
 
-// Core-link snapshot → the row shape the rail renders. Matches
-// `remoteProjectFromSnapshot` in `queries/index.ts`; the fields a snapshot
-// doesn't carry take safe defaults rather than inventing Core state.
-function projectSnapshotAsRow(snapshot: CoreLinkProjectSnapshot): ProjectWithCounts {
-  return {
-    id: snapshot.projectId,
-    name: snapshot.name,
-    path: snapshot.path,
-    icon: snapshot.icon,
-    iconColor: snapshot.iconColor,
-    imagePath: null,
-    groupId: null,
-    pinned: snapshot.pinned,
-    pinnedOrder: null,
-    launchUrl: null,
-    // Remembered session settings are Core facts on the project row (issue 22),
-    // so they come off the snapshot rather than defaulting to empty.
-    ...projectSettingsFromSnapshot(snapshot),
-    createdAt: snapshot.updatedAt,
-    updatedAt: snapshot.updatedAt,
-    taskCounts: {
-      ready: 0,
-      running: 0,
-      "needs-input": 0,
-      interrupted: 0,
-      finished: 0,
-      terminated: 0,
-      disconnected: 0,
-      total: 0,
-      activeNonDone: 0,
-    },
-    preview: null,
-    githubUrl: null,
-    repoKey: null,
-  };
-}

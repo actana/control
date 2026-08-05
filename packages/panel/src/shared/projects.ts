@@ -1,6 +1,6 @@
 import type { CoreLinkProjectSnapshot } from "@actana/shared/core-link-frames";
-import type { Harness } from "@actana/shared/domain";
-import type { Project, TaskStatus } from "~/db/schema";
+import { TASK_STATUSES, type Harness } from "@actana/shared/domain";
+import type { Project, ProjectPresentation, TaskStatus } from "~/db/schema";
 
 export type ProjectWithCounts = Project & {
   taskCounts: Record<TaskStatus, number> & { total: number; activeNonDone: number };
@@ -48,6 +48,60 @@ export function projectSettingsFromSnapshot(
     savedBareSession: snapshot.savedBareSession,
     defaultGridView: snapshot.defaultGridView,
   };
+}
+
+/**
+ * A Core's project snapshot as the row every project surface renders.
+ *
+ * The core-link carries Core facts only — name, path, icon, pin, remembered
+ * session settings. The Panel's own presentation for that project (its group,
+ * card image and launch URL) has no frame to travel in and is kept Panel-side
+ * (issue 98); pass the row for this project and it is joined on here. Without
+ * it those three read as empty, which is exactly right for a project the
+ * operator has never filed.
+ *
+ * The rest — task counts, preview, git remote — the Panel decorates from its
+ * own database and a Core snapshot has no answer for, so they take safe
+ * defaults rather than inventing Core state. One mapper for every caller: the
+ * project page, the rail's pinned strip and Fleet must agree on what a remote
+ * project looks like.
+ */
+export function projectRowFromSnapshot(
+  snapshot: CoreLinkProjectSnapshot,
+  presentation?: ProjectPresentation | null,
+): ProjectWithCounts {
+  return {
+    id: snapshot.projectId,
+    name: snapshot.name,
+    path: snapshot.path,
+    icon: snapshot.icon,
+    iconColor: snapshot.iconColor,
+    imagePath: presentation?.imagePath ?? null,
+    groupId: presentation?.groupId ?? null,
+    pinned: snapshot.pinned,
+    pinnedOrder: null,
+    launchUrl: presentation?.launchUrl ?? null,
+    // Remembered session settings are Core facts on the project row (issue 22),
+    // so they come off the snapshot rather than defaulting to empty.
+    ...projectSettingsFromSnapshot(snapshot),
+    createdAt: snapshot.updatedAt,
+    updatedAt: snapshot.updatedAt,
+    taskCounts: {
+      ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
+      total: 0,
+      activeNonDone: 0,
+    },
+    preview: null,
+    githubUrl: null,
+    repoKey: null,
+  };
+}
+
+/** Presentation rows as a lookup by project id, for the mapper above. */
+export function projectPresentationById(
+  rows: readonly ProjectPresentation[],
+): Map<string, ProjectPresentation> {
+  return new Map(rows.map((row) => [row.projectId, row]));
 }
 
 export type ProjectPathStatus =
