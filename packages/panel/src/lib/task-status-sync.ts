@@ -11,25 +11,28 @@ export function harnessUsesTerminalPromptFallback(agent: Harness): boolean {
 }
 
 /**
- * Does this keystroke start a turn for a Session with no hooks reporting?
+ * Does this keystroke start a turn for a Session nothing else will report?
  *
  * The suppression follows reality, not the harness family (issue 84). It used
  * to check a static "these families have lifecycle hooks" set, which was true
- * about the family and false about the Session: the Core installs the hook
- * files at spawn, and a spawn where that did not happen — an unsupported
- * harness, an unwritable workspace, a Core with no hook receiver — produced a
- * Session that was exempt from the fallback and had no hooks either, so
- * nothing ever moved it off `ready`.
+ * about the family and false about the Session: nothing installed hooks at
+ * all after the Electron main process was retired, so every hook-capable
+ * Session was exempt from the fallback AND had no hooks — nothing ever moved
+ * it off `ready`.
  *
- * `hooksInstalled` is the Core's own answer for this Session, from its spawn
- * result. Only that exempts it.
+ * `hooksReportTurnStart` is the owning Core's answer for this Session, from
+ * its spawn result, and it is narrower than "hooks were installed" on
+ * purpose: Cursor takes the hooks file but never fires `beforeSubmitPrompt`,
+ * and Codex will not run newly-installed hooks until the operator reviews
+ * them. Both report a turn's end; neither reports its start, so both still
+ * need this.
  */
 export function terminalInputStartsTurn(
   agent: Harness,
   data: string,
-  hooksInstalled: boolean,
+  hooksReportTurnStart: boolean,
 ): boolean {
-  if (hooksInstalled) return false;
+  if (hooksReportTurnStart) return false;
   return data.includes("\r") || data.includes("\n");
 }
 

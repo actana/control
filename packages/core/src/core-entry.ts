@@ -251,6 +251,12 @@ async function startCore(): Promise<void> {
     // One write seam for the Panel's `tasksMutate` and the Core's own hook /
     // exit / title writes (issue 84).
     taskWriter,
+    // Cursor never fires `beforeSubmitPrompt`, so the Panel reads the prompt
+    // off the terminal and hands it here — the only way a Core-owned Cursor
+    // Session gets named at all (issue 84).
+    promptPort: {
+      submitted: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+    },
     // Issue 11: back the `agentsAvailabilityList` frame with the current
     // snapshot from the Core's own PATH probe. The event stream carries
     // deltas; this snapshot answers the fresh-Panel hydration path.

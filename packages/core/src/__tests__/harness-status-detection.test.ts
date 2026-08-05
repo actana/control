@@ -241,6 +241,35 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(unknownTask.status).toBe(404);
   });
 
+  it("names a Session from a prompt the Panel captured off the terminal", async () => {
+    // Cursor never fires `beforeSubmitPrompt`, so no hook carries the prompt.
+    // The Panel reads it off the terminal and hands it over; without this hop
+    // a Core-owned Cursor Session could never be named at all.
+    const titleGenerator = new CoreTitleGenerator({
+      writer,
+      runCli: async () => "TITLE: Rebuild the warehouse picker\nICON: package",
+    });
+    titleGenerator.schedule(TASK_ID, "rebuild the picker");
+    await vi.waitFor(() => expect(rowTitle()).toBe("Rebuild the warehouse picker"));
+  });
+
+  it("refuses to name a Session from its own meta-prompt", async () => {
+    let ran = false;
+    const titleGenerator = new CoreTitleGenerator({
+      writer,
+      runCli: async () => {
+        ran = true;
+        return "TITLE: nope";
+      },
+    });
+    // A headless helper inherits the session's hook env; generating a title
+    // from the title-generation prompt is a loop with no end.
+    titleGenerator.schedule(TASK_ID, "You are naming a developer's coding session. Pick a title");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(ran).toBe(false);
+    expect(rowTitle()).toBe(TITLE_WAITING);
+  });
+
   it("binds loopback only — a hook never leaves the Core's machine", () => {
     expect(receiver.url.startsWith("http://127.0.0.1:")).toBe(true);
     expect(receiver.port).toBeGreaterThan(0);

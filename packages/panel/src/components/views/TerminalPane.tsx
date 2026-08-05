@@ -839,10 +839,11 @@ export function TerminalPane({
       // deleting the task card.
       let spawnAt = 0;
       let spawnedAsResume = false;
-      // Whether the Core installed lifecycle hooks for THIS Session's spawn.
-      // Until a spawn answers, assume none: an unanswered spawn has no hooks
-      // reporting either, and an armed fallback is the safe direction.
-      let hooksInstalled = false;
+      // Whether a hook will announce the START of a turn for THIS Session,
+      // as its Core answered at spawn. Until a spawn answers, assume not: an
+      // unanswered spawn has nothing reporting either, and an armed fallback
+      // is the safe direction.
+      let hooksReportTurnStart = false;
 
       const clearActivePty = () => {
         setActivePty(null);
@@ -915,27 +916,30 @@ export function TerminalPane({
         term.writeln("");
         term.writeln(`\x1b[2m[${message}]\x1b[0m`);
         void (async () => {
-          try {
-            // The row lives in the owning Core's database (ADR 0004/0005), so
-            // the exit status rides the panel link to that Core — the Panel's
-            // own HTTP API has no such row. This patch is what makes the Core
-            // emit `session:finished`, which is what raises the notification
-            // (ADR 0008), so a failure here is not cosmetic: the card would go
-            // on claiming the Session is running. Say so.
-            const patched = await mutateTaskForCore(descriptor.coreId, {
-              op: "update",
-              taskId: descriptor.taskId,
-              status,
-            });
-            // A null snapshot is the mutation finding no such row — the same
-            // lie by a quieter route, so it gets the same toast.
-            if (!patched) {
-              toast.error("This session is gone from its Core — its exit status was not recorded");
+          // A Core settles its own Session's exit (issue 84): the Core watches
+          // the PTY it spawned, so it sees the exit whether or not this tab is
+          // open, and it settles *conditionally* — a Session already
+          // `interrupted` keeps that status. This unconditional patch would
+          // overwrite it with `finished` and raise a spurious
+          // `session:finished` besides, so it stays on the arm that still
+          // needs it: the Panel's own rows, whose PTYs no Core watches.
+          if (!descriptor.coreId) {
+            try {
+              const patched = await mutateTaskForCore(null, {
+                op: "update",
+                taskId: descriptor.taskId,
+                status,
+              });
+              // A null snapshot is the mutation finding no such row — the card
+              // would go on claiming the Session is running, so say so.
+              if (!patched) {
+                toast.error("This session is gone — its exit status was not recorded");
+              }
+            } catch (e: unknown) {
+              toast.error(
+                e instanceof Error ? e.message : "Could not record the session's exit status",
+              );
             }
-          } catch (e: unknown) {
-            toast.error(
-              e instanceof Error ? e.message : "Could not record the session's exit status",
-            );
           }
           await Promise.all([
             queryClient.invalidateQueries({
@@ -1049,7 +1053,7 @@ export function TerminalPane({
           if (shouldResetTerminalRunningFallback(liveTaskStatusRef.current)) {
             fallbackRunningPosted = false;
           }
-          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data, hooksInstalled)) {
+          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data, hooksReportTurnStart)) {
             fallbackRunningPosted = true;
             void (async () => {
               try {
@@ -1061,14 +1065,19 @@ export function TerminalPane({
                   status: "running",
                 });
                 // The prompt patches no column of its own: it only asks a
-                // title generator to name the session. For a Core-owned row
-                // that generator runs on the Core, fed by the Core's own hook
-                // receiver (issue 84), so this arm is the Panel's local rows
-                // only — posting it for a Core row would name nothing.
-                if (submittedPrompt && !descriptor.coreId) {
-                  await api.updateTaskStatus(descriptor.taskId, {
-                    prompt: submittedPrompt,
-                  });
+                // title generator to name the session. Which generator depends
+                // on who owns the row — the Core's, for a Core-owned Session
+                // (issue 84), reached by the frame that exists because Cursor
+                // never fires `beforeSubmitPrompt` for the Core's own hook
+                // receiver to catch.
+                if (submittedPrompt) {
+                  if (descriptor.coreId && corePtyBridge) {
+                    await corePtyBridge.submitPrompt(descriptor.taskId, submittedPrompt);
+                  } else if (!descriptor.coreId) {
+                    await api.updateTaskStatus(descriptor.taskId, {
+                      prompt: submittedPrompt,
+                    });
+                  }
                   promptTitlePosted = true;
                 }
                 await Promise.all([
@@ -1176,7 +1185,7 @@ export function TerminalPane({
           initialInput,
         });
         const { ptyId } = spawnResult;
-        hooksInstalled = spawnResult.hooksInstalled;
+        hooksReportTurnStart = spawnResult.hooksReportTurnStart;
         spawnAt = Date.now();
         spawnedAsResume = isResume;
         if (surface.destroyed) {

@@ -454,7 +454,7 @@ export class PtyCore {
     emitTarget = fn;
   }
 
-  async spawn(opts: SpawnRequest): Promise<{ ptyId: string; hooksInstalled: boolean }> {
+  async spawn(opts: SpawnRequest): Promise<{ ptyId: string; hooksReportTurnStart: boolean }> {
     // Harness cold-boots are throttled; shells are not. A login shell is cheap
     // and is almost always an explicit gesture by one operator, while a grid of
     // agents arrives all at once and each one is a full Node process.
@@ -477,7 +477,7 @@ export class PtyCore {
   private async spawnUnthrottled(
     opts: SpawnRequest,
     releaseSpawnHold: () => void,
-  ): Promise<{ ptyId: string; hooksInstalled: boolean }> {
+  ): Promise<{ ptyId: string; hooksReportTurnStart: boolean }> {
     const pty = loadNodePty();
     const platform = os.platform();
     const { userDataDir, appPath, getHookEnv } = this.deps;
@@ -539,19 +539,23 @@ export class PtyCore {
 
     // Harness-workspace-only setup; a VM Shell Session (and a plain user shell)
     // has no agent config to touch.
-    let hooksInstalled = false;
+    let hooksReportTurnStart = false;
     if (plan.mode === "agent") {
       if (plan.agent === "claude-code") ensureStatuslineTap(plan.cwd);
       // Lifecycle hooks, pointed at THIS Core's loopback receiver (issue 84).
       // Without them nothing ever moves the Session's status off `ready`. The
       // env carries the URL and token so the file on disk holds no secret and
       // survives a restart that mints a new one; without a hook env there is
-      // no receiver to report to, so the install is skipped and the Panel is
-      // told the truth by `hooksInstalled: false`.
+      // no receiver to report to, so the install is skipped entirely.
       const hookEnv = getHookEnv();
       if (hookEnv) {
-        hooksInstalled = installHarnessHooks(plan.agent, plan.cwd);
-        if (hooksInstalled) {
+        const hooks = installHarnessHooks(plan.agent, plan.cwd);
+        hooksReportTurnStart = hooks.reportsTurnStart;
+        // The env goes in whenever a file landed, even for a family whose
+        // hooks do not announce a turn's start: those still report its end,
+        // and a `Stop` with no token to present is a Session that never
+        // finishes.
+        if (hooks.installed) {
           env[HOOK_URL_ENV] = hookEnv.apiUrl;
           env[HOOK_TOKEN_ENV] = hookEnv.token;
           env[HOOK_TASK_ID_ENV] = opts.taskId;
@@ -693,7 +697,7 @@ export class PtyCore {
       ptys.delete(id);
     });
 
-    return { ptyId: id, hooksInstalled };
+    return { ptyId: id, hooksReportTurnStart };
   }
 
   write(ptyId: string, data: string): boolean {

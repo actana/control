@@ -217,6 +217,13 @@ export type PtyCoreLinkServerOptions = {
    */
   taskWriter?: CoreTaskWriter;
   /**
+   * Takes a prompt the Panel captured from the terminal for a harness whose
+   * hooks do not report one (issue 84). Omitted, the `harnessPrompt` frame is
+   * answered `accepted: false` — a Core with no title generator is still a
+   * valid Core.
+   */
+  promptPort?: { submitted(taskId: string, prompt: string): void };
+  /**
    * Snapshot of this Core's CLI availability (issue 11). When omitted, the
    * `agentsAvailabilityList` frame answers with an empty map — the Panel's
    * per-Core availability store then falls back to "checking…" until the
@@ -318,6 +325,7 @@ export class PtyCoreLinkServer {
   private readonly mutationPort: CoreMutationPort | null;
   private readonly availabilityPort: HarnessAvailabilityPort | null;
   private readonly directoryPort: CoreDirectoryPort | null;
+  private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
   /**
    * The one seam every task-row change goes through — the Panel's
@@ -343,6 +351,7 @@ export class PtyCoreLinkServer {
     this.mutationPort = opts.mutationPort ?? null;
     this.availabilityPort = opts.availabilityPort ?? null;
     this.directoryPort = opts.directoryPort ?? null;
+    this.promptPort = opts.promptPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
     this.taskWriter =
       opts.taskWriter ??
@@ -566,7 +575,7 @@ export class PtyCoreLinkServer {
     switch (frame.type) {
       case "spawn": {
         try {
-          const { ptyId, hooksInstalled } = await this.core.spawn(frame.opts);
+          const { ptyId, hooksReportTurnStart } = await this.core.spawn(frame.opts);
           // `shellSession` is the VM Shell Session discriminant (issue 06):
           // `true` on the VM-shell variant, `never` (undefined) on the
           // agent/shell variants. The type-safe narrow records which surface
@@ -575,10 +584,11 @@ export class PtyCoreLinkServer {
           // agent/session spawn when replaying the event tail.
           const shellSession = frame.opts.shellSession === true;
           this.recordPtySpawn(ptyId, frame.opts.taskId, shellSession);
-          // `hooksInstalled` is what lets the Panel arm its terminal-input
-          // fallback on reality rather than on the harness family (issue 84):
-          // a Session whose hooks did not go in has no other `running` signal.
-          this.send(ws, { type: "spawned", reqId: frame.reqId, ptyId, hooksInstalled });
+          // `hooksReportTurnStart` is what lets the Panel arm its
+          // terminal-input fallback on reality rather than on the harness
+          // family (issue 84): a Session whose hooks will not announce the
+          // start of a turn has no other `running` signal.
+          this.send(ws, { type: "spawned", reqId: frame.reqId, ptyId, hooksReportTurnStart });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "spawnError", reqId: frame.reqId, message });
@@ -678,6 +688,15 @@ export class PtyCoreLinkServer {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "error", reqId: frame.reqId, message });
         }
+        return;
+      }
+      case "harnessPrompt": {
+        // The Panel read this off the terminal because the harness's hooks
+        // will not report it. Nothing is patched here; the Core decides on
+        // its own whether the Session wants naming.
+        const accepted = Boolean(this.promptPort && frame.taskId && frame.prompt?.trim());
+        if (accepted) this.promptPort!.submitted(frame.taskId, frame.prompt);
+        this.send(ws, { type: "harnessPromptResult", reqId: frame.reqId, accepted });
         return;
       }
       case "projectsMutate": {

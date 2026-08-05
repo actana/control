@@ -8,7 +8,7 @@
 //
 // Three rules the writers share:
 //
-//  - An operator's own hooks are preserved. Ours are tagged `_mcManaged: true`
+//  - An operator's own hooks are preserved. Ours are tagged `_acManaged: true`
 //    so the next spawn replaces exactly what a previous spawn wrote and nothing
 //    else. A workspace is the operator's, not ours.
 //  - The command carries no secret. It reads `$AC_HOOK_URL` and
@@ -20,8 +20,8 @@
 //    which the PTY-exit settle and the terminal-input fallback still catch.
 //
 // The registry is open by construction: a harness with no entry simply gets no
-// hooks and reports `installed: false`, which is what tells the Panel to keep
-// its terminal-input fallback armed for that Session.
+// hooks, which is what tells the Panel to keep its terminal-input fallback
+// armed for that Session.
 
 import * as path from "node:path";
 import {
@@ -31,7 +31,16 @@ import {
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
-const MANAGED_FLAG = "_mcManaged";
+const MANAGED_FLAG = "_acManaged";
+
+/**
+ * The marker the retired Electron app wrote into the same files. Its entries
+ * POST to an endpoint that no longer exists, so they are swept out alongside
+ * ours rather than left to fail on every turn (ADR 0007 retired the `MC_`
+ * prefix; this is the last place it can still be sitting on an operator's
+ * disk).
+ */
+const LEGACY_MANAGED_FLAG = "_mcManaged";
 
 /** Env var names the hook command reads. Set on the PTY by the spawn path. */
 export const HOOK_URL_ENV = "AC_HOOK_URL";
@@ -60,7 +69,9 @@ function managedEntry(slug: string): ManagedEntry {
 }
 
 function isManaged(value: unknown): boolean {
-  return Boolean(value && typeof value === "object" && (value as Record<string, unknown>)[MANAGED_FLAG]);
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return Boolean(entry[MANAGED_FLAG] || entry[LEGACY_MANAGED_FLAG]);
 }
 
 /**
@@ -149,38 +160,78 @@ function installCursorHooks(cwd: string, slug: string): boolean {
   return writeJsonSettingsFile(file, config);
 }
 
+type HookFamily = {
+  install: (cwd: string, slug: string) => boolean;
+  /**
+   * Do the hooks we install for this family actually fire when a turn STARTS?
+   *
+   * Installing is not reporting, and the difference is the whole point of this
+   * field. The Panel stands its terminal-input fallback down on the answer, so
+   * a family that takes our hook file but never fires a turn-start event must
+   * say `false` — otherwise its Sessions sit on `ready` for the entire first
+   * turn with nothing to move them.
+   */
+  reportsTurnStart: boolean;
+};
+
 /**
  * Per-harness hook writers. A harness absent from this table has no hook
  * surface we install — it is not an error, it is a Session whose status comes
  * from the PTY-exit settle and the Panel's terminal-input fallback instead.
  * Keep this open: adding a family is adding a row.
  */
-const HOOK_INSTALLERS: Record<string, (cwd: string, slug: string) => boolean> = {
-  "claude-code": installClaudeHooks,
-  codex: installCodexHooks,
-  "cursor-cli": installCursorHooks,
+const HOOK_FAMILIES: Record<string, HookFamily> = {
+  "claude-code": { install: installClaudeHooks, reportsTurnStart: true },
+  // Codex refuses to run newly-installed project hooks until the operator
+  // reviews them with `/hooks`, so its first turn — the one that matters most
+  // for the card — may report nothing at all.
+  codex: { install: installCodexHooks, reportsTurnStart: false },
+  // Cursor takes the hooks file and fires `stop` / `sessionStart` from it, but
+  // `beforeSubmitPrompt` still does not fire in cursor-agent. The turn's end is
+  // reported; its start is not.
+  "cursor-cli": { install: installCursorHooks, reportsTurnStart: false },
 };
 
 /** Does this Core know how to install hooks for `harness`? */
 export function harnessSupportsHooks(harness: string | undefined): boolean {
-  return Boolean(harness && harness in HOOK_INSTALLERS);
+  return Boolean(harness && harness in HOOK_FAMILIES);
 }
+
+export type HookInstallResult = {
+  /** Did a hook file land in the workspace? */
+  installed: boolean;
+  /**
+   * Will a hook report the start of a turn for this Session? Only this
+   * exempts the Panel's terminal-input fallback (issue 84) — it is the
+   * conjunction of "we wrote the file" and "this family fires on turn start",
+   * and either one alone is a Session with no `running` signal.
+   */
+  reportsTurnStart: boolean;
+};
+
+const NO_HOOKS: HookInstallResult = { installed: false, reportsTurnStart: false };
 
 /**
  * Install this Core's lifecycle hooks into `cwd` for `harness`.
  *
- * Returns whether hooks are now in place and will report for a Session spawned
- * in this workspace. `false` covers both "this harness has no hook surface" and
- * "the write did not land" — from the Panel's point of view those are the same
- * fact, and the honest answer is what keeps its terminal-input fallback armed
- * rather than suppressed on a promise nobody kept (issue 84).
+ * A failed write reports the same as an unsupported harness: from the Panel's
+ * point of view those are one fact, and the honest answer is what keeps its
+ * fallback armed rather than suppressed on a promise nobody kept.
  */
-export function installHarnessHooks(harness: string | undefined, cwd: string): boolean {
-  const installer = harness ? HOOK_INSTALLERS[harness] : undefined;
-  if (!installer || !cwd) return false;
+export function installHarnessHooks(
+  harness: string | undefined,
+  cwd: string,
+): HookInstallResult {
+  const family = harness ? HOOK_FAMILIES[harness] : undefined;
+  if (!family || !cwd) return NO_HOOKS;
+  let installed = false;
   try {
-    return installer(cwd, hookEndpointSlug(harness));
+    installed = family.install(cwd, hookEndpointSlug(harness));
   } catch {
-    return false;
+    return NO_HOOKS;
   }
+  return {
+    installed,
+    reportsTurnStart: installed && family.reportsTurnStart,
+  };
 }

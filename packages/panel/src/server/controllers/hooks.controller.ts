@@ -1,6 +1,7 @@
 import { z } from "zod";
 import {
   handleHarnessHookEvent,
+  hookResultResponse,
   type HarnessHookBody,
 } from "@actana/shared/harness-hook-pipeline";
 import type { HarnessQuestion } from "@actana/shared/harness-questions";
@@ -95,18 +96,10 @@ export async function receive(url: URL, request: Request): Promise<Response> {
       url.searchParams.get("hookEvent") ?? "",
     );
 
-    switch (result.outcome) {
-      case "task-not-found":
-        return jsonError(HTTP_NOT_FOUND, "task not found");
-      case "foreign-session":
-        return json({ ok: true, ignored: "foreign-session" });
-      case "ignored":
-        return json({ ok: true, ignored: result.event });
-      case "ok":
-        return result.status
-          ? json({ ok: true, status: result.status })
-          : json({ ok: true, event: result.event });
-    }
+    // One mapping, shared with the Core's receiver, so the same event never
+    // gets two different answers depending on which host owns the row.
+    const answer = hookResultResponse(result);
+    return answer.ok ? json(answer.body) : jsonError(HTTP_NOT_FOUND, "task not found");
   } catch (e) {
     return rethrowUnlessDomain(e);
   }

@@ -16,6 +16,7 @@
 import log from "./log";
 import {
   fallbackTitle,
+  isTitleGenerationPrompt,
   parseResponse,
   resolveTitleInvocation,
 } from "@actana/shared/title-generation";
@@ -34,10 +35,17 @@ export class CoreTitleGenerator {
   constructor(private readonly deps: CoreTitleGeneratorDeps) {}
 
   /**
-   * Fire-and-forget entry point for the hook pipeline. A failure to name a
-   * Session is never a reason to fail the hook that triggered it.
+   * Fire-and-forget entry point for every caller that has a prompt — the hook
+   * pipeline, and the Panel's terminal capture for harnesses whose hooks do
+   * not report one. A failure to name a Session is never a reason to fail
+   * what triggered it.
    */
   schedule(taskId: string, prompt: string): void {
+    // Never name a Session from this generator's OWN meta-prompt. A headless
+    // helper inherits the session's hook env, so if one ever fires these
+    // hooks, generating from its prompt is a loop with no end. The guard lives
+    // here rather than at each caller so a new caller cannot forget it.
+    if (isTitleGenerationPrompt(prompt)) return;
     void this.generate(taskId, prompt).catch((err) => {
       log.warn("title-gen.failed", { taskId, error: String(err) });
     });

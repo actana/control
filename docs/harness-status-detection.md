@@ -132,10 +132,24 @@ file each family reads:
 | `codex` | `<cwd>/.codex/hooks.json` |
 | `cursor-cli` | `<cwd>/.cursor/hooks.json` (needs `"version": 1`, or the CLI ignores it) |
 
-An operator's own hooks are preserved; ours are tagged `_mcManaged: true` so the
-next spawn replaces exactly what a previous spawn wrote. The registry is open —
-adding a harness family is adding a row, and every per-harness difference stays
-inside the Core process, never in the Panel.
+An operator's own hooks are preserved; ours are tagged `_acManaged: true` so the
+next spawn replaces exactly what a previous spawn wrote. Entries the retired
+Electron app left behind under `_mcManaged` are swept out at the same time,
+rather than left POSTing to an endpoint that no longer exists. The registry is
+open — adding a harness family is adding a row, and every per-harness difference
+stays inside the Core process, never in the Panel.
+
+The registry also records whether a family's hooks announce a turn's **start**,
+which is a narrower question than whether they were installed:
+
+| Harness | Hooks installed | Reports turn start | Why |
+| --- | --- | --- | --- |
+| `claude-code` | yes | yes | `UserPromptSubmit` fires |
+| `codex` | yes | no | won't run new hooks until `/hooks` review |
+| `cursor-cli` | yes | no | `beforeSubmitPrompt` doesn't fire in cursor-agent |
+| `opencode` | no | no | no writer in the registry |
+
+Only the third column exempts the terminal-input fallback below.
 
 Each managed entry runs:
 
@@ -179,6 +193,9 @@ Sessions whose process is gone:
   **active** status (`running` / `needs-input`) to `finished` (exit 0) or
   `terminated`, drops their tracked subagents, and leaves settled Sessions
   untouched — which keeps respawn flows and finished sessions unaffected.
+  The Panel's own exit patch no longer fires for a Core-owned row: it was
+  unconditional, so it would overwrite an `interrupted` Session with `finished`
+  and raise a spurious `session:finished` besides.
 - **Boot sweep** — the Core's DB bootstrap stamps `disconnected` on rows left
   `running` / `needs-input`, since no PTY of the previous run survived it.
 
@@ -189,11 +206,15 @@ treats Enter in the terminal as the start of a turn and writes `running` to the
 **owning Core**.
 
 The suppression rule follows **reality, not the harness family**: the Core
-answers each spawn with `hooksInstalled`, and only a Session whose hooks actually
-went in is exempt. The old rule exempted any harness whose family supports hooks
-in principle — which, once hook installation went away with the Electron main
-process, meant every hook-capable Session had neither hooks nor a fallback and
-never left `ready`.
+answers each spawn with `hooksReportTurnStart`, and only a Session that will
+actually be told about its own turn starting is exempt. The old rule exempted
+any harness whose family supports hooks in principle — which, once hook
+installation went away with the Electron main process, meant every hook-capable
+Session had neither hooks nor a fallback and never left `ready`.
+
+The narrower question matters: Cursor and Codex both take our hooks file and
+report a turn's *end*, so "hooks were installed" would suppress the fallback and
+leave their Sessions on `ready` for the whole first turn.
 
 ## Title generation
 
@@ -207,6 +228,11 @@ sets the column to `1`, and every check before a generated write re-reads the
 row. So a rename that lands while the print-mode CLI is still thinking wins, and
 — because the flag is on the row rather than in Panel memory — that protection
 survives a Panel reload.
+
+The trigger is normally the `UserPromptSubmit` hook. Cursor never fires one, so
+for it the Panel reads the prompt off the terminal and hands it to the owning
+Core over the `harnessPrompt` frame — the Panel holds the only copy, and without
+that hop a Core-owned Cursor Session could never be named at all.
 
 ## Interrupt fallback
 

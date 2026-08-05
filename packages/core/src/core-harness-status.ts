@@ -15,10 +15,10 @@
 import log from "./log";
 import {
   handleHarnessHookEvent,
+  hookResultResponse,
   type HarnessHookBody,
 } from "@actana/shared/harness-hook-pipeline";
 import { HARNESS_HOOK_EVENTS } from "@actana/shared/harness-hook-events";
-import { isTitleGenerationPrompt } from "@actana/shared/title-generation";
 import type { CoreLinkTaskStatus } from "@actana/shared/core-link-frames";
 import type { CoreTaskWriter } from "./core-task-writer";
 
@@ -57,28 +57,10 @@ export class CoreHarnessStatus {
       setSessionId: (id, sessionId) => {
         this.deps.writer.mutate({ op: "update", taskId: id, claudeSessionId: sessionId });
       },
-      onPrompt: (id, prompt) => {
-        // Never treat the Core's own headless title-generation helper as a user
-        // prompt: if it ever fires these hooks (it inherits the session's env),
-        // re-running generation is a loop that would never end.
-        if (isTitleGenerationPrompt(prompt)) return;
-        this.deps.generateTitle?.(id, prompt);
-      },
+      onPrompt: (id, prompt) => this.deps.generateTitle?.(id, prompt),
     });
 
-    switch (result.outcome) {
-      case "task-not-found":
-        return { ok: false, body: { error: "task not found" } };
-      case "foreign-session":
-        return { ok: true, body: { ok: true, ignored: "foreign-session" } };
-      case "ignored":
-        return { ok: true, body: { ok: true, ignored: result.event } };
-      case "ok":
-        return {
-          ok: true,
-          body: result.status ? { ok: true, status: result.status } : { ok: true, event: result.event },
-        };
-    }
+    return hookResultResponse(result);
   }
 
   /**

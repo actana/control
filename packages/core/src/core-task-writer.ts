@@ -97,9 +97,9 @@ export class CoreTaskWriter {
         ? "task:created"
         : mutation.op === "delete"
           ? "task:deleted"
-          : isIconOnlyUpdate(mutation)
+          : isOnlyPatchedField(mutation, "icon")
             ? "task:iconChanged"
-            : isPinnedOnlyUpdate(mutation)
+            : isOnlyPatchedField(mutation, "pinned")
               ? "task:pinnedChanged"
               : "task:updated";
     const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
@@ -173,39 +173,31 @@ function patchesFinishedStatus(
 }
 
 /**
- * Detect an update mutation whose only patched column is `icon` (issue 09).
- * Anything else patched alongside icon degrades the frame back to
- * `task:updated`, since the Panel-side icon listener doesn't need to fire for
- * mixed edits — a `task:updated` invalidation already picks up icon changes as
- * a side effect of the full row refetch. The narrowing keeps the dedicated
- * `task:iconChanged` kind meaningful: a Panel that only cares about icon
- * subscribes to that kind and skips the rest.
+ * Which columns an `update` mutation actually patches. One list, so a new
+ * field on the mutation cannot be forgotten by the "was this the only thing
+ * that changed?" checks below — which is exactly how an icon-plus-something
+ * patch would otherwise keep announcing itself as an icon-only change.
  */
-function isIconOnlyUpdate(mutation: CoreLinkTaskMutation): boolean {
-  if (mutation.op !== "update") return false;
-  if (mutation.icon === undefined) return false;
-  return (
-    mutation.status === undefined &&
-    mutation.title === undefined &&
-    mutation.pinned === undefined &&
-    mutation.archived === undefined
-  );
+function patchedFields(mutation: CoreLinkTaskMutation): string[] {
+  if (mutation.op !== "update") return [];
+  const { op: _op, taskId: _taskId, ...patch } = mutation;
+  return Object.entries(patch)
+    .filter(([, value]) => value !== undefined)
+    .map(([field]) => field)
+    // `titleManuallySet` qualifies the `title` beside it rather than being a
+    // change of its own; counting it would make every rename a mixed edit.
+    .filter((field) => field !== "titleManuallySet");
 }
 
 /**
- * Twin of {@link isIconOnlyUpdate} for the `task:pinnedChanged` kind (issue
- * 10). A patch that touches pinned alongside anything else keeps the
- * `task:updated` kind — mixed edits already invalidate the row via the
- * generic listener; the dedicated kind is only useful when pin is the sole
- * change.
+ * Detect an update mutation whose only patched column is `field` — the
+ * narrowing that keeps the dedicated `task:iconChanged` (issue 09) and
+ * `task:pinnedChanged` (issue 10) kinds meaningful. Anything patched alongside
+ * degrades the frame back to `task:updated`, which is fine: a consumer that
+ * only cares about icon subscribes to the dedicated kind, and a mixed edit
+ * already invalidates the whole row through the generic one.
  */
-function isPinnedOnlyUpdate(mutation: CoreLinkTaskMutation): boolean {
-  if (mutation.op !== "update") return false;
-  if (mutation.pinned === undefined) return false;
-  return (
-    mutation.status === undefined &&
-    mutation.title === undefined &&
-    mutation.icon === undefined &&
-    mutation.archived === undefined
-  );
+function isOnlyPatchedField(mutation: CoreLinkTaskMutation, field: string): boolean {
+  const patched = patchedFields(mutation);
+  return patched.length === 1 && patched[0] === field;
 }

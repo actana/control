@@ -72,11 +72,11 @@ describe("corePtyBridgeFor", () => {
     const bridge = corePtyBridgeFor(fake.link, "core_spawn");
     await expect(
       bridge.spawn({ taskId: "t1", cwd: "/srv/app", command: "claude", agent: "claude-code" }),
-      // A Core that predates issue 84 answers without `hooksInstalled`; the
-      // bridge reads that as "no hooks", which keeps the Panel's
-      // terminal-input fallback armed rather than suppressed on a promise
-      // nobody made.
-    ).resolves.toEqual({ ptyId: "pty-9", hooksInstalled: false });
+      // A Core that predates issue 84 answers without
+      // `hooksReportTurnStart`; the bridge reads that as "no", which keeps the
+      // Panel's terminal-input fallback armed rather than suppressed on a
+      // promise nobody made.
+    ).resolves.toEqual({ ptyId: "pty-9", hooksReportTurnStart: false });
     expect(fake.sent[0]).toEqual({
       coreId: "core_spawn",
       frame: { type: "spawn", opts: expect.objectContaining({ taskId: "t1" }) },

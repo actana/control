@@ -285,6 +285,36 @@ export function handleHarnessHookEvent(
 }
 
 /**
+ * The answer a hook gets back, as one shape both hosts encode.
+ *
+ * A harness ignores the body — its hook is fire-and-forget — but an operator
+ * debugging with `curl -v` reads it, and `404` is how they learn the task is
+ * gone rather than the hook being wrong. Keeping the mapping here means the
+ * Panel's endpoint and the Core's receiver cannot answer the same event
+ * differently.
+ */
+export function hookResultResponse(result: HookPipelineResult): {
+  ok: boolean;
+  body: Record<string, unknown>;
+} {
+  switch (result.outcome) {
+    case "task-not-found":
+      return { ok: false, body: { error: "task not found" } };
+    case "foreign-session":
+      return { ok: true, body: { ok: true, ignored: "foreign-session" } };
+    case "ignored":
+      return { ok: true, body: { ok: true, ignored: result.event } };
+    case "ok":
+      return {
+        ok: true,
+        body: result.status
+          ? { ok: true, status: result.status }
+          : { ok: true, event: result.event },
+      };
+  }
+}
+
+/**
  * Deferred-finish backstop: fires when a held or healed "running" drained its
  * subagents and no main-harness Stop landed within the grace. Guarded so it
  * cannot stomp a state the operator or a later event moved the task into.
