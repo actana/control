@@ -4,9 +4,14 @@ const apiCalls: string[] = [];
 const archiveTask = vi.fn();
 const restoreTask = vi.fn();
 const updateTask = vi.fn();
+const updateTaskStatus = vi.fn();
 
 vi.mock("~/lib/api", () => ({
   api: {
+    updateTaskStatus: (id: string, body: unknown) => {
+      apiCalls.push(`status:${id}`);
+      return updateTaskStatus(id, body);
+    },
     archiveTask: (id: string) => {
       apiCalls.push(`archive:${id}`);
       return archiveTask(id);
@@ -48,6 +53,7 @@ describe("mutateTaskForCore", () => {
     archiveTask.mockReset().mockResolvedValue(panelTask({ archived: true }));
     restoreTask.mockReset().mockResolvedValue(panelTask({ archived: false }));
     updateTask.mockReset().mockResolvedValue(panelTask());
+    updateTaskStatus.mockReset().mockResolvedValue(panelTask({ status: "finished" }));
   });
 
   afterEach(() => {
@@ -126,6 +132,45 @@ describe("mutateTaskForCore", () => {
 
     expect(apiCalls).toEqual(["update:t1"]);
     expect(updateTask).toHaveBeenCalledWith("t1", { pinned: true });
+  });
+
+  it("patches a Panel-owned status over the status endpoint", async () => {
+    const snapshot = await mutateTaskForCore(null, {
+      op: "update",
+      taskId: "t1",
+      status: "finished",
+    });
+
+    expect(apiCalls).toEqual(["status:t1"]);
+    expect(updateTaskStatus).toHaveBeenCalledWith("t1", { status: "finished" });
+    expect(snapshot?.status).toBe("finished");
+  });
+
+  it("routes a Core-owned status patch over the panel link", async () => {
+    vi.stubGlobal("window", {});
+    const mutateTask = vi.fn().mockResolvedValue(panelTask({ status: "finished" }).task);
+    __setPanelBridgeForTests({ mutateTask } as never);
+
+    await mutateTaskForCore("core-a", { op: "update", taskId: "t1", status: "finished" });
+
+    expect(mutateTask).toHaveBeenCalledWith("core-a", {
+      op: "update",
+      taskId: "t1",
+      status: "finished",
+    });
+    expect(apiCalls).toEqual([]);
+  });
+
+  it("applies the plain columns, then status, then archived on a Panel-owned row", async () => {
+    await mutateTaskForCore(null, {
+      op: "update",
+      taskId: "t1",
+      title: "Renamed",
+      status: "finished",
+      archived: true,
+    });
+
+    expect(apiCalls).toEqual(["update:t1", "status:t1", "archive:t1"]);
   });
 
   it("reports a missing Panel-owned row as null", async () => {

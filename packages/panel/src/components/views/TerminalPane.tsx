@@ -903,9 +903,21 @@ export function TerminalPane({
         term.writeln(`\x1b[2m[${message}]\x1b[0m`);
         void (async () => {
           try {
-            await api.updateTaskStatus(descriptor.taskId, { status });
-          } catch {
-            /* best effort */
+            // The row lives in the owning Core's database (ADR 0004/0005), so
+            // the exit status rides the panel link to that Core — the Panel's
+            // own HTTP API has no such row. This patch is what makes the Core
+            // emit `session:finished`, which is what raises the notification
+            // (ADR 0008), so a failure here is not cosmetic: the card would go
+            // on claiming the Session is running. Say so.
+            await mutateTaskForCore(descriptor.coreId, {
+              op: "update",
+              taskId: descriptor.taskId,
+              status,
+            });
+          } catch (e: unknown) {
+            toast.error(
+              e instanceof Error ? e.message : "Could not record the session's exit status",
+            );
           }
           await Promise.all([
             queryClient.invalidateQueries({
@@ -1023,11 +1035,25 @@ export function TerminalPane({
             fallbackRunningPosted = true;
             void (async () => {
               try {
-                await api.updateTaskStatus(descriptor.taskId, {
+                // Same routing as the exit patch above: a turn-start status is
+                // Core-owned state like any other column on the row.
+                await mutateTaskForCore(descriptor.coreId, {
+                  op: "update",
+                  taskId: descriptor.taskId,
                   status: "running",
-                  ...(submittedPrompt ? { prompt: submittedPrompt } : {}),
                 });
                 if (submittedPrompt) {
+                  // The prompt patches no column of its own: it only asks the
+                  // Panel's title generator to name the session, and that
+                  // generator reads and writes the Panel's own database
+                  // (`generateTitleForTask` returns early on a task it cannot
+                  // find). So it goes on the arm where it can land — for a
+                  // Core-owned row it was always a no-op.
+                  if (!descriptor.coreId) {
+                    await api.updateTaskStatus(descriptor.taskId, {
+                      prompt: submittedPrompt,
+                    });
+                  }
                   promptTitlePosted = true;
                 }
                 await Promise.all([

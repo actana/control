@@ -466,10 +466,16 @@ export class PtyCoreLinkServer {
    *
    * On `create`, the kind is always `task:created` — a new row's icon is part
    * of the initial snapshot the tasks list carries, not a discrete change.
+   *
+   * A transition into `finished` additionally appends `session:finished`
+   * (issue 20) — the event ADR 0008 built the Panel's notification on and no
+   * Core ever produced. It is additional, not a replacement: the live query
+   * still needs the `task:updated` event for the same mutation.
    */
   private recordTaskMutation(
     mutation: CoreLinkTaskMutation,
     task: CoreLinkTaskSnapshot,
+    previousStatus: string | null,
   ): void {
     if (!this.eventLog) return;
     const kind =
@@ -482,6 +488,52 @@ export class PtyCoreLinkServer {
             : "task:updated";
     const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: task.taskId });
+    this.recordSessionFinish(task, previousStatus);
+  }
+
+  /**
+   * Append `session:finished` when a mutation moved a task into `finished` —
+   * and only then. Re-patching a row that is already finished (a retried exit
+   * patch, a second tab racing the first) must not raise a second
+   * notification, so the prior status decides, not the resulting snapshot.
+   *
+   * The payload carries what the Panel's finish normalizer reads: the task id
+   * (as `id`, its preferred key), the project id, the project name, and the
+   * task title. Without the last two the toast reads "Project" / "Session",
+   * which is the degraded output this event exists to avoid. The project name
+   * is the one field not on the task snapshot; it is read through the query
+   * port, and omitted when no query port is wired (a PTY-only Core).
+   */
+  private recordSessionFinish(task: CoreLinkTaskSnapshot, previousStatus: string | null): void {
+    if (!this.eventLog) return;
+    if (task.status !== FINISHED_TASK_STATUS) return;
+    if (previousStatus === FINISHED_TASK_STATUS) return;
+    const projectName = this.queryPort
+      ?.listProjects()
+      .find((p) => p.projectId === task.projectId)?.name;
+    const payload = JSON.stringify({
+      id: task.taskId,
+      taskId: task.taskId,
+      projectId: task.projectId,
+      ...(projectName ? { projectName } : {}),
+      taskTitle: task.title,
+    });
+    this.eventLog.appendEvent("session:finished", payload, { taskId: task.taskId });
+  }
+
+  /**
+   * The status a task carried before a mutation is applied, or `null` when it
+   * doesn't matter. Only a patch that could produce a finish pays for the
+   * read; every other mutation skips it, since nothing else consults the
+   * prior status. `listSessions` is the mutation port's own view of every
+   * active row, so this works on any Core that can write at all.
+   */
+  private priorTaskStatus(mutation: CoreLinkTaskMutation): string | null {
+    if (mutation.op !== "update" || mutation.status !== FINISHED_TASK_STATUS) return null;
+    if (!this.mutationPort) return null;
+    return (
+      this.mutationPort.listSessions().find((s) => s.taskId === mutation.taskId)?.status ?? null
+    );
   }
 
   /**
@@ -669,8 +721,9 @@ export class PtyCoreLinkServer {
           return;
         }
         try {
+          const previousStatus = this.priorTaskStatus(frame.mutation);
           const task = this.mutationPort.mutateTask(frame.mutation);
-          if (task) this.recordTaskMutation(frame.mutation, task);
+          if (task) this.recordTaskMutation(frame.mutation, task, previousStatus);
           this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -860,6 +913,14 @@ class ActiveConnection {
     }
   }
 }
+
+/**
+ * The status a Session carries once its Harness has exited cleanly. The Panel
+ * writes it on PTY exit (`terminalExitTaskStatus`) and the Panel's own task
+ * service uses the same word; it is the one status this server reads rather
+ * than passing through, because it is what raises a finish notification.
+ */
+const FINISHED_TASK_STATUS = "finished";
 
 /**
  * Detect an update mutation whose only patched column is `icon` (issue 09).

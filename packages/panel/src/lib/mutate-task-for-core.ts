@@ -2,6 +2,7 @@ import type {
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
 } from "@actana/shared/core-link-frames";
+import { isTaskStatus } from "@actana/shared/domain";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { api } from "~/lib/api";
 
@@ -19,8 +20,8 @@ import { api } from "~/lib/api";
  *
  * A null `coreId` names a row in the Panel's own database — the last rows not
  * owned by a Core — and is written over the Panel's HTTP API instead. That
- * arm disappears with those rows. It understands `title`, `pinned`, and
- * `archived`; anything else on the patch is dropped.
+ * arm disappears with those rows. It understands `title`, `pinned`, `status`,
+ * and `archived`; anything else on the patch is dropped.
  */
 export async function mutateTaskForCore(
   coreId: string | null | undefined,
@@ -42,16 +43,26 @@ async function mutatePanelLocalTask(
     ...(mutation.title !== undefined ? { title: mutation.title } : {}),
     ...(mutation.pinned !== undefined ? { pinned: mutation.pinned } : {}),
   };
-  // `archived` is not a column the PATCH route accepts: archive/restore are
-  // their own endpoints because flipping the flag also clears the pending
-  // question and emits `task:archived`/`task:restored`. Apply the plain
-  // columns first, then flip archived, so the returned snapshot carries both.
-  // An archive-only patch skips the PATCH round trip; an empty patch with no
-  // archived flag still goes through it, so a no-op mutation returns the row.
+  // Neither `status` nor `archived` is a column the PATCH route accepts, and
+  // each has its own endpoint for the same reason: the status route clears the
+  // pending question and emits `session:finished` on a finish, archive/restore
+  // clear the question and emit `task:archived`/`task:restored`. Apply the
+  // plain columns first, then status, then archived, so the returned snapshot
+  // carries every leg. A patch that has other work to do skips the PATCH round
+  // trip; an otherwise-empty mutation still goes through it, so a no-op
+  // mutation returns the row.
+  //
+  // The frame's status is a free-form string (a Core's vocabulary is its own);
+  // the Panel's own route accepts only the statuses it knows, so a word it
+  // doesn't recognize is dropped rather than sent for a 400.
+  const status = isTaskStatus(mutation.status) ? mutation.status : undefined;
   let task =
-    Object.keys(patch).length > 0 || mutation.archived === undefined
+    Object.keys(patch).length > 0 || (status === undefined && mutation.archived === undefined)
       ? (await api.updateTask(mutation.taskId, patch)).task
       : null;
+  if (status !== undefined) {
+    task = (await api.updateTaskStatus(mutation.taskId, { status })).task;
+  }
   if (mutation.archived !== undefined) {
     const flipped = mutation.archived
       ? await api.archiveTask(mutation.taskId)
