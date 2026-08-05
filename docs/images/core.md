@@ -122,7 +122,6 @@ architecture, so the two cannot be cross-built.
 ## Links
 
 - [Source](https://github.com/actana/control) · [Installing on a machine you own](https://github.com/actana/control/blob/main/INSTALL.md) · [Security policy](https://github.com/actana/control/blob/main/SECURITY.md)
-- Also published as `ghcr.io/actana/core`
 
 MIT licensed. A derivative work of Mission Control by AgentSystem Labs — see
 [NOTICE](https://github.com/actana/control/blob/main/NOTICE).

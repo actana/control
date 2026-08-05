@@ -83,7 +83,6 @@ compose above brings both up together.
 ## Links
 
 - [Source](https://github.com/actana/control) · [Deployment guide](https://github.com/actana/control/blob/main/DEPLOY.md) · [Security policy](https://github.com/actana/control/blob/main/SECURITY.md)
-- Also published as `ghcr.io/actana/panel`
 
 MIT licensed. A derivative work of Mission Control by AgentSystem Labs — see
 [NOTICE](https://github.com/actana/control/blob/main/NOTICE).
