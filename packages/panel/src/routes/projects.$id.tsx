@@ -1460,6 +1460,15 @@ function ProjectPage() {
   // Archive one or more active sessions: kill each tty, flip the archived flag,
   // and repoint the terminal panel if the active session is being archived.
   // No confirmation — archiving is reversible via Restore.
+  //
+  // That last sentence holds for a Panel-owned row only. On a Core-owned
+  // project the flag flips in the Core's SQLite (the data is safe), but
+  // `queryTasks` selects `WHERE archived = 0` — "archived rows never cross the
+  // core-link" (packages/shared/src/core-query.ts) — so the row simply stops
+  // being listed: it never appears under Archived and there is nothing to
+  // Restore or Delete-all-archived from. Archive is a one-way hide there until
+  // the core-link can list archived rows (e.g. an `includeArchived` on
+  // `tasksList`); issue #18.
   const archiveTasks = (targets: Task[]) => {
     if (!project || targets.length === 0) return;
     const ids = new Set(targets.map((t) => t.id));
@@ -1546,6 +1555,11 @@ function ProjectPage() {
     }
   };
 
+  // Un-archive one session. Routed by owner like every other task mutation,
+  // but reachable today only for a Panel-owned row: the Archived list is built
+  // from `tasks`, and a Core never sends an archived row over the link (see
+  // archiveTasks above). The routing is here so restore works the moment the
+  // core-link starts listing them — not because a Core row can reach it now.
   const restoreSession = (taskId: string) => {
     if (!project) return;
     const task = tasks.find((t) => t.id === taskId);
@@ -1579,6 +1593,11 @@ function ProjectPage() {
     onTogglePinned: toggleSessionPinned,
   };
 
+  // Delete every archived row shown for this project. Still on the Panel's own
+  // delete endpoint, which is sound only because the rows it can see are
+  // Panel-owned — a Core's archived rows never reach `tasks` (see
+  // archiveTasks). Whoever teaches the core-link to list them owes this
+  // function a `mutateTaskForCore` route too, or it will 404 the way archive did.
   const deleteAllArchived = () => {
     setConfirmDeleteArchived(false);
     if (!project) return;
