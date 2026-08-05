@@ -18,14 +18,23 @@ the card re-renders live and a Panel that was away replays what it missed —
 with the Panel's database untouched throughout. An operator's rename is now
 protected on the row rather than in Panel memory, so a generated title can no
 longer overwrite it after a reload. And the terminal-input fallback stands down
-only for a Session whose hooks really went in, rather than for any harness whose
-family supports them in principle.
+only for a Session whose hooks really report the start of a turn, rather than
+for any harness whose family supports hooks in principle.
 
-The core-link protocol moves to 0.12.0 so a Session's manually-set-title flag
-and harness session id can cross the wire, so a project's remembered session
-settings can, and so a Session that lives on a Core can be deleted at all. The
-Panel and its Cores are version-locked, so every Core needs updating alongside
-the Panel — an older one renders as "needs update" rather than degrading.
+Archiving a Session on a Core used to be a one-way hide. The row was archived
+correctly and nothing was lost, but archived rows never crossed the link, so the
+Archived tab never appeared for that project and there was nothing to restore
+from. Archived Sessions on a Core now appear under Archived with a count on the
+tab, Restore returns one to the active list, and "Delete all archived" works.
+They travel on a read path of their own, used only while that view is open — the
+Fleet and active lists still carry none of them.
+
+The core-link protocol moves to 0.13.0 so a Session's manually-set-title flag
+and harness session id can cross the wire, so archived Sessions on a Core can be
+listed and restored, so a project's remembered session settings can cross, and
+so a Session that lives on a Core can be deleted at all. The Panel and its Cores
+are version-locked, so every Core needs updating alongside the Panel — an older
+one renders as "needs update" rather than degrading.
 
 Deleting a Session on a Core used to fail. The task-mutation frame carried no
 delete operation, so every delete fell through to the Panel's own endpoint,

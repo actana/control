@@ -71,6 +71,8 @@ describe("core-link-frames", () => {
       const frames: CoreLinkRequestFrame[] = [
         { type: "tasksList", reqId: "r1", projectId: "p1" },
         { type: "tasksList", reqId: "r2" },
+        { type: "archivedTasksList", reqId: "r8", projectId: "p1" },
+        { type: "archivedTasksList", reqId: "r9" },
         {
           type: "tasksMutate",
           reqId: "r3",
@@ -211,6 +213,31 @@ describe("core-link-frames", () => {
             status: "running",
             pinned: false,
             archived: false,
+            icon: null,
+            updatedAt: 1,
+          },
+        ],
+        archivedCount: 2,
+      };
+      const parsed = JSON.parse(serializeCoreLinkFrame(frame));
+      expect(parsed).toEqual(frame);
+    });
+
+    it("round-trips an archivedTasksListResult response", () => {
+      const frame: CoreLinkServerFrame = {
+        type: "archivedTasksListResult",
+        reqId: "r1",
+        tasks: [
+          {
+            taskId: "t1",
+            projectId: "p1",
+            title: "old work",
+            titleManuallySet: false,
+            claudeSessionId: null,
+            agent: "claude-code",
+            status: "done",
+            pinned: false,
+            archived: true,
             icon: null,
             updatedAt: 1,
           },

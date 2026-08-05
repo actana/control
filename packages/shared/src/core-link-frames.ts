@@ -390,6 +390,11 @@ export type CoreLinkRequestFrame =
   | { type: "subscribe"; reqId: string; lastEventId: number }
   // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
   | { type: "tasksList"; reqId: string; projectId?: string }
+  // The Archived view's own read path (issue 62, ADR 0019). Deliberately a
+  // second frame rather than a flag on `tasksList`: archived rows then cannot
+  // ride the active/Fleet answer whatever a caller passes. Sent only while
+  // that view is open — the count that gates it rides `tasksListResult`.
+  | { type: "archivedTasksList"; reqId: string; projectId?: string }
   | { type: "tasksMutate"; reqId: string; mutation: CoreLinkTaskMutation }
   /**
    * A prompt the operator submitted, for a harness whose hooks do not report
@@ -505,7 +510,18 @@ export type CoreLinkResponseFrame =
   // Panel's perspective — the ack is optional but aids debugging.)
   | { type: "subscribeAck"; reqId: string; fromEventId: number }
   // ─── Task / session / hook op responses (issue 02) ───
-  | { type: "tasksListResult"; reqId: string; tasks: CoreLinkTaskSnapshot[] }
+  // `tasks` carries active rows only. `archivedCount` is how many archived rows
+  // the same scope holds — unconditional, and never accompanied by the rows
+  // themselves. It is what lets the Panel gate and label the Archived tab
+  // without an archived row ever crossing this frame (issue 62, ADR 0019); the
+  // rows come back on `archivedTasksListResult` when that view opens.
+  | {
+      type: "tasksListResult";
+      reqId: string;
+      tasks: CoreLinkTaskSnapshot[];
+      archivedCount: number;
+    }
+  | { type: "archivedTasksListResult"; reqId: string; tasks: CoreLinkTaskSnapshot[] }
   | { type: "tasksMutateResult"; reqId: string; task: CoreLinkTaskSnapshot | null }
   /**
    * Was the prompt taken up? `false` means this Core has no title generator
@@ -686,21 +702,30 @@ export type CoreLinkServerFrame =
  * through to the Panel's own endpoint and 404'd. Same rule as above: the minor
  * moved, so a Core on 0.10.0 is "needs update" rather than a Core that accepts
  * the frame and silently drops the op.
+ * Issue 62 adds the `archivedTasksList` / `archivedTasksListResult` frames and
+ * an unconditional `archivedCount` on {@link CoreLinkServerFrame}'s
+ * `tasksListResult` → 0.12.0 (ADR 0019). Archived rows had no way across the
+ * link at all, so the Panel's Archived view was permanently empty for a Core
+ * and restore could not be invoked. The count is required rather than
+ * optional: a Core on 0.11.0 would answer without it and the Archived tab
+ * would silently never appear, which is exactly the bug — so the minor moves
+ * and such a Core renders as "needs update".
  * Issue 84 adds `titleManuallySet` and `claudeSessionId` to
  * {@link CoreLinkTaskSnapshot} and to the `update` variant of
  * {@link CoreLinkTaskMutation}, plus `hooksReportTurnStart` on the `spawned`
  * response, and the `harnessPrompt` frame that carries a terminal-captured
- * prompt to the Core that can act on it → 0.12.0. The snapshot field is the load-bearing one:
- * a Core that grew it without this bump would hand a Panel that predates it a
- * snapshot whose rename protection is silently absent, and a Panel that
- * predates the Core would keep synthesizing `false` — both render a Session
- * the generator is free to rename out from under its operator. Same rule as
- * above: the minor moved, so either side on 0.11.0 is "needs update" rather
- * than a partial snapshot nobody notices. No migration rides along — the
- * column (`title_manually_set`) has been in the shared schema bootstrap since
- * the fork; only the wire and the Core's readers/writers of it are new.
+ * prompt to the Core that can act on it → 0.13.0 (ADR 0020). The snapshot
+ * fields are the load-bearing part: a Core that grew them without this bump
+ * would hand a Panel that predates it a snapshot whose rename protection is
+ * silently absent, and a Panel that predates the Core would keep synthesizing
+ * `false` — both render a Session the generator is free to rename out from
+ * under its operator. Same rule as above: the minor moved, so either side on
+ * 0.12.0 is "needs update" rather than a partial snapshot nobody notices. No
+ * migration rides along — the columns (`title_manually_set`,
+ * `claude_session_id`) have been in the shared schema bootstrap since the
+ * fork; only the wire and the Core's readers/writers of them are new.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.12.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.13.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
@@ -742,6 +767,7 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "replay",
   "subscribe",
   "tasksList",
+  "archivedTasksList",
   "tasksMutate",
   "harnessPrompt",
   "projectsList",

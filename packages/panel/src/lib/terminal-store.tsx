@@ -980,7 +980,8 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
             remoteByCore.set(coreId, null);
             return;
           }
-          const tasks = await bridge.listTasks(coreId).catch(() => null);
+          const listed = await bridge.listTasks(coreId).catch(() => null);
+          const tasks = listed?.tasks;
           if (!tasks) {
             remoteByCore.set(coreId, null);
             return;

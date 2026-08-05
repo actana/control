@@ -156,6 +156,88 @@ describe("panel bridge — writes", () => {
   });
 });
 
+/**
+ * The Archived view's read path (ADR 0019). Two calls, two frames: the active
+ * list answers with a count of archived rows and none of them, and the rows
+ * come back only when something asks for them by name.
+ */
+describe("panel bridge — the archived read path", () => {
+  const ARCHIVED = {
+    taskId: "task_old",
+    projectId: "proj_1",
+    title: "last winter's stocktake",
+    titleManuallySet: false,
+    claudeSessionId: null,
+    agent: "claude-code",
+    status: "done",
+    pinned: false,
+    archived: true,
+    icon: null,
+    updatedAt: 1,
+  };
+
+  it("hands back the archived count alongside the active rows", async () => {
+    const { bridge, socket } = bridged();
+
+    const pending = bridge.listTasks("core_a", "proj_1");
+    const sent = lastRequest(socket);
+    expect(sent.frame).toMatchObject({ type: "tasksList", projectId: "proj_1" });
+
+    socket.push({
+      t: "core",
+      coreId: "core_a",
+      frame: {
+        type: "tasksListResult",
+        reqId: sent.frame.reqId as string,
+        tasks: [{ ...ARCHIVED, taskId: "task_1", archived: false, status: "running" }],
+        archivedCount: 4,
+      },
+    });
+    await expect(pending).resolves.toEqual({
+      tasks: [expect.objectContaining({ taskId: "task_1" })],
+      archivedCount: 4,
+    });
+  });
+
+  it("fetches the archived rows over their own frame", async () => {
+    const { bridge, socket } = bridged();
+
+    const pending = bridge.listArchivedTasks("core_a", "proj_1");
+    const sent = lastRequest(socket);
+    expect(sent.coreId).toBe("core_a");
+    expect(sent.frame).toMatchObject({ type: "archivedTasksList", projectId: "proj_1" });
+
+    socket.push({
+      t: "core",
+      coreId: "core_a",
+      frame: {
+        type: "archivedTasksListResult",
+        reqId: sent.frame.reqId as string,
+        tasks: [ARCHIVED],
+      },
+    });
+    await expect(pending).resolves.toEqual([ARCHIVED]);
+  });
+
+  it("surfaces an unreachable Core as a failed call, like the active list does", async () => {
+    const { bridge, socket } = bridged();
+
+    const pending = bridge.listArchivedTasks("core_gone", "proj_1");
+    const sent = lastRequest(socket);
+    socket.push({
+      t: "core",
+      coreId: "core_gone",
+      frame: {
+        type: "error",
+        reqId: sent.frame.reqId as string,
+        message: "core_gone is unreachable",
+      },
+    });
+
+    await expect(pending).rejects.toThrow("core_gone is unreachable");
+  });
+});
+
 describe("panel bridge — browsing the Core's filesystem", () => {
   it("asks the named Core for a listing, and for its home when given no path", async () => {
     const { bridge, socket } = bridged();

@@ -752,9 +752,30 @@ export class PtyCoreLinkClient {
    * List every active (non-archived) task on this Core, optionally filtered to
    * one project (issue 07 — per-Core navigation + Fleet view fan-out). The
    * Core omits archived tasks; the Panel caches nothing.
+   *
+   * `archivedCount` is how many archived rows the same scope holds — a scalar,
+   * never the rows (issue 62, ADR 0019). Use {@link archivedTasksList} for
+   * those.
    */
-  tasksList(projectId?: string): Promise<CoreLinkTaskSnapshot[]> {
-    return this.rpc({ type: "tasksList", reqId: "", projectId }) as Promise<CoreLinkTaskSnapshot[]>;
+  tasksList(
+    projectId?: string,
+  ): Promise<{ tasks: CoreLinkTaskSnapshot[]; archivedCount: number }> {
+    return this.rpc({ type: "tasksList", reqId: "", projectId }) as Promise<{
+      tasks: CoreLinkTaskSnapshot[];
+      archivedCount: number;
+    }>;
+  }
+
+  /**
+   * List every archived task on this Core, optionally filtered to one project
+   * (issue 62, ADR 0019) — the Archived view's own read path. A separate frame
+   * from `tasksList`, so the active answer stays free of archived rows by
+   * construction rather than by what a caller remembers to pass.
+   */
+  archivedTasksList(projectId?: string): Promise<CoreLinkTaskSnapshot[]> {
+    return this.rpc({ type: "archivedTasksList", reqId: "", projectId }) as Promise<
+      CoreLinkTaskSnapshot[]
+    >;
   }
 
   /**
@@ -885,7 +906,12 @@ function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return { ptyId: msg.ptyId };
     case "replayResult":
       return { data: msg.data, nextSeq: msg.nextSeq, from: msg.from };
+    // The active list answers with rows *and* the archived count (ADR 0019),
+    // so unwrapping to `msg.tasks` alone would drop a required field of the
+    // frame. The archived list carries rows only.
     case "tasksListResult":
+      return { tasks: msg.tasks, archivedCount: msg.archivedCount };
+    case "archivedTasksListResult":
       return msg.tasks;
     case "projectsListResult":
       return msg.projects;

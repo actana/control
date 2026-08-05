@@ -42,6 +42,13 @@ export function useCoreLiveQueries(coreId: string | null, projectId: string | nu
           event.kind.startsWith("pty:"))
       ) {
         void queryClient.invalidateQueries({ queryKey: tasksCacheKey(projectId, coreId) });
+        // A task crossing the archived line moves a row between two lists, and
+        // the archived one sits in its own bucket (ADR 0019) that no other
+        // invalidation reaches. Refetching it also re-reads the count, which
+        // rides the tasks answer above.
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.coreArchivedTasks(projectId, coreId),
+        });
       }
     });
     // A dropped link means a gap the replay may not fully cover; refetch both
@@ -51,6 +58,9 @@ export function useCoreLiveQueries(coreId: string | null, projectId: string | nu
       void queryClient.invalidateQueries({ queryKey: queryKeys.projects });
       if (projectId) {
         void queryClient.invalidateQueries({ queryKey: tasksCacheKey(projectId, coreId) });
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.coreArchivedTasks(projectId, coreId),
+        });
       }
     });
     return () => {
