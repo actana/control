@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { api } from "~/lib/api";
+import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import type { OpenTerminal } from "~/lib/terminal-store";
 import { queryKeys } from "~/queries";
 
@@ -22,6 +22,11 @@ type CloseSessionFn = (
  * `activateTaskId` is handed to `close` so the caller can promote a replacement
  * session to active (e.g. the grid activating the closed cell's neighbour);
  * it defaults to null, which leaves the project with no active session.
+ *
+ * For a Core-owned session this is one-way from the UI: the flag flips in the
+ * Core's SQLite, but `queryTasks` selects `WHERE archived = 0`, so the row
+ * leaves the grid and never reappears under Archived to restore from. See the
+ * note on `archiveTasks` in projects.$id.tsx.
  */
 export async function archiveOpenSession(
   session: OpenTerminal,
@@ -32,7 +37,14 @@ export async function archiveOpenSession(
   await close(session.taskId, {
     activateTaskId: opts?.activateTaskId ?? null,
   }).catch(() => undefined);
-  await api.archiveTask(session.taskId);
+  // The row lives in the owning Core's database (ADR 0004/0005), so the flip
+  // rides the panel link to that Core — the Panel's own HTTP API has no such
+  // row and would 404. `session.coreId` is null for a Panel-owned row.
+  await mutateTaskForCore(session.coreId, {
+    op: "update",
+    taskId: session.taskId,
+    archived: true,
+  });
   if (!opts?.skipInvalidate) await invalidateSessionQueries(queryClient, [session]);
 }
 
