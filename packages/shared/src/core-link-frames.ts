@@ -325,6 +325,54 @@ export type CoreLinkHarnessAvailabilityMap = Record<string, CoreLinkHarnessAvail
  */
 export const HARNESSES_AVAILABILITY_EVENT_KIND = "agents:availabilityChanged";
 
+// ─── Installing a missing Harness (issue 83) ────────────────────────────────
+//
+// Availability tells the operator a CLI is missing on a Core. The
+// `harnessInstall` frame is how they do something about it without leaving the
+// Panel: it names one Harness, and the Core that owns the machine runs the same
+// non-interactive install `actana harnesses install <id>` runs, then re-probes.
+//
+// The frame is answered by an *ack*, not by the install's outcome. A vendor
+// installer takes minutes and the panel link's request timeout is fixed per
+// client (30s), so a response frame held open for the install's duration would
+// reject a healthy install and — worse — tie the outcome to one browser tab's
+// pending promise. The outcome travels on the event log instead: success is the
+// ordinary `agents:availabilityChanged` event flipping the Harness to
+// `available`, failure is {@link HARNESS_INSTALL_FAILED_EVENT_KIND}. Both
+// outlive the request, a Panel reload, and a link drop — none of which a
+// pending promise does. Success is seen by every tab watching that Core; a
+// failure is acted on by the ones still waiting on that install, since the tail
+// replays and an outcome nobody is waiting for is history rather than news.
+
+/**
+ * Answer to a `harnessInstall` request. `accepted` means the Core validated the
+ * Harness id and started the install — nothing about whether it succeeded.
+ * `accepted: false` is a refusal to start at all (an unknown id, or a Core with
+ * no install path wired) and carries the operator-facing reason.
+ */
+export type CoreLinkHarnessInstallAck = {
+  accepted: boolean;
+  message?: string;
+};
+
+/**
+ * The kind appended to the event log when an install ends without the Harness
+ * becoming available. Payload is `{harness, message}` — the message is written
+ * for the operator, in the same register the `dirCreate` / `dirList` failures
+ * use. This is the only definitive failure signal: no failure is ever cached in
+ * the availability map, so a Panel that missed the event sees a plain `missing`
+ * Harness it can try again, never a permanently disabled one.
+ */
+export const HARNESS_INSTALL_FAILED_EVENT_KIND = "harness:installFailed";
+
+/** Payload of a {@link HARNESS_INSTALL_FAILED_EVENT_KIND} event. */
+export type CoreLinkHarnessInstallFailedPayload = {
+  /** The Harness id the install was for. */
+  harness: string;
+  /** Operator-facing reason, e.g. "Installing Claude Code failed (exit 1)." */
+  message: string;
+};
+
 // ─── Directory browsing (web-panel issue 06) ────────────────────────────────
 //
 // Adding a Project means naming a folder on the Core's machine. The Panel runs
@@ -436,6 +484,12 @@ export type CoreLinkRequestFrame =
   // Live snapshot query. Complements the `agents:availabilityChanged` event
   // stream so a fresh Panel hydrates without waiting for the next probe tick.
   | { type: "agentsAvailabilityList"; reqId: string }
+  // ─── Install a missing Harness (issue 83) ───
+  // Names one Harness for the Core that owns the machine to install. Answered
+  // by `harnessInstallAck` the moment the Core has started (or refused) it —
+  // the outcome arrives on the event log, never on this request. See the
+  // commentary above {@link HARNESS_INSTALL_FAILED_EVENT_KIND}.
+  | { type: "harnessInstall"; reqId: string; harness: string }
   // ─── Directory browsing (web-panel issue 06) ───
   // `path` omitted or null means "start at the Core's home directory" —
   // the Panel cannot compute that itself for a machine it has never seen.
@@ -546,6 +600,9 @@ export type CoreLinkResponseFrame =
       reqId: string;
       availability: CoreLinkHarnessAvailabilityMap;
     }
+  // ─── Install a missing Harness (issue 83) ───
+  // Deliberately an ack: it says the install started, not how it ended.
+  | ({ type: "harnessInstallAck"; reqId: string } & CoreLinkHarnessInstallAck)
   // ─── Directory browsing (web-panel issue 06) ───
   | { type: "dirListResult"; reqId: string; listing: CoreLinkDirListing }
   | { type: "dirCreateResult"; reqId: string; path: string }
@@ -724,8 +781,16 @@ export type CoreLinkServerFrame =
  * migration rides along — the columns (`title_manually_set`,
  * `claude_session_id`) have been in the shared schema bootstrap since the
  * fork; only the wire and the Core's readers/writers of them are new.
+ * Issue 83 adds the `harnessInstall` request frame, its `harnessInstallAck`
+ * response, and the `harness:installFailed` event kind → 0.14.0 (ADR 0021).
+ * Availability crossed the link Core→Panel only, so a missing CLI was a wall:
+ * the picker greyed the row out and told the operator to go run a command on
+ * another machine. This is the trigger that was absent — the Core still owns
+ * probing and installing, and still publishes availability as the one source of
+ * truth. Same rule as the bumps above: the minor moved, so a Core on 0.13.0
+ * renders as "needs update" rather than one that silently drops the frame.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.13.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.14.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
@@ -776,6 +841,7 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "hooksOp",
   "auth",
   "agentsAvailabilityList",
+  "harnessInstall",
   "dirList",
   "dirCreate",
 ]);

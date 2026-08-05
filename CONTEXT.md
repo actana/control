@@ -93,6 +93,10 @@ _Avoid_: project preferences, saved agent, sticky settings
 The Core's own view of which harness binaries (claude, opencode, codex, …) resolve on its PATH. The Core probes at startup, on a periodic tick, and on SIGHUP (which `actana harnesses install` sends after installing a CLI, so a Panel sees a new harness without a daemon restart), then publishes `{harnessId → status}` as part of its state stream. The Panel reads this via `useCliAvailability(coreId)`; `NewHarnessDialog` opens with the availability answer already in hand and blocks submit on `missing`. Every Core publishes the identical shape.
 _Avoid_: harness status, tool check, capability
 
+**Harness install (from the Panel)**:
+Asking the Core that owns a machine to put a missing Harness CLI on it, from the "Start a new session" picker. The `harnessInstall` core-link frame names one Harness; the Core runs the same non-interactive install `actana harnesses install <id>` runs, then re-probes. The frame is *acked*, not awaited — a vendor installer outruns the panel link's 30s request timeout — so the outcome arrives on the event log: availability flipping to `available`, or a `harness:installFailed` event carrying the operator-facing reason. The Panel tracks `installing` per (Core, Harness) outside React, and never caches a failure in the availability map. See ADR 0021.
+_Avoid_: provisioning, remote install, harness setup
+
 ### Install and onboarding
 
 **Core bundle**:

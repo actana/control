@@ -2,6 +2,7 @@ import { PanelLinkClient } from "./panel-link-client";
 import { corePtyBridgeFor, type CorePtyBridge } from "./core-pty-bridge";
 import type {
   CoreLinkHarnessAvailabilityMap,
+  CoreLinkHarnessInstallAck,
   CoreLinkDirListing,
   CoreLinkEvent,
   CoreLinkProjectMutation,
@@ -54,6 +55,17 @@ export type PanelBridge = {
   listSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionSnapshot[]>;
   /** A Core's CLI availability snapshot; live changes arrive on {@link onEvent}. */
   listHarnessAvailability(coreId: string): Promise<CoreLinkHarnessAvailabilityMap>;
+  /**
+   * Ask a Core to install a Harness its probe reports missing.
+   *
+   * Resolves on the Core's *ack* — that it took the job — and never on the
+   * install's outcome: a vendor installer runs for minutes, well past this
+   * link's per-request timeout. The outcome arrives on {@link onEvent}, as an
+   * availability change flipping the Harness to `available` or as a
+   * `harness:installFailed` event. `accepted: false` is a refusal to start,
+   * carrying the reason to show the operator.
+   */
+  installHarness(coreId: string, harness: string): Promise<CoreLinkHarnessInstallAck>;
 
   /**
    * Create / rename / archive / pin a project on the Core that owns it.
@@ -126,6 +138,13 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
           type: "agentsAvailabilityList",
         })
       ).availability,
+    installHarness: async (coreId, harness) => {
+      const ack = await link.request<Answer<"harnessInstallAck">>(coreId, {
+        type: "harnessInstall",
+        harness,
+      });
+      return { accepted: ack.accepted, message: ack.message };
+    },
     mutateProject: async (coreId, mutation) =>
       (
         await link.request<Answer<"projectsMutateResult">>(coreId, {
