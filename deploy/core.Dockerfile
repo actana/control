@@ -91,7 +91,28 @@ RUN apt-get update \
 # carries `nodejs` at all. NodeSource and every other third-party apt repo are
 # out for the same reason the tarball is in — this is a download we verify,
 # not a publisher we trust.
-ARG NODE_VERSION=24.18.1
+ARG NODE_VERSION=24.19.0
+# npm newer than the one Node bundles, because that is where the image's only
+# fixable CRITICAL/HIGH live: npm's vendored tar/undici/brace-expansion under
+# /usr/local/lib/node_modules/npm. 11.19.0 clears four of the seven measured
+# on 2026-08-04, including the lone CRITICAL (tar); no released npm clears all
+# seven, so this pays findings down — it does not green a raw scan.
+#
+# 11.19.0 and NOT 12.x, though 12.0.2's vendored tree is identical for all
+# four (measured from both published tarballs, #82): npm 12 ships allowScripts
+# off by default, which blocks dependency preinstall/install/postinstall AND
+# the implicit `node-gyp rebuild` for any binding.gyp package — the exact
+# capability build-essential/python3 above exist to serve, and how Harness
+# postinstalls run. Crossing that major is a product decision for an ADR, not
+# a rider on a CVE bump.
+#
+# The tarball is fetched from the registry and SHA-512-checked against the
+# digest pinned below — the same "download we verify" footing as the Node
+# fetch above (D8); a bare `npm install -g npm@x` would be publisher trust.
+# The hex is that release's registry dist.integrity, base64-decoded; the two
+# ARGs move together, on the same #51 cadence as NODE_VERSION.
+ARG NPM_VERSION=11.19.0
+ARG NPM_SHA512=48377f8478372aa1c4e47b763475b135836da82436a5700f2e5e8eb5084fc840f93c7b117eb3ad3b5f7d3194c81b6710a10d59448f6ddbcb21ac3fb672bdc003
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
       amd64) node_arch=x64 ;; \
@@ -107,8 +128,15 @@ RUN set -eux; \
     tar -xJf "${archive}" -C /usr/local --strip-components=1 \
         --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \
     rm -f "${archive}" SHASUMS256.txt; \
+    npm_tgz="npm-${NPM_VERSION}.tgz"; \
+    curl -fsSL -o "${npm_tgz}" "https://registry.npmjs.org/npm/-/${npm_tgz}"; \
+    echo "${NPM_SHA512}  ${npm_tgz}" | sha512sum -c -; \
+    npm install -g "${npm_tgz}"; \
+    rm -f "${npm_tgz}"; \
+    npm cache clean --force; \
+    rm -rf /root/.npm; \
     node --version; \
-    npm --version
+    [ "$(npm --version)" = "${NPM_VERSION}" ]
 
 # uid 1000 and gid 1000, by number, always (D12).
 #
