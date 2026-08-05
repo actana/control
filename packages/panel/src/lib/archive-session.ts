@@ -1,5 +1,5 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { api } from "~/lib/api";
+import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import type { OpenTerminal } from "~/lib/terminal-store";
 import { queryKeys } from "~/queries";
 
@@ -32,7 +32,14 @@ export async function archiveOpenSession(
   await close(session.taskId, {
     activateTaskId: opts?.activateTaskId ?? null,
   }).catch(() => undefined);
-  await api.archiveTask(session.taskId);
+  // The row lives in the owning Core's database (ADR 0004/0005), so the flip
+  // rides the panel link to that Core — the Panel's own HTTP API has no such
+  // row and would 404. `session.coreId` is null for a Panel-owned row.
+  await mutateTaskForCore(session.coreId, {
+    op: "update",
+    taskId: session.taskId,
+    archived: true,
+  });
   if (!opts?.skipInvalidate) await invalidateSessionQueries(queryClient, [session]);
 }
 

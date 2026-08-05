@@ -1493,7 +1493,13 @@ function ProjectPage() {
                 t.id === activeTaskId ? { activateTaskId: next?.id ?? null } : undefined,
               )
               .catch(() => undefined);
-            await api.archiveTask(t.id);
+            // Route to the Core that owns the row (ADR 0005) — the Panel's
+            // own archive endpoint only knows Panel-owned rows.
+            await mutateTaskForCore(coreId, {
+              op: "update",
+              taskId: t.id,
+              archived: true,
+            });
           }),
         );
         void refresh();
@@ -1552,7 +1558,7 @@ function ProjectPage() {
 
     void (async () => {
       try {
-        await api.restoreTask(taskId);
+        await mutateTaskForCore(coreId, { op: "update", taskId, archived: false });
         void refresh();
       } catch (e: unknown) {
         if (previousTasks) {
