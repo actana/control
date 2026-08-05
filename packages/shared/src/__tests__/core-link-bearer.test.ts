@@ -97,12 +97,23 @@ describe("core-link bearer", () => {
     });
   });
 
-  describe("exp clock-skew tolerance", () => {
+  describe("exp boundary", () => {
+    // Pin the verifier's clock via `opts.now` — reading Date.now() twice lets
+    // the millisecond tick between sign and verify, which fails the inclusive
+    // boundary on a loaded CI runner.
     it("accepts a bearer exp exactly now (boundary inclusive)", () => {
       const exp = Date.now();
       const token = signBearer({ coreId: "core_abc", exp }, SECRET);
-      const result = verifyBearer(token, SECRET);
+      const result = verifyBearer(token, SECRET, { now: exp });
       expect(result.ok).toBe(true);
+    });
+
+    it("rejects a bearer 1ms past exp", () => {
+      const exp = Date.now();
+      const token = signBearer({ coreId: "core_abc", exp }, SECRET);
+      const result = verifyBearer(token, SECRET, { now: exp + 1 });
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.reason).toBe("expired");
     });
   });
 });
