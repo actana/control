@@ -15,7 +15,8 @@ import { api } from "~/lib/api";
  *
  * Throws on transport failure or a Core-side error frame so the caller can
  * surface it in the picker/dialog. Returns `null` when the mutation targeted a
- * missing row.
+ * missing row — and, on a Panel-owned `delete`, always: that endpoint answers
+ * with no body, so a deleted row and a missing one look the same from here.
  *
  * A null `coreId` names a row in the Panel's own database — the last rows not
  * owned by a Core — and is written over the Panel's HTTP API instead. That

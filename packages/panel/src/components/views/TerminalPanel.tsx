@@ -81,14 +81,16 @@ export function TerminalPanel({
     }
     setDeleting(true);
     try {
+      // Tear the terminal down first, then delete — not both at once, the way
+      // this ran while the delete could only 404 for a Core-owned row. Both
+      // halves now land on the same Core, and the row's delete cascades the
+      // terminal_logs a still-running PTY is writing to.
+      await onClose(active.taskId);
       // The row lives in the owning Core's database (ADR 0004/0005), so the
       // delete rides the panel link to that Core — the Panel's own endpoint
       // has no such row and would 404. `active.coreId` is null for a
       // Panel-owned row, which routes back to that endpoint.
-      await Promise.all([
-        onClose(active.taskId),
-        mutateTaskForCore(active.coreId, { op: "delete", taskId: active.taskId }),
-      ]);
+      await mutateTaskForCore(active.coreId, { op: "delete", taskId: active.taskId });
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: queryKeys.tasks(active.project.id),

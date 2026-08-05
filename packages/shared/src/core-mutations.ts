@@ -475,6 +475,14 @@ export function updateTask(
  * The pre-delete snapshot is what comes back (mirroring {@link archiveProject})
  * so `tasksMutateResult.task` carries the same shape for every op and the
  * caller doesn't branch on `op` to read the answer.
+ *
+ * No pending-question clear rides along, unlike the Panel server's delete.
+ * A pending question is an in-memory map on the *Panel* server, filled by the
+ * hooks route, which resolves the task against the Panel's own database — so a
+ * Core-owned task never gets an entry to clear. Nothing on the Core tracks one.
+ * The Panel-side state that does follow a Core-owned session (its stored
+ * session-finish notifications) is pruned off the `task:deleted` event this
+ * delete appends.
  */
 export function deleteTask(
   sqlite: CoreMutationSqlite,

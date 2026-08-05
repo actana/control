@@ -393,7 +393,7 @@ describe("archiveProject", () => {
   });
 });
 
-// ─── createTask / updateTask ──────────────────────────────────────────────
+// ─── createTask / updateTask / deleteTask ─────────────────────────────────
 
 describe("createTask", () => {
   let db: Database.Database;
