@@ -107,31 +107,90 @@ export function queryTasks(
   sqlite: CoreQuerySqlite,
   projectId?: string,
 ): CoreLinkTaskSnapshot[] {
+  return listTasksWhereArchived(sqlite, 0, projectId);
+}
+
+/**
+ * Read every archived task on this Core, optionally filtered to one project.
+ * The exact mirror of {@link queryTasks} — same columns, same ordering, the
+ * opposite side of the `archived` flag.
+ *
+ * This is the Archived view's own read path (ADR 0019). It exists as a
+ * separate helper rather than a parameter on {@link queryTasks} so the
+ * active/Fleet path cannot return an archived row by any argument a caller
+ * passes: the two lists are different queries, answered by different frames.
+ * Returns an empty array when the table is absent or no rows match.
+ */
+export function queryArchivedTasks(
+  sqlite: CoreQuerySqlite,
+  projectId?: string,
+): CoreLinkTaskSnapshot[] {
+  return listTasksWhereArchived(sqlite, 1, projectId);
+}
+
+/**
+ * The one task-listing query both sides share, differing only in which side of
+ * the `archived` flag it selects. `archived` is a literal in the SQL, not a
+ * bound parameter, and the two public helpers are the only callers — so
+ * neither list can be talked into returning the other's rows.
+ */
+function listTasksWhereArchived(
+  sqlite: CoreQuerySqlite,
+  archived: 0 | 1,
+  projectId?: string,
+): CoreLinkTaskSnapshot[] {
+  const columns = `id, project_id, title, agent, status, pinned, archived, icon, updated_at`;
   let rows: TaskRow[];
   try {
-    if (projectId === undefined) {
-      rows = sqlite
-        .prepare(
-          `SELECT id, project_id, title, agent, status, pinned, archived, icon, updated_at
-           FROM tasks
-           WHERE archived = 0
-           ORDER BY updated_at DESC`,
-        )
-        .all() as TaskRow[];
-    } else {
-      rows = sqlite
-        .prepare(
-          `SELECT id, project_id, title, agent, status, pinned, archived, icon, updated_at
-           FROM tasks
-           WHERE archived = 0 AND project_id = ?
-           ORDER BY updated_at DESC`,
-        )
-        .all(projectId) as TaskRow[];
-    }
+    rows = (
+      projectId === undefined
+        ? sqlite
+            .prepare(
+              `SELECT ${columns}
+               FROM tasks
+               WHERE archived = ${archived}
+               ORDER BY updated_at DESC`,
+            )
+            .all()
+        : sqlite
+            .prepare(
+              `SELECT ${columns}
+               FROM tasks
+               WHERE archived = ${archived} AND project_id = ?
+               ORDER BY updated_at DESC`,
+            )
+            .all(projectId)
+    ) as TaskRow[];
   } catch {
+    // Table missing (DB not bootstrapped), same as the project listing.
     return [];
   }
   return rows.map(taskRowToSnapshot);
+}
+
+/**
+ * How many archived tasks this Core holds, optionally scoped to one project.
+ *
+ * The Panel needs this number continuously — it gates the Archived tab, labels
+ * it, and drives the auto-exit when the list empties — while the rows
+ * themselves are wanted only when that view is open. So the count rides the
+ * `tasksList` answer as a scalar and {@link queryArchivedTasks} stays lazy
+ * (ADR 0019). Returns 0 when the table is absent.
+ */
+export function countArchivedTasks(sqlite: CoreQuerySqlite, projectId?: string): number {
+  let rows: Array<{ n: number }>;
+  try {
+    rows = (
+      projectId === undefined
+        ? sqlite.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE archived = 1`).all()
+        : sqlite
+            .prepare(`SELECT COUNT(*) AS n FROM tasks WHERE archived = 1 AND project_id = ?`)
+            .all(projectId)
+    ) as Array<{ n: number }>;
+  } catch {
+    return 0;
+  }
+  return rows[0]?.n ?? 0;
 }
 
 /**

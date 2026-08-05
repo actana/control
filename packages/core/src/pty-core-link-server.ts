@@ -73,11 +73,25 @@ export interface CoreQueryPort {
   /** Every project on this Core, as a flattened snapshot. */
   listProjects(): CoreLinkProjectSnapshot[];
   /**
-   * Every task on this Core (optionally filtered to one project). The
+   * Every active task on this Core (optionally filtered to one project). The
    * Core omits archived tasks — the Fleet view is for active work, and the
-   * Panel caches nothing, so archived rows never cross the core-link.
+   * Panel caches nothing, so archived rows never cross the active path. There
+   * is no argument that changes this; the Archived view has its own frame.
    */
   listTasks(projectId?: string): CoreLinkTaskSnapshot[];
+  /**
+   * Every archived task on this Core (optionally filtered to one project) —
+   * the exact mirror of `listTasks`, answering the `archivedTasksList` frame.
+   * A separate method rather than a flag on `listTasks`, so no argument to the
+   * active path can make it return an archived row (issue 62, ADR 0019).
+   */
+  listArchivedTasks(projectId?: string): CoreLinkTaskSnapshot[];
+  /**
+   * How many archived tasks the same scope holds. Rides the `tasksList`
+   * answer so the Panel can gate and label its Archived tab continuously
+   * without fetching a single archived row (ADR 0019).
+   */
+  countArchivedTasks(projectId?: string): number;
   /**
    * One task by id, or `null` when this Core has no such row. Unlike
    * `listTasks` an archived row still answers — a caller asking by id wants
@@ -731,7 +745,19 @@ export class PtyCoreLinkServer {
       // with empty results so the Panel can round-trip them without errors.
       case "tasksList": {
         const tasks = this.queryPort ? this.queryPort.listTasks(frame.projectId) : [];
-        this.send(ws, { type: "tasksListResult", reqId: frame.reqId, tasks });
+        // The count of archived rows, never the rows — see ADR 0019. It rides
+        // this answer because the Panel needs it continuously (to gate and
+        // label the Archived tab), while the rows are wanted only when that
+        // view is open, over `archivedTasksList`.
+        const archivedCount = this.queryPort
+          ? this.queryPort.countArchivedTasks(frame.projectId)
+          : 0;
+        this.send(ws, { type: "tasksListResult", reqId: frame.reqId, tasks, archivedCount });
+        return;
+      }
+      case "archivedTasksList": {
+        const tasks = this.queryPort ? this.queryPort.listArchivedTasks(frame.projectId) : [];
+        this.send(ws, { type: "archivedTasksListResult", reqId: frame.reqId, tasks });
         return;
       }
       case "projectsList": {

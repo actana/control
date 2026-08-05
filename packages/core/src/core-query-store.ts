@@ -17,6 +17,8 @@ import * as path from "node:path";
 import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";
 import {
+  countArchivedTasks,
+  queryArchivedTasks,
   queryProjects,
   queryTask,
   queryTasks,
@@ -114,6 +116,26 @@ export const coreQueryStore: CoreQueryPort = {
     } catch (err) {
       log.warn("core-query.list-tasks-failed", { error: String(err) });
       return [];
+    }
+  },
+  listArchivedTasks(projectId?: string): CoreLinkTaskSnapshot[] {
+    const conn = ensureConnection();
+    if (!conn) return [];
+    try {
+      return queryArchivedTasks(conn as unknown as CoreQuerySqlite, projectId);
+    } catch (err) {
+      log.warn("core-query.list-archived-tasks-failed", { error: String(err) });
+      return [];
+    }
+  },
+  countArchivedTasks(projectId?: string): number {
+    const conn = ensureConnection();
+    if (!conn) return 0;
+    try {
+      return countArchivedTasks(conn as unknown as CoreQuerySqlite, projectId);
+    } catch (err) {
+      log.warn("core-query.count-archived-tasks-failed", { error: String(err) });
+      return 0;
     }
   },
   getTask(taskId: string): CoreLinkTaskSnapshot | null {

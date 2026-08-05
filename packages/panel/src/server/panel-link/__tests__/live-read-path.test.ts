@@ -256,10 +256,26 @@ const TASK: CoreLinkTaskSnapshot = {
   updatedAt: 2,
 };
 
+const ARCHIVED_TASK: CoreLinkTaskSnapshot = {
+  taskId: "task_old",
+  projectId: "proj_1",
+  title: "last winter's stocktake",
+  icon: null,
+  agent: "claude-code",
+  status: "done",
+  archived: true,
+  pinned: false,
+  updatedAt: 1,
+};
+
 function queryPort(): CoreQueryPort {
+  const scoped = (projectId: string | undefined) =>
+    projectId && projectId !== PROJECT.projectId;
   return {
     listProjects: () => [PROJECT],
-    listTasks: (projectId) => (projectId && projectId !== PROJECT.projectId ? [] : [TASK]),
+    listTasks: (projectId) => (scoped(projectId) ? [] : [TASK]),
+    listArchivedTasks: (projectId) => (scoped(projectId) ? [] : [ARCHIVED_TASK]),
+    countArchivedTasks: (projectId) => (scoped(projectId) ? 0 : 1),
     getTask: (taskId) => (taskId === TASK.taskId ? TASK : null),
   };
 }
@@ -381,6 +397,33 @@ describe("the live read path, browser to Core", () => {
     const theirs = await tab.ask(coreId, { type: "tasksList", projectId: "proj_other" });
 
     expect(mine.tasks).toEqual([expect.objectContaining({ taskId: "task_1" })]);
+    expect(theirs.tasks).toEqual([]);
+  });
+
+  // ADR 0019: the tab learns how many archived Sessions a project holds
+  // without a single archived row travelling the active answer. The rows come
+  // back only when it asks for them, over their own frame.
+  it("answers a task query with the archived count but never an archived row", { timeout: 20_000 }, async () => {
+    const { coreId } = await pair();
+    const tab = await openTab();
+
+    const answer = await tab.ask(coreId, { type: "tasksList", projectId: "proj_1" });
+
+    const rows = answer.tasks as Array<{ archived: boolean }>;
+    expect(rows).toEqual([expect.objectContaining({ taskId: "task_1" })]);
+    expect(rows.every((t) => !t.archived)).toBe(true);
+    expect(answer.archivedCount).toBe(1);
+  });
+
+  it("answers an archived task query, scoped to a project", { timeout: 20_000 }, async () => {
+    const { coreId } = await pair();
+    const tab = await openTab();
+
+    const mine = await tab.ask(coreId, { type: "archivedTasksList", projectId: "proj_1" });
+    const theirs = await tab.ask(coreId, { type: "archivedTasksList", projectId: "proj_other" });
+
+    expect(mine).toMatchObject({ type: "archivedTasksListResult" });
+    expect(mine.tasks).toEqual([expect.objectContaining({ taskId: "task_old", archived: true })]);
     expect(theirs.tasks).toEqual([]);
   });
 

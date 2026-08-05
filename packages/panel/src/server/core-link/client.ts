@@ -758,6 +758,18 @@ export class PtyCoreLinkClient {
   }
 
   /**
+   * List every archived task on this Core, optionally filtered to one project
+   * (issue 62, ADR 0019) — the Archived view's own read path. A separate frame
+   * from `tasksList`, so the active answer stays free of archived rows by
+   * construction rather than by what a caller remembers to pass.
+   */
+  archivedTasksList(projectId?: string): Promise<CoreLinkTaskSnapshot[]> {
+    return this.rpc({ type: "archivedTasksList", reqId: "", projectId }) as Promise<
+      CoreLinkTaskSnapshot[]
+    >;
+  }
+
+  /**
    * Create / rename / archive a project on this Core (issue 04 write path).
    * The Core validates the VM path server-side; an invalid path comes back
    * as an `error` frame that rejects this promise. Returns `null` when a
@@ -886,6 +898,7 @@ function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
     case "replayResult":
       return { data: msg.data, nextSeq: msg.nextSeq, from: msg.from };
     case "tasksListResult":
+    case "archivedTasksListResult":
       return msg.tasks;
     case "projectsListResult":
       return msg.projects;

@@ -32,8 +32,24 @@ export type PanelBridge = {
 
   /** List a Core's projects. Live query — the Panel persists none of this. */
   listProjects(coreId: string): Promise<CoreLinkProjectSnapshot[]>;
-  /** List a Core's active tasks, optionally scoped to one project. */
-  listTasks(coreId: string, projectId?: string): Promise<CoreLinkTaskSnapshot[]>;
+  /**
+   * List a Core's active tasks, optionally scoped to one project.
+   *
+   * `archivedCount` is how many archived rows the same scope holds — a scalar,
+   * never the rows, which is what lets the Archived tab be gated and labelled
+   * without an archived row crossing this answer (ADR 0019). Use
+   * {@link listArchivedTasks} for the rows.
+   */
+  listTasks(
+    coreId: string,
+    projectId?: string,
+  ): Promise<{ tasks: CoreLinkTaskSnapshot[]; archivedCount: number }>;
+  /**
+   * List a Core's archived tasks, optionally scoped to one project — the
+   * Archived view's own read path (ADR 0019). Called when that view opens,
+   * not on project open.
+   */
+  listArchivedTasks(coreId: string, projectId?: string): Promise<CoreLinkTaskSnapshot[]>;
   /** List a Core's active sessions, optionally scoped to one project. */
   listSessions(coreId: string, projectId?: string): Promise<CoreLinkSessionSnapshot[]>;
   /** A Core's CLI availability snapshot; live changes arrive on {@link onEvent}. */
@@ -87,9 +103,20 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
     isConnected: () => link.isConnected(),
     listProjects: async (coreId) =>
       (await link.request<Answer<"projectsListResult">>(coreId, { type: "projectsList" })).projects,
-    listTasks: async (coreId, projectId) =>
-      (await link.request<Answer<"tasksListResult">>(coreId, { type: "tasksList", projectId }))
-        .tasks,
+    listTasks: async (coreId, projectId) => {
+      const result = await link.request<Answer<"tasksListResult">>(coreId, {
+        type: "tasksList",
+        projectId,
+      });
+      return { tasks: result.tasks, archivedCount: result.archivedCount };
+    },
+    listArchivedTasks: async (coreId, projectId) =>
+      (
+        await link.request<Answer<"archivedTasksListResult">>(coreId, {
+          type: "archivedTasksList",
+          projectId,
+        })
+      ).tasks,
     listSessions: async (coreId, projectId) =>
       (await link.request<Answer<"sessionsListResult">>(coreId, { type: "sessionsList", projectId }))
         .sessions,

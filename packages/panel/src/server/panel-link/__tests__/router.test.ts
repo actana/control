@@ -17,7 +17,7 @@ import type { PanelLinkServerFrame } from "~/shared/panel-link";
 
 class FakeCoreLink implements CoreLinkClientLike {
   answers: (frame: CoreLinkRequestFrame) => CoreLinkResponseFrame | Promise<CoreLinkResponseFrame> =
-    (frame) => ({ type: "tasksListResult", reqId: frameReqId(frame), tasks: [] });
+    (frame) => ({ type: "tasksListResult", reqId: frameReqId(frame), tasks: [], archivedCount: 0 });
   readonly sent: CoreLinkRequestFrame[] = [];
   private data?: (msg: { ptyId: string; data: string; seq: number }) => void;
   private exit?: (msg: { ptyId: string; exitCode: number; signal?: number }) => void;

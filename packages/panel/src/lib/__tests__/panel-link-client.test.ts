@@ -113,7 +113,7 @@ describe("panel link · one socket for the whole fleet", () => {
     socket.push({
       t: "core",
       coreId: "core_a",
-      frame: { type: "tasksListResult", reqId, tasks: [] },
+      frame: { type: "tasksListResult", reqId, tasks: [], archivedCount: 0 },
     });
 
     await expect(answer).resolves.toMatchObject({ type: "tasksListResult" });
