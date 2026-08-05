@@ -37,6 +37,9 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     }
     const command = settings.hooks.Stop[0].hooks[0].command as string;
     expect(command).toContain("/api/hooks/claude");
+    // The event rides the URL too, so a payload that omits `hook_event_name`
+    // is still routable and every request identifies itself in a log.
+    expect(command).toContain("hookEvent=Stop");
     expect(command).toContain(`$${HOOK_URL_ENV}`);
     expect(command).toContain(`$${HOOK_TOKEN_ENV}`);
     expect(command).toContain(`$${HOOK_TASK_ID_ENV}`);
@@ -46,11 +49,23 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     // A hook file lives in the operator's workspace and may well be committed.
     // The literal token must never be in it; a restart also mints a new one,
     // and a file naming an env var stays correct across that.
-    expect(hookCommand("claude")).not.toMatch(/[0-9a-f]{32}/);
+    expect(hookCommand("claude", "Stop")).not.toMatch(/[0-9a-f]{32}/);
   });
 
   it("never blocks the operator's session when the receiver is down", () => {
-    expect(hookCommand("claude")).toContain("|| true");
+    expect(hookCommand("claude", "Stop")).toContain("|| true");
+  });
+
+  it("matches PreToolUse to AskUserQuestion but leaves PostToolUse open", () => {
+    installHarnessHooks("claude-code", cwd);
+    const hooks = readJson(".claude/settings.local.json").hooks;
+    // The only tool either host acts on — an unmatched subscription would
+    // spawn a curl per tool call to learn nothing.
+    expect(hooks.PreToolUse[0].matcher).toBe("AskUserQuestion");
+    // Unmatched on purpose: Claude fires no hook when a permission is
+    // GRANTED, so "some tool ran" is the only signal that heals a card stuck
+    // on needs-input before the turn's Stop.
+    expect(hooks.PostToolUse[0].matcher).toBeUndefined();
   });
 
   it("says a turn's START is unreported for families that only report its end", () => {

@@ -243,10 +243,14 @@ prompt in the PTY's output.
 
 ## Other harnesses
 
-`shell` has no hook surface and relies on explicit status updates. OpenCode has
-no hook writer in the registry today: its Sessions reach `running` through the
-terminal-input fallback (which stays armed for them, because the Core answers
-`hooksInstalled: false`) and settle on PTY exit.
+`shell` has no hook surface and relies on explicit status updates.
+
+OpenCode has no hook writer in the registry today, because its extension point
+is a plugin rather than a JSON hooks file. Its Sessions reach `running` through
+the terminal-input fallback (which stays armed for them, because the Core
+answers `hooksReportTurnStart: false`) and settle on PTY exit — but nothing
+reports the turn's *end*, so the card claims `running` through an idle CLI, and
+nothing feeds the title generator. Tracked as issue #101.
 
 ## What about a custom MCP?
 

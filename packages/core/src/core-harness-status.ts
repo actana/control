@@ -46,19 +46,25 @@ export class CoreHarnessStatus {
   receiveHook(
     taskId: string,
     payload: HarnessHookBody,
+    eventNameFallback = "",
   ): { ok: boolean; body: Record<string, unknown> } {
-    const result = handleHarnessHookEvent(taskId, payload, {
-      getTask: (id) => {
-        const task = this.deps.writer.readTask(id);
-        if (!task) return null;
-        return { status: task.status, claudeSessionId: task.claudeSessionId };
+    const result = handleHarnessHookEvent(
+      taskId,
+      payload,
+      {
+        getTask: (id) => {
+          const task = this.deps.writer.readTask(id);
+          if (!task) return null;
+          return { status: task.status, claudeSessionId: task.claudeSessionId };
+        },
+        updateStatus: (id, status) => this.writeStatus(id, status),
+        setSessionId: (id, sessionId) => {
+          this.deps.writer.mutate({ op: "update", taskId: id, claudeSessionId: sessionId });
+        },
+        onPrompt: (id, prompt) => this.deps.generateTitle?.(id, prompt),
       },
-      updateStatus: (id, status) => this.writeStatus(id, status),
-      setSessionId: (id, sessionId) => {
-        this.deps.writer.mutate({ op: "update", taskId: id, claudeSessionId: sessionId });
-      },
-      onPrompt: (id, prompt) => this.deps.generateTitle?.(id, prompt),
-    });
+      eventNameFallback,
+    );
 
     return hookResultResponse(result);
   }

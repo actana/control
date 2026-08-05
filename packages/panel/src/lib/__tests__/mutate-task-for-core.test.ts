@@ -133,6 +133,50 @@ describe("mutateTaskForCore", () => {
     expect(updateTask).toHaveBeenCalledWith("t1", { title: "Renamed" });
   });
 
+  it("forwards claudeSessionId on a Panel-owned row", async () => {
+    // The resume-failed path writes a fresh session id through this function.
+    // Dropping it here is not a no-op: the row keeps the DEAD id, so every
+    // later reopen retries it, fails, and falls back again — the stale-session
+    // loop the write exists to break.
+    await mutateTaskForCore(null, {
+      op: "update",
+      taskId: "t1",
+      claudeSessionId: "sess-fresh",
+    });
+
+    expect(updateTask).toHaveBeenCalledWith("t1", { claudeSessionId: "sess-fresh" });
+  });
+
+  it("forwards a cleared claudeSessionId, which is not the same as an absent one", async () => {
+    // codex/opencode get `null` rather than a fresh id — the row must actually
+    // be cleared, not left holding the old one.
+    await mutateTaskForCore(null, { op: "update", taskId: "t1", claudeSessionId: null });
+
+    expect(updateTask).toHaveBeenCalledWith("t1", { claudeSessionId: null });
+  });
+
+  it("forwards icon on a Panel-owned row", async () => {
+    await mutateTaskForCore(null, { op: "update", taskId: "t1", icon: "bug" });
+
+    expect(updateTask).toHaveBeenCalledWith("t1", { icon: "bug" });
+  });
+
+  it("carries a generated title's unpinned flag to a Panel-owned row", async () => {
+    // Both arms of one frame must agree on what a title means, or a title
+    // generated on one host pins a rename flag the other would not have.
+    await mutateTaskForCore(null, {
+      op: "update",
+      taskId: "t1",
+      title: "Rebuild the picker",
+      titleManuallySet: false,
+    });
+
+    expect(updateTask).toHaveBeenCalledWith("t1", {
+      title: "Rebuild the picker",
+      titleManuallySet: false,
+    });
+  });
+
   it("leaves a patch without archived on the update endpoint alone", async () => {
     await mutateTaskForCore(null, { op: "update", taskId: "t1", pinned: true });
 

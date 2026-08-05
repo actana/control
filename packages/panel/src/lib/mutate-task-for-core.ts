@@ -21,9 +21,10 @@ import { api } from "~/lib/api";
  *
  * A null `coreId` names a row in the Panel's own database — the last rows not
  * owned by a Core — and is written over the Panel's HTTP API instead. That
- * arm disappears with those rows. It understands `delete`, plus `title`,
- * `pinned`, `status`, and `archived` on an `update`; anything else on the
- * patch is dropped.
+ * arm disappears with those rows. It understands `delete`, plus every field
+ * an `update` carries: `title` (with `titleManuallySet`), `pinned`, `icon`,
+ * `claudeSessionId`, `status`, and `archived`. Keep it that way — a caller
+ * that names a field this arm quietly drops believes it wrote.
  */
 export async function mutateTaskForCore(
   coreId: string | null | undefined,
@@ -49,9 +50,19 @@ async function mutatePanelLocalTask(
   if (mutation.op !== "update") {
     throw new Error(`cannot ${mutation.op} a task that no Core owns`);
   }
+  // Every column the PATCH route accepts, so a frame that reaches this arm
+  // writes what the same frame would have written on a Core. A field silently
+  // missing here is not a no-op — it is a caller that believes it wrote.
   const patch = {
     ...(mutation.title !== undefined ? { title: mutation.title } : {}),
+    ...(mutation.title !== undefined && mutation.titleManuallySet !== undefined
+      ? { titleManuallySet: mutation.titleManuallySet }
+      : {}),
     ...(mutation.pinned !== undefined ? { pinned: mutation.pinned } : {}),
+    ...(mutation.icon !== undefined ? { icon: mutation.icon } : {}),
+    ...(mutation.claudeSessionId !== undefined
+      ? { claudeSessionId: mutation.claudeSessionId }
+      : {}),
   };
   // Neither `status` nor `archived` is a column the PATCH route accepts, and
   // each has its own endpoint for the same reason: the status route clears the

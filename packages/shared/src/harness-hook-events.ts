@@ -48,9 +48,12 @@ export function mapHookEventToStatus(payload: HarnessHookPayload): TaskStatus | 
       return "needs-input";
     case HARNESS_HOOK_EVENTS.notification:
       return isPermissionNotification(payload) ? "needs-input" : null;
-    // Matchers restrict these hooks to AskUserQuestion already; the tool_name
-    // guard keeps the mapping precise if a user points their own broader
-    // PreToolUse/PostToolUse hooks at Mission Control.
+    // `PreToolUse` is installed with an `AskUserQuestion` matcher, so the
+    // guard here is belt-and-braces for an operator's own broader hook.
+    // `PostToolUse` is installed UNMATCHED on purpose (see CLAUDE_HOOK_EVENTS
+    // in the Core's harness-hooks.ts): every tool call arrives, and the ones
+    // that are not AskUserQuestion are what heal a stale `needs-input` —
+    // handled in the pipeline, which is why they map to no status here.
     case HARNESS_HOOK_EVENTS.preToolUse:
       return payload.tool_name === ASK_USER_QUESTION_TOOL ? "needs-input" : null;
     case HARNESS_HOOK_EVENTS.postToolUse:

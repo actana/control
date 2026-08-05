@@ -29,6 +29,7 @@ import {
   writeJsonSettingsFile,
 } from "@actana/shared/json-settings-file";
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
+import { ASK_USER_QUESTION_TOOL } from "@actana/shared/harness-questions";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
 const MANAGED_FLAG = "_acManaged";
@@ -51,21 +52,30 @@ export const HOOK_TASK_ID_ENV = "AC_HOOK_TASK_ID";
  * The shell command a managed hook entry runs: POST the payload the harness
  * pipes on stdin to this Core's loopback receiver, tagged with the task it
  * belongs to. Short timeout and `|| true` — see the fail-soft rule above.
+ *
+ * The event name rides the URL as well as the body. The writer knows which
+ * event each entry is for, and naming it costs one query parameter: a payload
+ * that arrives without `hook_event_name` (an older harness build, a vendor
+ * that only sends it for some events) is still routable rather than silently
+ * `ignored`, and every request identifies itself in a log or a `curl -v`
+ * instead of being one of several indistinguishable opaque bodies. The body
+ * still wins when it carries a name — the harness knows better than we do.
  */
-export function hookCommand(slug: string): string {
+export function hookCommand(slug: string, event: string): string {
   return (
     `sh -c 'curl -sS -m 3 -X POST ` +
     `-H "Authorization: Bearer $${HOOK_TOKEN_ENV}" ` +
     `-H "Content-Type: application/json" ` +
     `--data-binary @- ` +
-    `"$${HOOK_URL_ENV}/api/hooks/${slug}?taskId=$${HOOK_TASK_ID_ENV}" || true'`
+    `"$${HOOK_URL_ENV}/api/hooks/${slug}` +
+    `?taskId=$${HOOK_TASK_ID_ENV}&hookEvent=${encodeURIComponent(event)}" || true'`
   );
 }
 
 type ManagedEntry = { [MANAGED_FLAG]: true; type: "command"; command: string };
 
-function managedEntry(slug: string): ManagedEntry {
-  return { [MANAGED_FLAG]: true, type: "command", command: hookCommand(slug) };
+function managedEntry(slug: string, event: string): ManagedEntry {
+  return { [MANAGED_FLAG]: true, type: "command", command: hookCommand(slug, event) };
 }
 
 function isManaged(value: unknown): boolean {
@@ -88,25 +98,45 @@ function mergeMatchers(existing: unknown, ours: unknown[]): unknown[] {
  * itself is what we tag, so a group we own is replaced wholesale and an
  * operator's group beside it is left alone.
  */
-function claudeGroup(slug: string): Record<string, unknown> {
-  return { [MANAGED_FLAG]: true, hooks: [managedEntry(slug)] };
+function claudeGroup(slug: string, event: string, matcher?: string): Record<string, unknown> {
+  return {
+    [MANAGED_FLAG]: true,
+    ...(matcher ? { matcher } : {}),
+    hooks: [managedEntry(slug, event)],
+  };
 }
 
 /**
- * The Claude Code events this Core subscribes to. `Notification` is included
- * because Claude's permission prompt arrives that way; the pipeline narrows it
- * to `permission_prompt` so idle reminders do not read as `needs-input`.
+ * The Claude Code events this Core subscribes to, and how narrowly.
+ *
+ * `Notification` is included because Claude's permission prompt arrives that
+ * way; the pipeline narrows it to `permission_prompt` so idle reminders do not
+ * read as `needs-input`.
+ *
+ * The two tool hooks are where the matcher earns its keep, and the two are
+ * deliberately asymmetric:
+ *
+ *  - `PreToolUse` is matched to `AskUserQuestion`. That is the only tool
+ *    either host does anything with — it is what raises `needs-input` and the
+ *    Panel's question overlay — so an unmatched subscription would spawn a
+ *    `curl` per tool call to learn nothing.
+ *  - `PostToolUse` is deliberately UNMATCHED, and costs one `curl` per tool
+ *    call. It is what heals a stale `needs-input`: Claude fires no hook when
+ *    an operator GRANTS a permission, so without a signal that some tool ran,
+ *    a granted permission leaves the card claiming `needs-input` until the
+ *    turn's `Stop` — precisely the drift this issue exists to remove. One
+ *    subprocess per tool call is the price of that, knowingly paid.
  */
-const CLAUDE_HOOK_EVENTS = [
-  "UserPromptSubmit",
-  "Stop",
-  "SubagentStart",
-  "SubagentStop",
-  "PreToolUse",
-  "PostToolUse",
-  "Notification",
-  "SessionStart",
-] as const;
+const CLAUDE_HOOK_EVENTS: readonly { name: string; matcher?: string }[] = [
+  { name: "UserPromptSubmit" },
+  { name: "Stop" },
+  { name: "SubagentStart" },
+  { name: "SubagentStop" },
+  { name: "PreToolUse", matcher: ASK_USER_QUESTION_TOOL },
+  { name: "PostToolUse" },
+  { name: "Notification" },
+  { name: "SessionStart" },
+];
 
 function installClaudeHooks(cwd: string, slug: string): boolean {
   const file = path.join(cwd, ".claude", "settings.local.json");
@@ -118,7 +148,9 @@ function installClaudeHooks(cwd: string, slug: string): boolean {
   if (settings === null) return false;
   const hooks: Record<string, unknown> = { ...(settings.hooks as object) };
   for (const event of CLAUDE_HOOK_EVENTS) {
-    hooks[event] = mergeMatchers(hooks[event], [claudeGroup(slug)]);
+    hooks[event.name] = mergeMatchers(hooks[event.name], [
+      claudeGroup(slug, event.name, event.matcher),
+    ]);
   }
   settings.hooks = hooks;
   return writeJsonSettingsFile(file, settings);
@@ -134,7 +166,7 @@ function installCodexHooks(cwd: string, slug: string): boolean {
   if (config === null) return false;
   const hooks: Record<string, unknown> = { ...(config.hooks as object) };
   for (const event of CODEX_HOOK_EVENTS) {
-    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug)]);
+    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug, event)]);
   }
   config.hooks = hooks;
   return writeJsonSettingsFile(file, config);
@@ -152,7 +184,7 @@ function installCursorHooks(cwd: string, slug: string): boolean {
   if (config === null) return false;
   const hooks: Record<string, unknown> = { ...(config.hooks as object) };
   for (const event of CURSOR_HOOK_EVENTS) {
-    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug)]);
+    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug, event)]);
   }
   config.hooks = hooks;
   // Cursor CLI silently ignores a hooks file with no `"version": 1`.
@@ -179,6 +211,11 @@ type HookFamily = {
  * surface we install — it is not an error, it is a Session whose status comes
  * from the PTY-exit settle and the Panel's terminal-input fallback instead.
  * Keep this open: adding a family is adding a row.
+ *
+ * OpenCode is the one family still absent, and it is absent because its
+ * extension point is a plugin rather than a JSON hooks file — a different
+ * shape of work from these three. Tracked as #101; until then its Sessions
+ * reach `running` through the Panel's fallback and settle on PTY exit.
  */
 const HOOK_FAMILIES: Record<string, HookFamily> = {
   "claude-code": { install: installClaudeHooks, reportsTurnStart: true },

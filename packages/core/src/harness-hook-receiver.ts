@@ -42,6 +42,11 @@ const HOOK_PATH_PREFIX = "/api/hooks/";
 export type HookReceiverHandler = (
   taskId: string,
   payload: HarnessHookBody,
+  /**
+   * The event named in the URL, for a payload whose body omits
+   * `hook_event_name`. The body still wins when it has one.
+   */
+  eventNameFallback: string,
 ) => { ok: boolean; body: Record<string, unknown> };
 
 /**
@@ -70,21 +75,34 @@ function bearerMatches(header: string | undefined, token: string): boolean {
   return timingSafeEqual(presented, expected);
 }
 
-function readBody(req: IncomingMessage): Promise<string | null> {
+/**
+ * Read the request body, distinguishing the two ways it can fail. An operator
+ * debugging a flaky hook with `curl -v` must not be told their kilobyte
+ * payload was "too large" because the socket dropped.
+ */
+type BodyResult =
+  | { ok: true; raw: string }
+  | { ok: false; reason: "too-large" | "read-failed" };
+
+function readBody(req: IncomingMessage): Promise<BodyResult> {
   return new Promise((resolve) => {
     let size = 0;
     const chunks: Buffer[] = [];
     req.on("data", (chunk: Buffer) => {
       size += chunk.length;
       if (size > MAX_BODY_BYTES) {
-        resolve(null);
-        req.destroy();
+        // Stop accumulating, but do NOT destroy the request here: tearing the
+        // socket down before the response is written means the caller sees a
+        // dropped connection instead of the 413 explaining why. The caller
+        // answers first and closes after (see the `too-large` branch below).
+        chunks.length = 0;
+        resolve({ ok: false, reason: "too-large" });
         return;
       }
       chunks.push(chunk);
     });
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", () => resolve(null));
+    req.on("end", () => resolve({ ok: true, raw: Buffer.concat(chunks).toString("utf8") }));
+    req.on("error", () => resolve({ ok: false, reason: "read-failed" }));
   });
 }
 
@@ -119,15 +137,28 @@ export async function startHarnessHookReceiver(
         res.end(JSON.stringify({ error: "taskId required" }));
         return;
       }
-      const raw = await readBody(req);
-      if (raw === null) {
-        res.writeHead(413, { "content-type": "application/json" });
-        res.end(JSON.stringify({ error: "payload too large" }));
+      const body = await readBody(req);
+      if (!body.ok) {
+        const tooLarge = body.reason === "too-large";
+        res.writeHead(tooLarge ? 413 : 400, {
+          "content-type": "application/json",
+          // The rest of an over-cap body is still in flight and we are not
+          // going to read it, so say the connection ends with this answer.
+          ...(tooLarge ? { connection: "close" } : {}),
+        });
+        res.end(
+          JSON.stringify({ error: tooLarge ? "payload too large" : "could not read body" }),
+          // Only once the answer is flushed is it safe to hang up on the
+          // sender still writing at us.
+          () => {
+            if (tooLarge) req.destroy();
+          },
+        );
         return;
       }
       let payload: HarnessHookBody;
       try {
-        payload = raw.trim() ? (JSON.parse(raw) as HarnessHookBody) : {};
+        payload = body.raw.trim() ? (JSON.parse(body.raw) as HarnessHookBody) : {};
       } catch {
         res.writeHead(400, { "content-type": "application/json" });
         res.end(JSON.stringify({ error: "invalid json" }));
@@ -136,7 +167,10 @@ export async function startHarnessHookReceiver(
       // A hook must never take a Session down with it: a handler that throws
       // answers 500 and the harness's `|| true` swallows it.
       try {
-        const result = handler(taskId, payload);
+        // The URL's event name is the fallback for a payload that carries
+        // none — the hook writer knows which event it installed each entry
+        // for, so a harness that omits it from the body is still routable.
+        const result = handler(taskId, payload, url.searchParams.get("hookEvent") ?? "");
         res.writeHead(result.ok ? 200 : 404, { "content-type": "application/json" });
         res.end(JSON.stringify(result.body));
       } catch (err) {

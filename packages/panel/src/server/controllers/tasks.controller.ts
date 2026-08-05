@@ -40,6 +40,11 @@ const updateTaskBody = z
     icon: z.string().nullable(),
     pinned: z.boolean(),
     claudeSessionId: z.string().nullable(),
+    // Whether the `title` beside it is an operator's rename. Absent, a title
+    // is one — the shape every rename has always had. A generator sends
+    // `false`, matching the Core-side rule (issue 84), so the two arms of one
+    // task-mutation frame cannot disagree about what a title means.
+    titleManuallySet: z.boolean(),
     claudeSkipPermissions: z.boolean(),
     claudeBareSession: z.boolean(),
   })
@@ -101,7 +106,7 @@ export async function update(rawId: string, request: Request): Promise<Response>
   if (!parsed.ok) return parsed.response;
   try {
     const patch = Object.prototype.hasOwnProperty.call(parsed.data, "title")
-      ? { ...parsed.data, titleManuallySet: true }
+      ? { ...parsed.data, titleManuallySet: parsed.data.titleManuallySet ?? true }
       : parsed.data;
     const t = updateTask(idParsed.data, patch);
     if (!t) return notFound();

@@ -73,8 +73,8 @@ describe("harness status detection on the Core (issue 84)", () => {
       writer,
       generateTitle: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
     });
-    receiver = await startHarnessHookReceiver((taskId, payload) =>
-      status.receiveHook(taskId, payload),
+    receiver = await startHarnessHookReceiver((taskId, payload, eventFallback) =>
+      status.receiveHook(taskId, payload, eventFallback),
     );
 
     coreMutationStore.mutateProject({
@@ -105,10 +105,12 @@ describe("harness status detection on the Core (issue 84)", () => {
   /** POST a hook payload exactly as a managed hook's `curl` would. */
   async function postHook(
     body: Record<string, unknown>,
-    opts?: { token?: string; taskId?: string },
+    opts?: { token?: string; taskId?: string; urlEvent?: string },
   ): Promise<{ status: number; json: unknown }> {
+    const query = new URLSearchParams({ taskId: opts?.taskId ?? TASK_ID });
+    if (opts?.urlEvent) query.set("hookEvent", opts.urlEvent);
     const res = await fetch(
-      `${receiver.url}/api/hooks/claude?taskId=${encodeURIComponent(opts?.taskId ?? TASK_ID)}`,
+      `${receiver.url}/api/hooks/claude?${query}`,
       {
         method: "POST",
         headers: {
@@ -268,6 +270,26 @@ describe("harness status detection on the Core (issue 84)", () => {
     await new Promise((r) => setTimeout(r, 10));
     expect(ran).toBe(false);
     expect(rowTitle()).toBe(TITLE_WAITING);
+  });
+
+  it("routes on the URL's event when the payload omits one", async () => {
+    // The hook writer names the event in the URL, so a harness build that
+    // leaves `hook_event_name` out of the body is still routable rather than
+    // silently ignored — which is what the Panel's endpoint has always done.
+    const res = await postHook({ session_id: "sess-1" }, { urlEvent: "UserPromptSubmit" });
+    expect(res.status).toBe(200);
+    expect(rowStatus()).toBe("running");
+  });
+
+  it("tells a dropped body apart from an oversized one", async () => {
+    // An operator debugging with `curl -v` must not be told their kilobyte
+    // payload was too large because the socket dropped.
+    const res = await fetch(`${receiver.url}/api/hooks/claude?taskId=${TASK_ID}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", authorization: `Bearer ${receiver.token}` },
+      body: "x".repeat(1_000_001),
+    });
+    expect(res.status).toBe(413);
   });
 
   it("binds loopback only — a hook never leaves the Core's machine", () => {
