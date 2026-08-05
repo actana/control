@@ -46,8 +46,12 @@ async function mutatePanelLocalTask(
   // their own endpoints because flipping the flag also clears the pending
   // question and emits `task:archived`/`task:restored`. Apply the plain
   // columns first, then flip archived, so the returned snapshot carries both.
-  const archiveOnly = mutation.archived !== undefined && Object.keys(patch).length === 0;
-  let task = archiveOnly ? null : (await api.updateTask(mutation.taskId, patch)).task;
+  // An archive-only patch skips the PATCH round trip; an empty patch with no
+  // archived flag still goes through it, so a no-op mutation returns the row.
+  let task =
+    Object.keys(patch).length > 0 || mutation.archived === undefined
+      ? (await api.updateTask(mutation.taskId, patch)).task
+      : null;
   if (mutation.archived !== undefined) {
     const flipped = mutation.archived
       ? await api.archiveTask(mutation.taskId)
