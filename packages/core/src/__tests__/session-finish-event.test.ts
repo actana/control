@@ -141,14 +141,22 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     fs.rmSync(userDataDir, { recursive: true, force: true });
   });
 
-  /** Patch a task through the core-link, as the Panel's exit handler does. */
-  async function patchStatus(taskId: string, status: string, reqId: string): Promise<void> {
-    ws.receive({ type: "tasksMutate", reqId, mutation: { op: "update", taskId, status } });
+  /** Send a task mutation over the core-link and wait for its answer. */
+  async function mutate(
+    reqId: string,
+    mutation: Record<string, unknown>,
+  ): Promise<void> {
+    ws.receive({ type: "tasksMutate", reqId, mutation });
     await vi.waitFor(() =>
       expect(
         ws.sent.some((raw) => (JSON.parse(raw) as { reqId?: string }).reqId === reqId),
       ).toBe(true),
     );
+  }
+
+  /** Patch a task's status, as the Panel's exit handler does. */
+  function patchStatus(taskId: string, status: string, reqId: string): Promise<void> {
+    return mutate(reqId, { op: "update", taskId, status });
   }
 
   function finishEvents(): CoreLinkEvent[] {
@@ -193,6 +201,44 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     await patchStatus("t1", "finished", "r2");
 
     expect(finishEvents()).toHaveLength(1);
+  });
+
+  // Archiving, pinning and renaming a finished Session are the most routine
+  // things to do with one, and each writes a row whose *resulting* status is
+  // still `finished`. Only the mutation that set the status is a finish.
+  it("does not emit a second finish when a finished task is archived", async () => {
+    await patchStatus("t1", "finished", "r1");
+    await mutate("r2", { op: "update", taskId: "t1", archived: true });
+
+    expect(finishEvents()).toHaveLength(1);
+  });
+
+  it("does not emit a second finish when a finished task is pinned", async () => {
+    await patchStatus("t1", "finished", "r1");
+    await mutate("r2", { op: "update", taskId: "t1", pinned: true });
+
+    expect(finishEvents()).toHaveLength(1);
+  });
+
+  it("does not emit a second finish when a finished task is renamed or re-iconed", async () => {
+    await patchStatus("t1", "finished", "r1");
+    await mutate("r2", { op: "update", taskId: "t1", title: "Renamed" });
+    await mutate("r3", { op: "update", taskId: "t1", icon: "bug" });
+
+    expect(finishEvents()).toHaveLength(1);
+  });
+
+  it("does not emit a finish for a task created already finished", async () => {
+    await mutate("r1", {
+      op: "create",
+      taskId: "t2",
+      projectId: "p1",
+      title: "Imported",
+      agent: "claude-code",
+      status: "finished",
+    });
+
+    expect(finishEvents()).toHaveLength(0);
   });
 
   it("emits nothing for a status change that is not a finish", async () => {

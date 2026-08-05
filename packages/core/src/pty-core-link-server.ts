@@ -497,14 +497,21 @@ export class PtyCoreLinkServer {
             : "task:updated";
     const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: task.taskId });
-    this.recordSessionFinish(task, previousStatus);
+    this.recordSessionFinish(mutation, task, previousStatus);
   }
 
   /**
    * Append `session:finished` when a mutation moved a task into `finished` —
-   * and only then. Re-patching a row that is already finished (a retried exit
-   * patch, a second tab racing the first) must not raise a second
-   * notification, so the prior status decides, not the resulting snapshot.
+   * and only then. Two things have to hold, and both are load-bearing.
+   *
+   * The mutation must be the one that set the status: the resulting snapshot
+   * alone would say `finished` for every later write to the same row, so
+   * archiving, pinning, or renaming a finished Session — the most routine
+   * things to do with one — would each raise a fresh notification.
+   *
+   * And the row must not have been finished already, so a retried exit patch
+   * or a second tab racing the first cannot raise a second notification. That
+   * is what the prior status is for; the snapshot cannot tell the two apart.
    *
    * The payload carries what the Panel's finish normalizer reads: the task id
    * (as `id`, its preferred key), the project id, the project name, and the
@@ -513,8 +520,13 @@ export class PtyCoreLinkServer {
    * is the one field not on the task snapshot; it is read through the query
    * port, and omitted when no query port is wired (a PTY-only Core).
    */
-  private recordSessionFinish(task: CoreLinkTaskSnapshot, previousStatus: string | null): void {
+  private recordSessionFinish(
+    mutation: CoreLinkTaskMutation,
+    task: CoreLinkTaskSnapshot,
+    previousStatus: string | null,
+  ): void {
     if (!this.eventLog) return;
+    if (!patchesFinishedStatus(mutation)) return;
     if (task.status !== FINISHED_TASK_STATUS) return;
     if (previousStatus === FINISHED_TASK_STATUS) return;
     const projectName = this.queryPort
@@ -537,7 +549,7 @@ export class PtyCoreLinkServer {
    * for the read; nothing else consults the prior status.
    */
   private priorTaskStatus(mutation: CoreLinkTaskMutation): string | null {
-    if (mutation.op !== "update" || mutation.status !== FINISHED_TASK_STATUS) return null;
+    if (!patchesFinishedStatus(mutation)) return null;
     return this.queryPort?.getTask(mutation.taskId)?.status ?? null;
   }
 
@@ -928,6 +940,19 @@ class ActiveConnection {
  * Panel writes.
  */
 const FINISHED_TASK_STATUS: TaskStatus = "finished";
+
+/**
+ * Does this mutation itself set the status to `finished`? The one question
+ * both halves of the finish path ask — whether to read the prior status, and
+ * whether to append the event — so they cannot drift apart and start emitting
+ * on writes that only happen to land on a row that is already finished.
+ *
+ * A `create` never qualifies: a row born `finished` is imported history, not a
+ * Session that just ended in front of the operator.
+ */
+function patchesFinishedStatus(mutation: CoreLinkTaskMutation): boolean {
+  return mutation.op === "update" && mutation.status === FINISHED_TASK_STATUS;
+}
 
 /**
  * Detect an update mutation whose only patched column is `icon` (issue 09).
