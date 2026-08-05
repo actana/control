@@ -4,11 +4,22 @@ All notable changes to this project, newest first.
 
 ## 0.1.0 — unreleased
 
-The core-link protocol moves to 0.12.0 so a project's remembered session
-settings can cross the wire, so a Session that lives on a Core can be deleted at
-all, and so archived Sessions on a Core can be listed and restored. The Panel
-and its Cores are version-locked, so every Core needs updating alongside the
-Panel — an older one renders as "needs update" rather than degrading.
+A Session card now tracks what its harness is actually doing. Until now nothing
+on a Core ever changed a Session's status or title after the row was created:
+the Core spawned harnesses without installing their lifecycle hooks and had
+nowhere for a hook to report to, so a Core-owned Session sat on "ready" until
+something else moved it, and a generated title never arrived at all.
+
+The Core now detects, writes, and tells the Panel. It installs each harness's
+hooks at spawn, pointed at a loopback receiver of its own; it settles a Session
+whose process exited; it names an unnamed Session using the harness binaries
+only it has. Each of those lands on the Core's own row and appends an event, so
+the card re-renders live and a Panel that was away replays what it missed —
+with the Panel's database untouched throughout. An operator's rename is now
+protected on the row rather than in Panel memory, so a generated title can no
+longer overwrite it after a reload. And the terminal-input fallback stands down
+only for a Session whose hooks really report the start of a turn, rather than
+for any harness whose family supports hooks in principle.
 
 Archiving a Session on a Core used to be a one-way hide. The row was archived
 correctly and nothing was lost, but archived rows never crossed the link, so the
@@ -17,6 +28,13 @@ from. Archived Sessions on a Core now appear under Archived with a count on the
 tab, Restore returns one to the active list, and "Delete all archived" works.
 They travel on a read path of their own, used only while that view is open — the
 Fleet and active lists still carry none of them.
+
+The core-link protocol moves to 0.13.0 so a Session's manually-set-title flag
+and harness session id can cross the wire, so archived Sessions on a Core can be
+listed and restored, so a project's remembered session settings can cross, and
+so a Session that lives on a Core can be deleted at all. The Panel and its Cores
+are version-locked, so every Core needs updating alongside the Panel — an older
+one renders as "needs update" rather than degrading.
 
 Deleting a Session on a Core used to fail. The task-mutation frame carried no
 delete operation, so every delete fell through to the Panel's own endpoint,

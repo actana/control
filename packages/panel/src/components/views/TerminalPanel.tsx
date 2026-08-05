@@ -10,7 +10,7 @@ import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
 import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import { useTerminals } from "~/lib/terminal-store";
 import { useUserTerminals } from "~/lib/user-terminal-store";
-import { queryKeys } from "~/queries";
+import { queryKeys, tasksCacheKey } from "~/queries";
 import { TerminalPane, type TerminalDescriptor } from "./TerminalPane";
 import type { Project, Task } from "~/db/schema";
 import { scopeKeyForProject } from "~/lib/scoped-project";
@@ -66,7 +66,7 @@ export function TerminalPanel({
   const currentActiveTask = useCallback((): Task | null => {
     if (!active) return null;
     const tasks = queryClient.getQueryData<Task[]>(
-      queryKeys.tasks(active.project.id),
+      tasksCacheKey(active.project.id, active.coreId),
     );
     return tasks?.find((task) => task.id === active.taskId) ?? active.task;
   }, [active, queryClient]);
@@ -93,7 +93,7 @@ export function TerminalPanel({
       await mutateTaskForCore(active.coreId, { op: "delete", taskId: active.taskId });
       await Promise.all([
         queryClient.invalidateQueries({
-          queryKey: queryKeys.tasks(active.project.id),
+          queryKey: tasksCacheKey(active.project.id, active.coreId),
         }),
         queryClient.invalidateQueries({ queryKey: queryKeys.project(active.project.id) }),
         queryClient.invalidateQueries({ queryKey: queryKeys.projects }),

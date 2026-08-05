@@ -744,7 +744,7 @@ function ProjectPage() {
         return;
       }
 
-      const tasksKey = queryKeys.tasks(project.id);
+      const tasksKey = tasksCacheKey(project.id, coreId);
       void queryClient.cancelQueries({ queryKey: tasksKey });
 
       const usesPersistedSession =
@@ -1366,9 +1366,9 @@ function ProjectPage() {
     pinRequestSeqRef.current[taskId] = requestId;
     setTaskPinning(taskId, true);
 
-    const tasksKey = queryKeys.tasks(project.id);
+    const tasksKey = tasksCacheKey(project.id, coreId);
     await queryClient.cancelQueries({ queryKey: tasksKey });
-    setTaskPinnedInCache(queryClient, project.id, taskId, nextPinned);
+    setTaskPinnedInCache(queryClient, project.id, taskId, nextPinned, coreId);
 
     try {
       // Task pin is Core-owned state; the mutation goes over the coreId-
@@ -1401,7 +1401,7 @@ function ProjectPage() {
       if (pinRequestSeqRef.current[taskId] === requestId) {
         const currentTask = queryClient.getQueryData<Task[]>(tasksKey)?.find((t) => t.id === taskId);
         if (currentTask?.pinned === nextPinned) {
-          setTaskPinnedInCache(queryClient, project.id, taskId, previousPinned);
+          setTaskPinnedInCache(queryClient, project.id, taskId, previousPinned, coreId);
         }
         void invalidateTasks();
         toast.error(e instanceof Error ? e.message : "Could not update pinned session");
@@ -1418,7 +1418,7 @@ function ProjectPage() {
     const task = tasks.find((t) => t.id === taskId);
     if (!task || !project) return;
 
-    const tasksKey = queryKeys.tasks(project.id);
+    const tasksKey = tasksCacheKey(project.id, coreId);
     void queryClient.cancelQueries({ queryKey: tasksKey });
     const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
 
@@ -1435,7 +1435,7 @@ function ProjectPage() {
       else terminals.deselect(selectedScopeKey);
     }
 
-    removeTaskFromCache(queryClient, project.id, taskId);
+    removeTaskFromCache(queryClient, project.id, taskId, coreId);
 
     void (async () => {
       try {
@@ -1449,7 +1449,7 @@ function ProjectPage() {
         void refresh();
       } catch (e: unknown) {
         if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks);
+          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
         }
         toast.error(e instanceof Error ? e.message : "Could not delete session");
       } finally {
@@ -1642,7 +1642,7 @@ function ProjectPage() {
       );
       queryClient.setQueryData<number>(countKey, (current) => Math.max(0, (current ?? 1) - 1));
     } else {
-      setTaskArchivedInCache(queryClient, project.id, taskId, false);
+      setTaskArchivedInCache(queryClient, project.id, taskId, false, coreId);
     }
 
     void (async () => {

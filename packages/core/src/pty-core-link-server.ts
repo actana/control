@@ -33,8 +33,8 @@ import {
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
-import type { TaskStatus } from "@actana/shared/domain";
 import type { PtyCore } from "./pty-manager";
+import { CoreTaskWriter } from "./core-task-writer";
 
 /**
  * The slice of the event-log store the server needs. The real implementation
@@ -224,6 +224,20 @@ export type PtyCoreLinkServerOptions = {
    */
   mutationPort?: CoreMutationPort;
   /**
+   * The Core's task-write seam (issue 84). The Core process passes the one it
+   * also gives its hook receiver and PTY-exit path, so a Panel-driven write
+   * and a hook-driven one are literally the same code on the same ports.
+   * Omitted (tests, a PTY-only Core), one is built from the ports above.
+   */
+  taskWriter?: CoreTaskWriter;
+  /**
+   * Takes a prompt the Panel captured from the terminal for a harness whose
+   * hooks do not report one (issue 84). Omitted, the `harnessPrompt` frame is
+   * answered `accepted: false` — a Core with no title generator is still a
+   * valid Core.
+   */
+  promptPort?: { submitted(taskId: string, prompt: string): void };
+  /**
    * Snapshot of this Core's CLI availability (issue 11). When omitted, the
    * `agentsAvailabilityList` frame answers with an empty map — the Panel's
    * per-Core availability store then falls back to "checking…" until the
@@ -325,7 +339,15 @@ export class PtyCoreLinkServer {
   private readonly mutationPort: CoreMutationPort | null;
   private readonly availabilityPort: HarnessAvailabilityPort | null;
   private readonly directoryPort: CoreDirectoryPort | null;
+  private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
+  /**
+   * The one seam every task-row change goes through — the Panel's
+   * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
+   * exit, title generator) alike, so a row never moves without the event that
+   * describes it (issue 84).
+   */
+  private readonly taskWriter: CoreTaskWriter;
   private activeWs: WebSocketLike | null = null;
   private connection: ActiveConnection | null = null;
 
@@ -343,7 +365,15 @@ export class PtyCoreLinkServer {
     this.mutationPort = opts.mutationPort ?? null;
     this.availabilityPort = opts.availabilityPort ?? null;
     this.directoryPort = opts.directoryPort ?? null;
+    this.promptPort = opts.promptPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
+    this.taskWriter =
+      opts.taskWriter ??
+      new CoreTaskWriter({
+        mutationPort: this.mutationPort,
+        queryPort: this.queryPort,
+        eventLog: this.eventLog,
+      });
     this.server.on("connection", (ws) => this.onConnection(ws));
     this.server.on("error", (err) => {
       log.error("core-link.server.error", { error: err.message });
@@ -473,106 +503,6 @@ export class PtyCoreLinkServer {
     this.eventLog.appendEvent(kind, payload, { taskId: null, ptyId: null });
   }
 
-  /**
-   * Record a task mutation in the event log (see {@link recordProjectMutation}).
-   *
-   * On `update`, the kind depends on which fields the frame carried:
-   *  - `icon` set (with no other patched field) → `task:iconChanged` — the
-   *    Panel's live query wants to route icon-only edits distinctly from other
-   *    task updates so a reconnecting Panel replays the change through the
-   *    existing `subscribe`/`event`/`eventsReplayed` path (issue 09).
-   *  - `pinned` set (with no other patched field) → `task:pinnedChanged` —
-   *    same rationale as icon (issue 10). Pin toggles are frequent and
-   *    consumers that only track pinned state (e.g. the SessionGrid pinned
-   *    filter) can subscribe distinctly.
-   *  - anything else → `task:updated` (unchanged).
-   *
-   * On `create`, the kind is always `task:created` — a new row's icon is part
-   * of the initial snapshot the tasks list carries, not a discrete change.
-   *
-   * On `delete`, the kind is `task:deleted` — the same name the Panel server
-   * emits when it deletes a Panel-owned row, so a reconnecting Panel replays a
-   * Core-owned delete through the handler it already has (it prunes that
-   * session's stored finish notifications keyed on the event's `taskId`).
-   *
-   * A transition into `finished` additionally appends `session:finished`
-   * (issue 20) — the event ADR 0008 built the Panel's notification on and no
-   * Core ever produced. It is additional, not a replacement: the live query
-   * still needs the `task:updated` event for the same mutation.
-   */
-  private recordTaskMutation(
-    mutation: CoreLinkTaskMutation,
-    task: CoreLinkTaskSnapshot,
-    previousStatus: string | null,
-  ): void {
-    if (!this.eventLog) return;
-    const kind =
-      mutation.op === "create"
-        ? "task:created"
-        : mutation.op === "delete"
-          ? "task:deleted"
-          : isIconOnlyUpdate(mutation)
-            ? "task:iconChanged"
-            : isPinnedOnlyUpdate(mutation)
-              ? "task:pinnedChanged"
-              : "task:updated";
-    const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
-    this.eventLog.appendEvent(kind, payload, { taskId: task.taskId });
-    this.recordSessionFinish(mutation, task, previousStatus);
-  }
-
-  /**
-   * Append `session:finished` when a mutation moved a task into `finished` —
-   * and only then. Two things have to hold, and both are load-bearing.
-   *
-   * The mutation must be the one that set the status: the resulting snapshot
-   * alone would say `finished` for every later write to the same row, so
-   * archiving, pinning, or renaming a finished Session — the most routine
-   * things to do with one — would each raise a fresh notification.
-   *
-   * And the row must not have been finished already, so a retried exit patch
-   * or a second tab racing the first cannot raise a second notification. That
-   * is what the prior status is for; the snapshot cannot tell the two apart.
-   *
-   * The payload carries what the Panel's finish normalizer reads: the task id
-   * (as `id`, its preferred key), the project id, the project name, and the
-   * task title. Without the last two the toast reads "Project" / "Session",
-   * which is the degraded output this event exists to avoid. The project name
-   * is the one field not on the task snapshot; it is read through the query
-   * port, and omitted when no query port is wired (a PTY-only Core).
-   */
-  private recordSessionFinish(
-    mutation: CoreLinkTaskMutation,
-    task: CoreLinkTaskSnapshot,
-    previousStatus: string | null,
-  ): void {
-    if (!this.eventLog) return;
-    if (!patchesFinishedStatus(mutation)) return;
-    if (task.status !== FINISHED_TASK_STATUS) return;
-    if (previousStatus === FINISHED_TASK_STATUS) return;
-    const projectName = this.queryPort
-      ?.listProjects()
-      .find((p) => p.projectId === task.projectId)?.name;
-    const payload = JSON.stringify({
-      id: task.taskId,
-      taskId: task.taskId,
-      projectId: task.projectId,
-      ...(projectName ? { projectName } : {}),
-      taskTitle: task.title,
-    });
-    this.eventLog.appendEvent("session:finished", payload, { taskId: task.taskId });
-  }
-
-  /**
-   * The status a task carried before a mutation is applied, or `null` when
-   * there is nothing to read — an unknown row, a Core with no query port, or
-   * a mutation that could not produce a finish. Only a patch that could pays
-   * for the read; nothing else consults the prior status.
-   */
-  private priorTaskStatus(mutation: CoreLinkTaskMutation): string | null {
-    if (!patchesFinishedStatus(mutation)) return null;
-    return this.queryPort?.getTask(mutation.taskId)?.status ?? null;
-  }
 
   /**
    * Record a pty:spawn event in the log (lifecycle marker for replay). The
@@ -659,7 +589,7 @@ export class PtyCoreLinkServer {
     switch (frame.type) {
       case "spawn": {
         try {
-          const { ptyId } = await this.core.spawn(frame.opts);
+          const { ptyId, hooksReportTurnStart } = await this.core.spawn(frame.opts);
           // `shellSession` is the VM Shell Session discriminant (issue 06):
           // `true` on the VM-shell variant, `never` (undefined) on the
           // agent/shell variants. The type-safe narrow records which surface
@@ -668,7 +598,11 @@ export class PtyCoreLinkServer {
           // agent/session spawn when replaying the event tail.
           const shellSession = frame.opts.shellSession === true;
           this.recordPtySpawn(ptyId, frame.opts.taskId, shellSession);
-          this.send(ws, { type: "spawned", reqId: frame.reqId, ptyId });
+          // `hooksReportTurnStart` is what lets the Panel arm its
+          // terminal-input fallback on reality rather than on the harness
+          // family (issue 84): a Session whose hooks will not announce the
+          // start of a turn has no other `running` signal.
+          this.send(ws, { type: "spawned", reqId: frame.reqId, ptyId, hooksReportTurnStart });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "spawnError", reqId: frame.reqId, message });
@@ -771,14 +705,24 @@ export class PtyCoreLinkServer {
           return;
         }
         try {
-          const previousStatus = this.priorTaskStatus(frame.mutation);
-          const task = this.mutationPort.mutateTask(frame.mutation);
-          if (task) this.recordTaskMutation(frame.mutation, task, previousStatus);
+          // The Panel's write and the Core's own writes (hooks, PTY exit, the
+          // title generator) share one seam, so the row and the events that
+          // describe it never come apart (issue 84).
+          const task = this.taskWriter.mutate(frame.mutation);
           this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "error", reqId: frame.reqId, message });
         }
+        return;
+      }
+      case "harnessPrompt": {
+        // The Panel read this off the terminal because the harness's hooks
+        // will not report it. Nothing is patched here; the Core decides on
+        // its own whether the Session wants naming.
+        const accepted = Boolean(this.promptPort && frame.taskId && frame.prompt?.trim());
+        if (accepted) this.promptPort!.submitted(frame.taskId, frame.prompt);
+        this.send(ws, { type: "harnessPromptResult", reqId: frame.reqId, accepted });
         return;
       }
       case "projectsMutate": {
@@ -962,69 +906,6 @@ class ActiveConnection {
       this.timer = null;
     }
   }
-}
-
-/**
- * The status a Session carries once its Harness has exited cleanly. The Panel
- * writes it on PTY exit (`terminalExitTaskStatus`); it is the one status this
- * server reads rather than passes through, because it is what raises a finish
- * notification. Typed against the shared vocabulary — type-only, so the Core
- * bundle gains no runtime dependency — so it cannot drift from the word the
- * Panel writes.
- */
-const FINISHED_TASK_STATUS: TaskStatus = "finished";
-
-/**
- * Does this mutation itself set the status to `finished`? The one question
- * both halves of the finish path ask — whether to read the prior status, and
- * whether to append the event — so they cannot drift apart and start emitting
- * on writes that only happen to land on a row that is already finished.
- *
- * A `create` never qualifies: a row born `finished` is imported history, not a
- * Session that just ended in front of the operator.
- */
-function patchesFinishedStatus(
-  mutation: CoreLinkTaskMutation,
-): mutation is Extract<CoreLinkTaskMutation, { op: "update" }> {
-  return mutation.op === "update" && mutation.status === FINISHED_TASK_STATUS;
-}
-
-/**
- * Detect an update mutation whose only patched column is `icon` (issue 09).
- * Anything else patched alongside icon degrades the frame back to
- * `task:updated`, since the Panel-side icon listener doesn't need to fire for
- * mixed edits — a `task:updated` invalidation already picks up icon changes as
- * a side effect of the full row refetch. The narrowing keeps the dedicated
- * `task:iconChanged` kind meaningful: a Panel that only cares about icon
- * subscribes to that kind and skips the rest.
- */
-function isIconOnlyUpdate(mutation: CoreLinkTaskMutation): boolean {
-  if (mutation.op !== "update") return false;
-  if (mutation.icon === undefined) return false;
-  return (
-    mutation.status === undefined &&
-    mutation.title === undefined &&
-    mutation.pinned === undefined &&
-    mutation.archived === undefined
-  );
-}
-
-/**
- * Twin of {@link isIconOnlyUpdate} for the `task:pinnedChanged` kind (issue
- * 10). A patch that touches pinned alongside anything else keeps the
- * `task:updated` kind — mixed edits already invalidate the row via the
- * generic listener; the dedicated kind is only useful when pin is the sole
- * change.
- */
-function isPinnedOnlyUpdate(mutation: CoreLinkTaskMutation): boolean {
-  if (mutation.op !== "update") return false;
-  if (mutation.pinned === undefined) return false;
-  return (
-    mutation.status === undefined &&
-    mutation.title === undefined &&
-    mutation.icon === undefined &&
-    mutation.archived === undefined
-  );
 }
 
 function defaultCreateServer(opts: {

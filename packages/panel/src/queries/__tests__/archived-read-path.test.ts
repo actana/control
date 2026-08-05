@@ -27,6 +27,8 @@ function snapshot(over: Partial<CoreLinkTaskSnapshot> = {}): CoreLinkTaskSnapsho
     taskId: "t1",
     projectId: "p1",
     title: "restock",
+    titleManuallySet: false,
+    claudeSessionId: null,
     agent: "claude-code",
     status: "running",
     pinned: false,

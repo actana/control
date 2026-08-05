@@ -182,6 +182,24 @@ export type CoreLinkTaskMutation =
       taskId: string;
       status?: CoreLinkTaskStatus;
       title?: string;
+      /**
+       * Whether the `title` on this patch is an operator's rename (issue 84).
+       * Omitted, a title reads as a rename and pins the row's
+       * manually-set-title flag — the shape every Panel-driven rename has
+       * always had. The Core's own title generator is the one caller that
+       * sends `false`, so a generated name never claims to be a rename and a
+       * rename is never overwritten by a generator that finished after it.
+       * Meaningless without `title`; ignored there.
+       */
+      titleManuallySet?: boolean;
+      /**
+       * The harness's own session id for this Task (issue 84). Captured by the
+       * Core when a hook reports one, and by the Panel when a resumed session
+       * hands back a fresh id — a Core-owned row's session id is Core state
+       * like every other column, and writing it to the Panel's database left
+       * the Core's row blank. `null` clears it.
+       */
+      claudeSessionId?: string | null;
       pinned?: boolean;
       archived?: boolean;
       /**
@@ -378,6 +396,22 @@ export type CoreLinkRequestFrame =
   // that view is open — the count that gates it rides `tasksListResult`.
   | { type: "archivedTasksList"; reqId: string; projectId?: string }
   | { type: "tasksMutate"; reqId: string; mutation: CoreLinkTaskMutation }
+  /**
+   * A prompt the operator submitted, for a harness whose hooks do not report
+   * one (issue 84).
+   *
+   * Cursor's `beforeSubmitPrompt` never fires in cursor-agent, so the Panel
+   * reads the prompt off the terminal instead — and that is the only copy
+   * anyone has. Without a way to hand it to the owning Core, a Core-owned
+   * Cursor Session could never be named at all: the Core's title generator
+   * had nothing to name it from, and the Panel's names only Panel rows.
+   *
+   * It patches no column. The Core takes it as the trigger its own hook
+   * receiver would otherwise have supplied, and the same rules apply — a
+   * Session that already has a real title, or one the operator renamed, is
+   * left alone.
+   */
+  | { type: "harnessPrompt"; reqId: string; taskId: string; prompt: string }
   // ─── Project ops (issue 07 — per-Core navigation: list the Core's
   // projects as live snapshots, no Panel-side persistence) ───
   | { type: "projectsList"; reqId: string }
@@ -434,7 +468,26 @@ export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId:
 /** Response frame — correlates to a request via `reqId`. */
 export type CoreLinkResponseFrame =
   | { type: "ready"; version: string }
-  | { type: "spawned"; reqId: string; ptyId: string }
+  | {
+      type: "spawned";
+      reqId: string;
+      ptyId: string;
+      /**
+       * Will a hook report the START of a turn for this Session (issue 84)?
+       *
+       * The Panel's terminal-input fallback stands down on this and nothing
+       * else. It is deliberately narrower than "hooks were installed": Cursor
+       * takes our hooks file but never fires `beforeSubmitPrompt`, and Codex
+       * refuses to run newly-installed hooks until the operator reviews them
+       * with `/hooks` — both would report a turn's END and leave its start
+       * unannounced. Suppressing the fallback on either is a Session with no
+       * `running` signal at all, which is the bug this replaced.
+       *
+       * Absent from an older Core's answer, which reads as "no" — a redundant
+       * `running` write, never a silent card.
+       */
+      hooksReportTurnStart?: boolean;
+    }
   | { type: "spawnError"; reqId: string; message: string }
   | { type: "writeResult"; reqId: string; ok: boolean }
   | { type: "resizeResult"; reqId: string; ok: boolean }
@@ -470,6 +523,12 @@ export type CoreLinkResponseFrame =
     }
   | { type: "archivedTasksListResult"; reqId: string; tasks: CoreLinkTaskSnapshot[] }
   | { type: "tasksMutateResult"; reqId: string; task: CoreLinkTaskSnapshot | null }
+  /**
+   * Was the prompt taken up? `false` means this Core has no title generator
+   * wired — not that the Session was left unnamed for a reason, which is a
+   * normal outcome the Core does not report on.
+   */
+  | { type: "harnessPromptResult"; reqId: string; accepted: boolean }
   // ─── Project op responses (issue 07 — per-Core navigation, issue 04 — writes) ───
   | { type: "projectsListResult"; reqId: string; projects: CoreLinkProjectSnapshot[] }
   | { type: "projectsMutateResult"; reqId: string; project: CoreLinkProjectSnapshot | null }
@@ -540,6 +599,22 @@ export type CoreLinkTaskSnapshot = {
   taskId: string;
   projectId: string;
   title: string;
+  /**
+   * True once an operator has renamed this Session (issue 84). The Core's
+   * title generator refuses to write over a row carrying it, and the flag
+   * lives on the row rather than in Panel memory so the protection survives a
+   * Panel reload and a generator that finishes after the rename. The Panel
+   * renders from this field instead of synthesizing `false`, which made every
+   * Core-owned Session look un-renamed.
+   */
+  titleManuallySet: boolean;
+  /**
+   * The harness's own session id for this Task, or `null` before one has been
+   * observed (issue 84). The Core's hook pipeline reads it to tell a hook from
+   * this Session apart from one belonging to a session that has since been
+   * replaced.
+   */
+  claudeSessionId: string | null;
   agent: string;
   status: string;
   pinned: boolean;
@@ -635,8 +710,22 @@ export type CoreLinkServerFrame =
  * optional: a Core on 0.11.0 would answer without it and the Archived tab
  * would silently never appear, which is exactly the bug — so the minor moves
  * and such a Core renders as "needs update".
+ * Issue 84 adds `titleManuallySet` and `claudeSessionId` to
+ * {@link CoreLinkTaskSnapshot} and to the `update` variant of
+ * {@link CoreLinkTaskMutation}, plus `hooksReportTurnStart` on the `spawned`
+ * response, and the `harnessPrompt` frame that carries a terminal-captured
+ * prompt to the Core that can act on it → 0.13.0 (ADR 0020). The snapshot
+ * fields are the load-bearing part: a Core that grew them without this bump
+ * would hand a Panel that predates it a snapshot whose rename protection is
+ * silently absent, and a Panel that predates the Core would keep synthesizing
+ * `false` — both render a Session the generator is free to rename out from
+ * under its operator. Same rule as above: the minor moved, so either side on
+ * 0.12.0 is "needs update" rather than a partial snapshot nobody notices. No
+ * migration rides along — the columns (`title_manually_set`,
+ * `claude_session_id`) have been in the shared schema bootstrap since the
+ * fork; only the wire and the Core's readers/writers of them are new.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.12.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.13.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
@@ -680,6 +769,7 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "tasksList",
   "archivedTasksList",
   "tasksMutate",
+  "harnessPrompt",
   "projectsList",
   "projectsMutate",
   "sessionsList",

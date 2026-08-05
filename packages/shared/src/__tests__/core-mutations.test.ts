@@ -51,6 +51,7 @@ function openDb(): Database.Database {
       archived INTEGER NOT NULL DEFAULT 0,
       icon TEXT,
       title_manually_set INTEGER NOT NULL DEFAULT 0,
+      claude_session_id TEXT,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );

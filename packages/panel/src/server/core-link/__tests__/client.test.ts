@@ -368,6 +368,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         taskId: "t1",
         projectId: "p1",
         title: "fix bug",
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: "claude-code",
         status: "running",
         pinned: false,
@@ -379,6 +381,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         taskId: "t2",
         projectId: "p2",
         title: "ship",
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: "codex",
         status: "needs-input",
         pinned: false,
@@ -399,8 +403,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
 
   it("forwards the projectId filter on tasksList to the query port", async () => {
     queryPort.tasks = [
-      { taskId: "t1", projectId: "p1", title: "a", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
-      { taskId: "t2", projectId: "p2", title: "b", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+      { taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+      { taskId: "t2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
     ];
     pair.server.receive({ type: "tasksList", reqId: "r3", projectId: "p1" });
     await vi.waitFor(() => expect(queryPort.listTasksCalls).toEqual(["p1"]));
@@ -416,9 +420,9 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
 
   it("keeps archived rows off tasksListResult and reports only how many there are", async () => {
     queryPort.tasks = [
-      { taskId: "live", projectId: "p1", title: "a", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
-      { taskId: "old1", projectId: "p1", title: "b", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
-      { taskId: "old2", projectId: "p1", title: "c", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
+      { taskId: "live", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { taskId: "old1", projectId: "p1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { taskId: "old2", projectId: "p1", title: "c", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
     ];
     pair.server.receive({ type: "tasksList", reqId: "r4", projectId: "p1" });
     await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("tasksListResult"));
@@ -432,8 +436,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
 
   it("answers archivedTasksList with the archived rows and nothing else", async () => {
     queryPort.tasks = [
-      { taskId: "live", projectId: "p1", title: "a", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
-      { taskId: "old", projectId: "p1", title: "b", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { taskId: "live", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { taskId: "old", projectId: "p1", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
     ];
     pair.server.receive({ type: "archivedTasksList", reqId: "r5", projectId: "p1" });
     await vi.waitFor(() => expect(queryPort.listArchivedTasksCalls).toEqual(["p1"]));
@@ -448,8 +452,8 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
 
   it("scopes archivedTasksList to one project, and lists every Core-wide row without one", async () => {
     queryPort.tasks = [
-      { taskId: "o1", projectId: "p1", title: "a", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
-      { taskId: "o2", projectId: "p2", title: "b", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
+      { taskId: "o1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { taskId: "o2", projectId: "p2", title: "b", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
     ];
     pair.server.receive({ type: "archivedTasksList", reqId: "r6", projectId: "p2" });
     await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("archivedTasksListResult"));
@@ -886,6 +890,8 @@ describe("PtyCoreLinkClient", () => {
       taskId: "t1",
       projectId: "p1",
       title: "hello",
+      titleManuallySet: false,
+      claudeSessionId: null,
       agent: "claude-code",
       status: "ready",
       pinned: false,
@@ -1401,6 +1407,8 @@ class FakeMutationPort implements CoreMutationPort {
         taskId: mutation.taskId ?? `t-${this.tasks.length + 1}`,
         projectId: mutation.projectId,
         title: mutation.title,
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: mutation.agent,
         status: mutation.status ?? "ready",
         pinned: false,
@@ -1527,6 +1535,8 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
         op: "create",
         projectId: "p1",
         title: "fix bug",
+        titleManuallySet: false,
+        claudeSessionId: null,
         agent: "claude-code",
       },
     });
@@ -1534,7 +1544,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     expect(pair.server.lastSent()).toMatchObject({
       type: "tasksMutateResult",
       reqId: "r1",
-      task: { projectId: "p1", title: "fix bug", agent: "claude-code" },
+      task: { projectId: "p1", title: "fix bug", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
   });
 
@@ -1615,7 +1625,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     pair.server.receive({
@@ -1633,7 +1643,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     // Icon-only patch → dedicated kind.
@@ -1651,7 +1661,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     // Pin-only patch → dedicated kind so consumers that only track pinned
@@ -1670,7 +1680,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     pair.server.receive({
@@ -1687,7 +1697,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     pair.server.receive({
       type: "tasksMutate",
       reqId: "seed",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "a", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
     pair.server.receive({
@@ -1746,7 +1756,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     p.server.receive({
       type: "tasksMutate",
       reqId: "r2",
-      mutation: { op: "create", projectId: "p1", title: "x", agent: "claude-code" },
+      mutation: { op: "create", projectId: "p1", title: "x", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() =>
       expect(p.server.lastSent()?.type).toBe("tasksMutateResult"),
@@ -1819,7 +1829,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     p2.server.receive({
       type: "tasksMutate",
       reqId: "r3",
-      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "fix", agent: "claude-code" },
+      mutation: { op: "create", taskId: "t1", projectId: "p1", title: "fix", titleManuallySet: false, claudeSessionId: null, agent: "claude-code" },
     });
     await vi.waitFor(() => expect(mutationPort.mutateTaskCalls).toHaveLength(1));
 

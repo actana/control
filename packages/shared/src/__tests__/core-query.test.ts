@@ -43,6 +43,8 @@ function openDb(): Database.Database {
       pinned INTEGER NOT NULL DEFAULT 0,
       archived INTEGER NOT NULL DEFAULT 0,
       icon TEXT,
+      title_manually_set INTEGER NOT NULL DEFAULT 0,
+      claude_session_id TEXT,
       updated_at INTEGER NOT NULL
     );
   `);
@@ -195,6 +197,8 @@ describe("queryTasks", () => {
       taskId: "t2",
       projectId: "p1",
       title: "ship",
+      titleManuallySet: false,
+      claudeSessionId: null,
       agent: "codex",
       status: "needs-input",
       pinned: true,

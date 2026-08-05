@@ -16,6 +16,8 @@ import type { CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
 
 const task = (over: Partial<CoreLinkTaskSnapshot> & Pick<CoreLinkTaskSnapshot, "taskId" | "projectId">): CoreLinkTaskSnapshot => ({
   title: over.title ?? "task",
+  titleManuallySet: over.titleManuallySet ?? false,
+  claudeSessionId: over.claudeSessionId ?? null,
   agent: over.agent ?? "claude-code",
   status: over.status ?? "running",
   pinned: over.pinned ?? false,
@@ -155,7 +157,7 @@ describe("fanOutTasks", () => {
     lastSeenAt,
   });
   const tasks = (taskId: string, projectId = "p1"): CoreLinkTaskSnapshot[] => [
-    { taskId, projectId, title: "t", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
+    { taskId, projectId, title: "t", titleManuallySet: false, claudeSessionId: null, agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 1 },
   ];
 
   it("returns ok+tasks for Cores whose query resolves", async () => {

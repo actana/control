@@ -36,7 +36,7 @@ import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
 import { useTerminals, type OpenTerminal } from "~/lib/terminal-store";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
 import { useUserTerminals } from "~/lib/user-terminal-store";
-import { queryKeys, useSettings, useTasks } from "~/queries";
+import { queryKeys, tasksCacheKey, useSettings, useTasks } from "~/queries";
 import type { Harness } from "@actana/shared/domain";
 import { scopeKeyForProject } from "~/lib/scoped-project";
 import { GridLayoutQuickPicker } from "./GridLayoutQuickPicker";
@@ -1266,7 +1266,7 @@ export function SessionGrid({
   const shouldConfirmClose = useCallback(
     (session: OpenTerminal): boolean => {
       const tasks = queryClient.getQueryData<Task[]>(
-        queryKeys.tasks(session.project.id),
+        tasksCacheKey(session.project.id, session.coreId),
       );
       if (!tasks) return true;
       const live = tasks.find((t) => t.id === session.taskId);

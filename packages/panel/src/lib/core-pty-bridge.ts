@@ -16,7 +16,16 @@ import type { CoreLinkPtyReplay, CoreLinkPtySpawnOptions } from "@actana/shared/
 import type { CoreLinkAnswer as Answer } from "~/shared/panel-link";
 
 export type CorePtyBridge = {
-  spawn: (opts: CoreLinkPtySpawnOptions) => Promise<{ ptyId: string }>;
+  spawn: (
+    opts: CoreLinkPtySpawnOptions,
+  ) => Promise<{ ptyId: string; hooksReportTurnStart: boolean }>;
+  /**
+   * Hand the owning Core a prompt read off the terminal, for a harness whose
+   * hooks will not report one (issue 84). It patches nothing — the Core takes
+   * it as the trigger to name an unnamed Session, which is the only way a
+   * Core-owned Cursor Session gets a title at all.
+   */
+  submitPrompt: (taskId: string, prompt: string) => Promise<boolean>;
   write: (ptyId: string, data: string) => Promise<boolean>;
   resize: (ptyId: string, cols: number, rows: number) => Promise<boolean>;
   kill: (ptyId: string) => Promise<boolean>;
@@ -65,9 +74,24 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
   link.watch(coreId);
   return {
     async spawn(opts) {
-      const { ptyId } = await link.request<Answer<"spawned">>(coreId, { type: "spawn", opts });
-      return { ptyId };
+      const { ptyId, hooksReportTurnStart } = await link.request<Answer<"spawned">>(coreId, {
+        type: "spawn",
+        opts,
+      });
+      // A Core that predates issue 84 answers without the field. Reading that
+      // as "no" keeps the terminal-input fallback armed, which is the safe
+      // direction: a redundant `running` write, never a Session with no status
+      // signal at all.
+      return { ptyId, hooksReportTurnStart: hooksReportTurnStart === true };
     },
+    submitPrompt: async (taskId, prompt) =>
+      (
+        await link.request<Answer<"harnessPromptResult">>(coreId, {
+          type: "harnessPrompt",
+          taskId,
+          prompt,
+        })
+      ).accepted,
     write: async (ptyId, data) =>
       (await link.request<Answer<"writeResult">>(coreId, { type: "write", ptyId, data })).ok,
     resize: async (ptyId, cols, rows) =>

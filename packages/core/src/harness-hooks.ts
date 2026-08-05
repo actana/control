@@ -1,0 +1,274 @@
+// Installing a harness's lifecycle hooks so they report to THIS Core.
+//
+// A harness is a vendor's program (CONTEXT.md "Harness"); the only handle we
+// have on what it is doing is the lifecycle hooks it offers, configured through
+// a file in the workspace. This module writes those files at spawn time, one
+// writer per harness family, and every per-harness difference stays inside this
+// Core process — the Panel learns only whether hooks went in (issue 84).
+//
+// Three rules the writers share:
+//
+//  - An operator's own hooks are preserved. Ours are tagged `_acManaged: true`
+//    so the next spawn replaces exactly what a previous spawn wrote and nothing
+//    else. A workspace is the operator's, not ours.
+//  - The command carries no secret. It reads `$AC_HOOK_URL` and
+//    `$AC_HOOK_TOKEN` out of the PTY's environment, so the file on disk stays
+//    valid across a Core restart that mints a new token, and a token never
+//    lands in a file the operator might commit.
+//  - It is fail-soft (`|| true`). A hook that blocks or fails must never take
+//    the operator's session down with it; a missed hook costs a stale card,
+//    which the PTY-exit settle and the terminal-input fallback still catch.
+//
+// The registry is open by construction: a harness with no entry simply gets no
+// hooks, which is what tells the Panel to keep its terminal-input fallback
+// armed for that Session.
+
+import * as path from "node:path";
+import {
+  readJsonSettingsFile,
+  writeJsonSettingsFile,
+} from "@actana/shared/json-settings-file";
+import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
+import { ASK_USER_QUESTION_TOOL } from "@actana/shared/harness-questions";
+
+/** Marks an entry this Core wrote, so the next spawn can replace just those. */
+const MANAGED_FLAG = "_acManaged";
+
+/**
+ * The marker the retired Electron app wrote into the same files. Its entries
+ * POST to an endpoint that no longer exists, so they are swept out alongside
+ * ours rather than left to fail on every turn (ADR 0007 retired the `MC_`
+ * prefix; this is the last place it can still be sitting on an operator's
+ * disk).
+ */
+const LEGACY_MANAGED_FLAG = "_mcManaged";
+
+/** Env var names the hook command reads. Set on the PTY by the spawn path. */
+export const HOOK_URL_ENV = "AC_HOOK_URL";
+export const HOOK_TOKEN_ENV = "AC_HOOK_TOKEN";
+export const HOOK_TASK_ID_ENV = "AC_HOOK_TASK_ID";
+
+/**
+ * The shell command a managed hook entry runs: POST the payload the harness
+ * pipes on stdin to this Core's loopback receiver, tagged with the task it
+ * belongs to. Short timeout and `|| true` — see the fail-soft rule above.
+ *
+ * The event name rides the URL as well as the body. The writer knows which
+ * event each entry is for, and naming it costs one query parameter: a payload
+ * that arrives without `hook_event_name` (an older harness build, a vendor
+ * that only sends it for some events) is still routable rather than silently
+ * `ignored`, and every request identifies itself in a log or a `curl -v`
+ * instead of being one of several indistinguishable opaque bodies. The body
+ * still wins when it carries a name — the harness knows better than we do.
+ */
+export function hookCommand(slug: string, event: string): string {
+  return (
+    `sh -c 'curl -sS -m 3 -X POST ` +
+    `-H "Authorization: Bearer $${HOOK_TOKEN_ENV}" ` +
+    `-H "Content-Type: application/json" ` +
+    `--data-binary @- ` +
+    `"$${HOOK_URL_ENV}/api/hooks/${slug}` +
+    `?taskId=$${HOOK_TASK_ID_ENV}&hookEvent=${encodeURIComponent(event)}" || true'`
+  );
+}
+
+type ManagedEntry = { [MANAGED_FLAG]: true; type: "command"; command: string };
+
+function managedEntry(slug: string, event: string): ManagedEntry {
+  return { [MANAGED_FLAG]: true, type: "command", command: hookCommand(slug, event) };
+}
+
+function isManaged(value: unknown): boolean {
+  if (!value || typeof value !== "object") return false;
+  const entry = value as Record<string, unknown>;
+  return Boolean(entry[MANAGED_FLAG] || entry[LEGACY_MANAGED_FLAG]);
+}
+
+/**
+ * Replace this Core's entries in one hook matcher list, preserving the
+ * operator's. `null` in means "no list yet"; the result is always a list.
+ */
+function mergeMatchers(existing: unknown, ours: unknown[]): unknown[] {
+  const kept = Array.isArray(existing) ? existing.filter((e) => !isManaged(e)) : [];
+  return [...kept, ...ours];
+}
+
+/**
+ * A Claude Code matcher group. `hooks` is the list of commands; the group
+ * itself is what we tag, so a group we own is replaced wholesale and an
+ * operator's group beside it is left alone.
+ */
+function claudeGroup(slug: string, event: string, matcher?: string): Record<string, unknown> {
+  return {
+    [MANAGED_FLAG]: true,
+    ...(matcher ? { matcher } : {}),
+    hooks: [managedEntry(slug, event)],
+  };
+}
+
+/**
+ * The Claude Code events this Core subscribes to, and how narrowly.
+ *
+ * `Notification` is included because Claude's permission prompt arrives that
+ * way; the pipeline narrows it to `permission_prompt` so idle reminders do not
+ * read as `needs-input`.
+ *
+ * The two tool hooks are where the matcher earns its keep, and the two are
+ * deliberately asymmetric:
+ *
+ *  - `PreToolUse` is matched to `AskUserQuestion`. That is the only tool
+ *    either host does anything with — it is what raises `needs-input` and the
+ *    Panel's question overlay — so an unmatched subscription would spawn a
+ *    `curl` per tool call to learn nothing.
+ *  - `PostToolUse` is deliberately UNMATCHED, and costs one `curl` per tool
+ *    call. It is what heals a stale `needs-input`: Claude fires no hook when
+ *    an operator GRANTS a permission, so without a signal that some tool ran,
+ *    a granted permission leaves the card claiming `needs-input` until the
+ *    turn's `Stop` — precisely the drift this issue exists to remove. One
+ *    subprocess per tool call is the price of that, knowingly paid.
+ */
+const CLAUDE_HOOK_EVENTS: readonly { name: string; matcher?: string }[] = [
+  { name: "UserPromptSubmit" },
+  { name: "Stop" },
+  { name: "SubagentStart" },
+  { name: "SubagentStop" },
+  { name: "PreToolUse", matcher: ASK_USER_QUESTION_TOOL },
+  { name: "PostToolUse" },
+  { name: "Notification" },
+  { name: "SessionStart" },
+];
+
+function installClaudeHooks(cwd: string, slug: string): boolean {
+  const file = path.join(cwd, ".claude", "settings.local.json");
+  const settings = readJsonSettingsFile<{ hooks?: Record<string, unknown>; [k: string]: unknown }>(
+    file,
+  );
+  // A read that failed for any reason other than "not there yet" must not be
+  // clobbered — the operator's settings are not ours to lose.
+  if (settings === null) return false;
+  const hooks: Record<string, unknown> = { ...(settings.hooks as object) };
+  for (const event of CLAUDE_HOOK_EVENTS) {
+    hooks[event.name] = mergeMatchers(hooks[event.name], [
+      claudeGroup(slug, event.name, event.matcher),
+    ]);
+  }
+  settings.hooks = hooks;
+  return writeJsonSettingsFile(file, settings);
+}
+
+const CODEX_HOOK_EVENTS = ["UserPromptSubmit", "Stop", "PermissionRequest"] as const;
+
+function installCodexHooks(cwd: string, slug: string): boolean {
+  const file = path.join(cwd, ".codex", "hooks.json");
+  const config = readJsonSettingsFile<{ hooks?: Record<string, unknown>; [k: string]: unknown }>(
+    file,
+  );
+  if (config === null) return false;
+  const hooks: Record<string, unknown> = { ...(config.hooks as object) };
+  for (const event of CODEX_HOOK_EVENTS) {
+    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug, event)]);
+  }
+  config.hooks = hooks;
+  return writeJsonSettingsFile(file, config);
+}
+
+const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "stop", "afterAgentResponse"] as const;
+
+function installCursorHooks(cwd: string, slug: string): boolean {
+  const file = path.join(cwd, ".cursor", "hooks.json");
+  const config = readJsonSettingsFile<{
+    version?: number;
+    hooks?: Record<string, unknown>;
+    [k: string]: unknown;
+  }>(file);
+  if (config === null) return false;
+  const hooks: Record<string, unknown> = { ...(config.hooks as object) };
+  for (const event of CURSOR_HOOK_EVENTS) {
+    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug, event)]);
+  }
+  config.hooks = hooks;
+  // Cursor CLI silently ignores a hooks file with no `"version": 1`.
+  config.version = 1;
+  return writeJsonSettingsFile(file, config);
+}
+
+type HookFamily = {
+  install: (cwd: string, slug: string) => boolean;
+  /**
+   * Do the hooks we install for this family actually fire when a turn STARTS?
+   *
+   * Installing is not reporting, and the difference is the whole point of this
+   * field. The Panel stands its terminal-input fallback down on the answer, so
+   * a family that takes our hook file but never fires a turn-start event must
+   * say `false` — otherwise its Sessions sit on `ready` for the entire first
+   * turn with nothing to move them.
+   */
+  reportsTurnStart: boolean;
+};
+
+/**
+ * Per-harness hook writers. A harness absent from this table has no hook
+ * surface we install — it is not an error, it is a Session whose status comes
+ * from the PTY-exit settle and the Panel's terminal-input fallback instead.
+ * Keep this open: adding a family is adding a row.
+ *
+ * OpenCode is the one family still absent, and it is absent because its
+ * extension point is a plugin rather than a JSON hooks file — a different
+ * shape of work from these three. Tracked as #101; until then its Sessions
+ * reach `running` through the Panel's fallback and settle on PTY exit.
+ */
+const HOOK_FAMILIES: Record<string, HookFamily> = {
+  "claude-code": { install: installClaudeHooks, reportsTurnStart: true },
+  // Codex refuses to run newly-installed project hooks until the operator
+  // reviews them with `/hooks`, so its first turn — the one that matters most
+  // for the card — may report nothing at all.
+  codex: { install: installCodexHooks, reportsTurnStart: false },
+  // Cursor takes the hooks file and fires `stop` / `sessionStart` from it, but
+  // `beforeSubmitPrompt` still does not fire in cursor-agent. The turn's end is
+  // reported; its start is not.
+  "cursor-cli": { install: installCursorHooks, reportsTurnStart: false },
+};
+
+/** Does this Core know how to install hooks for `harness`? */
+export function harnessSupportsHooks(harness: string | undefined): boolean {
+  return Boolean(harness && harness in HOOK_FAMILIES);
+}
+
+export type HookInstallResult = {
+  /** Did a hook file land in the workspace? */
+  installed: boolean;
+  /**
+   * Will a hook report the start of a turn for this Session? Only this
+   * exempts the Panel's terminal-input fallback (issue 84) — it is the
+   * conjunction of "we wrote the file" and "this family fires on turn start",
+   * and either one alone is a Session with no `running` signal.
+   */
+  reportsTurnStart: boolean;
+};
+
+const NO_HOOKS: HookInstallResult = { installed: false, reportsTurnStart: false };
+
+/**
+ * Install this Core's lifecycle hooks into `cwd` for `harness`.
+ *
+ * A failed write reports the same as an unsupported harness: from the Panel's
+ * point of view those are one fact, and the honest answer is what keeps its
+ * fallback armed rather than suppressed on a promise nobody kept.
+ */
+export function installHarnessHooks(
+  harness: string | undefined,
+  cwd: string,
+): HookInstallResult {
+  const family = harness ? HOOK_FAMILIES[harness] : undefined;
+  if (!family || !cwd) return NO_HOOKS;
+  let installed = false;
+  try {
+    installed = family.install(cwd, hookEndpointSlug(harness));
+  } catch {
+    return NO_HOOKS;
+  }
+  return {
+    installed,
+    reportsTurnStart: installed && family.reportsTurnStart,
+  };
+}

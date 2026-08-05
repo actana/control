@@ -44,6 +44,8 @@ type TaskRow = {
   id: string;
   project_id: string;
   title: string;
+  title_manually_set: number;
+  claude_session_id: string | null;
   agent: string;
   status: string;
   pinned: number;
@@ -139,7 +141,9 @@ function listTasksWhereArchived(
   archived: 0 | 1,
   projectId?: string,
 ): CoreLinkTaskSnapshot[] {
-  const columns = `id, project_id, title, agent, status, pinned, archived, icon, updated_at`;
+  const columns =
+    `id, project_id, title, title_manually_set, claude_session_id, agent, status, ` +
+    `pinned, archived, icon, updated_at`;
   let rows: TaskRow[];
   try {
     rows = (
@@ -207,7 +211,8 @@ export function queryTask(
   try {
     rows = sqlite
       .prepare(
-        `SELECT id, project_id, title, agent, status, pinned, archived, icon, updated_at
+        `SELECT id, project_id, title, title_manually_set, claude_session_id, agent, status,
+                  pinned, archived, icon, updated_at
          FROM tasks
          WHERE id = ?`,
       )
@@ -224,6 +229,8 @@ function taskRowToSnapshot(row: TaskRow): CoreLinkTaskSnapshot {
     taskId: row.id,
     projectId: row.project_id,
     title: row.title,
+    titleManuallySet: row.title_manually_set === 1,
+    claudeSessionId: row.claude_session_id,
     agent: row.agent,
     status: row.status,
     pinned: row.pinned === 1,

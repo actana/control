@@ -113,7 +113,7 @@ import {
   type SequencedPtyData,
 } from "~/lib/terminal-replay";
 import { getPtyStreamRouter, type PtyStreamHandlers } from "~/lib/pty-stream-router";
-import { queryKeys, useSettings, useTask } from "~/queries";
+import { queryKeys, tasksCacheKey, useSettings, useTask } from "~/queries";
 import {
   DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
   type SessionHeaderButtonVisibility,
@@ -495,7 +495,9 @@ export function TerminalPane({
   const meta = HARNESS_META[liveTask.agent];
   const statusMeta = STATUS_META[liveTask.status];
   const sessionRunning = liveTask.status === "running";
-  const tasksKey = queryKeys.tasks(project.id);
+  // The card reads from the Core-tagged bucket (issue 84) — invalidating the
+  // untagged key left a Core-owned row on screen exactly as stale as before.
+  const tasksKey = tasksCacheKey(project.id, descriptor.coreId);
 
   // Native AskUserQuestion overlay: pending question data arrives over SSE
   // (see harness-question-store); hydrate covers panes that mount after the
@@ -837,6 +839,11 @@ export function TerminalPane({
       // deleting the task card.
       let spawnAt = 0;
       let spawnedAsResume = false;
+      // Whether a hook will announce the START of a turn for THIS Session,
+      // as its Core answered at spawn. Until a spawn answers, assume not: an
+      // unanswered spawn has nothing reporting either, and an armed fallback
+      // is the safe direction.
+      let hooksReportTurnStart = false;
 
       const clearActivePty = () => {
         setActivePty(null);
@@ -854,7 +861,14 @@ export function TerminalPane({
             const fresh =
               task.agent === "codex" || task.agent === "opencode" ? null : newSessionId();
             try {
-              await api.updateTask(descriptor.taskId, { claudeSessionId: fresh });
+              // The row is the Core's (ADR 0004/0005) — the Panel's own HTTP
+              // task API has no such row, so writing the fresh session id
+              // there left the Core's column holding a dead id (issue 84).
+              await mutateTaskForCore(descriptor.coreId, {
+                op: "update",
+                taskId: descriptor.taskId,
+                claudeSessionId: fresh,
+              });
             } catch {
               /* best effort — even if patch fails, spawn with fresh id */
             }
@@ -902,31 +916,34 @@ export function TerminalPane({
         term.writeln("");
         term.writeln(`\x1b[2m[${message}]\x1b[0m`);
         void (async () => {
-          try {
-            // The row lives in the owning Core's database (ADR 0004/0005), so
-            // the exit status rides the panel link to that Core — the Panel's
-            // own HTTP API has no such row. This patch is what makes the Core
-            // emit `session:finished`, which is what raises the notification
-            // (ADR 0008), so a failure here is not cosmetic: the card would go
-            // on claiming the Session is running. Say so.
-            const patched = await mutateTaskForCore(descriptor.coreId, {
-              op: "update",
-              taskId: descriptor.taskId,
-              status,
-            });
-            // A null snapshot is the mutation finding no such row — the same
-            // lie by a quieter route, so it gets the same toast.
-            if (!patched) {
-              toast.error("This session is gone from its Core — its exit status was not recorded");
+          // A Core settles its own Session's exit (issue 84): the Core watches
+          // the PTY it spawned, so it sees the exit whether or not this tab is
+          // open, and it settles *conditionally* — a Session already
+          // `interrupted` keeps that status. This unconditional patch would
+          // overwrite it with `finished` and raise a spurious
+          // `session:finished` besides, so it stays on the arm that still
+          // needs it: the Panel's own rows, whose PTYs no Core watches.
+          if (!descriptor.coreId) {
+            try {
+              const patched = await mutateTaskForCore(null, {
+                op: "update",
+                taskId: descriptor.taskId,
+                status,
+              });
+              // A null snapshot is the mutation finding no such row — the card
+              // would go on claiming the Session is running, so say so.
+              if (!patched) {
+                toast.error("This session is gone — its exit status was not recorded");
+              }
+            } catch (e: unknown) {
+              toast.error(
+                e instanceof Error ? e.message : "Could not record the session's exit status",
+              );
             }
-          } catch (e: unknown) {
-            toast.error(
-              e instanceof Error ? e.message : "Could not record the session's exit status",
-            );
           }
           await Promise.all([
             queryClient.invalidateQueries({
-              queryKey: queryKeys.tasks(project.id),
+              queryKey: tasksCacheKey(project.id, descriptor.coreId),
             }),
             queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
             queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
@@ -1036,7 +1053,7 @@ export function TerminalPane({
           if (shouldResetTerminalRunningFallback(liveTaskStatusRef.current)) {
             fallbackRunningPosted = false;
           }
-          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data)) {
+          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data, hooksReportTurnStart)) {
             fallbackRunningPosted = true;
             void (async () => {
               try {
@@ -1047,22 +1064,25 @@ export function TerminalPane({
                   taskId: descriptor.taskId,
                   status: "running",
                 });
-                // The prompt patches no column of its own: it only asks the
-                // Panel's title generator to name the session, and that
-                // generator reads and writes the Panel's own database
-                // (`generateTitleForTask` returns early on a task it cannot
-                // find). So it goes on the arm where it can land — for a
-                // Core-owned row it was always a no-op, and the flag stays
-                // false there because nothing was posted.
-                if (submittedPrompt && !descriptor.coreId) {
-                  await api.updateTaskStatus(descriptor.taskId, {
-                    prompt: submittedPrompt,
-                  });
+                // The prompt patches no column of its own: it only asks a
+                // title generator to name the session. Which generator depends
+                // on who owns the row — the Core's, for a Core-owned Session
+                // (issue 84), reached by the frame that exists because Cursor
+                // never fires `beforeSubmitPrompt` for the Core's own hook
+                // receiver to catch.
+                if (submittedPrompt) {
+                  if (descriptor.coreId && corePtyBridge) {
+                    await corePtyBridge.submitPrompt(descriptor.taskId, submittedPrompt);
+                  } else if (!descriptor.coreId) {
+                    await api.updateTaskStatus(descriptor.taskId, {
+                      prompt: submittedPrompt,
+                    });
+                  }
                   promptTitlePosted = true;
                 }
                 await Promise.all([
                   queryClient.invalidateQueries({
-                    queryKey: queryKeys.tasks(project.id),
+                    queryKey: tasksCacheKey(project.id, descriptor.coreId),
                   }),
                   queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
                   queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
@@ -1165,6 +1185,7 @@ export function TerminalPane({
           initialInput,
         });
         const { ptyId } = spawnResult;
+        hooksReportTurnStart = spawnResult.hooksReportTurnStart;
         spawnAt = Date.now();
         spawnedAsResume = isResume;
         if (surface.destroyed) {
