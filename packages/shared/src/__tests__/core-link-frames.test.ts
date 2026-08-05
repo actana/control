@@ -1,6 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   CORE_LINK_PROTOCOL_VERSION,
+  HARNESSES_AVAILABILITY_EVENT_KIND,
+  HARNESS_INSTALL_FAILED_EVENT_KIND,
   coreLinkProtocolCompatible,
   parseCoreLinkRequestFrame,
   serializeCoreLinkFrame,
@@ -355,6 +357,48 @@ describe("core-link-frames", () => {
       };
       const parsed = JSON.parse(serializeCoreLinkFrame(frame));
       expect(parsed).toEqual(frame);
+    });
+  });
+
+  describe("harness install frames (issue 83)", () => {
+    it("parses a harnessInstall request naming one Harness", () => {
+      const frame: CoreLinkRequestFrame = {
+        type: "harnessInstall",
+        reqId: "r1",
+        harness: "claude-code",
+      };
+      expect(parseCoreLinkRequestFrame(JSON.stringify(frame))).toEqual(frame);
+    });
+
+    it("round-trips an accepted harnessInstallAck", () => {
+      const frame: CoreLinkServerFrame = {
+        type: "harnessInstallAck",
+        reqId: "r1",
+        accepted: true,
+      };
+      expect(JSON.parse(serializeCoreLinkFrame(frame))).toEqual(frame);
+    });
+
+    it("round-trips a refused harnessInstallAck carrying the operator's reason", () => {
+      const frame: CoreLinkServerFrame = {
+        type: "harnessInstallAck",
+        reqId: "r1",
+        accepted: false,
+        message: "Actana does not know how to install `banana`.",
+      };
+      expect(JSON.parse(serializeCoreLinkFrame(frame))).toEqual(frame);
+    });
+
+    it("does not accept the ack as a request frame", () => {
+      expect(
+        parseCoreLinkRequestFrame(
+          JSON.stringify({ type: "harnessInstallAck", reqId: "r1", accepted: true }),
+        ),
+      ).toBeNull();
+    });
+
+    it("names the install-failure event kind distinctly from availability", () => {
+      expect(HARNESS_INSTALL_FAILED_EVENT_KIND).not.toBe(HARNESSES_AVAILABILITY_EVENT_KIND);
     });
   });
 

@@ -15,9 +15,11 @@ import log from "./log";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
+  HARNESS_INSTALL_FAILED_EVENT_KIND,
   parseCoreLinkRequestFrame,
   serializeCoreLinkFrame,
   type CoreLinkHarnessAvailabilityMap,
+  type CoreLinkHarnessInstallFailedPayload,
   type CoreLinkDirListing,
   type CoreLinkEvent,
   type CoreLinkProjectMutation,
@@ -129,6 +131,25 @@ export interface CoreQueryPort {
 export interface HarnessAvailabilityPort {
   /** Current availability map for every managed agent. */
   snapshot(): CoreLinkHarnessAvailabilityMap;
+}
+
+/**
+ * Installing a missing Harness on this machine (issue 83, ADR 0021). The Panel
+ * can see a CLI is missing but cannot install it — the Core owns the machine.
+ * This port is that install, and `harness-install-service.ts` is the real one;
+ * tests inject a fake. When omitted, `harnessInstall` is refused outright with
+ * a message rather than acked, so no Panel row waits for an install that was
+ * never going to happen.
+ *
+ * Neither method may throw, and `install` must resolve only once the Harness is
+ * actually available (or definitively is not) — the ack has long since gone out
+ * and the Panel is waiting on the event log, not on this promise.
+ */
+export interface HarnessInstallPort {
+  /** Is this an id this Core knows how to install? */
+  installable(harnessId: string): boolean;
+  /** Run the vendor installer, then re-probe. Resolves to the verdict. */
+  install(harnessId: string): Promise<{ ok: boolean; message?: string }>;
 }
 
 /**
@@ -245,6 +266,13 @@ export type PtyCoreLinkServerOptions = {
    */
   availabilityPort?: HarnessAvailabilityPort;
   /**
+   * Installs a missing Harness on this machine when the Panel asks (issue 83).
+   * When omitted, `harnessInstall` is answered `accepted: false` with a message
+   * — a Core that cannot install is still a valid Core, and the Panel's row
+   * goes back to plain `missing` rather than waiting forever.
+   */
+  installPort?: HarnessInstallPort;
+  /**
    * This machine's filesystem, for the Panel's folder picker (web-panel issue
    * 06). When omitted, `dirList` / `dirCreate` answer with an `error` frame
    * saying browsing is unavailable on this Core.
@@ -338,6 +366,7 @@ export class PtyCoreLinkServer {
   private readonly queryPort: CoreQueryPort | null;
   private readonly mutationPort: CoreMutationPort | null;
   private readonly availabilityPort: HarnessAvailabilityPort | null;
+  private readonly installPort: HarnessInstallPort | null;
   private readonly directoryPort: CoreDirectoryPort | null;
   private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
@@ -364,6 +393,7 @@ export class PtyCoreLinkServer {
     this.queryPort = opts.queryPort ?? null;
     this.mutationPort = opts.mutationPort ?? null;
     this.availabilityPort = opts.availabilityPort ?? null;
+    this.installPort = opts.installPort ?? null;
     this.directoryPort = opts.directoryPort ?? null;
     this.promptPort = opts.promptPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
@@ -767,6 +797,15 @@ export class PtyCoreLinkServer {
         });
         return;
       }
+      case "harnessInstall": {
+        // Issue 83: ack, then install. Never `await` the install here — a
+        // vendor installer runs for minutes, the Panel's request timeout is
+        // 30s, and this connection has every other frame to go on serving. The
+        // outcome reaches the Panel on the event log: `available` from the
+        // re-probe, or `harness:installFailed`.
+        this.startHarnessInstall(ws, frame.reqId, frame.harness);
+        return;
+      }
       // ─── Folder picker (web-panel issue 06) ───
       // The Panel is a browser: the machine whose folders matter is this one,
       // and nothing else can enumerate it. Errors are thrown by the port with
@@ -789,6 +828,81 @@ export class PtyCoreLinkServer {
     // Exhaustive switch — if a new frame type is added to CoreLinkRequestFrame
     // without a case here, TypeScript flags this unreachable line.
     this.send(ws, { type: "error", message: `unhandled frame type: ${(frame as { type: string }).type}` });
+  }
+
+  /**
+   * Acknowledge a `harnessInstall` request and start the install behind it
+   * (issue 83).
+   *
+   * The ack is the whole answer to the request: it says the Core took the job,
+   * never how the job went. What comes back later comes back on the event log,
+   * which is what makes an install survive a Panel reload, a link drop, and a
+   * second tab watching the same Core — none of which a pending promise does.
+   *
+   * A refusal (`accepted: false`) is for an install that will not happen at
+   * all: an id this Core does not know, or a Core wired with no install port.
+   * The Panel returns the row to plain `missing` so it can be retried.
+   */
+  private startHarnessInstall(ws: WebSocketLike, reqId: string, harnessId: string): void {
+    const port = this.installPort;
+    if (!port) {
+      this.send(ws, {
+        type: "harnessInstallAck",
+        reqId,
+        accepted: false,
+        message: "This Core cannot install Harnesses.",
+      });
+      return;
+    }
+    if (!port.installable(harnessId)) {
+      this.send(ws, {
+        type: "harnessInstallAck",
+        reqId,
+        accepted: false,
+        message: `Actana does not know how to install \`${harnessId}\`.`,
+      });
+      return;
+    }
+    this.send(ws, { type: "harnessInstallAck", reqId, accepted: true });
+
+    void port
+      .install(harnessId)
+      .then((result) => {
+        if (result.ok) return;
+        this.publishHarnessInstallFailure(harnessId, result.message);
+      })
+      .catch((err: unknown) => {
+        // The port promises not to throw; if it does, the Panel still gets a
+        // verdict rather than a row stuck installing forever.
+        this.publishHarnessInstallFailure(
+          harnessId,
+          err instanceof Error ? err.message : String(err),
+        );
+      });
+  }
+
+  /**
+   * Append the one definitive install failure the Panel acts on. It rides the
+   * event log rather than the availability map on purpose: an availability
+   * entry is a fact about PATH that the next probe overwrites, and a failure
+   * cached there would outlive its own truth and disable the Harness for good.
+   */
+  private publishHarnessInstallFailure(harnessId: string, message?: string): void {
+    const payload: CoreLinkHarnessInstallFailedPayload = {
+      harness: harnessId,
+      message: message || `Installing ${harnessId} on this Core failed.`,
+    };
+    log.warn("core-link.harness-install.failed", payload);
+    try {
+      this.eventLog?.appendEvent(HARNESS_INSTALL_FAILED_EVENT_KIND, JSON.stringify(payload), {
+        ptyId: null,
+        taskId: null,
+      });
+    } catch (err) {
+      log.warn("core-link.harness-install.append-failed", {
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
   }
 
   /**

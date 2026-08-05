@@ -49,6 +49,7 @@
 // (ADR 0003). A supervising parent swallows both lines; a
 // `core install` flow captures the blob line for the operator.
 
+import * as os from "node:os";
 import { randomBytes } from "node:crypto";
 import {
   PtyCore,
@@ -93,6 +94,8 @@ import {
 import { CONTAINER_PUBLIC_HOST_ENV, inContainer } from "./actana-container";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "./harness-availability-store";
+import { HarnessInstallService } from "./harness-install-service";
+import { nodeActanaSystem } from "./actana-system";
 
 const CORE_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 const REGISTRATION_BLOB_SENTINEL = "@@AC_CORE_REGISTRATION_BLOB@@";
@@ -227,6 +230,19 @@ async function startCore(): Promise<void> {
   // without a restart and without a wait. Unknown senders cost one probe.
   process.on("SIGHUP", () => availabilityStore.runProbe());
 
+  // Issue 83 (ADR 0021): the Panel can now ask this Core to install a Harness
+  // it found missing. Same non-interactive path `actana harnesses install <id>`
+  // takes, and the same re-probe afterwards — the difference is only who asked.
+  // `os.homedir()` is the daemon's own operator, whose login PATH the install
+  // writes; the daemon runs as that operator on metal and in the container.
+  const harnessInstalls = new HarnessInstallService({
+    availability: () => availabilityStore.snapshot(),
+    reprobe: () => availabilityStore.runProbe(),
+    system: nodeActanaSystem(),
+    platform: process.platform,
+    homeDir: os.homedir(),
+  });
+
   // ─── mTLS + bearer auth (issue 04) ───
   // In remote mode the Core presents a server cert, pins the CA, requires a
   // Panel client cert, and gates every frame behind a verified bearer. In
@@ -262,6 +278,13 @@ async function startCore(): Promise<void> {
     // deltas; this snapshot answers the fresh-Panel hydration path.
     availabilityPort: {
       snapshot: () => availabilityStore.snapshot(),
+    },
+    // Issue 83: the `harnessInstall` frame's other end. Acked immediately by
+    // the server and run in the background, so a vendor installer taking
+    // minutes never holds the link.
+    installPort: {
+      installable: (harnessId) => harnessInstalls.installable(harnessId),
+      install: (harnessId) => harnessInstalls.install(harnessId),
     },
     // Web-panel issue 06: the Panel's folder picker browses THIS machine's
     // disk. The browser has none to offer and the operator's laptop is the

@@ -10,8 +10,10 @@ import { getPanelBridge } from "~/lib/panel-bridge";
 import {
   harnessCanLaunch,
   availabilityFor,
+  installStateFor,
   type CliAvailability,
   useCliAvailability,
+  useHarnessInstall,
 } from "~/lib/cli-availability";
 import { TITLE_WAITING } from "~/lib/task-sentinels";
 import { useSettings } from "~/queries";
@@ -74,6 +76,12 @@ export function NewHarnessDialog({
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
   const cliAvailability = useCliAvailability(coreId);
+  // A missing CLI is a thing the operator can fix from here (issue 83): the
+  // owning Core installs it and republishes availability. `installIntent` is
+  // the Harness they clicked Install on — it wins the selection once it lands,
+  // ahead of the effect below that moves the selection off missing rows.
+  const { installs, install } = useHarnessInstall(coreId);
+  const [installIntent, setInstallIntent] = useState<Harness | null>(null);
   const { data: settings } = useSettings();
   // Resolve the Core's alias for the error copy — an operator with several
   // Cores registered needs to know *where* to install a missing CLI, not just
@@ -126,6 +134,12 @@ export function NewHarnessDialog({
         ? project.savedHarness
         : harnessOptions[0]?.id ?? "claude-code";
     setHarness(seedHarness);
+    // An install still running from a previous opening of this dialog is still
+    // the Harness the operator asked for — the store outlives the component, so
+    // reopening picks the intent back up rather than dropping it.
+    setInstallIntent(
+      harnessOptions.find((a) => installStateFor(installs, a.id).installing)?.id ?? null,
+    );
     setRememberSettings(!!project?.rememberHarnessSettings);
     setError(null);
     setSubmitting(false);
@@ -176,12 +190,32 @@ export function NewHarnessDialog({
     }
   };
 
+  const startInstall = (nextHarness: Harness) => {
+    setError(null);
+    setInstallIntent(nextHarness);
+    install(nextHarness);
+  };
+
+  // Clicking Install is a choice of Harness, made before that Harness could be
+  // chosen. Honour it the moment the Core says it landed — otherwise the
+  // operator installs the one they wanted and starts a session on another.
+  useEffect(() => {
+    if (!open || !installIntent) return;
+    if (!harnessCanLaunch(cliAvailability, installIntent)) return;
+    setInstallIntent(null);
+    selectHarness(installIntent);
+  }, [open, installIntent, cliAvailability]);
+
   useEffect(() => {
     if (!open) return;
     if (availabilityFor(cliAvailability, agent).status !== "missing") return;
+    // …but not off a Harness that is being installed right now: the selection
+    // would jump away mid-install and the intent effect above would have to
+    // fight it back.
+    if (installStateFor(installs, agent).installing) return;
     const next = harnessOptions.find((a) => harnessCanLaunch(cliAvailability, a.id))?.id;
     if (next && next !== agent) setHarness(next);
-  }, [open, agent, cliAvailability, harnessOptions]);
+  }, [open, agent, cliAvailability, harnessOptions, installs]);
 
   useEffect(() => {
     if (!open) return;
@@ -264,118 +298,174 @@ export function NewHarnessDialog({
               const meta = HARNESS_META[a.id];
               const selected = agent === a.id;
               const availability = availabilityFor(cliAvailability, a.id);
+              const installState = installStateFor(installs, a.id);
+              const installing = installState.installing;
               // "unknown" with a live link means the Core hasn't published its
-              // snapshot yet — that reads as checking, not as launchable.
+              // snapshot yet — that reads as checking, not as launchable. An
+              // install in flight outranks it: the Core's post-install re-probe
+              // passes through `checking`, and a row that flipped to "Checking
+              // PATH..." there would drop the install the operator is watching.
               const cliChecking =
-                availability.status === "checking" ||
-                (availability.status === "unknown" && !!getPanelBridge());
-              const cliMissing = availability.status === "missing";
+                !installing &&
+                (availability.status === "checking" ||
+                  (availability.status === "unknown" && !!getPanelBridge()));
               const cliOutdated = availability.status === "outdated";
-              const disabled = !cliOutdated && !harnessCanLaunch(cliAvailability, a.id);
+              // A registry-disabled Harness ("Coming soon") also probes as
+              // `missing`, and nothing about it is installable — it stays the
+              // greyed-out row it has always been.
+              const cliMissing =
+                !a.disabled && !cliOutdated && (availability.status === "missing" || installing);
+              // Missing is no longer a dead end (issue 83): the row keeps its
+              // full weight and carries an Install button instead. It is still
+              // not selectable — that waits for the Core to report it available.
+              const disabled =
+                !cliOutdated && !cliMissing && !harnessCanLaunch(cliAvailability, a.id);
               return (
-                <button
-                  key={a.id}
-                  onClick={() => !disabled && selectHarness(a.id)}
-                  disabled={disabled}
-                  aria-disabled={disabled}
-                  title={
-                    a.disabled
-                      ? "Coming soon"
-                      : cliMissing
-                        ? `${a.command} was not found on PATH`
-                        : cliOutdated
-                          ? `${a.command} must be updated before launching`
-                        : cliChecking
-                          ? `Checking for ${a.command}`
-                        : undefined
-                  }
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 12,
-                    textAlign: "left",
-                    padding: "12px 14px",
-                    background: selected ? "var(--surface-2)" : "var(--surface-0)",
-                    border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
-                    borderRadius: 8,
-                    cursor: disabled ? "not-allowed" : "pointer",
-                    color: "var(--text)",
-                    boxShadow: selected ? "0 0 0 1px var(--accent)" : "none",
-                    opacity: disabled ? 0.56 : 1,
-                  }}
-                >
-                  <div
+                <div key={a.id} style={{ position: "relative", display: "flex" }}>
+                  <button
+                    onClick={() => !disabled && selectHarness(a.id)}
+                    disabled={disabled}
+                    aria-disabled={disabled}
+                    title={
+                      a.disabled
+                        ? "Coming soon"
+                        : installing
+                          ? `Installing ${a.command} on ${coreLabel}`
+                        : cliMissing
+                          ? `${a.command} was not found on PATH`
+                          : cliOutdated
+                            ? `${a.command} must be updated before launching`
+                          : cliChecking
+                            ? `Checking for ${a.command}`
+                          : undefined
+                    }
                     style={{
-                      width: 32,
-                      height: 32,
-                      borderRadius: 6,
-                      background: `${meta.color}22`,
-                      border: `1px solid ${meta.color}44`,
+                      flex: 1,
                       display: "flex",
                       alignItems: "center",
-                      justifyContent: "center",
-                      color: meta.color,
-                      fontSize: 15,
-                      fontFamily: "var(--mono)",
-                      flexShrink: 0,
+                      gap: 12,
+                      textAlign: "left",
+                      // Room on the right for the Install button, which sits over
+                      // the card rather than beside it so the row stays one card.
+                      padding: cliMissing ? "12px 108px 12px 14px" : "12px 14px",
+                      background: selected ? "var(--surface-2)" : "var(--surface-0)",
+                      border: `1px solid ${selected ? "var(--accent)" : "var(--border)"}`,
+                      borderRadius: 8,
+                      // A missing row is neither greyed out nor selectable: the
+                      // Install button beside it is the thing to click, and a
+                      // pointer over the card would promise a selection that
+                      // `selectHarness` is right to refuse.
+                      cursor: disabled ? "not-allowed" : cliMissing ? "default" : "pointer",
+                      color: "var(--text)",
+                      boxShadow: selected ? "0 0 0 1px var(--accent)" : "none",
+                      opacity: disabled ? 0.56 : 1,
                     }}
                   >
-                    <HarnessLogo agent={a.id} size={20} title={a.label} />
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{a.label}</div>
                     <div
                       style={{
+                        width: 32,
+                        height: 32,
+                        borderRadius: 6,
+                        background: `${meta.color}22`,
+                        border: `1px solid ${meta.color}44`,
+                        display: "flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        color: meta.color,
+                        fontSize: 15,
                         fontFamily: "var(--mono)",
-                        fontSize: 11,
-                        color: "var(--text-dim)",
-                        lineHeight: 1.4,
+                        flexShrink: 0,
                       }}
                     >
-                    {a.description}
+                      <HarnessLogo agent={a.id} size={20} title={a.label} />
                     </div>
-                    {(cliChecking || cliMissing || cliOutdated) && (
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 2 }}>{a.label}</div>
                       <div
                         style={{
-                          marginTop: 5,
                           fontFamily: "var(--mono)",
-                          fontSize: 10.5,
-                          color: cliMissing || cliOutdated ? "var(--status-failed)" : "var(--text-faint)",
-                          lineHeight: 1.35,
+                          fontSize: 11,
+                          color: "var(--text-dim)",
+                          lineHeight: 1.4,
                         }}
                       >
-                        {cliMissing
-                          ? "CLI not found on PATH."
-                          : cliOutdated
-                            ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
-                            : "Checking PATH..."}
+                      {a.description}
                       </div>
+                      {(cliChecking || cliMissing || cliOutdated) && (
+                        <div
+                          style={{
+                            marginTop: 5,
+                            fontFamily: "var(--mono)",
+                            fontSize: 10.5,
+                            color:
+                              (cliMissing && !installing) || cliOutdated
+                                ? "var(--status-failed)"
+                                : "var(--text-faint)",
+                            lineHeight: 1.35,
+                          }}
+                        >
+                          {cliMissing
+                            ? installing
+                              ? `Installing on ${coreLabel}...`
+                              : installState.error ?? "CLI not found on PATH."
+                            : cliOutdated
+                              ? `Update required: ${availability.label ?? a.label} ${availability.requiredVersion ?? "latest"} or newer.`
+                              : "Checking PATH..."}
+                        </div>
+                      )}
+                    </div>
+                    {!cliMissing && (
+                      <code
+                        style={{
+                          fontFamily: "var(--mono)",
+                          fontSize: 10.5,
+                          color: "var(--text-faint)",
+                          background: "var(--surface-0)",
+                          padding: "3px 7px",
+                          border: "1px solid var(--border)",
+                          borderRadius: 4,
+                          textTransform: disabled ? "uppercase" : "none",
+                          letterSpacing: disabled ? "0.05em" : "normal",
+                        }}
+                      >
+                        {a.disabled
+                          ? "Coming soon"
+                          : cliOutdated
+                            ? "Update"
+                            : cliChecking
+                              ? "Checking"
+                              : `$${a.command}`}
+                      </code>
                     )}
-                  </div>
-                  <code
-                    style={{
-                      fontFamily: "var(--mono)",
-                      fontSize: 10.5,
-                      color: "var(--text-faint)",
-                      background: "var(--surface-0)",
-                      padding: "3px 7px",
-                      border: "1px solid var(--border)",
-                      borderRadius: 4,
-                      textTransform: disabled ? "uppercase" : "none",
-                      letterSpacing: disabled ? "0.05em" : "normal",
-                    }}
-                  >
-                    {a.disabled
-                      ? "Coming soon"
-                      : cliMissing
-                        ? "Missing"
-                        : cliOutdated
-                          ? "Update"
-                        : cliChecking
-                          ? "Checking"
-                          : `$${a.command}`}
-                  </code>
-                </button>
+                  </button>
+                  {cliMissing && (
+                    // Its own button, a sibling of the row rather than a child:
+                    // a button inside a button is not something the DOM keeps.
+                    // Overlaid on the card's right edge and in the tab order, so
+                    // the row a keyboard operator cannot select is still one
+                    // they can act on.
+                    <Btn
+                      size="sm"
+                      variant="frame"
+                      icon={installing ? undefined : "download"}
+                      disabled={installing}
+                      onClick={() => startInstall(a.id)}
+                      title={
+                        installing
+                          ? `Installing ${a.command} on ${coreLabel}`
+                          : `Install ${a.command} on ${coreLabel}`
+                      }
+                      style={{
+                        position: "absolute",
+                        right: 10,
+                        top: "50%",
+                        transform: "translateY(-50%)",
+                      }}
+                    >
+                      {installing ? "Installing..." : "Install"}
+                    </Btn>
+                  )}
+                </div>
               );
             })}
           </div>
