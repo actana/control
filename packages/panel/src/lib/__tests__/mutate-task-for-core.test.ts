@@ -4,9 +4,14 @@ const apiCalls: string[] = [];
 const archiveTask = vi.fn();
 const restoreTask = vi.fn();
 const updateTask = vi.fn();
+const deleteTask = vi.fn();
 
 vi.mock("~/lib/api", () => ({
   api: {
+    deleteTask: (id: string) => {
+      apiCalls.push(`delete:${id}`);
+      return deleteTask(id);
+    },
     archiveTask: (id: string) => {
       apiCalls.push(`archive:${id}`);
       return archiveTask(id);
@@ -48,6 +53,7 @@ describe("mutateTaskForCore", () => {
     archiveTask.mockReset().mockResolvedValue(panelTask({ archived: true }));
     restoreTask.mockReset().mockResolvedValue(panelTask({ archived: false }));
     updateTask.mockReset().mockResolvedValue(panelTask());
+    deleteTask.mockReset().mockResolvedValue(undefined);
   });
 
   afterEach(() => {
@@ -126,6 +132,35 @@ describe("mutateTaskForCore", () => {
 
     expect(apiCalls).toEqual(["update:t1"]);
     expect(updateTask).toHaveBeenCalledWith("t1", { pinned: true });
+  });
+
+  it("routes a Core-owned delete over the panel link, not the Panel's HTTP API", async () => {
+    vi.stubGlobal("window", {});
+    const mutateTask = vi.fn().mockResolvedValue({
+      taskId: "t1",
+      projectId: "p1",
+      title: "Session",
+      icon: null,
+      agent: "claude",
+      status: "ready",
+      archived: true,
+      pinned: false,
+      updatedAt: 43,
+    });
+    __setPanelBridgeForTests({ mutateTask } as never);
+
+    const snapshot = await mutateTaskForCore("core-a", { op: "delete", taskId: "t1" });
+
+    expect(mutateTask).toHaveBeenCalledWith("core-a", { op: "delete", taskId: "t1" });
+    expect(apiCalls).toEqual([]);
+    // The Core hands back the row it removed, so the caller can echo it.
+    expect(snapshot?.taskId).toBe("t1");
+  });
+
+  it("deletes a Panel-owned row over the delete endpoint", async () => {
+    expect(await mutateTaskForCore(null, { op: "delete", taskId: "t1" })).toBeNull();
+
+    expect(apiCalls).toEqual(["delete:t1"]);
   });
 
   it("reports a missing Panel-owned row as null", async () => {

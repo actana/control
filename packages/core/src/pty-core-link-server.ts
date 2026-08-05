@@ -466,6 +466,11 @@ export class PtyCoreLinkServer {
    *
    * On `create`, the kind is always `task:created` — a new row's icon is part
    * of the initial snapshot the tasks list carries, not a discrete change.
+   *
+   * On `delete`, the kind is `task:deleted` — the same name the Panel server
+   * emits when it deletes a Panel-owned row, so a reconnecting Panel replays a
+   * Core-owned delete through the handler it already has (it prunes that
+   * session's stored finish notifications keyed on the event's `taskId`).
    */
   private recordTaskMutation(
     mutation: CoreLinkTaskMutation,
@@ -475,11 +480,13 @@ export class PtyCoreLinkServer {
     const kind =
       mutation.op === "create"
         ? "task:created"
-        : isIconOnlyUpdate(mutation)
-          ? "task:iconChanged"
-          : isPinnedOnlyUpdate(mutation)
-            ? "task:pinnedChanged"
-            : "task:updated";
+        : mutation.op === "delete"
+          ? "task:deleted"
+          : isIconOnlyUpdate(mutation)
+            ? "task:iconChanged"
+            : isPinnedOnlyUpdate(mutation)
+              ? "task:pinnedChanged"
+              : "task:updated";
     const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: task.taskId });
   }

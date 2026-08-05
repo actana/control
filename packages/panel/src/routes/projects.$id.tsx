@@ -1414,7 +1414,9 @@ function ProjectPage() {
           taskId,
           isActive ? { activateTaskId: next?.id ?? null } : undefined,
         );
-        await api.deleteTask(taskId);
+        // Route to the Core that owns the row (ADR 0005) — the Panel's own
+        // delete endpoint only knows Panel-owned rows.
+        await mutateTaskForCore(coreId, { op: "delete", taskId });
         void refresh();
       } catch (e: unknown) {
         if (previousTasks) {
@@ -1614,11 +1616,12 @@ function ProjectPage() {
     onTogglePinned: toggleSessionPinned,
   };
 
-  // Delete every archived row shown for this project. Still on the Panel's own
-  // delete endpoint, which is sound only because the rows it can see are
-  // Panel-owned — a Core's archived rows never reach `tasks` (see
-  // archiveTasks). Whoever teaches the core-link to list them owes this
-  // function a `mutateTaskForCore` route too, or it will 404 the way archive did.
+  // Delete every archived row shown for this project. Routed by owner like
+  // every other task mutation, though only Panel-owned rows reach it today: a
+  // Core's archived rows never cross the link (see archiveTasks), so the
+  // Archived list this reads is Panel-only until #62 lands. The routing is here
+  // so the button works the moment those rows appear, rather than going live
+  // already 404'ing.
   const deleteAllArchived = () => {
     setConfirmDeleteArchived(false);
     if (!project) return;
@@ -1636,7 +1639,7 @@ function ProjectPage() {
         await Promise.all(
           archived.map(async (t) => {
             await terminals.close(t.id).catch(() => undefined);
-            await api.deleteTask(t.id);
+            await mutateTaskForCore(coreId, { op: "delete", taskId: t.id });
           }),
         );
         void refresh();

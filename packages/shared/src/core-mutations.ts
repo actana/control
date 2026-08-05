@@ -464,6 +464,28 @@ export function updateTask(
   return readTaskSnapshot(sqlite, input.taskId);
 }
 
+/**
+ * Delete a task row and return the snapshot of what was removed. SQLite's
+ * ON DELETE CASCADE takes the rows hanging off it (terminal_logs, prompts,
+ * token_usage, …) — the same hard delete the Panel server's `deleteTask`
+ * performs for a Panel-owned row. Returns `null` when nothing matched, the way
+ * {@link updateTask} reports a missing row, so the server answers
+ * `tasksMutateResult` with a null task rather than an `error` frame.
+ *
+ * The pre-delete snapshot is what comes back (mirroring {@link archiveProject})
+ * so `tasksMutateResult.task` carries the same shape for every op and the
+ * caller doesn't branch on `op` to read the answer.
+ */
+export function deleteTask(
+  sqlite: CoreMutationSqlite,
+  taskId: string,
+): CoreLinkTaskSnapshot | null {
+  const before = readTaskSnapshot(sqlite, taskId);
+  if (!before) return null;
+  sqlite.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
+  return before;
+}
+
 function readTaskSnapshot(
   sqlite: CoreMutationSqlite,
   taskId: string,

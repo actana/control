@@ -7,7 +7,7 @@ import { useResizablePanel } from "~/lib/use-resizable-panel";
 import { useHotkey } from "~/lib/use-hotkey";
 import { useFocusWithin } from "~/lib/use-focus-within";
 import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
-import { api } from "~/lib/api";
+import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import { useTerminals } from "~/lib/terminal-store";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import { queryKeys } from "~/queries";
@@ -81,7 +81,14 @@ export function TerminalPanel({
     }
     setDeleting(true);
     try {
-      await Promise.all([onClose(active.taskId), api.deleteTask(active.taskId)]);
+      // The row lives in the owning Core's database (ADR 0004/0005), so the
+      // delete rides the panel link to that Core — the Panel's own endpoint
+      // has no such row and would 404. `active.coreId` is null for a
+      // Panel-owned row, which routes back to that endpoint.
+      await Promise.all([
+        onClose(active.taskId),
+        mutateTaskForCore(active.coreId, { op: "delete", taskId: active.taskId }),
+      ]);
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: queryKeys.tasks(active.project.id),
