@@ -106,10 +106,21 @@ describe("project-images service", () => {
     expect(findProjectImageOwner("core-project")?.imagePath).toBe("core-project.png");
   });
 
-  it("refuses an image for a project neither owner knows", () => {
+  it("refuses an image for a project neither owner knows, before writing it", () => {
     // No Panel row, no coreId to key a presentation row by: writing the file
-    // and reporting success would leave bytes nothing ever points at.
+    // and reporting success would leave bytes nothing ever points at. The
+    // refusal has to come first, or the file outlives it as an orphan.
     expect(writeProjectImage("nobodys-project", "png", PNG_BYTES)).toBeNull();
+    expect(fs.existsSync(path.join(projectImagesDir(), "nobodys-project.png"))).toBe(false);
+  });
+
+  // The stale-extension sweep runs on the way to writing, so a refusal that
+  // happened after it would take the project's existing image down with it.
+  it("leaves an existing image intact when a later write is refused", () => {
+    const filename = touchImage("nobodys-project", "png");
+
+    expect(writeProjectImage("nobodys-project", "jpg", PNG_BYTES)).toBeNull();
+    expect(fs.existsSync(path.join(projectImagesDir(), filename))).toBe(true);
   });
 
   it("finds the Core it already knows when a later call omits the coreId", () => {

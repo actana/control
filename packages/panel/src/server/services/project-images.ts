@@ -112,6 +112,11 @@ export function readProjectImage(
  * and a project can never accumulate orphans. A format change leaves a file
  * under the old extension, so those are swept first.
  *
+ * A project neither owner can claim is refused before anything is written: the
+ * bytes would be a file no row ever points at, and the stale-extension sweep
+ * below would have already deleted the image the project did have. The refusal
+ * has to happen first to be a refusal at all.
+ *
  * Throws if the directory or the file cannot be written — the caller turns that
  * into an error response rather than a silent success.
  */
@@ -121,6 +126,7 @@ export function writeProjectImage(
   bytes: Uint8Array,
   coreId?: string | null,
 ): ProjectImageOwner | null {
+  if (!canOwnProjectImage(projectId, coreId)) return null;
   const dir = projectImagesDir();
   fs.mkdirSync(dir, { recursive: true });
   for (const stale of PROJECT_IMAGE_EXTENSIONS) {
@@ -131,4 +137,16 @@ export function writeProjectImage(
   const filename = `${projectId}.${extension}`;
   fs.writeFileSync(projectImageAbsolutePath(filename), bytes);
   return setProjectImage(projectId, filename, coreId);
+}
+
+/**
+ * Is there a row for {@link setProjectImage} to write the filename onto — the
+ * Panel's own project row, an existing presentation row, or a `coreId` to key a
+ * new one by? The same question `setProjectImage` answers by returning `null`,
+ * asked before any bytes hit the disk.
+ */
+function canOwnProjectImage(projectId: string, coreId?: string | null): boolean {
+  if (coreId) return true;
+  if (findProjectById(projectId)) return true;
+  return !!getProjectPresentation(projectId);
 }

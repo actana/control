@@ -143,6 +143,7 @@ export function ProjectDialog({
   groups,
   cores,
   initialCoreId,
+  projectCoreId = null,
   onClose,
   onSave,
   onCreateGroup,
@@ -162,6 +163,14 @@ export function ProjectDialog({
   cores?: Array<{ id: string; label: string }>;
   /** Create flow only: pre-select this Core. Empty means none is chosen yet. */
   initialCoreId?: string;
+  /**
+   * Edit flow only: the Core that owns the project being edited, `null` for a
+   * Panel-owned one. Distinct from `initialCoreId`, which names the Core whose
+   * disk the folder browser walks — the two diverge when the project rail edits
+   * a Panel-owned project while a Core is open, and it is ownership, not
+   * browsing, that decides whether the path can change.
+   */
+  projectCoreId?: string | null;
   onClose: () => void;
   onSave: (data: {
     name?: string;
@@ -858,10 +867,19 @@ export function ProjectDialog({
     </div>
   );
 
+  // A Core-owned project's path is set at create and immutable afterwards:
+  // it is a VM path only the Core can validate, and no project mutation op
+  // carries one post-create (ADR 0022). The field used to stay editable and
+  // Browse… was gated on exactly this case, so an operator could pick a new
+  // folder on the Core's disk, hit Save, and have it silently discarded —
+  // the half-save this PR exists to end, reproduced at the field level.
+  const pathIsImmutable = !!project && !!projectCoreId;
+
   const dirField = (
     <div>
       <FieldLabel>
-        Working directory <span style={{ color: "var(--accent)" }}>*</span>
+        Working directory{" "}
+        {!pathIsImmutable && <span style={{ color: "var(--accent)" }}>*</span>}
       </FieldLabel>
       {/* While the browser is open it IS the working-directory control —
           breadcrumbs + highlight show the path, so the input row would just
@@ -871,8 +889,13 @@ export function ProjectDialog({
           <div style={{ flex: 1 }}>
             <TextField
               mono
-              required
-              ariaLabel="Working directory (required)"
+              required={!pathIsImmutable}
+              disabled={pathIsImmutable}
+              ariaLabel={
+                pathIsImmutable
+                  ? "Working directory (set on the Core, cannot be changed)"
+                  : "Working directory (required)"
+              }
               value={path}
               onChange={setPath}
               placeholder="/Users/me/dev/my-project"
@@ -880,8 +903,10 @@ export function ProjectDialog({
           </div>
           {/* Browsing needs a live panel link — the folders being listed are
               the Core's, and there is no local filesystem to fall back on.
-              Typing a path stays available and is validated on save. */}
-          {!!getPanelBridge() && !!coreId && (
+              Typing a path stays available and is validated on save. Not
+              offered where the path cannot change: picking a folder that gets
+              discarded on Save is worse than not offering the pick. */}
+          {!!getPanelBridge() && !!coreId && !pathIsImmutable && (
             <Btn variant="solid" icon="folder" onClick={toggleFolderBrowser}>
               Browse…
             </Btn>
@@ -902,6 +927,12 @@ export function ProjectDialog({
           onCommit={commitFolder}
           onCancel={cancelFolderBrowse}
         />
+      )}
+      {pathIsImmutable && (
+        <div style={{ marginTop: 6, fontSize: 11.5, lineHeight: 1.45, color: "var(--text-dim)" }}>
+          This folder is on the Core that owns the project and cannot be changed
+          here. To move the project, remove it and add it again at the new path.
+        </div>
       )}
     </div>
   );

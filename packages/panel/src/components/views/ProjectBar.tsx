@@ -1366,6 +1366,10 @@ export const ProjectBar = memo(function ProjectBar({
         // Folder browsing walks the disk of the Core that owns the row, so the
         // dialog is told whose it is (remote pins carry their own `coreId`).
         initialCoreId={editingProject.coreId ?? coreId ?? ""}
+        // Ownership, not browsing: a Panel-owned pin edited while a Core is
+        // open must keep its editable path, and `initialCoreId` above falls
+        // back to the open Core precisely when ownership does not.
+        projectCoreId={editingProject.coreId ?? null}
         onCreateGroup={createGroupForSelection}
         onClose={() => setEditingProject(null)}
         onSave={async (data) => {

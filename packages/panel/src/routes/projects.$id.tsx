@@ -2340,8 +2340,13 @@ function ProjectPage() {
           <div style={{ fontSize: 13, lineHeight: 1.55, color: "var(--text)" }}>
             {projectPathIssue?.message ?? "Actana Control cannot find this project folder."}
             {" "}
-            Point the project at its new location from Edit project, or remove it from Actana
-            Control.
+            {/* Repointing is only an option where the Panel owns the row. A
+                Core-owned project's path is set at create and immutable
+                afterwards (ADR 0022), so offering Edit project here would send
+                the operator to a field they cannot change. */}
+            {coreId
+              ? "This project's folder is on its Core and cannot be repointed from here — remove it from Actana Control and add it again at the new path."
+              : "Point the project at its new location from Edit project, or remove it from Actana Control."}
           </div>
           {projectPathActionError && (
             <div
@@ -2461,6 +2466,7 @@ function ProjectPage() {
         // Editing browses the folders of the Core that owns this project —
         // the dialog has no other way to know whose disk to walk.
         initialCoreId={coreId}
+        projectCoreId={coreId}
         onCreateGroup={createGroupForSelection}
         onClose={() => setShowEdit(false)}
         onSave={async (data) => {
