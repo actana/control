@@ -91,7 +91,7 @@ RUN apt-get update \
 # carries `nodejs` at all. NodeSource and every other third-party apt repo are
 # out for the same reason the tarball is in — this is a download we verify,
 # not a publisher we trust.
-ARG NODE_VERSION=24.18.1
+ARG NODE_VERSION=24.19.0
 RUN set -eux; \
     case "$(dpkg --print-architecture)" in \
       amd64) node_arch=x64 ;; \
