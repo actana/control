@@ -134,6 +134,32 @@ export function queryTasks(
   return rows.map(taskRowToSnapshot);
 }
 
+/**
+ * Read one task by id, or `null` when this Core has no such row. Unlike
+ * {@link queryTasks} an archived row still answers: a caller asking by id
+ * wants that row's facts (its status, its title), not a browse of active work.
+ * Returns `null` when the table is absent, same as the listing helpers.
+ */
+export function queryTask(
+  sqlite: CoreQuerySqlite,
+  taskId: string,
+): CoreLinkTaskSnapshot | null {
+  let rows: TaskRow[];
+  try {
+    rows = sqlite
+      .prepare(
+        `SELECT id, project_id, title, agent, status, pinned, archived, icon, updated_at
+         FROM tasks
+         WHERE id = ?`,
+      )
+      .all(taskId) as TaskRow[];
+  } catch {
+    return null;
+  }
+  const row = rows[0];
+  return row ? taskRowToSnapshot(row) : null;
+}
+
 function taskRowToSnapshot(row: TaskRow): CoreLinkTaskSnapshot {
   return {
     taskId: row.id,

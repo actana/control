@@ -33,6 +33,7 @@ import {
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
+import type { TaskStatus } from "@actana/shared/domain";
 import type { PtyCore } from "./pty-manager";
 
 /**
@@ -77,6 +78,14 @@ export interface CoreQueryPort {
    * Panel caches nothing, so archived rows never cross the core-link.
    */
   listTasks(projectId?: string): CoreLinkTaskSnapshot[];
+  /**
+   * One task by id, or `null` when this Core has no such row. Unlike
+   * `listTasks` an archived row still answers — a caller asking by id wants
+   * that row's facts, not a browse of active work. The server reads it to
+   * learn a task's status *before* a mutation lands, which is what tells a
+   * genuine finish from a re-patch of an already-finished Session (issue 20).
+   */
+  getTask(taskId: string): CoreLinkTaskSnapshot | null;
 }
 
 /**
@@ -471,10 +480,16 @@ export class PtyCoreLinkServer {
    * emits when it deletes a Panel-owned row, so a reconnecting Panel replays a
    * Core-owned delete through the handler it already has (it prunes that
    * session's stored finish notifications keyed on the event's `taskId`).
+   *
+   * A transition into `finished` additionally appends `session:finished`
+   * (issue 20) — the event ADR 0008 built the Panel's notification on and no
+   * Core ever produced. It is additional, not a replacement: the live query
+   * still needs the `task:updated` event for the same mutation.
    */
   private recordTaskMutation(
     mutation: CoreLinkTaskMutation,
     task: CoreLinkTaskSnapshot,
+    previousStatus: string | null,
   ): void {
     if (!this.eventLog) return;
     const kind =
@@ -489,6 +504,60 @@ export class PtyCoreLinkServer {
               : "task:updated";
     const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: task.taskId });
+    this.recordSessionFinish(mutation, task, previousStatus);
+  }
+
+  /**
+   * Append `session:finished` when a mutation moved a task into `finished` —
+   * and only then. Two things have to hold, and both are load-bearing.
+   *
+   * The mutation must be the one that set the status: the resulting snapshot
+   * alone would say `finished` for every later write to the same row, so
+   * archiving, pinning, or renaming a finished Session — the most routine
+   * things to do with one — would each raise a fresh notification.
+   *
+   * And the row must not have been finished already, so a retried exit patch
+   * or a second tab racing the first cannot raise a second notification. That
+   * is what the prior status is for; the snapshot cannot tell the two apart.
+   *
+   * The payload carries what the Panel's finish normalizer reads: the task id
+   * (as `id`, its preferred key), the project id, the project name, and the
+   * task title. Without the last two the toast reads "Project" / "Session",
+   * which is the degraded output this event exists to avoid. The project name
+   * is the one field not on the task snapshot; it is read through the query
+   * port, and omitted when no query port is wired (a PTY-only Core).
+   */
+  private recordSessionFinish(
+    mutation: CoreLinkTaskMutation,
+    task: CoreLinkTaskSnapshot,
+    previousStatus: string | null,
+  ): void {
+    if (!this.eventLog) return;
+    if (!patchesFinishedStatus(mutation)) return;
+    if (task.status !== FINISHED_TASK_STATUS) return;
+    if (previousStatus === FINISHED_TASK_STATUS) return;
+    const projectName = this.queryPort
+      ?.listProjects()
+      .find((p) => p.projectId === task.projectId)?.name;
+    const payload = JSON.stringify({
+      id: task.taskId,
+      taskId: task.taskId,
+      projectId: task.projectId,
+      ...(projectName ? { projectName } : {}),
+      taskTitle: task.title,
+    });
+    this.eventLog.appendEvent("session:finished", payload, { taskId: task.taskId });
+  }
+
+  /**
+   * The status a task carried before a mutation is applied, or `null` when
+   * there is nothing to read — an unknown row, a Core with no query port, or
+   * a mutation that could not produce a finish. Only a patch that could pays
+   * for the read; nothing else consults the prior status.
+   */
+  private priorTaskStatus(mutation: CoreLinkTaskMutation): string | null {
+    if (!patchesFinishedStatus(mutation)) return null;
+    return this.queryPort?.getTask(mutation.taskId)?.status ?? null;
   }
 
   /**
@@ -676,8 +745,9 @@ export class PtyCoreLinkServer {
           return;
         }
         try {
+          const previousStatus = this.priorTaskStatus(frame.mutation);
           const task = this.mutationPort.mutateTask(frame.mutation);
-          if (task) this.recordTaskMutation(frame.mutation, task);
+          if (task) this.recordTaskMutation(frame.mutation, task, previousStatus);
           this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
@@ -866,6 +936,31 @@ class ActiveConnection {
       this.timer = null;
     }
   }
+}
+
+/**
+ * The status a Session carries once its Harness has exited cleanly. The Panel
+ * writes it on PTY exit (`terminalExitTaskStatus`); it is the one status this
+ * server reads rather than passes through, because it is what raises a finish
+ * notification. Typed against the shared vocabulary — type-only, so the Core
+ * bundle gains no runtime dependency — so it cannot drift from the word the
+ * Panel writes.
+ */
+const FINISHED_TASK_STATUS: TaskStatus = "finished";
+
+/**
+ * Does this mutation itself set the status to `finished`? The one question
+ * both halves of the finish path ask — whether to read the prior status, and
+ * whether to append the event — so they cannot drift apart and start emitting
+ * on writes that only happen to land on a row that is already finished.
+ *
+ * A `create` never qualifies: a row born `finished` is imported history, not a
+ * Session that just ended in front of the operator.
+ */
+function patchesFinishedStatus(
+  mutation: CoreLinkTaskMutation,
+): mutation is Extract<CoreLinkTaskMutation, { op: "update" }> {
+  return mutation.op === "update" && mutation.status === FINISHED_TASK_STATUS;
 }
 
 /**

@@ -291,6 +291,9 @@ class FakeQueryPort implements CoreQueryPort {
     if (projectId === undefined) return this.tasks;
     return this.tasks.filter((t) => t.projectId === projectId);
   }
+  getTask(taskId: string): CoreLinkTaskSnapshot | null {
+    return this.tasks.find((t) => t.taskId === taskId) ?? null;
+  }
 }
 
 describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
@@ -1702,6 +1705,8 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
         projectId
           ? mutationPort.tasks.filter((t) => t.projectId === projectId)
           : mutationPort.tasks,
+      getTask: (taskId: string) =>
+        mutationPort.tasks.find((t) => t.taskId === taskId) ?? null,
     };
     const wss2 = new FakeWebSocketServer();
     const server2 = new PtyCoreLinkServer(core, {
