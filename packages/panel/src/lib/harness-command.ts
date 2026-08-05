@@ -1,6 +1,7 @@
 import type { Task } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
 import type { AiModelId } from "@actana/shared/ai-runtime-defaults";
+import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import { buildClaudeCommand, newSessionId } from "./claude-command";
 
 export { newSessionId };
@@ -104,7 +105,11 @@ export function buildHarnessLaunchCommand(
   mode: HarnessLaunchMode,
   opts: { model?: AiModelId | null } = {},
 ): string {
-  const skipPermissions = !!task.claudeSkipPermissions;
+  // Auto-mode is the default for every session (issue 22) — no task column and
+  // no user choice feeds this. The spawn descriptor derives the same value from
+  // the same helper; they must not diverge or the spawn policy rejects the
+  // command this builds. See `harnessLaunchesWithSkipPermissions`.
+  const skipPermissions = harnessLaunchesWithSkipPermissions(task.agent);
   const model = opts.model ?? null;
   switch (task.agent) {
     case "claude-code":
@@ -143,7 +148,7 @@ export function buildFreshHarnessLaunchCommand(
     case "cursor-cli":
       return buildCursorCommand({
         sessionId,
-        skipPermissions: !!task.claudeSkipPermissions,
+        skipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
         model,
       });
     case "opencode":
@@ -151,7 +156,7 @@ export function buildFreshHarnessLaunchCommand(
     case "codex":
       return buildCodexCommand({
         mode: "new",
-        skipPermissions: !!task.claudeSkipPermissions,
+        skipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
         model,
       });
     default:

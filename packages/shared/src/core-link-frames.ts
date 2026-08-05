@@ -208,6 +208,16 @@ export type CoreLinkProjectMutation =
       icon?: string;
       iconColor?: string;
       pinned?: boolean;
+      /**
+       * The remembered session settings the Create Project dialog collected
+       * (issue 22). Omitted fields fall back to the column defaults, so a
+       * caller that only names the project still creates a valid row.
+       */
+      rememberHarnessSettings?: boolean;
+      savedHarness?: string | null;
+      savedSkipPermissions?: boolean;
+      savedBareSession?: boolean;
+      defaultGridView?: boolean;
     }
   | { op: "rename"; projectId: string; name: string }
   | { op: "archive"; projectId: string }
@@ -219,7 +229,27 @@ export type CoreLinkProjectMutation =
    * — a reconnecting Panel replays pin flips distinctly from other project
    * edits.
    */
-  | { op: "pin"; projectId: string; pinned: boolean };
+  | { op: "pin"; projectId: string; pinned: boolean }
+  /**
+   * Patch a project's remembered session settings (issue 22) — the "Remember
+   * settings for this project" checkbox and the grid-view default. These are
+   * Core facts on the project row, so every Panel connected to the same Core
+   * converges on them, exactly as pin state does.
+   *
+   * Follows the `pin` precedent rather than becoming a generic field patch: a
+   * dedicated op earns its own `project:settingsChanged` event kind, so a
+   * reconnecting Panel replays a settings change distinctly from a rename.
+   * Fields left `undefined` are untouched; `savedHarness: null` clears it.
+   */
+  | {
+      op: "settings";
+      projectId: string;
+      rememberHarnessSettings?: boolean;
+      savedHarness?: string | null;
+      savedSkipPermissions?: boolean;
+      savedBareSession?: boolean;
+      defaultGridView?: boolean;
+    };
 
 export type CoreLinkHookOp =
   | { op: "list"; taskId?: string }
@@ -456,6 +486,21 @@ export type CoreLinkProjectSnapshot = {
   /** Hex color for the icon background. */
   iconColor: string;
   pinned: boolean;
+  /**
+   * Remembered session settings (issue 22). Core facts on the project row —
+   * the Panel holds no copy, so a second Panel on the same Core reads the
+   * same values, the way pin state already behaves.
+   *
+   * `savedSkipPermissions` is carried for symmetry with the column that
+   * already exists; nothing on the launch path reads it. Auto-mode is the
+   * unconditional default for every Harness that has such a flag, so wiring
+   * this back into a session launch would reintroduce the removed control.
+   */
+  rememberHarnessSettings: boolean;
+  savedHarness: string | null;
+  savedSkipPermissions: boolean;
+  savedBareSession: boolean;
+  defaultGridView: boolean;
   updatedAt: number;
 };
 
@@ -541,8 +586,17 @@ export type CoreLinkServerFrame =
  * machine-local dialog that no longer exists → 0.9.0. Additive: a Core that
  * has not been upgraded rejects the unknown request type, which the Panel
  * surfaces as the same actionable error any other failed listing produces.
+ * Issue 22 adds a `settings` op to {@link CoreLinkProjectMutation}, the same
+ * remembered-settings fields on its `create` variant, those fields on
+ * {@link CoreLinkProjectSnapshot}, and the `project:settingsChanged` event
+ * kind → 0.10.0. Every column they land in already exists in the shared
+ * schema bootstrap, so no migration rides along. Unlike the additive bumps
+ * above, there is no partial-compatibility story to describe here and none is
+ * wanted: the minor moved, so a Core still speaking 0.9.0 is incompatible by
+ * the major.minor rule below and renders as "needs update" (ADR 0005). It
+ * never reaches the mutation store's runtime `op` check.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.9.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.10.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?

@@ -85,6 +85,10 @@ _Avoid_: avatar, badge
 A pin flag stored on the owning Core against the Task or Project row. Toggled via core-link mutation. Every Panel connected to that Core sees the same pin state — it is a Core fact, not a Panel preference.
 _Avoid_: favorite, starred, bookmarked
 
+**Remembered session settings** (Core-scoped):
+The Harness a Project starts sessions with, whether to skip the New session dialog and launch it directly, and the Project's default grid view. Stored on the owning Core against the Project row and patched via the core-link `settings` mutation, so — exactly like a pin — every Panel connected to that Core sees the same choice. Not a per-operator preference and not Panel-local. See ADR 0017.
+_Avoid_: project preferences, saved agent, sticky settings
+
 **CLI availability**:
 The Core's own view of which harness binaries (claude, opencode, codex, …) resolve on its PATH. The Core probes at startup, on a periodic tick, and on SIGHUP (which `actana harnesses install` sends after installing a CLI, so a Panel sees a new harness without a daemon restart), then publishes `{harnessId → status}` as part of its state stream. The Panel reads this via `useCliAvailability(coreId)`; `NewHarnessDialog` opens with the availability answer already in hand and blocks submit on `missing`. Every Core publishes the identical shape.
 _Avoid_: harness status, tool check, capability

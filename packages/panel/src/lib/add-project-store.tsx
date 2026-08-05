@@ -120,6 +120,14 @@ export function AddProjectProvider({ children }: { children: React.ReactNode }) 
             icon: createBody.icon,
             iconColor: createBody.iconColor,
             pinned: createBody.pinned,
+            // "Start with →" is a remembered setting, not a one-shot: without
+            // these the created project auto-starts and then re-opens the New
+            // session dialog asking for the Harness that was just picked, and
+            // the grid-view default is lost after the first navigation
+            // (issue 22).
+            savedHarness: createBody.savedHarness ?? null,
+            rememberHarnessSettings: createBody.rememberHarnessSettings,
+            defaultGridView: createBody.defaultGridView,
           });
           // A Core that answers without a row wrote nothing — closing the
           // dialog on that would show a project that does not exist.

@@ -15,7 +15,7 @@ import {
 } from "~/lib/cli-availability";
 import { TITLE_WAITING } from "~/lib/task-sentinels";
 import { useSettings } from "~/queries";
-import { HARNESS_REGISTRY, harnessSupportsSkipPermissions } from "@actana/shared/harnesses";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
   DEFAULT_AGENT_LAUNCHER_CONFIG,
   visibleLauncherHarnesses,
@@ -60,19 +60,16 @@ export function NewHarnessDialog({
   onStart: (data: {
     agent: Harness;
     title: string;
-    dangerouslySkipPermissions: boolean;
     bareSession: boolean;
   }) => Promise<void> | void;
   onPersistRemember: (patch: RememberPatch) => Promise<void> | void;
   onHarnessUpdateRequired?: (agent: Harness, availability: CliAvailability) => void;
   onPrepareWarm?: (payload: {
     agent: Harness;
-    skipPermissions: boolean;
     bareSession: boolean;
   }) => void;
 }) {
   const [agent, setHarness] = useState<Harness>("claude-code");
-  const [dangerouslySkipPermissions, setDangerouslySkipPermissions] = useState(false);
   const [rememberSettings, setRememberSettings] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
@@ -97,33 +94,24 @@ export function NewHarnessDialog({
     [launcherConfig],
   );
 
+  // `savedSkipPermissions` is carried for symmetry with the column that still
+  // exists, and is always false: auto-mode is unconditional (issue 22) and no
+  // launch path reads this field. Setting it from a user choice would
+  // reintroduce the control that was removed.
   const buildSessionSettingsPatch = (
     nextRememberSettings: boolean,
     nextHarness: Harness,
-    nextSkipPermissions: boolean
   ): RememberPatch => ({
     rememberHarnessSettings: nextRememberSettings,
     savedHarness: nextHarness,
-    savedSkipPermissions: nextSkipPermissions,
+    savedSkipPermissions: false,
     savedBareSession: false,
   });
 
-  const persistRememberedSettings = async (
-    nextHarness: Harness,
-    nextSkipPermissions: boolean
-  ) => {
-    await onPersistRemember(buildSessionSettingsPatch(true, nextHarness, nextSkipPermissions));
-  };
-
   useEffect(() => {
     if (!open || !project || !onPrepareWarm) return;
-    const supportsSkip = harnessSupportsSkipPermissions(agent);
-    onPrepareWarm({
-      agent,
-      skipPermissions: supportsSkip && dangerouslySkipPermissions,
-      bareSession: false,
-    });
-  }, [open, project, agent, dangerouslySkipPermissions, onPrepareWarm]);
+    onPrepareWarm({ agent, bareSession: false });
+  }, [open, project, agent, onPrepareWarm]);
 
   useEffect(() => {
     if (!open) {
@@ -137,9 +125,7 @@ export function NewHarnessDialog({
       project?.savedHarness && harnessOptions.some((a) => a.id === project.savedHarness)
         ? project.savedHarness
         : harnessOptions[0]?.id ?? "claude-code";
-    const seedSkip = !!project?.savedSkipPermissions;
     setHarness(seedHarness);
-    setDangerouslySkipPermissions(seedSkip);
     setRememberSettings(!!project?.rememberHarnessSettings);
     setError(null);
     setSubmitting(false);
@@ -149,7 +135,7 @@ export function NewHarnessDialog({
 
   const toggleRemember = async (next: boolean) => {
     setRememberSettings(next);
-    await onPersistRemember(buildSessionSettingsPatch(next, agent, dangerouslySkipPermissions));
+    await onPersistRemember(buildSessionSettingsPatch(next, agent));
   };
 
   const selectHarness = (nextHarness: Harness) => {
@@ -158,12 +144,7 @@ export function NewHarnessDialog({
       nextAvailability.status === "outdated";
     if (!canSelect) return;
     setHarness(nextHarness);
-    void onPersistRemember(buildSessionSettingsPatch(rememberSettings, nextHarness, dangerouslySkipPermissions));
-  };
-
-  const setSkipPermissions = (nextSkipPermissions: boolean) => {
-    setDangerouslySkipPermissions(nextSkipPermissions);
-    void onPersistRemember(buildSessionSettingsPatch(rememberSettings, agent, nextSkipPermissions));
+    void onPersistRemember(buildSessionSettingsPatch(rememberSettings, nextHarness));
   };
 
   const submit = () => {
@@ -182,17 +163,10 @@ export function NewHarnessDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const supportsSkip = harnessSupportsSkipPermissions(agent);
-      const skip = supportsSkip && dangerouslySkipPermissions;
-      if (rememberSettings) {
-        void persistRememberedSettings(agent, dangerouslySkipPermissions);
-      } else {
-        void onPersistRemember(buildSessionSettingsPatch(false, agent, dangerouslySkipPermissions));
-      }
+      void onPersistRemember(buildSessionSettingsPatch(rememberSettings, agent));
       onStart({
         agent,
         title: TITLE_WAITING,
-        dangerouslySkipPermissions: skip,
         bareSession: false,
       });
     } catch (e: any) {
@@ -237,7 +211,7 @@ export function NewHarnessDialog({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, agent, submitting, project, rememberSettings, dangerouslySkipPermissions, cliAvailability, harnessOptions]);
+  }, [open, agent, submitting, project, rememberSettings, cliAvailability, harnessOptions]);
 
   const selectedAvailability = availabilityFor(cliAvailability, agent);
   const selectedHarnessOutdated = selectedAvailability.status === "outdated";
@@ -406,47 +380,6 @@ export function NewHarnessDialog({
             })}
           </div>
         </div>
-
-        {harnessSupportsSkipPermissions(agent) && (
-          <label
-            style={{
-              display: "flex",
-              alignItems: "flex-start",
-              gap: 10,
-              padding: "10px 12px",
-              background: "var(--surface-0)",
-              border: "1px solid var(--border)",
-              borderRadius: 7,
-              cursor: "pointer",
-            }}
-          >
-            <input
-              type="checkbox"
-              checked={dangerouslySkipPermissions}
-              onChange={(e) => setSkipPermissions(e.target.checked)}
-              style={{ marginTop: 2 }}
-            />
-            <div style={{ flex: 1 }}>
-              <div style={{ fontSize: 12.5, fontWeight: 600, marginBottom: 2 }}>
-                Skip permission prompts
-              </div>
-              <div
-                style={{
-                  fontFamily: "var(--mono)",
-                  fontSize: 11,
-                  color: "var(--text-dim)",
-                  lineHeight: 1.4,
-                }}
-              >
-                Launches with{" "}
-                <code style={{ color: "var(--text)" }}>
-                  {HARNESS_REGISTRY[agent].skipPermissionsFlag}
-                </code>
-                .
-              </div>
-            </div>
-          </label>
-        )}
 
         <label
           style={{

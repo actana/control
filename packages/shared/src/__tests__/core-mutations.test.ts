@@ -7,6 +7,7 @@ import {
   pinProject,
   querySessions,
   renameProject,
+  updateProjectSettings,
   updateTask,
   validateProjectPath,
   type CoreMutationSqlite,
@@ -30,6 +31,11 @@ function openDb(): Database.Database {
       icon TEXT NOT NULL,
       icon_color TEXT NOT NULL,
       pinned INTEGER NOT NULL DEFAULT 0,
+      remember_agent_settings INTEGER NOT NULL DEFAULT 0,
+      saved_agent TEXT,
+      saved_skip_permissions INTEGER NOT NULL DEFAULT 0,
+      saved_bare_session INTEGER NOT NULL DEFAULT 0,
+      default_grid_view INTEGER NOT NULL DEFAULT 0,
       created_at INTEGER NOT NULL,
       updated_at INTEGER NOT NULL
     );
@@ -160,6 +166,139 @@ describe("createProject", () => {
     expect(() =>
       createProject(asWriter(db), { op: "create", name: "  ", path: "/x" }, "/x", 1),
     ).toThrow(/name is required/);
+  });
+
+  it("defaults the remembered session settings when the frame omits them", () => {
+    const snap = createProject(
+      asWriter(db),
+      { op: "create", name: "x", path: "/x" },
+      "/x",
+      1,
+    );
+    expect(snap).toMatchObject({
+      rememberHarnessSettings: false,
+      savedHarness: null,
+      savedSkipPermissions: false,
+      savedBareSession: false,
+      defaultGridView: false,
+    });
+    expect(queryProjects(asReader(db))[0]).toEqual(snap);
+  });
+
+  it("persists the Create Project dialog's remembered settings", () => {
+    const snap = createProject(
+      asWriter(db),
+      {
+        op: "create",
+        name: "x",
+        path: "/x",
+        rememberHarnessSettings: true,
+        savedHarness: "codex",
+        defaultGridView: true,
+      },
+      "/x",
+      1,
+    );
+    expect(snap).toMatchObject({
+      rememberHarnessSettings: true,
+      savedHarness: "codex",
+      defaultGridView: true,
+    });
+    // The snapshot the Panel gets back must be the row that was written, or
+    // the next refetch silently contradicts it.
+    expect(queryProjects(asReader(db))[0]).toEqual(snap);
+  });
+
+  it("stores a blank saved harness as no remembered harness", () => {
+    const snap = createProject(
+      asWriter(db),
+      { op: "create", name: "x", path: "/x", savedHarness: "   " },
+      "/x",
+      1,
+    );
+    expect(snap.savedHarness).toBeNull();
+  });
+});
+
+describe("updateProjectSettings", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+    createProject(
+      asWriter(db),
+      { op: "create", projectId: "p1", name: "x", path: "/p" },
+      "/p",
+      1,
+    );
+  });
+
+  it("persists the remembered harness and survives a re-read", () => {
+    const snap = updateProjectSettings(
+      asWriter(db),
+      {
+        op: "settings",
+        projectId: "p1",
+        rememberHarnessSettings: true,
+        savedHarness: "claude-code",
+      },
+      5,
+    );
+    expect(snap).toMatchObject({
+      rememberHarnessSettings: true,
+      savedHarness: "claude-code",
+      updatedAt: 5,
+    });
+    expect(queryProjects(asReader(db))[0]).toMatchObject({
+      rememberHarnessSettings: true,
+      savedHarness: "claude-code",
+    });
+  });
+
+  it("leaves omitted fields untouched", () => {
+    updateProjectSettings(
+      asWriter(db),
+      { op: "settings", projectId: "p1", rememberHarnessSettings: true, savedHarness: "codex" },
+      5,
+    );
+    const snap = updateProjectSettings(
+      asWriter(db),
+      { op: "settings", projectId: "p1", defaultGridView: true },
+      6,
+    );
+    expect(snap).toMatchObject({
+      rememberHarnessSettings: true,
+      savedHarness: "codex",
+      defaultGridView: true,
+    });
+  });
+
+  it("clears the remembered harness on an explicit null", () => {
+    updateProjectSettings(
+      asWriter(db),
+      { op: "settings", projectId: "p1", savedHarness: "codex" },
+      5,
+    );
+    const snap = updateProjectSettings(
+      asWriter(db),
+      { op: "settings", projectId: "p1", savedHarness: null },
+      6,
+    );
+    expect(snap?.savedHarness).toBeNull();
+  });
+
+  it("reads the row back for an empty patch without bumping updated_at", () => {
+    const snap = updateProjectSettings(asWriter(db), { op: "settings", projectId: "p1" }, 9);
+    expect(snap?.updatedAt).toBe(1);
+  });
+
+  it("returns null when the projectId is unknown", () => {
+    expect(
+      updateProjectSettings(
+        asWriter(db),
+        { op: "settings", projectId: "missing", defaultGridView: true },
+        5,
+      ),
+    ).toBeNull();
   });
 });
 

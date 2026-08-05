@@ -1,7 +1,7 @@
 import type { Task } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
 import type { ScopedProject } from "~/lib/scoped-project";
-import { harnessSupportsSkipPermissions } from "@actana/shared/harnesses";
+import { harnessLaunchesWithSkipPermissions } from "@actana/shared/harnesses";
 import { newClientId } from "@actana/shared/client-id";
 import { newSessionId } from "~/lib/harness-command";
 import { buildOptimisticTask } from "~/lib/optimistic-task";
@@ -14,7 +14,6 @@ import { DEFAULT_PTY_COLS, DEFAULT_PTY_ROWS } from "~/shared/pty-size";
 
 export type SessionCreatePayload = {
   agent: Harness;
-  skipPermissions: boolean;
   bareSession: boolean;
 };
 
@@ -45,7 +44,6 @@ export function sessionCreateSignature(
     coreId,
     cwd,
     payload.agent,
-    payload.skipPermissions ? "1" : "0",
     payload.bareSession ? "1" : "0",
     // A warm slot pre-spawns the agent PTY with the theme captured at prepare
     // time (COLORFGBG). Include the theme so switching light/dark
@@ -67,9 +65,7 @@ function buildDraftTask(
     projectId: project.id,
     agent: payload.agent,
     claudeSessionId,
-    claudeSkipPermissions: harnessSupportsSkipPermissions(payload.agent)
-      ? payload.skipPermissions
-      : false,
+    claudeSkipPermissions: harnessLaunchesWithSkipPermissions(payload.agent),
     claudeBareSession: payload.agent === "claude-code" ? payload.bareSession : false,
   });
 }
@@ -77,13 +73,11 @@ function buildDraftTask(
 export function defaultSessionPayload(project: {
   rememberHarnessSettings?: boolean;
   savedHarness?: Harness | null;
-  savedSkipPermissions?: boolean;
   savedBareSession?: boolean;
 }): SessionCreatePayload {
   const agent = project.savedHarness ?? "claude-code";
   return {
     agent,
-    skipPermissions: !!project.savedSkipPermissions,
     bareSession:
       project.rememberHarnessSettings && project.savedHarness === "claude-code"
         ? !!project.savedBareSession
@@ -164,7 +158,10 @@ export async function prepareSessionWarmSlot(input: {
         cols: DEFAULT_PTY_COLS,
         rows: DEFAULT_PTY_ROWS,
         agent: draftTask.agent,
-        dangerouslySkipPermissions: draftTask.claudeSkipPermissions,
+        // Same helper the start command was built from — the spawn policy
+        // checks the argv against this declared intent, so a divergence here
+        // means no session spawns at all (issue 22).
+        dangerouslySkipPermissions: harnessLaunchesWithSkipPermissions(draftTask.agent),
         missionControlTheme: getTerminalColorScheme(),
       });
       if (generation !== warmGeneration) {
@@ -212,9 +209,7 @@ export async function persistWarmSlotTask(
     claudeSessionId: slot.draftTask.claudeSessionId,
     claudeBareSession:
       slot.payload.agent === "claude-code" ? slot.payload.bareSession : undefined,
-    claudeSkipPermissions: harnessSupportsSkipPermissions(slot.payload.agent)
-      ? slot.payload.skipPermissions
-      : undefined,
+    claudeSkipPermissions: harnessLaunchesWithSkipPermissions(slot.payload.agent),
   });
   return task;
 }

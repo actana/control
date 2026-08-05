@@ -310,6 +310,7 @@ export function updateProject(
       | "savedHarness"
       | "savedSkipPermissions"
       | "savedBareSession"
+      | "defaultGridView"
     >
   >
 ): Project | null {

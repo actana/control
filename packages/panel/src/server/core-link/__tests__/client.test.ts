@@ -327,6 +327,11 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
         icon: "MC",
         iconColor: "#7ce58a",
         pinned: true,
+        rememberHarnessSettings: false,
+        savedHarness: null,
+        savedSkipPermissions: false,
+        savedBareSession: false,
+        defaultGridView: false,
         updatedAt: 1,
       },
     ];
@@ -756,6 +761,11 @@ describe("PtyCoreLinkClient", () => {
       icon: "MC",
       iconColor: "#7ce58a",
       pinned: false,
+      rememberHarnessSettings: false,
+      savedHarness: null,
+      savedSkipPermissions: false,
+      savedBareSession: false,
+      defaultGridView: false,
       updatedAt: 1,
     };
     pair.client.receive({ type: "projectsMutateResult", reqId: frame.reqId, project });
@@ -1264,6 +1274,11 @@ class FakeMutationPort implements CoreMutationPort {
         icon: mutation.icon ?? "PR",
         iconColor: mutation.iconColor ?? "#7ce58a",
         pinned: mutation.pinned === true,
+        rememberHarnessSettings: false,
+        savedHarness: null,
+        savedSkipPermissions: false,
+        savedBareSession: false,
+        defaultGridView: false,
         updatedAt: 1,
       };
       this.projects.push(snap);

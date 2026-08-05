@@ -32,6 +32,11 @@ type ProjectRow = {
   icon: string;
   icon_color: string;
   pinned: number;
+  remember_agent_settings: number;
+  saved_agent: string | null;
+  saved_skip_permissions: number;
+  saved_bare_session: number;
+  default_grid_view: number;
   updated_at: number;
 };
 
@@ -58,7 +63,9 @@ export function queryProjects(sqlite: CoreQuerySqlite): CoreLinkProjectSnapshot[
   try {
     rows = sqlite
       .prepare(
-        `SELECT id, name, path, icon, icon_color, pinned, updated_at
+        `SELECT id, name, path, icon, icon_color, pinned,
+                remember_agent_settings, saved_agent, saved_skip_permissions,
+                saved_bare_session, default_grid_view, updated_at
          FROM projects
          ORDER BY pinned DESC, updated_at DESC`,
       )
@@ -79,6 +86,11 @@ function rowToSnapshot(row: ProjectRow): CoreLinkProjectSnapshot {
     icon: row.icon,
     iconColor: row.icon_color,
     pinned: row.pinned === 1,
+    rememberHarnessSettings: row.remember_agent_settings === 1,
+    savedHarness: row.saved_agent,
+    savedSkipPermissions: row.saved_skip_permissions === 1,
+    savedBareSession: row.saved_bare_session === 1,
+    defaultGridView: row.default_grid_view === 1,
     updatedAt: row.updated_at,
   };
 }

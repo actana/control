@@ -15,7 +15,7 @@ import type {
 } from "@actana/shared/core-link-frames";
 import type { Task } from "~/db/schema";
 import { TASK_STATUSES, type Harness, type TaskStatus } from "@actana/shared/domain";
-import type { ProjectWithCounts } from "~/shared/projects";
+import { projectSettingsFromSnapshot, type ProjectWithCounts } from "~/shared/projects";
 
 export const queryKeys = {
   projects: ["projects"] as const,
@@ -57,11 +57,9 @@ function remoteProjectFromSnapshot(snapshot: CoreLinkProjectSnapshot): ProjectWi
     pinned: snapshot.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    rememberHarnessSettings: false,
-    savedHarness: null,
-    savedSkipPermissions: false,
-    savedBareSession: false,
-    defaultGridView: false,
+    // Remembered session settings are Core facts on the project row (issue 22),
+    // so they come off the snapshot rather than defaulting to empty.
+    ...projectSettingsFromSnapshot(snapshot),
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
     // Task counts / preview / githubUrl are decorated by the Panel's own DB —

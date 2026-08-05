@@ -4,6 +4,21 @@ All notable changes to this project, newest first.
 
 ## 0.1.0 — unreleased
 
+The core-link protocol moves to 0.10.0 so a project's remembered session
+settings can cross the wire. The Panel and its Cores are version-locked, so
+every Core needs updating alongside the Panel — an older one renders as "needs
+update" rather than degrading.
+
+Two New session dialog changes come with it. "Remember settings for this
+project" now persists on the Core that owns the project, so it survives a
+reload and a Panel restart, and is shared by every Panel connected to that Core
+— the same semantics project pinning already has. The "Skip permission prompts"
+checkbox is gone: every session now launches in auto-mode for the harnesses
+that have such a flag (`--dangerously-skip-permissions`, `--yolo`, `--force`).
+OpenCode, which has no such flag, launches unchanged. **There is no longer a way
+to start a non-auto session from the Panel UI** — override per session in the
+terminal.
+
 Core tarballs are published as `actana-core-<version>-<target>.tar.gz`. This is
 the first published release of the Core tarball; no earlier asset name was ever
 released, so no download URL changes.

@@ -44,7 +44,9 @@ async function mutatePanelLocalProject(
       ? { name: mutation.name }
       : mutation.op === "pin"
         ? { pinned: mutation.pinned }
-        : { archived: true };
+        : mutation.op === "settings"
+          ? projectSettingsPatch(mutation)
+          : { archived: true };
   const { project } = await api.updateProject(mutation.projectId, patch);
   if (!project) return null;
   return {
@@ -54,6 +56,25 @@ async function mutatePanelLocalProject(
     icon: project.icon,
     iconColor: project.iconColor,
     pinned: project.pinned,
+    rememberHarnessSettings: !!project.rememberHarnessSettings,
+    savedHarness: project.savedHarness ?? null,
+    savedSkipPermissions: !!project.savedSkipPermissions,
+    savedBareSession: !!project.savedBareSession,
+    defaultGridView: !!project.defaultGridView,
     updatedAt: project.updatedAt,
   };
+}
+
+/**
+ * The `settings` op as the Panel's own PATCH body. Undefined fields are
+ * dropped rather than sent as `undefined` so a partial patch stays partial on
+ * this arm too — the Core-side helper has the same rule.
+ */
+function projectSettingsPatch(
+  mutation: Extract<CoreLinkProjectMutation, { op: "settings" }>,
+): Record<string, unknown> {
+  const { op: _op, projectId: _projectId, ...fields } = mutation;
+  return Object.fromEntries(
+    Object.entries(fields).filter(([, value]) => value !== undefined),
+  );
 }

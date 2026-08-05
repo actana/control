@@ -150,7 +150,7 @@ describe("buildHarnessLaunchCommand", () => {
   it("uses Claude session-id for ready tasks", () => {
     const task = { ...baseTask, agent: "claude-code" } satisfies Task;
     expect(buildHarnessLaunchCommand(task, task.claudeSessionId!, "new")).toBe(
-      "claude --session-id 00000000-0000-4000-8000-000000000000",
+      "claude --session-id 00000000-0000-4000-8000-000000000000 --dangerously-skip-permissions",
     );
   });
 
@@ -158,13 +158,13 @@ describe("buildHarnessLaunchCommand", () => {
     const task = { ...baseTask, agent: "claude-code" } satisfies Task;
     expect(
       buildHarnessLaunchCommand(task, task.claudeSessionId!, "new", { model: "sonnet" }),
-    ).toBe("claude --session-id 00000000-0000-4000-8000-000000000000 --model sonnet");
+    ).toBe("claude --session-id 00000000-0000-4000-8000-000000000000 --model sonnet --dangerously-skip-permissions");
   });
 
   it("uses Cursor resume for every launch", () => {
     const task = { ...baseTask, agent: "cursor-cli" } satisfies Task;
     expect(buildHarnessLaunchCommand(task, task.claudeSessionId!, "resume")).toBe(
-      "cursor-agent --resume 00000000-0000-4000-8000-000000000000",
+      "cursor-agent --resume 00000000-0000-4000-8000-000000000000 --force",
     );
   });
 
@@ -259,7 +259,7 @@ describe("isHarnessResumeCommand", () => {
         "codex resume 019d7a0f-432a-7fa1-a821-b7841f983967 --enable hooks",
       ),
     ).toBe(true);
-    expect(isHarnessResumeCommand("codex", "codex --enable hooks")).toBe(false);
+    expect(isHarnessResumeCommand("codex", "codex --enable hooks --yolo")).toBe(false);
   });
 });
 
@@ -270,7 +270,7 @@ describe("buildFreshHarnessLaunchCommand", () => {
       agent: "codex",
       status: "running",
     } satisfies Task;
-    expect(buildFreshHarnessLaunchCommand(task, "fresh-id")).toBe("codex --enable hooks");
+    expect(buildFreshHarnessLaunchCommand(task, "fresh-id")).toBe("codex --enable hooks --yolo");
   });
 
   it("falls back to a fresh OpenCode session without session flags", () => {
