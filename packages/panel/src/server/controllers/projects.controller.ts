@@ -27,6 +27,7 @@ import {
 import {
   MAX_IMAGE_BYTES,
   clearProjectImage,
+  findProjectImageOwner,
   readProjectImage,
   writeProjectImage,
 } from "../services/project-images";
@@ -151,13 +152,20 @@ export async function remove(rawId: string, request: Request): Promise<Response>
 // The browser uploads bytes and reads them back over HTTP. There is no native
 // picker and no `app://` protocol to serve them from (ADR 0010): the operator's
 // machine only ever hands us a File, never a path.
+//
+// A Core-owned project has no row in the Panel's database, and its image is
+// still Panel-local presentation — so these routes address the image record
+// (`ProjectImageOwner`) rather than a project row, and take `?coreId=` so the
+// first upload for a Core-owned project has something to key its presentation
+// row by (issue 98). They answer with `{ imagePath }`, the one field a caller
+// can act on for either kind of project.
 
 export async function getImage(rawId: string): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const project = getProject(parsed.data);
-  if (!project) return notFound();
-  const image = readProjectImage(project);
+  const owner = findProjectImageOwner(parsed.data);
+  if (!owner) return notFound();
+  const image = readProjectImage(owner);
   if (!image) return notFound();
   return new Response(image.bytes as unknown as BodyInit, {
     headers: {
@@ -176,7 +184,8 @@ export async function putImage(rawId: string, request: Request): Promise<Respons
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
   const id = parsed.data;
-  if (!getProject(id)) return notFound();
+  const coreId = coreIdParam(request);
+  if (!getProject(id) && !coreId && !findProjectImageOwner(id)) return notFound();
 
   const extension = projectImageExtensionFor(request.headers.get("content-type"));
   if (!extension) return jsonError(HTTP_BAD_REQUEST, "unsupported image type");
@@ -202,8 +211,8 @@ export async function putImage(rawId: string, request: Request): Promise<Respons
   }
 
   try {
-    const project = writeProjectImage(id, extension, bytes);
-    return project ? json({ project }) : notFound();
+    const owner = writeProjectImage(id, extension, bytes, coreId);
+    return owner ? json({ imagePath: owner.imagePath }) : notFound();
   } catch {
     // Disk full, permissions, a read-only data dir — the operator needs to know
     // the image did not land, not a bare 500.
@@ -214,9 +223,15 @@ export async function putImage(rawId: string, request: Request): Promise<Respons
   }
 }
 
-export async function removeImage(rawId: string): Promise<Response> {
+export async function removeImage(rawId: string, request: Request): Promise<Response> {
   const parsed = idParam.safeParse(rawId);
   if (!parsed.success) return notFound();
-  const project = clearProjectImage(parsed.data);
-  return project ? json({ project }) : notFound();
+  const owner = clearProjectImage(parsed.data, coreIdParam(request));
+  return owner ? json({ imagePath: owner.imagePath }) : notFound();
+}
+
+/** The `?coreId=` a Core-owned project's image request carries, or null. */
+function coreIdParam(request: Request): string | null {
+  const value = new URL(request.url).searchParams.get("coreId");
+  return value?.trim() || null;
 }

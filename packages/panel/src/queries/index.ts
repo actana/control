@@ -9,13 +9,10 @@ import {
   readCachedProjects,
   readCachedSettings,
 } from "~/lib/shell-query-cache";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
 import type { Task } from "~/db/schema";
-import { TASK_STATUSES, type Harness, type TaskStatus } from "@actana/shared/domain";
-import { projectSettingsFromSnapshot, type ProjectWithCounts } from "~/shared/projects";
+import type { Harness } from "@actana/shared/domain";
+import { projectRowFromSnapshot } from "~/shared/projects";
 
 export const queryKeys = {
   projects: ["projects"] as const,
@@ -50,41 +47,6 @@ export const projectsQueryOptions = () =>
     placeholderData: readCachedProjects,
   });
 
-// A Core's snapshot → the UI's `Project` row. The core-link only carries
-// display metadata (name/path/icon/branch/pinned) — fields the Panel needs but
-// the Core owns get safe defaults, and are read from the Panel's own
-// mutation call sites when relevant.
-function remoteProjectFromSnapshot(snapshot: CoreLinkProjectSnapshot): ProjectWithCounts {
-  return {
-    id: snapshot.projectId,
-    name: snapshot.name,
-    path: snapshot.path,
-    icon: snapshot.icon,
-    iconColor: snapshot.iconColor,
-    imagePath: null,
-    groupId: null,
-    pinned: snapshot.pinned,
-    pinnedOrder: null,
-    launchUrl: null,
-    // Remembered session settings are Core facts on the project row (issue 22),
-    // so they come off the snapshot rather than defaulting to empty.
-    ...projectSettingsFromSnapshot(snapshot),
-    createdAt: snapshot.updatedAt,
-    updatedAt: snapshot.updatedAt,
-    // Task counts / preview / githubUrl are decorated by the Panel's own DB —
-    // a Core snapshot renders as zeros until the core-link grows per-project
-    // counts. Header still mounts; no consumer crashes.
-    taskCounts: {
-      ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
-      total: 0,
-      activeNonDone: 0,
-    },
-    preview: null,
-    githubUrl: null,
-    repoKey: null,
-  };
-}
-
 export const projectQueryOptions = (id: string, opts?: { coreId?: string | null }) => {
   const coreId = opts?.coreId ?? null;
   return queryOptions({
@@ -104,10 +66,28 @@ export const projectQueryOptions = (id: string, opts?: { coreId?: string | null 
         // invalidation.
         const bridge = getPanelBridge();
         if (!bridge) throw new Error("panel link unavailable");
-        const projects = await bridge.listProjects(coreId);
+        // A failed presentation read costs the operator's filing, not the
+        // project — degrade to unfiled rather than failing a read whose Core
+        // facts arrived fine. `useRemotePinnedProjects` degrades the same way.
+        const [projects, presentation] = await Promise.all([
+          bridge.listProjects(coreId),
+          api
+            .listProjectPresentation()
+            .then((r) => r.presentation)
+            .catch(() => []),
+        ]);
         const snapshot = projects.find((p) => p.projectId === id);
         if (!snapshot) throw new Error(`project ${id} not found on core ${coreId}`);
-        return remoteProjectFromSnapshot(snapshot);
+        // We just read what this Core has; anything the Panel still files under
+        // a project it no longer lists is an orphan nothing else collects
+        // (issue 98). Fire-and-forget — a failed sweep must not fail the read.
+        void api
+          .pruneProjectPresentation(coreId, projects.map((p) => p.projectId))
+          .catch(() => undefined);
+        return projectRowFromSnapshot(
+          snapshot,
+          presentation.find((row) => row.projectId === id),
+        );
       }
       return (await api.getProject(id)).project;
     },

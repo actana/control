@@ -335,6 +335,20 @@ export interface WebSocketLike {
 
 const DEFAULT_LIVE_EVENT_POLL_MS = 500;
 const EVENT_TAIL_LIMIT = 1_000;
+
+/**
+ * The event-log kind each project mutation op appends. Typed on the op union
+ * rather than written as a ternary chain so a new op cannot ship without
+ * deciding what a reconnecting Panel replays for it — the compiler asks.
+ */
+const PROJECT_MUTATION_EVENT_KINDS: Record<CoreLinkProjectMutation["op"], string> = {
+  create: "project:created",
+  rename: "project:renamed",
+  archive: "project:archived",
+  pin: "project:pinnedChanged",
+  settings: "project:settingsChanged",
+  appearance: "project:appearanceChanged",
+};
 /**
  * Heartbeat cadence, mirroring the Panel-side client. The Core must detect a
  * vanished Panel too: `setEmitTarget` points PTY output at whatever socket is
@@ -510,25 +524,16 @@ export class PtyCoreLinkServer {
    * replay path the PTY lifecycle events use (issue 04). Kinds mirror the
    * server's AppEvent names (`project:created`, `project:updated`,
    * `project:archived`, plus the dedicated `project:pinnedChanged` /
-   * `project:settingsChanged`) so the Panel can route by kind without a translation
-   * layer. Only successful mutations are recorded — a `null` result (row
-   * missing) does not append.
+   * `project:settingsChanged` / `project:appearanceChanged`) so the Panel can
+   * route by kind without a translation layer. Only successful mutations are
+   * recorded — a `null` result (row missing) does not append.
    */
   private recordProjectMutation(
     mutation: CoreLinkProjectMutation,
     project: CoreLinkProjectSnapshot,
   ): void {
     if (!this.eventLog) return;
-    const kind =
-      mutation.op === "create"
-        ? "project:created"
-        : mutation.op === "rename"
-          ? "project:renamed"
-          : mutation.op === "pin"
-            ? "project:pinnedChanged"
-            : mutation.op === "settings"
-              ? "project:settingsChanged"
-              : "project:archived";
+    const kind = PROJECT_MUTATION_EVENT_KINDS[mutation.op];
     const payload = JSON.stringify({ projectId: project.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: null, ptyId: null });
   }

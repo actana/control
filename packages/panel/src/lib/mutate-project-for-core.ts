@@ -39,14 +39,21 @@ async function mutatePanelLocalProject(
   if (mutation.op === "create") {
     throw new Error("cannot create a project that no Core owns");
   }
+  // `archive` is a destructive delete at the protocol layer (see
+  // CoreLinkProjectMutation), and the Panel's own row has no archived column —
+  // so it maps to the DELETE endpoint, which answers with no body. A snapshot
+  // of a row that no longer exists would be a fiction; `null` is the honest
+  // answer and no archive caller reads one.
+  if (mutation.op === "archive") {
+    await api.deleteProject(mutation.projectId);
+    return null;
+  }
   const patch =
     mutation.op === "rename"
       ? { name: mutation.name }
       : mutation.op === "pin"
         ? { pinned: mutation.pinned }
-        : mutation.op === "settings"
-          ? projectSettingsPatch(mutation)
-          : { archived: true };
+        : definedFieldsOf(mutation);
   const { project } = await api.updateProject(mutation.projectId, patch);
   if (!project) return null;
   return {
@@ -66,12 +73,13 @@ async function mutatePanelLocalProject(
 }
 
 /**
- * The `settings` op as the Panel's own PATCH body. Undefined fields are
+ * A field-carrying op (`settings`, `appearance`) as the Panel's own PATCH
+ * body: every field the op names, minus its routing keys. Undefined fields are
  * dropped rather than sent as `undefined` so a partial patch stays partial on
- * this arm too — the Core-side helper has the same rule.
+ * this arm too — the Core-side helpers have the same rule.
  */
-function projectSettingsPatch(
-  mutation: Extract<CoreLinkProjectMutation, { op: "settings" }>,
+function definedFieldsOf(
+  mutation: Extract<CoreLinkProjectMutation, { op: "settings" | "appearance" }>,
 ): Record<string, unknown> {
   const { op: _op, projectId: _projectId, ...fields } = mutation;
   return Object.fromEntries(

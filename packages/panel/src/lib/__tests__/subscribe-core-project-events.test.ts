@@ -68,6 +68,14 @@ describe("subscribeCoreProjectEvents", () => {
     expect(onChanged).toHaveBeenCalledTimes(1);
   });
 
+  it("fires on an appearance change, so a re-iconed project redraws", () => {
+    const fake = fakeBridge();
+    const onChanged = vi.fn();
+    subscribeCoreProjectEvents(fake.bridge, "core_a", onChanged);
+    fake.emit({ coreId: "core_a", event: makeEvent("project:appearanceChanged") });
+    expect(onChanged).toHaveBeenCalledTimes(1);
+  });
+
   it("ignores another Core's project events on the shared link", () => {
     const fake = fakeBridge();
     const onChanged = vi.fn();

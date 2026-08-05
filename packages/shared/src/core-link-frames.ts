@@ -277,7 +277,22 @@ export type CoreLinkProjectMutation =
       savedSkipPermissions?: boolean;
       savedBareSession?: boolean;
       defaultGridView?: boolean;
-    };
+    }
+  /**
+   * Patch a project's icon and icon colour (issue 98). Both live on the Core's
+   * project row and already travel in {@link CoreLinkProjectSnapshot}, and
+   * `create` accepts them — but until this op nothing could change them
+   * afterwards, so the Edit-project dialog PATCHed them at a Panel row a
+   * Core-owned project does not have, and 404'd.
+   *
+   * Follows the `pin` / `settings` precedent rather than widening `rename` into
+   * a generic field patch: a dedicated op earns its own
+   * `project:appearanceChanged` event kind, so a reconnecting Panel replays an
+   * icon change distinctly from a rename. Fields left `undefined` are
+   * untouched; a blank string is not an erase (both columns are NOT NULL) and
+   * is ignored.
+   */
+  | { op: "appearance"; projectId: string; icon?: string; iconColor?: string };
 
 export type CoreLinkHookOp =
   | { op: "list"; taskId?: string }
@@ -789,8 +804,17 @@ export type CoreLinkServerFrame =
  * probing and installing, and still publishes availability as the one source of
  * truth. Same rule as the bumps above: the minor moved, so a Core on 0.13.0
  * renders as "needs update" rather than one that silently drops the frame.
+ * Issue 98 adds an `appearance` op to {@link CoreLinkProjectMutation} and the
+ * `project:appearanceChanged` event kind the Core appends for it → 0.15.0
+ * (ADR 0022). A project's icon and icon colour are Core facts that `create`
+ * could set and nothing could change afterwards, so the Edit-project dialog
+ * PATCHed them at a Panel row a Core-owned project does not have, and 404'd with
+ * the rename already applied. Same rule as above: the minor moved, so a Core on
+ * 0.14.0 is "needs update" rather than one that takes the frame and drops the
+ * op. The columns (`icon`, `icon_color`) have been in the shared schema
+ * bootstrap since the fork, so no migration rides along on the Core's side.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.14.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?

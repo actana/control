@@ -18,6 +18,10 @@ const PROJECT_EVENT_KINDS = new Set([
   // (issue 22), and they change what the New session button does — a Panel
   // that missed the change would keep opening the dialog it should skip.
   "project:settingsChanged",
+  // Icon and icon colour are Core facts on the project row too (issue 98), and
+  // they are what the project reads as in the rail and on its card — a Panel
+  // that missed the change would keep drawing the old badge.
+  "project:appearanceChanged",
 ]);
 
 /**

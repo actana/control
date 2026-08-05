@@ -60,6 +60,40 @@ export const projects = sqliteTable(
   })
 );
 
+/**
+ * Panel-local presentation for a project the Panel does not own (issue 98).
+ *
+ * A Core-owned Project's row lives on its Core, and the core-link carries only
+ * Core facts (name, path, icon, pin, remembered settings). Group membership,
+ * the card image and the launch URL are the Panel operator's own filing — they
+ * mean nothing on the Core and have no frame to travel in — so they are kept
+ * here, keyed to the Core's project id, and joined onto the Core's snapshot on
+ * read. Without this table those three fields PATCHed a `projects` row that
+ * does not exist and 404'd.
+ *
+ * Keyed by `projectId` alone: ids are minted `p-<base36 ms>-<6 hex>`
+ * (shared/client-id), so two Cores colliding is not a case worth a composite
+ * key. `coreId` rides along anyway — it is what an orphan sweep needs to ask
+ * the right Core whether the project is still there.
+ *
+ * No foreign key to `projects`: the whole point is a row with no project row.
+ */
+export const projectPresentation = sqliteTable(
+  "project_presentation",
+  {
+    projectId: text("project_id").primaryKey(),
+    coreId: text("core_id").notNull(),
+    imagePath: text("image_path"),
+    groupId: text("group_id").references(() => groups.id, { onDelete: "set null" }),
+    launchUrl: text("launch_url"),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (t) => ({
+    coreIdx: index("project_presentation_core_idx").on(t.coreId),
+    groupIdx: index("project_presentation_group_idx").on(t.groupId),
+  })
+);
+
 export const tasks = sqliteTable(
   "tasks",
   {
@@ -238,6 +272,7 @@ export type Group = typeof groups.$inferSelect;
 export type NewGroup = typeof groups.$inferInsert;
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
+export type ProjectPresentation = typeof projectPresentation.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
 // User terminals live in the DB, but ship-skill install spawns need a

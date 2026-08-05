@@ -580,12 +580,14 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
         prev?.id === project.id ? { ...prev, launchUrl: normalized, updatedAt: Date.now() } : prev
       );
       try {
-        await api.updateProjectLaunchUrl(project.id, normalized);
+        // A Core-owned project has no Panel row to PATCH; its launch URL is
+        // Panel-local presentation keyed to its Core instead (issue 98).
+        await api.updateProjectLaunchUrl(project.id, normalized, projectCoreId);
       } catch {
         /* swallow */
       }
     },
-    [project]
+    [project, projectCoreId]
   );
 
   const setPtyId = useCallback((terminalId: string, ptyId: string | null, coreId?: string) => {

@@ -190,6 +190,32 @@ describe("coreMutationStore (integration against real schema)", () => {
     expect(coreMutationStore.mutateTask({ op: "delete", taskId: "t-ghost" })).toBeNull();
   });
 
+  // Issue 98: the icons were Core facts with no op to change them, so the
+  // Edit-project dialog PATCHed a Panel row a Core-owned project does not have.
+  it("round-trips an appearance patch → projectsList", () => {
+    coreMutationStore.mutateProject({
+      op: "create",
+      projectId: "p-int-6",
+      name: "MC",
+      path: userDataDir,
+      icon: "MC",
+      iconColor: "#111111",
+    });
+
+    const patched = coreMutationStore.mutateProject({
+      op: "appearance",
+      projectId: "p-int-6",
+      icon: "ZZ",
+      iconColor: "#abcdef",
+    });
+
+    expect(patched).toMatchObject({ icon: "ZZ", iconColor: "#abcdef" });
+    expect(coreQueryStore.listProjects()[0]).toMatchObject({
+      icon: "ZZ",
+      iconColor: "#abcdef",
+    });
+  });
+
   it("throws on an unknown project mutation op (stale-shape guard)", () => {
     expect(() =>
       coreMutationStore.mutateProject({

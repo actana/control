@@ -362,8 +362,10 @@ export function ProjectDialog({
     }
     setUploading(true);
     try {
-      const saved = await api.uploadProjectImage(project.id, file);
-      setImagePath(saved.imagePath);
+      // `coreId` is what lets a Core-owned project's first image create its
+      // Panel-side presentation row — it has no project row here (issue 98).
+      const savedPath = await api.uploadProjectImage(project.id, file, coreId);
+      setImagePath(savedPath);
       setImageVersion((v) => v + 1);
     } catch (e: any) {
       setError(e?.message || "Could not upload that image.");
@@ -379,7 +381,7 @@ export function ProjectDialog({
     const previous = imagePath;
     setImagePath(null);
     try {
-      await api.deleteProjectImage(project.id);
+      await api.deleteProjectImage(project.id, coreId);
     } catch (e: any) {
       // Put the preview back: the image is still there, and showing it gone
       // next to an error would tell the operator two different stories.

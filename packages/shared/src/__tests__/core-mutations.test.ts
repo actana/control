@@ -8,6 +8,7 @@ import {
   querySessions,
   renameProject,
   deleteTask,
+  updateProjectAppearance,
   updateProjectSettings,
   updateTask,
   validateProjectPath,
@@ -298,6 +299,76 @@ describe("updateProjectSettings", () => {
       updateProjectSettings(
         asWriter(db),
         { op: "settings", projectId: "missing", defaultGridView: true },
+        5,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe("updateProjectAppearance", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+    createProject(
+      asWriter(db),
+      { op: "create", projectId: "p1", name: "x", path: "/p", icon: "AB", iconColor: "#111111" },
+      "/p",
+      1,
+    );
+  });
+
+  it("writes both icon fields and survives a re-read", () => {
+    const snap = updateProjectAppearance(
+      asWriter(db),
+      { op: "appearance", projectId: "p1", icon: "ZZ", iconColor: "#abcdef" },
+      5,
+    );
+    expect(snap).toMatchObject({ icon: "ZZ", iconColor: "#abcdef", updatedAt: 5 });
+    expect(queryProjects(asReader(db))[0]).toMatchObject({
+      icon: "ZZ",
+      iconColor: "#abcdef",
+    });
+  });
+
+  it("leaves an omitted field untouched", () => {
+    const snap = updateProjectAppearance(
+      asWriter(db),
+      { op: "appearance", projectId: "p1", iconColor: "#abcdef" },
+      5,
+    );
+    expect(snap).toMatchObject({ icon: "AB", iconColor: "#abcdef" });
+  });
+
+  it("trims what it writes", () => {
+    const snap = updateProjectAppearance(
+      asWriter(db),
+      { op: "appearance", projectId: "p1", icon: "  ZZ  " },
+      5,
+    );
+    expect(snap?.icon).toBe("ZZ");
+  });
+
+  // Both columns are NOT NULL: a blank icon box must not blank a row that has
+  // one. Blank reads as "nothing to set", exactly as an omitted field does.
+  it("ignores a blank value rather than erasing the column", () => {
+    const snap = updateProjectAppearance(
+      asWriter(db),
+      { op: "appearance", projectId: "p1", icon: "   ", iconColor: "" },
+      5,
+    );
+    expect(snap).toMatchObject({ icon: "AB", iconColor: "#111111", updatedAt: 1 });
+  });
+
+  it("reads the row back for an empty patch without bumping updated_at", () => {
+    const snap = updateProjectAppearance(asWriter(db), { op: "appearance", projectId: "p1" }, 9);
+    expect(snap?.updatedAt).toBe(1);
+  });
+
+  it("returns null when the projectId is unknown", () => {
+    expect(
+      updateProjectAppearance(
+        asWriter(db),
+        { op: "appearance", projectId: "missing", icon: "ZZ" },
         5,
       ),
     ).toBeNull();

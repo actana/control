@@ -28,6 +28,7 @@ import {
   pinProject as pinProjectSql,
   querySessions as querySessionsSql,
   renameProject as renameProjectSql,
+  updateProjectAppearance as updateProjectAppearanceSql,
   updateProjectSettings as updateProjectSettingsSql,
   updateTask as updateTaskSql,
   validateProjectPath,
@@ -127,6 +128,8 @@ export const coreMutationStore: CoreMutationPort = {
         return pinProjectSql(conn, mutation.projectId, mutation.pinned, now);
       case "settings":
         return updateProjectSettingsSql(conn, mutation, now);
+      case "appearance":
+        return updateProjectAppearanceSql(conn, mutation, now);
     }
     // Runtime guard for a stale-shape frame that parsed as `projectsMutate`
     // but carried an unknown `op`. `parseCoreLinkRequestFrame` only checks

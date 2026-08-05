@@ -89,6 +89,10 @@ _Avoid_: favorite, starred, bookmarked
 The Harness a Project starts sessions with, whether to skip the New session dialog and launch it directly, and the Project's default grid view. Stored on the owning Core against the Project row and patched via the core-link `settings` mutation, so — exactly like a pin — every Panel connected to that Core sees the same choice. Not a per-operator preference and not Panel-local. See ADR 0017.
 _Avoid_: project preferences, saved agent, sticky settings
 
+**Project presentation** (Panel-scoped):
+The Panel operator's own filing over a Project that lives on a Core: its group, its card image and its launch URL. Stored on the Panel, keyed to the Core's project id, and joined onto the Core's snapshot on read — the deliberate mirror image of **Remembered session settings**. Groups exist only in the Panel's database, the card image is bytes on the Panel's disk, and the launch URL names a port only this browser can reach, so none of the three is a Core fact and two Panels on one Core are meant to disagree about them. Everything else the Edit-project dialog produces — name, icon, icon colour — is a Core fact and crosses the core-link. See ADR 0022.
+_Avoid_: project metadata, local overrides, project settings (that is the Core-scoped entry above)
+
 **CLI availability**:
 The Core's own view of which harness binaries (claude, opencode, codex, …) resolve on its PATH. The Core probes at startup, on a periodic tick, and on SIGHUP (which `actana harnesses install` sends after installing a CLI, so a Panel sees a new harness without a daemon restart), then publishes `{harnessId → status}` as part of its state stream. The Panel reads this via `useCliAvailability(coreId)`; `NewHarnessDialog` opens with the availability answer already in hand and blocks submit on `missing`. Every Core publishes the identical shape.
 _Avoid_: harness status, tool check, capability

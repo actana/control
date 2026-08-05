@@ -8,6 +8,7 @@ import {
   HTTP_NOT_FOUND,
 } from "~/shared/http-status";
 import * as projectsController from "./controllers/projects.controller";
+import * as projectPresentationController from "./controllers/project-presentation.controller";
 import * as tasksController from "./controllers/tasks.controller";
 import * as groupsController from "./controllers/groups.controller";
 import * as userTerminalsController from "./controllers/user-terminals.controller";
@@ -29,6 +30,7 @@ const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
 const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
 const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
+const PROJECT_PRESENTATION_PATH = /^\/api\/project-presentation\/([^/]+)$/;
 const PROJECT_TASKS_PATH = /^\/api\/projects\/([^/]+)\/tasks$/;
 const PROJECT_USER_TERMINALS_PATH = /^\/api\/projects\/([^/]+)\/user-terminals$/;
 const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
@@ -233,7 +235,22 @@ async function dispatch(
     const id = decode(m[1]);
     if (method === "GET") return projectsController.getImage(id);
     if (method === "PUT") return projectsController.putImage(id, request);
-    if (method === "DELETE") return projectsController.removeImage(id);
+    if (method === "DELETE") return projectsController.removeImage(id, request);
+  }
+
+  // Panel-local presentation for Core-owned projects (issue 98) — group, card
+  // image and launch URL for a project whose row lives on its Core.
+  if (pathname === "/api/project-presentation" && method === "GET") {
+    return projectPresentationController.list();
+  }
+  if (pathname === "/api/project-presentation/prune" && method === "POST") {
+    return projectPresentationController.prune(request);
+  }
+  m = pathname.match(PROJECT_PRESENTATION_PATH);
+  if (m) {
+    const id = decode(m[1]);
+    if (method === "PATCH") return projectPresentationController.upsert(id, request);
+    if (method === "DELETE") return projectPresentationController.remove(id);
   }
 
   m = pathname.match(PROJECT_TASKS_PATH);
