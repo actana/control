@@ -11,6 +11,8 @@
 // These tests drive the real policy (not a stand-in) with both sides derived
 // the way the app derives them, so changing either side alone fails here.
 
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Task } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
@@ -123,6 +125,47 @@ describe("skip permissions on a newly created session", () => {
     const flag = HARNESS_REGISTRY[agent].skipPermissionsFlag;
     const argvHasFlag = !!flag && req.command.split(" ").includes(flag);
     expect(argvHasFlag).toBe(!!req.dangerouslySkipPermissions);
+  });
+
+  // The equality above proves the two derivations agree, but it builds the
+  // descriptor side itself — it cannot see whether the real spawn sites still
+  // use the shared helper. This does: every `dangerouslySkipPermissions` a
+  // spawn descriptor is built with must come from it. Reverting any one site to
+  // the task column (which a Core never writes, so it is permanently false)
+  // rejects that spawn at the policy and starts no session — the failure
+  // Refinement 2 asked to be pinned, and the one the equality test misses.
+  it.each([
+    "src/lib/terminal-store.tsx",
+    "src/lib/session-warm-pool.ts",
+  ])("%s builds every spawn descriptor from the shared helper", (file) => {
+    const source = readFileSync(resolve(import.meta.dirname, "../../..", file), "utf8");
+    const assignments = [...source.matchAll(/dangerouslySkipPermissions:\s*([^,\n]+)/g)].map(
+      (m) => m[1]!.trim(),
+    );
+    expect(assignments.length).toBeGreaterThan(0);
+    let decisions = 0;
+    for (const rhs of assignments) {
+      // Type positions (`dangerouslySkipPermissions: boolean;`) declare the
+      // field rather than fill it.
+      if (/^(boolean|never)\b/.test(rhs)) continue;
+      // `s.dangerouslySkipPermissions` / `entry.dangerouslySkipPermissions`
+      // carry an already-derived value between store records; only the sites
+      // that *decide* the value are in scope.
+      if (/^[A-Za-z_$][\w$]*\.dangerouslySkipPermissions$/.test(rhs)) continue;
+      decisions += 1;
+      expect(rhs).toMatch(/^harnessLaunchesWithSkipPermissions\(/);
+    }
+    expect(decisions).toBeGreaterThan(0);
+  });
+
+  it("no launch path reads the task's skip-permissions column", () => {
+    // The column stays on the row and on the optimistic/draft task shapes, but
+    // nothing that builds a command or a descriptor may read it back.
+    for (const file of ["src/lib/harness-command.ts", "src/lib/terminal-store.tsx"]) {
+      const source = readFileSync(resolve(import.meta.dirname, "../../..", file), "utf8");
+      const reads = [...source.matchAll(/[\w.]*\bclaudeSkipPermissions\b(?!\s*:)/g)];
+      expect(reads.map((m) => m[0])).toEqual([]);
+    }
   });
 
   it("would reject a spawn whose argv carries a flag the request never declared", () => {

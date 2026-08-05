@@ -86,7 +86,7 @@ export const harnessSupportsSkipPermissions = (agent: Harness) =>
  * This is the single decision point on purpose. The command builder (which
  * puts the argument in the command string) and the spawn descriptor (which
  * declares the intent the policy checks that argument against) must agree, or
- * `assertSpawnAllowed` rejects the spawn and nothing starts. Both read this.
+ * `resolveSpawnPlan` rejects the spawn and nothing starts. Both read this.
  */
-export const harnessLaunchesWithSkipPermissions = (agent: Harness) =>
-  harnessSupportsSkipPermissions(agent);
+export const harnessLaunchesWithSkipPermissions = (harness: Harness) =>
+  harnessSupportsSkipPermissions(harness);

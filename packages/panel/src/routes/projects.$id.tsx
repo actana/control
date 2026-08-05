@@ -912,14 +912,22 @@ function ProjectPage() {
   }, [id, terminals]);
   // The layout the project was created with is a Core fact on the project row
   // (issue 22), so it applies on every later visit too — the one-shot onboard
-  // intent above only covers the navigation that created the project. Applied
-  // once per project, not on every render, so toggling the grid off during a
-  // visit sticks.
+  // intent above only covers the navigation that created the project.
+  //
+  // Two things this deliberately does not do. It does not persist: grid view is
+  // one global preference shared by every project, and a project asserting its
+  // own layout must not overwrite what the operator last chose everywhere else.
+  // And it only ever turns the grid *on* — a project whose default is off says
+  // nothing about the layout, so the operator's standing preference wins, which
+  // is what Panel-owned projects (whose default is off) keep doing today.
+  //
+  // Applied once per project rather than on every render, so toggling the grid
+  // off during a visit sticks.
   useEffect(() => {
     if (!project) return;
     if (gridDefaultAppliedForRef.current === id) return;
     gridDefaultAppliedForRef.current = id;
-    if (project.defaultGridView) terminals.setGridView(true);
+    if (project.defaultGridView) terminals.setGridView(true, { persist: false });
   }, [id, project, terminals]);
   useEffect(() => {
     const intent = onboardIntentRef.current;

@@ -6,7 +6,7 @@ import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shar
 import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
-import type { ProjectWithCounts } from "~/shared/projects";
+import { projectSettingsFromSnapshot, type ProjectWithCounts } from "~/shared/projects";
 
 // The fleet, as the browser sees it.
 //
@@ -353,12 +353,9 @@ function projectSnapshotAsRow(snapshot: CoreLinkProjectSnapshot): ProjectWithCou
     pinned: snapshot.pinned,
     pinnedOrder: null,
     launchUrl: null,
-    // Remembered session settings are Core facts on the project row (issue 22).
-    rememberHarnessSettings: snapshot.rememberHarnessSettings,
-    savedHarness: (snapshot.savedHarness as Harness | null) ?? null,
-    savedSkipPermissions: snapshot.savedSkipPermissions,
-    savedBareSession: snapshot.savedBareSession,
-    defaultGridView: snapshot.defaultGridView,
+    // Remembered session settings are Core facts on the project row (issue 22),
+    // so they come off the snapshot rather than defaulting to empty.
+    ...projectSettingsFromSnapshot(snapshot),
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
     taskCounts: {

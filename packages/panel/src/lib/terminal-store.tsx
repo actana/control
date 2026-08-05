@@ -24,6 +24,7 @@ import type { Harness } from "@actana/shared/domain";
 import type { Task } from "~/db/schema";
 import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
 import { projectScopeKey, scopeKeyForProject, type ScopedProject } from "./scoped-project";
+import { projectSettingsFromSnapshot } from "~/shared/projects";
 import { getDefaultModelForHarness } from "./default-model-store";
 import { peekPendingSessionModel } from "./session-model-overrides";
 
@@ -112,7 +113,13 @@ type Ctx = {
   runIn: (taskId: string, command: string) => Promise<void>;
   /** Whether the full-width "all sessions" grid view is active. */
   gridView: boolean;
-  setGridView: (value: boolean) => void;
+  /**
+   * Set the grid view. It is one global preference, persisted across reloads —
+   * so `persist: false` is for callers applying a *contextual* layout (a
+   * project's own default grid view, issue 22) that must not overwrite what the
+   * operator last chose for every other project.
+   */
+  setGridView: (value: boolean, opts?: { persist?: boolean }) => void;
   /** Flip the grid view on/off. */
   toggleGridView: () => void;
   /** Latest request to spotlight a session cell in the grid (e.g. from a
@@ -250,11 +257,7 @@ function remoteScopedProjectFromSnapshot(
     launchUrl: null,
     // Remembered session settings are Core facts on the project row (issue 22),
     // so they come off the snapshot rather than defaulting to empty.
-    rememberHarnessSettings: snap.rememberHarnessSettings,
-    savedHarness: (snap.savedHarness as Harness | null) ?? null,
-    savedSkipPermissions: snap.savedSkipPermissions,
-    savedBareSession: snap.savedBareSession,
-    defaultGridView: snap.defaultGridView,
+    ...projectSettingsFromSnapshot(snap),
     createdAt: now,
     updatedAt: now,
   };
@@ -516,8 +519,9 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
   const visibleScopeByProjectRef = useRef(visibleScopeByProject);
   visibleScopeByProjectRef.current = visibleScopeByProject;
 
-  const setGridView = useCallback((value: boolean) => {
+  const setGridView = useCallback((value: boolean, opts?: { persist?: boolean }) => {
     setGridViewState(value);
+    if (opts?.persist === false) return;
     if (typeof window === "undefined") return;
     try {
       window.localStorage.setItem(GRID_VIEW_KEY, value ? "1" : "0");

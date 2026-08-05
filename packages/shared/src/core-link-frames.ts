@@ -590,10 +590,11 @@ export type CoreLinkServerFrame =
  * remembered-settings fields on its `create` variant, those fields on
  * {@link CoreLinkProjectSnapshot}, and the `project:settingsChanged` event
  * kind → 0.10.0. Every column they land in already exists in the shared
- * schema bootstrap, so no migration rides along. A Core that has not been
- * upgraded rejects the unknown `settings` op at its mutation store's runtime
- * `op` check, which the Panel surfaces as the failed-write toast its
- * optimistic patch already rolls back to.
+ * schema bootstrap, so no migration rides along. Unlike the additive bumps
+ * above, there is no partial-compatibility story to describe here and none is
+ * wanted: the minor moved, so a Core still speaking 0.9.0 is incompatible by
+ * the major.minor rule below and renders as "needs update" (ADR 0005). It
+ * never reaches the mutation store's runtime `op` check.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.10.0";
 

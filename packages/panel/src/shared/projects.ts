@@ -1,3 +1,5 @@
+import type { CoreLinkProjectSnapshot } from "@actana/shared/core-link-frames";
+import type { Harness } from "@actana/shared/domain";
 import type { Project, TaskStatus } from "~/db/schema";
 
 export type ProjectWithCounts = Project & {
@@ -17,6 +19,36 @@ export type ProjectWithCounts = Project & {
    */
   coreId?: string | null;
 };
+
+/**
+ * The remembered session settings a Core's project snapshot carries (issue 22),
+ * in the Panel row's shape. Three separate snapshot -> row mappers need exactly
+ * this slice — `queries/index.ts`, `lib/use-fleet.ts` and `lib/terminal-store.tsx`
+ * — so it lives here rather than being retyped in each: a sixth field is then
+ * one edit, not three, and the three can't drift apart.
+ *
+ * `savedHarness` is a plain string on the wire (a Core may name a Harness this
+ * Panel does not render); the cast lands it in the row's own union and consumers
+ * already fall back when the id is unknown.
+ */
+export function projectSettingsFromSnapshot(
+  snapshot: CoreLinkProjectSnapshot,
+): Pick<
+  Project,
+  | "rememberHarnessSettings"
+  | "savedHarness"
+  | "savedSkipPermissions"
+  | "savedBareSession"
+  | "defaultGridView"
+> {
+  return {
+    rememberHarnessSettings: snapshot.rememberHarnessSettings,
+    savedHarness: (snapshot.savedHarness as Harness | null) ?? null,
+    savedSkipPermissions: snapshot.savedSkipPermissions,
+    savedBareSession: snapshot.savedBareSession,
+    defaultGridView: snapshot.defaultGridView,
+  };
+}
 
 export type ProjectPathStatus =
   | { ok: true; path: string }
