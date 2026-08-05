@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";
 import {
   queryProjects,
+  queryTask,
   queryTasks,
   type CoreQuerySqlite,
 } from "@actana/shared/core-query";
@@ -113,6 +114,16 @@ export const coreQueryStore: CoreQueryPort = {
     } catch (err) {
       log.warn("core-query.list-tasks-failed", { error: String(err) });
       return [];
+    }
+  },
+  getTask(taskId: string): CoreLinkTaskSnapshot | null {
+    const conn = ensureConnection();
+    if (!conn) return null;
+    try {
+      return queryTask(conn as unknown as CoreQuerySqlite, taskId);
+    } catch (err) {
+      log.warn("core-query.get-task-failed", { error: String(err) });
+      return null;
     }
   },
 };

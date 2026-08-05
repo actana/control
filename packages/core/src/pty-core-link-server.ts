@@ -33,6 +33,7 @@ import {
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
+import type { TaskStatus } from "@actana/shared/domain";
 import type { PtyCore } from "./pty-manager";
 
 /**
@@ -77,6 +78,14 @@ export interface CoreQueryPort {
    * Panel caches nothing, so archived rows never cross the core-link.
    */
   listTasks(projectId?: string): CoreLinkTaskSnapshot[];
+  /**
+   * One task by id, or `null` when this Core has no such row. Unlike
+   * `listTasks` an archived row still answers — a caller asking by id wants
+   * that row's facts, not a browse of active work. The server reads it to
+   * learn a task's status *before* a mutation lands, which is what tells a
+   * genuine finish from a re-patch of an already-finished Session (issue 20).
+   */
+  getTask(taskId: string): CoreLinkTaskSnapshot | null;
 }
 
 /**
@@ -522,18 +531,14 @@ export class PtyCoreLinkServer {
   }
 
   /**
-   * The status a task carried before a mutation is applied, or `null` when it
-   * doesn't matter. Only a patch that could produce a finish pays for the
-   * read; every other mutation skips it, since nothing else consults the
-   * prior status. `listSessions` is the mutation port's own view of every
-   * active row, so this works on any Core that can write at all.
+   * The status a task carried before a mutation is applied, or `null` when
+   * there is nothing to read — an unknown row, a Core with no query port, or
+   * a mutation that could not produce a finish. Only a patch that could pays
+   * for the read; nothing else consults the prior status.
    */
   private priorTaskStatus(mutation: CoreLinkTaskMutation): string | null {
     if (mutation.op !== "update" || mutation.status !== FINISHED_TASK_STATUS) return null;
-    if (!this.mutationPort) return null;
-    return (
-      this.mutationPort.listSessions().find((s) => s.taskId === mutation.taskId)?.status ?? null
-    );
+    return this.queryPort?.getTask(mutation.taskId)?.status ?? null;
   }
 
   /**
@@ -916,11 +921,13 @@ class ActiveConnection {
 
 /**
  * The status a Session carries once its Harness has exited cleanly. The Panel
- * writes it on PTY exit (`terminalExitTaskStatus`) and the Panel's own task
- * service uses the same word; it is the one status this server reads rather
- * than passing through, because it is what raises a finish notification.
+ * writes it on PTY exit (`terminalExitTaskStatus`); it is the one status this
+ * server reads rather than passes through, because it is what raises a finish
+ * notification. Typed against the shared vocabulary — type-only, so the Core
+ * bundle gains no runtime dependency — so it cannot drift from the word the
+ * Panel writes.
  */
-const FINISHED_TASK_STATUS = "finished";
+const FINISHED_TASK_STATUS: TaskStatus = "finished";
 
 /**
  * Detect an update mutation whose only patched column is `icon` (issue 09).

@@ -909,11 +909,16 @@ export function TerminalPane({
             // emit `session:finished`, which is what raises the notification
             // (ADR 0008), so a failure here is not cosmetic: the card would go
             // on claiming the Session is running. Say so.
-            await mutateTaskForCore(descriptor.coreId, {
+            const patched = await mutateTaskForCore(descriptor.coreId, {
               op: "update",
               taskId: descriptor.taskId,
               status,
             });
+            // A null snapshot is the mutation finding no such row — the same
+            // lie by a quieter route, so it gets the same toast.
+            if (!patched) {
+              toast.error("This session is gone from its Core — its exit status was not recorded");
+            }
           } catch (e: unknown) {
             toast.error(
               e instanceof Error ? e.message : "Could not record the session's exit status",
@@ -1042,18 +1047,17 @@ export function TerminalPane({
                   taskId: descriptor.taskId,
                   status: "running",
                 });
-                if (submittedPrompt) {
-                  // The prompt patches no column of its own: it only asks the
-                  // Panel's title generator to name the session, and that
-                  // generator reads and writes the Panel's own database
-                  // (`generateTitleForTask` returns early on a task it cannot
-                  // find). So it goes on the arm where it can land — for a
-                  // Core-owned row it was always a no-op.
-                  if (!descriptor.coreId) {
-                    await api.updateTaskStatus(descriptor.taskId, {
-                      prompt: submittedPrompt,
-                    });
-                  }
+                // The prompt patches no column of its own: it only asks the
+                // Panel's title generator to name the session, and that
+                // generator reads and writes the Panel's own database
+                // (`generateTitleForTask` returns early on a task it cannot
+                // find). So it goes on the arm where it can land — for a
+                // Core-owned row it was always a no-op, and the flag stays
+                // false there because nothing was posted.
+                if (submittedPrompt && !descriptor.coreId) {
+                  await api.updateTaskStatus(descriptor.taskId, {
+                    prompt: submittedPrompt,
+                  });
                   promptTitlePosted = true;
                 }
                 await Promise.all([

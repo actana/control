@@ -184,6 +184,17 @@ describe("session:finished is emitted by the Core (issue 20)", () => {
     expect(finishEvents()).toHaveLength(1);
   });
 
+  it("does not emit a second finish for an archived task either", async () => {
+    // An archived row is invisible to `listTasks` / `listSessions`, so a prior
+    // status read through either would come back empty and let the re-patch
+    // through. The row still exists, and it is still finished.
+    await patchStatus("t1", "finished", "r1");
+    coreMutationStore.mutateTask({ op: "update", taskId: "t1", archived: true });
+    await patchStatus("t1", "finished", "r2");
+
+    expect(finishEvents()).toHaveLength(1);
+  });
+
   it("emits nothing for a status change that is not a finish", async () => {
     await patchStatus("t1", "needs-input", "r1");
 

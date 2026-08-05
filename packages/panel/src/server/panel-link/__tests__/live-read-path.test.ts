@@ -260,6 +260,7 @@ function queryPort(): CoreQueryPort {
   return {
     listProjects: () => [PROJECT],
     listTasks: (projectId) => (projectId && projectId !== PROJECT.projectId ? [] : [TASK]),
+    getTask: (taskId) => (taskId === TASK.taskId ? TASK : null),
   };
 }
 
