@@ -7,7 +7,7 @@ import { useResizablePanel } from "~/lib/use-resizable-panel";
 import { useHotkey } from "~/lib/use-hotkey";
 import { useFocusWithin } from "~/lib/use-focus-within";
 import { isUserTerminalXtermFocused } from "~/lib/terminal-pane-helpers";
-import { api } from "~/lib/api";
+import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import { useTerminals } from "~/lib/terminal-store";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import { queryKeys } from "~/queries";
@@ -81,7 +81,16 @@ export function TerminalPanel({
     }
     setDeleting(true);
     try {
-      await Promise.all([onClose(active.taskId), api.deleteTask(active.taskId)]);
+      // Tear the terminal down first, then delete — not both at once, the way
+      // this ran while the delete could only 404 for a Core-owned row. Both
+      // halves now land on the same Core, and the row's delete cascades the
+      // terminal_logs a still-running PTY is writing to.
+      await onClose(active.taskId);
+      // The row lives in the owning Core's database (ADR 0004/0005), so the
+      // delete rides the panel link to that Core — the Panel's own endpoint
+      // has no such row and would 404. `active.coreId` is null for a
+      // Panel-owned row, which routes back to that endpoint.
+      await mutateTaskForCore(active.coreId, { op: "delete", taskId: active.taskId });
       await Promise.all([
         queryClient.invalidateQueries({
           queryKey: queryKeys.tasks(active.project.id),

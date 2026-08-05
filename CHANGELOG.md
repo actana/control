@@ -4,10 +4,17 @@ All notable changes to this project, newest first.
 
 ## 0.1.0 — unreleased
 
-The core-link protocol moves to 0.10.0 so a project's remembered session
-settings can cross the wire. The Panel and its Cores are version-locked, so
-every Core needs updating alongside the Panel — an older one renders as "needs
-update" rather than degrading.
+The core-link protocol moves to 0.11.0 so a project's remembered session
+settings can cross the wire, and so a Session that lives on a Core can be
+deleted at all. The Panel and its Cores are version-locked, so every Core needs
+updating alongside the Panel — an older one renders as "needs update" rather
+than degrading.
+
+Deleting a Session on a Core used to fail. The task-mutation frame carried no
+delete operation, so every delete fell through to the Panel's own endpoint,
+which cannot see a row that lives in the Core's database. Deleting from the
+Session card menu and from the open session's terminal panel both work now, on
+every Core.
 
 Two New session dialog changes come with it. "Remember settings for this
 project" now persists on the Core that owns the project, so it survives a

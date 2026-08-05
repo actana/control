@@ -299,6 +299,10 @@ function mutationPort(): CoreMutationPort {
       }
       const existing = tasks.get(mutation.taskId);
       if (!existing) return null;
+      if (mutation.op === "delete") {
+        tasks.delete(mutation.taskId);
+        return existing;
+      }
       const next: CoreLinkTaskSnapshot = {
         ...existing,
         ...(mutation.title === undefined ? {} : { title: mutation.title }),
@@ -536,6 +540,48 @@ describe("writing to a Core from the browser", () => {
       mutation: { op: "update", taskId: task.taskId, title: "restock" },
     });
     expect(reIconed.task).toMatchObject({ icon: "rocket" });
+  });
+
+  it("deletes a session on the Core and tells a watching tab it is gone", async () => {
+    const { coreId } = await pair();
+    const tab = await openTab();
+    tab.subscribe(coreId, 0);
+
+    const task = (
+      await tab.ask(coreId, {
+        type: "tasksMutate",
+        mutation: { op: "create", projectId: "proj_1", title: "restock", agent: "claude-code" },
+      })
+    ).task as CoreLinkTaskSnapshot;
+
+    const removed = await tab.ask(coreId, {
+      type: "tasksMutate",
+      mutation: { op: "delete", taskId: task.taskId },
+    });
+
+    // The Core answers with the row it removed, and it is out of the sessions
+    // list the next read returns.
+    expect(removed).toMatchObject({
+      type: "tasksMutateResult",
+      task: expect.objectContaining({ taskId: task.taskId, title: "restock" }),
+    });
+    expect((await tab.ask(coreId, { type: "sessionsList" })).sessions).toEqual([]);
+
+    await vi.waitFor(() => {
+      expect(tab.events(coreId).map((e) => e.kind)).toContain("task:deleted");
+    }, 5_000);
+  });
+
+  it("reports a delete of a session the Core does not have as a null row", async () => {
+    const { coreId } = await pair();
+    const tab = await openTab();
+
+    const answer = await tab.ask(coreId, {
+      type: "tasksMutate",
+      mutation: { op: "delete", taskId: "task_gone" },
+    });
+
+    expect(answer).toMatchObject({ type: "tasksMutateResult", task: null });
   });
 
   it("tells a watching tab which kind of change happened", async () => {

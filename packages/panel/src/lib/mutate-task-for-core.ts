@@ -15,12 +15,14 @@ import { api } from "~/lib/api";
  *
  * Throws on transport failure or a Core-side error frame so the caller can
  * surface it in the picker/dialog. Returns `null` when the mutation targeted a
- * missing row.
+ * missing row — and, on a Panel-owned `delete`, always: that endpoint answers
+ * with no body, so a deleted row and a missing one look the same from here.
  *
  * A null `coreId` names a row in the Panel's own database — the last rows not
  * owned by a Core — and is written over the Panel's HTTP API instead. That
- * arm disappears with those rows. It understands `title`, `pinned`, and
- * `archived`; anything else on the patch is dropped.
+ * arm disappears with those rows. It understands `delete`, plus `title`,
+ * `pinned`, and `archived` on an `update`; anything else on the patch is
+ * dropped.
  */
 export async function mutateTaskForCore(
   coreId: string | null | undefined,
@@ -35,6 +37,14 @@ export async function mutateTaskForCore(
 async function mutatePanelLocalTask(
   mutation: CoreLinkTaskMutation,
 ): Promise<CoreLinkTaskSnapshot | null> {
+  if (mutation.op === "delete") {
+    // The DELETE route answers 204 with no body, so there is no row to echo
+    // back the way the Core's delete does. Every delete caller awaits the
+    // promise and ignores the value, so null is the honest answer rather than
+    // a fabricated snapshot or an extra GET to fetch a row about to vanish.
+    await api.deleteTask(mutation.taskId);
+    return null;
+  }
   if (mutation.op !== "update") {
     throw new Error(`cannot ${mutation.op} a task that no Core owns`);
   }

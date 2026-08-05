@@ -158,6 +158,38 @@ describe("coreMutationStore (integration against real schema)", () => {
     expect(idle?.ptyId).toBeNull();
   });
 
+  it("delete removes the task from tasksList and hands back what it removed", () => {
+    coreMutationStore.mutateProject({
+      op: "create",
+      projectId: "p-int-5",
+      name: "delete-src",
+      path: userDataDir,
+    });
+    coreMutationStore.mutateTask({
+      op: "create",
+      taskId: "t-doomed",
+      projectId: "p-int-5",
+      title: "doomed",
+      agent: "claude-code",
+    });
+    coreMutationStore.mutateTask({
+      op: "create",
+      taskId: "t-spared",
+      projectId: "p-int-5",
+      title: "spared",
+      agent: "claude-code",
+    });
+
+    const removed = coreMutationStore.mutateTask({ op: "delete", taskId: "t-doomed" });
+    expect(removed?.taskId).toBe("t-doomed");
+    expect(removed?.title).toBe("doomed");
+    expect(coreQueryStore.listTasks("p-int-5").map((t) => t.taskId)).toEqual(["t-spared"]);
+  });
+
+  it("reports a delete of a row that isn't there as null, not an exception", () => {
+    expect(coreMutationStore.mutateTask({ op: "delete", taskId: "t-ghost" })).toBeNull();
+  });
+
   it("throws on an unknown project mutation op (stale-shape guard)", () => {
     expect(() =>
       coreMutationStore.mutateProject({

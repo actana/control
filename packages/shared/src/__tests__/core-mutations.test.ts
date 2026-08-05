@@ -7,6 +7,7 @@ import {
   pinProject,
   querySessions,
   renameProject,
+  deleteTask,
   updateProjectSettings,
   updateTask,
   validateProjectPath,
@@ -392,7 +393,7 @@ describe("archiveProject", () => {
   });
 });
 
-// ─── createTask / updateTask ──────────────────────────────────────────────
+// ─── createTask / updateTask / deleteTask ─────────────────────────────────
 
 describe("createTask", () => {
   let db: Database.Database;
@@ -542,6 +543,49 @@ describe("updateTask", () => {
     updateTask(asWriter(db), { op: "update", taskId: "t1", icon: "wrench" }, 5);
     updateTask(asWriter(db), { op: "update", taskId: "t1", title: "renamed" }, 6);
     expect(queryTasks(asReader(db))[0]!.icon).toBe("wrench");
+  });
+});
+
+describe("deleteTask", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+    createProject(
+      asWriter(db),
+      { op: "create", projectId: "p1", name: "x", path: "/p" },
+      "/p",
+      1,
+    );
+    createTask(
+      asWriter(db),
+      { op: "create", taskId: "t1", projectId: "p1", title: "orig", agent: "claude-code" },
+      1,
+    );
+    createTask(
+      asWriter(db),
+      { op: "create", taskId: "t2", projectId: "p1", title: "keep", agent: "claude-code" },
+      1,
+    );
+  });
+
+  it("removes the row and returns the pre-delete snapshot", () => {
+    const snap = deleteTask(asWriter(db), "t1");
+    expect(snap?.taskId).toBe("t1");
+    expect(snap?.title).toBe("orig");
+    expect(queryTasks(asReader(db)).map((t) => t.taskId)).toEqual(["t2"]);
+  });
+
+  it("deletes an archived row too — that is the only way one leaves the DB", () => {
+    updateTask(asWriter(db), { op: "update", taskId: "t1", archived: true }, 5);
+    expect(deleteTask(asWriter(db), "t1")?.archived).toBe(true);
+    expect(
+      db.prepare(`SELECT COUNT(*) AS n FROM tasks WHERE id = 't1'`).get(),
+    ).toEqual({ n: 0 });
+  });
+
+  it("returns null when the taskId is unknown, leaving every row in place", () => {
+    expect(deleteTask(asWriter(db), "missing")).toBeNull();
+    expect(queryTasks(asReader(db))).toHaveLength(2);
   });
 });
 

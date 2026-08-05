@@ -148,9 +148,10 @@ export type CoreLinkEvent = {
 export type CoreLinkTaskStatus = string;
 
 /**
- * A task mutation — either `create` (a new task under an existing project) or
- * `update` (patch an existing task row). The discriminant lets the Core
- * dispatch to `createTask` / `updateTask` without a nullable-id sniff.
+ * A task mutation — `create` (a new task under an existing project), `update`
+ * (patch an existing task row), or `delete` (remove one). The discriminant lets
+ * the Core dispatch to `createTask` / `updateTask` / `deleteTask` without a
+ * nullable-id sniff.
  *
  * On `create`, `projectId`, `title`, and `agent` are required — everything
  * else defaults on the Core (status → `ready`, pinned/archived → false).
@@ -159,6 +160,11 @@ export type CoreLinkTaskStatus = string;
  * On `update`, `taskId` is required and identifies the row; any of
  * `status`/`title`/`pinned`/`archived` may be set. Fields omitted are left
  * untouched (partial patch, mirroring the Panel server's PATCH shape).
+ *
+ * On `delete`, `taskId` is required and the row is removed outright — the
+ * Core's SQLite cascades the rows hanging off it, mirroring the Panel
+ * server's own DELETE. A missing row comes back as `task: null`, the same way
+ * a missing row on `update` does; it is not an error frame.
  */
 export type CoreLinkTaskMutation =
   | {
@@ -185,6 +191,10 @@ export type CoreLinkTaskMutation =
        * routes through this frame.
        */
       icon?: string | null;
+    }
+  | {
+      op: "delete";
+      taskId: string;
     };
 
 /**
@@ -595,8 +605,14 @@ export type CoreLinkServerFrame =
  * wanted: the minor moved, so a Core still speaking 0.9.0 is incompatible by
  * the major.minor rule below and renders as "needs update" (ADR 0005). It
  * never reaches the mutation store's runtime `op` check.
+ * Issue 63 adds a `delete` op to {@link CoreLinkTaskMutation} and the
+ * `task:deleted` event kind the Core appends for it → 0.11.0. Deleting a
+ * Core-owned Session had no operation to carry, so every delete call site fell
+ * through to the Panel's own endpoint and 404'd. Same rule as above: the minor
+ * moved, so a Core on 0.10.0 is "needs update" rather than a Core that accepts
+ * the frame and silently drops the op.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.10.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.11.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
