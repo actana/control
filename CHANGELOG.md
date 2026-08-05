@@ -4,11 +4,19 @@ All notable changes to this project, newest first.
 
 ## 0.1.0 — unreleased
 
-The core-link protocol moves to 0.11.0 so a project's remembered session
-settings can cross the wire, and so a Session that lives on a Core can be
-deleted at all. The Panel and its Cores are version-locked, so every Core needs
-updating alongside the Panel — an older one renders as "needs update" rather
-than degrading.
+The core-link protocol moves to 0.12.0 so a project's remembered session
+settings can cross the wire, so a Session that lives on a Core can be deleted at
+all, and so archived Sessions on a Core can be listed and restored. The Panel
+and its Cores are version-locked, so every Core needs updating alongside the
+Panel — an older one renders as "needs update" rather than degrading.
+
+Archiving a Session on a Core used to be a one-way hide. The row was archived
+correctly and nothing was lost, but archived rows never crossed the link, so the
+Archived tab never appeared for that project and there was nothing to restore
+from. Archived Sessions on a Core now appear under Archived with a count on the
+tab, Restore returns one to the active list, and "Delete all archived" works.
+They travel on a read path of their own, used only while that view is open — the
+Fleet and active lists still carry none of them.
 
 Deleting a Session on a Core used to fail. The task-mutation frame carried no
 delete operation, so every delete fell through to the Panel's own endpoint,

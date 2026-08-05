@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import {
+  countArchivedTasks,
+  queryArchivedTasks,
   queryProjects,
   queryTasks,
   type CoreQuerySqlite,
@@ -234,5 +236,79 @@ describe("queryTasks", () => {
   it("returns empty when the tasks table does not exist", () => {
     const db2 = new Database(":memory:");
     expect(queryTasks(asQuery(db2))).toEqual([]);
+  });
+});
+
+// The Archived view's own read path (ADR 0019). The point of it being a
+// separate helper rather than a flag on queryTasks is that the two lists
+// cannot bleed into each other, so that is what these assert.
+describe("queryArchivedTasks", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+  });
+
+  it("returns the archived rows, and only those", () => {
+    insertTask(db, { taskId: "live", projectId: "p1", archived: false });
+    insertTask(db, { taskId: "old", projectId: "p1", archived: true });
+    const tasks = queryArchivedTasks(asQuery(db));
+    expect(tasks.map((t) => t.taskId)).toEqual(["old"]);
+    expect(tasks[0]!.archived).toBe(true);
+  });
+
+  it("is the exact complement of queryTasks — no row appears in both, none is lost", () => {
+    insertTask(db, { taskId: "a", projectId: "p1", archived: false });
+    insertTask(db, { taskId: "b", projectId: "p1", archived: true });
+    insertTask(db, { taskId: "c", projectId: "p1", archived: false });
+    const active = queryTasks(asQuery(db)).map((t) => t.taskId);
+    const archived = queryArchivedTasks(asQuery(db)).map((t) => t.taskId);
+    expect(active.filter((id) => archived.includes(id))).toEqual([]);
+    expect([...active, ...archived].sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("filters by projectId when given", () => {
+    insertTask(db, { taskId: "t1", projectId: "p1", archived: true });
+    insertTask(db, { taskId: "t2", projectId: "p2", archived: true });
+    expect(queryArchivedTasks(asQuery(db), "p1").map((t) => t.taskId)).toEqual(["t1"]);
+  });
+
+  it("orders by updated_at descending, like the active list", () => {
+    insertTask(db, { taskId: "old", projectId: "p1", archived: true, updatedAt: 100 });
+    insertTask(db, { taskId: "new", projectId: "p1", archived: true, updatedAt: 999 });
+    insertTask(db, { taskId: "mid", projectId: "p1", archived: true, updatedAt: 500 });
+    expect(queryArchivedTasks(asQuery(db)).map((t) => t.taskId)).toEqual(["new", "mid", "old"]);
+  });
+
+  it("returns empty when the tasks table does not exist", () => {
+    expect(queryArchivedTasks(asQuery(new Database(":memory:")))).toEqual([]);
+  });
+});
+
+describe("countArchivedTasks", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+  });
+
+  it("counts archived rows and ignores active ones", () => {
+    insertTask(db, { taskId: "live", projectId: "p1", archived: false });
+    insertTask(db, { taskId: "o1", projectId: "p1", archived: true });
+    insertTask(db, { taskId: "o2", projectId: "p1", archived: true });
+    expect(countArchivedTasks(asQuery(db))).toBe(2);
+  });
+
+  it("scopes to one project when given", () => {
+    insertTask(db, { taskId: "o1", projectId: "p1", archived: true });
+    insertTask(db, { taskId: "o2", projectId: "p2", archived: true });
+    expect(countArchivedTasks(asQuery(db), "p1")).toBe(1);
+  });
+
+  it("is 0 when nothing is archived", () => {
+    insertTask(db, { taskId: "live", projectId: "p1", archived: false });
+    expect(countArchivedTasks(asQuery(db))).toBe(0);
+  });
+
+  it("is 0 when the tasks table does not exist", () => {
+    expect(countArchivedTasks(asQuery(new Database(":memory:")))).toBe(0);
   });
 });

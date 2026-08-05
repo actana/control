@@ -90,6 +90,8 @@ import {
   queryKeys,
   remoteTaskFromSnapshot,
   tasksCacheKey,
+  useArchivedTasks,
+  useCoreArchivedTaskCount,
   useHookToken,
   useGroups,
   useProject,
@@ -263,7 +265,6 @@ function ProjectPage() {
   // fresh says nothing about them. Core events over the panel link do.
   useCoreLiveQueries(coreId, id);
   const tasks = tasksQuery.data ?? [];
-  const hasArchivedTasks = tasks.some((t) => t.archived);
   // Live pinned-session ids for the grid's "Pinned" filter — derived from the
   // task query (not the store's open-time snapshot) so a pin toggle reflects
   // immediately. Memoized so SessionGrid's filter doesn't churn every render.
@@ -283,6 +284,18 @@ function ProjectPage() {
   const [sessionView, setSessionView] = useState<SessionView>("active");
   const showArchived = sessionView === "archived";
   const showPinned = sessionView === "pinned";
+  // Where the Archived view's contents come from differs by owner (ADR 0019).
+  // A Panel-owned project's task list already carries its archived rows, so
+  // both the rows and the count are a filter away. A Core's list carries none
+  // of them: the count rides the `tasksList` answer as a scalar, and the rows
+  // arrive over their own frame — fetched only once this view is open.
+  const archivedTasksQuery = useArchivedTasks(id, { coreId, enabled: showArchived });
+  const coreArchivedCount = useCoreArchivedTaskCount(id, coreId);
+  const archivedTasks = coreId ? (archivedTasksQuery.data ?? []) : tasks.filter((t) => t.archived);
+  // Count, not `archivedTasks.length` — for a Core the rows are absent until
+  // the view opens, and the tab has to be gated and labelled before that.
+  const archivedCount = coreId ? coreArchivedCount : archivedTasks.length;
+  const hasArchivedTasks = archivedCount > 0;
   const [pinningTaskIds, setPinningTaskIds] = useState<Set<string>>(() => new Set());
   const pinRequestSeqRef = useRef<Record<string, number>>({});
   // Stable callback identities for the memoized TaskCard: the real handlers are
@@ -636,6 +649,18 @@ function ProjectPage() {
       }),
     [queryClient, id, coreId]
   );
+  // The archived list lives in its own bucket outside the project key (ADR
+  // 0019), so nothing else's invalidation reaches it — anything that can move
+  // a row across the archived line has to say so.
+  const invalidateArchivedTasks = useCallback(
+    () =>
+      coreId
+        ? queryClient.invalidateQueries({
+            queryKey: queryKeys.coreArchivedTasks(id, coreId),
+          })
+        : Promise.resolve(),
+    [queryClient, id, coreId],
+  );
   const invalidateProjects = useCallback(
     () => queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
     [queryClient]
@@ -656,8 +681,13 @@ function ProjectPage() {
     [invalidateGroups, queryClient],
   );
   const refresh = useCallback(async () => {
-    await Promise.all([invalidateProject(), invalidateTasks(), invalidateProjects()]);
-  }, [invalidateProject, invalidateTasks, invalidateProjects]);
+    await Promise.all([
+      invalidateProject(),
+      invalidateTasks(),
+      invalidateArchivedTasks(),
+      invalidateProjects(),
+    ]);
+  }, [invalidateProject, invalidateTasks, invalidateArchivedTasks, invalidateProjects]);
 
   const toggleProjectPin = useCallback(async () => {
     if (!project || pinning) return;
@@ -1286,7 +1316,6 @@ function ProjectPage() {
 
   const activeTasks = tasks.filter((t) => !t.archived);
   const pinnedTasks = activeTasks.filter((t) => t.pinned);
-  const archivedTasks = tasks.filter((t) => t.archived);
   const visibleTasks = showArchived ? archivedTasks : showPinned ? pinnedTasks : activeTasks;
   // Active list peels pinned into a top "Pinned" section; Pinned tab keeps
   // normal status grouping (already all-pinned). Archived folds every live
@@ -1482,21 +1511,14 @@ function ProjectPage() {
 
   // Archive one or more active sessions: kill each tty, flip the archived flag,
   // and repoint the terminal panel if the active session is being archived.
-  // No confirmation — archiving is reversible via Restore.
-  //
-  // That last sentence holds for a Panel-owned row only. On a Core-owned
-  // project the flag flips in the Core's SQLite (the data is safe), but
-  // `queryTasks` selects `WHERE archived = 0` — "archived rows never cross the
-  // core-link" (packages/shared/src/core-query.ts) — so the row simply stops
-  // being listed: it never appears under Archived and there is nothing to
-  // Restore or Delete-all-archived from. Archive is a one-way hide there until
-  // the core-link can list archived rows (e.g. an `includeArchived` on
-  // `tasksList`); issue #18.
+  // No confirmation — archiving is reversible via Restore, for a Core-owned
+  // row as much as a Panel-owned one: the Core lists its archived rows over
+  // their own frame (ADR 0019), so the row reappears under Archived.
   const archiveTasks = (targets: Task[]) => {
     if (!project || targets.length === 0) return;
     const ids = new Set(targets.map((t) => t.id));
 
-    const tasksKey = queryKeys.tasks(project.id);
+    const tasksKey = tasksCacheKey(project.id, coreId);
     void queryClient.cancelQueries({ queryKey: tasksKey });
     const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
 
@@ -1513,7 +1535,16 @@ function ProjectPage() {
       else terminals.deselect(selectedScopeKey);
     }
 
-    setTasksArchivedInCache(queryClient, project.id, ids, true);
+    setTasksArchivedInCache(queryClient, project.id, ids, true, coreId);
+    // Bump the count the Archived tab is gated on, so the tab appears with the
+    // row rather than one refetch later — the mirror of what restore does when
+    // it takes a row back out (ADR 0019). A Panel-owned project counts its own
+    // rows and needs no bucket.
+    const countKey = coreId ? queryKeys.coreArchivedTaskCount(project.id, coreId) : null;
+    const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
+    if (countKey) {
+      queryClient.setQueryData<number>(countKey, (current) => (current ?? 0) + ids.size);
+    }
 
     void (async () => {
       try {
@@ -1537,7 +1568,10 @@ function ProjectPage() {
         void refresh();
       } catch (e: unknown) {
         if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks);
+          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        }
+        if (countKey && previousCount !== undefined) {
+          queryClient.setQueryData<number>(countKey, previousCount);
         }
         toast.error(e instanceof Error ? e.message : "Could not archive session");
       }
@@ -1578,20 +1612,38 @@ function ProjectPage() {
     }
   };
 
-  // Un-archive one session. Routed by owner like every other task mutation,
-  // but reachable today only for a Panel-owned row: the Archived list is built
-  // from `tasks`, and a Core never sends an archived row over the link (see
-  // archiveTasks above). The routing is here so restore works the moment the
-  // core-link starts listing them — not because a Core row can reach it now.
+  // Un-archive one session, routed by owner like every other task mutation.
+  //
+  // The two owners keep their rows in different buckets, so the optimistic
+  // move differs. A Panel-owned row is already in the task list with
+  // `archived: true` — clearing the flag there moves it between the two
+  // views. A Core's archived rows live in their own list (ADR 0019), so the
+  // row leaves that one and the count that gates the tab drops with it; the
+  // refetch behind `refresh()` is what puts it back in the active list.
   const restoreSession = (taskId: string) => {
     if (!project) return;
-    const task = tasks.find((t) => t.id === taskId);
+    const task = archivedTasks.find((t) => t.id === taskId) ?? tasks.find((t) => t.id === taskId);
     if (!task) return;
 
-    const tasksKey = queryKeys.tasks(project.id);
+    const tasksKey = tasksCacheKey(project.id, coreId);
     void queryClient.cancelQueries({ queryKey: tasksKey });
     const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
-    setTaskArchivedInCache(queryClient, project.id, taskId, false);
+    const archivedKey = coreId ? queryKeys.coreArchivedTasks(project.id, coreId) : null;
+    const previousArchived = archivedKey
+      ? queryClient.getQueryData<Task[]>(archivedKey)
+      : undefined;
+    const countKey = coreId ? queryKeys.coreArchivedTaskCount(project.id, coreId) : null;
+    const previousCount = countKey ? queryClient.getQueryData<number>(countKey) : undefined;
+
+    if (archivedKey && countKey) {
+      void queryClient.cancelQueries({ queryKey: archivedKey });
+      queryClient.setQueryData<Task[]>(archivedKey, (current) =>
+        (current ?? []).filter((t) => t.id !== taskId),
+      );
+      queryClient.setQueryData<number>(countKey, (current) => Math.max(0, (current ?? 1) - 1));
+    } else {
+      setTaskArchivedInCache(queryClient, project.id, taskId, false);
+    }
 
     void (async () => {
       try {
@@ -1599,7 +1651,13 @@ function ProjectPage() {
         void refresh();
       } catch (e: unknown) {
         if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks);
+          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        }
+        if (archivedKey && previousArchived) {
+          queryClient.setQueryData<Task[]>(archivedKey, previousArchived);
+        }
+        if (countKey && previousCount !== undefined) {
+          queryClient.setQueryData<number>(countKey, previousCount);
         }
         toast.error(e instanceof Error ? e.message : "Could not restore session");
       }
@@ -1617,22 +1675,23 @@ function ProjectPage() {
   };
 
   // Delete every archived row shown for this project. Routed by owner like
-  // every other task mutation, though only Panel-owned rows reach it today: a
-  // Core's archived rows never cross the link (see archiveTasks), so the
-  // Archived list this reads is Panel-only until #62 lands. The routing is here
-  // so the button works the moment those rows appear, rather than going live
-  // already 404'ing.
+  // every other task mutation; the rows come from wherever this project's
+  // Archived view sources them (ADR 0019), which for a Core is its own list.
   const deleteAllArchived = () => {
     setConfirmDeleteArchived(false);
     if (!project) return;
-    const archived = tasks.filter((t) => t.archived);
+    const archived = archivedTasks;
     if (archived.length === 0) return;
 
-    const tasksKey = queryKeys.tasks(project.id);
+    const tasksKey = tasksCacheKey(project.id, coreId);
     void queryClient.cancelQueries({ queryKey: tasksKey });
     const previousTasks = queryClient.getQueryData<Task[]>(tasksKey);
     const archivedIds = new Set(archived.map((t) => t.id));
-    removeTasksFromCache(queryClient, project.id, archivedIds);
+    removeTasksFromCache(queryClient, project.id, archivedIds, coreId);
+    if (coreId) {
+      queryClient.setQueryData<Task[]>(queryKeys.coreArchivedTasks(project.id, coreId), []);
+      queryClient.setQueryData<number>(queryKeys.coreArchivedTaskCount(project.id, coreId), 0);
+    }
 
     void (async () => {
       try {
@@ -1645,7 +1704,17 @@ function ProjectPage() {
         void refresh();
       } catch (e: unknown) {
         if (previousTasks) {
-          restoreTasksCache(queryClient, project.id, previousTasks);
+          restoreTasksCache(queryClient, project.id, previousTasks, coreId);
+        }
+        if (coreId) {
+          queryClient.setQueryData<Task[]>(
+            queryKeys.coreArchivedTasks(project.id, coreId),
+            archived,
+          );
+          queryClient.setQueryData<number>(
+            queryKeys.coreArchivedTaskCount(project.id, coreId),
+            archived.length,
+          );
         }
         toast.error(e instanceof Error ? e.message : "Could not delete archived sessions");
       } finally {
@@ -1942,7 +2011,7 @@ function ProjectPage() {
               view={sessionView}
               activeCount={activeTasks.length}
               pinnedCount={pinnedTasks.length}
-              archivedCount={archivedTasks.length}
+              archivedCount={archivedCount}
               showArchivedTab={hasArchivedTasks || showArchived}
               onChange={setSessionView}
             />
@@ -2042,6 +2111,31 @@ function ProjectPage() {
               icon="shield"
               action={
                 <Btn variant="primary" icon="refresh" onClick={() => void tasksQuery.refetch()}>
+                  Retry
+                </Btn>
+              }
+            />
+          ) : showArchived && archivedTasksQuery.isLoading ? (
+            // A Core fetches its archived rows over their own frame when this
+            // view opens (ADR 0019), so unlike the active list there is a real
+            // wait here. Both branches stay dark for a Panel-owned project,
+            // whose query is disabled and so never pending-and-fetching.
+            <EmptyState
+              title="Loading archived sessions"
+              subtitle="Fetching this project's archived sessions from the Core that owns them."
+              icon="sparkles"
+            />
+          ) : showArchived && archivedTasksQuery.isError ? (
+            <EmptyState
+              title="Could not load archived sessions"
+              subtitle="Actana Control could not reach the Core that owns these sessions. Retry to see them."
+              icon="shield"
+              action={
+                <Btn
+                  variant="primary"
+                  icon="refresh"
+                  onClick={() => void archivedTasksQuery.refetch()}
+                >
                   Retry
                 </Btn>
               }
@@ -2181,7 +2275,7 @@ function ProjectPage() {
                     variant="ghost"
                     icon="archive"
                     onClick={() => setSessionView("archived")}
-                    title={`View ${archivedTasks.length} archived session${archivedTasks.length === 1 ? "" : "s"}`}
+                    title={`View ${archivedCount} archived session${archivedCount === 1 ? "" : "s"}`}
                   >
                     View archived
                   </Btn>
@@ -2390,7 +2484,7 @@ function ProjectPage() {
           Permanently delete all archived sessions in &ldquo;{project.name}&rdquo;?
         </div>
         <div style={{ fontSize: 12, color: "var(--text-dim)" }}>
-          {archivedTasks.length} archived session{archivedTasks.length === 1 ? "" : "s"} will be deleted. This cannot be undone. Active sessions are unaffected.
+          {archivedCount} archived session{archivedCount === 1 ? "" : "s"} will be deleted. This cannot be undone. Active sessions are unaffected.
         </div>
       </ConfirmDialog>
 

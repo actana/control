@@ -286,13 +286,28 @@ class FakeQueryPort implements CoreQueryPort {
     this.listProjectsCalls++;
     return this.projects;
   }
+  listArchivedTasksCalls: (string | undefined)[] = [];
+
+  // Mirrors the real port's split: `listTasks` is the active list and has no
+  // argument that reaches an archived row; the archived rows have their own
+  // method behind their own frame (ADR 0019).
   listTasks(projectId?: string): CoreLinkTaskSnapshot[] {
     this.listTasksCalls.push(projectId);
-    if (projectId === undefined) return this.tasks;
-    return this.tasks.filter((t) => t.projectId === projectId);
+    return this.inScope(projectId).filter((t) => !t.archived);
+  }
+  listArchivedTasks(projectId?: string): CoreLinkTaskSnapshot[] {
+    this.listArchivedTasksCalls.push(projectId);
+    return this.inScope(projectId).filter((t) => t.archived);
+  }
+  countArchivedTasks(projectId?: string): number {
+    return this.inScope(projectId).filter((t) => t.archived).length;
   }
   getTask(taskId: string): CoreLinkTaskSnapshot | null {
     return this.tasks.find((t) => t.taskId === taskId) ?? null;
+  }
+  private inScope(projectId?: string): CoreLinkTaskSnapshot[] {
+    if (projectId === undefined) return this.tasks;
+    return this.tasks.filter((t) => t.projectId === projectId);
   }
 }
 
@@ -378,6 +393,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
       type: "tasksListResult",
       reqId: "r2",
       tasks: queryPort.tasks,
+      archivedCount: 0,
     });
   });
 
@@ -392,7 +408,56 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
       type: "tasksListResult",
       reqId: "r3",
       tasks: [queryPort.tasks[0]],
+      archivedCount: 0,
     });
+  });
+
+  // ─── Archived read path (issue 62, ADR 0019) ───
+
+  it("keeps archived rows off tasksListResult and reports only how many there are", async () => {
+    queryPort.tasks = [
+      { taskId: "live", projectId: "p1", title: "a", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { taskId: "old1", projectId: "p1", title: "b", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { taskId: "old2", projectId: "p1", title: "c", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
+    ];
+    pair.server.receive({ type: "tasksList", reqId: "r4", projectId: "p1" });
+    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("tasksListResult"));
+    expect(pair.server.lastSent()).toEqual({
+      type: "tasksListResult",
+      reqId: "r4",
+      tasks: [queryPort.tasks[0]],
+      archivedCount: 2,
+    });
+  });
+
+  it("answers archivedTasksList with the archived rows and nothing else", async () => {
+    queryPort.tasks = [
+      { taskId: "live", projectId: "p1", title: "a", agent: "claude-code", status: "running", pinned: false, archived: false, icon: null, updatedAt: 3 },
+      { taskId: "old", projectId: "p1", title: "b", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+    ];
+    pair.server.receive({ type: "archivedTasksList", reqId: "r5", projectId: "p1" });
+    await vi.waitFor(() => expect(queryPort.listArchivedTasksCalls).toEqual(["p1"]));
+    expect(pair.server.lastSent()).toEqual({
+      type: "archivedTasksListResult",
+      reqId: "r5",
+      tasks: [queryPort.tasks[1]],
+    });
+    // The archived read path never reaches the active one.
+    expect(queryPort.listTasksCalls).toEqual([]);
+  });
+
+  it("scopes archivedTasksList to one project, and lists every Core-wide row without one", async () => {
+    queryPort.tasks = [
+      { taskId: "o1", projectId: "p1", title: "a", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 2 },
+      { taskId: "o2", projectId: "p2", title: "b", agent: "claude-code", status: "done", pinned: false, archived: true, icon: null, updatedAt: 1 },
+    ];
+    pair.server.receive({ type: "archivedTasksList", reqId: "r6", projectId: "p2" });
+    await vi.waitFor(() => expect(pair.server.lastSent()?.type).toBe("archivedTasksListResult"));
+    expect(pair.server.lastSent()).toMatchObject({ tasks: [queryPort.tasks[1]] });
+
+    pair.server.receive({ type: "archivedTasksList", reqId: "r7" });
+    await vi.waitFor(() => expect(queryPort.listArchivedTasksCalls).toEqual(["p2", undefined]));
+    expect(pair.server.lastSent()).toMatchObject({ reqId: "r7", tasks: queryPort.tasks });
   });
 
   it("returns empty results when no queryPort is configured (backward compat)", async () => {
@@ -423,7 +488,20 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
 
     p.server.receive({ type: "tasksList", reqId: "r2" });
     await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("tasksListResult"));
-    expect(p.server.lastSent()).toMatchObject({ type: "tasksListResult", reqId: "r2", tasks: [] });
+    expect(p.server.lastSent()).toMatchObject({
+      type: "tasksListResult",
+      reqId: "r2",
+      tasks: [],
+      archivedCount: 0,
+    });
+
+    p.server.receive({ type: "archivedTasksList", reqId: "r3" });
+    await vi.waitFor(() => expect(p.server.lastSent()?.type).toBe("archivedTasksListResult"));
+    expect(p.server.lastSent()).toMatchObject({
+      type: "archivedTasksListResult",
+      reqId: "r3",
+      tasks: [],
+    });
     s.close();
   });
 });
@@ -1702,9 +1780,20 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     const queryPort: CoreQueryPort = {
       listProjects: () => mutationPort.projects,
       listTasks: (projectId?: string) =>
-        projectId
+        (projectId
           ? mutationPort.tasks.filter((t) => t.projectId === projectId)
-          : mutationPort.tasks,
+          : mutationPort.tasks
+        ).filter((t) => !t.archived),
+      listArchivedTasks: (projectId?: string) =>
+        (projectId
+          ? mutationPort.tasks.filter((t) => t.projectId === projectId)
+          : mutationPort.tasks
+        ).filter((t) => t.archived),
+      countArchivedTasks: (projectId?: string) =>
+        (projectId
+          ? mutationPort.tasks.filter((t) => t.projectId === projectId)
+          : mutationPort.tasks
+        ).filter((t) => t.archived).length,
       getTask: (taskId: string) =>
         mutationPort.tasks.find((t) => t.taskId === taskId) ?? null,
     };

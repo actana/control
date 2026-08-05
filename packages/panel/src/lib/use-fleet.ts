@@ -125,7 +125,7 @@ export function useFleetTasks(): {
           // router would only answer with an error.
           if (core.dial.state !== "connected") return offline;
           try {
-            const tasks = await bridge.listTasks(core.id);
+            const { tasks } = await bridge.listTasks(core.id);
             return {
               coreId: core.id,
               coreLabel: core.label,
@@ -254,7 +254,7 @@ export function useCoreTasks(
       try {
         const result = await bridge.listTasks(coreId, projectId);
         if (!cancelled) {
-          setTasks(result);
+          setTasks(result.tasks);
           setError(null);
         }
       } catch (err) {
