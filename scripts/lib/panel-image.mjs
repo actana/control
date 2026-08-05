@@ -30,7 +30,7 @@ export const PANEL_DOCKERFILE = "deploy/panel.Dockerfile";
  * workflow pushes the version tag and `latest`, and the smoke script builds a
  * local tag — all against this one name.
  */
-export const PANEL_IMAGE = "ghcr.io/actana/panel";
+export const PANEL_IMAGE = "actana/panel";
 
 /** The single directory inside the container that must be a mounted volume. */
 export const PANEL_DATA_DIR = "/data";
@@ -76,7 +76,7 @@ export const CORE_PORT = 8443;
  * reference compose pulls `:latest` so a clean checkout brings the pair up
  * without building either one.
  */
-export const CORE_IMAGE = "ghcr.io/actana/core";
+export const CORE_IMAGE = "actana/core";
 
 /** Where the Core image extracts the release tarball (ADR 0016 D13). */
 export const CORE_APP_ROOT = "/opt/actana";

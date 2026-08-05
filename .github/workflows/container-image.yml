@@ -18,16 +18,16 @@ name: Container image
 # per-architecture Core tarball — emulating either under QEMU is slow and
 # proves the wrong machine.
 #
-# Registries. GHCR always, authenticated with the workflow's own `github.token`,
-# which GHCR accepts for packages owned by this repository. Docker Hub *as well*
-# whenever the DOCKERHUB_TOKEN secret is set — absent it, every Docker Hub step
-# is skipped and the run still succeeds on GHCR alone. That gating is what lets
-# a fork build and release without any Docker Hub account. See docs/ci-cd.md.
+# Registry. Docker Hub only (ADR 0018 — GHCR was retired): the image name is
+# docker.io/<DOCKERHUB_NAMESPACE or repo owner>/<image>. A non-pushing build —
+# `push: false`, the PR path — needs no credentials at all; a pushing build
+# requires DOCKERHUB_USERNAME / DOCKERHUB_TOKEN and fails in `resolve`, before
+# anything is built, when they are missing. See docs/ci-cd.md.
 #
 # No `permissions:` block here on purpose. A reusable workflow may not request
-# more than its caller granted — declaring `packages: write` made the PR build
-# in ci.yml, which needs only `read`, fail at startup. The callers set what they
-# need: `write` for the edge and release paths, `read` for the PR build.
+# more than its caller granted, and nothing here needs more than `contents:
+# read` — Docker Hub authenticates with repository secrets, not the workflow's
+# own token.
 
 on:
   workflow_call:
@@ -70,17 +70,17 @@ jobs:
     name: Resolve registries
     runs-on: ubuntu-24.04
     outputs:
-      ghcr: ${{ steps.registries.outputs.ghcr }}
-      dockerhub: ${{ steps.registries.outputs.dockerhub }}
-      images: ${{ steps.registries.outputs.images }}
+      image: ${{ steps.registry.outputs.image }}
     steps:
-      - id: registries
+      - id: registry
         env:
           OWNER: ${{ github.repository_owner }}
           IMAGE: ${{ inputs.image }}
+          PUSH: ${{ inputs.push }}
           # A repository variable, so a fork publishing under a different
           # Docker Hub org doesn't have to edit this file.
           DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
           set -euo pipefail
@@ -89,22 +89,24 @@ jobs:
             *) echo "unknown image '$IMAGE' — expected 'panel' or 'core'" >&2; exit 1 ;;
           esac
 
-          # GHCR requires a lowercase namespace.
-          ghcr="ghcr.io/${OWNER,,}/${IMAGE}"
-          echo "ghcr=$ghcr" >> "$GITHUB_OUTPUT"
+          # Docker Hub requires a lowercase namespace.
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          image="docker.io/${namespace,,}/${IMAGE}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
 
-          images="$ghcr"
-          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
-            namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
-            dockerhub="docker.io/${namespace,,}/${IMAGE}"
-            echo "dockerhub=$dockerhub" >> "$GITHUB_OUTPUT"
-            images="$images $dockerhub"
-            echo "Publishing to GHCR and Docker Hub ($dockerhub)."
-          else
-            echo "dockerhub=" >> "$GITHUB_OUTPUT"
-            echo "DOCKERHUB_TOKEN is not set — publishing to GHCR only."
+          # A missing credential is decided here, before anything is built —
+          # unlike a *broken* one, it costs nothing to catch early. Docker Hub
+          # is the only registry, so a pushing build without credentials has
+          # nowhere to publish at all.
+          if [[ "$PUSH" == "true" && ( -z "$DOCKERHUB_TOKEN" || -z "$DOCKERHUB_USERNAME" ) ]]; then
+            echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set to publish $image — Docker Hub is the only registry images are published to (ADR 0018). One personal access token (Read & Write) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
+            exit 1
           fi
-          echo "images=$images" >> "$GITHUB_OUTPUT"
+          if [[ "$PUSH" == "true" ]]; then
+            echo "Publishing to $image."
+          else
+            echo "Build and smoke only ($image, no push)."
+          fi
 
   build:
     name: Build + smoke (${{ matrix.arch }})
@@ -131,7 +133,7 @@ jobs:
       - name: Build the Panel image
         if: inputs.image == 'panel'
         env:
-          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
           REPO: ${{ github.repository }}
@@ -149,7 +151,7 @@ jobs:
       - name: Smoke — boots, sets up, survives container recreation
         if: inputs.image == 'panel'
         env:
-          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
         run: node scripts/smoke-panel-image.mjs --image "$IMAGE:$STAGE-$ARCH" --skip-build
@@ -183,7 +185,7 @@ jobs:
       - name: Build the Core image
         if: inputs.image == 'core'
         env:
-          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
           REPO: ${{ github.repository }}
@@ -222,7 +224,7 @@ jobs:
       - name: Smoke — the image boots unprivileged and a Panel pairs with it
         if: inputs.image == 'core'
         env:
-          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
         run: |
@@ -259,7 +261,7 @@ jobs:
       - name: Trivy — fixable CRITICAL/HIGH gate
         if: always() && inputs.image == 'core'
         env:
-          IMAGE: ${{ needs.resolve.outputs.ghcr }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
           TRIVY_VERSION: 0.73.0
@@ -296,47 +298,21 @@ jobs:
       - name: Push the per-arch tags
         if: inputs.push
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_ACTOR: ${{ github.actor }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          GHCR_IMAGE: ${{ needs.resolve.outputs.ghcr }}
-          IMAGES: ${{ needs.resolve.outputs.images }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
-
-          # GHCR is the primary registry and it has already authenticated, so a
-          # Docker Hub credential problem must not take the release down with
-          # it: push what we can, then fail at the end with the reason. Failing
-          # here instead would leave GHCR unpublished because a *mirror* was
-          # misconfigured.
-          dockerhub_ok=1
-          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
-            if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
-              dockerhub_ok=0
-              echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. The username depends on which kind of token you made. ORGANISATION access token (created under the org, app.docker.com/accounts/<org>): DOCKERHUB_USERNAME must be the ORGANISATION NAME — an OAT authenticates as the org, not as the person who created it, and OATs need a Team or Business subscription. PERSONAL access token (Account settings > Personal access tokens): DOCKERHUB_USERNAME is your own username, and that account needs push rights on the target repos. Either way the token needs Read & Write, and an account password will never work. GHCR was published; Docker Hub was not."
-            fi
+          # A broken credential fails here, before any tag is pushed — with
+          # one registry there is no mirror posture to soften it, and nothing
+          # has been half-published yet.
+          if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
+            echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. The username depends on which kind of token you made. ORGANISATION access token (created under the org, app.docker.com/accounts/<org>): DOCKERHUB_USERNAME must be the ORGANISATION NAME — an OAT authenticates as the org, not as the person who created it, and OATs need a Team or Business subscription. PERSONAL access token (Account settings > Personal access tokens): DOCKERHUB_USERNAME is your own username, and that account needs push rights on the target repos. Either way the token needs Read & Write, and an account password will never work."
+            exit 1
           fi
-
-          for image in $IMAGES; do
-            if [[ "$image" == docker.io/* && "$dockerhub_ok" -eq 0 ]]; then
-              echo "Skipping $image — Docker Hub login failed."
-              continue
-            fi
-            # The image was built under the GHCR name; retag for any other registry.
-            if [[ "$image" != "$GHCR_IMAGE" ]]; then
-              docker tag "$GHCR_IMAGE:$STAGE-$ARCH" "$image:$STAGE-$ARCH"
-            fi
-            docker push "$image:$STAGE-$ARCH"
-          done
-
-          # Deliberately not `exit 1` here: the publish job needs this one to
-          # succeed, and failing now would leave GHCR with per-arch tags and no
-          # manifest. The run is failed at the end of publish instead, once
-          # GHCR is completely published.
+          docker push "$IMAGE:$STAGE-$ARCH"
 
   publish:
     name: Publish the multi-arch manifest
@@ -346,11 +322,9 @@ jobs:
     steps:
       - name: Stitch per-arch tags into the release tags
         env:
-          GH_TOKEN: ${{ github.token }}
-          GH_ACTOR: ${{ github.actor }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          IMAGES: ${{ needs.resolve.outputs.images }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
           IMAGE_KIND: ${{ inputs.image }}
           MATRIX: ${{ inputs.matrix }}
           STAGE: ${{ inputs.stage }}
@@ -361,17 +335,9 @@ jobs:
             echo "no tags requested for a pushing build" >&2
             exit 1
           fi
-          echo "$GH_TOKEN" | docker login ghcr.io --username "$GH_ACTOR" --password-stdin
-
-          # Same posture as the build job: GHCR is finished no matter what
-          # Docker Hub does, and the run is failed at the very end if Docker
-          # Hub was configured but unusable.
-          dockerhub_ok=1
-          if [[ -n "$DOCKERHUB_TOKEN" ]]; then
-            if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
-              dockerhub_ok=0
-              echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. DOCKERHUB_USERNAME must be the Docker Hub *account* that owns the access token — not the organisation name. If you publish under an org, set DOCKERHUB_USERNAME to your user account and DOCKERHUB_NAMESPACE to the org. The token needs Read & Write. GHCR was published; Docker Hub was not."
-            fi
+          if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
+            echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected between the per-arch push and the manifest stitch. The per-arch tags are on Docker Hub; the release tags are not. Re-run this job once the credentials are fixed."
+            exit 1
           fi
 
           # The arch list comes from the same matrix the build job used, so a
@@ -379,63 +345,54 @@ jobs:
           # than referencing a tag that was never pushed.
           arches="$(echo "$MATRIX" | jq -r '.include[].arch' | tr '\n' ' ')"
 
-          for image in $IMAGES; do
-            if [[ "$image" == docker.io/* && "$dockerhub_ok" -eq 0 ]]; then
-              echo "Skipping $image — Docker Hub login failed."
-              continue
-            fi
-            sources=()
-            for arch in $arches; do sources+=("$image:$STAGE-$arch"); done
-            tag_args=()
-            for tag in $TAGS; do tag_args+=(--tag "$image:$tag"); done
-            docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
-            primary="$image:${TAGS%% *}"
-            docker buildx imagetools inspect "$primary"
+          sources=()
+          for arch in $arches; do sources+=("$IMAGE:$STAGE-$arch"); done
+          tag_args=()
+          for tag in $TAGS; do tag_args+=(--tag "$IMAGE:$tag"); done
+          docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
+          primary="$IMAGE:${TAGS%% *}"
+          docker buildx imagetools inspect "$primary"
 
-            # The Panel's HEALTHCHECK is a Docker extension to the OCI image
-            # config, and a builder is free to drop it: podman does exactly
-            # that, silently, without --format docker (ADR 0016 D23). The
-            # build job already proved it on the per-arch image *before* that
-            # image was pushed, which is the gate that can actually stop a
-            # publish. This second check covers what that one cannot see —
-            # the stitched manifest is a different artifact, assembled after
-            # the per-arch tags exist — so it fails the run loudly rather
-            # than leaving a healthcheck-less image tagged :latest unnoticed.
-            #
-            # Read back by pulling each platform and asking the *daemon* for
-            # the config, which is the same reader `smoke-panel-image.mjs` uses
-            # before the push and the only one proven to answer this question.
-            #
-            # Not `imagetools inspect --format '{{json .Image}}'`, which is what
-            # this gate used and what made it red on run 30912583589: it
-            # reported MISSING for linux/amd64 and linux/arm64 on an image that
-            # had the healthcheck. It had it before the push — the per-arch
-            # smoke asserts exactly this and was green on both arches — and
-            # `imagetools create` stitches an index over the existing per-arch
-            # manifests without rewriting a config blob, so nothing between the
-            # two could have removed it. What that format renders is a Go
-            # struct, and the field is a Docker extension the struct need not
-            # carry. A reader that cannot represent the answer is not evidence
-            # of a missing healthcheck; it is a broken question.
-            #
-            # Second reason to leave that path, observed locally against the
-            # published image but not in CI: `{{json}}` there emitted the
-            # backtick in the HEALTHCHECK's template literal as `\``, which is
-            # not a valid JSON escape, and jq rejected the document outright.
-            # The daemon's own encoder emits the backtick literally.
-            if [[ "$IMAGE_KIND" == panel ]]; then
-              for arch in $arches; do
-                docker pull --quiet --platform "linux/$arch" "$primary" >/dev/null
-                healthcheck="$(docker image inspect --format '{{json .Config.Healthcheck}}' "$primary")"
-                if ! jq -e '(.Test // []) | join(" ") | contains("/nodejs/bin/node")' \
-                     >/dev/null <<<"$healthcheck"; then
-                  echo "::error title=Published image has no healthcheck::$primary at linux/$arch is missing the /nodejs/bin/node HEALTHCHECK. The builder dropped it between the per-arch build and the manifest. Config.Healthcheck was $healthcheck" >&2
-                  exit 1
-                fi
-                echo "  $primary at linux/$arch carries its healthcheck"
-              done
-            fi
-          done
-
-          # Configured but broken is a failure — just not one that costs GHCR.
-          [[ "$dockerhub_ok" -eq 1 ]] || exit 1
+          # The Panel's HEALTHCHECK is a Docker extension to the OCI image
+          # config, and a builder is free to drop it: podman does exactly
+          # that, silently, without --format docker (ADR 0016 D23). The
+          # build job already proved it on the per-arch image *before* that
+          # image was pushed, which is the gate that can actually stop a
+          # publish. This second check covers what that one cannot see —
+          # the stitched manifest is a different artifact, assembled after
+          # the per-arch tags exist — so it fails the run loudly rather
+          # than leaving a healthcheck-less image tagged :latest unnoticed.
+          #
+          # Read back by pulling each platform and asking the *daemon* for
+          # the config, which is the same reader `smoke-panel-image.mjs` uses
+          # before the push and the only one proven to answer this question.
+          #
+          # Not `imagetools inspect --format '{{json .Image}}'`, which is what
+          # this gate used and what made it red on run 30912583589: it
+          # reported MISSING for linux/amd64 and linux/arm64 on an image that
+          # had the healthcheck. It had it before the push — the per-arch
+          # smoke asserts exactly this and was green on both arches — and
+          # `imagetools create` stitches an index over the existing per-arch
+          # manifests without rewriting a config blob, so nothing between the
+          # two could have removed it. What that format renders is a Go
+          # struct, and the field is a Docker extension the struct need not
+          # carry. A reader that cannot represent the answer is not evidence
+          # of a missing healthcheck; it is a broken question.
+          #
+          # Second reason to leave that path, observed locally against the
+          # published image but not in CI: `{{json}}` there emitted the
+          # backtick in the HEALTHCHECK's template literal as `\``, which is
+          # not a valid JSON escape, and jq rejected the document outright.
+          # The daemon's own encoder emits the backtick literally.
+          if [[ "$IMAGE_KIND" == panel ]]; then
+            for arch in $arches; do
+              docker pull --quiet --platform "linux/$arch" "$primary" >/dev/null
+              healthcheck="$(docker image inspect --format '{{json .Config.Healthcheck}}' "$primary")"
+              if ! jq -e '(.Test // []) | join(" ") | contains("/nodejs/bin/node")' \
+                   >/dev/null <<<"$healthcheck"; then
+                echo "::error title=Published image has no healthcheck::$primary at linux/$arch is missing the /nodejs/bin/node HEALTHCHECK. The builder dropped it between the per-arch build and the manifest. Config.Healthcheck was $healthcheck" >&2
+                exit 1
+              fi
+              echo "  $primary at linux/$arch carries its healthcheck"
+            done
+          fi

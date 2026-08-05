@@ -33,7 +33,7 @@ The things this project actually controls:
   the registration blob that establishes it.
 - The **Core** — the daemon, `actana setup`, the installer (`install.sh`),
   and the release tarballs and their checksums.
-- The **published container image**, `ghcr.io/actana/panel`.
+- The **published container image**, [`actana/panel`](https://hub.docker.com/r/actana/panel) on Docker Hub.
 
 ## What is out of scope
 

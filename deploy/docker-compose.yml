@@ -22,7 +22,7 @@
 # blob, and is never something you supply or renew.
 services:
   panel:
-    image: ghcr.io/actana/panel:latest
+    image: actana/panel:latest
     restart: unless-stopped
     ports:
       # Loopback on purpose: this is plain HTTP. `localhost` is a secure
@@ -45,7 +45,7 @@ services:
   # host`, `tmpfs:` or `init:` — all four belonged to the systemd fixture this
   # replaced, and tini is PID 1 inside the image itself (ADR 0016 D14).
   core:
-    image: ghcr.io/actana/core:latest
+    image: actana/core:latest
     restart: unless-stopped
     environment:
       # The address the Panel dials, and therefore the SAN in this Core's
@@ -82,7 +82,7 @@ services:
 #
 # >>> second Core
 #   core2:
-#     image: ghcr.io/actana/core:latest
+#     image: actana/core:latest
 #     restart: unless-stopped
 #     environment:
 #       - ACTANA_PUBLIC_HOST=core2

@@ -33,15 +33,15 @@ Set under **Settings → Secrets and variables → Actions**.
 | `DOCKERHUB_NAMESPACE` | Variable | Docker Hub org to publish under. Optional; defaults to the GitHub owner (`actana`) |
 
 With these set, both images publish to `docker.io/actana/panel` and
-`docker.io/actana/core` alongside their GHCR copies, and each image's Docker Hub
-page is rewritten from `docs/images/`.
+`docker.io/actana/core`, and each image's Docker Hub page is rewritten from
+`docs/images/`.
 
-Nothing else is required: GHCR authenticates with the workflow's own
-`github.token`. On a **fork**, leave the pair unset: every Docker Hub step is
-skipped and releases still publish to GHCR. On **`actana/control`** the same
-gap fails the release before it builds anything — Docker Hub is the registry the
-docs tell operators to pull from, so a release that reached GHCR alone is not a
-release ([ADR 0016](adr/0016-the-0-1-0-shape.md) D31). See [`ci-cd.md`](ci-cd.md).
+Docker Hub is the **only** registry
+([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired),
+so the pair is required wherever images are published: a release or edge build
+without it fails before anything is built. PR builds never push and need no
+credentials, so a fork gets green PRs with nothing set. See
+[`ci-cd.md`](ci-cd.md).
 
 ### It must be a *personal* access token, and one token does both jobs
 
@@ -139,8 +139,6 @@ changelog is assembled from.
       reporting channel
 - [ ] Enable Dependabot alerts + security updates
 - [ ] Enable secret scanning + push protection
-- [ ] Set the GHCR packages `panel` and `core` to **public** once the repo is public,
-      or `docker pull` fails for everyone but org members
 - [ ] After the first release, check that **both Docker Hub pages render** —
       `actana/panel` and `actana/core`. Nothing here is manual: `release.yml`'s
       `descriptions` job PATCHes each page from [`docs/images/`](images/) as

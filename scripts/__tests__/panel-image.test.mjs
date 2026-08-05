@@ -417,18 +417,18 @@ describe("release workflow", () => {
     expect(words(workflow)).toContain(words(quote));
   });
 
-  // D31. Skipping everywhere is right for a fork and wrong for the repo that
-  // tells people to pull from Docker Hub: a release that never reached the
-  // primary registry must not report success.
-  it("fails a missing Docker Hub credential on the canonical repo only", () => {
-    expect(workflow).toContain("actana/control");
+  // D31, amended by ADR 0018: Docker Hub is the only registry, so a missing
+  // credential fails the release before anything is built — on any repo,
+  // fork or not. There is no longer a registry that authenticates for free.
+  it("fails a missing Docker Hub credential before building anything", () => {
     expect(workflow).toMatch(/DOCKERHUB_TOKEN/);
     expect(workflow).toContain("::error title=Missing Docker Hub credential");
+    expect(workflow).not.toContain("Publishing to GHCR only");
   });
 
   it("pushes the image name the compose file pulls", () => {
     expect(imageWorkflow).toContain(PANEL_IMAGE.split("/").pop());
-    expect(imageWorkflow).toContain("ghcr.io");
+    expect(imageWorkflow).toContain("docker.io/");
   });
 
   it("builds each architecture on a runner of that architecture", () => {
@@ -445,11 +445,13 @@ describe("release workflow", () => {
     );
   });
 
-  it("publishes to Docker Hub only when the token is configured", () => {
-    // Every Docker Hub step is gated on a non-empty DOCKERHUB_TOKEN, so a repo
-    // (or fork) without the secret still releases to GHCR.
-    expect(imageWorkflow).toContain('if [[ -n "$DOCKERHUB_TOKEN" ]]');
+  it("publishes to Docker Hub and nowhere else", () => {
+    // ADR 0018: GHCR was retired. A pushing build without credentials fails
+    // in `resolve`, before anything is built — there is nowhere else to
+    // publish — and a PR build (push: false) needs no credentials at all.
     expect(imageWorkflow).toContain("docker.io/");
+    expect(imageWorkflow).not.toContain("ghcr.io");
+    expect(imageWorkflow).toContain("::error title=Missing Docker Hub credential");
   });
 
   it("derives the registry namespace instead of hardcoding an owner", () => {
@@ -803,8 +805,9 @@ describe("docker hub descriptions", () => {
     expect(core).not.toContain("--public-host core");
   });
 
-  it("links the GHCR packages back to this repository", () => {
-    // Without image.source the package page has no README at all.
+  it("links the images back to this repository via OCI labels", () => {
+    // Docker Hub ignores these, but any registry UI that reads OCI labels —
+    // and every `docker image inspect` — finds its way back to the source.
     expect(readRepoFile(PANEL_DOCKERFILE)).toContain("org.opencontainers.image.source");
     expect(imageWorkflow).toContain("org.opencontainers.image.source");
   });
