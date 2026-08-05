@@ -32,22 +32,13 @@ name: Release
 # raw.githubusercontent.com/actana/control/main/install.sh, so a broken
 # installer is fixable without cutting a release.
 #
-# ── Two things that must not be "fixed" later ────────────────────────────────
+# ── The registry posture ─────────────────────────────────────────────────────
 #
-# 1. GHCR is pushed first and must complete, even though Docker Hub is the
-#    "primary" registry (D32). Primary means the canonical place a user is told
-#    to pull from, not the publish order. GHCR authenticates with the
-#    workflow's own `github.token` and therefore *cannot* fail on credentials,
-#    which is exactly why it goes first. Do not reorder the pushes to match the
-#    word.
-#
-# 2. Present-but-broken Docker Hub credentials publish GHCR completely — per-arch
-#    tags *and* manifest — and then fail the run at the very end (D31, and see
-#    container-image.yml, which is where that happens). Failing early would
-#    strand GHCR with per-arch tags and no manifest.
-#
-# A *missing* credential is the other case, and it is decided here in `resolve`
-# before anything is built: fatal on actana/control, skipped on a fork.
+# Docker Hub is the only registry (ADR 0018 — GHCR was retired). A *missing*
+# credential is decided here in `resolve` before anything is built: fatal, on
+# any repo, because there is no longer a registry that authenticates for free.
+# A present-but-*broken* credential fails at the `docker login` in
+# container-image.yml, before any tag is pushed.
 
 on:
   push:
@@ -114,20 +105,18 @@ jobs:
             echo "tags=$version latest" >> "$GITHUB_OUTPUT"
           fi
 
-      # D31. A fork has no Docker Hub account and must still be able to cut a
-      # release to GHCR alone — but on the repo whose docs tell people to
-      # `docker pull docker.io/actana/…`, a release that never reached the
-      # primary registry must not report success. Same one PAT serves both the
-      # `docker login` in container-image.yml and the description API below:
-      # an organization access token can push images but answers "Cannot log
-      # into an organization account" on POST /v2/users/login, so it would mean
-      # paying for Team or Business *and still* provisioning a PAT.
+      # D31, amended by ADR 0018: Docker Hub is the only registry, so missing
+      # credentials mean the images have nowhere to go — on any repo, fork or
+      # not. The same one PAT serves both the `docker login` in
+      # container-image.yml and the description API below: an organization
+      # access token can push images but answers "Cannot log into an
+      # organization account" on POST /v2/users/login, so it would mean paying
+      # for Team or Business *and still* provisioning a PAT.
       #
       # Checked before anything is built, deliberately — unlike a *broken*
       # credential, a missing one costs nothing to catch early.
-      - name: Require Docker Hub credentials on the canonical repo
+      - name: Require Docker Hub credentials
         env:
-          REPO: ${{ github.repository }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
@@ -135,11 +124,7 @@ jobs:
           if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]; then
             exit 0
           fi
-          if [[ "$REPO" != "actana/control" ]]; then
-            echo "::notice title=Docker Hub skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set on $REPO. Publishing to GHCR only."
-            exit 0
-          fi
-          echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set on actana/control — Docker Hub is the registry the docs tell operators to pull from, so a release that reaches GHCR alone is not a release. One personal access token (Read & Write, from an account with Admin on the org) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
+          echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set — Docker Hub is the only registry the images are published to, so a release without them is not a release. One personal access token (Read & Write, from an account with Admin on the org) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
           exit 1
 
   tarball:
@@ -284,7 +269,6 @@ jobs:
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
-      packages: write
     secrets: inherit
     with:
       image: panel
@@ -299,7 +283,6 @@ jobs:
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
-      packages: write
     secrets: inherit
     with:
       image: core
@@ -379,8 +362,8 @@ jobs:
   # Docker Hub does not pull a README from GitHub on its own — the repository
   # description is a field you PATCH through its API. This syncs one file per
   # image, so `actana/panel` and `actana/core` each get their own page rather
-  # than sharing the source repo's README (which is what GHCR shows, and which
-  # describes the project rather than either image).
+  # than sharing the source repo's README (which describes the project rather
+  # than either image).
   #
   #   docs/images/panel.md → docker.io/<ns>/panel
   #   docs/images/core.md  → docker.io/<ns>/core

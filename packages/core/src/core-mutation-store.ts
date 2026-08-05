@@ -24,6 +24,7 @@ import {
   archiveProject as archiveProjectSql,
   createProject as createProjectSql,
   createTask as createTaskSql,
+  deleteTask as deleteTaskSql,
   pinProject as pinProjectSql,
   querySessions as querySessionsSql,
   renameProject as renameProjectSql,
@@ -142,6 +143,8 @@ export const coreMutationStore: CoreMutationPort = {
         return createTaskSql(conn, mutation, now);
       case "update":
         return updateTaskSql(conn, mutation, now);
+      case "delete":
+        return deleteTaskSql(conn, mutation.taskId);
     }
     throw new Error(`unknown task mutation op: ${(mutation as { op?: string }).op}`);
   },

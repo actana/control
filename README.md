@@ -94,7 +94,7 @@ Open `http://localhost:7420`, create the Operator, and paste that blob into
 
 ```bash
 docker run -d -p 127.0.0.1:7420:7420 -v actana-panel-data:/data \
-  ghcr.io/actana/panel:latest
+  actana/panel:latest
 ```
 
 [DEPLOY.md](DEPLOY.md) covers the compose path, the bare `node` path,

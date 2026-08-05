@@ -40,8 +40,8 @@ lookalike pipeline that drifts.
 | `actana/panel` | The Panel web service. **This is the one you deploy.** |
 | `actana/core` | The Core daemon. **A second, supported way to run a Core.** |
 
-Both are published to GHCR (`ghcr.io/actana/…`) and Docker Hub
-(`docker.io/actana/…`) under the same tags.
+Both are published to Docker Hub (`docker.io/actana/…`) — the only registry
+([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md)).
 
 `actana/core` is built from [`../deploy/core.Dockerfile`](../deploy/core.Dockerfile)
 and is a Core you run rather than a machine you install one on: `tini` is PID 1
@@ -54,23 +54,17 @@ Installing on a machine you own — `install.sh` plus `actana setup` plus a user
 service, see [`../INSTALL.md`](../INSTALL.md) — is untouched and equally
 supported. The container is a second distribution, not a replacement.
 
-### Where each registry's description comes from
+### Where each image's description comes from
 
-The two registries work differently, and neither reads a README from GitHub on
-its own:
-
-- **GHCR** links a package to its repository through the
-  `org.opencontainers.image.source` label, and then shows **this repository's
-  README** on the package page. There is no per-package README, so both images
-  show the same project README; the only per-image text is the
-  `org.opencontainers.image.description` label. Both images set these labels at
-  build time.
-- **Docker Hub** ignores those labels and stores its own per-repository
-  description, set through its API. The `descriptions` job in
-  [`release.yml`](../.github/workflows/release.yml) pushes one file per image —
-  [`docs/images/panel.md`](images/panel.md) and
-  [`docs/images/core.md`](images/core.md) — gated on the two publish jobs, so
-  the page never describes a version nobody can pull yet.
+Docker Hub does not read a README from GitHub on its own — it stores its own
+per-repository description, set through its API. The `descriptions` job in
+[`release.yml`](../.github/workflows/release.yml) pushes one file per image —
+[`docs/images/panel.md`](images/panel.md) and
+[`docs/images/core.md`](images/core.md) — gated on the two publish jobs, so
+the page never describes a version nobody can pull yet. (The images also set
+the `org.opencontainers.image.source` / `description` labels at build time;
+Docker Hub ignores them, but `docker image inspect` and any label-reading UI
+finds its way back to the source.)
 
 Edit those two files to change what Docker Hub shows. A typo is fixable without
 cutting a release: merge the fix to `main`, then
@@ -85,10 +79,10 @@ the API endpoint rejects organization ones; see [`REPO_SETUP.md`](REPO_SETUP.md)
 
 The product ships as three things, on one pipeline, from the same tag:
 
-- **The Panel** is a container. `release.yml` → `ghcr.io/actana/panel`
-  (and Docker Hub, when configured). No installer, no signing — the image is
+- **The Panel** is a container. `release.yml` → `docker.io/actana/panel`.
+  No installer, no signing — the image is
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
-- **The Core, as a container** comes from the same workflow → `ghcr.io/actana/core`.
+- **The Core, as a container** comes from the same workflow → `docker.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
   tarball. `release.yml` → `linux-x64` and `linux-arm64` with published
   checksums, which `install.sh` and `actana update` verify against.
@@ -384,19 +378,17 @@ bumps it and not CI's Node is *meant* to go red there.
 
 ## Registries
 
-**GHCR always.** It authenticates with the workflow's own `github.token`, which
-GHCR accepts for packages owned by this repository. No secret to configure, and
-it works in forks.
+**Docker Hub, and nothing else**
+([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired).
+It authenticates with the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so:
 
-**Docker Hub additionally**, whenever the `DOCKERHUB_TOKEN` secret is set. Every
-Docker Hub step is individually gated on that secret being non-empty, so:
-
-- With the keys set → the same manifest is published to both registries.
-- Without them → the run publishes to GHCR alone and still succeeds.
-- With the keys set but **wrong** → GHCR is published *completely* (per-arch
-  tags and manifests), Docker Hub is skipped, and the run then fails with an
-  annotation naming the cause. A misconfigured mirror must not cost you the
-  primary registry, but nor should it pass silently.
+- A **non-pushing build** — the PR path, `push: false` — needs no credentials
+  at all. Forks get green PR builds with zero configuration.
+- A **pushing build with the keys missing** fails in `resolve`, before
+  anything is built: there is nowhere to publish, and a missing credential
+  costs nothing to catch early.
+- A **pushing build with the keys wrong** fails at the `docker login`, before
+  any tag is pushed — nothing is half-published.
 
 If you see `unauthorized: incorrect username or password`, the cause is almost
 always that `DOCKERHUB_USERNAME` does not match the *kind* of token in
@@ -414,17 +406,14 @@ a PAT belonging to a member with push rights is the way in.
 
 An account password never works in place of a token.
 
-That gating is what lets a fork — or this repo before the keys were added —
-build and release without a Docker Hub account. Adding the keys is a settings
-change, not a code change; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+The image name is derived, never hardcoded:
+`docker.io/<DOCKERHUB_NAMESPACE or repo owner>/panel`. A fork that sets its
+own keys publishes under its own namespace with no edit to any workflow; see
+[`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
-The image name is derived, never hardcoded: `ghcr.io/<repo owner>/panel`,
-and `docker.io/<DOCKERHUB_NAMESPACE or repo owner>/panel`. A fork
-publishes under its own namespace with no edit to any workflow.
+### `gcr.io` is a second registry, and it is in the build path
 
-### `gcr.io` is a third registry, and it is in the build path
-
-Docker Hub primary and GHCR mirror is a decision about **publishing**. Pulling
+Docker Hub as the sole registry is a decision about **publishing**. Pulling
 the Panel's runtime base from `gcr.io/distroless/nodejs24` is a different thing
 in a different direction: an availability and rate-limit dependency on Google's
 registry, on **every single build** — every PR that touches the Panel image,
@@ -437,25 +426,24 @@ What that means in practice:
 - **When `gcr.io` is down or throttling, the Panel image cannot be built.** Not
   degraded — the `FROM` fails and the job is red. Nothing already published is
   affected: pulling `actana/panel` never touches `gcr.io`, because the base's
-  layers are inside the image operators pull from Docker Hub or GHCR.
+  layers are inside the image operators pull from Docker Hub.
 - **The Core image does not have this dependency.** It builds `FROM ubuntu`,
   which is Docker Hub, so an outage at one registry does not stop both images.
 - **Anonymous pulls are rate-limited per source IP**, and GitHub-hosted runners
   share theirs. The build pulls one base per job, so this has room; a fan-out
   that built the Panel image many times in parallel would not.
-- **There is no mirror configured, deliberately.** Copying the base into GHCR
-  and building `FROM` that would trade Google's availability for a copy that
-  can go stale and for a second thing Dependabot would have to be taught to
-  update. The pin is a digest, so a `gcr.io` outage delays a build; it cannot
-  change what a build produces.
+- **There is no mirror configured, deliberately.** Copying the base into
+  another registry and building `FROM` that would trade Google's availability
+  for a copy that can go stale and for a second thing Dependabot would have to
+  be taught to update. The pin is a digest, so a `gcr.io` outage delays a
+  build; it cannot change what a build produces.
 
-Three registries are therefore in play, doing three different jobs:
+Two registries are therefore in play, doing two different jobs:
 
 | Registry | Role | Fails how |
 | --- | --- | --- |
 | `gcr.io` | pulls the Panel's runtime base | no Panel image can be built |
-| Docker Hub | pulls `ubuntu` and `node`; publishes both images (primary) | no Core image can be built; publishing is skipped if credentials are absent |
-| GHCR | publishes both images (always) | release fails — there is no fallback for the primary publish target |
+| Docker Hub | pulls `ubuntu` and `node`; publishes both images | no Core image can be built; a pushing build without working credentials is red |
 
 ## Housekeeping
 
@@ -564,8 +552,11 @@ with the config copied alongside, so `extends` still resolves — is what the
 
 ## Notes for forks
 
-Everything works in a fork with no configuration: GHCR uses the fork's own
-token and namespace, Docker Hub steps skip, and the PR build never pushes.
+The PR path works in a fork with no configuration: a PR build never pushes,
+so it needs no registry credentials at all. Publishing — the edge tags on a
+push to `main`, and releases — requires setting `DOCKERHUB_USERNAME` /
+`DOCKERHUB_TOKEN` (and optionally `DOCKERHUB_NAMESPACE`) on the fork; without
+them a pushing build fails in `resolve` with an annotation naming the fix.
 
-PRs *from* a fork run without repository secrets — so `DOCKERHUB_TOKEN` is
-empty there and the publishing steps skip. That is expected, not a failure.
+PRs *from* a fork run without repository secrets — that is fine, because the
+PR build is the non-pushing one.

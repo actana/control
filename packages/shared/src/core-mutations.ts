@@ -464,6 +464,36 @@ export function updateTask(
   return readTaskSnapshot(sqlite, input.taskId);
 }
 
+/**
+ * Delete a task row and return the snapshot of what was removed. SQLite's
+ * ON DELETE CASCADE takes the rows hanging off it (terminal_logs, prompts,
+ * token_usage, …) — the same hard delete the Panel server's `deleteTask`
+ * performs for a Panel-owned row. Returns `null` when nothing matched, the way
+ * {@link updateTask} reports a missing row, so the server answers
+ * `tasksMutateResult` with a null task rather than an `error` frame.
+ *
+ * The pre-delete snapshot is what comes back (mirroring {@link archiveProject})
+ * so `tasksMutateResult.task` carries the same shape for every op and the
+ * caller doesn't branch on `op` to read the answer.
+ *
+ * No pending-question clear rides along, unlike the Panel server's delete.
+ * A pending question is an in-memory map on the *Panel* server, filled by the
+ * hooks route, which resolves the task against the Panel's own database — so a
+ * Core-owned task never gets an entry to clear. Nothing on the Core tracks one.
+ * The Panel-side state that does follow a Core-owned session (its stored
+ * session-finish notifications) is pruned off the `task:deleted` event this
+ * delete appends.
+ */
+export function deleteTask(
+  sqlite: CoreMutationSqlite,
+  taskId: string,
+): CoreLinkTaskSnapshot | null {
+  const before = readTaskSnapshot(sqlite, taskId);
+  if (!before) return null;
+  sqlite.prepare(`DELETE FROM tasks WHERE id = ?`).run(taskId);
+  return before;
+}
+
 function readTaskSnapshot(
   sqlite: CoreMutationSqlite,
   taskId: string,

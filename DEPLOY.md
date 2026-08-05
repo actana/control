@@ -13,8 +13,8 @@ directory. Back that directory up and you have backed up the Panel.
 
 It ships two equivalent ways:
 
-- a **Docker image**, `ghcr.io/actana/panel` — built by CI on
-  every release
+- a **Docker image**, [`actana/panel`](https://hub.docker.com/r/actana/panel)
+  on Docker Hub — built by CI on every release
 - the same build as a **plain Node process**, for machines where containers
   are unavailable or unwanted
 
@@ -70,7 +70,7 @@ setup is one command:
 docker run -d --name actana-panel \
   -p 127.0.0.1:7420:7420 \
   -v actana-panel-data:/data \
-  ghcr.io/actana/panel:latest
+  actana/panel:latest
 ```
 
 Open `http://localhost:7420`. Binding `127.0.0.1` keeps the plain-HTTP port

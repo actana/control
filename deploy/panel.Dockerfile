@@ -70,9 +70,9 @@ RUN mkdir -p /staged/data
 # it from a tag name.
 FROM gcr.io/distroless/nodejs24@sha256:2e3b3a96d1d7286c3e4727f9c84b4dc32b6b33e7d7d4425c5a5c8186ad85fa93
 
-# `image.source` is what links the package to its repository on GHCR — without
-# it the package page has no README and no provenance. An ARG rather than a
-# literal so a fork's build links to the fork; CI passes its own values.
+# `image.source` is what links the image back to its repository for
+# `docker image inspect` and any label-reading registry UI. An ARG rather than
+# a literal so a fork's build links to the fork; CI passes its own values.
 # Docker Hub ignores all of this and reads its description from the API
 # instead (the `descriptions` job in .github/workflows/release.yml).
 ARG IMAGE_SOURCE=https://github.com/actana/control

@@ -442,7 +442,6 @@ jobs:
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
-      packages: read
     with:
       image: panel
       ref: ${{ github.sha }}
@@ -461,7 +460,6 @@ jobs:
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
-      packages: read
     with:
       image: core
       ref: ${{ github.sha }}
@@ -484,10 +482,10 @@ jobs:
   # property of a version tag.
   #
   # They are separate jobs from the two above, rather than the same jobs with
-  # conditional inputs, because `permissions:` takes no expression and a caller
-  # that asks for `packages: write` fails at startup where the token cannot be
-  # granted it — a fork's PR. The two sets are mutually exclusive on
-  # `github.event_name`, so no single run ever builds an image twice.
+  # conditional inputs, because the ruleset pins the PR jobs' check names, and
+  # a job that sometimes pushes is a job whose green means two different
+  # things. The two sets are mutually exclusive on `github.event_name`, so no
+  # single run ever builds an image twice.
   #
   # `!= 'pull_request'` rather than `== 'push'`, so `workflow_dispatch`
   # republishes `:edge` the way images-edge.yml's own dispatch did.
@@ -510,7 +508,6 @@ jobs:
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
-      packages: write
     secrets: inherit
     with:
       image: panel
@@ -526,7 +523,6 @@ jobs:
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
-      packages: write
     secrets: inherit
     with:
       image: core

@@ -476,6 +476,11 @@ export class PtyCoreLinkServer {
    * On `create`, the kind is always `task:created` — a new row's icon is part
    * of the initial snapshot the tasks list carries, not a discrete change.
    *
+   * On `delete`, the kind is `task:deleted` — the same name the Panel server
+   * emits when it deletes a Panel-owned row, so a reconnecting Panel replays a
+   * Core-owned delete through the handler it already has (it prunes that
+   * session's stored finish notifications keyed on the event's `taskId`).
+   *
    * A transition into `finished` additionally appends `session:finished`
    * (issue 20) — the event ADR 0008 built the Panel's notification on and no
    * Core ever produced. It is additional, not a replacement: the live query
@@ -490,11 +495,13 @@ export class PtyCoreLinkServer {
     const kind =
       mutation.op === "create"
         ? "task:created"
-        : isIconOnlyUpdate(mutation)
-          ? "task:iconChanged"
-          : isPinnedOnlyUpdate(mutation)
-            ? "task:pinnedChanged"
-            : "task:updated";
+        : mutation.op === "delete"
+          ? "task:deleted"
+          : isIconOnlyUpdate(mutation)
+            ? "task:iconChanged"
+            : isPinnedOnlyUpdate(mutation)
+              ? "task:pinnedChanged"
+              : "task:updated";
     const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
     this.eventLog.appendEvent(kind, payload, { taskId: task.taskId });
     this.recordSessionFinish(mutation, task, previousStatus);
@@ -950,7 +957,9 @@ const FINISHED_TASK_STATUS: TaskStatus = "finished";
  * A `create` never qualifies: a row born `finished` is imported history, not a
  * Session that just ended in front of the operator.
  */
-function patchesFinishedStatus(mutation: CoreLinkTaskMutation): boolean {
+function patchesFinishedStatus(
+  mutation: CoreLinkTaskMutation,
+): mutation is Extract<CoreLinkTaskMutation, { op: "update" }> {
   return mutation.op === "update" && mutation.status === FINISHED_TASK_STATUS;
 }
 
