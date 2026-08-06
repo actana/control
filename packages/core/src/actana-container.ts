@@ -171,16 +171,20 @@ export function containerRefusal(verb: string): string | null {
 }
 
 /**
- * What replaces `actana update` in a container — the two commands the
- * reference deployment's `deploy/docker-compose.yml` is driven with.
+ * What an operator runs to bring this Core up to date.
  *
- * The update check's remedy line reads it from here rather than spelling the
- * commands out again, so a container operator is told the same thing whether
- * they typed `actana update` and were refused or read the availability line in
- * `actana status`.
+ * In a container that is the two commands the reference deployment's
+ * `deploy/docker-compose.yml` is driven with — the same string
+ * {@link containerRefusal} prints when someone types `actana update` there, so
+ * a container operator is told one thing whether they were refused or read the
+ * availability line in `actana status`.
+ *
+ * This is the whole branch, in one place: `actana status` and the daemon's
+ * once-a-day log line both name a remedy, and two copies of the conditional
+ * would be two places for the container case to be forgotten.
  */
-export function containerUpdateCommand(): string {
-  return DOCKER_EQUIVALENT.update.run;
+export function coreUpdateCommand(container: boolean): string {
+  return container ? DOCKER_EQUIVALENT.update.run : "actana update";
 }
 
 /** The verbs {@link containerRefusal} answers, in the order help lists them. */

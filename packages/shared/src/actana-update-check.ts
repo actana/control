@@ -78,16 +78,14 @@ export type LatestReleaseFetcher = {
   fetchText(url: string): Promise<string>;
 };
 
-/** Milliseconds since the epoch, injected so "a day has passed" is testable. */
-export type Clock = () => number;
-
 export type UpdateCheckOptions = {
   /** The asking component's own version. Never a combined "deployment version". */
   current: string;
   fetcher: LatestReleaseFetcher;
   /** JSON file holding the last answer and when it was read. */
   cachePath: string;
-  now: Clock;
+  /** Milliseconds since the epoch — injected so "a day has passed" is testable. */
+  now: () => number;
   env: NodeJS.ProcessEnv;
   /** Defaults to the public channel; a fixture server passes its own. */
   channel?: ReleaseChannel;
@@ -104,7 +102,8 @@ type CacheEntry = {
   latest: string | null;
 };
 
-const NOTHING: Omit<UpdateCheck, "current"> = { latest: null, updateAvailable: false };
+/** The answer whenever there is nothing to say, whatever the reason. */
+const NO_UPDATE: Omit<UpdateCheck, "current"> = { latest: null, updateAvailable: false };
 
 /**
  * Whether the operator has left the check on.
@@ -128,7 +127,7 @@ export async function checkForUpdate(opts: UpdateCheckOptions): Promise<UpdateCh
 
   if (!updateCheckEnabled(env)) {
     say(`update check disabled by ${UPDATE_CHECK_ENV}`);
-    return { current, ...NOTHING };
+    return { current, ...NO_UPDATE };
   }
 
   const cached = readCache(opts.cachePath, now(), say);

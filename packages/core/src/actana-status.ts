@@ -13,7 +13,7 @@
 
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
-import { containerUpdateCommand } from "./actana-container";
+import { coreUpdateCommand } from "./actana-container";
 import type { ActanaServiceState } from "./actana-service";
 
 /**
@@ -120,7 +120,7 @@ function row(label: string, value: string): string {
 function updateRows(report: ActanaStatusReport): string[] {
   const update = report.update;
   if (!update?.updateAvailable || update.latest === null) return [];
-  const remedy = report.container ? containerUpdateCommand() : "actana update";
+  const remedy = coreUpdateCommand(report.container !== null);
   return [
     row("Update", `${update.latest} is available — you're on ${update.current}`),
     row("", `run: ${remedy}`),

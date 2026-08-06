@@ -94,10 +94,10 @@ import {
 } from "./core-first-run";
 import {
   CONTAINER_PUBLIC_HOST_ENV,
-  containerUpdateCommand,
+  coreUpdateCommand,
   inContainer,
 } from "./actana-container";
-import { updateCheckCachePath } from "./actana-layout";
+import { updateCheckCachePath, updateNoticeStatePath } from "./actana-layout";
 import { readCoreManifest } from "./actana-manifest";
 import { nodeReleaseFetcher } from "./actana-release";
 import { startUpdateNotice } from "./core-update-notice";
@@ -420,15 +420,23 @@ async function startCore(): Promise<void> {
 
   // Alert-only, once a day, into this daemon's log — never a frame the Panel
   // raises and never an update this process applies (ADR 0010).
-  const updateNotice = startUpdateNotice({
-    current: readCoreManifest(path.resolve(__dirname, ".."))?.version ?? "0.0.0",
-    fetcher: nodeReleaseFetcher(),
-    cachePath: updateCheckCachePath(userDataDir),
-    env: process.env,
-    now: () => Date.now(),
-    log: (message) => log.info(message),
-    remedy: containerMode ? containerUpdateCommand() : "actana update",
-  });
+  //
+  // No manifest means no check at all, never a placeholder version: every
+  // release is newer than an invented `0.0.0`, so guessing would make a daemon
+  // that cannot read its own manifest announce an update on every boot.
+  const ownVersion = readCoreManifest(path.resolve(__dirname, ".."))?.version ?? null;
+  const updateNotice = ownVersion
+    ? startUpdateNotice({
+        current: ownVersion,
+        fetcher: nodeReleaseFetcher(),
+        cachePath: updateCheckCachePath(userDataDir),
+        noticePath: updateNoticeStatePath(userDataDir),
+        env: process.env,
+        now: () => Date.now(),
+        log: (message) => log.info(message),
+        remedy: coreUpdateCommand(containerMode),
+      })
+    : null;
 
   // Clean up on shutdown.
   const shutdown = () => {
@@ -436,7 +444,7 @@ async function startCore(): Promise<void> {
     server.close();
     hookReceiver?.close();
     availabilityStore.stop();
-    updateNotice.stop();
+    updateNotice?.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();

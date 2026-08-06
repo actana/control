@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { UPDATE_CHECK_TTL_MS } from "@actana/shared/actana-update-check";
 import { runUpdateNotice, type UpdateNoticeDeps } from "../core-update-notice";
 
 let dir: string;
@@ -29,6 +30,7 @@ function notice(over: Partial<UpdateNoticeDeps> = {}): Promise<void> {
     current: "0.1.0",
     fetcher: answering("0.2.0"),
     cachePath: path.join(dir, "update-check.json"),
+    noticePath: path.join(dir, "update-notice.json"),
     env: {},
     now: () => NOW,
     log: (message) => logged.push(message),
@@ -92,6 +94,49 @@ describe("the daemon's update notice", () => {
     await notice({ fetcher, now: () => NOW + 60_000 });
 
     expect(asked).toBe(1);
+  });
+
+  // "Once a day at most" has to survive a restart: a container under
+  // `restart: unless-stopped` boots as often as its host decides.
+  it("says it once a day however often the daemon restarts", async () => {
+    await notice();
+    await notice({ now: () => NOW + 60_000 });
+    await notice({ now: () => NOW + UPDATE_CHECK_TTL_MS - 1 });
+
+    expect(logged).toHaveLength(1);
+  });
+
+  it("says it again the next day", async () => {
+    await notice();
+    await notice({ now: () => NOW + UPDATE_CHECK_TTL_MS });
+
+    expect(logged).toHaveLength(2);
+  });
+
+  // A new release is news whenever it lands, not on tomorrow's schedule. The
+  // CLI shares the check's cache, so `actana status` can refresh what the
+  // channel says between two of this daemon's ticks.
+  it("speaks straight away for a different release", async () => {
+    await notice();
+    await notice({
+      fetcher: answering("0.3.0"),
+      cachePath: path.join(dir, "refreshed-by-the-cli.json"),
+      now: () => NOW + 60_000,
+    });
+
+    expect(logged).toHaveLength(2);
+    expect(logged[1]).toContain("0.3.0");
+  });
+
+  // The bookkeeping's failure mode is a repeated line, never a missed one.
+  it("repeats rather than goes quiet when it cannot write its own record", async () => {
+    const blocked = path.join(dir, "a-file-not-a-dir");
+    fs.writeFileSync(blocked, "");
+    const noticePath = path.join(blocked, "update-notice.json");
+
+    await notice({ noticePath });
+    await notice({ noticePath, now: () => NOW + 60_000 });
+
     expect(logged).toHaveLength(2);
   });
 });

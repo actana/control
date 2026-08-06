@@ -65,6 +65,10 @@ export function readPanelUpdateCheck(): Promise<UpdateCheck> {
     cachePath: path.join(resolvePanelDataDir(), CACHE_FILE),
     now: () => Date.now(),
     env: process.env,
+    // Two deadlines on purpose, not one by accident: the abort signal above
+    // actually cancels the socket, and this bounds the promise for anything
+    // that ignores a signal. They fire at the same moment, so whichever wins
+    // gives the same answer.
     timeoutMs: REQUEST_TIMEOUT_MS,
   }).finally(() => {
     if (inflight === running) inflight = null;
