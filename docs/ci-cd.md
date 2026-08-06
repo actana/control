@@ -84,19 +84,24 @@ The product ships as three things, on one pipeline, from the same tag:
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
 - **The Core, as a container** comes from the same workflow → `docker.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
-  tarball. `release.yml` → `linux-x64` and `linux-arm64` with published
-  checksums, which `install.sh` and `actana update` verify against.
+  tarball. `release.yml` → `linux-x64`, `linux-arm64` and `mac-arm64` with
+  published checksums, which `install.sh` and `actana update` verify against.
 
-A tag therefore publishes exactly three release assets —
+A tag therefore publishes exactly four release assets —
 `actana-core-<version>-linux-x64.tar.gz`,
-`actana-core-<version>-linux-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
+`actana-core-<version>-linux-arm64.tar.gz`,
+`actana-core-<version>-mac-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
 deliberately **not** one of them: it is served from `main`, so a broken
 installer is fixable without cutting a release
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D29).
 
-The three are Linux-only because the macOS Core targets were dropped
-([ADR 0016](adr/0016-the-0-1-0-shape.md) D28): a Mac runs the Panel and
-hosts its Cores on Linux.
+There is no `mac-x64`, and there never will be
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended): the on-device macOS
+install is Apple silicon only, and an Intel Mac runs its Core from the
+container image. Both front doors refuse it at detection and name that path —
+`install.sh`'s `detect_target` and `releaseTargetFor` in
+`packages/core/src/actana-release.ts`, which are required to agree on every
+shape, refusals included.
 
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
@@ -166,9 +171,13 @@ which is written down here rather than discovered:
   core:harnesses:e2e` against four vendors' real installers — and a failure
   arrives as an issue rather than a red check. It is failing on `opencode`
   today ([#31](https://github.com/actana/control/issues/31)).
-- **The macOS install path** — `actana setup` against launchd. Nothing
-  automated covers it at all now; [the manual pre-release
-  checklist](core-macos-prerelease-checklist.md) is the whole of it.
+- **The macOS install path** — `actana setup` against launchd, Gatekeeper on an
+  unsigned bundle, and whether the LaunchAgent survives a reboot and a logout.
+  A release-tag runner builds and smokes the `mac-arm64` tarball, and that is
+  all it can do: a runner is destroyed rather than restarted, so nothing
+  automated answers the persistence questions. [The pre-release
+  checklist](core-macos-prerelease-checklist.md) is the rest of it, and it is a
+  **release gate** — see "Cutting a release" below.
 
 ## The installer e2e, and why it is one job on two triggers
 
@@ -504,15 +513,47 @@ someone decided it was handled, so the next recurrence earns a fresh one.
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-That fires `release.yml`: the two tarball legs and the two image builds run in
-parallel, then the GitHub Release is created and each image's Docker Hub page is
-rewritten. A release lands in under six minutes. If one needs rebuilding, the
-workflow accepts a `workflow_dispatch` with the tag name — the tag must already
-exist on origin.
+That fires `release.yml`: the two Linux tarball legs and the two image builds
+run in parallel, then the GitHub Release is created and each image's Docker Hub
+page is rewritten. If one needs rebuilding, the workflow accepts a
+`workflow_dispatch` with the tag name — the tag must already exist on origin.
 
 `release.yml` attaches nothing until its arm64 installer legs are green
 (see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
 so a tag takes a few minutes longer than the tarball builds alone.
+
+### The approval pause — a release waits for a person
+
+The `tarball-macos` job declares `environment: macos-release`, and that
+environment has required reviewers. So a tag push does **not** produce a
+release on its own: the job goes to **waiting** the moment the run starts, and
+the machine work around it — the Linux tarballs, the installer e2e, both images
+— proceeds while it waits. Nothing publishes until a reviewer approves, because
+`github-release` needs that job ([ADR 0016](adr/0016-the-0-1-0-shape.md) D28,
+as amended). A `SHA256SUMS` covering fewer architectures than the docs promise
+is worse than a release that is late.
+
+The pause is the manual test window, not a rubber stamp. Before approving,
+the reviewer:
+
+1. Builds the tarball on their own Mac from the tagged commit —
+   `pnpm core:tarball` on Apple silicon produces exactly the `mac-arm64` asset
+   the waiting leg will. The leg has not run yet, so there is nothing to
+   download.
+2. Works through
+   [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md)
+   against it — Gatekeeper on an unsigned bundle, the LaunchAgent surviving a
+   reboot and a logout, the lifecycle verbs, a clean uninstall. Ten minutes.
+3. Approves in the run's UI. Only then does the mac leg spend a runner minute,
+   and only then does the release publish.
+
+An unticked box is a reason to **reject**: no release is better than one whose
+macOS asset a person could not get working, because the assets an operator
+downloads are the ones somebody said work. Who may approve is set up once, as
+an admin step: [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+
+Because of the wait, a release no longer "lands in under six minutes" — the
+automated part still does, and the rest is however long the person takes.
 
 Push one tag deliberately, never `git push --tags` — a clone made from the fork
 parent carries tags that would fire a release run each for versions this

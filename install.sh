@@ -148,32 +148,48 @@ parse_args() {
 
 # ─── platform ────────────────────────────────────────────────────────────────
 
-# Maps this machine to one of the two release targets, or explains why there
-# is no build for it. macOS and Windows are not omissions: their operators run
-# the web Panel and host their Cores on Linux (WSL counts as Linux).
+# Maps this machine to one of the three release targets, or explains why there
+# is no build for it. Windows is not an omission: its operators run the web
+# Panel and host their Cores on Linux (WSL counts as Linux).
 #
-# Darwin dies here, at detection, rather than later against the release's
-# checksum file. Mapping it to `mac-*` and letting the download fail produced
-# "release v0.1.0 has no build for mac-arm64" — which reads as a broken
-# release, when the truth is a platform Cores do not run on.
+# The architecture is resolved before the OS because the Darwin branch needs
+# it: an Apple-silicon Mac is a first-class Core (`mac-arm64`), an Intel Mac is
+# not and never will be — it runs its Core from the container image, and is
+# told so by name rather than lumped in with the platforms Cores do not run on.
+#
+# Both refusals happen here, at detection, rather than later against the
+# release's checksum file. Mapping an Intel Mac to `mac-x64` and letting the
+# download fail produced "release v0.1.0 has no build for mac-x64" — which
+# reads as a broken release, when the truth is an asset that will never exist.
+# `releaseTargetFor` in packages/core/src/actana-release.ts mirrors every shape
+# here, refusals included.
 detect_target() {
   uname_s=$(uname -s)
   uname_m=$(uname -m)
-
-  case $uname_s in
-    Linux) platform="linux" ;;
-    *)
-      die "unsupported operating system: $uname_s. Cores run on Linux
-  (WSL counts as Linux); on macOS and Windows, use the web Panel and host your
-  Cores on a Linux machine."
-      ;;
-  esac
 
   case $uname_m in
     x86_64 | amd64) cpu="x64" ;;
     aarch64 | arm64) cpu="arm64" ;;
     *)
       die "unsupported architecture: $uname_m. Cores run on x86_64 and arm64."
+      ;;
+  esac
+
+  case $uname_s in
+    Linux) platform="linux" ;;
+    Darwin)
+      if [ "$cpu" != "arm64" ]; then
+        die "no Core build for an Intel Mac ($uname_m). The on-device install is
+  Apple silicon only; on an Intel Mac, run your Core from the container image
+  instead — the reference deploy/docker-compose.yml at
+  https://github.com/actana/control brings up a Core in one command."
+      fi
+      platform="mac"
+      ;;
+    *)
+      die "unsupported operating system: $uname_s. Cores run on Linux
+  (WSL counts as Linux) and on Apple-silicon macOS; on Windows, use the web
+  Panel and host your Core on a Linux machine."
       ;;
   esac
 

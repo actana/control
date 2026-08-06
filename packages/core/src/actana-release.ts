@@ -101,13 +101,24 @@ export function releaseChannel(opts: { repo?: string; baseUrl?: string }): Relea
 /**
  * The release target for a machine, or null when there is no build for it.
  *
- * Windows is not an omission: Windows operators run the web Panel and host
- * their Cores on macOS/Linux (WSL counts as Linux).
+ * Three targets: `linux-x64`, `linux-arm64`, `mac-arm64`. Windows is not an
+ * omission — Windows operators run the web Panel and host their Cores on Linux
+ * (WSL counts as Linux).
+ *
+ * **An Intel Mac returns null on purpose.** `darwin`/`x64` is the one
+ * combination that looks like it ought to have an asset and never will: the
+ * on-device install is Apple silicon only, and an Intel Mac runs its Core from
+ * the container image. Answering `"mac-x64"` here would make `actana update`
+ * fail two steps later with "release 0.2.0 has no build for mac-x64", which
+ * reads as a broken release rather than as the decision it is. `install.sh`'s
+ * `detect_target` refuses at the same point, for the same reason.
  */
 export function releaseTargetFor(platform: NodeJS.Platform, arch: string): string | null {
-  const os = platform === "darwin" ? "mac" : platform === "linux" ? "linux" : null;
   const cpu = arch === "x64" || arch === "arm64" ? arch : null;
-  return os && cpu ? `${os}-${cpu}` : null;
+  if (!cpu) return null;
+  if (platform === "linux") return `linux-${cpu}`;
+  if (platform === "darwin") return cpu === "arm64" ? "mac-arm64" : null;
+  return null;
 }
 
 /** The tarball asset name for a version and target. */

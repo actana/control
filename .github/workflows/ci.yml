@@ -419,13 +419,15 @@ jobs:
           tarball="$(find artifacts/core -name 'actana-core-*-${{ matrix.target }}.tar.gz' | head -n1)"
           node scripts/e2e-actana-setup-linux.mjs --tarball "$tarball" --distro ${{ matrix.distro }}
 
-  # There is no macOS counterpart to the jobs above, and now two reasons for
-  # it. `mac-arm64` and `mac-x64` are no longer release targets (ADR 0016 D28),
-  # so there is no mac tarball to build and nothing for a launchd e2e to
-  # install — that job could only ever be red. D35 had already taken the leg
-  # off the PR gate as most of the bill. `e2e-actana-setup-macos.mjs` went with
-  # it; docs/core-macos-prerelease-checklist.md is what remains, for anyone
-  # running a Core off a local build on a Mac.
+  # There is no macOS counterpart to the jobs above, and `mac-arm64` being a
+  # release target again (ADR 0016 D28, as amended) does not change that. D35
+  # took the macOS legs off the PR gate because they were 72% of the bill at
+  # 10× billing, and that is the decision this file keeps: zero macOS minutes
+  # on a pull request. The one mac leg lives in release.yml, runs on a tag, and
+  # waits on a human approval; `e2e-actana-setup-macos.mjs` stays deleted, and
+  # docs/core-macos-prerelease-checklist.md is what a person runs instead.
+  # `scripts/__tests__/workflows.test.mjs` fails if a macOS runner appears in
+  # this file.
 
   # The Panel image, built and smoked on every PR but never pushed. Until this
   # existed, a Dockerfile or build-stage break stayed invisible until someone

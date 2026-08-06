@@ -1,53 +1,52 @@
-# macOS Core — manual checklist
+# macOS Core — the release approval checklist
 
-> **No longer a gate on a release.** `mac-arm64` and `mac-x64` were dropped as
-> release targets (ADR 0016 D28): a tag publishes two Linux tarballs and their
-> `SHA256SUMS`, and there is no macOS tarball to download — so nothing on this
-> page can hold up a release that contains no macOS asset. It stays for the
-> people running a Core on a Mac from a local build, and because
-> [#55](https://github.com/actana/control/issues/55) has not yet promoted its
-> one load-bearing fact — the Gatekeeper blocker in section 1, which is a
-> blocker on *any* Mac Core, released or not — into `docs/ci-cd.md`. This page
-> goes when that lands.
+> **This page is the gate.** `release.yml`'s `tarball-macos` job declares
+> `environment: macos-release`, and that environment has required reviewers, so
+> a tag push pauses there until a person approves it (ADR 0016 D28, as
+> amended). Working through this list on real Apple hardware **is** what the
+> reviewer is approving; `github-release` needs that job, so nothing publishes
+> until they do. An unticked box below is a reason to reject the release, not a
+> note to file.
 
-**Nothing automated covers this any more**, so what follows is the whole macOS
-install story rather than the tail of it. An `actana-setup-e2e-macos` job used
-to walk setup, the loaded LaunchAgent, a core-link dial with the printed
-pairing token, every lifecycle verb, and two idempotent re-installs, on both
-`mac-arm64` and `mac-x64` runners. [ADR 0016](adr/0016-the-0-1-0-shape.md) D35
-deleted it — macOS runners bill at 10×, and those two legs plus the macOS
-`panel-e2e` were 72% of the CI bill for a platform
-[#6](https://github.com/actana/control/issues/6) descoped — and D28 then
-removed the tarball it would have installed. `scripts/e2e-actana-setup-macos.mjs`
-went with them.
+**Nothing automated can cover what follows**, which is why the gate is a person
+rather than a job. A GitHub runner is destroyed rather than restarted, and a
+LaunchAgent is by definition tied to a login session, so "does the Core come
+back after a reboot?" and "does it come back after a logout?" can only be
+answered on a real Mac. Gatekeeper is the same kind of question: the tarball
+ships unsigned and un-notarized (out of scope — see
+[#55](https://github.com/actana/control/issues/55)), and whether macOS lets an
+operator run it is not something a headless runner experiences.
 
-Two of the sections below were always going to be manual whatever CI did: a
-GitHub runner is destroyed rather than restarted, and a LaunchAgent is by
-definition tied to a login session, so "does the Core come back?" can only be
-answered by a person on a real Mac. The rest is here because nothing else
-checks it at all.
+The `tarball-macos` leg does the part a runner *can* do: it builds the
+`mac-arm64` tarball on an Apple-silicon runner and boots it through its own
+launcher with no system Node. There has been no macOS setup e2e since
+[ADR 0016](adr/0016-the-0-1-0-shape.md) D35 deleted it — macOS runners bill at
+10×, and those legs plus the macOS `panel-e2e` were 72% of the CI bill — and
+that stays deleted. **Zero macOS in per-PR CI**; one leg, on a release, behind
+this list.
 
-Run this on **one Apple-silicon Mac** and, when the install path changed,
-**one Intel Mac**. Ten minutes.
+Run this on **one Apple-silicon Mac**. Ten minutes. There is nothing to run on
+an Intel Mac: there is no `mac-x64` asset and there will not be one — an Intel
+Mac runs its Core from the container image, and both `install.sh` and
+`actana update` refuse it at detection and say so.
 
-The Linux path — the one that actually ships — is covered by
+The Linux path is covered by
 [the one-liner rehearsal](core-linux-rehearsal.md): `pnpm core:rehearse` for a
-throwaway machine to paste the real one-liner into. That one is a release gate
-and protects the prompts and the pairing token; this one is not a gate, and is
-the only check the macOS install path gets at all.
+throwaway machine to paste the real one-liner into. Same standing as this page
+now has, for the other half of the release.
 
 ---
 
 ## Before you start
 
-- A Mac you can reboot and log back into.
+- A Mac you can reboot and log back into, on Apple silicon.
 - No Actana Core installed yet (`launchctl print gui/$(id -u)/com.actana.core`
   should fail). If one is installed, this is an upgrade rehearsal instead —
   note that in the results.
-- A `mac-arm64` / `mac-x64` tarball. No release carries one, so build it on the
-  Mac itself with `pnpm core:tarball` — from a checkout that has put a `darwin`
-  row back into `CORE_TARGETS` (`scripts/lib/core-tarball.mjs`), since the
-  shipped one has none.
+- A `mac-arm64` tarball **built from the tagged commit**. The waiting leg has
+  not run, so there is nothing to download yet: check the tag out on the Mac
+  and run `pnpm core:tarball`, which builds the host's own target and produces
+  the same asset the leg will.
 
 ---
 
@@ -134,11 +133,17 @@ rm -rf ~/Library/Logs/Actana
 
 ---
 
-## Recording the result
+## Recording the result, and approving
 
-Note wherever the work is being tracked: macOS version, chip (M-series or
-Intel), and which boxes did not tick. Sections 3 and 4 are the two properties
-this checklist exists to protect, and an unticked box in either means the Mac
-Core in front of you is not fit to run — as does the Gatekeeper box in section
-1. What has changed is only who that blocks: a release ships no macOS asset, so
-it is the operator of that machine, not a release, that this stops.
+Post it as a comment on the release's own tracking issue, or on the run:
+macOS version, chip, and which boxes did not tick.
+
+Then approve or reject the waiting `tarball-macos` job. Sections 3 and 4 are
+the two properties this checklist exists to protect, and an unticked box in
+either means the Mac Core in front of you is not fit to run — as does the
+Gatekeeper box in section 1. Any of those three is a **reject**: the release
+publishes no assets at all rather than a macOS tarball nobody could get
+working, and the fix ships in the next tag.
+
+Approving spends the runner minutes, attaches the four assets, and publishes
+the release. Nothing else is waiting on you afterwards.

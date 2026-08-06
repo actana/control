@@ -172,11 +172,18 @@ async function verifyAndUnpack(
 export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult> {
   const { layout, config, service } = opts;
 
+  // An Intel Mac lands here, and it is the one machine with a real answer
+  // rather than a refusal — the on-device install is Apple silicon only, and
+  // the container image is the supported path. Same distinction `install.sh`
+  // draws at detection.
   const target = releaseTargetFor(opts.platform, opts.arch);
   if (!target) {
     throw new Error(
-      `there is no Core build for ${opts.platform}/${opts.arch} — Cores run on macOS and ` +
-        "Linux (WSL counts as Linux) on x64 and arm64.",
+      opts.platform === "darwin"
+        ? "there is no Core build for an Intel Mac — the on-device install is Apple silicon " +
+          "only. Run your Core from the container image instead."
+        : `there is no Core build for ${opts.platform}/${opts.arch} — Cores run on Linux ` +
+          "(WSL counts as Linux) at x64 and arm64, and on Apple-silicon macOS.",
     );
   }
 

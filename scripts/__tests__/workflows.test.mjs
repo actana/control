@@ -51,6 +51,36 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
   });
 });
 
+// The macOS cost posture (decision #14) and the approval gate (D28, as
+// amended) are both invisible in a green run: a release that quietly built its
+// mac tarball without waiting for a person looks exactly like one that waited,
+// and a macOS runner that crept into the PR path looks exactly like a slow PR
+// until the bill arrives. Both are one deleted line away, so both are pinned.
+describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
+  const source = read("release.yml");
+
+  it("builds mac-arm64 behind the macos-release environment", () => {
+    const job = jobBlock(source, "tarball-macos");
+    expect(job).toContain("environment: macos-release");
+    expect(job).toMatch(/runs-on: macos-/);
+    expect(job).toContain("TARGET: mac-arm64");
+  });
+
+  it("holds the release behind that leg, so SHA256SUMS covers every asset", () => {
+    const job = jobBlock(source, "github-release");
+    expect(job).toMatch(/needs: \[[^\]]*tarball-macos[^\]]*\]/);
+    // The count of CORE_TARGETS. A subset would publish a checksum file
+    // covering less than the release does.
+    expect(job).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 3");
+  });
+
+  it("spends no macOS minutes on a pull request or a chore", () => {
+    for (const file of ["ci.yml", "housekeeping.yml"]) {
+      expect(read(file), `${file} runs a job on macOS`).not.toMatch(/runs-on:.*macos/);
+    }
+  });
+});
+
 describe("housekeeping.yml", () => {
   const source = read("housekeeping.yml");
 

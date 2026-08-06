@@ -74,16 +74,16 @@ describeOnPosix("install.sh", () => {
     root = fs.mkdtempSync(path.join(os.tmpdir(), "actana-install-sh-"));
     releaseDir = path.join(root, "releases");
 
-    // Both release targets, both good versions: the mapping tests need a real
+    // Every release target, both good versions: the mapping tests need a real
     // asset to download for each, and the pinning test needs two releases to
     // choose between.
     for (const version of [OLD_VERSION, NEW_VERSION]) {
-      for (const target of ["linux-x64", "linux-arm64"]) {
+      for (const target of ["linux-x64", "linux-arm64", "mac-arm64"]) {
         writeStubRelease({ dir: releaseDir, version, target, script: stubActana(version, target) });
       }
     }
-    // The broken release: half a release (no linux-arm64) whose one asset is
-    // also served corrupted.
+    // The broken release: part of a release (linux-x64 alone) whose one asset
+    // is also served corrupted.
     writeStubRelease({
       dir: releaseDir,
       version: BROKEN_VERSION,
@@ -267,6 +267,7 @@ describeOnPosix("install.sh", () => {
       { uname: ["Linux", "amd64"], target: "linux-x64" },
       { uname: ["Linux", "aarch64"], target: "linux-arm64" },
       { uname: ["Linux", "arm64"], target: "linux-arm64" },
+      { uname: ["Darwin", "arm64"], target: "mac-arm64" },
     ];
 
     for (const { uname, target } of cases) {
@@ -289,24 +290,23 @@ describeOnPosix("install.sh", () => {
       expect(run.actanaArgs).toBeNull();
     });
 
-    // The whole point of the Darwin case: a Mac is not an unlucky release, it
-    // is an unsupported platform, and it has to read that way. Before this, the
-    // script mapped Darwin to `mac-*` and the operator met a late
-    // "release v0.1.0 has no build for mac-arm64" — which describes a broken
-    // release, not a machine Cores do not run on.
-    for (const machine of ["arm64", "x86_64"]) {
-      it(`aborts on macOS (${machine}) at detection, before any download`, async () => {
-        const run = await runInstaller({ args: withServer([]), uname: ["Darwin", machine] });
-        expect(run.status).not.toBe(0);
-        expect(run.output).toContain("Darwin");
-        expect(run.output).toMatch(/Cores run on Linux/i);
-        // Not the late, misleading shape this replaced.
-        expect(run.output).not.toMatch(/no build for/i);
-        expect(run.output).not.toContain("mac-");
-        expect(traffic()).toEqual([]);
-        expect(run.actanaArgs).toBeNull();
-      });
-    }
+    // An Intel Mac is the one machine this script refuses that has a real
+    // answer, so it gets its own message rather than the generic
+    // unsupported-OS one: there will never be a `mac-x64` asset, and the Core
+    // image is the supported path. Refusing at detection also keeps the
+    // operator away from the late, misleading "release v0.1.0 has no build for
+    // mac-x64", which describes a broken release rather than the truth.
+    it("sends an Intel Mac to the container path, at detection", async () => {
+      const run = await runInstaller({ args: withServer([]), uname: ["Darwin", "x86_64"] });
+      expect(run.status).not.toBe(0);
+      expect(run.output).toMatch(/Intel Mac/i);
+      expect(run.output).toMatch(/docker/i);
+      // Not the generic refusal, and not the late one.
+      expect(run.output).not.toMatch(/unsupported operating system/i);
+      expect(run.output).not.toMatch(/no build for/i);
+      expect(traffic()).toEqual([]);
+      expect(run.actanaArgs).toBeNull();
+    });
 
     it("aborts on an unsupported architecture without downloading anything", async () => {
       const run = await runInstaller({ args: withServer([]), uname: ["Linux", "i686"] });
