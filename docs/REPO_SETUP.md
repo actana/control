@@ -101,12 +101,21 @@ images **and** updates descriptions. Then delete the old token in Docker Hub.
 Set under **Settings → Environments**, not under Secrets and variables. It
 holds no secrets at all; the only thing it carries is a list of people.
 
+> **Do this before the first `v*` tag, not after.** A missing environment is
+> not a red build — GitHub auto-creates a referenced environment with **no
+> protection rules** on first use, so the mac leg would run immediately and the
+> whole release would publish unreviewed, silently. `GET
+> /repos/actana/control/environments` returning `total_count: 0` means the gate
+> described below does not exist yet.
+
 - [ ] Create an environment named exactly **`macos-release`**
 - [ ] **Required reviewers** → the people who own a Mac and can run the
       checklist. At least one, and give it more than one — until somebody
-      approves, no release publishes at all
+      approves, nothing a release would publish is published
 - [ ] Leave **deployment branches** unrestricted: the job that uses it runs on
       a `v*` tag, and a branch restriction would refuse the tag
+- [ ] Confirm it took: `gh api repos/actana/control/environments --jq
+      '.environments[].name'` lists `macos-release`
 
 `release.yml`'s `tarball-macos` job declares this environment, so on a tag push
 it enters **waiting** and burns no runner minutes until it is approved
@@ -118,11 +127,14 @@ LaunchAgent survives a reboot and a logout — none of which a runner that is
 destroyed rather than restarted can answer. Clicking approve is the statement
 that it passed.
 
-The whole release waits on it, deliberately: `github-release` needs that job,
-because a `SHA256SUMS` covering fewer architectures than the docs promise is
-worse than a release that is late. If the environment does not exist, GitHub
-creates an unprotected one on first use — which is right for a fork and wrong
-here, so the box above is the check that a release actually pauses.
+**What a reviewer's approval actually controls: everything a release
+publishes.** `github-release` needs that job, and so do the `panel` and `core`
+image builds — and `descriptions`, which needs those two. So a rejection stops
+the GitHub Release, the tarballs, both images, `:latest`, and both Docker Hub
+pages. That is the property worth protecting: an image push cannot be undone
+and `:latest` has no history, so a reviewer who rejects on a Gatekeeper blocker
+must be able to believe nothing shipped. The cost is that a release is as slow
+as its reviewer, which is the cheaper side of the trade.
 
 ## 3. Branch ruleset for `main` (Settings → Rules → Rulesets)
 

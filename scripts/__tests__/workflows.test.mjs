@@ -14,6 +14,8 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
+import { CORE_TARGETS } from "../lib/core-tarball.mjs";
+
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const workflowDir = path.join(repoRoot, ".github/workflows");
 const read = (file) => fs.readFileSync(path.join(workflowDir, file), "utf8");
@@ -69,9 +71,30 @@ describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
   it("holds the release behind that leg, so SHA256SUMS covers every asset", () => {
     const job = jobBlock(source, "github-release");
     expect(job).toMatch(/needs: \[[^\]]*tarball-macos[^\]]*\]/);
-    // The count of CORE_TARGETS. A subset would publish a checksum file
-    // covering less than the release does.
-    expect(job).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 3");
+    // Derived, not a literal. `--expect` is co-edit #2 in core-tarball.mjs's
+    // header, and a bare `3` here would let a fourth target land with every
+    // other co-edit done and this one missed — green CI, then a release that
+    // publishes a SHA256SUMS covering less than the release does.
+    expect(job).toContain(
+      `compose-core-shasums.mjs --dir core-tarballs --expect ${CORE_TARGETS.length}`,
+    );
+  });
+
+  // The reason this matters more than the ordering it looks like: pushing an
+  // image is not undoable, and `:latest` is a pointer with no history. A
+  // reviewer who rejects on a Gatekeeper blocker has to be able to believe
+  // nothing shipped, and that is only true while every publishing job sits
+  // downstream of the approval. `descriptions` is covered transitively — it
+  // needs `[panel, core]`.
+  it("publishes no image until that leg is approved", () => {
+    for (const image of ["panel", "core"]) {
+      const job = jobBlock(source, image);
+      expect(job, `${image} publishes ahead of the approval`).toMatch(
+        /needs: \[[^\]]*tarball-macos[^\]]*\]/,
+      );
+      expect(job).toContain("push: true");
+    }
+    expect(jobBlock(source, "descriptions")).toMatch(/needs: \[[^\]]*panel[^\]]*\]/);
   });
 
   // container-image.yml is in the list because ci.yml calls it on every PR: a

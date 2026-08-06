@@ -5,10 +5,10 @@ name: Release
 # Docker Hub page. One file rather than four, because they are one event
 # (ADR 0016 D34).
 #
-#   resolve ─┬─ tarball ─── installer-e2e ──┐
-#            ├─ tarball-macos ⏸ ────────────┤
-#            ├─ panel ─┐                    ├── github-release
-#            └─ core ──┴─ descriptions      ┘
+#   resolve ─┬─ tarball ───────── installer-e2e ──────────┐
+#            │                                            │
+#            └─ tarball-macos ⏸ ─┬─ panel ─┬─ descriptions│
+#                                └─ core ──┴──────────────┴── github-release
 #
 # `panel` and `core` go through the reusable container-image.yml with
 # push: true, and both they and the tarball legs feed `github-release`.
@@ -17,6 +17,12 @@ name: Release
 #
 # ⏸ is the deliberate one: `tarball-macos` declares `environment: macos-release`
 # and therefore waits for a human. See its own comment.
+#
+# Everything that leaves this repository sits downstream of that ⏸ — the images
+# and their `:latest`, the Docker Hub pages, the GitHub Release and its assets.
+# Only the Linux build-and-test work runs while a reviewer decides, and none of
+# it is published. That is what makes "reject" a real answer: an image push is
+# not undoable, and `:latest` has no history to roll back to.
 #
 # Exactly four assets (D28, as amended): actana-core-<version>-linux-x64.tar.gz,
 # actana-core-<version>-linux-arm64.tar.gz,
@@ -350,14 +356,25 @@ jobs:
             --tarball "artifacts/core/actana-core-${{ needs.resolve.outputs.version }}-${{ matrix.target }}.tar.gz" \
             --distro ${{ matrix.distro }}
 
-  # The images do not wait on the tarball job: container-image.yml builds the
+  # The images do not wait on the `tarball` job: container-image.yml builds the
   # Core tarball it bakes in itself, on the runner that will ship it. They are
   # the long pole (~3½ min for both images, both arches, both registries), so
-  # running them beside the tarball legs is what keeps a release under six
-  # minutes.
+  # running them beside the Linux tarball legs is what keeps the machine part
+  # of a release under six minutes.
+  #
+  # They *do* wait on `tarball-macos`, which is the leg behind the
+  # `macos-release` approval, and that is the whole point of the gate: pushing
+  # an image is not undoable. `:latest` is a moving pointer with no history, so
+  # a reviewer who works the checklist, hits a blocker and rejects — exactly as
+  # docs/core-macos-prerelease-checklist.md instructs — has to be able to
+  # believe that nothing shipped. If these two jobs ran on `resolve` alone,
+  # `docker pull actana/core:latest` would already be serving the build they
+  # just declared unfit, and the README quickstart points there. The cost is
+  # that a release is as slow as its reviewer; the alternative is a rejection
+  # that does not reject anything.
   panel:
     name: Panel image
-    needs: resolve
+    needs: [resolve, tarball-macos]
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -371,7 +388,7 @@ jobs:
 
   core:
     name: Core image
-    needs: resolve
+    needs: [resolve, tarball-macos]
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -392,9 +409,12 @@ jobs:
     # install is not an asset worth attaching.
     #
     # `tarball-macos` is in here for a third: it is the leg behind the
-    # `macos-release` approval, so this is where the whole release waits for a
-    # person. That is the point — a SHA256SUMS covering a subset of the
-    # architectures the docs promise is worse than a release that is late.
+    # `macos-release` approval. It is now redundant — `panel` and `core` need
+    # it too, so it is already transitive — and it is kept named because a
+    # `needs:` list is the only place a reader learns what a job waits for, and
+    # this is the job whose assets the approval most directly governs. A
+    # SHA256SUMS covering a subset of the architectures the docs promise is
+    # worse than a release that is late.
     needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
     runs-on: ubuntu-24.04
     permissions:

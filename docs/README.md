@@ -78,8 +78,11 @@ routing around it.
 
 - [`core-linux-rehearsal.md`](core-linux-rehearsal.md) — rehearsing a Linux install
 - [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) — the macOS
-  checks a runner cannot perform (reboot persistence, chiefly). Not a release
-  gate: a release ships Linux Cores only
+  checks a runner cannot perform (Gatekeeper, and reboot/logout persistence).
+  **This one is the release gate**: a `v*` tag pauses on the `macos-release`
+  environment until a reviewer works through it on real Apple hardware, and
+  nothing — images, `:latest`, Release or tarballs — publishes until they
+  approve
 - [`local-build-screen-recording.md`](local-build-screen-recording.md)
 
 ## Historical record

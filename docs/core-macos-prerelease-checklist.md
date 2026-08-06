@@ -4,9 +4,9 @@
 > `environment: macos-release`, and that environment has required reviewers, so
 > a tag push pauses there until a person approves it (ADR 0016 D28, as
 > amended). Working through this list on real Apple hardware **is** what the
-> reviewer is approving; `github-release` needs that job, so nothing publishes
-> until they do. An unticked box below is a reason to reject the release, not a
-> note to file.
+> reviewer is approving. Every publishing job needs that leg — the Release, the
+> tarballs, both images and `:latest` — so nothing publishes until they do. An
+> unticked box below is a reason to reject the release, not a note to file.
 
 **Nothing automated can cover what follows**, which is why the gate is a person
 rather than a job. A GitHub runner is destroyed rather than restarted, and a
@@ -141,9 +141,14 @@ macOS version, chip, and which boxes did not tick.
 Then approve or reject the waiting `tarball-macos` job. Sections 3 and 4 are
 the two properties this checklist exists to protect, and an unticked box in
 either means the Mac Core in front of you is not fit to run — as does the
-Gatekeeper box in section 1. Any of those three is a **reject**: the release
-publishes no assets at all rather than a macOS tarball nobody could get
-working, and the fix ships in the next tag.
+Gatekeeper box in section 1. Any of those three is a **reject**.
 
-Approving spends the runner minutes, attaches the four assets, and publishes
-the release. Nothing else is waiting on you afterwards.
+**Rejecting stops everything a tag would publish**, not just the macOS
+tarball: no GitHub Release, no Linux tarballs, no `actana/panel` or
+`actana/core` image, no moved `:latest`, no Docker Hub description update.
+Every publishing job in `release.yml` sits downstream of the leg you are
+holding. Nothing needs rolling back, because nothing left the repository — the
+fix ships in the next tag.
+
+Approving spends the runner minutes, then releases the images and the four
+assets in one go. Nothing else is waiting on you afterwards.
