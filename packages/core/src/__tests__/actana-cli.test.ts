@@ -198,6 +198,72 @@ describe("usage", () => {
   });
 });
 
+// ─── help ↔ dispatch drift guard (issue 92) ─────────────────────────────────
+//
+// `--help` once advertised an `agents` verb the dispatch had never had, so
+// every operator who read the help and typed what it said got "unknown
+// command". Nothing failed but the operator. These two tests close both
+// directions of that gap.
+
+/** The verbs the `Commands:` block of what `--help` actually prints advertises. */
+async function documentedVerbs(): Promise<string[]> {
+  out = [];
+  await runActanaCli(deps(["--help"], fakeSystem()));
+  // The block runs from `Commands:` to the blank line before `Setup options:`.
+  const block = out.join("\n").split(/^Commands:$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
+  const verbs = new Set<string>();
+  for (const line of block.split("\n")) {
+    // Two-space indent, then the verb — the continuation row that spells out
+    // `token regenerate` re-names `token`, which the set folds away.
+    const match = /^ {2}(\w+)/.exec(line);
+    if (match) verbs.add(match[1]);
+  }
+  return [...verbs];
+}
+
+/**
+ * The verbs the dispatch `switch` has a case for.
+ *
+ * Read off the source because the switch is the only place that knows: a list
+ * exported for the test to compare against would be a third thing to keep in
+ * sync, which is the bug this guards. A refactor that replaces the switch
+ * breaks this loudly rather than quietly passing — a parse that finds nothing
+ * asserts that, rather than sliding through on an empty list.
+ */
+function dispatchedVerbs(): string[] {
+  const source = fs.readFileSync(path.resolve(__dirname, "../actana-cli.ts"), "utf8");
+  const start = source.indexOf("switch (verb) {");
+  expect(start, "the dispatch switch moved — this guard parses `switch (verb) {`").toBeGreaterThan(
+    -1,
+  );
+  const body = source.slice(start, source.indexOf("default:", start));
+  const verbs = [...body.matchAll(/case "(\w+)":/g)].map((match) => match[1]);
+  expect(verbs).toContain("setup");
+  return verbs;
+}
+
+describe("help and dispatch stay in sync", () => {
+  it("dispatches every verb the help advertises", async () => {
+    const verbs = await documentedVerbs();
+    expect(verbs).toContain("setup");
+
+    for (const verb of verbs) {
+      err = [];
+      // A flag no verb owns: each one rejects it while parsing, so the verb is
+      // proven to be dispatched without any of them being run for real.
+      await runActanaCli(deps([verb, "--not-a-real-flag"], fakeSystem()));
+      expect(err.join("\n")).not.toContain(`unknown command: ${verb}`);
+    }
+  });
+
+  it("advertises every verb it dispatches, `daemon` excepted", async () => {
+    const documented = new Set(await documentedVerbs());
+    // `daemon` is what the unit / LaunchAgent execs, not something an operator
+    // types, so it is the one verb deliberately left out of the help.
+    expect(dispatchedVerbs().filter((verb) => !documented.has(verb))).toEqual(["daemon"]);
+  });
+});
+
 describe("setup", () => {
   it("installs, starts, and prints a pairing token with a paste instruction", async () => {
     expect(await setup(fakeSystem())).toBe(0);

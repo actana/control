@@ -1,7 +1,7 @@
 // The `actana` CLI — one command that owns a Core's machine-side lifecycle.
 //
 //   actana setup     install, auto-start, and print the pairing token
-//   actana status    daemon state, versions, endpoint, agent availability
+//   actana status    daemon state, versions, endpoint, Harness availability
 //   actana token     reprint the pairing token
 //   actana token regenerate   mint fresh credentials, invalidating the old ones
 //   actana update    fetch, verify and swap in a release, then restart
@@ -104,7 +104,7 @@ export type ActanaCliDeps = {
   fetcher: ReleaseFetcher;
   out: (line: string) => void;
   err: (line: string) => void;
-  /** The Core's own PATH probe — the source of truth for agent availability. */
+  /** The Core's own PATH probe — the source of truth for Harness availability. */
   probeHarnesses: () => CoreLinkHarnessAvailabilityMap;
   /**
    * Run the Core daemon in the foreground. What the systemd unit execs, and
@@ -125,7 +125,7 @@ Usage:
 
 Commands:
   setup      Install the Core, start it, and print the pairing token
-  status     Show daemon state, versions, endpoint, and agent availability
+  status     Show daemon state, versions, endpoint, and Harness availability
   token      Reprint the pairing token
   token regenerate
              Issue fresh pairing credentials and invalidate the old ones
@@ -134,7 +134,7 @@ Commands:
   stop       Stop the Core daemon
   restart    Restart the Core daemon
   logs       Show the daemon's log output
-  agents     Manage Harnesses — \`actana harnesses install <id>\`
+  harnesses  Manage the Harnesses this Core runs — \`harnesses install <id>\`
   uninstall  Stop the daemon and remove the service and the install
 
 Setup options:
@@ -142,8 +142,8 @@ Setup options:
   --host <addr>         Address the daemon binds (default 0.0.0.0)
   --public-host <addr>  Address your Panel dials (default: this machine's IP)
   --label <name>        Alias shown in your Panel (default: the hostname)
-  --with-<harness>        Install this Harness without asking (repeatable)
-  --no-harnesses           Do not install or offer any Harness
+  --with-<harness>      Install this Harness without asking (repeatable)
+  --no-harnesses        Do not install or offer any Harness
   --yes                 Take the recommended answer to every prompt, which
                         includes installing every missing Harness
 
@@ -916,7 +916,7 @@ async function cmdHarnesses(deps: ActanaCliDeps, argv: string[]): Promise<number
     return EXIT_USAGE;
   }
   if (rest.length === 0) {
-    deps.err("actana harnesses install <id> — name the agent to install.");
+    deps.err("actana harnesses install <id> — name the Harness to install.");
     deps.err(supportedHarnessIdsSentence());
     return EXIT_USAGE;
   }
