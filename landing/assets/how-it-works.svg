@@ -1,0 +1,90 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 780 300" width="780" height="300"
+     role="img" aria-label="Browser connects to the Panel over a panel-link WebSocket; the Panel dials each Core over a mutually-authenticated core-link; each Core runs PTYs against its own repos.">
+  <!--
+    The README's mermaid flowchart, redrawn as a static asset so the page needs
+    no renderer. Themed from inside: an SVG loaded through <img> gets no page
+    CSS, but it does see the user's colour scheme, so the tokens live here.
+    Font is the generic mono stack for the same reason — an @font-face here
+    could not fetch the woff2 from inside an <img>.
+  -->
+  <style>
+    :root {
+      --ink: #f9fafb;
+      --sub: #9ca3af;
+      --card: #122231;
+      --edge: #1c3346;
+      --accent: #29a9e0;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --ink: #111827;
+        --sub: #6b7280;
+        --card: #ffffff;
+        --edge: #e5e7eb;
+      }
+    }
+    .box { fill: var(--card); stroke: var(--edge); stroke-width: 1; }
+    .box-accent { stroke: var(--accent); }
+    .edge { fill: none; stroke: var(--edge); stroke-width: 1.5; }
+    .edge-accent { stroke: var(--accent); }
+    .head { fill: var(--edge); }
+    .head-accent { fill: var(--accent); }
+    text {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      text-anchor: middle;
+    }
+    .t-title { font-size: 12px; font-weight: 700; fill: var(--ink); }
+    .t-title-lg { font-size: 14px; font-weight: 700; fill: var(--ink); }
+    .t-sub { font-size: 9px; fill: var(--sub); }
+    .t-edge { font-size: 9px; fill: var(--sub); }
+  </style>
+
+  <defs>
+    <marker id="a" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head" d="M0 0 L8 4 L0 8 z"/>
+    </marker>
+    <marker id="a-accent" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path class="head-accent" d="M0 0 L8 4 L0 8 z"/>
+    </marker>
+  </defs>
+
+  <!-- Browser -->
+  <rect class="box" x="4" y="120" width="104" height="60" rx="10"/>
+  <text class="t-title" x="56" y="146">Browser</text>
+  <text class="t-sub" x="56" y="163">one tab</text>
+
+  <!-- panel-link -->
+  <path class="edge" d="M110 150 L 210 150" marker-end="url(#a)"/>
+  <text class="t-edge" x="160" y="140">panel-link (WSS)</text>
+
+  <!-- Panel — accented, because it is the one thing you deploy -->
+  <rect class="box box-accent" x="218" y="114" width="116" height="72" rx="10"/>
+  <text class="t-title-lg" x="276" y="147">Panel</text>
+  <text class="t-sub" x="276" y="165">web service</text>
+
+  <!-- core-link, dialled outward to each Core -->
+  <path class="edge edge-accent" d="M334 150 C 380 150 392 80 438 80" marker-end="url(#a-accent)"/>
+  <path class="edge edge-accent" d="M334 150 C 380 150 392 220 438 220" marker-end="url(#a-accent)"/>
+  <text class="t-edge" x="387" y="153">core-link (mTLS)</text>
+
+  <!-- Cores -->
+  <rect class="box" x="444" y="50" width="150" height="60" rx="10"/>
+  <text class="t-title" x="519" y="76">Core</text>
+  <text class="t-sub" x="519" y="93">laptop</text>
+
+  <rect class="box" x="444" y="190" width="150" height="60" rx="10"/>
+  <text class="t-title" x="519" y="216">Core</text>
+  <text class="t-sub" x="519" y="233">workstation</text>
+
+  <!-- PTYs -->
+  <path class="edge" d="M596 80 L 648 80" marker-end="url(#a)"/>
+  <path class="edge" d="M596 220 L 648 220" marker-end="url(#a)"/>
+
+  <rect class="box" x="654" y="56" width="122" height="48" rx="10"/>
+  <text class="t-sub" x="715" y="77">PTY → Harness</text>
+  <text class="t-sub" x="715" y="92">→ your repo</text>
+
+  <rect class="box" x="654" y="196" width="122" height="48" rx="10"/>
+  <text class="t-sub" x="715" y="217">PTY → Harness</text>
+  <text class="t-sub" x="715" y="232">→ your repo</text>
+</svg>

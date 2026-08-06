@@ -127,7 +127,7 @@ async function githubApi(path) {
     headers: {
       Accept: "application/vnd.github+json",
       Authorization: `Bearer ${token}`,
-      "User-Agent": "mission-control-wait-for-hosted-ci",
+      "User-Agent": "actana-control-wait-for-hosted-ci",
       "X-GitHub-Api-Version": "2022-11-28",
     },
   });

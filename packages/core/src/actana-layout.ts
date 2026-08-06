@@ -126,6 +126,34 @@ export function installDirFor(layout: ActanaLayout, version: string): string {
 }
 
 /**
+ * Where the update check remembers what the release channel last answered.
+ *
+ * Under the data dir rather than the install tree: `actana update` replaces
+ * `versions/<v>` wholesale, and a cache that vanished on every update would
+ * ask GitHub again on the first `status` after one — exactly when an operator
+ * is most likely to run it in a loop.
+ *
+ * Takes the data dir rather than the whole layout because container mode
+ * resolves it from `AC_USER_DATA_DIR` (the image bakes it) instead of from the
+ * install root.
+ */
+export function updateCheckCachePath(dataDir: string): string {
+  return path.join(dataDir, "update-check.json");
+}
+
+/**
+ * Where the daemon remembers which release it last announced in its log.
+ *
+ * Beside the cache above, and separate from it: that file is the release
+ * channel's answer, shared with the CLI; this one is the daemon's own record of
+ * what it has already said, so a Core its host restarts hourly does not repeat
+ * the same line hourly.
+ */
+export function updateNoticeStatePath(dataDir: string): string {
+  return path.join(dataDir, "update-notice.json");
+}
+
+/**
  * Whether the launcher's directory is on `PATH` — if it is not, `actana` works
  * during setup (the operator ran it by path) and then vanishes, so setup says
  * so instead of leaving them to discover it.

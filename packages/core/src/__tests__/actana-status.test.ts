@@ -16,6 +16,7 @@ const healthy: ActanaStatusReport = {
     claude: { status: "available", version: "2.1.0" },
     opencode: { status: "missing", reason: "not on PATH" },
   },
+  update: null,
 };
 
 describe("summarizeHealth", () => {
@@ -130,6 +131,7 @@ describe("formatActanaStatus", () => {
       container: null,
       paired: false,
       agents: {},
+      update: null,
     });
     expect(text).toMatch(/not installed/i);
     expect(text).toContain("actana setup");
@@ -141,6 +143,64 @@ describe("formatActanaStatus", () => {
 
   it("ends with a newline so shell output does not run together", () => {
     expect(formatActanaStatus(healthy).endsWith("\n")).toBe(true);
+  });
+});
+
+// An alert, and only an alert: the line names the command and never runs it,
+// and nothing about it reaches the exit code a script reads.
+describe("the update availability line", () => {
+  const available = {
+    ...healthy,
+    update: { current: "0.1.0", latest: "0.2.0", updateAvailable: true },
+  };
+
+  it("names the newer release and the version this Core is on", () => {
+    const text = formatActanaStatus(available);
+    expect(text).toMatch(/Update\s+0\.2\.0 is available — you're on 0\.1\.0/);
+  });
+
+  it("tells a metal install to run `actana update`", () => {
+    expect(formatActanaStatus(available)).toMatch(/run: actana update$/m);
+  });
+
+  it("tells a container operator to pull the image on the host instead", () => {
+    const text = formatActanaStatus({
+      ...available,
+      serviceName: null,
+      service: null,
+      persistence: null,
+      container: { listening: true, port: 8443 },
+    });
+    expect(text).toContain("run: docker compose pull && docker compose up -d");
+    expect(text).not.toMatch(/run: actana update/);
+  });
+
+  // No button, no prompt, no offer — the remedy is a sentence the operator
+  // types (ADR 0010).
+  it("offers nothing to press", () => {
+    expect(formatActanaStatus(available)).not.toMatch(/\[y\/n\]|press|install now/i);
+  });
+
+  it("says nothing when this Core is already on the newest release", () => {
+    const text = formatActanaStatus({
+      ...healthy,
+      update: { current: "0.2.0", latest: "0.2.0", updateAvailable: false },
+    });
+    expect(text).not.toMatch(/Update/);
+  });
+
+  // The live path today: the repository has published no releases, so the
+  // check has nothing to report and status looks exactly as it did before.
+  it("says nothing when the channel could not be read", () => {
+    const text = formatActanaStatus({
+      ...healthy,
+      update: { current: "0.1.0", latest: null, updateAvailable: false },
+    });
+    expect(text).toBe(formatActanaStatus(healthy));
+  });
+
+  it("does not make an out-of-date Core unhealthy", () => {
+    expect(summarizeHealth(available)).toBe("healthy");
   });
 });
 

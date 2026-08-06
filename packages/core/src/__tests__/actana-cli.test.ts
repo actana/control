@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { runActanaCli, EXIT_USAGE, type ActanaCliDeps } from "../actana-cli";
+import { refusedContainerVerbs } from "../actana-container";
 import { installDirFor, resolveActanaLayout } from "../actana-layout";
 import { releaseAssetName, releaseChannel } from "../actana-release";
 import type { ActanaSystem, CommandResult } from "../actana-system";
@@ -92,7 +93,11 @@ let installRoot: string;
 let releaseDir: string;
 let out: string[];
 let err: string[];
+let debug: string[];
 let daemonRuns: number;
+
+/** A fixed "now" for the update check's once-a-day cache. */
+const NOW = 1_700_000_000_000;
 
 function makeTarballTree(root: string, manifest = MANIFEST): void {
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
@@ -123,8 +128,10 @@ function deps(argv: string[], system: ActanaSystem, over: Partial<ActanaCliDeps>
     interactive: false,
     system,
     fetcher: fixtureFetcher(releaseDir, CHANNEL),
+    now: () => NOW,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
+    debug: (line) => debug.push(line),
     probeHarnesses: () => ({ claude: { status: "available", version: "2.1.0" } }),
     runDaemon: async () => {
       daemonRuns += 1;
@@ -153,6 +160,7 @@ beforeEach(() => {
   makeTarballTree(installRoot);
   out = [];
   err = [];
+  debug = [];
   daemonRuns = 0;
 });
 
@@ -195,6 +203,72 @@ describe("usage", () => {
   it("rejects an unknown flag rather than silently ignoring it", async () => {
     expect(await runActanaCli(deps(["setup", "--porto", "9000"], fakeSystem()))).toBe(2);
     expect(err.join("\n")).toMatch(/--porto/);
+  });
+});
+
+// ─── help ↔ dispatch drift guard (issue 92) ─────────────────────────────────
+//
+// `--help` once advertised an `agents` verb the dispatch had never had, so
+// every operator who read the help and typed what it said got "unknown
+// command". Nothing failed but the operator. These two tests close both
+// directions of that gap.
+
+/** The verbs the `Commands:` block of what `--help` actually prints advertises. */
+async function documentedVerbs(): Promise<string[]> {
+  out = [];
+  await runActanaCli(deps(["--help"], fakeSystem()));
+  // The block runs from `Commands:` to the blank line before `Setup options:`.
+  const block = out.join("\n").split(/^Commands:$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
+  const verbs = new Set<string>();
+  for (const line of block.split("\n")) {
+    // Two-space indent, then the verb — the continuation row that spells out
+    // `token regenerate` re-names `token`, which the set folds away.
+    const match = /^ {2}(\w+)/.exec(line);
+    if (match) verbs.add(match[1]);
+  }
+  return [...verbs];
+}
+
+/**
+ * The verbs the dispatch `switch` has a case for.
+ *
+ * Read off the source because the switch is the only place that knows: a list
+ * exported for the test to compare against would be a third thing to keep in
+ * sync, which is the bug this guards. A refactor that replaces the switch
+ * breaks this loudly rather than quietly passing — a parse that finds nothing
+ * asserts that, rather than sliding through on an empty list.
+ */
+function dispatchedVerbs(): string[] {
+  const source = fs.readFileSync(path.resolve(__dirname, "../actana-cli.ts"), "utf8");
+  const start = source.indexOf("switch (verb) {");
+  expect(start, "the dispatch switch moved — this guard parses `switch (verb) {`").toBeGreaterThan(
+    -1,
+  );
+  const body = source.slice(start, source.indexOf("default:", start));
+  const verbs = [...body.matchAll(/case "(\w+)":/g)].map((match) => match[1]);
+  expect(verbs).toContain("setup");
+  return verbs;
+}
+
+describe("help and dispatch stay in sync", () => {
+  it("dispatches every verb the help advertises", async () => {
+    const verbs = await documentedVerbs();
+    expect(verbs).toContain("setup");
+
+    for (const verb of verbs) {
+      err = [];
+      // A flag no verb owns: each one rejects it while parsing, so the verb is
+      // proven to be dispatched without any of them being run for real.
+      await runActanaCli(deps([verb, "--not-a-real-flag"], fakeSystem()));
+      expect(err.join("\n")).not.toContain(`unknown command: ${verb}`);
+    }
+  });
+
+  it("advertises every verb it dispatches, `daemon` excepted", async () => {
+    const documented = new Set(await documentedVerbs());
+    // `daemon` is what the unit / LaunchAgent execs, not something an operator
+    // types, so it is the one verb deliberately left out of the help.
+    expect(dispatchedVerbs().filter((verb) => !documented.has(verb))).toEqual(["daemon"]);
   });
 });
 
@@ -332,6 +406,124 @@ describe("status", () => {
     });
     await runActanaCli(deps(["status"], system));
     expect(out.join("\n")).toMatch(/State\s+not installed/);
+  });
+});
+
+// Alert-only, and cheap: `status` names a newer release and the command the
+// operator runs, asks the channel at most once a day, and is the same command
+// it always was on the day the channel cannot be reached — which is every day
+// until 0.1.0 is published.
+describe("status: the update check", () => {
+  /** A fetcher answering the public channel `checkForUpdate` actually asks. */
+  function channelWith(version: string | null) {
+    const dir = path.join(tmp, `channel-${version ?? "empty"}`);
+    fs.mkdirSync(dir, { recursive: true });
+    if (version) writeRelease({ dir, version, target: "linux-x64" });
+    return fixtureFetcher(dir, releaseChannel({}));
+  }
+
+  const running = () =>
+    fakeSystem({
+      "systemctl --user show": { status: 0, stdout: RUNNING_UNIT, stderr: "" },
+      "loginctl show-user": { status: 0, stdout: "Linger=yes", stderr: "" },
+    });
+
+  it("names the newer release and the command that installs it", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const code = await runActanaCli(
+      deps(["status"], running(), { fetcher: channelWith("0.2.0") }),
+    );
+
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toMatch(/Update\s+0\.2\.0 is available — you're on 0\.1\.0/);
+    expect(text).toContain("run: actana update");
+  });
+
+  // The live path: `releases/latest` 404s because nothing is published yet.
+  it("says nothing at all when the channel has no releases", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const code = await runActanaCli(
+      deps(["status"], running(), { fetcher: channelWith(null) }),
+    );
+
+    expect(code).toBe(0);
+    expect(out.join("\n")).not.toMatch(/Update/);
+    expect(err).toEqual([]);
+    expect(debug.join("\n")).toMatch(/404/);
+  });
+
+  it("leaves the health verdict and the exit code alone", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const system = fakeSystem({
+      "systemctl --user show": {
+        status: 0,
+        stdout: "LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0",
+        stderr: "",
+      },
+    });
+    const code = await runActanaCli(deps(["status"], system, { fetcher: channelWith("0.2.0") }));
+
+    expect(code).toBe(1);
+    expect(out.join("\n")).toMatch(/stopped/i);
+  });
+
+  it("asks the channel once a day, however often status is run", async () => {
+    await setup(fakeSystem());
+    const fetcher = channelWith("0.2.0");
+    const latestUrl = "https://api.github.com/repos/actana/control/releases/latest";
+
+    await runActanaCli(deps(["status"], running(), { fetcher }));
+    await runActanaCli(deps(["status"], running(), { fetcher, now: () => NOW + 3_600_000 }));
+
+    expect(fetcher.asked.filter((url) => url === latestUrl)).toHaveLength(1);
+  });
+
+  it("asks again once the cached answer is a day old", async () => {
+    await setup(fakeSystem());
+    const fetcher = channelWith("0.2.0");
+    const latestUrl = "https://api.github.com/repos/actana/control/releases/latest";
+
+    await runActanaCli(deps(["status"], running(), { fetcher }));
+    await runActanaCli(
+      deps(["status"], running(), { fetcher, now: () => NOW + 24 * 60 * 60 * 1000 }),
+    );
+
+    expect(fetcher.asked.filter((url) => url === latestUrl)).toHaveLength(2);
+  });
+
+  it("makes no request at all when the operator opted out", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+    const fetcher = channelWith("0.2.0");
+
+    await runActanaCli(
+      deps(["status"], running(), {
+        fetcher,
+        env: {
+          HOME: home,
+          PATH: path.join(home, ".local", "bin"),
+          ACTANA_UPDATE_CHECK: "0",
+        },
+      }),
+    );
+
+    expect(fetcher.asked).toEqual([]);
+    expect(out.join("\n")).not.toMatch(/Update/);
+  });
+
+  it("says nothing on a machine setup never ran on", async () => {
+    const fetcher = channelWith("0.2.0");
+    await runActanaCli(deps(["status"], fakeSystem(), { fetcher }));
+
+    expect(fetcher.asked).toEqual([]);
+    expect(out.join("\n")).toMatch(/not installed/i);
   });
 });
 
@@ -1065,7 +1257,23 @@ describe("in a container", () => {
     );
   }
 
-  const REFUSED = ["setup", "start", "stop", "restart", "update", "uninstall", "logs"];
+  // Derived from the source of truth (`DOCKER_EQUIVALENT`), not retyped. A
+  // hardcoded copy here is bound to nothing: a verb added to the refusal table
+  // would go untested, and one removed from it would keep passing against a
+  // list that no longer describes the CLI.
+  const REFUSED = refusedContainerVerbs();
+
+  it("refuses a verb set that is neither empty nor the whole CLI", () => {
+    // A floor and a ceiling on the derivation above, so an accidental `{}` or
+    // a table that swallowed every verb is a red test rather than a suite that
+    // silently checks nothing.
+    expect(REFUSED).toContain("setup");
+    expect(REFUSED).toContain("update");
+    // The verbs that must keep working inside the image.
+    expect(REFUSED).not.toContain("status");
+    expect(REFUSED).not.toContain("token");
+    expect(REFUSED).not.toContain("harnesses");
+  });
 
   it.each(REFUSED)("refuses `%s` and names the Docker command that does it", async (verb) => {
     const system = fakeSystem();
@@ -1106,6 +1314,26 @@ describe("in a container", () => {
     expect(text).toMatch(/restart policy/i);
     expect(text).not.toMatch(/actana-core\.service/);
     expect(system.calls.some((call) => call[0] === "systemctl")).toBe(false);
+  });
+
+  // The remedy is the only half of the availability line that differs by how
+  // this Core arrived: there is no tree to swap in the image, so the command
+  // belongs to the operator's host (ADR 0016 D16).
+  it("points the update line at the compose commands, not at `actana update`", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+    const channel = path.join(tmp, "container-channel");
+    fs.mkdirSync(channel, { recursive: true });
+    writeRelease({ dir: channel, version: "0.2.0", target: "linux-x64" });
+
+    await runActanaCli(
+      deps(["status"], fakeSystem(), { env, fetcher: fixtureFetcher(channel, releaseChannel({})) }),
+    );
+
+    const text = out.join("\n");
+    expect(text).toMatch(/Update\s+0\.2\.0 is available/);
+    expect(text).toContain("run: docker compose pull && docker compose up -d");
+    expect(text).not.toContain("run: actana update");
   });
 
   it("is stopped, not degraded, when the daemon's port does not answer", async () => {
@@ -1225,15 +1453,37 @@ describe("in a container", () => {
     expect(system.calls.some((call) => call[0] === "systemctl")).toBe(false);
   });
 
-  it("lists the three variables and the refused verbs in help", async () => {
-    await runActanaCli(deps(["--help"], fakeSystem(), { env: containerEnv() }));
+  // Scoped to the container page rather than to the whole `--help` output, and
+  // that is the entire point of the test. `--help` in the image prints
+  // CONTAINER_USAGE *followed by* the ordinary USAGE, whose Commands block
+  // already lists setup/start/stop/restart/update/uninstall/logs — so a
+  // whole-output match passes even if the container page's verb line is
+  // blanked. The split is on USAGE's own first line, which is the boundary
+  // between the two pages.
+  const containerPage = (): string => {
     const text = out.join("\n");
+    const boundary = text.indexOf("actana — install and operate");
+    expect(boundary, "the ordinary USAGE did not follow the container page").toBeGreaterThan(0);
+    return text.slice(0, boundary);
+  };
+
+  it("lists the three variables and the refused verbs on the container page", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem(), { env: containerEnv() }));
+    const page = containerPage();
+
     for (const name of ["ACTANA_PUBLIC_HOST", "ACTANA_PORT", "ACTANA_LABEL"]) {
-      expect(text).toContain(name);
+      expect(page).toContain(name);
     }
     for (const verb of REFUSED) {
-      expect(text).toMatch(new RegExp(`\\b${verb}\\b`));
+      expect(page, `\`${verb}\` is refused but not named on the container page`).toMatch(
+        new RegExp(`\\b${verb}\\b`),
+      );
     }
+  });
+
+  it("prints the container page only inside the image", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem(), { env: { HOME: home } }));
+    expect(out.join("\n")).not.toContain("its lifecycle belongs to Docker");
   });
 });
 

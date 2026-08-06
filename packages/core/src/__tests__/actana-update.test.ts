@@ -316,6 +316,34 @@ describe("releases this machine cannot use", () => {
     await expect(update({ platform: "win32", arch: "x64" })).rejects.toThrow(/win32/);
   });
 
+  // An Intel Mac is the one refusal with a real answer behind it rather than
+  // an absence, and it is the second of the two front doors: `install.sh`'s
+  // `detect_target` refuses the same machine by name (covered end-to-end in
+  // scripts/__tests__/install-sh.test.mjs), and the two have to agree. Both
+  // properties matter — the Docker path has to be *named*, or the operator
+  // reads "no build" as a broken release; and it has to happen at detection,
+  // or they wait through a download to be told.
+  it("refuses an Intel Mac by name, and points at the container image", async () => {
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
+    const fetcher = fixtureFetcher(releaseDir, CHANNEL);
+
+    await expect(update({ platform: "darwin", arch: "x64", fetcher })).rejects.toThrow(
+      /Intel Mac.*Apple silicon.*container image/s,
+    );
+    // Detection, not a failed download: nothing was asked of the release host.
+    expect(fetcher.asked).toEqual([]);
+  });
+
+  it("still installs on an Apple-silicon Mac, which is the target that exists", async () => {
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
+    const result = await update({
+      platform: "darwin",
+      arch: "arm64",
+      system: fakeSystem(),
+    });
+    expect(result.version).toBe("0.2.0");
+  });
+
   it("rejects a tarball whose manifest is not the release it was served as", async () => {
     writeRelease({
       dir: releaseDir,

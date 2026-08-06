@@ -11,16 +11,32 @@
 // resolution rules are unit-testable without a network or a release existing.
 // The bytes themselves come through {@link ReleaseFetcher}, which
 // `actana-update.ts` drives and tests replace with a local fixture.
+//
+// The channel's own shape — the repository, its hosts, the `releases/latest`
+// URL and the tag inside a release payload — lives in
+// `@actana/shared/actana-release-channel`, because the Panel's update check
+// reads the same endpoint and cannot import the Core (ADR 0016 D3). It is
+// re-exported here so this stays the one release module the CLI imports.
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import { Readable } from "node:stream";
 import { pipeline } from "node:stream/promises";
+import {
+  latestReleaseUrl,
+  parseLatestTag,
+  type ReleaseChannel,
+} from "@actana/shared/actana-release-channel";
 
-/** Where the project publishes releases. Matches `install.sh`'s defaults. */
-export const DEFAULT_REPO = "actana/control";
-export const DEFAULT_API_BASE = "https://api.github.com";
-export const DEFAULT_DOWNLOAD_BASE = "https://github.com";
+export {
+  DEFAULT_API_BASE,
+  DEFAULT_DOWNLOAD_BASE,
+  DEFAULT_REPO,
+  latestReleaseUrl,
+  parseLatestTag,
+  releaseChannel,
+  type ReleaseChannel,
+} from "@actana/shared/actana-release-channel";
 
 /** The checksum asset every release carries, named as the release workflow names it. */
 export const SHASUMS_ASSET = "SHA256SUMS";
@@ -73,41 +89,27 @@ export function nodeReleaseFetcher(): ReleaseFetcher {
   };
 }
 
-/** Which repository, and which hosts its releases are read from. */
-export type ReleaseChannel = {
-  repo: string;
-  /** Host serving the releases API (`/repos/<repo>/releases/latest`). */
-  apiBase: string;
-  /** Host serving release assets (`/<repo>/releases/download/<tag>/<asset>`). */
-  downloadBase: string;
-};
-
-/**
- * Resolve the channel to read releases from.
- *
- * One `baseUrl` replaces both of GitHub's hosts, exactly as `install.sh`'s
- * `--base-url` does. That is what lets a fixture server stand in for GitHub in
- * tests and in a hand-run rehearsal, with no published release involved.
- */
-export function releaseChannel(opts: { repo?: string; baseUrl?: string }): ReleaseChannel {
-  const repo = opts.repo || DEFAULT_REPO;
-  if (!opts.baseUrl) {
-    return { repo, apiBase: DEFAULT_API_BASE, downloadBase: DEFAULT_DOWNLOAD_BASE };
-  }
-  const base = opts.baseUrl.replace(/\/+$/, "");
-  return { repo, apiBase: base, downloadBase: base };
-}
-
 /**
  * The release target for a machine, or null when there is no build for it.
  *
- * Windows is not an omission: Windows operators run the web Panel and host
- * their Cores on macOS/Linux (WSL counts as Linux).
+ * Three targets: `linux-x64`, `linux-arm64`, `mac-arm64`. Windows is not an
+ * omission — Windows operators run the web Panel and host their Cores on Linux
+ * (WSL counts as Linux).
+ *
+ * **An Intel Mac returns null on purpose.** `darwin`/`x64` is the one
+ * combination that looks like it ought to have an asset and never will: the
+ * on-device install is Apple silicon only, and an Intel Mac runs its Core from
+ * the container image. Answering `"mac-x64"` here would make `actana update`
+ * fail two steps later with "release 0.2.0 has no build for mac-x64", which
+ * reads as a broken release rather than as the decision it is. `install.sh`'s
+ * `detect_target` refuses at the same point, for the same reason.
  */
 export function releaseTargetFor(platform: NodeJS.Platform, arch: string): string | null {
-  const os = platform === "darwin" ? "mac" : platform === "linux" ? "linux" : null;
   const cpu = arch === "x64" || arch === "arm64" ? arch : null;
-  return os && cpu ? `${os}-${cpu}` : null;
+  if (!cpu) return null;
+  if (platform === "linux") return `linux-${cpu}`;
+  if (platform === "darwin") return cpu === "arm64" ? "mac-arm64" : null;
+  return null;
 }
 
 /** The tarball asset name for a version and target. */
@@ -115,31 +117,9 @@ export function releaseAssetName(version: string, target: string): string {
   return `actana-core-${version}-${target}.tar.gz`;
 }
 
-/** The releases-API URL for the newest published release. */
-export function latestReleaseUrl(channel: ReleaseChannel): string {
-  return `${channel.apiBase}/repos/${channel.repo}/releases/latest`;
-}
-
 /** The download URL for one asset of one release. */
 export function assetUrl(channel: ReleaseChannel, version: string, asset: string): string {
   return `${channel.downloadBase}/${channel.repo}/releases/download/v${version}/${asset}`;
-}
-
-/**
- * The bare version in a release payload's `tag_name`, or null when there is
- * none — a 404 body, an error object, or anything that is not a release.
- */
-export function parseLatestTag(json: string): string | null {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(json);
-  } catch {
-    return null;
-  }
-  if (!parsed || typeof parsed !== "object") return null;
-  const tag = (parsed as Record<string, unknown>).tag_name;
-  if (typeof tag !== "string" || tag === "") return null;
-  return tag.replace(/^v/, "");
 }
 
 /** `<digest>  <name>` (coreutils) and `<digest> *<name>` (shasum binary mode). */

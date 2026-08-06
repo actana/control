@@ -1,0 +1,65 @@
+name: Landing
+
+# The fourth entry point, and the only one that publishes something a stranger
+# sees without cloning anything: `landing/` is uploaded to Bunny Edge Storage
+# and served at control.actana.ai through the pull zone in front of it.
+#
+# The plan, and the reference research behind every choice in it, is
+# docs/landing-page.md. ADR 0016 D34 collapsed the workflows to three entry
+# points; this file deliberately revises that count, which is why
+# scripts/__tests__/workflows.test.mjs names it.
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      # The folder, plus this file — so a change to the deploy itself can be
+      # exercised without an unrelated edit to the page.
+      - "landing/**"
+      - ".github/workflows/landing.yml"
+  # Redeploys without a commit: the first deploy, a purge that did not take,
+  # a zone that was rebuilt.
+  workflow_dispatch: {}
+
+# Two deploys of the same folder must not interleave their uploads. Queue
+# rather than cancel — cancelling mid-upload is how a zone ends up half-written.
+concurrency:
+  group: landing
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    name: Upload to Bunny, then purge
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Upload landing/ to Edge Storage and purge the pull zone
+        uses: ayeressian/bunnycdn-storage-deploy@251c77f4b9e7e683ad00086de2bef5770c3386b2 # v2.4.5
+        with:
+          source: landing
+          # The zone root: control.actana.ai/ serves landing/index.html.
+          destination: /
+          storageZoneName: ${{ vars.BUNNY_STORAGE_ZONE }}
+          storageEndpoint: ${{ vars.BUNNY_STORAGE_ENDPOINT || 'storage.bunnycdn.com' }}
+          storagePassword: ${{ secrets.BUNNY_STORAGE_PASSWORD }}
+          upload: "true"
+          # Deliberately not clearing the zone first. `remove` would prune files
+          # a rename left behind, but it runs *before* the upload — so an upload
+          # that fails halfway leaves the front door blank. An orphaned asset
+          # nothing links to costs a few KB of storage; a blank front door costs
+          # the visitor. Clear the zone by hand on the rare rename that matters.
+          remove: "false"
+          # The purge is a different credential with a different blast radius:
+          # the storage password writes one zone, the API key acts on the
+          # account. They are two secrets on purpose — do not fold them into one.
+          accessKey: ${{ secrets.BUNNY_API_KEY }}
+          pullZoneId: ${{ vars.BUNNY_PULL_ZONE_ID }}
+          purgePullZone: "true"
+          # Seconds. Edge Storage replicates before the purge is worth making;
+          # purging first just re-caches what is already stale.
+          purgePullZoneDelay: "15"

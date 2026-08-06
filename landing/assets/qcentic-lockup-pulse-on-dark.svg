@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-45.548 -60.044 321.853 135.598" width="321.853" height="135.598">
+<rect x="-45.548" y="-60.044" width="321.853" height="135.598" fill="#0D0D0D"/>
+<style>.fl{animation:fl 2.6s ease-in-out infinite}@keyframes fl{0%,100%{opacity:1}50%{opacity:.3}}@media (prefers-reduced-motion:reduce){.fl{animation:none;opacity:1}}</style>
+<g>
+<g fill="none" stroke="#FFFFFF" stroke-width="6" stroke-linecap="round">
+<path class="" d="M0 -18 A 18 18 0 1 1 0 18 A 18 18 0 1 1 0 -18"/>
+<path class="" d="M18 0 L18 48.006"/>
+<g class="">
+<path d="M60.715 -14.745 A 18 18 0 1 0 60.715 14.745"/>
+<path d="M70.598 0 L106.598 0"/>
+<path d="M106.598 0 A 18 18 0 1 0 98.922 14.745"/>
+<path d="M117.209 18 L117.209 0 A 18 18 0 0 1 153.209 0 L153.209 18"/>
+<path d="M172.094 -32.004 L172.094 7.992 A 10.008 10.008 0 0 0 182.102 18"/>
+<path d="M165.092 -18 L183.092 -18"/>
+<path d="M196.209 -18 L196.209 18"/>
+<path d="M241.081 -14.745 A 18 18 0 1 0 241.081 14.745"/>
+</g>
+</g>
+<circle class="fl" cx="0" cy="0" r="4.5" fill="#FFFFFF"/>
+<circle cx="196.209" cy="-32.004" r="3.492" fill="#FFFFFF"/>
+</g></svg>

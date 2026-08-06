@@ -129,7 +129,7 @@ export function resolveHarnessId(token: string): Harness | null {
 
 /** The list an unknown id is answered with. */
 export function supportedHarnessIdsSentence(): string {
-  return `Supported agents: ${offerableHarnessIds().join(", ")}.`;
+  return `Supported Harnesses: ${offerableHarnessIds().join(", ")}.`;
 }
 
 /** Every `--with-<id>` spelling, for the setup verb's flag spec. */

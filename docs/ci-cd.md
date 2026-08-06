@@ -12,6 +12,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a rebuilt-and-republished Core image, a `NODE_VERSION` bump PR, and an issue for anything the dev-tree audit or the Harness canary found |
+| [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
 
 `ci.yml` is one file doing two jobs, and the trigger is the difference. On a
 PR it gates and pushes nothing; on a push to `main` it publishes `:edge` and
@@ -25,6 +26,18 @@ file of its own. The repo conventions — PR title, commit messages, branch name
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
 described in full under [Housekeeping](#housekeeping).
+
+`landing.yml` is the fourth entry point, and the only one that publishes to
+somewhere other than a registry: it uploads `landing/` to Bunny Edge Storage
+and purges the pull zone in front of it. It is a separate file rather than a
+path-filtered job inside `ci.yml` for a reason that bites hard —
+**`ci.yml`'s checks are required by the "Protect main" ruleset, and a required
+check whose workflow is filtered out of a run stays Pending forever, blocking
+every PR that does not touch the filtered path.** The same rule applies going
+forward: if the landing page ever grows a validation step, it belongs in
+`landing.yml` on a `pull_request` trigger with the same path filter, and it must
+never be added to the ruleset's required checks. The page has no build, so
+there is nothing to gate today. See [`landing-page.md`](landing-page.md) §7.
 
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
@@ -84,19 +97,24 @@ The product ships as three things, on one pipeline, from the same tag:
   the release artifact ([ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md)).
 - **The Core, as a container** comes from the same workflow → `docker.io/actana/core`.
 - **The Core** — the thing a real Core actually runs — is a per-platform
-  tarball. `release.yml` → `linux-x64` and `linux-arm64` with published
-  checksums, which `install.sh` and `actana update` verify against.
+  tarball. `release.yml` → `linux-x64`, `linux-arm64` and `mac-arm64` with
+  published checksums, which `install.sh` and `actana update` verify against.
 
-A tag therefore publishes exactly three release assets —
+A tag therefore publishes exactly four release assets —
 `actana-core-<version>-linux-x64.tar.gz`,
-`actana-core-<version>-linux-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
+`actana-core-<version>-linux-arm64.tar.gz`,
+`actana-core-<version>-mac-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
 deliberately **not** one of them: it is served from `main`, so a broken
 installer is fixable without cutting a release
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D29).
 
-The three are Linux-only because the macOS Core targets were dropped
-([ADR 0016](adr/0016-the-0-1-0-shape.md) D28): a Mac runs the Panel and
-hosts its Cores on Linux.
+There is no `mac-x64`, and there never will be
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended): the on-device macOS
+install is Apple silicon only, and an Intel Mac runs its Core from the
+container image. Both front doors refuse it at detection and name that path —
+`install.sh`'s `detect_target` and `releaseTargetFor` in
+`packages/core/src/actana-release.ts`, which are required to agree on every
+shape, refusals included.
 
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
@@ -166,9 +184,13 @@ which is written down here rather than discovered:
   core:harnesses:e2e` against four vendors' real installers — and a failure
   arrives as an issue rather than a red check. It is failing on `opencode`
   today ([#31](https://github.com/actana/control/issues/31)).
-- **The macOS install path** — `actana setup` against launchd. Nothing
-  automated covers it at all now; [the manual pre-release
-  checklist](core-macos-prerelease-checklist.md) is the whole of it.
+- **The macOS install path** — `actana setup` against launchd, Gatekeeper on an
+  unsigned bundle, and whether the LaunchAgent survives a reboot and a logout.
+  A release-tag runner builds and smokes the `mac-arm64` tarball, and that is
+  all it can do: a runner is destroyed rather than restarted, so nothing
+  automated answers the persistence questions. [The pre-release
+  checklist](core-macos-prerelease-checklist.md) is the rest of it, and it is a
+  **release gate** — see "Cutting a release" below.
 
 ## The installer e2e, and why it is one job on two triggers
 
@@ -504,15 +526,75 @@ someone decided it was handled, so the next recurrence earns a fresh one.
 git tag v0.1.0 && git push origin v0.1.0
 ```
 
-That fires `release.yml`: the two tarball legs and the two image builds run in
-parallel, then the GitHub Release is created and each image's Docker Hub page is
-rewritten. A release lands in under six minutes. If one needs rebuilding, the
-workflow accepts a `workflow_dispatch` with the tag name — the tag must already
-exist on origin.
+That fires `release.yml`: the two Linux tarball legs and the installer e2e run
+straight away, the mac leg waits for a person (below), and once it is approved
+the two image builds, the GitHub Release and each image's Docker Hub page
+follow. If one needs rebuilding, the workflow accepts a `workflow_dispatch`
+with the tag name — the tag must already exist on origin.
 
 `release.yml` attaches nothing until its arm64 installer legs are green
 (see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
 so a tag takes a few minutes longer than the tarball builds alone.
+
+**Two preconditions the workflow does not check for you.** Neither is enforced
+in `release.yml`, so both are yours:
+
+- **CI is green on the commit you are tagging.** There is no `release-gate` job
+  reading the tagged commit's check runs — a tag on a red commit builds and
+  publishes exactly like a tag on a green one. Look at the commit's checks
+  before you push the tag.
+- **The `macos-release` environment exists with required reviewers on it.**
+  Without it there is no pause at all: GitHub auto-creates a referenced
+  environment with no protection rules, so the mac leg runs immediately and the
+  release publishes unreviewed — silently, not as a red build. See
+  [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+
+`resolve` does fail the run outright when `DOCKERHUB_USERNAME` or
+`DOCKERHUB_TOKEN` is missing on `actana/control`, before anything is built —
+that one the workflow does check.
+
+### The approval pause — a release waits for a person
+
+The `tarball-macos` job declares `environment: macos-release`, and that
+environment has required reviewers. So a tag push does **not** produce a
+release on its own: the job goes to **waiting** the moment the run starts, and
+only the unpublished machine work — the Linux tarballs and the installer e2e —
+proceeds while it waits.
+
+**Nothing leaves the repository until a reviewer approves.** Every publishing
+job sits downstream of that leg: `github-release` needs it, and so do `panel`
+and `core` (and therefore `descriptions`, which needs those two). No image, no
+moved `:latest`, no Docker Hub page, no GitHub Release
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended).
+
+That ordering costs a release the reviewer's own latency, and it buys the one
+thing that makes "reject" a real answer: an image push is not undoable, and
+`:latest` is a pointer with no history to roll back to. A reviewer who hits a
+blocker and rejects has to be able to believe nothing shipped. For the same
+reason a `SHA256SUMS` covering fewer architectures than the docs promise is
+worse than a release that is late.
+
+The pause is the manual test window, not a rubber stamp. Before approving,
+the reviewer:
+
+1. Builds the tarball on their own Mac from the tagged commit —
+   `pnpm core:tarball` on Apple silicon produces exactly the `mac-arm64` asset
+   the waiting leg will. The leg has not run yet, so there is nothing to
+   download.
+2. Works through
+   [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md)
+   against it — Gatekeeper on an unsigned bundle, the LaunchAgent surviving a
+   reboot and a logout, the lifecycle verbs, a clean uninstall. Ten minutes.
+3. Approves in the run's UI. Only then does the mac leg spend a runner minute,
+   and only then do the images and the Release publish.
+
+An unticked box is a reason to **reject**: no release is better than one whose
+macOS asset a person could not get working, because the assets an operator
+downloads are the ones somebody said work. Who may approve is set up once, as
+an admin step: [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+
+Because of the wait, a release no longer "lands in under six minutes" — the
+automated part still does, and the rest is however long the person takes.
 
 Push one tag deliberately, never `git push --tags` — a clone made from the fork
 parent carries tags that would fire a release run each for versions this

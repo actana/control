@@ -1,0 +1,798 @@
+/*
+ * control.actana.ai — the whole stylesheet.
+ *
+ * Tokens are copied from packages/panel/src/styles.css so the page the
+ * screenshots sit on looks like the product in them. Copied, not imported:
+ * that one is an app stylesheet, and this folder must never grow a dependency
+ * on the workspace build (docs/landing-page.md §4).
+ *
+ * Dark is designed first and lives in :root; light is the override. Our
+ * audience lives in terminals, and every screenshot here was shot dark-first.
+ */
+
+/* ---------------------------------------------------------------- fonts -- */
+
+/*
+ * JetBrains Mono, self-hosted — the product's own UI font, so the page wears
+ * the product's face rather than a web-safe stand-in. Two static weights is
+ * the whole family we need. OFL-1.1, see fonts/OFL.txt.
+ */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Regular.woff2") format("woff2");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "JetBrains Mono";
+  src: url("fonts/JetBrainsMono-Bold.woff2") format("woff2");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* --------------------------------------------------------------- tokens -- */
+
+:root {
+  color-scheme: dark;
+
+  --bg: #0e1722;
+  --surface-card: #122231;
+  --surface-raised: #16293a;
+  --border: #1c3346;
+  --border-strong: #244157;
+
+  --text-primary: #f9fafb;
+  --text-secondary: #d1d5db;
+  --text-muted: #9ca3af;
+
+  --brand-accent: #29a9e0;
+  --brand-accent-hover: #1786c2;
+  --accent-wash: rgb(41 169 224 / 14%);
+
+  /* The chip the harness marks are drawn on — see docs/assets/README.md. */
+  --harness-chip: #151b26;
+  --harness-chip-border: #24354a;
+  --harness-planned-ink: #7d8899;
+
+  /* Qcentic's served identity, untouched: their ink on their own black. */
+  --qcentic-bg: #0d0d0d;
+  --qcentic-border: #2a2a2a;
+
+  --radius: 12px;
+  --radius-sm: 8px;
+  --shadow-card: 0 1px 2px rgb(0 0 0 / 30%);
+  --shadow-hero: 0 24px 64px rgb(0 0 0 / 45%);
+  --measure: 68ch;
+}
+
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f3f4f6;
+    --surface-card: #ffffff;
+    --surface-raised: #f9fafb;
+    --border: #e5e7eb;
+    --border-strong: #c7e6f6;
+
+    --text-primary: #111827;
+    --text-secondary: #374151;
+    --text-muted: #6b7280;
+
+    --accent-wash: rgb(41 169 224 / 10%);
+
+    --shadow-card: 0 1px 2px rgb(17 24 39 / 6%);
+    --shadow-hero: 0 24px 64px rgb(17 24 39 / 14%);
+  }
+}
+
+/* ---------------------------------------------------------------- reset -- */
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  /* The sticky nav must not sit on top of an anchored heading. */
+  scroll-padding-top: 5.5rem;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text-secondary);
+  font-family: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Consolas,
+    monospace;
+  font-size: 16px;
+  line-height: 1.65;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+img,
+svg {
+  max-width: 100%;
+}
+
+a {
+  color: var(--brand-accent);
+  text-decoration-color: rgb(41 169 224 / 40%);
+  text-underline-offset: 3px;
+}
+
+a:hover {
+  color: var(--brand-accent-hover);
+  text-decoration-color: currentcolor;
+}
+
+:focus-visible {
+  outline: 2px solid var(--brand-accent);
+  outline-offset: 3px;
+  border-radius: 4px;
+}
+
+::selection {
+  background: var(--brand-accent);
+  color: #f1f9fe;
+}
+
+h1,
+h2,
+h3 {
+  color: var(--text-primary);
+  line-height: 1.15;
+  /* Mono at display sizes needs the tracking pulled in or it reads as a ransom
+     note. */
+  letter-spacing: -0.03em;
+  margin: 0;
+}
+
+/* -------------------------------------------------------------- scaffold -- */
+
+.wrap {
+  width: 100%;
+  max-width: 1000px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+section {
+  padding: clamp(56px, 9vw, 104px) 0;
+  border-top: 1px solid var(--border);
+}
+
+.section-head {
+  margin-bottom: clamp(28px, 4vw, 44px);
+}
+
+.section-head h2 {
+  font-size: clamp(1.4rem, 3.4vw, 2rem);
+}
+
+.section-head p {
+  margin: 12px 0 0;
+  max-width: var(--measure);
+  color: var(--text-muted);
+}
+
+.eyebrow {
+  font-size: 0.75rem;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--brand-accent);
+  margin: 0 0 10px;
+}
+
+.skip-link {
+  position: absolute;
+  left: -9999px;
+  top: 0;
+  background: var(--surface-card);
+  color: var(--text-primary);
+  padding: 12px 18px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  z-index: 100;
+}
+
+.skip-link:focus {
+  left: 12px;
+  top: 12px;
+}
+
+/* ------------------------------------------------------------------ nav -- */
+
+.nav {
+  position: sticky;
+  top: 0;
+  z-index: 50;
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
+  backdrop-filter: blur(10px);
+  border-bottom: 1px solid var(--border);
+}
+
+.nav .wrap {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  height: 64px;
+}
+
+.nav-logo img {
+  height: 26px;
+  width: auto;
+  display: block;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.nav-links a {
+  color: var(--text-secondary);
+  text-decoration: none;
+  font-size: 0.875rem;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+}
+
+.nav-links a:hover {
+  color: var(--text-primary);
+  background: var(--accent-wash);
+}
+
+.nav-links .nav-cta {
+  border: 1px solid var(--border-strong);
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.nav-links .nav-cta svg {
+  width: 15px;
+  height: 15px;
+  fill: currentcolor;
+}
+
+/* ----------------------------------------------------------------- hero -- */
+
+.hero {
+  padding-top: clamp(48px, 8vw, 88px);
+  padding-bottom: clamp(40px, 6vw, 64px);
+  border-top: 0;
+  text-align: center;
+}
+
+.hero h1 {
+  font-size: clamp(1.9rem, 6.2vw, 3.35rem);
+  font-weight: 700;
+}
+
+/* The third clause is the one people remember; let the accent carry it. */
+.hero h1 .lede-accent {
+  color: var(--brand-accent);
+}
+
+.hero-sub {
+  margin: 20px auto 0;
+  max-width: var(--measure);
+  font-size: clamp(0.95rem, 2.1vw, 1.075rem);
+  color: var(--text-muted);
+}
+
+.hero-sub strong {
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+.hero-shot {
+  margin: clamp(36px, 6vw, 60px) auto 0;
+  max-width: 900px;
+}
+
+.hero-shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-hero);
+}
+
+figure {
+  margin: 0;
+}
+
+figcaption {
+  margin-top: 14px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+  text-align: center;
+}
+
+/* ---------------------------------------------------------------- tabs --- */
+
+.install {
+  margin: clamp(28px, 4.5vw, 40px) auto 0;
+  max-width: 760px;
+  text-align: left;
+}
+
+.tablist {
+  display: flex;
+  gap: 6px;
+  margin-bottom: -1px;
+  position: relative;
+  z-index: 1;
+}
+
+.tab {
+  appearance: none;
+  font: inherit;
+  font-size: 0.8125rem;
+  cursor: pointer;
+  padding: 9px 16px;
+  color: var(--text-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+}
+
+.tab:hover {
+  color: var(--text-primary);
+}
+
+.tab[aria-selected="true"] {
+  color: var(--text-primary);
+  background: var(--surface-card);
+  border-color: var(--border);
+  /* Sit the selected tab on top of the panel's top border. */
+  box-shadow: 0 1px 0 0 var(--surface-card);
+}
+
+.panel[hidden] {
+  display: none;
+}
+
+.codeblock {
+  position: relative;
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: 0 var(--radius) var(--radius) var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.codeblock pre {
+  margin: 0;
+  padding: 18px 60px 18px 20px;
+  overflow-x: auto;
+  font-size: 0.8125rem;
+  line-height: 1.9;
+  color: var(--text-primary);
+  -moz-tab-size: 2;
+  tab-size: 2;
+}
+
+.codeblock code {
+  font: inherit;
+}
+
+.codeblock .cmt {
+  color: var(--text-muted);
+}
+
+.copy {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  appearance: none;
+  font: inherit;
+  font-size: 0.6875rem;
+  cursor: pointer;
+  padding: 6px 10px;
+  color: var(--text-muted);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  transition: color 0.12s, border-color 0.12s;
+}
+
+.copy:hover {
+  color: var(--text-primary);
+  border-color: var(--border-strong);
+}
+
+.copy[data-copied="true"] {
+  color: var(--brand-accent);
+  border-color: var(--brand-accent);
+}
+
+.install-note {
+  margin: 14px 2px 0;
+  font-size: 0.75rem;
+  line-height: 1.7;
+  color: var(--text-muted);
+}
+
+.install-note b {
+  color: var(--text-secondary);
+}
+
+/* --------------------------------------------------------- harness row --- */
+
+.harnesses {
+  padding: clamp(40px, 6vw, 64px) 0;
+}
+
+.harness-row {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 12px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+/*
+ * Lockups, not bare icons: the mark plus its name, so the row reads without
+ * hovering. The chip surface is the same #151b26 the marks are already drawn
+ * on (docs/assets/README.md), so the mark's own chip dissolves into this one
+ * instead of stacking a second rounded rectangle inside the first.
+ */
+.harness {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 16px 7px 7px;
+  background: var(--harness-chip);
+  border: 1px solid var(--harness-chip-border);
+  border-radius: var(--radius);
+  text-decoration: none;
+  color: #e5e7eb;
+  font-size: 0.8125rem;
+  white-space: nowrap;
+}
+
+a.harness:hover {
+  color: #ffffff;
+  border-color: var(--brand-accent);
+}
+
+.harness img {
+  width: 34px;
+  height: 34px;
+  display: block;
+}
+
+/* Planned: the dashed chip is the mark's own, and the label goes muted with
+   it. Same grammar as the README banner — solid is shipped, dashed is next. */
+.harness.planned {
+  color: var(--harness-planned-ink);
+  background: color-mix(in srgb, var(--harness-chip) 55%, transparent);
+  border-style: dashed;
+  border-color: #3f4b5c;
+}
+
+.harness-caption {
+  margin: 22px auto 0;
+  max-width: var(--measure);
+  text-align: center;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.harness-caption b {
+  color: var(--text-secondary);
+}
+
+/* ------------------------------------------------------------- features -- */
+
+.feature-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+
+.feature {
+  padding: 24px;
+  background: var(--surface-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+.feature h3 {
+  font-size: 1rem;
+  margin-bottom: 10px;
+}
+
+.feature p {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.feature p + p {
+  margin-top: 10px;
+}
+
+.shot {
+  margin-top: clamp(28px, 4vw, 40px);
+}
+
+.shot img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow-card);
+}
+
+/* ------------------------------------------------------------- diagram --- */
+
+.diagram {
+  margin: 0 auto;
+  max-width: 780px;
+}
+
+.diagram img {
+  display: block;
+  width: 100%;
+  height: auto;
+}
+
+.diagram-note {
+  margin: clamp(24px, 4vw, 36px) auto 0;
+  max-width: var(--measure);
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+/* ------------------------------------------------------------------ faq -- */
+
+/*
+ * <details> rather than a JS accordion: it opens without script, it is
+ * findable by the browser's own in-page search, and it costs nothing.
+ */
+.faq {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-card);
+  box-shadow: var(--shadow-card);
+  overflow: hidden;
+}
+
+.faq details + details {
+  border-top: 1px solid var(--border);
+}
+
+.faq summary {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  padding: 18px 22px;
+  cursor: pointer;
+  list-style: none;
+  color: var(--text-primary);
+  font-size: 0.9375rem;
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  line-height: 1.5;
+}
+
+.faq summary::-webkit-details-marker {
+  display: none;
+}
+
+.faq summary:hover {
+  background: var(--accent-wash);
+}
+
+/* Our own marker, so it rotates rather than swapping glyph. */
+.faq summary::before {
+  content: "";
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  margin-top: 8px;
+  border-right: 1.5px solid var(--brand-accent);
+  border-bottom: 1.5px solid var(--brand-accent);
+  transform: rotate(-45deg);
+  transition: transform 0.15s ease;
+}
+
+.faq details[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.faq-body {
+  padding: 0 22px 20px 41px;
+}
+
+.faq-body p {
+  margin: 0;
+  max-width: var(--measure);
+  font-size: 0.875rem;
+  color: var(--text-muted);
+}
+
+.faq-body p + p {
+  margin-top: 12px;
+}
+
+.faq-body b {
+  color: var(--text-secondary);
+  font-weight: 700;
+}
+
+@media (max-width: 640px) {
+  .faq summary {
+    padding: 16px;
+    font-size: 0.875rem;
+  }
+
+  .faq-body {
+    padding: 0 16px 18px 35px;
+  }
+}
+
+/* -------------------------------------------------------------- closing -- */
+
+.closing {
+  text-align: center;
+}
+
+.closing .install {
+  text-align: left;
+}
+
+.doclinks {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 10px;
+  margin: clamp(28px, 4vw, 36px) 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.8125rem;
+}
+
+.doclinks a {
+  display: inline-block;
+  padding: 7px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-card);
+  text-decoration: none;
+}
+
+.doclinks a:hover {
+  border-color: var(--brand-accent);
+}
+
+/* --------------------------------------------------------------- footer -- */
+
+.footer {
+  border-top: 1px solid var(--border);
+  padding: 40px 0 96px;
+  font-size: 0.8125rem;
+  color: var(--text-muted);
+}
+
+.footer-links {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 0 0 18px;
+  padding: 0;
+  list-style: none;
+}
+
+.footer-links a {
+  text-decoration: none;
+}
+
+.footer p {
+  margin: 0 0 6px;
+  max-width: var(--measure);
+}
+
+/* -------------------------------------------------------- qcentic badge -- */
+
+/*
+ * Qcentic's identity is deliberately monochrome, so the badge is a dark chip
+ * in both themes rather than something tinted into Actana's blue. The chip
+ * colour is the black baked into the lockup's own artboard, so the SVG's edge
+ * is invisible and the padding reads as part of the mark.
+ */
+.qcentic {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px 6px 12px;
+  background: var(--qcentic-bg);
+  border: 1px solid var(--qcentic-border);
+  border-radius: 2px;
+  text-decoration: none;
+  color: #8a8a8a;
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 28%);
+}
+
+.qcentic:hover {
+  color: #f5f5f5;
+  border-color: #3d3d3d;
+}
+
+.qcentic img {
+  height: 30px;
+  width: auto;
+  display: block;
+}
+
+/* ---------------------------------------------------------- responsive --- */
+
+@media (max-width: 640px) {
+  .nav-links a {
+    padding: 8px 9px;
+    font-size: 0.8125rem;
+  }
+
+  .nav-links .nav-label {
+    display: none;
+  }
+
+  .codeblock pre {
+    padding: 16px 16px 44px;
+    font-size: 0.75rem;
+  }
+
+  .copy {
+    top: auto;
+    bottom: 10px;
+    right: 10px;
+  }
+
+  .qcentic {
+    right: 10px;
+    bottom: 10px;
+    padding: 5px 8px 5px 10px;
+  }
+
+  .qcentic img {
+    height: 24px;
+  }
+
+  .qcentic .qcentic-label {
+    display: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  * {
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+  }
+}

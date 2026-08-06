@@ -56,8 +56,14 @@ async function main(): Promise<void> {
     interactive: Boolean(process.stdin.isTTY && process.stdout.isTTY),
     system: nodeActanaSystem(),
     fetcher: nodeReleaseFetcher(),
+    now: () => Date.now(),
     out: (line) => console.log(line),
     err: (line) => console.error(line),
+    // Dropped on the floor deliberately. The only thing that logs here is the
+    // update check giving up, and an operator running `actana status` did not
+    // ask about the release channel — the daemon logs the same facts once a
+    // day where someone reading `actana logs` will actually find them.
+    debug: () => {},
     probeHarnesses,
     runDaemon: async (env) => {
       // `core-entry` reads its configuration from `process.env`, so whatever

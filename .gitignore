@@ -38,16 +38,16 @@ resources/whisper/*
 !resources/whisper/.gitkeep
 !resources/whisper/README.md
 
-# Mission Control Recall (project memory) — private, do not commit
+# Actana Control Recall (project memory) — private, do not commit
 CLAUDE.local.md
-# Mission Control Recall (code graph MCP) — machine-specific, regenerated per session
+# Actana Control Recall (code graph MCP) — machine-specific, regenerated per session
 .mcp.json
 
 # Grok goal scratch dirs (local agent workspaces)
 Temp/
 **/grok-goal-*/
 
-# Local git worktrees created by Mission Control
+# Local git worktrees created by Actana Control
 .worktree/
 
 # Checkouts the reference compose bind-mounts into the Core (deploy/docker-compose.yml).
@@ -55,3 +55,8 @@ Temp/
 # no root-owned mountpoint appearing under it; its contents are yours.
 deploy/repos/*
 !deploy/repos/.gitkeep
+
+# Vendor font binaries for `docs/assets/src/build.mjs` (OFL-1.1, not ours to
+# redistribute) and the stale output dir the script used to write to.
+docs/assets/src/fonts/
+docs/assets/src/out/

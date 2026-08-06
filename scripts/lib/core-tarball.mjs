@@ -18,15 +18,34 @@ import path from "node:path";
 export const BUNDLED_NODE_VERSION = "24.15.0";
 
 /**
- * The two Core release targets — Linux only. A tag publishes exactly three
- * assets: these two tarballs and the `SHA256SUMS` covering them (ADR 0016
- * D28). macOS and Windows operators run the web Panel and host their Cores on
- * a Linux machine; WSL counts as Linux and is `linux-*`.
+ * The three Core release targets. A tag publishes exactly four assets: these
+ * three tarballs and the `SHA256SUMS` covering them (ADR 0016 D28, as
+ * amended). Windows operators, and Intel Mac operators, run the web Panel and
+ * host their Cores elsewhere; WSL counts as Linux and is `linux-*`, and an
+ * Intel Mac runs its Core from the Core image.
  *
- * Adding a row here is not a local edit. The release matrix in
- * `.github/workflows/release.yml` needs a leg that can build it, and that
- * workflow's `compose-core-shasums.mjs --expect` has to grow to match — or the
- * release ships a `SHA256SUMS` covering less than the release does.
+ * `mac-arm64` is the one target whose leg costs real money: macOS runners bill
+ * at 10×, so it builds only on a release tag, behind the `macos-release`
+ * environment's manual approval, and never on a pull request — which is what
+ * keeps D35's cost posture intact.
+ *
+ * Adding a row here is not a local edit. Every one of these has to move with
+ * it, or the release ships something incoherent:
+ *
+ *   1. `.github/workflows/release.yml` — a leg on a runner of that
+ *      architecture. The tarballs carry native modules copied from the build
+ *      host, so a cross-compiled leg is a guess, not a build.
+ *   2. That workflow's `compose-core-shasums.mjs --expect`, and the asset
+ *      count asserted by the `github-release` job — or the release ships a
+ *      `SHA256SUMS` covering less than the release does.
+ *   3. `install.sh`'s `detect_target`, which maps a machine to one of these
+ *      names, and refuses by name the platforms that are deliberately absent.
+ *   4. `releaseTargetFor` in `packages/core/src/actana-release.ts` — `actana
+ *      update` is the second front door and must agree with the installer on
+ *      every shape, refusals included.
+ *   5. The tests over all four: `scripts/__tests__/core-tarball.test.mjs`,
+ *      `scripts/__tests__/install-sh.test.mjs`, and
+ *      `packages/core/src/__tests__/actana-release.test.ts`.
  *
  * `nodeDistId` is the Node.org tarball's platform slug; `platform`/`arch` are
  * the `process.platform`/`process.arch` values a build host must report, since
@@ -36,6 +55,7 @@ export const BUNDLED_NODE_VERSION = "24.15.0";
 export const CORE_TARGETS = Object.freeze([
   Object.freeze({ target: "linux-x64", platform: "linux", arch: "x64", nodeDistId: "linux-x64" }),
   Object.freeze({ target: "linux-arm64", platform: "linux", arch: "arm64", nodeDistId: "linux-arm64" }),
+  Object.freeze({ target: "mac-arm64", platform: "darwin", arch: "arm64", nodeDistId: "darwin-arm64" }),
 ]);
 
 /**

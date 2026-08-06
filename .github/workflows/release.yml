@@ -1,23 +1,35 @@
 name: Release
 
-# Everything a `v*` tag publishes: the two Core tarballs and their SHA256SUMS,
-# the Panel and Core images, the GitHub Release, and each image's Docker Hub
-# page. One file rather than four, because they are one event (ADR 0016 D34).
+# Everything a `v*` tag publishes: the three Core tarballs and their
+# SHA256SUMS, the Panel and Core images, the GitHub Release, and each image's
+# Docker Hub page. One file rather than four, because they are one event
+# (ADR 0016 D34).
 #
-#   resolve ─┬─ tarball ─── installer-e2e ──┐
-#            ├─ panel ─┐                    ├── github-release
-#            └─ core ──┴─ descriptions      ┘
+#   resolve ─┬─ tarball ───────── installer-e2e ──────────┐
+#            │                                            │
+#            └─ tarball-macos ⏸ ─┬─ panel ─┬─ descriptions│
+#                                └─ core ──┴──────────────┴── github-release
 #
 # `panel` and `core` go through the reusable container-image.yml with
 # push: true, and both they and the tarball legs feed `github-release`.
 # `descriptions` is a leaf hanging off those two alone (D33): it describes an
 # image, so what it waits for is the image being pullable — nothing else.
 #
-# Exactly three assets (D28): actana-core-<version>-linux-x64.tar.gz,
-# actana-core-<version>-linux-arm64.tar.gz, SHA256SUMS. No macOS legs, no
-# signing, no notarization, and no secrets beyond `github.token` for the assets
-# and the Docker Hub PAT for the mirror. Integrity is the published checksums,
-# verified by `install.sh` and by `actana update`.
+# ⏸ is the deliberate one: `tarball-macos` declares `environment: macos-release`
+# and therefore waits for a human. See its own comment.
+#
+# Everything that leaves this repository sits downstream of that ⏸ — the images
+# and their `:latest`, the Docker Hub pages, the GitHub Release and its assets.
+# Only the Linux build-and-test work runs while a reviewer decides, and none of
+# it is published. That is what makes "reject" a real answer: an image push is
+# not undoable, and `:latest` has no history to roll back to.
+#
+# Exactly four assets (D28, as amended): actana-core-<version>-linux-x64.tar.gz,
+# actana-core-<version>-linux-arm64.tar.gz,
+# actana-core-<version>-mac-arm64.tar.gz, SHA256SUMS. No signing, no
+# notarization, and no secrets beyond `github.token` for the assets and the
+# Docker Hub PAT for the mirror. Integrity is the published checksums, verified
+# by `install.sh` and by `actana update`.
 #
 # ── The installer contract (ADR 0016 D29), quoted verbatim ───────────────────
 #
@@ -127,6 +139,14 @@ jobs:
           echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set — Docker Hub is the only registry the images are published to, so a release without them is not a release. One personal access token (Read & Write, from an account with Admin on the org) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
           exit 1
 
+  # The two Linux legs. The mac leg is `tarball-macos` below rather than a third
+  # row here, for two reasons. `needs:` waits on a matrix job whole, so an
+  # approval pause on any row of this one would hold `installer-e2e` — a
+  # Linux-only check that has nothing to wait for — behind a human. And
+  # `environment:` is a job-level key, so putting it here at all would mean
+  # `environment: ${{ matrix.environment }}` with an empty string on the Linux
+  # rows: a load-bearing gate expressed as a value that is usually blank.
+  # Split, the manual checks and the Linux installer e2e run side by side.
   tarball:
     name: Core tarball (${{ matrix.target }})
     needs: resolve
@@ -137,11 +157,10 @@ jobs:
       # job whole.
       fail-fast: false
       matrix:
-        # Two legs, not four — macOS Core targets are dropped (D28). Every
-        # target builds on a runner of its own architecture: the tarballs carry
-        # prebuilt native modules (node-pty, better-sqlite3) copied from the
-        # build host's own install, so a cross-compiled leg would be a guess,
-        # not a build.
+        # Every target builds on a runner of its own architecture: the tarballs
+        # carry prebuilt native modules (node-pty, better-sqlite3) copied from
+        # the build host's own install, so a cross-compiled leg would be a
+        # guess, not a build.
         include:
           - os: ubuntu-24.04
             target: linux-x64
@@ -194,6 +213,85 @@ jobs:
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: core-tarball-${{ matrix.target }}
+          path: artifacts/core/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # The macOS Core tarball — the only macOS minutes this repository spends
+  # (D28, as amended). It is release-only and never runs on a pull request:
+  # macOS runners bill at 10×, and three macOS legs were once 72% of the whole
+  # CI bill (D35). One leg, on a release cadence, behind a person.
+  #
+  # `environment: macos-release` is the gate. That environment carries required
+  # reviewers, so this job enters "waiting" the moment the tag is pushed and
+  # burns no minutes until someone approves it in the UI. The reviewer's job is
+  # not to click: it is to run docs/core-macos-prerelease-checklist.md on real
+  # Apple hardware — Gatekeeper behaviour on an unsigned bundle, reboot and
+  # logout persistence of the LaunchAgent — none of which a runner that is
+  # destroyed rather than restarted can answer. Approving is the statement that
+  # the checklist passed.
+  #
+  # The whole release waits on it, deliberately — `github-release` needs this
+  # job, and the reason is on that job. A release is rare, and the pause is the
+  # manual test window. Setting the environment up is an admin step: see
+  # docs/REPO_SETUP.md §2. On a fork with no such environment configured,
+  # GitHub creates an unprotected one on first use and this leg simply runs.
+  #
+  # macos-15 is Apple silicon (macos-15-intel is the Intel label), which is what
+  # makes this a build rather than a cross-compile: node-pty's darwin-arm64
+  # prebuild and the better-sqlite3 binding both come off the build host.
+  tarball-macos:
+    name: Core tarball (mac-arm64)
+    needs: resolve
+    environment: macos-release
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TARGET: mac-arm64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the Core bundle
+        run: pnpm --filter @actana/core build
+
+      - name: Build the tarball
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          node scripts/build-core-tarball.mjs \
+            --target "$TARGET" \
+            --version "$RELEASE_VERSION" \
+            --out-dir artifacts/core
+
+      # The same acceptance criterion the Linux legs run, on the platform it is
+      # about: extract the tarball and boot it through its own launcher with no
+      # system Node. It is not a substitute for the human checklist — a runner
+      # cannot reboot, log out, or meet Gatekeeper.
+      - name: Smoke — extracted tarball boots a dialable Core
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          node scripts/smoke-core-tarball.mjs \
+            --tarball "artifacts/core/actana-core-$RELEASE_VERSION-$TARGET.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-tarball-mac-arm64
           path: artifacts/core/*.tar.gz
           if-no-files-found: error
           retention-days: 14
@@ -258,14 +356,25 @@ jobs:
             --tarball "artifacts/core/actana-core-${{ needs.resolve.outputs.version }}-${{ matrix.target }}.tar.gz" \
             --distro ${{ matrix.distro }}
 
-  # The images do not wait on the tarball job: container-image.yml builds the
+  # The images do not wait on the `tarball` job: container-image.yml builds the
   # Core tarball it bakes in itself, on the runner that will ship it. They are
   # the long pole (~3½ min for both images, both arches, both registries), so
-  # running them beside the tarball legs is what keeps a release under six
-  # minutes.
+  # running them beside the Linux tarball legs is what keeps the machine part
+  # of a release under six minutes.
+  #
+  # They *do* wait on `tarball-macos`, which is the leg behind the
+  # `macos-release` approval, and that is the whole point of the gate: pushing
+  # an image is not undoable. `:latest` is a moving pointer with no history, so
+  # a reviewer who works the checklist, hits a blocker and rejects — exactly as
+  # docs/core-macos-prerelease-checklist.md instructs — has to be able to
+  # believe that nothing shipped. If these two jobs ran on `resolve` alone,
+  # `docker pull actana/core:latest` would already be serving the build they
+  # just declared unfit, and the README quickstart points there. The cost is
+  # that a release is as slow as its reviewer; the alternative is a rejection
+  # that does not reject anything.
   panel:
     name: Panel image
-    needs: resolve
+    needs: [resolve, tarball-macos]
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -279,7 +388,7 @@ jobs:
 
   core:
     name: Core image
-    needs: resolve
+    needs: [resolve, tarball-macos]
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -298,7 +407,15 @@ jobs:
     # sends operators to tags that are not there yet. `installer-e2e` is in
     # here for a different reason (D36): an arm64 tarball the one-liner cannot
     # install is not an asset worth attaching.
-    needs: [resolve, tarball, installer-e2e, panel, core]
+    #
+    # `tarball-macos` is in here for a third: it is the leg behind the
+    # `macos-release` approval. It is now redundant — `panel` and `core` need
+    # it too, so it is already transitive — and it is kept named because a
+    # `needs:` list is the only place a reader learns what a job waits for, and
+    # this is the job whose assets the approval most directly governs. A
+    # SHA256SUMS covering a subset of the architectures the docs promise is
+    # worse than a release that is late.
+    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -318,17 +435,20 @@ jobs:
           path: core-tarballs
           merge-multiple: true
 
-      # --expect 2 is the guard, and the 2 is deliberate (D28): a silently
-      # missing architecture must be a red build, not a checksum file that
-      # quietly covers half the release. It was 4 while macOS was a target.
+      # --expect 3 is the guard, and the 3 is deliberate (D28, as amended): a
+      # silently missing architecture must be a red build, not a checksum file
+      # that quietly covers part of the release. It was 2 while macOS was
+      # dropped, and 4 before that, when there were two macOS targets. It is
+      # the count of CORE_TARGETS — the header of scripts/lib/core-tarball.mjs
+      # lists this among the co-edits a new row requires.
       - name: Compose SHA256SUMS
-        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 2
+        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 3
 
       - name: Verify SHA256SUMS the way an operator would
         working-directory: core-tarballs
         run: sha256sum -c SHA256SUMS
 
-      # Exactly three assets. `install.sh` is not among them by design (D29) —
+      # Exactly four assets. `install.sh` is not among them by design (D29) —
       # it is served from `main`, and adding it here would make a broken
       # installer fixable only by cutting a release.
       #
@@ -343,8 +463,8 @@ jobs:
         run: |
           set -euo pipefail
           mapfile -t files < <(find core-tarballs -maxdepth 1 -type f \( -name '*.tar.gz' -o -name 'SHA256SUMS' \) | sort)
-          if (( ${#files[@]} != 3 )); then
-            echo "::error title=Wrong asset count::expected 3 assets (two tarballs + SHA256SUMS), found ${#files[@]}" >&2
+          if (( ${#files[@]} != 4 )); then
+            echo "::error title=Wrong asset count::expected 4 assets (three tarballs + SHA256SUMS), found ${#files[@]}" >&2
             printf '  %s\n' "${files[@]}" >&2
             exit 1
           fi
@@ -356,7 +476,7 @@ jobs:
           else
             gh release create "$RELEASE_REF" "${files[@]}" \
               --title "$RELEASE_REF" \
-              --notes "Core tarballs for Linux Cores. Verify with \`sha256sum -c SHA256SUMS\`."
+              --notes "Core tarballs for Linux and Apple-silicon macOS Cores. Verify with \`sha256sum -c SHA256SUMS\`."
           fi
 
   # Docker Hub does not pull a README from GitHub on its own — the repository
