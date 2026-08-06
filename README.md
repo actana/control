@@ -15,7 +15,11 @@
 
 <p align="center">
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/github/license/actana/control?style=flat-square&labelColor=101723&color=279ed6&cacheSeconds=3600"></a>
-  <a href="https://github.com/actana/control/releases/latest"><img alt="Latest release" src="https://img.shields.io/github/v/release/actana/control?style=flat-square&labelColor=101723&color=279ed6&cacheSeconds=3600"></a>
+  <!-- Static until the first `v*` tag: shields' github/v/release endpoint has no
+       fallback and renders "no releases or repo not found" against a repo with
+       none, which reads as abandoned in the first screenful. At v0.1.0, restore:
+       src="https://img.shields.io/github/v/release/actana/control?style=flat-square&labelColor=101723&color=279ed6&cacheSeconds=3600" -->
+  <a href="https://github.com/actana/control/releases"><img alt="Release status: pre-release" src="https://img.shields.io/badge/release-pre--release-279ed6?style=flat-square&labelColor=101723&cacheSeconds=3600"></a>
   <a href="https://github.com/actana/control/actions/workflows/ci.yml"><img alt="CI" src="https://img.shields.io/github/actions/workflow/status/actana/control/ci.yml?branch=main&style=flat-square&labelColor=101723&color=279ed6&cacheSeconds=3600"></a>
   <a href="https://github.com/actana/control/commits/main"><img alt="Last commit" src="https://img.shields.io/github/last-commit/actana/control?style=flat-square&labelColor=101723&color=279ed6&cacheSeconds=3600"></a>
   <a href="https://hub.docker.com/r/actana/panel"><img alt="Docker pulls" src="https://img.shields.io/docker/pulls/actana/panel?style=flat-square&labelColor=101723&color=279ed6&cacheSeconds=3600"></a>
@@ -28,9 +32,9 @@ repos.
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-fleet-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/panel-fleet-light.png">
-    <img src="docs/assets/panel-fleet-light.png" alt="The Actana Control Panel showing the Fleet view — every Core's sessions in one list" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-project-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/panel-project-light.png">
+    <img src="docs/assets/panel-project-light.png" alt="The Actana Control Panel inside a project — sessions split by status, with a live harness terminal alongside" width="900">
   </picture>
 </p>
 
@@ -38,16 +42,24 @@ repos.
 
 ## Quickstart
 
+> **Pre-release.** No `v*` tag is published yet, so `:latest` and the
+> installer's `releases/latest` both 404. Until the first release, run the
+> Compose path against **`:edge`** — the tag CI moves on every push to `main` —
+> by changing the two `image:` lines in `deploy/docker-compose.yml`. The
+> installer one-liner works from the first tag onward.
+
 **Docker Compose** — a Panel and a Core on one network, which is the whole
 product in one command:
 
 ```bash
+git clone https://github.com/actana/control && cd control
 docker compose -f deploy/docker-compose.yml up -d
 docker compose -f deploy/docker-compose.yml logs core   # the registration blob
 ```
 
 Open `http://localhost:7420`, create the Operator, and paste that blob into
-"Add Core".
+"Add Core". [deploy/README.md](deploy/README.md) walks through the file itself
+— the volumes, the loopback port, adding a second Core.
 
 **Installer** — turn a Linux or macOS (arm64) machine into a Core, as your own
 user, without sudo:
@@ -60,7 +72,8 @@ curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | ba
 the installer if you want a Core on a machine that already has your code — your
 laptop, a workstation, a build box — paired to a Panel you deploy separately.
 
-Full paths: [DEPLOY.md](DEPLOY.md) for the Panel, [INSTALL.md](INSTALL.md) for a Core.
+Full paths: [deploy/README.md](deploy/README.md) for the reference Compose,
+[DEPLOY.md](DEPLOY.md) for the Panel, [INSTALL.md](INSTALL.md) for a Core.
 
 ## Features
 
@@ -70,7 +83,9 @@ Full paths: [DEPLOY.md](DEPLOY.md) for the Panel, [INSTALL.md](INSTALL.md) for a
 - **Real terminals, not a transcript.** Every session is a PTY on the Core,
   streamed to the browser over one multiplexed WebSocket per tab. Type into it.
 - **Your code never moves.** A Core runs on the machine that already has the
-  repo. Nothing is uploaded, mirrored, or checked out anywhere else.
+  repo. Nothing is uploaded, mirrored, or checked out anywhere else — and
+  removing a project from the Panel **only unlinks it. It never touches your
+  files.**
 - **Status you can scan.** Sessions split into needs-input / running / finished,
   with per-project counts, so a machine asking a question is visible without
   opening it.
@@ -87,10 +102,15 @@ compatibility promise — it tracks `HARNESS_REGISTRY` in `@actana/shared`.
 
 | Harness | Command | Status | Auto-approve flag |
 | --- | --- | --- | --- |
-| Claude Code | `claude` | Supported | `--dangerously-skip-permissions` |
-| Codex | `codex` | Supported | `--yolo` |
-| Cursor CLI | `cursor-agent` | Supported | `--force` |
-| OpenCode | `opencode` | Supported | — (none offered) |
+| <img src="docs/assets/harness/claude-code.png" width="18" align="top" alt=""> **Claude Code** | `claude` | Supported | `--dangerously-skip-permissions` |
+| <img src="docs/assets/harness/codex.svg" width="18" align="top" alt=""> **Codex** | `codex` | Supported | `--yolo` |
+| <img src="docs/assets/harness/cursor-cli.png" width="18" align="top" alt=""> **Cursor CLI** | `cursor-agent` | Supported | `--force` |
+| <img src="docs/assets/harness/opencode.svg" width="18" align="top" alt=""> **OpenCode** | `opencode` | Supported | — (none offered) |
+| **More coming soon** | | | |
+
+A Harness is one registry entry plus a launcher — the set grows, and nothing in
+the Panel or the core-link is specific to any of the four above. Missing one you
+use? [Open an issue](https://github.com/actana/control/issues/new).
 
 Each Core needs the CLIs it runs, installed under its own user — see
 [Harness CLIs](INSTALL.md#harness-clis).
@@ -119,13 +139,14 @@ flowchart LR
   C2 --> H2["PTY → Harness → repo"]
 ```
 
-Inside a project, sessions sit beside their live terminals:
+In the Panel, that diagram is one list — every Core's sessions in a single Fleet
+view, whichever machine they are running on:
 
 <p align="center">
   <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-project-dark.png">
-    <source media="(prefers-color-scheme: light)" srcset="docs/assets/panel-project-light.png">
-    <img src="docs/assets/panel-project-light.png" alt="A project's sessions split by status, with a live harness terminal alongside" width="900">
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/panel-fleet-dark.png">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/panel-fleet-light.png">
+    <img src="docs/assets/panel-fleet-light.png" alt="The Actana Control Panel showing the Fleet view — every Core's sessions in one list" width="900">
   </picture>
 </p>
 
@@ -173,19 +194,26 @@ the architecture is the way it is.
 
 ## Related Projects
 
-| Project | How it differs |
-| --- | --- |
-| [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | Kanban-shaped planning over agent tasks, self-hostable. **Sunsetting** — Bloop shut down; community-maintained. |
-| [claude-squad](https://github.com/smtg-ai/claude-squad) | Many sessions in tmux + worktrees — a Core's job, as a local TUI rather than a control plane. AGPL-3.0. |
-| [Happy](https://github.com/slopus/happy) | End-to-end-encrypted mobile/web remote control of Claude Code and Codex; a client + relay, not a control plane. |
-| [Claude Code UI](https://github.com/siteboon/claudecodeui) | The closest single-node Panel analogue. AGPL-3.0. |
-| [VibeTunnel](https://github.com/amantus-ai/vibetunnel) | The PTY-over-web layer on its own, without the fleet above it. |
-| [cmux](https://github.com/manaflow-ai/cmux) | Concurrent-session legibility as a native macOS terminal. GPL-3.0, macOS-only. |
-| [Emdash](https://github.com/generalaction/emdash) | Parallel CLIs in worktrees with a UI — minus the multi-machine dimension. |
+| Project | Self-hosted | Browser UI | Live terminals | Many machines,<br>one control plane | Each machine<br>owns its state | Notes |
+| --- | :---: | :---: | :---: | :---: | :---: | --- |
+| **Actana Control** | ✅ | ✅ | ✅ | ✅ | ✅ | MIT |
+| [Vibe Kanban](https://github.com/BloopAI/vibe-kanban) | ✅ | ✅ | — | — | — | Kanban-shaped planning over agent tasks. **Sunsetting** — Bloop shut down; community-maintained. |
+| [claude-squad](https://github.com/smtg-ai/claude-squad) | ✅ | — | ✅ | — | — | Many sessions in tmux + worktrees — a Core's job, as a local TUI. AGPL-3.0. |
+| [Happy](https://github.com/slopus/happy) | ✅ | ✅ | ✅ | — | — | End-to-end-encrypted mobile/web remote control of Claude Code and Codex; a client + relay. |
+| [Claude Code UI](https://github.com/siteboon/claudecodeui) | ✅ | ✅ | ✅ | — | — | The closest single-node Panel analogue. AGPL-3.0. |
+| [VibeTunnel](https://github.com/amantus-ai/vibetunnel) | ✅ | ✅ | ✅ | — | — | The PTY-over-web layer on its own, without the fleet above it. |
+| [cmux](https://github.com/manaflow-ai/cmux) | ✅ | — | ✅ | — | — | Concurrent-session legibility as a native macOS terminal. GPL-3.0, macOS-only. |
+| [Emdash](https://github.com/generalaction/emdash) | ✅ | ✅ | ✅ | — | — | Parallel CLIs in worktrees with a UI. |
 
-What sets Actana apart is the fleet: one Panel over many machines, each owning
-its own state. [ADR 0001](docs/adr/0001-detach-core-from-panel.md) is why the
-Core was detached from the Panel in the first place.
+<sup>Read from each project's own README on 2026-08-06. If a row is wrong or out
+of date, [open an issue](https://github.com/actana/control/issues/new) — the
+point of the table is to help you pick, not to win an argument.</sup>
+
+Everyone in this list is self-hosted and most render a terminal in a browser;
+those are table stakes, not a differentiator. **What sets Actana apart is the
+last two columns**: one Panel over many machines, each owning its own state.
+[ADR 0001](docs/adr/0001-detach-core-from-panel.md) is why the Core was detached
+from the Panel in the first place.
 
 ## Contributing
 
