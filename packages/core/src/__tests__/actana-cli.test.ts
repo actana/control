@@ -5,6 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { runActanaCli, EXIT_USAGE, type ActanaCliDeps } from "../actana-cli";
+import { refusedContainerVerbs } from "../actana-container";
 import { installDirFor, resolveActanaLayout } from "../actana-layout";
 import { releaseAssetName, releaseChannel } from "../actana-release";
 import type { ActanaSystem, CommandResult } from "../actana-system";
@@ -1256,7 +1257,23 @@ describe("in a container", () => {
     );
   }
 
-  const REFUSED = ["setup", "start", "stop", "restart", "update", "uninstall", "logs"];
+  // Derived from the source of truth (`DOCKER_EQUIVALENT`), not retyped. A
+  // hardcoded copy here is bound to nothing: a verb added to the refusal table
+  // would go untested, and one removed from it would keep passing against a
+  // list that no longer describes the CLI.
+  const REFUSED = refusedContainerVerbs();
+
+  it("refuses a verb set that is neither empty nor the whole CLI", () => {
+    // A floor and a ceiling on the derivation above, so an accidental `{}` or
+    // a table that swallowed every verb is a red test rather than a suite that
+    // silently checks nothing.
+    expect(REFUSED).toContain("setup");
+    expect(REFUSED).toContain("update");
+    // The verbs that must keep working inside the image.
+    expect(REFUSED).not.toContain("status");
+    expect(REFUSED).not.toContain("token");
+    expect(REFUSED).not.toContain("harnesses");
+  });
 
   it.each(REFUSED)("refuses `%s` and names the Docker command that does it", async (verb) => {
     const system = fakeSystem();
@@ -1436,15 +1453,37 @@ describe("in a container", () => {
     expect(system.calls.some((call) => call[0] === "systemctl")).toBe(false);
   });
 
-  it("lists the three variables and the refused verbs in help", async () => {
-    await runActanaCli(deps(["--help"], fakeSystem(), { env: containerEnv() }));
+  // Scoped to the container page rather than to the whole `--help` output, and
+  // that is the entire point of the test. `--help` in the image prints
+  // CONTAINER_USAGE *followed by* the ordinary USAGE, whose Commands block
+  // already lists setup/start/stop/restart/update/uninstall/logs — so a
+  // whole-output match passes even if the container page's verb line is
+  // blanked. The split is on USAGE's own first line, which is the boundary
+  // between the two pages.
+  const containerPage = (): string => {
     const text = out.join("\n");
+    const boundary = text.indexOf("actana — install and operate");
+    expect(boundary, "the ordinary USAGE did not follow the container page").toBeGreaterThan(0);
+    return text.slice(0, boundary);
+  };
+
+  it("lists the three variables and the refused verbs on the container page", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem(), { env: containerEnv() }));
+    const page = containerPage();
+
     for (const name of ["ACTANA_PUBLIC_HOST", "ACTANA_PORT", "ACTANA_LABEL"]) {
-      expect(text).toContain(name);
+      expect(page).toContain(name);
     }
     for (const verb of REFUSED) {
-      expect(text).toMatch(new RegExp(`\\b${verb}\\b`));
+      expect(page, `\`${verb}\` is refused but not named on the container page`).toMatch(
+        new RegExp(`\\b${verb}\\b`),
+      );
     }
+  });
+
+  it("prints the container page only inside the image", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem(), { env: { HOME: home } }));
+    expect(out.join("\n")).not.toContain("its lifecycle belongs to Docker");
   });
 });
 
