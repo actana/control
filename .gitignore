@@ -55,3 +55,8 @@ Temp/
 # no root-owned mountpoint appearing under it; its contents are yours.
 deploy/repos/*
 !deploy/repos/.gitkeep
+
+# Vendor font binaries for `docs/assets/src/build.mjs` (OFL-1.1, not ours to
+# redistribute) and the stale output dir the script used to write to.
+docs/assets/src/fonts/
+docs/assets/src/out/

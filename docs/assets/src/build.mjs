@@ -1,16 +1,66 @@
-import { Resvg } from '@resvg/resvg-js'
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs'
+// Regenerates every committed brand PNG from the SVG sources beside this file.
+//
+//   node docs/assets/src/build.mjs
+//
+// Two things it needs that a clean checkout does not have, both deliberate and
+// both diagnosed below rather than left to a stack trace:
+//
+//   • `@resvg/resvg-js` — a native module, and the only thing that would need
+//     it is this script. Keeping it out of the workspace manifests means every
+//     `pnpm install` and every CI job avoids downloading a prebuild for a
+//     renderer used when the logo changes, which is roughly never.
+//   • the JetBrains Mono TTFs — vendor font binaries, not ours to redistribute
+//     from this repo, and ~600KB of it. `loadSystemFonts: false` is on purpose:
+//     a whatever-is-installed fallback silently renders the wordmark in the
+//     wrong face, and a wrong logo is worse than a missing one.
+//
+// `docs/assets/README.md` § "Regenerating the brand PNGs" has the two commands.
+// Output overwrites the committed files in place — review `git diff --stat` on
+// docs/assets/ afterwards and commit what actually changed.
+
+import { existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
-const OUT = join(import.meta.dirname, 'out')
-mkdirSync(OUT, { recursive: true })
+const SRC = import.meta.dirname
+const OUT = join(SRC, '..')
 
-const FONTS = [
-  'fonts/JetBrainsMono-400.ttf',
-  'fonts/JetBrainsMono-500.ttf',
-  'fonts/JetBrainsMono-700.ttf',
-  'fonts/JetBrainsMono-800.ttf',
-].map(f => join(import.meta.dirname, f))
+const FONT_NAMES = [
+  'JetBrainsMono-400.ttf',
+  'JetBrainsMono-500.ttf',
+  'JetBrainsMono-700.ttf',
+  'JetBrainsMono-800.ttf',
+]
+const FONTS = FONT_NAMES.map(f => join(SRC, 'fonts', f))
+
+const missingFonts = FONTS.filter(f => !existsSync(f))
+if (missingFonts.length > 0) {
+  console.error(
+    `Missing ${missingFonts.length} of ${FONTS.length} font files under docs/assets/src/fonts/:\n` +
+      missingFonts.map(f => `  ${f}`).join('\n') +
+      '\n\nFetch JetBrains Mono (OFL-1.1) and place the four weights there:\n' +
+      '  curl -fsSL -o /tmp/jbmono.zip https://github.com/JetBrains/JetBrainsMono/releases/latest/download/JetBrainsMono.zip\n' +
+      '  unzip -j /tmp/jbmono.zip "fonts/ttf/JetBrainsMono-*.ttf" -d /tmp/jbmono\n' +
+      '  mkdir -p docs/assets/src/fonts\n' +
+      '  for w in Regular:400 Medium:500 Bold:700 ExtraBold:800; do\n' +
+      '    cp "/tmp/jbmono/JetBrainsMono-${w%%:*}.ttf" "docs/assets/src/fonts/JetBrainsMono-${w##*:}.ttf"\n' +
+      '  done\n\n' +
+      'They stay untracked (docs/assets/src/fonts/ is gitignored) — see this file’s header.',
+  )
+  process.exit(1)
+}
+
+let Resvg
+try {
+  ;({ Resvg } = await import('@resvg/resvg-js'))
+} catch {
+  console.error(
+    '`@resvg/resvg-js` is not installed, and it is deliberately not a workspace\n' +
+      'dependency — see this file’s header. Install it just for this run:\n\n' +
+      '  pnpm add -w -D @resvg/resvg-js && node docs/assets/src/build.mjs\n\n' +
+      'then `git checkout package.json pnpm-lock.yaml` to leave the manifests alone.',
+  )
+  process.exit(1)
+}
 
 // Brand tokens from actana.ai stylesheet
 const brand = '#1786c2'
@@ -94,9 +144,12 @@ function render(name, svg, scale) {
 const light = wordmark({ primary: ink, secondary: brand })
 const darkWm = wordmark({ primary: '#ffffff', secondary: brand2 })
 
-writeFileSync(join(OUT, 'logo-light.svg'), light)
-writeFileSync(join(OUT, 'logo-dark.svg'), darkWm)
-writeFileSync(join(OUT, 'banner-social.svg'), banner())
+// The SVGs are the tracked sources, so they land back in src/ beside this
+// file. `actana-icon.svg` is the exception the README notes: it is also a
+// published asset, and it lives one level up with the PNGs.
+writeFileSync(join(SRC, 'logo-light.svg'), light)
+writeFileSync(join(SRC, 'logo-dark.svg'), darkWm)
+writeFileSync(join(SRC, 'banner-social.svg'), banner())
 writeFileSync(join(OUT, 'actana-icon.svg'), icon(24))
 
 render('logo-light.png', light, 3)      // 1680w, displayed at 380-420
