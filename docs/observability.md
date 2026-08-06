@@ -7,11 +7,13 @@ supervises the process owns the sink:
 | --- | --- |
 | Compose / Docker | `docker compose logs panel`, `docker compose logs core` |
 | systemd user unit (Linux Core) | `journalctl --user -u actana-core` |
-| LaunchAgent (macOS Core) | the paths `actana status` prints |
+| LaunchAgent (macOS Core) | `actana logs` tails `~/Library/Logs/Actana/core.log` |
 | Foreground (`pnpm start`) | the terminal you started it in |
 
-`actana status` on a Core prints where its own daemon logs land, along with the
-Core's address, its bearer token, and whether a newer release exists.
+On any Core, `actana logs` (`-f` to follow) reads the daemon's log wherever it
+lands, and `actana status` prints the Core's health, its endpoint, whether a
+pairing token is available, and — when one exists — whether a newer release
+does too.
 
 There is no metrics endpoint and no tracing exporter. The Panel holds no
 task-shaped state to report on — each Core owns its own
