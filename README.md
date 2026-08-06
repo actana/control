@@ -78,6 +78,11 @@ control/
 Install a Core on each machine you want to work on — see [INSTALL.md](INSTALL.md)
 — then run the Panel and pair them from its UI.
 
+A Core needs the harness CLIs it runs. `actana setup` offers to install the
+missing ones; `actana harnesses install <id>` adds one afterwards, taking either
+the canonical id or the command it puts on your PATH (`claude-code` and `claude`
+both work). See [Harness CLIs](INSTALL.md#harness-clis).
+
 ### The Panel, deployed
 
 The Panel ships as a Docker image. [`deploy/docker-compose.yml`](deploy/docker-compose.yml)
