@@ -25,12 +25,33 @@ import {
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
 describe("CORE_TARGETS", () => {
-  it("covers exactly the two supported Cores", () => {
-    expect(CORE_TARGETS.map((t) => t.target)).toEqual(["linux-x64", "linux-arm64"]);
+  it("covers exactly the three supported Cores", () => {
+    expect(CORE_TARGETS.map((t) => t.target)).toEqual([
+      "linux-x64",
+      "linux-arm64",
+      "mac-arm64",
+    ]);
   });
 
-  it("is Linux-only — no macOS target, no Windows target", () => {
-    expect(CORE_TARGETS.every((t) => t.platform === "linux")).toBe(true);
+  // Apple silicon only, and no Windows at all. An Intel Mac runs its Core from
+  // the Core image, so `mac-x64` is an answered question rather than a gap —
+  // `install.sh` and `releaseTargetFor` both refuse it by name.
+  it("carries one darwin target, and it is arm64", () => {
+    expect(CORE_TARGETS.filter((t) => t.platform === "darwin").map((t) => t.arch)).toEqual([
+      "arm64",
+    ]);
+    expect(CORE_TARGETS.some((t) => t.platform === "win32")).toBe(false);
+  });
+
+  // The Node.org slug is `darwin-arm64` while the asset is `mac-arm64` — the
+  // one target where the two names differ, and the reason `nodeDistId` is a
+  // field rather than the target name reused.
+  it("points mac-arm64 at the darwin-arm64 Node runtime", () => {
+    expect(findTarget("mac-arm64")).toMatchObject({
+      platform: "darwin",
+      arch: "arm64",
+      nodeDistId: "darwin-arm64",
+    });
   });
 });
 
@@ -48,11 +69,11 @@ describe("hostTarget", () => {
   it("maps a build host to the target it can legitimately produce", () => {
     expect(hostTarget("linux", "x64")?.target).toBe("linux-x64");
     expect(hostTarget("linux", "arm64")?.target).toBe("linux-arm64");
+    expect(hostTarget("darwin", "arm64")?.target).toBe("mac-arm64");
   });
 
   it("has no target for an unsupported host", () => {
     expect(hostTarget("win32", "x64")).toBeUndefined();
-    expect(hostTarget("darwin", "arm64")).toBeUndefined();
     expect(hostTarget("darwin", "x64")).toBeUndefined();
   });
 });
@@ -82,6 +103,9 @@ describe("prebuildDirName", () => {
   it("names the one node-pty prebuild directory the target needs", () => {
     expect(prebuildDirName(findTarget("linux-arm64"))).toBe("linux-arm64");
     expect(prebuildDirName(findTarget("linux-x64"))).toBe("linux-x64");
+    // node-pty names its prebuilds by `process.platform`, so the mac leg wants
+    // `darwin-arm64` — not the `mac-arm64` the asset is called.
+    expect(prebuildDirName(findTarget("mac-arm64"))).toBe("darwin-arm64");
   });
 });
 

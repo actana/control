@@ -363,24 +363,37 @@ describe("release workflow", () => {
     }
   });
 
-  // D28. Two legs, not four: the darwin targets are dropped, so a release is
-  // two tarballs and a SHA256SUMS over exactly those two.
-  it("builds the two Linux tarballs on native runners and nothing on macOS", () => {
+  // D28, as amended. Every target builds on a runner of its own architecture —
+  // the tarballs carry native modules copied from the build host, so a
+  // cross-compiled leg would be a guess. The mac leg is its own job rather
+  // than a third matrix row because `environment:` is job-level, and putting
+  // the approval pause on this matrix would stall the Linux legs behind it.
+  it("builds each tarball on a runner of its own architecture", () => {
     const tarball = workflow.slice(
       workflow.indexOf("  tarball:"),
-      workflow.indexOf("  installer-e2e:"),
+      workflow.indexOf("  tarball-macos:"),
     );
     expect(tarball).toContain("target: linux-x64");
     expect(tarball).toContain("target: linux-arm64");
     expect(tarball).toContain("ubuntu-24.04-arm");
-    expect(tarball).not.toContain("macos");
-    expect(tarball).not.toContain("mac-arm64");
+    // No macOS row crept into the Linux matrix — matched on the keys rather
+    // than the word, since the slice runs up to the mac job's own comment.
+    expect(tarball).not.toMatch(/os: macos/);
+    expect(tarball).not.toMatch(/target: mac-/);
+
+    const macTarball = workflow.slice(
+      workflow.indexOf("  tarball-macos:"),
+      workflow.indexOf("  installer-e2e:"),
+    );
+    expect(macTarball).toContain("TARGET: mac-arm64");
+    expect(macTarball).toMatch(/runs-on: macos-/);
   });
 
   // The guard that makes a silently missing architecture a red build rather
-  // than a checksum file covering half the release.
-  it("composes SHA256SUMS with --expect 2", () => {
-    expect(workflow).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 2");
+  // than a checksum file covering part of the release. The 3 is the count of
+  // CORE_TARGETS.
+  it("composes SHA256SUMS with --expect 3", () => {
+    expect(workflow).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 3");
   });
 
   // D29: the installer's contract is the two asset names and bin/actana. The

@@ -22,9 +22,11 @@ visibility is flipped from private to public.
       should match **only** `NOTICE`, `docs/upstream/`, `docs/agents/upstream-harvest.md`,
       and historical ADRs/specs — those are fork attribution and must not change).
 
-## 2. Secrets and variables
+## 2. Secrets, variables, and environments
 
-Set under **Settings → Secrets and variables → Actions**.
+Set under **Settings → Secrets and variables → Actions** — except the
+environment at the end of this section, which lives under **Settings →
+Environments**.
 
 | Name | Kind | Needed for |
 | --- | --- | --- |
@@ -93,6 +95,34 @@ gh workflow run release.yml --repo actana/control -f tag=<the latest tag>
 
 The dispatch re-runs the whole tag, which is what proves the new token pushes
 images **and** updates descriptions. Then delete the old token in Docker Hub.
+
+### The `macos-release` environment — the one human gate in a release
+
+Set under **Settings → Environments**, not under Secrets and variables. It
+holds no secrets at all; the only thing it carries is a list of people.
+
+- [ ] Create an environment named exactly **`macos-release`**
+- [ ] **Required reviewers** → the people who own a Mac and can run the
+      checklist. At least one, and give it more than one — until somebody
+      approves, no release publishes at all
+- [ ] Leave **deployment branches** unrestricted: the job that uses it runs on
+      a `v*` tag, and a branch restriction would refuse the tag
+
+`release.yml`'s `tarball-macos` job declares this environment, so on a tag push
+it enters **waiting** and burns no runner minutes until it is approved
+([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended). Approval is not a
+formality: the reviewer runs
+[`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) on
+real Apple hardware — Gatekeeper on an unsigned bundle, and whether the
+LaunchAgent survives a reboot and a logout — none of which a runner that is
+destroyed rather than restarted can answer. Clicking approve is the statement
+that it passed.
+
+The whole release waits on it, deliberately: `github-release` needs that job,
+because a `SHA256SUMS` covering fewer architectures than the docs promise is
+worse than a release that is late. If the environment does not exist, GitHub
+creates an unprotected one on first use — which is right for a fork and wrong
+here, so the box above is the check that a release actually pauses.
 
 ## 3. Branch ruleset for `main` (Settings → Rules → Rulesets)
 

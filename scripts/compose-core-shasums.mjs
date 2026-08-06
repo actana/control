@@ -13,8 +13,9 @@
 // --dir     Directory holding the tarballs (searched one level deep, so
 //           GitHub's per-artifact subdirectories work unflattened).
 // --expect  Fail unless exactly this many tarballs were found. CI passes the
-//           full target count so a silently missing platform is a red build,
-//           not a checksum file that quietly covers three of four.
+//           full target count (`CORE_TARGETS.length`, spelled out in
+//           release.yml) so a silently missing platform is a red build, not a
+//           checksum file that quietly covers two of three.
 
 import * as fs from "node:fs";
 import * as path from "node:path";

@@ -76,12 +76,15 @@ Core afterwards.
 ## Prerequisites
 
 - **Linux x86_64 or arm64** with systemd user units available — `systemctl --user`
-  must work. WSL counts as Linux (with systemd enabled). A release publishes
-  these two builds and nothing else — on a Mac or on Windows, run the Panel and
-  host your Cores on a Linux machine. (The `actana` CLI still knows how to set
-  itself up under launchd, but nothing builds it a macOS bundle any more; see
-  [the macOS checklist](docs/core-macos-prerelease-checklist.md) if you intend
-  to make one anyway.)
+  must work. WSL counts as Linux (with systemd enabled).
+- **or macOS on Apple silicon** (M-series), where the auto-start unit is a
+  LaunchAgent and no systemd is involved. See
+  [macOS, on the machine itself](#macos-on-the-machine-itself) below for what
+  differs.
+- A release publishes those three builds and nothing else. **An Intel Mac has
+  no on-device build** and will not get one: run its Core from the container
+  image instead — the installer says so if you try. On Windows, run the Panel
+  and host your Cores on a Linux machine.
 - **A reachable port.** The Panel dials the Core, so the port you choose
   (default `8443`) must be open from the Panel's machine:
   ```bash
@@ -101,8 +104,8 @@ you already have, or work on a machine with no outbound network to GitHub.
 ### Step 1 — Download and verify the bundle
 
 Pick the tarball matching the machine's architecture from the GitHub Release —
-`linux-x64` or `linux-arm64` — plus the `SHA256SUMS` asset from the same
-release. Those three files are the whole release.
+`linux-x64`, `linux-arm64` or `mac-arm64` — plus the `SHA256SUMS` asset from
+the same release. Those four files are the whole release.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -191,6 +194,92 @@ the Fleet view.
 
 Lost the token? `actana token` reprints it. It puts only the token on stdout,
 so piping it into a clipboard tool works.
+
+---
+
+## macOS, on the machine itself
+
+A Mac with Apple silicon is a Core like any other: the one-liner at the top of
+this page installs it, `actana setup` runs without sudo, and the machine pairs
+with your Panel the same way. What differs is the auto-start mechanism, and
+one property that follows from it.
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+```
+
+The installer maps the machine to the `mac-arm64` release asset and hands over
+to `actana setup`, which writes a **LaunchAgent** at
+`~/Library/LaunchAgents/com.actana.core.plist`, labelled `com.actana.core`, and
+loads it.
+
+**An Intel Mac stops here, deliberately.** There is no `mac-x64` build and
+there will not be one; the installer refuses at detection and points you at the
+container image, which is the supported way to run a Core on that machine.
+
+### The LaunchAgent is tied to your login session
+
+This is the one thing to understand before you rely on a Mac Core:
+
+- It starts **when you log in**, not when the machine boots.
+- It stops **when you log out**. Locking the screen is fine; logging out is not.
+- **There is no `loginctl enable-linger` equivalent.** That is not a gap in the
+  CLI — surviving logout on macOS means a root-owned LaunchDaemon in
+  `/Library/LaunchDaemons`, and this install is sudo-less by design. `setup`
+  offers you no such prompt on macOS because there is no such choice to offer.
+
+So a Mac Core wants to stay logged in. Enable automatic login (System Settings
+→ Users & Groups → Automatic login) if the Core has to be reachable after a
+reboot, and keep the session open. `actana status` states which of the two
+regimes you are on, on its `Linger` / `At login` row — on macOS it reads
+`At login`.
+
+### `status` and `logs` on macOS
+
+```bash
+actana status
+```
+
+Reports `Core: healthy`, the LaunchAgent as `com.actana.core`, and the
+`At login` row above. It exits non-zero when the Core is not healthy, on macOS
+as on Linux, so it works as a health check in scripts.
+
+```bash
+actana logs -f
+```
+
+There is no journal to read, so `logs` tails
+`~/Library/Logs/Actana/core.log` — where the LaunchAgent sends both of the
+daemon's streams. `-n` / `--lines <n>` and `-f` / `--follow` work as they do on
+Linux. `start`, `stop` and `restart` drive `launchctl` for you.
+
+That log directory is the one thing `actana uninstall --purge-data` leaves
+behind. Remove it by hand if you want the machine spotless:
+
+```bash
+rm -rf ~/Library/Logs/Actana
+```
+
+### Gatekeeper, and downloading the tarball in a browser
+
+Releases are **not code-signed or notarized**. That is fine for the paths above:
+`curl` and `wget` do not set the `com.apple.quarantine` attribute, so the
+one-liner — and a by-hand `curl` of the tarball — installs without Gatekeeper
+intervening.
+
+A browser *does* set it. If you downloaded the tarball in Safari or Chrome and
+macOS refuses to run the launcher or the bundled `node`, clear the attribute
+from the extracted tree and try again:
+
+```bash
+xattr -dr com.apple.quarantine ./actana-core-0.1.0-mac-arm64
+```
+
+### The firewall prompt
+
+The first time the daemon binds its port, macOS may ask whether to allow
+incoming connections. Allow it, or the Panel cannot dial the Core. It is under
+System Settings → Network → Firewall → Options if you dismissed it.
 
 ---
 
@@ -381,5 +470,6 @@ slots.
 - [ADR 0001 — Detach core from panel](docs/adr/0001-detach-core-from-panel.md)
 - [ADR 0002 — Core-link auth and transport](docs/adr/0002-core-link-auth-and-transport.md)
 - [ADR 0003 — Core install and registration](docs/adr/0003-core-install-and-registration.md)
-- [macOS checklist](docs/core-macos-prerelease-checklist.md) — the reboot and
-  logout checks for a Mac Core built from source
+- [macOS release checklist](docs/core-macos-prerelease-checklist.md) — the
+  reboot, logout and Gatekeeper checks a person runs on real hardware before
+  any release carrying a `mac-arm64` tarball can publish

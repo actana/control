@@ -43,7 +43,6 @@ describe("release targets", () => {
     ["linux", "x64", "linux-x64"],
     ["linux", "arm64", "linux-arm64"],
     ["darwin", "arm64", "mac-arm64"],
-    ["darwin", "x64", "mac-x64"],
   ])("maps %s/%s to the %s build", (platform, arch, target) => {
     expect(releaseTargetFor(platform as NodeJS.Platform, arch)).toBe(target);
   });
@@ -51,6 +50,14 @@ describe("release targets", () => {
   it("has no build for a platform Cores do not run on", () => {
     expect(releaseTargetFor("win32", "x64")).toBeNull();
     expect(releaseTargetFor("linux", "ppc64")).toBeNull();
+  });
+
+  // The one refusal that is a decision rather than an absence: no `mac-x64`
+  // asset will ever be published, so `update` has to fail at detection the way
+  // `install.sh` does — not later, holding a release that "has no build for
+  // mac-x64" and reads as broken.
+  it("has no build for an Intel Mac, which is a decision and not a gap", () => {
+    expect(releaseTargetFor("darwin", "x64")).toBeNull();
   });
 
   it("names the asset the way the release workflow does", () => {
