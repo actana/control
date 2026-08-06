@@ -68,7 +68,7 @@ over the panel link as core-link frames, because each Core owns that state
 ## Skill file for external CLIs
 
 A drop-in skill for Claude Code / Codex / Cursor CLI lives in
-[`skills/missioncontrol-notify.md`](skills/missioncontrol-notify.md). Paste it
+[`skills/actana-notify.md`](skills/actana-notify.md). Paste it
 into the CLI's instructions or memory so the harness knows to report its
 lifecycle events back to Actana Control.
 

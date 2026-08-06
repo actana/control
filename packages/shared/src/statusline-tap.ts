@@ -22,6 +22,11 @@ import { readJsonSettingsFile, writeJsonSettingsFile } from "./json-settings-fil
 export const SHARED_LIMITS_DIR = path.join(os.homedir(), ".cache", "claude-limits");
 export const SHARED_LIMITS_FILE = path.join(SHARED_LIMITS_DIR, "limits.json");
 
+// The pre-fork name survives in this path on purpose. It is written into the
+// `statusLine.command` of every ~/.claude/settings.json this has ever touched,
+// on machines this repo will never see again; renaming the directory orphans
+// the installed script rather than moving it. The *text* the script carries was
+// rebranded (v5) — that one is only ever read by a human.
 const TAP_DIR = path.join(os.homedir(), ".claude", "mission-control");
 export const STATUSLINE_TAP_PATH = path.join(TAP_DIR, "statusline-tap.sh");
 
@@ -160,10 +165,10 @@ except Exception:
  * build vs a newer dev build, or a not-yet-restarted process) can never stomp
  * a newer script back to an old version on every session spawn.
  */
-export const STATUSLINE_TAP_VERSION = 4;
+export const STATUSLINE_TAP_VERSION = 5;
 
 export const STATUSLINE_TAP_SCRIPT = `#!/bin/sh
-# Mission Control statusline tap v${STATUSLINE_TAP_VERSION} (managed - safe to delete; Mission Control reinstalls it).
+# Actana Control statusline tap v${STATUSLINE_TAP_VERSION} (managed - safe to delete; Actana Control reinstalls it).
 # Tees Claude Code's rate_limits from the statusline payload into a shared cache
 # (~/.cache/claude-limits/limits.json), then chains your own statusline command
 # from ~/.claude/settings.json so the visible statusline is unchanged.
@@ -195,6 +200,9 @@ function readUserStatusLine(homedir: string): StatusLineConfig | null {
   }
 }
 
+// Deliberately anchored on "statusline tap v<n>" and not on the product name
+// in front of it, so a v4 script written under the old branding still reports
+// 4 and gets overwritten rather than being read as version 0.
 function readTapVersion(content: string): number {
   const m = content.match(/statusline tap v(\d+)/);
   return m ? Number.parseInt(m[1], 10) : 0;

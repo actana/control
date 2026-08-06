@@ -267,14 +267,28 @@ describe("statusline tap installer", () => {
     expect(ensureStatuslineTapScript(target)).toBe(target);
     expect(fs.readFileSync(target, "utf8")).toBe(STATUSLINE_TAP_SCRIPT);
 
-    fs.writeFileSync(target, `# Mission Control statusline tap v${STATUSLINE_TAP_VERSION} drift`);
+    fs.writeFileSync(target, `# Actana Control statusline tap v${STATUSLINE_TAP_VERSION} drift`);
+    ensureStatuslineTapScript(target);
+    expect(fs.readFileSync(target, "utf8")).toBe(STATUSLINE_TAP_SCRIPT);
+  });
+
+  // The rebrand changed the product name in the script's own header comment.
+  // Version detection reads "statusline tap v<n>" and not the name in front of
+  // it, so a tap written by a pre-rebrand build reports its real version and is
+  // overwritten. Read the name and it would report 0 — harmless here, but the
+  // same parse decides the downgrade guard below.
+  it("recognises a pre-rebrand script's version and replaces it", () => {
+    const target = path.join(tmpDir, "tap-install", "statusline-tap.sh");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, `#!/bin/sh\n# Mission Control statusline tap v4 (managed)\n`);
+
     ensureStatuslineTapScript(target);
     expect(fs.readFileSync(target, "utf8")).toBe(STATUSLINE_TAP_SCRIPT);
   });
 
   it("never downgrades a newer on-disk script (older app build still running)", () => {
     const target = path.join(tmpDir, "tap-install", "statusline-tap.sh");
-    const newer = `#!/bin/sh\n# Mission Control statusline tap v${STATUSLINE_TAP_VERSION + 1} (managed)\n`;
+    const newer = `#!/bin/sh\n# Actana Control statusline tap v${STATUSLINE_TAP_VERSION + 1} (managed)\n`;
     fs.mkdirSync(path.dirname(target), { recursive: true });
     fs.writeFileSync(target, newer);
 

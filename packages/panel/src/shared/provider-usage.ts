@@ -1,6 +1,6 @@
 /**
- * Multi-provider usage limits — CodexBar capability forked into mission-control
- * TypeScript (Windows + macOS). Catalog IDs match CodexBar's UsageProvider.
+ * Multi-provider usage limits — CodexBar capability ported into Actana Control
+ * TypeScript. Catalog IDs match CodexBar's UsageProvider.
  *
  * Every catalog id has a live adapter that resolves credentials and probes
  * the provider API/local source. Missing credentials → unauthenticated.
@@ -100,7 +100,7 @@ export type ProviderUsageMeta = {
   displayName: string;
   /** Whether this provider has a live TS adapter (vs catalog-only stub). */
   implemented: boolean;
-  /** Default-on for mission-control agent surface. */
+  /** Default-on in the Panel's Providers settings. */
   defaultEnabled: boolean;
 };
 
@@ -167,7 +167,7 @@ export const PROVIDER_USAGE_CATALOG: readonly ProviderUsageMeta[] = [
 ] as const;
 
 /**
- * Harnesses mission-control actually supports. The full CodexBar catalog stays
+ * Harnesses Actana Control actually supports. The full CodexBar catalog stays
  * above for adapter parity, but settings/UI only ever offer these four.
  */
 export const SUPPORTED_PROVIDER_USAGE_IDS = [

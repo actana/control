@@ -1,11 +1,11 @@
 ---
-name: missioncontrol-notify
-description: When you finish a task, hit a question, or fail, POST your status to the Actana Control desktop app so the user sees it without checking your terminal.
+name: actana-notify
+description: When you finish a task, hit a question, or fail, POST your status to Actana Control so the user sees it without checking your terminal.
 ---
 
 # Actana Control status hook
 
-You are running inside a terminal launched by Actana Control. There is a task ID associated with this run, and a localhost API you can call to update the user's mission-control board.
+You are running inside a terminal launched by Actana Control. There is a task ID associated with this run, and a localhost API you can call to update the user's board in the Panel.
 
 ## How to find your credentials
 
