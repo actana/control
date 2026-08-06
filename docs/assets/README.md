@@ -11,7 +11,7 @@ kinds, with two different provenances — one generated, one captured by hand.
 | `banner-social.png` | GitHub social preview, 2560×1280 — uploaded in repo Settings, not linked from the README | `src/build.mjs` |
 | `panel-project-light.png` / `panel-project-dark.png` | README hero screenshot | a browser, by hand — see below |
 | `panel-fleet-light.png` / `panel-fleet-dark.png` | README, "How it works" | a browser, by hand — see below |
-| `harness/*.png`, `harness/*.svg` | README, Supported-harnesses table | vendor marks on a chip — see below |
+| `harness/*.png`, `harness/*.svg` | README harness banner (44px) and Supported-harnesses table (18px) | vendor marks on a chip — see below |
 
 All generated text is set in **JetBrains Mono** — the product's primary UI font
 (Studio look, spec 12) — so the brand type matches the app everywhere.
@@ -84,16 +84,23 @@ keeps the images rendering on forks.
 
 ## The harness marks
 
-`harness/` holds one 48×48 mark per supported Harness, shown at 18px in the
-README's Supported-harnesses table. Each is the **vendor's own mark**, unaltered,
-on an identical dark rounded chip:
+`harness/` holds one 48×48 mark per Harness, used twice in the README: at 44px
+in the banner under the hero screenshot, and at 18px in the Supported-harnesses
+table. The banner is the statement, the table is the spec.
 
-| File | Mark from |
-| --- | --- |
-| `claude-code.png` | `packages/panel/public/claude.png` — the same asset the Panel renders |
-| `cursor-cli.png` | `packages/panel/public/cursor.png` — likewise |
-| `codex.svg` | the OpenAI mark, path verbatim from Simple Icons (`SiOpenai` in `react-icons`, which `HarnessLogo.tsx` also uses) |
-| `opencode.svg` | `packages/panel/public/opencode.svg`, geometry verbatim |
+**One visual grammar, two states.** Supported Harnesses are the vendor's own
+mark, unaltered, on a solid dark chip. Planned ones are a muted, dashed-border
+chip carrying a single glyph — a placeholder, deliberately not a vendor logo,
+because we do not ship other people's branding for a Harness we have not built.
+
+| File | State | Mark from |
+| --- | --- | --- |
+| `claude-code.png` | supported | `packages/panel/public/claude.png` — the same asset the Panel renders |
+| `cursor-cli.png` | supported | `packages/panel/public/cursor.png` — likewise |
+| `codex.svg` | supported | the OpenAI mark, path verbatim from Simple Icons (`SiOpenai` in `react-icons`, which `HarnessLogo.tsx` also uses) |
+| `opencode.svg` | supported | `packages/panel/public/opencode.svg`, geometry verbatim |
+| `soon-hermes.svg` | planned | placeholder — `H` |
+| `soon-pi.svg` | planned | placeholder — `π` |
 
 The chip is not decoration. Both raster marks are near-white
 (`#FDF3EE`, `#EDECEC`) because they are drawn for the app's dark surface, so on
@@ -101,5 +108,14 @@ GitHub's light theme they would be all but invisible. Putting every mark on the
 same `#151b26` chip keeps the vendor artwork untouched — no recolouring — and
 makes one set that reads identically in both themes.
 
-Adding a Harness means adding a row here, a mark in `harness/`, and a row in the
-README table — which is checked against `HARNESS_REGISTRY` in `@actana/shared`.
+The planned set is not a wishlist. It is exactly the roster recorded in
+[`domain-model.md` § Harness](../domain-model.md#harness) — `pi` and `hermes` —
+which is also what [ADR 0007](../adr/0007-scope-narrowing-and-rebrand.md) names
+as the reason the registry stays extensible. Adding a dimmed mark here is a
+roadmap claim on a public front page, so it follows the domain model rather
+than leading it.
+
+**When a planned Harness ships**, replace its `soon-*.svg` with the vendor mark
+on a solid chip, move its README row up out of the dashed group, and delete the
+`soon-` file — the grammar is what tells a visitor which is which, so a stale
+dashed chip is worse than none.

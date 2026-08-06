@@ -38,6 +38,31 @@ repos.
   </picture>
 </p>
 
+<!--
+  The harness banner. Full-colour marks are Harnesses that work today; the
+  dashed, muted ones are the planned additions recorded in
+  docs/domain-model.md § Harness. Keep that grammar — supported is solid,
+  planned is dashed — and keep the paths relative so forks render.
+-->
+<p align="center">
+  <a href="https://github.com/anthropics/claude-code" title="Claude Code — supported"><img src="docs/assets/harness/claude-code.png" width="44" height="44" alt="Claude Code"></a>
+  &nbsp;
+  <a href="https://github.com/openai/codex" title="Codex — supported"><img src="docs/assets/harness/codex.svg" width="44" height="44" alt="Codex"></a>
+  &nbsp;
+  <a href="https://cursor.com/cli" title="Cursor CLI — supported"><img src="docs/assets/harness/cursor-cli.png" width="44" height="44" alt="Cursor CLI"></a>
+  &nbsp;
+  <a href="https://opencode.ai" title="OpenCode — supported"><img src="docs/assets/harness/opencode.svg" width="44" height="44" alt="OpenCode"></a>
+  &nbsp;&nbsp;&nbsp;
+  <a href="#supported-harnesses" title="Hermes — planned"><img src="docs/assets/harness/soon-hermes.svg" width="44" height="44" alt="Hermes (planned)"></a>
+  &nbsp;
+  <a href="#supported-harnesses" title="Pi — planned"><img src="docs/assets/harness/soon-pi.svg" width="44" height="44" alt="Pi (planned)"></a>
+</p>
+
+<p align="center">
+  <b>Claude Code · Codex · Cursor CLI · OpenCode</b><br>
+  <sub>work here today — <a href="#supported-harnesses">Hermes and Pi are next</a>, and the family is open</sub>
+</p>
+
 <!-- Demo recording goes here once it exists. Deliberately empty until then. -->
 
 ## Quickstart
@@ -97,8 +122,10 @@ Full paths: [deploy/README.md](deploy/README.md) for the reference Compose,
 
 ## Supported harnesses
 
-A **Harness** is the vendor CLI a session drives. This table is the
-compatibility promise — it tracks `HARNESS_REGISTRY` in `@actana/shared`.
+A **Harness** is the vendor CLI a session drives. The **Supported** rows are the
+compatibility promise, and they track `HARNESS_REGISTRY` in `@actana/shared`
+one-for-one. The dashed rows below them are not in the registry yet — that is
+what makes them coming soon.
 
 | Harness | Command | Status | Auto-approve flag |
 | --- | --- | --- | --- |
@@ -106,11 +133,21 @@ compatibility promise — it tracks `HARNESS_REGISTRY` in `@actana/shared`.
 | <img src="docs/assets/harness/codex.svg" width="18" align="top" alt=""> **Codex** | `codex` | Supported | `--yolo` |
 | <img src="docs/assets/harness/cursor-cli.png" width="18" align="top" alt=""> **Cursor CLI** | `cursor-agent` | Supported | `--force` |
 | <img src="docs/assets/harness/opencode.svg" width="18" align="top" alt=""> **OpenCode** | `opencode` | Supported | — (none offered) |
-| **More coming soon** | | | |
+| <img src="docs/assets/harness/soon-hermes.svg" width="18" align="top" alt=""> Hermes | — | *Coming soon* | — |
+| <img src="docs/assets/harness/soon-pi.svg" width="18" align="top" alt=""> Pi | — | *Coming soon* | — |
 
-A Harness is one registry entry plus a launcher — the set grows, and nothing in
-the Panel or the core-link is specific to any of the four above. Missing one you
-use? [Open an issue](https://github.com/actana/control/issues/new).
+The dashed rows are the planned additions recorded in
+[the domain model](docs/domain-model.md#harness) — the Panel already has a
+"Coming soon" state for a registry entry that is not yet installable
+([ADR 0021](docs/adr/0021-installing-a-harness-is-a-panel-gesture.md)), so they
+appear as themselves rather than as a footnote.
+
+The family is open by design
+([ADR 0013](docs/adr/0013-core-is-the-machine-harness-is-the-cli.md)):
+a Harness is one registry entry plus a launcher, and nothing in the Panel or the
+core-link is specific to any of the four supported today. Using one that is not
+here? [Open an issue](https://github.com/actana/control/issues/new) — that is
+how a row gets added.
 
 Each Core needs the CLIs it runs, installed under its own user — see
 [Harness CLIs](INSTALL.md#harness-clis).
