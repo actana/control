@@ -26,8 +26,8 @@ export const BUNDLED_NODE_VERSION = "24.15.0";
  *
  * `mac-arm64` is the one target whose leg costs real money: macOS runners bill
  * at 10×, so it builds only on a release tag, behind the `macos-release`
- * environment's manual approval, and never on a pull request (decision #14's
- * cost posture, kept intact).
+ * environment's manual approval, and never on a pull request — which is what
+ * keeps D35's cost posture intact.
  *
  * Adding a row here is not a local edit. Every one of these has to move with
  * it, or the release ships something incoherent:

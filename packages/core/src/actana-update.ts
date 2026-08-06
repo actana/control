@@ -179,7 +179,7 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   const target = releaseTargetFor(opts.platform, opts.arch);
   if (!target) {
     throw new Error(
-      opts.platform === "darwin"
+      opts.platform === "darwin" && opts.arch === "x64"
         ? "there is no Core build for an Intel Mac — the on-device install is Apple silicon " +
           "only. Run your Core from the container image instead."
         : `there is no Core build for ${opts.platform}/${opts.arch} — Cores run on Linux ` +

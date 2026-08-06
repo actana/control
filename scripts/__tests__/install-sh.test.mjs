@@ -103,8 +103,14 @@ describeOnPosix("install.sh", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  /** A `uname` that reports the machine the test is pretending to run on. */
-  function unameShim(caseDir, sysname, machine) {
+  /**
+   * A `uname` that reports the machine the test is pretending to run on, and —
+   * when `rosetta` is set — a `sysctl` that answers as a translated process
+   * does. Rosetta is the one case `uname` alone cannot describe: an
+   * Apple-silicon Mac running a translated shell reports `x86_64`, so
+   * `sysctl.proc_translated` is what tells the two Macs apart.
+   */
+  function unameShim(caseDir, sysname, machine, rosetta = false) {
     const binDir = path.join(caseDir, "shim-bin");
     fs.mkdirSync(binDir, { recursive: true });
     const shim = path.join(binDir, "uname");
@@ -113,6 +119,17 @@ describeOnPosix("install.sh", () => {
       `#!/bin/sh\ncase "\${1:-}" in\n  -s) echo '${sysname}' ;;\n  -m) echo '${machine}' ;;\n  *) echo '${sysname}' ;;\nesac\n`,
     );
     fs.chmodSync(shim, 0o755);
+
+    // Absent by default: a real Intel Mac has no such key and the command
+    // fails, which is exactly what the unshimmed host does here.
+    if (rosetta) {
+      const sysctl = path.join(binDir, "sysctl");
+      fs.writeFileSync(
+        sysctl,
+        `#!/bin/sh\ncase "$*" in\n  *sysctl.proc_translated) echo 1 ;;\n  *) exit 1 ;;\nesac\n`,
+      );
+      fs.chmodSync(sysctl, 0o755);
+    }
     return binDir;
   }
 
@@ -147,6 +164,8 @@ describeOnPosix("install.sh", () => {
   async function runInstaller({
     args = [],
     uname = ["Linux", "x86_64"],
+    /** Pretend the shell is running translated by Rosetta. */
+    rosetta = false,
     piped = true,
     /** Content to put on the installer's own stdin, as a pipe would. */
     stdinContent,
@@ -159,7 +178,7 @@ describeOnPosix("install.sh", () => {
 
     const env = {
       ...process.env,
-      PATH: `${unameShim(caseDir, uname[0], uname[1])}:${process.env.PATH}`,
+      PATH: `${unameShim(caseDir, uname[0], uname[1], rosetta)}:${process.env.PATH}`,
       TMPDIR: tmpDir,
       ACTANA_STUB_LOG: stubLog,
       ...extraEnv,
@@ -296,6 +315,20 @@ describeOnPosix("install.sh", () => {
     // image is the supported path. Refusing at detection also keeps the
     // operator away from the late, misleading "release v0.1.0 has no build for
     // mac-x64", which describes a broken release rather than the truth.
+    // `uname -m` says x86_64 in a shell running under Rosetta, so taking it at
+    // face value would refuse a supported machine as an Intel one. Opening a
+    // translated terminal is a normal way to get here, and the operator has no
+    // reason to connect "Intel Mac" with the shell they happen to be in.
+    it("installs the arm64 build on an Apple-silicon Mac under Rosetta", async () => {
+      const run = await runInstaller({
+        args: withServer(["--version", OLD_VERSION]),
+        uname: ["Darwin", "x86_64"],
+        rosetta: true,
+      });
+      expect(run.status, run.output).toBe(0);
+      expect(run.stdout).toContain("target=mac-arm64");
+    });
+
     it("sends an Intel Mac to the container path, at detection", async () => {
       const run = await runInstaller({ args: withServer([]), uname: ["Darwin", "x86_64"] });
       expect(run.status).not.toBe(0);

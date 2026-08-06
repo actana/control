@@ -152,10 +152,9 @@ parse_args() {
 # is no build for it. Windows is not an omission: its operators run the web
 # Panel and host their Cores on Linux (WSL counts as Linux).
 #
-# The architecture is resolved before the OS because the Darwin branch needs
-# it: an Apple-silicon Mac is a first-class Core (`mac-arm64`), an Intel Mac is
-# not and never will be — it runs its Core from the container image, and is
-# told so by name rather than lumped in with the platforms Cores do not run on.
+# An Apple-silicon Mac is a first-class Core (`mac-arm64`). An Intel Mac is not
+# and never will be — it runs its Core from the container image, and is told so
+# by name rather than lumped in with the platforms Cores do not run on.
 #
 # Both refusals happen here, at detection, rather than later against the
 # release's checksum file. Mapping an Intel Mac to `mac-x64` and letting the
@@ -167,6 +166,16 @@ detect_target() {
   uname_s=$(uname -s)
   uname_m=$(uname -m)
 
+  case $uname_s in
+    Linux) platform="linux" ;;
+    Darwin) platform="mac" ;;
+    *)
+      die "unsupported operating system: $uname_s. Cores run on Linux
+  (WSL counts as Linux) and on Apple-silicon macOS; on Windows, use the web
+  Panel and host your Core on a Linux machine."
+      ;;
+  esac
+
   case $uname_m in
     x86_64 | amd64) cpu="x64" ;;
     aarch64 | arm64) cpu="arm64" ;;
@@ -175,23 +184,23 @@ detect_target() {
       ;;
   esac
 
-  case $uname_s in
-    Linux) platform="linux" ;;
-    Darwin)
-      if [ "$cpu" != "arm64" ]; then
-        die "no Core build for an Intel Mac ($uname_m). The on-device install is
+  # Rosetta makes an Apple-silicon Mac report `x86_64` from `uname -m`, so
+  # `uname` alone would refuse a supported machine as an Intel one — a shell
+  # opened under Rosetta is a normal way to end up here. sysctl knows the
+  # difference: `sysctl.proc_translated` is 1 in a translated process, 0 in a
+  # native one, and absent on a real Intel Mac, where the command fails and
+  # leaves this empty.
+  if [ "$platform" = "mac" ] && [ "$cpu" = "x64" ] &&
+    [ "$(sysctl -n sysctl.proc_translated 2>/dev/null)" = "1" ]; then
+    cpu="arm64"
+  fi
+
+  if [ "$platform" = "mac" ] && [ "$cpu" != "arm64" ]; then
+    die "no Core build for an Intel Mac ($uname_m). The on-device install is
   Apple silicon only; on an Intel Mac, run your Core from the container image
   instead — the reference deploy/docker-compose.yml at
   https://github.com/actana/control brings up a Core in one command."
-      fi
-      platform="mac"
-      ;;
-    *)
-      die "unsupported operating system: $uname_s. Cores run on Linux
-  (WSL counts as Linux) and on Apple-silicon macOS; on Windows, use the web
-  Panel and host your Core on a Linux machine."
-      ;;
-  esac
+  fi
 
   TARGET="$platform-$cpu"
 }

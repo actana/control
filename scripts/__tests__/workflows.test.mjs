@@ -74,8 +74,11 @@ describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
     expect(job).toContain("compose-core-shasums.mjs --dir core-tarballs --expect 3");
   });
 
+  // container-image.yml is in the list because ci.yml calls it on every PR: a
+  // macOS runner added there would spend PR minutes without appearing in any
+  // entry point.
   it("spends no macOS minutes on a pull request or a chore", () => {
-    for (const file of ["ci.yml", "housekeeping.yml"]) {
+    for (const file of ["ci.yml", "housekeeping.yml", "container-image.yml"]) {
       expect(read(file), `${file} runs a job on macOS`).not.toMatch(/runs-on:.*macos/);
     }
   });

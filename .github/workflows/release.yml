@@ -134,10 +134,13 @@ jobs:
           exit 1
 
   # The two Linux legs. The mac leg is `tarball-macos` below rather than a third
-  # row here, because `environment:` is a job-level key: putting it on this
-  # matrix would make the approval pause hold the Linux tarballs — and with
-  # them `installer-e2e` — behind a human, for no gain. Split, the manual
-  # checks and the Linux installer e2e run at the same time.
+  # row here, for two reasons. `needs:` waits on a matrix job whole, so an
+  # approval pause on any row of this one would hold `installer-e2e` — a
+  # Linux-only check that has nothing to wait for — behind a human. And
+  # `environment:` is a job-level key, so putting it here at all would mean
+  # `environment: ${{ matrix.environment }}` with an empty string on the Linux
+  # rows: a load-bearing gate expressed as a value that is usually blank.
+  # Split, the manual checks and the Linux installer e2e run side by side.
   tarball:
     name: Core tarball (${{ matrix.target }})
     needs: resolve
@@ -222,12 +225,11 @@ jobs:
   # destroyed rather than restarted can answer. Approving is the statement that
   # the checklist passed.
   #
-  # The whole release waits on it, deliberately: `github-release` needs this
-  # job, because a SHA256SUMS covering a subset of architectures is worse than
-  # no release. A release is rare and the pause is the manual test window.
-  # Setting the environment up is an admin step — see docs/REPO_SETUP.md §2. On
-  # a fork with no such environment configured, GitHub creates an unprotected
-  # one on first use and this leg simply runs.
+  # The whole release waits on it, deliberately — `github-release` needs this
+  # job, and the reason is on that job. A release is rare, and the pause is the
+  # manual test window. Setting the environment up is an admin step: see
+  # docs/REPO_SETUP.md §2. On a fork with no such environment configured,
+  # GitHub creates an unprotected one on first use and this leg simply runs.
   #
   # macos-15 is Apple silicon (macos-15-intel is the Intel label), which is what
   # makes this a build rather than a cross-compile: node-pty's darwin-arm64
