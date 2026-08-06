@@ -12,6 +12,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a rebuilt-and-republished Core image, a `NODE_VERSION` bump PR, and an issue for anything the dev-tree audit or the Harness canary found |
+| [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
 
 `ci.yml` is one file doing two jobs, and the trigger is the difference. On a
 PR it gates and pushes nothing; on a push to `main` it publishes `:edge` and
@@ -25,6 +26,18 @@ file of its own. The repo conventions — PR title, commit messages, branch name
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
 described in full under [Housekeeping](#housekeeping).
+
+`landing.yml` is the fourth entry point, and the only one that publishes to
+somewhere other than a registry: it uploads `landing/` to Bunny Edge Storage
+and purges the pull zone in front of it. It is a separate file rather than a
+path-filtered job inside `ci.yml` for a reason that bites hard —
+**`ci.yml`'s checks are required by the "Protect main" ruleset, and a required
+check whose workflow is filtered out of a run stays Pending forever, blocking
+every PR that does not touch the filtered path.** The same rule applies going
+forward: if the landing page ever grows a validation step, it belongs in
+`landing.yml` on a `pull_request` trigger with the same path filter, and it must
+never be added to the ruleset's required checks. The page has no build, so
+there is nothing to gate today. See [`landing-page.md`](landing-page.md) §7.
 
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable

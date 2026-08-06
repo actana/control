@@ -6,6 +6,14 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
+// D34's count is now **four** entry points. `landing.yml` deploys `landing/`
+// to the CDN behind control.actana.ai (docs/landing-page.md §7), and it could
+// not be folded into `ci.yml` behind a path filter: `ci.yml` is in the "Protect
+// main" ruleset's required checks, and a required check whose workflow is
+// filtered out of a run stays Pending forever, blocking every PR that does not
+// touch the filtered path. So the deploy is its own file — a deliberate
+// revision of the count, not the drift this test exists to catch.
+//
 // It also pins the parts of `housekeeping.yml` that are load-bearing but
 // invisible in a green run: the cron a job is gated on, and the fact that the
 // two non-hermetic chores open an issue rather than failing a build (D38).
@@ -30,13 +38,25 @@ const jobBlock = (source, name) => {
 };
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is three entry points plus one reusable workflow — nothing else", () => {
+  it("is four entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
       "ci.yml",
       "container-image.yml",
       "housekeeping.yml",
+      "landing.yml",
       "release.yml",
     ]);
+  });
+
+  it("keeps the landing deploy off pull requests and out of ci.yml", () => {
+    const source = read("landing.yml");
+    // The CDN serves `main`, the same rule the `:edge` tags follow. A PR-side
+    // deploy would publish an unmerged front door.
+    expect(source).not.toMatch(/^ {2}pull_request:/m);
+    expect(source).toMatch(/^ {4}branches:\n {6}- main$/m);
+    expect(source).toMatch(/^ {6}- "landing\/\*\*"$/m);
+    // And ci.yml must not rebuild two images for a copy fix on the page.
+    expect(read("ci.yml")).toMatch(/^ {6}- "landing\/\*\*"$/m);
   });
 
   it("keeps container-image.yml reusable rather than a fourth entry point", () => {

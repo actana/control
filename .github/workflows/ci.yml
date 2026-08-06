@@ -16,6 +16,10 @@ on:
       - "docs/**"
       - ".scratch/**"
       - "designs/**"
+      # Same trade for the landing page: it ships no code into either image,
+      # and `landing.yml` is what publishes it. A copy fix on the front door
+      # should not rebuild and republish two containers.
+      - "landing/**"
   # Also carried across: republishing `:edge` without a new commit, for when a
   # registry was down or a run was cancelled. On a dispatch the gate jobs run
   # too — that is the cheap half, and a dispatch is rare.

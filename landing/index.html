@@ -1,0 +1,653 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Actana Control — one Panel over every machine you code on</title>
+    <meta
+      name="description"
+      content="Actana Control is a self-hosted control plane for agentic coding. One web Panel drives Cores running Claude Code, Codex, Cursor CLI and OpenCode in real PTY sessions against your repos. MIT, no telemetry."
+    />
+    <link rel="canonical" href="https://control.actana.ai/" />
+
+    <meta name="theme-color" content="#0e1722" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f3f4f6" media="(prefers-color-scheme: light)" />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content="https://control.actana.ai/" />
+    <meta property="og:title" content="Actana Control — one Panel over every machine you code on" />
+    <meta
+      property="og:description"
+      content="A self-hosted control plane for agentic coding. One web Panel, many Cores, real terminals — and your code never leaves the machine it is already on."
+    />
+    <meta property="og:image" content="https://control.actana.ai/assets/og-image.png" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:image" content="https://control.actana.ai/assets/og-image.png" />
+
+    <link rel="icon" href="assets/actana-icon.svg" type="image/svg+xml" />
+    <link rel="apple-touch-icon" href="assets/icon-256.png" />
+
+    <!-- The page makes zero third-party requests: fonts, marks and screenshots
+         are all served from this zone. The README promises no telemetry; the
+         front door keeps the promise. -->
+    <link rel="preload" href="fonts/JetBrainsMono-Regular.woff2" as="font" type="font/woff2" crossorigin />
+    <link rel="stylesheet" href="styles.css" />
+
+    <!-- Without JS the tabs cannot switch, which would hide the installer path
+         behind a control that does nothing. Show both blocks instead. -->
+    <noscript>
+      <style>
+        .tablist {
+          display: none;
+        }
+        .panel[hidden] {
+          display: block;
+        }
+        .codeblock {
+          border-radius: var(--radius);
+          margin-top: 12px;
+        }
+      </style>
+    </noscript>
+  </head>
+
+  <body>
+    <a class="skip-link" href="#install">Skip to the install commands</a>
+
+    <header class="nav">
+      <div class="wrap">
+        <a class="nav-logo" href="/" aria-label="Actana Control — home">
+          <picture>
+            <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.png" />
+            <source media="(prefers-color-scheme: light)" srcset="assets/logo-light.png" />
+            <img src="assets/logo-light.png" alt="Actana Control" width="380" height="66" />
+          </picture>
+        </a>
+
+        <nav class="nav-links" aria-label="Primary">
+          <a href="https://github.com/actana/control/blob/main/docs/README.md">Docs</a>
+          <a href="#faq">FAQ</a>
+          <a href="#install">Install</a>
+          <a class="nav-cta" href="https://github.com/actana/control">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path
+                d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+              />
+            </svg>
+            <span class="nav-label">GitHub</span>
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <main id="main">
+      <!-- ------------------------------------------------------------ hero -->
+      <section class="hero">
+        <div class="wrap">
+          <h1>
+            One Panel. Every machine.<br />
+            <span class="lede-accent">Real terminals.</span>
+          </h1>
+
+          <p class="hero-sub">
+            Actana Control is a self-hosted control plane for agentic coding. One
+            web <strong>Panel</strong> drives any number of
+            <strong>Cores</strong> — machines running Claude Code, Codex, Cursor
+            CLI and OpenCode in real PTY sessions against your git repos.
+          </p>
+
+          <div class="install" id="install" data-install="hero">
+            <div class="tablist" role="tablist" aria-label="Install path">
+              <button
+                class="tab"
+                role="tab"
+                type="button"
+                id="tab-hero-compose"
+                aria-controls="panel-hero-compose"
+                aria-selected="true"
+                data-tab="compose"
+              >
+                Docker Compose
+              </button>
+              <button
+                class="tab"
+                role="tab"
+                type="button"
+                id="tab-hero-installer"
+                aria-controls="panel-hero-installer"
+                aria-selected="false"
+                tabindex="-1"
+                data-tab="installer"
+              >
+                Installer
+              </button>
+            </div>
+
+            <div
+              class="panel"
+              role="tabpanel"
+              id="panel-hero-compose"
+              aria-labelledby="tab-hero-compose"
+              tabindex="0"
+              data-panel="compose"
+            >
+              <div class="codeblock">
+                <pre><code>git clone https://github.com/actana/control &amp;&amp; cd control
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs core <span class="cmt"># the registration blob</span></code></pre>
+                <button class="copy" type="button" data-copy>Copy</button>
+              </div>
+              <p class="install-note">
+                The whole product in one command — a Panel and a Core on one
+                network. Open <b>http://localhost:7420</b>, create the Operator,
+                paste that blob into “Add Core”.
+              </p>
+            </div>
+
+            <div
+              class="panel"
+              role="tabpanel"
+              id="panel-hero-installer"
+              aria-labelledby="tab-hero-installer"
+              tabindex="0"
+              data-panel="installer"
+              hidden
+            >
+              <div class="codeblock">
+                <pre><code>curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash</code></pre>
+                <button class="copy" type="button" data-copy>Copy</button>
+              </div>
+              <p class="install-note">
+                Turns a Linux or macOS (arm64) machine into a Core, as your own
+                user, <b>without sudo</b> — for a machine that already has your
+                code, paired to a Panel you deploy separately.
+              </p>
+            </div>
+
+            <p class="install-note">
+              <b>Pre-release.</b> No <b>v*</b> tag is published yet, so
+              <b>:latest</b> and the installer’s <b>releases/latest</b> both 404.
+              Until the first release, run the Compose path against
+              <b>:edge</b> — the tag CI moves on every push to <b>main</b> — by
+              changing the two <b>image:</b> lines in
+              <b>deploy/docker-compose.yml</b>.
+              <a href="https://github.com/actana/control#quickstart">Quickstart →</a>
+            </p>
+          </div>
+
+          <figure class="hero-shot">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="assets/panel-project-dark.png" />
+              <source media="(prefers-color-scheme: light)" srcset="assets/panel-project-light.png" />
+              <img
+                src="assets/panel-project-light.png"
+                alt="The Actana Control Panel inside a project — sessions split by status, with a live harness terminal alongside"
+                width="1800"
+                height="1130"
+                loading="eager"
+                decoding="async"
+              />
+            </picture>
+          </figure>
+        </div>
+      </section>
+
+      <!-- -------------------------------------------------------- harnesses -->
+      <section class="harnesses" aria-labelledby="harness-heading">
+        <div class="wrap">
+          <h2 id="harness-heading" class="eyebrow">Works with the CLIs you already run</h2>
+
+          <ul class="harness-row">
+            <li>
+              <a class="harness" href="https://github.com/anthropics/claude-code">
+                <img src="assets/harness/claude-code.png" width="48" height="48" alt="" />
+                Claude Code
+              </a>
+            </li>
+            <li>
+              <a class="harness" href="https://github.com/openai/codex">
+                <img src="assets/harness/codex.svg" width="48" height="48" alt="" />
+                Codex
+              </a>
+            </li>
+            <li>
+              <a class="harness" href="https://cursor.com/cli">
+                <img src="assets/harness/cursor-cli.png" width="48" height="48" alt="" />
+                Cursor CLI
+              </a>
+            </li>
+            <li>
+              <a class="harness" href="https://opencode.ai">
+                <img src="assets/harness/opencode.svg" width="48" height="48" alt="" />
+                OpenCode
+              </a>
+            </li>
+            <li>
+              <span class="harness planned">
+                <img src="assets/harness/soon-hermes.svg" width="48" height="48" alt="" />
+                Hermes
+              </span>
+            </li>
+            <li>
+              <span class="harness planned">
+                <img src="assets/harness/soon-pi.svg" width="48" height="48" alt="" />
+                Pi
+              </span>
+            </li>
+          </ul>
+
+          <p class="harness-caption">
+            <b>Claude Code · Codex · Cursor CLI · OpenCode</b> work today —
+            <a href="https://github.com/actana/control#supported-harnesses">Hermes and Pi are next</a>,
+            and the family is open.
+          </p>
+        </div>
+      </section>
+
+      <!-- --------------------------------------------------------- features -->
+      <section aria-labelledby="features-heading">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Why this one</p>
+            <h2 id="features-heading">Everyone renders a terminal in a browser. Two columns are ours.</h2>
+            <p>
+              Self-hosting and a web terminal are table stakes. What sets Actana
+              apart is one Panel over many machines, each owning its own state —
+              see the
+              <a href="https://github.com/actana/control#related-projects">comparison table</a>.
+            </p>
+          </div>
+
+          <div class="feature-grid">
+            <article class="feature">
+              <h3>One Panel, many machines</h3>
+              <p>
+                The Panel holds no project or session state; it terminates a link
+                to each Core and renders the union. Add a machine, and its work
+                shows up in the same view.
+              </p>
+            </article>
+
+            <article class="feature">
+              <h3>Real terminals, not a transcript</h3>
+              <p>
+                Every session is a PTY on the Core, streamed to the browser over
+                one multiplexed WebSocket per tab. Type into it.
+              </p>
+            </article>
+
+            <article class="feature">
+              <h3>Your code never moves</h3>
+              <p>
+                A Core runs on the machine that already has the repo. Nothing is
+                uploaded, mirrored, or checked out anywhere else — and removing a
+                project from the Panel only unlinks it. It never touches your
+                files.
+              </p>
+              <p>
+                No telemetry, no analytics, no crash reporting —
+                <a href="https://github.com/actana/control#security--privacy">what leaves a machine</a>,
+                in full.
+              </p>
+            </article>
+          </div>
+
+          <figure class="shot">
+            <picture>
+              <source media="(prefers-color-scheme: dark)" srcset="assets/panel-fleet-dark.png" />
+              <source media="(prefers-color-scheme: light)" srcset="assets/panel-fleet-light.png" />
+              <img
+                src="assets/panel-fleet-light.png"
+                alt="The Actana Control Panel showing the Fleet view — every Core's sessions in one list"
+                width="1800"
+                height="1130"
+                loading="lazy"
+                decoding="async"
+              />
+            </picture>
+            <figcaption>
+              The Fleet view — every Core’s sessions in one list, whichever
+              machine they are running on.
+            </figcaption>
+          </figure>
+        </div>
+      </section>
+
+      <!-- ----------------------------------------------------- how it works -->
+      <section aria-labelledby="how-heading">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">How it works</p>
+            <h2 id="how-heading">The Panel dials the Core. Never the reverse.</h2>
+          </div>
+
+          <div class="diagram">
+            <img
+              src="assets/how-it-works.svg"
+              alt="Browser connects to the Panel over a panel-link WebSocket; the Panel dials each Core over a mutually-authenticated core-link; each Core runs PTYs against its own repos."
+              width="780"
+              height="300"
+              loading="lazy"
+            />
+          </div>
+
+          <p class="diagram-note">
+            The Panel is a web service you deploy once. Each Core is a daemon on
+            a machine that has your code; it owns the projects, the sessions, the
+            SQLite database and the PTYs, and it is the only process that writes
+            its own state. The two speak over a <b>core-link</b> — a WebSocket
+            the Panel dials, authenticated by mutual TLS with material the Core
+            mints at first run. Expose one HTTP port for the Panel and, on each
+            Core, one port reachable from the Panel’s machine; that port needs no
+            route from the public internet. More in
+            <a href="https://github.com/actana/control/blob/main/CONTEXT.md">CONTEXT.md</a>
+            and the
+            <a href="https://github.com/actana/control/tree/main/docs/adr">ADRs</a>.
+          </p>
+        </div>
+      </section>
+
+      <!-- -------------------------------------------------------------- faq -->
+      <section id="faq" aria-labelledby="faq-heading">
+        <div class="wrap">
+          <div class="section-head">
+            <p class="eyebrow">Questions</p>
+            <h2 id="faq-heading">The ones developers actually ask</h2>
+          </div>
+
+          <div class="faq">
+            <details open>
+              <summary>Why not just spin up a VM or a container and SSH into it?</summary>
+              <div class="faq-body">
+                <p>
+                  For one machine, honestly, that is hard to beat — and Actana
+                  does not take it away from you. A Core is a daemon running as
+                  your own user on a machine you already have; nothing stops you
+                  from SSH-ing into that same machine and attaching the old way.
+                </p>
+                <p>
+                  What changes is the <b>plural</b>. Every extra machine is
+                  another SSH session, another multiplexer to drive, and another
+                  set of pane and session-name conventions you keep in your head
+                  — set up by hand, then set up by hand again on the next box.
+                  And SSH gives you a terminal on a machine you have
+                  <i>already picked</i>; it cannot tell you which machine needs
+                  you. The Panel renders every Core's sessions in one list, split
+                  into needs-input / running / finished with per-project counts,
+                  so a session sitting on a question is visible without attaching
+                  to anything.
+                </p>
+                <p>
+                  Not everything you code on is a box you would want to reach
+                  that way, either. A workstation that also runs Blender or
+                  Godot, a laptop that sleeps, a Mac — machines with your repos
+                  and your CLI credentials already on them, and no clean SSH
+                  story. The installer turns any of them into a Core as your own
+                  user, without sudo.
+                </p>
+                <p>
+                  Three more things fall out of it. You reach it from a browser
+                  rather than from a shell with your keys in it. Nothing needs an
+                  inbound SSH port: the Panel dials each Core over mutual TLS, so
+                  a Core needs no route from the public internet at all. And
+                  projects, session records and task history live in that Core's
+                  own SQLite database rather than in a multiplexer's memory.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Can I run more than one Core on the same machine?</summary>
+              <div class="faq-body">
+                <p>
+                  Yes, and it is a documented path rather than a trick — nothing
+                  in the architecture is a singleton. Split a host into
+                  containers and give each one its own Core: each gets its own
+                  filesystem, its own volumes and its own Harness credentials,
+                  and all of them show up in the same Panel. The reference
+                  Compose file ships a commented
+                  <b>&gt;&gt;&gt; second Core</b> block for exactly this.
+                </p>
+                <p>
+                  That is the answer when you want work isolated from itself — a
+                  risky refactor in one Core, the branch you are actually
+                  shipping in another, no shared working tree between them — and
+                  it is the same gesture whether the second Core is a container
+                  on this host or a laptop across the room.
+                  <a href="https://github.com/actana/control/blob/main/deploy/README.md#adding-a-second-core">Adding a second Core →</a>
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Isn't this just a web terminal?</summary>
+              <div class="faq-body">
+                <p>
+                  A web terminal is one part of it, and it is table stakes —
+                  nearly everything in
+                  <a href="https://github.com/actana/control#related-projects">the comparison table</a>
+                  renders a PTY in a browser. The two columns that are ours are
+                  the last two: <b>many machines under one control plane</b>, and
+                  <b>each machine owning its own state</b>. The Panel holds no
+                  project or session state; it terminates a link to each Core and
+                  renders the union.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Does my code get uploaded anywhere?</summary>
+              <div class="faq-body">
+                <p>
+                  No. A Core runs on the machine that already has the repo.
+                  Nothing is uploaded, mirrored, or checked out anywhere else —
+                  and removing a project from the Panel <b>only unlinks it. It
+                  never touches your files.</b>
+                </p>
+                <p>
+                  There is no telemetry, no analytics and no crash reporting.
+                  Two outbound requests exist and that is the complete list: once
+                  every 24 hours the Panel and each Core ask the GitHub releases
+                  API whether a newer release exists — nothing is downloaded and
+                  nothing is applied, and <b>ACTANA_UPDATE_CHECK=0</b> turns it
+                  off — and <b>registry.npmjs.org</b> is asked for the newest
+                  published version of each Harness CLI while you have the
+                  Providers settings page open, so it can tell you one is
+                  outdated.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Do I have to run it in a container? Is a Core a sandbox?</summary>
+              <div class="faq-body">
+                <p>
+                  Neither is required, and a Core is deliberately
+                  <b>not</b> a sandbox. The installer turns a Linux or macOS
+                  (arm64) machine into a Core as your own user, without sudo —
+                  the point is to run where your code, your git config and your
+                  Harness credentials already are. Your laptop, a workstation, a
+                  build box.
+                </p>
+                <p>
+                  The Compose path exists for the other case: you want the whole
+                  product on one host to try it, in one command. If you would
+                  rather isolate a Core in its own container or VM, nothing stops
+                  you — but then it is a machine like any other, and it needs
+                  your code and credentials put into it the same way any machine
+                  would.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>What do I have to expose to the internet?</summary>
+              <div class="faq-body">
+                <p>
+                  One HTTP port for the Panel, reachable by your browser. The
+                  Panel speaks plain HTTP and expects your own proxy to terminate
+                  TLS — it never grows certificate-management code.
+                </p>
+                <p>
+                  On each Core, one port (default <b>8443</b>) that needs to be
+                  reachable <i>from the Panel's machine</i> and from nowhere
+                  else. The Panel dials the Core, never the reverse, so that port
+                  needs no route from the public internet. In the reference
+                  Compose file the two share a network and nothing is published
+                  at all.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>Which CLIs does it drive, and can I add one?</summary>
+              <div class="faq-body">
+                <p>
+                  Claude Code, Codex, Cursor CLI and OpenCode work today; Hermes
+                  and Pi are the recorded next two. Each Core needs the CLIs it
+                  runs installed under its own user — <b>actana setup</b> offers
+                  the missing ones, and <b>actana harnesses install &lt;id&gt;</b>
+                  adds one later.
+                </p>
+                <p>
+                  The family is open by design: a Harness is one registry entry
+                  plus a launcher, and nothing in the Panel or the core-link is
+                  specific to any of the four. Using one that is not here?
+                  <a href="https://github.com/actana/control/issues/new">Open an issue</a>
+                  — that is how a row gets added.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>I only have one machine. Is this overkill?</summary>
+              <div class="faq-body">
+                <p>
+                  Probably, if you also run one session at a time — tmux is
+                  fine, and we would rather say so than sell you something. The
+                  Compose path is one command, so finding out costs you very
+                  little. The reason to keep it is the second machine, or the
+                  fifth concurrent session.
+                </p>
+              </div>
+            </details>
+
+            <details>
+              <summary>What does it cost, and what am I locked into?</summary>
+              <div class="faq-body">
+                <p>
+                  It is <a href="https://github.com/actana/control/blob/main/LICENSE">MIT</a>
+                  and it is self-hosted. There is no account with us, no hosted
+                  tier, and no in-app updater — you deploy two published images
+                  or run the installer, and you update them the way you update
+                  anything else. Your Harness subscriptions and API keys are
+                  yours, and they stay on the Core that uses them.
+                </p>
+              </div>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <!-- ---------------------------------------------------------- closing -->
+      <section class="closing" aria-labelledby="closing-heading">
+        <div class="wrap">
+          <div class="section-head">
+            <h2 id="closing-heading">Run it in a minute.</h2>
+          </div>
+
+          <div class="install" data-install="closing">
+            <div class="tablist" role="tablist" aria-label="Install path">
+              <button
+                class="tab"
+                role="tab"
+                type="button"
+                id="tab-closing-compose"
+                aria-controls="panel-closing-compose"
+                aria-selected="true"
+                data-tab="compose"
+              >
+                Docker Compose
+              </button>
+              <button
+                class="tab"
+                role="tab"
+                type="button"
+                id="tab-closing-installer"
+                aria-controls="panel-closing-installer"
+                aria-selected="false"
+                tabindex="-1"
+                data-tab="installer"
+              >
+                Installer
+              </button>
+            </div>
+
+            <div
+              class="panel"
+              role="tabpanel"
+              id="panel-closing-compose"
+              aria-labelledby="tab-closing-compose"
+              tabindex="0"
+              data-panel="compose"
+            >
+              <div class="codeblock">
+                <pre><code>git clone https://github.com/actana/control &amp;&amp; cd control
+docker compose -f deploy/docker-compose.yml up -d
+docker compose -f deploy/docker-compose.yml logs core <span class="cmt"># the registration blob</span></code></pre>
+                <button class="copy" type="button" data-copy>Copy</button>
+              </div>
+            </div>
+
+            <div
+              class="panel"
+              role="tabpanel"
+              id="panel-closing-installer"
+              aria-labelledby="tab-closing-installer"
+              tabindex="0"
+              data-panel="installer"
+              hidden
+            >
+              <div class="codeblock">
+                <pre><code>curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash</code></pre>
+                <button class="copy" type="button" data-copy>Copy</button>
+              </div>
+            </div>
+          </div>
+
+          <ul class="doclinks">
+            <li><a href="https://github.com/actana/control/blob/main/deploy/README.md">Reference Compose</a></li>
+            <li><a href="https://github.com/actana/control/blob/main/DEPLOY.md">Deploy a Panel</a></li>
+            <li><a href="https://github.com/actana/control/blob/main/INSTALL.md">Install a Core</a></li>
+            <li><a href="https://github.com/actana/control/blob/main/CONTRIBUTING.md">Contributing</a></li>
+          </ul>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="wrap">
+        <ul class="footer-links">
+          <li><a href="https://github.com/actana/control/blob/main/docs/README.md">Docs</a></li>
+          <li><a href="https://github.com/actana/control">GitHub</a></li>
+          <li><a href="https://github.com/actana/control/issues">Issues</a></li>
+          <li><a href="https://github.com/actana/control/blob/main/SECURITY.md">Security</a></li>
+          <li><a href="https://github.com/actana/control/blob/main/LICENSE">MIT License</a></li>
+        </ul>
+        <p>
+          A derivative work of Mission Control by AgentSystem Labs — see
+          <a href="https://github.com/actana/control/blob/main/NOTICE">NOTICE</a>
+          for attribution.
+        </p>
+        <p>© Actana</p>
+      </div>
+    </footer>
+
+    <a class="qcentic" href="https://qcentic.com" rel="noopener" target="_blank">
+      <span class="qcentic-label">Built by</span>
+      <img src="assets/qcentic-lockup-pulse-on-dark.svg" alt="Qcentic" width="322" height="136" />
+    </a>
+
+    <script src="main.js" defer></script>
+  </body>
+</html>
