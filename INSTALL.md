@@ -243,6 +243,23 @@ Old versions stay in `~/.local/share/actana/versions`, so going back is a
 second `--version` away rather than a re-download. Your pairing credentials and
 your data are untouched by an update: a paired Panel stays paired.
 
+#### Knowing there is one
+
+You do not have to go looking. Once a day this Core asks
+`https://api.github.com/repos/actana/control/releases/latest` whether a newer
+release exists; if there is one, `actana status` gains an availability line
+naming it and the command above, and the daemon writes the same fact to its log
+once. Nothing else happens — there is no updater running in the background, and
+nothing is downloaded until you type `actana update` yourself.
+
+The answer is cached for 24 hours under your data directory, so asking `status`
+a hundred times costs one request. If the check fails — no network, the request
+times out, or the release channel has published nothing yet — `status` prints
+exactly what it printed before the check existed, and its exit code is
+unchanged. A Core one release behind is not an unhealthy Core.
+
+Set `ACTANA_UPDATE_CHECK=0` (or `false`, or `off`) to turn it off entirely.
+
 ### Reissuing the pairing token
 
 ```bash

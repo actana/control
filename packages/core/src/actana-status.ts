@@ -12,6 +12,8 @@
 // and frames keep "Registration blob".
 
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
+import type { UpdateCheck } from "@actana/shared/actana-update-check";
+import { coreUpdateCommand } from "./actana-container";
 import type { ActanaServiceState } from "./actana-service";
 
 /**
@@ -51,6 +53,15 @@ export type ActanaStatusReport = {
   paired: boolean;
   /** The Core's own view of which Harnesses resolve on its PATH. */
   agents: CoreLinkHarnessAvailabilityMap;
+  /**
+   * What the update check answered, or null when it was not run.
+   *
+   * Deliberately outside {@link summarizeHealth}: `actana status` is
+   * documented as a health check, and a Core one release behind is not
+   * unhealthy — telling a script otherwise would break every deployment the
+   * day 0.2.0 ships.
+   */
+  update: UpdateCheck | null;
 };
 
 /** The one-word answer at the top of `actana status`. */
@@ -93,6 +104,29 @@ function row(label: string, value: string): string {
   return `  ${label.padEnd(18)}${value}`;
 }
 
+/**
+ * The availability rows, or nothing at all.
+ *
+ * Silence is the default: no rows when the check is off, when it could not
+ * reach the channel, and when this Core is already on the newest release. An
+ * "up to date" row would be a claim the check cannot make on the day GitHub is
+ * unreachable, and a line that says nothing every day is a line operators stop
+ * reading.
+ *
+ * The remedy differs by how this Core was installed, and only by that: in the
+ * image there is no tree to swap, so the command belongs to the operator's
+ * host (ADR 0016 D16). Neither remedy runs anything — this is an alert.
+ */
+function updateRows(report: ActanaStatusReport): string[] {
+  const update = report.update;
+  if (!update?.updateAvailable || update.latest === null) return [];
+  const remedy = coreUpdateCommand(report.container !== null);
+  return [
+    row("Update", `${update.latest} is available — you're on ${update.current}`),
+    row("", `run: ${remedy}`),
+  ];
+}
+
 /** Render the report as the text `actana status` prints. */
 export function formatActanaStatus(report: ActanaStatusReport): string {
   const health = summarizeHealth(report);
@@ -105,6 +139,7 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
 
   lines.push("");
   lines.push(row("Version", report.version ?? "unknown"));
+  lines.push(...updateRows(report));
   lines.push(row("Protocol version", report.protocolVersion ?? "unknown"));
   if (report.target) lines.push(row("Target", report.target));
   lines.push(row("Endpoint", report.endpoint ?? "unknown"));

@@ -119,6 +119,7 @@ Everything is environment variables; there is no config file.
 | `AC_PANEL_HOST` / `HOST` | `0.0.0.0` | Interface to bind (`127.0.0.1` keeps a shared machine's loopback) |
 | `AC_PANEL_DATA_DIR` | `/data` in the image; platform data dir otherwise | The one directory all Panel state lives in |
 | `AC_SECRETS_KEY` | generated at `<data dir>/secrets.key` | 32-byte key (hex or base64) sealing each Core's stored credentials. Set it to keep the key out of the data directory — then a copied volume or backup alone cannot open the fleet credentials. Losing whichever key is in use means re-pairing every Core. |
+| `ACTANA_UPDATE_CHECK` | on | Set to `0`, `false` or `off` to stop the daily release check. It reads `https://api.github.com/repos/actana/control/releases/latest`, caches the answer for 24h under the data directory, and only ever shows a banner — it never updates anything. |
 
 Generate a key with `openssl rand -hex 32`.
 

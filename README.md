@@ -129,12 +129,19 @@ one. It never grows certificate-management code (ADR 0010).
 | `AC_PANEL_HOST` / `HOST` | `0.0.0.0` | Interface to bind |
 | `AC_PANEL_DATA_DIR` | platform data dir | Where `panel.db` and the secrets key live |
 | `AC_SECRETS_KEY` | generated | 32-byte key sealing each Core's stored credentials. Lose it and every Core must be re-paired. |
+| `ACTANA_UPDATE_CHECK` | on | Set to `0`, `false` or `off` to stop the daily release check. |
 
 ### Updating
 
 Pull a newer Panel image (or rebuild from source) and restart the service. There
 is no in-app updater: the Panel is a service its operator deploys, not an app
-that rewrites itself.
+that rewrites itself — it does tell you when a newer release exists. Once a day
+the Panel asks
+`https://api.github.com/repos/actana/control/releases/latest` and, if that
+release is newer than the running one, shows a dismissible banner naming it.
+Nothing is downloaded and nothing is applied; the remedy is the same
+`docker compose pull` you would have run anyway. `ACTANA_UPDATE_CHECK=0`
+turns the check off.
 
 ### Native modules
 

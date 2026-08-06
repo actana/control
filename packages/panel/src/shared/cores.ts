@@ -75,6 +75,17 @@ export const CORE_UPDATE_COMMAND =
   "curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash";
 
 /**
+ * The command that brings a Panel up to date.
+ *
+ * There is only one, because the Panel ships one way: a container image
+ * (ADR 0010). It runs on the host beside `deploy/docker-compose.yml`, never
+ * inside the Panel — pulling and recreating the container is the operator's
+ * gesture, and a service that could do it to itself would be the in-app updater
+ * this project deliberately does not have.
+ */
+export const PANEL_UPDATE_COMMAND = "docker compose pull && docker compose up -d";
+
+/**
  * Which side of a version mismatch is behind.
  *
  * A gate that always says "update the Core" is wrong half the time: a Panel

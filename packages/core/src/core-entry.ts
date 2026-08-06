@@ -50,6 +50,7 @@
 // `core install` flow captures the blob line for the operator.
 
 import * as os from "node:os";
+import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import {
   PtyCore,
@@ -91,7 +92,16 @@ import {
   registrationBlobPath,
   type LoadOrMintResult,
 } from "./core-first-run";
-import { CONTAINER_PUBLIC_HOST_ENV, inContainer } from "./actana-container";
+import {
+  CONTAINER_PUBLIC_HOST_ENV,
+  coreUpdateCommand,
+  inContainer,
+} from "./actana-container";
+import { updateCheckCachePath, updateNoticeStatePath } from "./actana-layout";
+import { readCoreManifest } from "./actana-manifest";
+import { nodeReleaseFetcher } from "./actana-release";
+import { startUpdateNotice } from "./core-update-notice";
+import log from "./log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "./harness-availability-store";
 import { HarnessInstallService } from "./harness-install-service";
@@ -408,12 +418,33 @@ async function startCore(): Promise<void> {
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 
+  // Alert-only, once a day, into this daemon's log — never a frame the Panel
+  // raises and never an update this process applies (ADR 0010).
+  //
+  // No manifest means no check at all, never a placeholder version: every
+  // release is newer than an invented `0.0.0`, so guessing would make a daemon
+  // that cannot read its own manifest announce an update on every boot.
+  const ownVersion = readCoreManifest(path.resolve(__dirname, ".."))?.version ?? null;
+  const updateNotice = ownVersion
+    ? startUpdateNotice({
+        current: ownVersion,
+        fetcher: nodeReleaseFetcher(),
+        cachePath: updateCheckCachePath(userDataDir),
+        noticePath: updateNoticeStatePath(userDataDir),
+        env: process.env,
+        now: () => Date.now(),
+        log: (message) => log.info(message),
+        remedy: coreUpdateCommand(containerMode),
+      })
+    : null;
+
   // Clean up on shutdown.
   const shutdown = () => {
     core.killAll();
     server.close();
     hookReceiver?.close();
     availabilityStore.stop();
+    updateNotice?.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();

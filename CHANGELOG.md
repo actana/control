@@ -4,6 +4,17 @@ All notable changes to this project, newest first.
 
 ## 0.1.0 — unreleased
 
+Actana now tells you when a newer release exists. Once a day the Panel and each
+Core ask GitHub for the newest published release; if it is newer than what they
+are running, the Panel shows a dismissible banner, `actana status` gains an
+availability line, and the Core's daemon writes the same fact to its log once.
+Each component answers for its own version, so a deployment whose Panel and Core
+have drifted is told the truth about both. Nothing here updates anything: the
+remedy is named, never offered as a button, and stays `actana update` on metal
+and `docker compose pull && docker compose up -d` in a container. The answer is
+cached for 24 hours, every failure — no network, no releases published, a rate
+limit — is silent, and `ACTANA_UPDATE_CHECK=0` turns the whole thing off.
+
 A Session card now tracks what its harness is actually doing. Until now nothing
 on a Core ever changed a Session's status or title after the row was created:
 the Core spawned harnesses without installing their lifecycle hooks and had

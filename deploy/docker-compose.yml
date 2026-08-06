@@ -35,6 +35,10 @@ services:
       # volume alone can't open the Core credentials. Empty means the Panel
       # keeps the key at /data/secrets.key instead.
       - AC_SECRETS_KEY=${AC_SECRETS_KEY:-}
+      # Optional: 0 / false / off stops the daily "a newer Actana exists"
+      # check. It only ever tells you — updating is still
+      # `docker compose pull && docker compose up -d`, run by you, here.
+      - ACTANA_UPDATE_CHECK=${ACTANA_UPDATE_CHECK:-}
     volumes:
       # The single place all Panel state lives. Backing up this volume is
       # backing up the Panel.
@@ -56,6 +60,9 @@ services:
       - ACTANA_PUBLIC_HOST=core
       # What the Panel shows this Core as. Defaults to the public host.
       - ACTANA_LABEL=core
+      # Same daily release check as the Panel's, reported by `actana status`
+      # and once a day in `docker compose logs core`.
+      - ACTANA_UPDATE_CHECK=${ACTANA_UPDATE_CHECK:-}
     volumes:
       # The Core's whole home: the pairing identity, the SQLite database, and
       # each Harness's own credentials (~/.claude, ~/.codex, …). One mount,

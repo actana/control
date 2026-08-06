@@ -25,6 +25,7 @@ import * as healthController from "./controllers/health.controller";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
 import * as coresController from "./controllers/cores.controller";
+import * as updateCheckController from "./controllers/update-check.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
 const PROJECT_PATH = /^\/api\/projects\/([^/]+)$/;
@@ -357,6 +358,10 @@ async function dispatch(
     return harnessLaunchersController.latestVersions(url);
   }
   if (pathname === "/api/events" && method === "GET") return eventsController.stream();
+
+  // Behind the session gate like everything else: an anonymous browser has no
+  // business learning which release this deployment is on.
+  if (pathname === "/api/update-check" && method === "GET") return updateCheckController.read();
 
   return jsonError(HTTP_NOT_FOUND, "not found");
 }

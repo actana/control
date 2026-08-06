@@ -40,6 +40,12 @@ The image never guesses the public host. A container's hostname is its container
 default would silently change the certificate SAN every time you recreated the container, and every
 paired Panel would stop trusting it.
 
+One more variable exists, and it is not part of that contract: `ACTANA_UPDATE_CHECK=0` (or `false`,
+or `off`) stops the daily release check behind the `actana status` availability line and the
+daemon's once-a-day "a newer Actana is available" log line. The check reads
+`https://api.github.com/repos/actana/control/releases/latest`, caches the answer for 24 hours, and
+never updates anything — `docker compose pull && docker compose up -d` stays yours to run.
+
 ## State
 
 One volume, mounted at `/home/core` — the whole home directory.

@@ -38,6 +38,7 @@ export const queryKeys = {
   providerUsage: (idsKey: string) => ["provider-usage", idsKey] as const,
   harnessAccounts: ["harness-launchers", "accounts"] as const,
   harnessLatestVersions: ["harness-launchers", "latest-versions"] as const,
+  updateCheck: ["update-check"] as const,
 };
 
 export const projectsQueryOptions = () =>
@@ -317,6 +318,19 @@ export const harnessLatestVersionsQueryOptions = () =>
     staleTime: HARNESS_LATEST_VERSIONS_STALE_MS,
   });
 
+// The server answers from a file it refreshes at most once a day, so anything
+// shorter here would only re-read the same three fields. A day-stale banner is
+// exactly as useful as a fresh one — nobody needs to learn about a release in
+// the first minute.
+const UPDATE_CHECK_STALE_MS = 3_600_000;
+
+export const updateCheckQueryOptions = () =>
+  queryOptions({
+    queryKey: queryKeys.updateCheck,
+    queryFn: () => api.getUpdateCheck(),
+    staleTime: UPDATE_CHECK_STALE_MS,
+  });
+
 export const useProjects = () => useQuery(projectsQueryOptions());
 export const useProject = (id: string, opts?: { coreId?: string | null }) =>
   useQuery(projectQueryOptions(id, opts));
@@ -383,3 +397,4 @@ export const useProviderUsage = (enabled: boolean, providerIds: readonly string[
   useQuery(providerUsageQueryOptions(enabled, providerIds));
 export const useHarnessAccounts = () => useQuery(harnessAccountsQueryOptions());
 export const useHarnessLatestVersions = () => useQuery(harnessLatestVersionsQueryOptions());
+export const useUpdateCheck = () => useQuery(updateCheckQueryOptions());

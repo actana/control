@@ -92,7 +92,11 @@ let installRoot: string;
 let releaseDir: string;
 let out: string[];
 let err: string[];
+let debug: string[];
 let daemonRuns: number;
+
+/** A fixed "now" for the update check's once-a-day cache. */
+const NOW = 1_700_000_000_000;
 
 function makeTarballTree(root: string, manifest = MANIFEST): void {
   fs.mkdirSync(path.join(root, "bin"), { recursive: true });
@@ -123,8 +127,10 @@ function deps(argv: string[], system: ActanaSystem, over: Partial<ActanaCliDeps>
     interactive: false,
     system,
     fetcher: fixtureFetcher(releaseDir, CHANNEL),
+    now: () => NOW,
     out: (line) => out.push(line),
     err: (line) => err.push(line),
+    debug: (line) => debug.push(line),
     probeHarnesses: () => ({ claude: { status: "available", version: "2.1.0" } }),
     runDaemon: async () => {
       daemonRuns += 1;
@@ -153,6 +159,7 @@ beforeEach(() => {
   makeTarballTree(installRoot);
   out = [];
   err = [];
+  debug = [];
   daemonRuns = 0;
 });
 
@@ -398,6 +405,124 @@ describe("status", () => {
     });
     await runActanaCli(deps(["status"], system));
     expect(out.join("\n")).toMatch(/State\s+not installed/);
+  });
+});
+
+// Alert-only, and cheap: `status` names a newer release and the command the
+// operator runs, asks the channel at most once a day, and is the same command
+// it always was on the day the channel cannot be reached — which is every day
+// until 0.1.0 is published.
+describe("status: the update check", () => {
+  /** A fetcher answering the public channel `checkForUpdate` actually asks. */
+  function channelWith(version: string | null) {
+    const dir = path.join(tmp, `channel-${version ?? "empty"}`);
+    fs.mkdirSync(dir, { recursive: true });
+    if (version) writeRelease({ dir, version, target: "linux-x64" });
+    return fixtureFetcher(dir, releaseChannel({}));
+  }
+
+  const running = () =>
+    fakeSystem({
+      "systemctl --user show": { status: 0, stdout: RUNNING_UNIT, stderr: "" },
+      "loginctl show-user": { status: 0, stdout: "Linger=yes", stderr: "" },
+    });
+
+  it("names the newer release and the command that installs it", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const code = await runActanaCli(
+      deps(["status"], running(), { fetcher: channelWith("0.2.0") }),
+    );
+
+    expect(code).toBe(0);
+    const text = out.join("\n");
+    expect(text).toMatch(/Update\s+0\.2\.0 is available — you're on 0\.1\.0/);
+    expect(text).toContain("run: actana update");
+  });
+
+  // The live path: `releases/latest` 404s because nothing is published yet.
+  it("says nothing at all when the channel has no releases", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const code = await runActanaCli(
+      deps(["status"], running(), { fetcher: channelWith(null) }),
+    );
+
+    expect(code).toBe(0);
+    expect(out.join("\n")).not.toMatch(/Update/);
+    expect(err).toEqual([]);
+    expect(debug.join("\n")).toMatch(/404/);
+  });
+
+  it("leaves the health verdict and the exit code alone", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const system = fakeSystem({
+      "systemctl --user show": {
+        status: 0,
+        stdout: "LoadState=loaded\nActiveState=inactive\nSubState=dead\nMainPID=0",
+        stderr: "",
+      },
+    });
+    const code = await runActanaCli(deps(["status"], system, { fetcher: channelWith("0.2.0") }));
+
+    expect(code).toBe(1);
+    expect(out.join("\n")).toMatch(/stopped/i);
+  });
+
+  it("asks the channel once a day, however often status is run", async () => {
+    await setup(fakeSystem());
+    const fetcher = channelWith("0.2.0");
+    const latestUrl = "https://api.github.com/repos/actana/control/releases/latest";
+
+    await runActanaCli(deps(["status"], running(), { fetcher }));
+    await runActanaCli(deps(["status"], running(), { fetcher, now: () => NOW + 3_600_000 }));
+
+    expect(fetcher.asked.filter((url) => url === latestUrl)).toHaveLength(1);
+  });
+
+  it("asks again once the cached answer is a day old", async () => {
+    await setup(fakeSystem());
+    const fetcher = channelWith("0.2.0");
+    const latestUrl = "https://api.github.com/repos/actana/control/releases/latest";
+
+    await runActanaCli(deps(["status"], running(), { fetcher }));
+    await runActanaCli(
+      deps(["status"], running(), { fetcher, now: () => NOW + 24 * 60 * 60 * 1000 }),
+    );
+
+    expect(fetcher.asked.filter((url) => url === latestUrl)).toHaveLength(2);
+  });
+
+  it("makes no request at all when the operator opted out", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+    const fetcher = channelWith("0.2.0");
+
+    await runActanaCli(
+      deps(["status"], running(), {
+        fetcher,
+        env: {
+          HOME: home,
+          PATH: path.join(home, ".local", "bin"),
+          ACTANA_UPDATE_CHECK: "0",
+        },
+      }),
+    );
+
+    expect(fetcher.asked).toEqual([]);
+    expect(out.join("\n")).not.toMatch(/Update/);
+  });
+
+  it("says nothing on a machine setup never ran on", async () => {
+    const fetcher = channelWith("0.2.0");
+    await runActanaCli(deps(["status"], fakeSystem(), { fetcher }));
+
+    expect(fetcher.asked).toEqual([]);
+    expect(out.join("\n")).toMatch(/not installed/i);
   });
 });
 
@@ -1172,6 +1297,26 @@ describe("in a container", () => {
     expect(text).toMatch(/restart policy/i);
     expect(text).not.toMatch(/actana-core\.service/);
     expect(system.calls.some((call) => call[0] === "systemctl")).toBe(false);
+  });
+
+  // The remedy is the only half of the availability line that differs by how
+  // this Core arrived: there is no tree to swap in the image, so the command
+  // belongs to the operator's host (ADR 0016 D16).
+  it("points the update line at the compose commands, not at `actana update`", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+    const channel = path.join(tmp, "container-channel");
+    fs.mkdirSync(channel, { recursive: true });
+    writeRelease({ dir: channel, version: "0.2.0", target: "linux-x64" });
+
+    await runActanaCli(
+      deps(["status"], fakeSystem(), { env, fetcher: fixtureFetcher(channel, releaseChannel({})) }),
+    );
+
+    const text = out.join("\n");
+    expect(text).toMatch(/Update\s+0\.2\.0 is available/);
+    expect(text).toContain("run: docker compose pull && docker compose up -d");
+    expect(text).not.toContain("run: actana update");
   });
 
   it("is stopped, not degraded, when the daemon's port does not answer", async () => {

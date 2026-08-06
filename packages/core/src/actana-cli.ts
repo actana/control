@@ -46,7 +46,17 @@ import {
   refusedContainerVerbs,
 } from "./actana-container";
 import { endpointFor, readActanaConfig, type ActanaConfig } from "./actana-config";
-import { binDirOnPath, resolveActanaLayout, type ActanaLayout } from "./actana-layout";
+import {
+  binDirOnPath,
+  resolveActanaLayout,
+  updateCheckCachePath,
+  type ActanaLayout,
+} from "./actana-layout";
+import {
+  checkForUpdate,
+  updateCheckEnabled,
+  type UpdateCheck,
+} from "@actana/shared/actana-update-check";
 import { readCoreManifest, type CoreManifest } from "./actana-manifest";
 import { releaseChannel, type ReleaseFetcher } from "./actana-release";
 import {
@@ -102,8 +112,22 @@ export type ActanaCliDeps = {
   system: ActanaSystem;
   /** How `actana update` reaches the release channel. */
   fetcher: ReleaseFetcher;
+  /**
+   * Milliseconds since the epoch. Only the update check reads it, and it reads
+   * it to answer "has a day passed since I last asked the release channel" —
+   * which is not a question a test can wait out.
+   */
+  now: () => number;
   out: (line: string) => void;
   err: (line: string) => void;
+  /**
+   * Where the update check's silent failures go.
+   *
+   * Separate from {@link err} because they are not the operator's business: a
+   * release channel that 404s (the truth until 0.1.0 ships) must leave
+   * `actana status` looking exactly as it did before the check existed.
+   */
+  debug: (line: string) => void;
   /** The Core's own PATH probe — the source of truth for Harness availability. */
   probeHarnesses: () => CoreLinkHarnessAvailabilityMap;
   /**
@@ -537,6 +561,38 @@ async function cmdSetup(deps: ActanaCliDeps, argv: string[]): Promise<number> {
 }
 
 /**
+ * Ask whether a newer release exists, for the availability line `status` prints.
+ *
+ * Returns null rather than propagating anything: `actana status` is a health
+ * check with a documented exit code, so the update check is allowed to be
+ * unavailable and is never allowed to be the reason the command failed.
+ * `checkForUpdate` already swallows its own failures — the catch here is for
+ * the one thing it cannot promise, which is that it will keep doing so.
+ */
+async function updateCheckFor(
+  deps: ActanaCliDeps,
+  dataDir: string,
+  current: string | null,
+): Promise<UpdateCheck | null> {
+  // An install whose manifest could not be read has no version to compare, and
+  // guessing one would be how a Core alerts about a release it already runs.
+  if (!current || !updateCheckEnabled(deps.env)) return null;
+  try {
+    return await checkForUpdate({
+      current,
+      fetcher: deps.fetcher,
+      cachePath: updateCheckCachePath(dataDir),
+      now: deps.now,
+      env: deps.env,
+      debug: deps.debug,
+    });
+  } catch (err) {
+    deps.debug(`update check failed: ${err instanceof Error ? err.message : String(err)}`);
+    return null;
+  }
+}
+
+/**
  * `actana status` inside the image.
  *
  * Same report, two rows answered differently: there is no unit to ask whether
@@ -567,6 +623,7 @@ async function containerStatus(deps: ActanaCliDeps): Promise<number> {
     container: { listening, port: config.port },
     paired: fs.existsSync(materialPathFor(deps, layout)),
     agents: deps.probeHarnesses(),
+    update: await updateCheckFor(deps, config.dataDir, manifest?.version ?? null),
   };
 
   deps.out(formatActanaStatus(report).trimEnd());
@@ -588,9 +645,10 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   const service = requireService(deps, layout);
   if (!service) return 1;
 
-  const report = {
+  const version = manifest?.version ?? config?.version ?? null;
+  const report: ActanaStatusReport = {
     installed: config !== null,
-    version: manifest?.version ?? config?.version ?? null,
+    version,
     protocolVersion: manifest?.protocolVersion ?? null,
     target: manifest?.target ?? null,
     endpoint: config ? endpointFor(config) : null,
@@ -600,6 +658,10 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     container: null,
     paired: fs.existsSync(materialFilePath(layout.configDir)),
     agents: config ? deps.probeHarnesses() : {},
+    // Only for an install there is something to update: before `actana setup`
+    // the report is a single "run setup" line and a release number would be an
+    // answer to a question nobody asked.
+    update: config ? await updateCheckFor(deps, config.dataDir, version) : null,
   };
 
   deps.out(formatActanaStatus(report).trimEnd());
