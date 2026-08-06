@@ -13,7 +13,8 @@ Start with the task you actually have.
 | Configure it — every environment variable | [`../DEPLOY.md#configuration`](../DEPLOY.md#configuration) |
 | Back it up, upgrade it, or restore it | [`../DEPLOY.md#backup`](../DEPLOY.md#backup) |
 | Fix an install that went wrong | [`../INSTALL.md#troubleshooting`](../INSTALL.md#troubleshooting) |
-| Drive it from another tool over HTTP | [`../README.md#external-api`](../README.md#external-api) |
+| Drive it from another tool over HTTP | [`external-api.md`](external-api.md) |
+| See where the Panel's and a Core's logs land | [`observability.md`](observability.md) |
 
 The order that works: **deploy a Panel first**, then install a Core on each
 machine, then paste that machine's pairing token into the Panel.

@@ -20,6 +20,47 @@ A **Core** is one machine in the fleet; a **Harness** is the agentic CLI it
 runs. If that vocabulary is new, read [`CONTEXT.md`](CONTEXT.md) before you write code — it is the
 project's glossary, and reviewers use its terms.
 
+### The stack
+
+- TanStack Start (file-based React routes + server file routes for `/api/*`)
+- Vite 7 + Tailwind v4
+- SQLite (`better-sqlite3`) + Drizzle ORM
+- `node-pty` + `@xterm/xterm` + `@xterm/addon-fit`
+- Server-Sent Events for live updates (no socket.io / Redis)
+
+### Where the code lives
+
+```
+control/
+├── packages/
+│   ├── core/               Standalone Node daemon — the Core
+│   │   └── src/
+│   │       ├── core-entry.ts           daemon entry
+│   │       ├── actana-cli.ts           the `actana` CLI (setup, status, token)
+│   │       ├── pty-manager.ts          PTY lifecycle
+│   │       └── pty-core-link-server.ts core-link WebSocket server
+│   ├── panel/              The Panel — service + browser UI
+│   │   ├── bin/panel.mjs   the service entry (`actana-panel`)
+│   │   └── src/
+│   │       ├── routes/     TanStack Start file routes
+│   │       ├── components/ ui/ primitives, views/ screens
+│   │       ├── lib/
+│   │       │   ├── panel-bridge.ts  the one surface components reach a Core through
+│   │       │   └── api.ts           typed fetch client for the Panel's own routes
+│   │       ├── server/
+│   │       │   ├── panel-link/      the browser's multiplexed WebSocket
+│   │       │   ├── core-link/       the service's link to each Core
+│   │       │   └── controllers/     the `/api/*` surface
+│   │       └── db/         Drizzle schema + client
+│   └── shared/             core-link / panel-link frames, protocol types
+├── docs/adr/               Architecture decisions
+├── designs/                Original HTML+JSX prototype (source of truth)
+├── deploy/                 The two images and the one reference compose
+├── INSTALL.md              Installing a Core
+├── DEPLOY.md               Deploying the Panel
+└── SPEC.md                 Approved product spec
+```
+
 ## Setup
 
 You need **Node 24** (`.nvmrc` pins it; `preinstall` refuses anything else) and
@@ -33,8 +74,11 @@ pnpm build          # Core bundle first, then the Panel — that order matters
 pnpm dev            # Panel dev server
 ```
 
-The Panel's native dependency (`better-sqlite3`) is compiled during install. If
-it goes stale after a Node upgrade, `pnpm native:node:rebuild`.
+The native dependencies (`better-sqlite3`, `node-pty`) are compiled during
+install, against the standard Node ABI — there is no second runtime to rebuild
+for. `pnpm dev`, `pnpm test` and `pnpm db:*` each ensure `better-sqlite3`
+matches the current Node before they run; if it goes stale after a Node
+upgrade, `pnpm native:node:rebuild`.
 
 To exercise a real Panel↔Core pair without provisioning a machine, bring up
 the reference deployment — the published Panel and Core images on one network:
