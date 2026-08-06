@@ -11,6 +11,7 @@ import type { HarnessLauncherConfig } from "~/shared/harness-launcher-config";
 import type { HarnessAccountStatus, HarnessLatestVersion } from "~/shared/harness-launchers";
 import type { PendingQuestion } from "~/shared/harness-questions";
 import type { AiModelId, AiRuntimeModelsResponse } from "@actana/shared/ai-runtime-defaults";
+import type { UpdateCheck } from "@actana/shared/actana-update-check";
 import type { ProjectsDashboardView } from "~/shared/ui-preferences";
 import type { TerminalZoomLevel } from "~/shared/terminal-zoom";
 import type { SessionHeaderButtonVisibility } from "~/shared/session-header-buttons";
@@ -457,6 +458,11 @@ export const api = {
     const q = params.size > 0 ? `?${params.toString()}` : "";
     return req<{ versions: HarnessLatestVersion[] }>(`/api/harness-launchers/latest-versions${q}`);
   },
+  /**
+   * Whether a newer Actana release exists than the one this Panel is running.
+   * Alert-only — there is no companion call that would apply it.
+   */
+  getUpdateCheck: () => req<UpdateCheck>("/api/update-check"),
   getAuthState: () => req<AuthStateResponse>("/api/auth/state"),
   setupOperator: (body: { name: string; password: string }) =>
     req<{ operator: { name: string } }>("/api/auth/setup", {

@@ -46,6 +46,7 @@ import {
 } from "~/components/ui/HeaderActionsSlot";
 import { useSettings, useProjects } from "~/queries";
 import { ProviderUsageIndicator } from "~/components/views/ProviderUsageIndicator";
+import { UpdateBanner } from "~/components/views/UpdateBanner";
 import {
   normalizeSettingsPanelId,
   type SettingsPanelId,
@@ -536,6 +537,11 @@ function Shell() {
     <>
       <div id="root">
         {/* Banner hidden for now — toggle also removed from Settings. */}
+        {/* Above the top bar and across the full width: it is about the
+         * deployment, not about whatever project is open below it. Renders
+         * nothing at all unless a newer release exists and this browser has
+         * not dismissed that release. */}
+        <UpdateBanner />
         <TopBar
           crumbs={crumbs}
           onHome={goHome}

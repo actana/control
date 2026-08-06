@@ -44,6 +44,7 @@ Environment variables only; there is no config file.
 | `AC_PANEL_HOST` / `HOST` | `0.0.0.0` | Interface to bind |
 | `AC_PANEL_DATA_DIR` | `/data` | The one directory all Panel state lives in |
 | `AC_SECRETS_KEY` | generated at `<data dir>/secrets.key` | 32-byte key (hex or base64) sealing each Core's stored credentials |
+| `ACTANA_UPDATE_CHECK` | on | Set to `0`, `false` or `off` to stop the daily release check behind the Panel's "a newer Actana is available" banner. |
 
 Set `AC_SECRETS_KEY` (`openssl rand -hex 32`) to keep the key out of the data
 directory — otherwise a copied volume or a backup carries both the sealed

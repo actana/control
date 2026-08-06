@@ -50,6 +50,7 @@
 // `core install` flow captures the blob line for the operator.
 
 import * as os from "node:os";
+import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import {
   PtyCore,
@@ -91,7 +92,16 @@ import {
   registrationBlobPath,
   type LoadOrMintResult,
 } from "./core-first-run";
-import { CONTAINER_PUBLIC_HOST_ENV, inContainer } from "./actana-container";
+import {
+  CONTAINER_PUBLIC_HOST_ENV,
+  containerUpdateCommand,
+  inContainer,
+} from "./actana-container";
+import { updateCheckCachePath } from "./actana-layout";
+import { readCoreManifest } from "./actana-manifest";
+import { nodeReleaseFetcher } from "./actana-release";
+import { startUpdateNotice } from "./core-update-notice";
+import log from "./log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "./harness-availability-store";
 import { HarnessInstallService } from "./harness-install-service";
@@ -408,12 +418,25 @@ async function startCore(): Promise<void> {
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 
+  // Alert-only, once a day, into this daemon's log — never a frame the Panel
+  // raises and never an update this process applies (ADR 0010).
+  const updateNotice = startUpdateNotice({
+    current: readCoreManifest(path.resolve(__dirname, ".."))?.version ?? "0.0.0",
+    fetcher: nodeReleaseFetcher(),
+    cachePath: updateCheckCachePath(userDataDir),
+    env: process.env,
+    now: () => Date.now(),
+    log: (message) => log.info(message),
+    remedy: containerMode ? containerUpdateCommand() : "actana update",
+  });
+
   // Clean up on shutdown.
   const shutdown = () => {
     core.killAll();
     server.close();
     hookReceiver?.close();
     availabilityStore.stop();
+    updateNotice.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();

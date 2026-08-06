@@ -170,6 +170,19 @@ export function containerRefusal(verb: string): string | null {
   );
 }
 
+/**
+ * What replaces `actana update` in a container — the two commands the
+ * reference deployment's `deploy/docker-compose.yml` is driven with.
+ *
+ * The update check's remedy line reads it from here rather than spelling the
+ * commands out again, so a container operator is told the same thing whether
+ * they typed `actana update` and were refused or read the availability line in
+ * `actana status`.
+ */
+export function containerUpdateCommand(): string {
+  return DOCKER_EQUIVALENT.update.run;
+}
+
 /** The verbs {@link containerRefusal} answers, in the order help lists them. */
 export function refusedContainerVerbs(): string[] {
   return Object.keys(DOCKER_EQUIVALENT);
