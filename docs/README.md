@@ -13,7 +13,8 @@ Start with the task you actually have.
 | Configure it — every environment variable | [`../DEPLOY.md#configuration`](../DEPLOY.md#configuration) |
 | Back it up, upgrade it, or restore it | [`../DEPLOY.md#backup`](../DEPLOY.md#backup) |
 | Fix an install that went wrong | [`../INSTALL.md#troubleshooting`](../INSTALL.md#troubleshooting) |
-| Drive it from another tool over HTTP | [`../README.md#external-api`](../README.md#external-api) |
+| Drive it from another tool over HTTP | [`external-api.md`](external-api.md) |
+| See where the Panel's and a Core's logs land | [`observability.md`](observability.md) |
 
 The order that works: **deploy a Panel first**, then install a Core on each
 machine, then paste that machine's pairing token into the Panel.
@@ -39,7 +40,7 @@ carries the invariants a reviewer will hold you to.
 | Goal | Read |
 | --- | --- |
 | Set up the GitHub repo: secrets, rulesets, labels, teams | [`REPO_SETUP.md`](REPO_SETUP.md) |
-| Add Docker Hub publishing keys | [`REPO_SETUP.md#2-secrets-and-variables`](REPO_SETUP.md#2-secrets-and-variables) |
+| Add Docker Hub publishing keys | [`REPO_SETUP.md#2-secrets-variables-and-environments`](REPO_SETUP.md#2-secrets-variables-and-environments) |
 | Cut a release | [`ci-cd.md#cutting-a-release`](ci-cd.md#cutting-a-release) |
 | Know why this repo has no tag before `v0.1.0` | [`REPO_SETUP.md#6-tag-history`](REPO_SETUP.md#6-tag-history) |
 
