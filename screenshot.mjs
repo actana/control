@@ -1,4 +1,4 @@
-// Capture Mission Control routes via puppeteer. Usage:
+// Capture Actana Control routes via puppeteer. Usage:
 //   node screenshot.mjs <label>   -> writes <label>-<route>.png for each route
 //
 // Routes: / (dashboard), /projects/<id> (project), plus zoomed crops on a card
