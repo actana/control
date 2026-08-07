@@ -4,30 +4,37 @@ on:
   pull_request:
   push:
     branches:
-      - main
-    # Carried across from images-edge.yml, whose jobs this workflow absorbed
-    # (ADR 0016 D30): a docs-only merge must not rebuild and republish two
-    # container images. On the `push` trigger only — a PR is gated on
-    # everything it changes, whatever it changes. The trade is that a
-    # docs-only merge skips the whole post-merge run, gates included; those
-    # gates already ran on the PR that produced the merge.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".scratch/**"
-      - "designs/**"
-      # Same trade for the landing page: it ships no code into either image,
-      # and `landing.yml` is what publishes it. A copy fix on the front door
-      # should not rebuild and republish two containers.
-      - "landing/**"
-  # Also carried across: republishing `:edge` without a new commit, for when a
-  # registry was down or a run was cancelled. On a dispatch the gate jobs run
-  # too — that is the cheap half, and a dispatch is rare.
+      # The train, and nothing else (ADR 0023 D41). Nothing else in the
+      # repository triggers on a train merge, so without this `beta-x.y.z` —
+      # the tag the entire promotion depends on — would never be published.
+      #
+      # `main` is deliberately absent. Commits arrive there by a fast-forward
+      # of a train whose every commit this workflow already gated and
+      # published (D5), so a second run would re-prove what the train proved.
+      # Its `paths-ignore` block went with it: that block existed so a
+      # docs-only merge did not rebuild and republish `:edge`, and `:edge` is
+      # retired (D13). There is no path filter here either, on purpose (D20) —
+      # a docs-only merge that skipped the build would leave `beta-x.y.z`'s
+      # revision label naming an older commit, and the promotion assertion
+      # would then fail: a README fix would block the release.
+      #
+      # `landing.yml` keeps its own `push: main` trigger, which is what still
+      # deploys the front door.
+      - "beta/**"
+  # Republishing a train's images without a new commit, for when a registry
+  # was down or a run was cancelled. On a dispatch the gate jobs run too —
+  # that is the cheap half, and a dispatch is rare.
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A train push must never cancel the one before it (ADR 0023 D7). `beta-x.y.z`
+  # moves per merge, so two merges landing 30 seconds apart can finish out of
+  # order and leave the moving tag on *older* bytes — silently, with both runs
+  # green. `release.yml` and `housekeeping.yml` take `false` for exactly this
+  # reason; a pull request keeps cancelling, because a superseded push has
+  # nothing to publish and nobody is waiting on its check.
+  group: ${{ startsWith(github.ref, 'refs/heads/beta/') && format('ci-train-{0}', github.ref) || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/beta/') }}
 
 permissions:
   contents: read
@@ -88,7 +95,16 @@ jobs:
 
       # Held in a shell variable and piped, never interpolated into the script
       # — a PR title is attacker-controlled text.
+      #
+      # Skipped on the promotion pull request, and only there (ADR 0023 D5,
+      # D38). `main` advances by fast-forward, so a promotion produces no
+      # squash commit and its title never becomes history — linting it would
+      # bounce a required check over a string nothing will ever read. **Do not
+      # make this strict again**: the promotion PR is opened by a workflow with
+      # a subject describing a train, not a change. Commit linting below is
+      # deliberately kept — the train's commits *are* what lands on `main`.
       - name: Lint the PR title
+        if: ${{ !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -130,6 +146,17 @@ jobs:
             exit 0
           fi
 
+          # The train (ADR 0023 D1, D3). A promotion pull request's head *is*
+          # `beta/x.y.z`, which is a branch class the convention above does not
+          # know about — without this every promotion fails a required check
+          # and the train can never reach `main`. The shape is asserted rather
+          # than waved through: `beta/` plus a bare `x.y.z`, which is what the
+          # cut writes into all four manifests.
+          if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1)."
+            exit 0
+          fi
+
           if echo "$BRANCH" | grep -qE "$PATTERN"; then
             echo "✅ Branch name '$BRANCH' is valid."
           else
@@ -141,6 +168,195 @@ jobs:
             echo "Rules: lowercase only; words separated by hyphens; no consecutive/leading/trailing separators."
             exit 1
           fi
+
+  # The branch model, enforced (ADR 0023 D1, D3, D19, D21, D26, D31).
+  #
+  # This job exists because **GitHub rulesets cannot restrict a pull request's
+  # source branch** — there is no such setting, so "work reaches `main` only
+  # through a train" is unenforceable as configuration and has to be a check.
+  # Once it is in `main`'s required checks (#114) it is what makes D1 real.
+  #
+  # It runs on every pull request whatever the base, and says so in the log:
+  # a base this model has nothing to say about passes with a notice rather
+  # than a silent green, so "the check ran and found nothing to enforce" and
+  # "the check did not run" are distinguishable from the outside.
+  train-rules:
+    name: Train rules
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+      # `gh run list`, for D21 — the train's latest push.
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Enforce the branch model
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          failed=0
+          fail() {
+            echo "::error title=$1::$2"
+            failed=1
+          }
+
+          # D3. The cut writes one version into all four manifests; this is
+          # what makes drift afterwards impossible rather than discouraged.
+          # Hand-editing four files is how three of them end up disagreeing,
+          # and the one that disagrees is found at promotion, by a person.
+          assert_versions() {
+            local expected="$1" file version
+            for file in package.json packages/core/package.json \
+                        packages/panel/package.json packages/shared/package.json; do
+              version="$(jq -r .version "$file")"
+              if [[ "$version" != "$expected" ]]; then
+                fail "Version drift in $file" "$file says $version; the train is $expected. All four manifests carry the train's version (ADR 0023 D3) — the cut wrote them and nothing else should be editing them."
+              else
+                echo "  ✅ $file is $version"
+              fi
+            done
+          }
+
+          # D21. When a train merge's image build fails, `beta-x.y.z` does not
+          # move and the train is silently un-promotable. Left alone that
+          # surfaces at the dispatch, after a human has already worked the
+          # acceptance checklist against a stale image — so it surfaces here,
+          # on the pull request that would promote it.
+          assert_train_is_green() {
+            local train="$1" run conclusion status url
+            run="$(gh run list --repo "$REPO" --branch "$train" --workflow ci.yml \
+                     --event push --limit 1 --json conclusion,status,url \
+                     --jq '.[0] // empty')"
+            if [[ -z "$run" ]]; then
+              echo "::notice title=No train push to check::No push run on $train yet. A zero-merge train is legitimate — its image came from the cut."
+              return
+            fi
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
+            status="$(jq -r '.status // ""' <<<"$run")"
+            url="$(jq -r '.url // ""' <<<"$run")"
+            case "$conclusion" in
+              success)
+                echo "  ✅ the train's latest push is green" ;;
+              "")
+                echo "::notice title=The train is still building::$train's latest push is $status ($url). Promotion asserts the digest, so a run that has not finished is not a blocker here — but the image may still move." ;;
+              *)
+                fail "The train's latest publish is red" "$train's latest push run concluded '$conclusion' ($url). \`beta-$version\` did not move, so this pull request would promote bytes older than the train tip. Fix the train and let it republish before promoting (ADR 0023 D21)." ;;
+            esac
+          }
+
+          echo "Base: $BASE"
+          echo "Head: $HEAD"
+
+          case "$BASE" in
+            main)
+              # D1. `main` accepts exactly one kind of change: a promotion of a
+              # whole train. No exception for hotfixes (they are expedited
+              # trains, D22), for documentation, or for reverts.
+              if [[ "$HEAD" != beta/* ]]; then
+                fail "Only a train may target main" "This pull request is based on \`main\` with head \`$HEAD\`. Work reaches \`main\` only by promoting a train (ADR 0023 D1) — retarget it at the open \`beta/x.y.z\` branch. A hotfix is an expedited train (D22), not an exception."
+              else
+                version="${HEAD#beta/}"
+                if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  fail "Not a train branch" "\`$HEAD\` is not \`beta/x.y.z\`. The promotion's head is the train, and the train's name is its version (ADR 0023 D3)."
+                else
+                  echo "Promotion pull request for $version."
+                  assert_versions "$version"
+                  assert_train_is_green "$HEAD"
+                fi
+              fi
+              ;;
+
+            beta/*)
+              version="${BASE#beta/}"
+              if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                fail "Not a train branch" "\`$BASE\` is not \`beta/x.y.z\` (ADR 0023 D3)."
+              else
+                # "The open train" is not a list to keep in sync — it is a
+                # property of the branch: a train promotes by fast-forward
+                # (D5), so a train `main` is no longer an ancestor of can
+                # never promote at all. That is exactly what a train stranded
+                # by someone else's promotion looks like (D2), and it is
+                # better found here than by the author of the pull request
+                # sitting on it.
+                #
+                # The branch list below is *not* the rule and is not consulted
+                # by it — it is printed so that "this train is dead" arrives
+                # next to the names of the trains that are not, which is the
+                # one thing the author of a stranded pull request needs. It
+                # cannot fail the check for the same reason: a rule that does
+                # not read it must not die when it is unavailable.
+                trains="$(gh api "repos/$REPO/branches?per_page=100" --paginate \
+                           --jq '.[].name | select(startswith("beta/"))' | sort || true)"
+                echo "Open trains (context only — the rule is the compare below):"
+                echo "${trains:-  (could not list branches)}" | sed 's/^/  /'
+                status="$(gh api "repos/$REPO/compare/main...$BASE" --jq .status)"
+                case "$status" in
+                  ahead|identical)
+                    echo "  ✅ $BASE can still fast-forward into main" ;;
+                  *)
+                    fail "This train is dead" "\`main\` is not an ancestor of \`$BASE\` (compare says '$status'), so it can never fast-forward and can never be promoted (ADR 0023 D2, D5). Another train was promoted past it. Retarget this pull request at the open train, or wait for the post-hotfix rebase (D24)." ;;
+                esac
+
+                # The head is an ordinary branch. A train targeting a train is
+                # not a thing the model has, and the `beta/*` allowlist in
+                # `Conventions` above would otherwise wave it through.
+                PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
+                if echo "$HEAD" | grep -qE '^(dependabot|renovate)/'; then
+                  echo "  ✅ $HEAD is bot-generated"
+                elif ! echo "$HEAD" | grep -qE "$PATTERN"; then
+                  fail "Head branch does not follow the convention" "\`$HEAD\` is not \`<type>/<kebab-case-description>\`. A train's own name (\`beta/x.y.z\`) is allowed only as the *head* of a promotion pull request into \`main\`."
+                else
+                  echo "  ✅ $HEAD follows the branch convention"
+                fi
+
+                assert_versions "$version"
+              fi
+              ;;
+
+            release/*)
+              # D26, D31. Backports are the one exception to digest promotion,
+              # and the exception is bounded: the last two minor lines while
+              # the product is past 1.0, the current line only before it —
+              # a `0.x` minor bump *is* the breaking change under semver, so
+              # backporting across one is backporting across a break.
+              lines="$(gh api "repos/$REPO/branches?per_page=100" --paginate \
+                        --jq '.[].name | select(startswith("release/"))' \
+                        | sed 's|^release/||' | sort -t. -k1,1n -k2,2n -r)"
+              if [[ -z "$lines" ]]; then
+                fail "No release lines exist" "\`$BASE\` does not look like a supported line — this repository has no \`release/*\` branches at all."
+              else
+                if [[ "$(head -n1 <<<"$lines" | cut -d. -f1)" == "0" ]]; then
+                  supported="$(head -n1 <<<"$lines")"
+                  echo "Pre-1.0: the supported set is the current line only (ADR 0023 D31)."
+                else
+                  supported="$(head -n2 <<<"$lines")"
+                fi
+                echo "Supported lines:"; echo "$supported" | sed 's|^|  release/|'
+                if ! grep -qxF "${BASE#release/}" <<<"$supported"; then
+                  fail "That release line is not supported" "\`$BASE\` is not one of the supported lines. Anything older gets \"upgrade to latest\", which the one-command installer and the compose setup make cheap (ADR 0023 D26, D31)."
+                else
+                  echo "  ✅ $BASE is a supported line"
+                fi
+              fi
+              ;;
+
+            *)
+              echo "::notice title=No train rules apply::This pull request is based on \`$BASE\`, which is neither \`main\`, a train, nor a release line. Nothing in the branch model constrains it."
+              ;;
+          esac
+
+          if [[ "$failed" != "0" ]]; then
+            echo "❌ The branch model rejects this pull request. See the annotations above."
+            exit 1
+          fi
+          echo "✅ Branch model satisfied."
 
   typecheck:
     name: Typecheck
@@ -433,26 +649,263 @@ jobs:
   # `scripts/__tests__/workflows.test.mjs` fails if a macOS runner appears in
   # this file.
 
-  # The Panel image, built and smoked on every PR but never pushed. Until this
-  # existed, a Dockerfile or build-stage break stayed invisible until someone
-  # cut a release tag and the release itself failed. Same reusable workflow the
-  # release uses, so this is the release build, not an approximation of it.
+  # ------------------------------------------------------ pull request images
   #
-  # amd64 only: the release and edge builds cover arm64 natively, and paying
-  # for a second runner on every PR buys little — the two legs share a
+  # Every push to a non-draft pull request publishes an image a reviewer can
+  # run, rather than read (ADR 0023 D32). One check name covers four
+  # behaviours, and each run says which one it took (D38):
+  #
+  #   build + push   same-repo, non-draft, code-touching  → pr-<prid><YYYYMM>
+  #   build, no push fork                                 → today's behaviour (D34)
+  #   verify         promotion PR (base main, head beta/*) → assert the digest (D19)
+  #   pass           draft, or a documentation-only diff  → green immediately (D33)
+  #
+  # They are four modes of one job rather than four jobs because the ruleset
+  # pins these check names, and **a required check whose job is skipped stays
+  # Pending forever** — the failure that forced `landing.yml` into a file of
+  # its own. ADR 0016's principle here — *a job that sometimes pushes is a job
+  # whose green means two different things* — is narrowed by D38 rather than
+  # discarded: it guards against a green check concealing a publish, and every
+  # mode below asserts "these bytes are good" while the modes are mutually
+  # exclusive on observable facts rather than on a flag someone sets.
+  #
+  # Deciding the mode is a job of its own because a `uses:` job cannot run a
+  # step to work out its own inputs — which puts a job of ours directly
+  # upstream of two required checks, and a `needs:` whose upstream *failed* is
+  # reported as **skipped**. That is the same trap again, reached by a new
+  # route: this job failing for any reason at all would leave `Panel image` and
+  # `Core image` Pending forever.
+  #
+  # So the resolve is two steps, split on exactly that line. The first thinks
+  # and is allowed to fail; the second thinks about nothing and therefore
+  # cannot. `continue-on-error` on both keeps a step's failure off the job's
+  # conclusion, the thinking step writes a file rather than `$GITHUB_OUTPUT`,
+  # and the deciding step supplies a default for anything the file is missing.
+  # A resolver that dies for *any* reason — an unreadable file list, a runner
+  # hiccup, a future edit with a typo in it — therefore yields `mode=build`
+  # with `push=false`, and both image checks still run and still report. A
+  # build nobody needed costs one runner; a required check that can never
+  # leave Pending costs the repository.
+  pr-image-mode:
+    name: Resolve PR image mode
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      push: ${{ steps.mode.outputs.push }}
+      stage: ${{ steps.mode.outputs.stage }}
+      ref: ${{ steps.mode.outputs.ref }}
+      tags: ${{ steps.mode.outputs.tags }}
+      dev_tags: ${{ steps.mode.outputs.dev_tags }}
+    steps:
+      # The failure boundary. Everything that can fail is on this side of it:
+      # the API call, the pattern matching, the `date`, the write.
+      - name: Work out the mode
+        id: resolve
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          MERGE_SHA: ${{ github.sha }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          RESOLVED: ${{ runner.temp }}/pr-image-mode.env
+        run: |
+          set -euo pipefail
+
+          # The documentation-only test that used to be the `push` trigger's
+          # `paths-ignore` (D20 took it off the train path, not this one). A
+          # diff that ships no code into either image has nothing to prove by
+          # building one, and the saving is nearly all of it: pull request
+          # pushes vastly outnumber train merges.
+          #
+          # An unreadable file list resolves to "not documentation-only", which
+          # costs a build nobody needed. The other way round costs a merged
+          # change whose image was never built.
+          #
+          # A *partial* list reaches that unsafe answer by a different route:
+          # `pulls/:number/files` truncates past 300 entries however hard
+          # `--paginate` asks, so a large diff can return its documentation
+          # files with the code files missing and read as documentation-only.
+          # The PR payload's own `changed_files` is the count that does not
+          # truncate, so a short list is treated as no list at all.
+          docs_only=false
+          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
+          listed="$(grep -c . <<<"$files" || true)"
+          if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
+            echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
+            files=""
+          fi
+          if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
+            docs_only=true
+          fi
+
+          mode=build
+          push=false
+          tags=""
+          dev_tags=""
+          ref="$MERGE_SHA"
+          # `pr-<number>`, never `ci` (ADR 0023 D12). `container-image.yml`
+          # pushes per-arch `<stage>-<arch>` tags *before* stitching the
+          # manifest; two open pull requests sharing `stage: ci` would
+          # overwrite each other's, and the stitch could then assemble a
+          # manifest from another pull request's bytes. Harmless while PR
+          # builds pushed nothing; corrupting from the moment they do.
+          stage="pr-$PR"
+
+          if [[ "$DRAFT" == "true" ]]; then
+            mode=pass
+            why="the pull request is a draft"
+          elif [[ "$BASE" == "main" && "$HEAD" == beta/* ]]; then
+            # D19. The image this would build already exists — the train built
+            # it — so the hour is spent proving it is the right one instead.
+            mode=verify
+            ref="$HEAD_SHA"
+            tags="beta-${HEAD#beta/}"
+            why="this is the promotion pull request for ${HEAD#beta/}"
+          elif [[ "$docs_only" == "true" ]]; then
+            mode=pass
+            why="the diff touches documentation only"
+          elif [[ "$HEAD_REPO" != "$REPO" ]]; then
+            # D34. GitHub does not expose secrets to a `pull_request` run from
+            # a fork, by design, and `pull_request_target` is rejected
+            # outright: the credential it would hand contributor-authored code
+            # can push `:latest`. The pull request image is therefore a
+            # maintainer convenience, not a contributor one.
+            mode=build
+            why="the head is the fork $HEAD_REPO, which has no registry credential"
+          else
+            mode=build
+            push=true
+            # `pr-<prid><YYYYMM>` (D10): mutable on purpose — what it points at
+            # is what is under discussion — and not `sha-`, which this
+            # repository already uses for the opposite thing. The six-digit
+            # suffix is fixed width so the PR id is recoverable from the right.
+            dev_tags="pr-${PR}$(date -u +%Y%m)"
+            why="a same-repo pull request touching code"
+          fi
+
+          echo "mode=$mode ($why)"
+          # One shot, at the end, into a file rather than `$GITHUB_OUTPUT`: a
+          # resolve that dies partway through must leave *nothing* behind
+          # rather than half a decision, and a later default appended to
+          # `$GITHUB_OUTPUT` would silently win over a good value already
+          # written there. The next step is the only writer of the outputs.
+          {
+            echo "mode=$mode"
+            echo "push=$push"
+            echo "stage=$stage"
+            echo "ref=$ref"
+            echo "tags=$tags"
+            echo "dev_tags=$dev_tags"
+            echo "why=$why"
+          } >"$RESOLVED"
+
+      # The other side of the boundary. No network, no `gh`, no `set -e`, and
+      # nothing to decide that was not already decided: it reads the resolver's
+      # answer out of a local file, defaults what is missing, writes the
+      # outputs.
+      # `continue-on-error` here too — not because this step is expected to
+      # fail, but because "the job cannot fail" has to hold for the whole job
+      # or it does not hold at all. If it somehow does fail, the outputs it
+      # managed to write stand and the image jobs run with an empty mode, which
+      # `container-image.yml` rejects loudly: a red required check is
+      # re-runnable, a Pending one is not.
+      - name: Decide
+        id: mode
+        continue-on-error: true
+        env:
+          RESOLVED: ${{ runner.temp }}/pr-image-mode.env
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          value() { sed -n "s/^$1=//p" "${RESOLVED:-/nonexistent}" 2>/dev/null | tail -n 1; }
+
+          mode="$(value mode)"
+          push="$(value push)"
+          stage="$(value stage)"
+          ref="$(value ref)"
+          tags="$(value tags)"
+          dev_tags="$(value dev_tags)"
+          why="$(value why)"
+
+          # `build` is what a resolve that did not finish produces, and
+          # `push=false` goes with it. Never `verify` or `pass`: both report a
+          # green check having built nothing, and a crash must not be able to
+          # reach an answer that proves nothing. A publishing fallback would be
+          # worse still — bytes under a tag chosen by a decision that did not
+          # finish.
+          #
+          # A *partial* file is rejected whole rather than read for the parts
+          # that made it: `why` is written last, so its absence is the
+          # resolver saying it did not finish, and `mode=verify` with the tag
+          # it was going to verify missing is worse than no answer at all.
+          case "$mode" in
+            build|verify|pass) ;;
+            *) mode="" ;;
+          esac
+          if [[ -z "$mode" || -z "$why" ]]; then
+            echo "::warning title=PR image mode fell back to build::The resolver did not finish, so the mode defaulted to a build that publishes nothing. Both image checks still run and still report — a skipped required check would stay Pending forever (ADR 0023 D33). The 'Work out the mode' step above says what went wrong."
+            mode=build
+            push=false
+            tags=""
+            dev_tags=""
+            why="the resolver did not finish"
+          fi
+          [[ "$push" == "true" ]] || push=false
+          [[ -n "$stage" ]] || stage="pr-${PR:-0}"
+          [[ -n "$ref" ]] || ref="$MERGE_SHA"
+
+          echo "mode=$mode push=$push stage=$stage ref=$ref (${why:-no reason recorded})"
+          {
+            echo "mode=$mode"
+            echo "push=$push"
+            echo "stage=$stage"
+            echo "ref=$ref"
+            echo "tags=$tags"
+            echo "dev_tags=$dev_tags"
+          } >> "$GITHUB_OUTPUT"
+
+  # The Panel image, built and smoked on every code-touching pull request.
+  # Until this existed, a Dockerfile or build-stage break stayed invisible
+  # until someone cut a release tag and the release itself failed. Same
+  # reusable workflow the train and the release use, so this is the release
+  # build, not an approximation of it.
+  #
+  # amd64 only (D35): the train and release builds cover arm64 natively, and
+  # paying for a second runner on every PR buys little — the two legs share a
   # Dockerfile, and arch-specific breakage is almost always in better-sqlite3's
-  # native build, which this leg already exercises.
+  # native build, which this leg already exercises. Emulation on Apple silicon
+  # is acceptable for a developer poking at a change; it is not acceptable for
+  # anything an operator deploys.
+  #
+  # `push_required: false` (D37): the publish goes to `panel-dev`, and the gate
+  # is the build and the smoke. A Docker Hub outage must not freeze merging.
   panel-image:
     name: Panel image
     if: github.event_name == 'pull_request'
+    needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
+    secrets: inherit
     with:
       image: panel
-      ref: ${{ github.sha }}
-      stage: ci
-      push: false
+      ref: ${{ needs.pr-image-mode.outputs.ref }}
+      stage: ${{ needs.pr-image-mode.outputs.stage }}
+      mode: ${{ needs.pr-image-mode.outputs.mode }}
+      tags: ${{ needs.pr-image-mode.outputs.tags }}
+      dev_tags: ${{ needs.pr-image-mode.outputs.dev_tags }}
+      push: ${{ needs.pr-image-mode.outputs.push == 'true' }}
+      push_required: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
 
   # Same reasoning, and this job carries more than a build: the Core image's
@@ -460,57 +913,107 @@ jobs:
   # so a break in core.Dockerfile surfaces on the PR that caused it rather
   # than on the next release. It is what `panel-e2e-core-in-a-box` used to be,
   # against the bytes that ship and with nothing privileged.
+  #
+  # The CVE gate blocks the merge (ADR 0016 D11), and nothing CVE-flagged
+  # reaches a release repository — this path publishes to `panel-dev` /
+  # `core-dev` only.
+  #
+  # D37 asks for one thing this does not do: it wants the `-dev` publish to
+  # happen *even when the scan fails*, on the grounds that the image you most
+  # need to pull and inspect is the one that failed. `container-image.yml`
+  # pushes only on `if: inputs.push`, which a failed earlier step suppresses,
+  # and `publish` needs a green `build` — so a CVE-flagged image is built,
+  # scanned, reported, and not published. Making it publish means unpicking
+  # the invariant `scripts/__tests__/image-cve-gate.test.mjs` pins for the
+  # release path ("an image that fails the gate never reaches a registry")
+  # in two places, and that is a decision to take deliberately rather than as
+  # a side effect of this ticket. The scan JSON is uploaded either way.
   core-image:
     name: Core image
     if: github.event_name == 'pull_request'
+    needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
+    secrets: inherit
     with:
       image: core
-      ref: ${{ github.sha }}
-      stage: ci
-      push: false
+      ref: ${{ needs.pr-image-mode.outputs.ref }}
+      stage: ${{ needs.pr-image-mode.outputs.stage }}
+      mode: ${{ needs.pr-image-mode.outputs.mode }}
+      tags: ${{ needs.pr-image-mode.outputs.tags }}
+      dev_tags: ${{ needs.pr-image-mode.outputs.dev_tags }}
+      push: ${{ needs.pr-image-mode.outputs.push == 'true' }}
+      push_required: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
 
-  # ----------------------------------------------------------------- edge
+  # ------------------------------------------------------------ the train
   #
-  # A push to `main` publishes the unreleased images, so anyone can try what is
-  # about to ship without waiting for a version tag:
+  # Every merge into `beta/x.y.z` publishes the image a person will pull, run
+  # and approve — and promotion re-points that exact digest at `x.y.z` and
+  # `latest` (ADR 0023 D7, D16). Nothing is rebuilt between the thing that was
+  # approved and the thing that ships:
   #
-  #   :edge          always the latest main
-  #   :sha-<short>   the immutable pin for that exact commit
+  #   beta-x.y.z    panel / core,          multi-arch, moves per merge
+  #   sha-<short>   panel-dev / core-dev,  multi-arch, never moves
   #
-  # This was images-edge.yml. ADR 0016 D30 folded it in here rather than keep a
-  # fourth entry point for jobs that differ from the PR build only in which
-  # tags come out the other end: same reusable workflow, same build, same
-  # smoke, same registries. Nothing here moves `:latest` — that stays the
-  # property of a version tag.
+  # These sit structurally where `panel-image-edge` / `core-image-edge` sat —
+  # same reusable workflow, same build, same smoke, new tags — which keeps ADR
+  # 0016's one-build-implementation property intact and makes this a
+  # substitution rather than a rewrite. `:edge` is retired, job and tag (D13):
+  # it published from `main`, and under the train model `main` is only ever a
+  # released version, so `:edge` would be a second name for `:latest`.
   #
-  # They are separate jobs from the two above, rather than the same jobs with
-  # conditional inputs, because the ruleset pins the PR jobs' check names, and
-  # a job that sometimes pushes is a job whose green means two different
-  # things. The two sets are mutually exclusive on `github.event_name`, so no
-  # single run ever builds an image twice.
+  # Nothing here moves `:latest` — that stays the property of a promotion, and
+  # a promotion publishes no bytes at all.
   #
-  # `!= 'pull_request'` rather than `== 'push'`, so `workflow_dispatch`
-  # republishes `:edge` the way images-edge.yml's own dispatch did.
-  edge-tags:
-    name: Resolve edge tags
-    if: github.event_name != 'pull_request'
+  # One build, two repositories. `sha-<short>` is the immutable handle on
+  # exactly the digest `beta-x.y.z` names (D11) — it answers "which commit
+  # introduced this", which is the question a misbehaving beta produces — and
+  # it lives in `-dev` because the sweep that deletes it needs a delete-capable
+  # credential, which D36 keeps permanently out of the repositories holding
+  # `latest`. Building it a second time would answer that question with a
+  # different digest.
+  #
+  # `startsWith(github.ref, 'refs/heads/beta/')` rather than `!= 'pull_request'`,
+  # so a `workflow_dispatch` republishes a train — the images-edge.yml
+  # affordance, kept — while a dispatch on any other branch runs the gates and
+  # publishes nothing.
+  train-tags:
+    name: Resolve train tags
+    if: startsWith(github.ref, 'refs/heads/beta/')
     runs-on: ubuntu-24.04
     outputs:
+      version: ${{ steps.tags.outputs.version }}
       tags: ${{ steps.tags.outputs.tags }}
+      dev_tags: ${{ steps.tags.outputs.dev_tags }}
+      stage: ${{ steps.tags.outputs.stage }}
     steps:
       - id: tags
         env:
+          BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
-        run: echo "tags=edge sha-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="${BRANCH#beta/}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Not a train branch::'$BRANCH' is not beta/x.y.z, so there is no version to publish under. A train's name is its version (ADR 0023 D3)."
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tags=beta-$version"
+            echo "dev_tags=sha-${SHA:0:7}"
+            # Per train, not a bare `beta`: two trains exist while a hotfix is
+            # in flight (D22), and a shared stage would let them overwrite each
+            # other's per-arch tags (D12).
+            echo "stage=beta-$version"
+          } >> "$GITHUB_OUTPUT"
 
-  panel-image-edge:
-    name: Panel image (edge)
-    if: github.event_name != 'pull_request'
-    needs: edge-tags
+  panel-image-train:
+    name: Panel image (train)
+    if: startsWith(github.ref, 'refs/heads/beta/')
+    needs: train-tags
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -518,14 +1021,15 @@ jobs:
     with:
       image: panel
       ref: ${{ github.sha }}
-      stage: edge
-      tags: ${{ needs.edge-tags.outputs.tags }}
+      stage: ${{ needs.train-tags.outputs.stage }}
+      tags: ${{ needs.train-tags.outputs.tags }}
+      dev_tags: ${{ needs.train-tags.outputs.dev_tags }}
       push: true
 
-  core-image-edge:
-    name: Core image (edge)
-    if: github.event_name != 'pull_request'
-    needs: edge-tags
+  core-image-train:
+    name: Core image (train)
+    if: startsWith(github.ref, 'refs/heads/beta/')
+    needs: train-tags
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -533,6 +1037,7 @@ jobs:
     with:
       image: core
       ref: ${{ github.sha }}
-      stage: edge
-      tags: ${{ needs.edge-tags.outputs.tags }}
+      stage: ${{ needs.train-tags.outputs.stage }}
+      tags: ${{ needs.train-tags.outputs.tags }}
+      dev_tags: ${{ needs.train-tags.outputs.dev_tags }}
       push: true
