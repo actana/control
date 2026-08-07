@@ -94,7 +94,37 @@ gh workflow run release.yml --repo actana/control -f tag=<the latest tag>
 ```
 
 The dispatch re-runs the whole tag, which is what proves the new token pushes
-images **and** updates descriptions. Then delete the old token in Docker Hub.
+images. `gh workflow run housekeeping.yml --repo actana/control -f
+chore=descriptions` proves it still updates the Docker Hub pages. Then delete
+the old token in Docker Hub.
+
+### `DOCKERHUB_CLEANUP_TOKEN` — the second, delete-capable token
+
+The weekly `dev-tag-sweep` chore deletes stale `pr-*` and `sha-*` tags from
+`panel-dev` and `core-dev`, and delete is a permission the push token must never
+have. It is therefore a **second** PAT, and it is the more dangerous of the two:
+Docker Hub personal access tokens carry an account-wide permission level rather
+than a repository list, so this one can delete from `actana/panel` and
+`actana/core` as well, and Docker Hub has no undelete.
+
+The only thing preventing that is the hard-coded, exact-match repository
+allowlist in `scripts/lib/dev-tag-sweep.mjs` — re-asserted before every delete
+call, refusing to run when empty, and unit-tested against a release repository
+handed to it by name ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D38, as amended). Treat
+that list the way you would treat a production database credential.
+
+- [ ] Create a PAT with **Read, Write & Delete** scope, from an account with
+      Admin on the org
+- [ ] `gh secret set DOCKERHUB_CLEANUP_TOKEN --repo actana/control`
+- [ ] Rotate it on the same schedule and under the same conditions as the push
+      token above
+- [ ] Prove it before trusting it: `gh workflow run housekeeping.yml --repo
+      actana/control -f chore=dev-tag-sweep -f dry-run=true` reports every tag
+      it would delete and every tag it would keep, and deletes nothing
+
+Unset, the chore skips with a notice rather than failing — which is the right
+answer on a fork, and the wrong answer to ignore here.
 
 ### The `macos-release` environment — the one human gate in a release
 
@@ -129,9 +159,10 @@ that it passed.
 
 **What a reviewer's approval actually controls: everything a release
 publishes.** `github-release` needs that job, and so do the `panel` and `core`
-image builds — and `descriptions`, which needs those two. So a rejection stops
-the GitHub Release, the tarballs, both images, `:latest`, and both Docker Hub
-pages. That is the property worth protecting: an image push cannot be undone
+image builds. So a rejection stops the GitHub Release, the tarballs, both
+images and `:latest`. (The Docker Hub pages are no longer downstream of it —
+they sync on a weekly clock now, and a page is not a published artifact.) That
+is the property worth protecting: an image push cannot be undone
 and `:latest` has no history, so a reviewer who rejects on a Gatekeeper blocker
 must be able to believe nothing shipped. The cost is that a release is as slow
 as its reviewer, which is the cheaper side of the trade.
@@ -181,14 +212,14 @@ changelog is assembled from.
       reporting channel
 - [ ] Enable Dependabot alerts + security updates
 - [ ] Enable secret scanning + push protection
-- [ ] After the first release, check that **both Docker Hub pages render** —
-      `actana/panel` and `actana/core`. Nothing here is manual: `release.yml`'s
-      `descriptions` job PATCHes each page from [`docs/images/`](images/) as
-      soon as both images are published ([ADR
-      0016](adr/0016-the-0-1-0-shape.md) D33), and a
-      typo is fixed by editing the file and dispatching that workflow rather
-      than by cutting a release. Neither page has ever been published, so the
-      first release is the first time either is seen.
+- [ ] Check that **all four Docker Hub pages render** — `actana/panel`,
+      `actana/core`, `actana/panel-dev` and `actana/core-dev`. Nothing here is
+      manual: `housekeeping.yml`'s `descriptions` job PATCHes each page from
+      [`docs/images/`](images/) on the weekly tick ([ADR
+      0023](adr/0023-release-trains-and-digest-promotion.md) D43), and a typo is
+      fixed by editing the file and waiting for Monday — or dispatching the
+      chore. No page has ever been published, so the first tick is the first
+      time any of them is seen.
 
 ## 6. Tag history
 
