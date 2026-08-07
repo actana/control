@@ -1,19 +1,24 @@
 name: Release
 
 # Everything a `v*` tag publishes: the three Core tarballs and their
-# SHA256SUMS, the Panel and Core images, the GitHub Release, and each image's
-# Docker Hub page. One file rather than four, because they are one event
-# (ADR 0016 D34).
+# SHA256SUMS, the Panel and Core images, and the GitHub Release. One file
+# rather than four, because they are one event (ADR 0016 D34).
 #
-#   resolve ─┬─ tarball ───────── installer-e2e ──────────┐
-#            │                                            │
-#            └─ tarball-macos ⏸ ─┬─ panel ─┬─ descriptions│
-#                                └─ core ──┴──────────────┴── github-release
+#   resolve ─┬─ tarball ───────── installer-e2e ─┐
+#            │                                   │
+#            └─ tarball-macos ⏸ ─┬─ panel ───────┤
+#                                └─ core ────────┴── github-release
 #
 # `panel` and `core` go through the reusable container-image.yml with
 # push: true, and both they and the tarball legs feed `github-release`.
-# `descriptions` is a leaf hanging off those two alone (D33): it describes an
-# image, so what it waits for is the image being pullable — nothing else.
+#
+# The Docker Hub pages are **not** here. `descriptions` moved to
+# housekeeping.yml and now covers all four repositories on a weekly tick (ADR
+# 0023 D43). ADR 0016 D33's reason for gating it on the two image publishes —
+# a page must not describe a version nobody can pull — did not move with it and
+# is not restated there: the `-dev` pages have nothing to do with a release,
+# and four pages that drift until someone happens to cut a release is the
+# larger problem.
 #
 # ⏸ is the deliberate one: `tarball-macos` declares `environment: macos-release`
 # and therefore waits for a human. See its own comment.
@@ -57,8 +62,10 @@ on:
     tags:
       - "v*"
   # Re-runs a whole tag: rebuilds the tarballs and images, re-attaches the
-  # assets, re-syncs the descriptions. Also how a description typo is fixed
-  # without cutting a release (D33).
+  # assets. A Docker Hub description typo is no longer fixed from here —
+  # merge the fix and the weekly `descriptions` chore publishes it, or
+  # `gh workflow run housekeeping.yml -f chore=descriptions` does it now
+  # (ADR 0023 D43).
   workflow_dispatch:
     inputs:
       tag:
@@ -120,10 +127,10 @@ jobs:
       # D31, amended by ADR 0018: Docker Hub is the only registry, so missing
       # credentials mean the images have nowhere to go — on any repo, fork or
       # not. The same one PAT serves both the `docker login` in
-      # container-image.yml and the description API below: an organization
-      # access token can push images but answers "Cannot log into an
-      # organization account" on POST /v2/users/login, so it would mean paying
-      # for Team or Business *and still* provisioning a PAT.
+      # container-image.yml and the description API housekeeping.yml calls: an
+      # organization access token can push images but answers "Cannot log into
+      # an organization account" on POST /v2/users/login, so it would mean
+      # paying for Team or Business *and still* provisioning a PAT.
       #
       # Checked before anything is built, deliberately — unlike a *broken*
       # credential, a missing one costs nothing to catch early.
@@ -478,115 +485,3 @@ jobs:
               --title "$RELEASE_REF" \
               --notes "Core tarballs for Linux and Apple-silicon macOS Cores. Verify with \`sha256sum -c SHA256SUMS\`."
           fi
-
-  # Docker Hub does not pull a README from GitHub on its own — the repository
-  # description is a field you PATCH through its API. This syncs one file per
-  # image, so `actana/panel` and `actana/core` each get their own page rather
-  # than sharing the source repo's README (which describes the project rather
-  # than either image).
-  #
-  #   docs/images/panel.md → docker.io/<ns>/panel
-  #   docs/images/core.md  → docker.io/<ns>/core
-  #
-  # Done with curl rather than a third-party action on purpose: this step
-  # handles a credential that can rewrite the public face of both images, and
-  # the repo pins every action it does trust by SHA.
-  #
-  # Gated on the two publish jobs and on nothing else (D33). The page describes
-  # an *image*, and the version it names has to be pullable when someone reads
-  # it — which is exactly what `panel` and `core` completing means. Hanging it
-  # off `github-release` instead would have been a stronger condition for the
-  # wrong reason: a red arm64 installer leg would then leave both images
-  # published and both pages describing whatever was there before, over a
-  # failure that has nothing to do with either image.
-  descriptions:
-    name: Docker Hub descriptions
-    needs: [panel, core]
-    runs-on: ubuntu-24.04
-    steps:
-      # Deliberately no `ref:` — the only job here that does not pin the tag.
-      # A description is a living page, not a versioned artifact: a tag push
-      # syncs that tag's files, and a `workflow_dispatch` from `main` syncs
-      # `main`'s, which is what makes "fix a typo without cutting a release"
-      # (D33) actually reach Docker Hub. Pinning the tag here would republish
-      # the typo.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Push each image's README to Docker Hub
-        env:
-          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
-          OWNER: ${{ github.repository_owner }}
-          # The same one PAT the image push uses. `resolve` has already failed
-          # the run if it is missing on actana/control, so reaching the skip
-          # below means this is a fork.
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "$DOCKERHUB_TOKEN" || -z "$DOCKERHUB_USERNAME" ]]; then
-            echo "::notice title=Docker Hub descriptions skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set. See docs/REPO_SETUP.md section 2."
-            exit 0
-          fi
-
-          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
-          namespace="${namespace,,}"
-
-          # A JWT, not the token itself — the /v2/repositories/ endpoints do not
-          # accept a raw PAT.
-          jwt="$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}' \
-            | curl -sS -X POST -H 'Content-Type: application/json' -d @- \
-                https://hub.docker.com/v2/users/login/ \
-            | jq -r '.token // empty')"
-
-          if [[ -z "$jwt" ]]; then
-            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read & Write scope, from an account with Admin on the org. That one token serves the image push as well."
-            exit 1
-          fi
-
-          # short: what shows in search results. full: the page body.
-          # Docker Hub caps these at 100 and 25000 bytes; overflowing is a 400,
-          # so fail with the length rather than a bare API error.
-          sync() {
-            local repo="$1" file="$2" short="$3"
-            if [[ ! -f "$file" ]]; then
-              echo "::error title=Missing description file::$file"
-              return 1
-            fi
-            # Byte length, not ${#short}: that counts characters, and these
-            # strings contain multibyte punctuation. Docker's limit is bytes.
-            local short_bytes bytes
-            short_bytes="$(printf '%s' "$short" | wc -c)"
-            if (( short_bytes > 100 )); then
-              echo "::error title=Short description too long::$repo is $short_bytes bytes, max 100"
-              return 1
-            fi
-            bytes="$(wc -c < "$file")"
-            if (( bytes > 25000 )); then
-              echo "::error title=README too long::$file is $bytes bytes, max 25000"
-              return 1
-            fi
-
-            local status
-            status="$(jq -n --rawfile full "$file" --arg short "$short" \
-                        '{full_description:$full, description:$short}' \
-              | curl -sS -o /tmp/resp.json -w '%{http_code}' \
-                  -X PATCH \
-                  -H "Authorization: JWT $jwt" \
-                  -H 'Content-Type: application/json' \
-                  -d @- \
-                  "https://hub.docker.com/v2/repositories/${namespace}/${repo}/")"
-
-            if [[ "$status" != "200" ]]; then
-              echo "::error title=Failed to update $repo::HTTP $status — $(cat /tmp/resp.json)"
-              return 1
-            fi
-            echo "✅ ${namespace}/${repo} — $bytes bytes of README, short description set"
-          }
-
-          rc=0
-          sync panel docs/images/panel.md \
-            "Self-hosted web Panel for driving agentic coding work across your machines." || rc=1
-          sync core docs/images/core.md \
-            "The Actana Core daemon: the machine your agentic coding sessions actually run on." || rc=1
-          exit "$rc"

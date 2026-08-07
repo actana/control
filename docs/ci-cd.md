@@ -71,22 +71,27 @@ supported. The container is a second distribution, not a replacement.
 
 Docker Hub does not read a README from GitHub on its own — it stores its own
 per-repository description, set through its API. The `descriptions` job in
-[`release.yml`](../.github/workflows/release.yml) pushes one file per image —
-[`docs/images/panel.md`](images/panel.md) and
-[`docs/images/core.md`](images/core.md) — gated on the two publish jobs, so
-the page never describes a version nobody can pull yet. (The images also set
-the `org.opencontainers.image.source` / `description` labels at build time;
-Docker Hub ignores them, but `docker image inspect` and any label-reading UI
-finds its way back to the source.)
+[`housekeeping.yml`](../.github/workflows/housekeeping.yml) pushes one file per
+image, on the weekly tick, for all four repositories —
+[`panel.md`](images/panel.md), [`core.md`](images/core.md),
+[`panel-dev.md`](images/panel-dev.md) and [`core-dev.md`](images/core-dev.md).
+(The images also set the `org.opencontainers.image.source` / `description`
+labels at build time; Docker Hub ignores them, but `docker image inspect` and
+any label-reading UI finds its way back to the source.)
 
-Edit those two files to change what Docker Hub shows. A typo is fixable without
-cutting a release: merge the fix to `main`, then
-`gh workflow run release.yml -f tag=<the current tag>`. That job is the one
-place the workflow does *not* check out the tag — it syncs the branch you
-dispatch from, which is what makes the fix reach Docker Hub. The
-sync authenticates with the same `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` the
-image push uses, which is why that token must be a *personal* access token —
-the API endpoint rejects organization ones; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+It used to hang off `release.yml`'s two image publishes, so that a page could
+not describe a version nobody can pull (ADR 0016 D33). That reason did not
+survive the move ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md)
+D43): the `-dev` pages have nothing to do with a release, and four pages
+drifting until someone happens to cut a release is the larger problem. On a
+clock the drift is self-healing.
+
+Edit those four files to change what Docker Hub shows. Merge the fix and the
+next Monday publishes it, or `gh workflow run housekeeping.yml -f
+chore=descriptions` publishes it now. The sync authenticates with the same
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` the image push uses — not the cleanup
+token — which is why that token must be a *personal* access token: the API
+endpoint rejects organization ones; see [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
 ## The release artifacts
 
@@ -471,54 +476,80 @@ Two registries are therefore in play, doing two different jobs:
 
 [`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the third and
 last workflow ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34) and the only one
-that is not a check. Five chores on two crons:
+that is not a check. Seven chores on two crons:
 
 | Job | Cron | What it does |
 | --- | --- | --- |
 | `stale` | daily, 03:17 UTC | labels and closes inactive issues and PRs |
 | `base-pins` | Mondays, 07:00 UTC | opens the `NODE_VERSION` bump PR, reports digest drift |
-| `core-rebuild` | Mondays, 07:00 UTC | rebuilds the newest release's Core image and republishes `:<version>` and `:latest` |
+| `release-detector` | Mondays, 07:00 UTC | base drift or a new fixable CVE in a *released* image, both images — **opens an issue**, publishes nothing |
+| `dev-tag-sweep` | Mondays, 07:00 UTC | deletes stale `pr-*` and `sha-*` tags from `panel-dev` and `core-dev` |
+| `descriptions` | Mondays, 07:00 UTC | syncs all four Docker Hub pages from `docs/images/` |
 | `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
 | `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
 
-A sixth job, `release-ref`, resolves the newest published release for
-`core-rebuild`; it is a job rather than a step only because a `uses:` job cannot
-compute its own inputs.
+An eighth job, `release-ref`, resolves the newest published release for
+`release-detector`; it is a job rather than a step only because a matrix job
+cannot compute its own inputs.
 
 One file, because a workflow file's unit is not a subject but a relationship to
-a pull request, and these five share one: no PR causes them and no PR fixes
+a pull request, and these seven share one: no PR causes them and no PR fixes
 them. Jobs are gated on `github.event.schedule`, which is how one file carries
 two cadences; `workflow_dispatch` takes a `chore` input naming one of them, or
-`weekly` for the four that share the Monday tick.
+`weekly` for the six that share the Monday tick.
 `scripts/__tests__/workflows.test.mjs` reads the file and asserts each job is on
 the cron it claims — and that the directory still holds exactly three entry
 points plus `container-image.yml`.
 
-**The weekly rebuild is what makes the digest pin honest.** `apt-get upgrade`
-runs inside the Core image's own layer (D5), so it resolves `noble-security` at
-*build* time: a rebuild on an unchanged base digest still collects every fix
-Canonical has shipped since the last one. Without it, pinning a digest means
-shipping the security state of the day it was pinned. It rebuilds the newest
-published non-prerelease release rather than `main`, and republishes that
-release's own tags — a rebuild that pushed nothing would prove the base still
-builds and ship none of what it collected. T9's Trivy gate comes for free:
-`container-image.yml` runs it before anything is pushed, so a base that has
-rotted past fixable CRITICAL/HIGH fails the rebuild rather than republishing
-over a good tag.
+**Nothing on a clock publishes an image.** This file used to rebuild the newest
+release every Monday and push over `:<version>` and `:latest`, on the argument
+that a rebuild is what makes the digest pin honest — `apt-get upgrade` runs
+inside the Core image's own layer (D5) and resolves `noble-security` at *build*
+time, so even an unchanged base collects every fix Canonical has shipped since.
+Under digest promotion that republish overwrites a promoted digest with bytes no
+beta contained and no human approved, while the `revision` label still names the
+promoted commit — so the promotion assertion keeps passing against changed
+bytes, and the immutability claim survives about seven days
+([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D42).
+
+`release-detector` asks the same two questions and answers them with an issue.
+It resolves the newest published non-prerelease release, checks that release's
+own `FROM` digests against what upstream serves today, and runs Trivy over the
+published image. Both images, not just Core: the distroless argument — a Panel
+rebuild collects nothing because there is no apt — is an argument about
+*rebuilds*, and a Chainguard base moving under a released Panel is worth knowing
+about either way. Unfixable findings are deliberately excluded (ADR 0016 D11).
+The accepted trade is that a base-image CVE now costs a patch release and a
+person, shipped through a hotfix train like any other change.
 
 Weekly rather than nightly (D10): Canonical does not ship security updates
-nightly, and a nightly rebuild is a property of a vendor's build farm, not
-something worth imitating here. The Panel is not rebuilt — it is distroless, has
-no apt at all, and its findings move only when Chainguard moves the base, which
-is Dependabot's job.
+nightly, and a nightly sweep of a registry is a property of a vendor's build
+farm, not something worth imitating here.
 
-**Two chores end in `gh issue create` rather than a red run.** `dev-audit` (D37)
-is red for advisories in packages that never ship; `harness-canary` (D38) is red
-when a vendor changes their installer. Neither is payable by the person whose PR
-happens to be open, and a permanently red scheduled workflow is how a team
-learns that red means nothing. Both file at most one open issue at a time: a
-recurrence while the first is still open is silent, and a closed issue means
-someone decided it was handled, so the next recurrence earns a fresh one.
+**Three chores end in `gh issue create` rather than a red run.** `dev-audit`
+(D37) is red for advisories in packages that never ship; `harness-canary` (D38)
+is red when a vendor changes their installer; `release-detector` (ADR 0023 D42)
+is red when a base image someone else maintains grows a CVE. None is payable by
+the person whose PR happens to be open, and a permanently red scheduled workflow
+is how a team learns that red means nothing. All three file at most one open
+issue at a time: a recurrence while the first is still open is silent, and a
+closed issue means someone decided it was handled, so the next recurrence earns
+a fresh one.
+
+**The `-dev` tag sweep is the only destructive unattended job here**, and Docker
+Hub has no undelete. Every decision it makes lives in
+`scripts/lib/dev-tag-sweep.mjs`, which is pure and unit-tested: which tag names
+it recognises (`pr-<number><YYYYMM>`, `pr-<number>-<arch>`, `sha-<short>`, each
+an anchored pattern rather than a prefix), which are stale, and — the part that
+matters — which repositories it may touch at all. That last one is an
+exact-match list of two names, re-asserted immediately before every delete call,
+refusing to run when empty. `DOCKERHUB_CLEANUP_TOKEN` is a *second* credential
+from the one the image push uses, and it can delete from the release
+repositories too: Docker Hub personal access tokens carry an account-wide
+permission level rather than a repository list (ADR 0023 D38, as amended), so
+that list is the only guard there is. `gh workflow run housekeeping.yml -f
+chore=dev-tag-sweep -f dry-run=true` reports what it would delete without
+deleting it.
 
 ## Cutting a release
 
@@ -563,8 +594,7 @@ proceeds while it waits.
 
 **Nothing leaves the repository until a reviewer approves.** Every publishing
 job sits downstream of that leg: `github-release` needs it, and so do `panel`
-and `core` (and therefore `descriptions`, which needs those two). No image, no
-moved `:latest`, no Docker Hub page, no GitHub Release
+and `core`. No image, no moved `:latest`, no GitHub Release
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended).
 
 That ordering costs a release the reviewer's own latency, and it buys the one

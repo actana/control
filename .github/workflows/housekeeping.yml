@@ -2,26 +2,41 @@ name: Housekeeping
 
 # The third and last workflow (ADR 0016 D34), and the one that is not a check.
 #
-# Five chores on two schedules. What they have in common is not their subject —
+# Seven chores on two schedules. What they have in common is not their subject —
 # they share nothing — but their relationship to a pull request: **none of them
 # gates one, and none of them can be caused or fixed by one.** That is the whole
 # reason they are here rather than in `ci.yml`.
 #
-#   stale           daily   labels and closes an inactive issue or PR
-#   base-pins       weekly  opens the NODE_VERSION bump PR, reports digest drift
-#   core-rebuild    weekly  rebuilds and republishes the released Core image
-#   dev-audit       weekly  `pnpm audit` over the dev tree — opens an issue
-#   harness-canary  weekly  the vendors' real installers — opens an issue
+#   stale             daily   labels and closes an inactive issue or PR
+#   base-pins         weekly  opens the NODE_VERSION bump PR, reports digest drift
+#   release-detector  weekly  base drift or a new fixable CVE in a released
+#                             image — opens an issue, publishes nothing
+#   dev-tag-sweep     weekly  deletes stale `pr-*` / `sha-*` tags from the two
+#                             `-dev` repositories
+#   descriptions      weekly  syncs the four Docker Hub pages from docs/images/
+#   dev-audit         weekly  `pnpm audit` over the dev tree — opens an issue
+#   harness-canary    weekly  the vendors' real installers — opens an issue
 #
-# Two of them deliberately end in `gh issue create` rather than a red run.
-# `dev-audit` (D37) is red for advisories in packages that never ship, and
-# `harness-canary` (D38) is red when a vendor changes their installer — neither
-# is payable by the person whose PR happens to be open, and a permanently red
-# scheduled workflow is how a team learns that red means nothing.
+# Three of them deliberately end in `gh issue create` rather than a red run.
+# `dev-audit` (ADR 0016 D37) is red for advisories in packages that never ship,
+# `harness-canary` (D38) is red when a vendor changes their installer, and
+# `release-detector` (ADR 0023 D42) is red when a base image someone else
+# maintains grows a CVE — none is payable by the person whose PR happens to be
+# open, and a permanently red scheduled workflow is how a team learns that red
+# means nothing.
 #
-# Six jobs, five chores: `release-ref` is `core-rebuild`'s resolver rather than a
-# chore of its own — it is a separate job only because a `uses:` job cannot run
-# a step to work out its own inputs.
+# Eight jobs, seven chores: `release-ref` is `release-detector`'s resolver
+# rather than a chore of its own — it is a separate job only because a matrix
+# job cannot run a step to work out its own inputs.
+#
+# **Nothing here publishes.** Until ADR 0023 this file rebuilt the newest
+# release every Monday and pushed over `:<version>` and `:latest`, which under
+# digest promotion would overwrite a promoted digest with bytes no beta
+# contained and no human approved — while the `revision` label still named the
+# promoted commit, so the promotion assertion (D16) would keep passing against
+# changed bytes. The immutability claim would have survived about seven days.
+# The rebuild is now a detector: it finds the same things and files an issue,
+# and the patch ships through a hotfix train like any other change (D42).
 #
 # `base-pins` was `base-pins.yml`; `stale` was `stale.yml`. Both are folded in
 # here rather than kept as files of their own, because D34's count is entry
@@ -40,9 +55,10 @@ on:
   schedule:
     # Daily, off-peak. Carried across from stale.yml unchanged.
     - cron: "17 3 * * *"
-    # Mondays at 07:00 UTC. Weekly rather than nightly for the rebuild (D10):
-    # Canonical does not ship security updates nightly, and a nightly rebuild is
-    # a property of a vendor's build farm, not something worth imitating here.
+    # Mondays at 07:00 UTC. Weekly rather than nightly for the base check
+    # (D10): Canonical does not ship security updates nightly, and a nightly
+    # sweep of a registry is a property of a vendor's build farm, not something
+    # worth imitating here.
     #
     # The time is base-pins' and the reason is base-pins': it is after the 06:00
     # Europe/Berlin the `docker` entry in .github/dependabot.yml is scheduled
@@ -53,20 +69,26 @@ on:
   workflow_dispatch:
     inputs:
       chore:
-        description: "Which chore to run. `weekly` runs the four on the Monday tick."
+        description: "Which chore to run. `weekly` runs the six on the Monday tick."
         type: choice
         default: weekly
         options:
           - weekly
           - stale
           - base-pins
-          - core-rebuild
+          - release-detector
+          - dev-tag-sweep
+          - descriptions
           - dev-audit
           - harness-canary
+      dry-run:
+        description: "`dev-tag-sweep` only: decide and report, delete nothing."
+        type: boolean
+        default: false
 
-# Serialised, never cancelled: a run that is halfway through republishing an
-# image must finish, and a stale sweep that is skipped is a day of backlog
-# nobody swept.
+# Serialised, never cancelled: a run that is halfway through deleting tags must
+# finish rather than leave a `-dev` repository half swept, and a stale sweep
+# that is skipped is a day of backlog nobody swept.
 concurrency:
   group: housekeeping
   cancel-in-progress: false
@@ -113,18 +135,18 @@ jobs:
 
   # ----------------------------------------------------------------- weekly
 
-  # The third of ADR 0016 D10's three rebuild mechanisms, plus a backstop for
-  # the second. Which pin is whose job, and why a checker exists alongside the
-  # Dependabot config at all, is written up once in docs/ci-cd.md § "The image
-  # bases, and what moves them" — this job implements that split rather than
-  # re-arguing it:
+  # ADR 0016 D10's second and third mechanisms. Which pin is whose job, and why
+  # a checker exists alongside the Dependabot config at all, is written up once
+  # in docs/ci-cd.md § "The image bases, and what moves them" — this job
+  # implements that split rather than re-arguing it:
   #
   #   opens PRs for   `ARG NODE_VERSION`, which is a nodejs.org tarball (D8) and
   #                   so invisible to Dependabot's docker ecosystem
   #   reports only    the two base digests, which are Dependabot's to open PRs
   #                   for; two bots racing on one PR is worse than one bot
-  #   not here        the weekly rebuild-and-republish, which is `core-rebuild`
-  #                   below
+  #   not here        the same question asked of the *released* images, which is
+  #                   `release-detector` below. This job looks at the working
+  #                   tree; that one looks at what operators are running.
   #
   # One correction worth carrying, because the wording is easy to repeat: D10
   # calls the NODE_VERSION bump "the only thing that clears the Node-attributed
@@ -252,38 +274,20 @@ jobs:
             --title "build(core-image): bump NODE_VERSION to ${LATEST}" \
             --body-file "$RUNNER_TEMP/pr-body.md"
 
-  # The first of D10's three mechanisms, and the one that pays down findings
-  # rather than reporting them.
-  #
-  # `apt-get upgrade` runs inside the Core image's own layer (D5), so it
-  # resolves `noble-security` at *build* time: a rebuild on an unchanged base
-  # digest still collects every fix Canonical has shipped since the last one.
-  # That is what makes the digest pin honest — without this, pinning a digest
-  # means shipping the security state of the day it was pinned, forever.
-  #
-  # It rebuilds the newest published release rather than `main`, and republishes
-  # that release's own tags: `:<version>` and `:latest` now point at an image
-  # with this week's fixes and the same code. A rebuild that pushed nothing
-  # would prove the base still builds and ship none of what it collected.
-  #
-  # The Core image only. The Panel is distroless — it has no apt at all, so a
-  # rebuild on an unchanged base digest collects nothing and its findings move
-  # only when Chainguard moves the base, which is Dependabot's job.
-  #
-  # T9's Trivy gate comes for free: `container-image.yml` runs it on the built
-  # image before anything is pushed, so a base that has rotted past fixable
-  # CRITICAL/HIGH fails the rebuild instead of republishing over a good tag.
+  # `release-detector`'s resolver. A job rather than a step because a matrix
+  # job cannot compute its own inputs, and both matrix legs need the same
+  # answer — resolving it twice would let the two legs disagree if a release
+  # were published in between.
   release-ref:
-    name: Resolve the released Core to rebuild
+    name: Resolve the released version to inspect
     if: >-
       github.event.schedule == '0 7 * * 1'
       || (github.event_name == 'workflow_dispatch'
-          && contains(fromJSON('["weekly","core-rebuild"]'), inputs.chore))
+          && contains(fromJSON('["weekly","release-detector"]'), inputs.chore))
     runs-on: ubuntu-24.04
     outputs:
       ref: ${{ steps.release.outputs.ref }}
       version: ${{ steps.release.outputs.version }}
-      tags: ${{ steps.release.outputs.tags }}
     steps:
       - id: release
         env:
@@ -292,45 +296,467 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Prereleases are excluded because they must not move `:latest`
-          # (D30), and rebuilding one would republish exactly the tag pair the
-          # release deliberately withheld.
+          # `--exclude-pre-releases` is the same invariant D9 depends on
+          # elsewhere: a beta is Docker-only and never becomes a GitHub
+          # Release, so the newest non-prerelease Release *is* the newest thing
+          # an operator can be running.
           ref="$(gh release list \
             --exclude-drafts --exclude-pre-releases \
             --limit 1 --json tagName --jq '.[0].tagName // empty')"
 
           if [[ -z "$ref" ]]; then
             # Before 0.1.0 this is the normal answer, not a failure: there is
-            # no published image for a rebuild to republish over.
-            echo "::notice title=Nothing to rebuild::No published release yet."
+            # no released image for anything to have rotted underneath.
+            echo "::notice title=Nothing to inspect::No published release yet."
             exit 0
           fi
 
           version="${ref#v}"
-          echo "Rebuilding $ref → $version, latest"
+          echo "Inspecting $ref → :$version"
           {
             echo "ref=$ref"
             echo "version=$version"
-            echo "tags=$version latest"
           } >> "$GITHUB_OUTPUT"
 
-  core-rebuild:
-    name: Weekly Core image rebuild
+  # The weekly rebuild, as a detector (ADR 0023 D42).
+  #
+  # It used to rebuild the newest release and push over `:<version>` and
+  # `:latest` — which under digest promotion overwrites a promoted digest with
+  # bytes no beta contained and no human approved, while the `revision` label
+  # still names the promoted commit so D16's assertion keeps passing against
+  # changed bytes. **It publishes nothing now.** It asks the two questions the
+  # rebuild used to answer by doing, and files an issue:
+  #
+  #   has the base moved?     the released tag's `FROM` digest against what
+  #                           upstream serves for that tag today
+  #   has it rotted?          Trivy over the published image, fixable
+  #                           CRITICAL/HIGH only
+  #
+  # Both images, not just Core. Core-only was an accident of how this grew: the
+  # argument was that the Panel is distroless and collects nothing from an
+  # `apt-get upgrade` that does not exist there — true of a *rebuild*, and
+  # irrelevant to a detector. A Chainguard base that moves under a released
+  # Panel is exactly as worth knowing about.
+  #
+  # The accepted trade (D42): a base-image CVE now costs a patch release and a
+  # person, instead of a silent Monday mutation of `:latest`. The patch ships
+  # through a hotfix train (D22) like any other change.
+  #
+  # Unfixable findings are deliberately not reported. ADR 0016 D11 is explicit:
+  # unfixed findings do not gate, because a report nobody can act on teaches
+  # everyone to ignore the ones they can. `scan-core-image.mjs` already draws
+  # that line and is tested where it is drawn.
+  release-detector:
+    name: Released image detector (${{ matrix.image }})
     needs: release-ref
     if: needs.release-ref.outputs.ref != ''
-    uses: ./.github/workflows/container-image.yml
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       contents: read
-    secrets: inherit
-    with:
-      image: core
-      ref: ${{ needs.release-ref.outputs.ref }}
-      # The same stage the release used, so the per-arch tags are overwritten
-      # rather than accumulating a `rebuild-…` set beside them. This job is the
-      # release's `core` job run again, on purpose.
-      stage: ${{ needs.release-ref.outputs.version }}
-      tags: ${{ needs.release-ref.outputs.tags }}
-      push: true
+      issues: write
+    strategy:
+      # Independent questions about independent images: a Core finding must not
+      # cancel the Panel's scan.
+      fail-fast: false
+      matrix:
+        image: [panel, core]
+    steps:
+      # The *released* tag, not the default branch. The pins that built the
+      # image an operator is running are the ones in that commit's Dockerfile;
+      # `main`'s may already have moved, which is `base-pins`' question, not
+      # this one.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.release-ref.outputs.ref }}
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # No `pnpm install` here either, and for the same reason as `base-pins`:
+      # both checkers are dependency-free so a broken lockfile cannot be why
+      # nobody hears about a rotted release.
+      - name: Has this image's base moved since the release?
+        id: bases
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          set -euo pipefail
+          node scripts/check-base-pins.mjs --json "$RUNNER_TEMP/pins.json" | tee "$RUNNER_TEMP/pins.txt"
+
+          # This image's Dockerfile only, and only its `FROM` pins: the
+          # NODE_VERSION row is a nodejs.org tarball rather than a base image
+          # (`kind: tarball`), it is `base-pins`' to open a PR for, and a new
+          # Node release is not a reason to tell anyone their release rotted.
+          #
+          # Joined onto one line rather than emitted as a heredoc output: a
+          # step output that is "one empty line" and one that is "the empty
+          # string" are the same thing to the `!= ''` below, and betting the
+          # difference on GitHub's heredoc trimming is not worth the two lines
+          # it would save. A Dockerfile has one or two `FROM` pins.
+          drift="$(jq -r --arg file "deploy/${IMAGE}.Dockerfile" \
+            '[.rows[] | select(.file == $file and .kind != "tarball" and .upstream != null and .pinned != .upstream)
+              | "\(.label): \(.pinned) → \(.upstream)"] | join("; ")' \
+            "$RUNNER_TEMP/pins.json")"
+
+          echo "drifted=$drift" >> "$GITHUB_OUTPUT"
+
+      # Pinned by version and checked against that release's own published
+      # checksums — the same "a download we verify, not a publisher we trust"
+      # posture core.Dockerfile takes with Node (D8), and the reason this is
+      # not `curl … | sh`. Pinning also pins the *scanner*, so a finding count
+      # moves only when a deliberate bump moves it.
+      #
+      # Duplicated from container-image.yml rather than shared: that file is a
+      # `workflow_call` reusable workflow, which cannot lend a single step to a
+      # caller, and a composite action would be a fifth entry point in a
+      # directory whose count D34 fixes at four.
+      - name: Install Trivy
+        env:
+          TRIVY_VERSION: 0.73.0
+        run: |
+          set -euo pipefail
+          archive="trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz"
+          dist="https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}"
+          cd "$RUNNER_TEMP"
+          curl -fsSLO "$dist/$archive"
+          curl -fsSLO "$dist/trivy_${TRIVY_VERSION}_checksums.txt"
+          grep " ${archive}\$" "trivy_${TRIVY_VERSION}_checksums.txt" | sha256sum -c -
+          mkdir -p bin && tar -xzf "$archive" -C bin trivy
+
+      # Against the published image, pulled from the registry — not against a
+      # rebuild. The whole point is to grade the bytes operators actually have.
+      #
+      # `scan-core-image.mjs` is named for the image it was written against and
+      # is image-agnostic: it grades a Trivy document with the classification in
+      # scripts/lib/image-cve-gate.mjs, which knows about fixable-vs-unfixed and
+      # nothing about Core. The suppression assertion inside it is a no-op on a
+      # distroless image, which has no `linux-libc-dev` to suppress.
+      - name: Trivy — fixable CRITICAL/HIGH in the released image
+        id: scan
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.release-ref.outputs.version }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -uo pipefail
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          ref="docker.io/${namespace,,}/${IMAGE}:${VERSION}"
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+
+          PATH="$RUNNER_TEMP/bin:$PATH" node scripts/scan-core-image.mjs \
+            --image "$ref" --json "$RUNNER_TEMP/trivy.json" \
+            > "$RUNNER_TEMP/scan.log" 2>&1
+          status=$?
+          cat "$RUNNER_TEMP/scan.log"
+
+          # A non-zero exit means one of two very different things, and they
+          # must not be conflated: gating findings — which are news for an
+          # issue — or a scanner that could not run, which is a broken job and
+          # belongs red. Trivy having written a report at all separates them,
+          # and the gate's own wording confirms which side we are on.
+          if [[ ! -s "$RUNNER_TEMP/trivy.json" ]]; then
+            echo "::error title=Scanner error::trivy produced no report for $ref"
+            exit 1
+          fi
+          if [[ $status -eq 0 ]]; then
+            echo "findings=false" >> "$GITHUB_OUTPUT"
+          elif grep -q "fixable CRITICAL/HIGH finding" "$RUNNER_TEMP/scan.log"; then
+            echo "findings=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error title=Scan failed::$ref could not be graded — see the log above."
+            exit 1
+          fi
+
+      - name: Report
+        if: always()
+        env:
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.release-ref.outputs.version }}
+          DRIFTED: ${{ steps.bases.outputs.drifted }}
+          FINDINGS: ${{ steps.scan.outputs.findings }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### ${IMAGE} ${VERSION}"
+            echo ""
+            echo "Base drift: ${DRIFTED:-none}"
+            echo ""
+            echo "Fixable CRITICAL/HIGH: ${FINDINGS:-unknown}"
+            echo ""
+            echo '```'
+            cat "$RUNNER_TEMP/scan.log" 2>/dev/null || echo "(the scan did not run)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Open an issue for the released image
+        if: steps.bases.outputs.drifted != '' || steps.scan.outputs.findings == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          IMAGE: ${{ matrix.image }}
+          VERSION: ${{ needs.release-ref.outputs.version }}
+          REF: ${{ steps.scan.outputs.ref }}
+          DRIFTED: ${{ steps.bases.outputs.drifted }}
+          FINDINGS: ${{ steps.scan.outputs.findings }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # One open issue per released image, which is the granularity of the
+          # *remedy* rather than of the finding: base drift and three new CVEs
+          # in `actana/core:0.1.0` are all cleared by one patch release, so
+          # filing them separately would be three issues one pull request
+          # closes. Re-running weekly against something nobody has got to yet
+          # is therefore silent — the run link on the original finds the latest
+          # output — while a closed issue means someone decided it was handled,
+          # so a fresh recurrence deserves a fresh issue.
+          #
+          # The version is in the title on purpose: once the patch ships, the
+          # next Monday asks about a different release and gets a new issue.
+          TITLE="Released image needs a patch: ${IMAGE} ${VERSION}"
+          open="$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+          if [[ -n "$open" ]]; then
+            echo "::notice title=Already tracked::#$open is open for this. Not filing another."
+            exit 0
+          fi
+
+          {
+            echo "\`$REF\` — the image operators are running — has moved out from under its release."
+            echo ""
+            if [[ -n "$DRIFTED" ]]; then
+              echo "**The base image moved.** The digest \`deploy/${IMAGE}.Dockerfile\` pinned at"
+              echo "\`v${VERSION}\` is no longer what that tag serves:"
+              echo ""
+              echo '```'
+              echo "$DRIFTED"
+              echo '```'
+              echo ""
+            fi
+            if [[ "$FINDINGS" == "true" ]]; then
+              echo "**Trivy found fixable CRITICAL/HIGH findings** in the published image."
+              echo "Unfixed findings are excluded deliberately (ADR 0016 D11) — they do not gate,"
+              echo "because a report nobody can act on teaches everyone to ignore the ones they can."
+              echo ""
+              echo '```'
+              tail -n 60 "$RUNNER_TEMP/scan.log"
+              echo '```'
+              echo ""
+            fi
+            echo "**Nothing was rebuilt and nothing was published** (ADR 0023 D42). A weekly rebuild"
+            echo "that pushed over \`:${VERSION}\` and \`:latest\` would overwrite a promoted digest"
+            echo "with bytes no beta contained and no human approved, while the \`revision\` label"
+            echo "still named the promoted commit — so the promotion assertion (D16) would keep"
+            echo "passing against changed bytes."
+            echo ""
+            echo "The fix ships as a patch release through a hotfix train (D22): cut"
+            echo "\`beta/<next patch>\` from \`main\`, bump the pin, promote."
+            echo ""
+            echo "[Run]($RUN_URL)"
+          } > "$RUNNER_TEMP/issue.md"
+
+          # `needs-triage` and nothing else. `gh issue create` fails outright on
+          # a label the repo does not have, which would turn "open an issue"
+          # into the red run this job exists to avoid.
+          gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
+            --label needs-triage
+
+  # The `-dev` tag sweep (ADR 0023 D33).
+  #
+  # Docker Hub has no automatic tag garbage collection, so every push to every
+  # pull request leaves a tag behind forever. This is the clock that empties
+  # `panel-dev` and `core-dev`.
+  #
+  # It is the only destructive unattended job in the repository, against a
+  # registry with **no undelete**, and D38's two independent guards on that are
+  # not both available: Docker Hub personal access tokens carry an account-wide
+  # permission level rather than a repository list, so
+  # `DOCKERHUB_CLEANUP_TOKEN` can delete from `actana/panel` and `actana/core`
+  # as well. See the ADR's D38 amendment. The hard-coded allowlist in
+  # `scripts/lib/dev-tag-sweep.mjs` is therefore load-bearing rather than
+  # defence in depth: it is exact-match, it is re-asserted immediately before
+  # every delete call, it refuses to run when empty, and it is unit-tested
+  # against a release repository being handed to it by name.
+  #
+  # The credential is a *second* token, not the one the image push uses. That
+  # is the point: the push credential never gains delete, and the delete
+  # credential never appears in a job that touches a release repository.
+  dev-tag-sweep:
+    name: Sweep the -dev image tags
+    if: >-
+      github.event.schedule == '0 7 * * 1'
+      || (github.event_name == 'workflow_dispatch'
+          && contains(fromJSON('["weekly","dev-tag-sweep"]'), inputs.chore))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      # The sweep asks which pull requests are still open before deleting their
+      # images. It never writes one.
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # No `pnpm install`: the sweep uses `fetch` and nothing else, so a broken
+      # lockfile cannot be the reason a registry stops being swept.
+      - name: Sweep
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          OWNER: ${{ github.repository_owner }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_CLEANUP_TOKEN: ${{ secrets.DOCKERHUB_CLEANUP_TOKEN }}
+          DRY_RUN: ${{ inputs.dry-run }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${DOCKERHUB_CLEANUP_TOKEN:-}" ]]; then
+            # A fork, or a repository where section 2 of docs/REPO_SETUP.md has
+            # not been done. Not a failure: there is nothing to sweep and no
+            # credential to sweep it with.
+            echo "::notice title=Sweep skipped::DOCKERHUB_CLEANUP_TOKEN is not set. See docs/REPO_SETUP.md section 2."
+            exit 0
+          fi
+
+          # An array rather than an interpolated string: `--dry-run` is the
+          # difference between a report and an irreversible delete, and word
+          # splitting is not a mechanism to trust with that.
+          extra=()
+          if [[ "${DRY_RUN:-false}" == "true" ]]; then extra+=(--dry-run); fi
+
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          node scripts/sweep-dev-tags.mjs \
+            --namespace "${namespace,,}" \
+            --github-repo "$GITHUB_REPOSITORY" \
+            --summary "$GITHUB_STEP_SUMMARY" \
+            "${extra[@]}"
+
+  # The four Docker Hub pages (ADR 0023 D43).
+  #
+  # Docker Hub does not pull a README from GitHub on its own — the repository
+  # description is a field you PATCH through its API. This syncs one file per
+  # image, so each repository gets its own page rather than sharing the source
+  # repo's README (which describes the project rather than any of them).
+  #
+  #   docs/images/panel.md      → docker.io/<ns>/panel
+  #   docs/images/core.md       → docker.io/<ns>/core
+  #   docs/images/panel-dev.md  → docker.io/<ns>/panel-dev
+  #   docs/images/core-dev.md   → docker.io/<ns>/core-dev
+  #
+  # It lived in `release.yml`, gated on the two release image publishes (ADR
+  # 0016 D33), because a page must not describe a version nobody can pull. That
+  # rationale does not survive the move and is not carried with it: the `-dev`
+  # pages have nothing to do with a release, and a page describing the version
+  # *before* the current one is a smaller problem than four pages that drift
+  # until someone happens to cut a release. On a weekly tick the drift is
+  # self-healing on all four, and a typo is fixed by merging the fix — the next
+  # Monday publishes it, or `gh workflow run housekeeping.yml -f
+  # chore=descriptions` does it now.
+  #
+  # Done with curl rather than a third-party action on purpose: this step
+  # handles a credential that can rewrite the public face of four images, and
+  # the repo pins every action it does trust by SHA.
+  descriptions:
+    name: Docker Hub descriptions
+    if: >-
+      github.event.schedule == '0 7 * * 1'
+      || (github.event_name == 'workflow_dispatch'
+          && contains(fromJSON('["weekly","descriptions"]'), inputs.chore))
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Push each image's README to Docker Hub
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          OWNER: ${{ github.repository_owner }}
+          # The same one PAT the image push uses — *not* the cleanup token.
+          # Descriptions are a write to a page, not a delete.
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$DOCKERHUB_TOKEN" || -z "$DOCKERHUB_USERNAME" ]]; then
+            echo "::notice title=Docker Hub descriptions skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set. See docs/REPO_SETUP.md section 2."
+            exit 0
+          fi
+
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          namespace="${namespace,,}"
+
+          # A JWT, not the token itself — the /v2/repositories/ endpoints do not
+          # accept a raw PAT.
+          jwt="$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}' \
+            | curl -sS -X POST -H 'Content-Type: application/json' -d @- \
+                https://hub.docker.com/v2/users/login/ \
+            | jq -r '.token // empty')"
+
+          if [[ -z "$jwt" ]]; then
+            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read & Write scope, from an account with Admin on the org. That one token serves the image push as well."
+            exit 1
+          fi
+
+          # short: what shows in search results. full: the page body.
+          # Docker Hub caps these at 100 and 25000 bytes; overflowing is a 400,
+          # so fail with the length rather than a bare API error.
+          sync() {
+            local repo="$1" file="$2" short="$3"
+            if [[ ! -f "$file" ]]; then
+              echo "::error title=Missing description file::$file"
+              return 1
+            fi
+            # Byte length, not ${#short}: that counts characters, and these
+            # strings contain multibyte punctuation. Docker's limit is bytes.
+            local short_bytes bytes
+            short_bytes="$(printf '%s' "$short" | wc -c)"
+            if (( short_bytes > 100 )); then
+              echo "::error title=Short description too long::$repo is $short_bytes bytes, max 100"
+              return 1
+            fi
+            bytes="$(wc -c < "$file")"
+            if (( bytes > 25000 )); then
+              echo "::error title=README too long::$file is $bytes bytes, max 25000"
+              return 1
+            fi
+
+            local status
+            status="$(jq -n --rawfile full "$file" --arg short "$short" \
+                        '{full_description:$full, description:$short}' \
+              | curl -sS -o /tmp/resp.json -w '%{http_code}' \
+                  -X PATCH \
+                  -H "Authorization: JWT $jwt" \
+                  -H 'Content-Type: application/json' \
+                  -d @- \
+                  "https://hub.docker.com/v2/repositories/${namespace}/${repo}/")"
+
+            if [[ "$status" != "200" ]]; then
+              echo "::error title=Failed to update $repo::HTTP $status — $(cat /tmp/resp.json)"
+              return 1
+            fi
+            echo "✅ ${namespace}/${repo} — $bytes bytes of README, short description set"
+          }
+
+          # All four are attempted before the run fails, so one broken page does
+          # not hide the state of the other three.
+          rc=0
+          sync panel docs/images/panel.md \
+            "Self-hosted web Panel for driving agentic coding work across your machines." || rc=1
+          sync core docs/images/core.md \
+            "The Actana Core daemon: the machine your agentic coding sessions actually run on." || rc=1
+          sync panel-dev docs/images/panel-dev.md \
+            "Pre-merge Panel builds. Not released, not scanned-clean — do not deploy." || rc=1
+          sync core-dev docs/images/core-dev.md \
+            "Pre-merge Core builds. Not released, not scanned-clean — do not deploy." || rc=1
+          exit "$rc"
 
   # The second of D37's three populations. `ci.yml`'s `dependency-audit` runs
   # `--prod`, which is the graph that reaches an operator; this is everything
