@@ -95,7 +95,16 @@ jobs:
 
       # Held in a shell variable and piped, never interpolated into the script
       # — a PR title is attacker-controlled text.
+      #
+      # Skipped on the promotion pull request, and only there (ADR 0023 D5,
+      # D38). `main` advances by fast-forward, so a promotion produces no
+      # squash commit and its title never becomes history — linting it would
+      # bounce a required check over a string nothing will ever read. **Do not
+      # make this strict again**: the promotion PR is opened by a workflow with
+      # a subject describing a train, not a change. Commit linting below is
+      # deliberately kept — the train's commits *are* what lands on `main`.
       - name: Lint the PR title
+        if: ${{ !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -137,6 +146,17 @@ jobs:
             exit 0
           fi
 
+          # The train (ADR 0023 D1, D3). A promotion pull request's head *is*
+          # `beta/x.y.z`, which is a branch class the convention above does not
+          # know about — without this every promotion fails a required check
+          # and the train can never reach `main`. The shape is asserted rather
+          # than waved through: `beta/` plus a bare `x.y.z`, which is what the
+          # cut writes into all four manifests.
+          if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1)."
+            exit 0
+          fi
+
           if echo "$BRANCH" | grep -qE "$PATTERN"; then
             echo "✅ Branch name '$BRANCH' is valid."
           else
@@ -148,6 +168,187 @@ jobs:
             echo "Rules: lowercase only; words separated by hyphens; no consecutive/leading/trailing separators."
             exit 1
           fi
+
+  # The branch model, enforced (ADR 0023 D1, D3, D19, D21, D26, D31).
+  #
+  # This job exists because **GitHub rulesets cannot restrict a pull request's
+  # source branch** — there is no such setting, so "work reaches `main` only
+  # through a train" is unenforceable as configuration and has to be a check.
+  # Once it is in `main`'s required checks (#114) it is what makes D1 real.
+  #
+  # It runs on every pull request whatever the base, and says so in the log:
+  # a base this model has nothing to say about passes with a notice rather
+  # than a silent green, so "the check ran and found nothing to enforce" and
+  # "the check did not run" are distinguishable from the outside.
+  train-rules:
+    name: Train rules
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+      # `gh run list`, for D21 — the train's latest push.
+      actions: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Enforce the branch model
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+        run: |
+          set -euo pipefail
+
+          failed=0
+          fail() {
+            echo "::error title=$1::$2"
+            failed=1
+          }
+
+          # D3. The cut writes one version into all four manifests; this is
+          # what makes drift afterwards impossible rather than discouraged.
+          # Hand-editing four files is how three of them end up disagreeing,
+          # and the one that disagrees is found at promotion, by a person.
+          assert_versions() {
+            local expected="$1" file version
+            for file in package.json packages/core/package.json \
+                        packages/panel/package.json packages/shared/package.json; do
+              version="$(jq -r .version "$file")"
+              if [[ "$version" != "$expected" ]]; then
+                fail "Version drift in $file" "$file says $version; the train is $expected. All four manifests carry the train's version (ADR 0023 D3) — the cut wrote them and nothing else should be editing them."
+              else
+                echo "  ✅ $file is $version"
+              fi
+            done
+          }
+
+          # D21. When a train merge's image build fails, `beta-x.y.z` does not
+          # move and the train is silently un-promotable. Left alone that
+          # surfaces at the dispatch, after a human has already worked the
+          # acceptance checklist against a stale image — so it surfaces here,
+          # on the pull request that would promote it.
+          assert_train_is_green() {
+            local train="$1" run conclusion status url
+            run="$(gh run list --repo "$REPO" --branch "$train" --workflow ci.yml \
+                     --event push --limit 1 --json conclusion,status,url \
+                     --jq '.[0] // empty')"
+            if [[ -z "$run" ]]; then
+              echo "::notice title=No train push to check::No push run on $train yet. A zero-merge train is legitimate — its image came from the cut."
+              return
+            fi
+            conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
+            status="$(jq -r '.status // ""' <<<"$run")"
+            url="$(jq -r '.url // ""' <<<"$run")"
+            case "$conclusion" in
+              success)
+                echo "  ✅ the train's latest push is green" ;;
+              "")
+                echo "::notice title=The train is still building::$train's latest push is $status ($url). Promotion asserts the digest, so a run that has not finished is not a blocker here — but the image may still move." ;;
+              *)
+                fail "The train's latest publish is red" "$train's latest push run concluded '$conclusion' ($url). \`beta-$version\` did not move, so this pull request would promote bytes older than the train tip. Fix the train and let it republish before promoting (ADR 0023 D21)." ;;
+            esac
+          }
+
+          echo "Base: $BASE"
+          echo "Head: $HEAD"
+
+          case "$BASE" in
+            main)
+              # D1. `main` accepts exactly one kind of change: a promotion of a
+              # whole train. No exception for hotfixes (they are expedited
+              # trains, D22), for documentation, or for reverts.
+              if [[ "$HEAD" != beta/* ]]; then
+                fail "Only a train may target main" "This pull request is based on \`main\` with head \`$HEAD\`. Work reaches \`main\` only by promoting a train (ADR 0023 D1) — retarget it at the open \`beta/x.y.z\` branch. A hotfix is an expedited train (D22), not an exception."
+              else
+                version="${HEAD#beta/}"
+                if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                  fail "Not a train branch" "\`$HEAD\` is not \`beta/x.y.z\`. The promotion's head is the train, and the train's name is its version (ADR 0023 D3)."
+                else
+                  echo "Promotion pull request for $version."
+                  assert_versions "$version"
+                  assert_train_is_green "$HEAD"
+                fi
+              fi
+              ;;
+
+            beta/*)
+              version="${BASE#beta/}"
+              if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                fail "Not a train branch" "\`$BASE\` is not \`beta/x.y.z\` (ADR 0023 D3)."
+              else
+                # "The open train" is not a list to keep in sync — it is a
+                # property of the branch: a train promotes by fast-forward
+                # (D5), so a train `main` is no longer an ancestor of can
+                # never promote at all. That is exactly what a train stranded
+                # by someone else's promotion looks like (D2), and it is
+                # better found here than by the author of the pull request
+                # sitting on it.
+                trains="$(gh api "repos/$REPO/branches?per_page=100" --paginate \
+                           --jq '.[].name | select(startswith("beta/"))' | sort)"
+                echo "Open trains:"; echo "$trains" | sed 's/^/  /'
+                status="$(gh api "repos/$REPO/compare/main...$BASE" --jq .status)"
+                case "$status" in
+                  ahead|identical)
+                    echo "  ✅ $BASE can still fast-forward into main" ;;
+                  *)
+                    fail "This train is dead" "\`main\` is not an ancestor of \`$BASE\` (compare says '$status'), so it can never fast-forward and can never be promoted (ADR 0023 D2, D5). Another train was promoted past it. Retarget this pull request at the open train, or wait for the post-hotfix rebase (D24)." ;;
+                esac
+
+                # The head is an ordinary branch. A train targeting a train is
+                # not a thing the model has, and the `beta/*` allowlist in
+                # `Conventions` above would otherwise wave it through.
+                PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
+                if echo "$HEAD" | grep -qE '^(dependabot|renovate)/'; then
+                  echo "  ✅ $HEAD is bot-generated"
+                elif ! echo "$HEAD" | grep -qE "$PATTERN"; then
+                  fail "Head branch does not follow the convention" "\`$HEAD\` is not \`<type>/<kebab-case-description>\`. A train's own name (\`beta/x.y.z\`) is allowed only as the *head* of a promotion pull request into \`main\`."
+                else
+                  echo "  ✅ $HEAD follows the branch convention"
+                fi
+
+                assert_versions "$version"
+              fi
+              ;;
+
+            release/*)
+              # D26, D31. Backports are the one exception to digest promotion,
+              # and the exception is bounded: the last two minor lines while
+              # the product is past 1.0, the current line only before it —
+              # a `0.x` minor bump *is* the breaking change under semver, so
+              # backporting across one is backporting across a break.
+              lines="$(gh api "repos/$REPO/branches?per_page=100" --paginate \
+                        --jq '.[].name | select(startswith("release/"))' \
+                        | sed 's|^release/||' | sort -t. -k1,1n -k2,2n -r)"
+              if [[ -z "$lines" ]]; then
+                fail "No release lines exist" "\`$BASE\` does not look like a supported line — this repository has no \`release/*\` branches at all."
+              else
+                if [[ "$(head -n1 <<<"$lines" | cut -d. -f1)" == "0" ]]; then
+                  supported="$(head -n1 <<<"$lines")"
+                  echo "Pre-1.0: the supported set is the current line only (ADR 0023 D31)."
+                else
+                  supported="$(head -n2 <<<"$lines")"
+                fi
+                echo "Supported lines:"; echo "$supported" | sed 's|^|  release/|'
+                if ! grep -qxF "${BASE#release/}" <<<"$supported"; then
+                  fail "That release line is not supported" "\`$BASE\` is not one of the supported lines. Anything older gets \"upgrade to latest\", which the one-command installer and the compose setup make cheap (ADR 0023 D26, D31)."
+                else
+                  echo "  ✅ $BASE is a supported line"
+                fi
+              fi
+              ;;
+
+            *)
+              echo "::notice title=No train rules apply::This pull request is based on \`$BASE\`, which is neither \`main\`, a train, nor a release line. Nothing in the branch model constrains it."
+              ;;
+          esac
+
+          if [[ "$failed" != "0" ]]; then
+            echo "❌ The branch model rejects this pull request. See the annotations above."
+            exit 1
+          fi
+          echo "✅ Branch model satisfied."
 
   typecheck:
     name: Typecheck
