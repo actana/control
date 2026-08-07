@@ -606,6 +606,44 @@ describe("the pull request image", () => {
     expect(modeJob).not.toMatch(/^\s*tags="pr-/m);
   });
 
+  // D33 from the third direction. `panel-image` and `core-image` both carry
+  // `needs: pr-image-mode`, and a `needs:` whose upstream *fails* is reported
+  // as skipped — so a resolver that can fail is a required check that can
+  // stay Pending forever, which is the trap the four modes exist to avoid.
+  // The resolve is therefore split: a step that thinks and may fail, and a
+  // step that only reads a file and defaults what is missing. Both are
+  // `continue-on-error`, so no step's failure can reach the job's conclusion.
+  it("cannot leave the two image checks skipped", () => {
+    expect(modeJob.match(/continue-on-error: true/g) ?? []).toHaveLength(2);
+
+    // The fallback is a build that publishes nothing — never `verify` or
+    // `pass`, which report green having proved nothing, and never a push,
+    // which would put bytes under a tag nothing finished choosing.
+    const fallback = modeJob.slice(modeJob.indexOf("case \"$mode\" in"));
+    expect(fallback).toContain("mode=build");
+    expect(fallback).toContain("push=false");
+    expect(fallback).toMatch(/::warning title=PR image mode fell back to build/);
+  });
+
+  // The partial-list hole in the same resolver: `pulls/:number/files`
+  // truncates past 300 entries, and a documentation-only *slice* of a mixed
+  // diff reads as documentation-only — a merged change whose image was never
+  // built. `changed_files` off the PR payload is the count that cannot
+  // truncate, so a short list is treated as no list at all.
+  it("will not call a truncated file list documentation-only", () => {
+    expect(modeJob).toContain("CHANGED_FILES: ${{ github.event.pull_request.changed_files }}");
+    expect(modeJob).toContain('"$listed" -lt "${CHANGED_FILES:-0}"');
+    // Emptying `files` is what makes the truncated case fall through to
+    // `docs_only=false`; asserting the mechanism, not just the comparison.
+    // The window is the truncation guard itself — it ends where the test it
+    // guards begins, so a comparison that stopped emptying `files` fails here.
+    const guard = modeJob.slice(
+      modeJob.indexOf('"$listed" -lt'),
+      modeJob.indexOf("docs_only=true"),
+    );
+    expect(guard).toContain('files=""');
+  });
+
   // D37/D32: the gate is the build and the smoke. A Docker Hub outage must
   // not freeze merging, so the publish cannot fail the required check.
   it("cannot fail the required check on a publish", () => {

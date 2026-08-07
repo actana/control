@@ -285,9 +285,17 @@ jobs:
                 # by someone else's promotion looks like (D2), and it is
                 # better found here than by the author of the pull request
                 # sitting on it.
+                #
+                # The branch list below is *not* the rule and is not consulted
+                # by it — it is printed so that "this train is dead" arrives
+                # next to the names of the trains that are not, which is the
+                # one thing the author of a stranded pull request needs. It
+                # cannot fail the check for the same reason: a rule that does
+                # not read it must not die when it is unavailable.
                 trains="$(gh api "repos/$REPO/branches?per_page=100" --paginate \
-                           --jq '.[].name | select(startswith("beta/"))' | sort)"
-                echo "Open trains:"; echo "$trains" | sed 's/^/  /'
+                           --jq '.[].name | select(startswith("beta/"))' | sort || true)"
+                echo "Open trains (context only — the rule is the compare below):"
+                echo "${trains:-  (could not list branches)}" | sed 's/^/  /'
                 status="$(gh api "repos/$REPO/compare/main...$BASE" --jq .status)"
                 case "$status" in
                   ahead|identical)
@@ -662,7 +670,22 @@ jobs:
   # exclusive on observable facts rather than on a flag someone sets.
   #
   # Deciding the mode is a job of its own because a `uses:` job cannot run a
-  # step to work out its own inputs.
+  # step to work out its own inputs — which puts a job of ours directly
+  # upstream of two required checks, and a `needs:` whose upstream *failed* is
+  # reported as **skipped**. That is the same trap again, reached by a new
+  # route: this job failing for any reason at all would leave `Panel image` and
+  # `Core image` Pending forever.
+  #
+  # So the resolve is two steps, split on exactly that line. The first thinks
+  # and is allowed to fail; the second thinks about nothing and therefore
+  # cannot. `continue-on-error` on both keeps a step's failure off the job's
+  # conclusion, the thinking step writes a file rather than `$GITHUB_OUTPUT`,
+  # and the deciding step supplies a default for anything the file is missing.
+  # A resolver that dies for *any* reason — an unreadable file list, a runner
+  # hiccup, a future edit with a typo in it — therefore yields `mode=build`
+  # with `push=false`, and both image checks still run and still report. A
+  # build nobody needed costs one runner; a required check that can never
+  # leave Pending costs the repository.
   pr-image-mode:
     name: Resolve PR image mode
     if: github.event_name == 'pull_request'
@@ -678,7 +701,11 @@ jobs:
       tags: ${{ steps.mode.outputs.tags }}
       dev_tags: ${{ steps.mode.outputs.dev_tags }}
     steps:
-      - id: mode
+      # The failure boundary. Everything that can fail is on this side of it:
+      # the API call, the pattern matching, the `date`, the write.
+      - name: Work out the mode
+        id: resolve
+        continue-on-error: true
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -689,6 +716,8 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           DRAFT: ${{ github.event.pull_request.draft }}
           MERGE_SHA: ${{ github.sha }}
+          CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
+          RESOLVED: ${{ runner.temp }}/pr-image-mode.env
         run: |
           set -euo pipefail
 
@@ -700,10 +729,21 @@ jobs:
           #
           # An unreadable file list resolves to "not documentation-only", which
           # costs a build nobody needed. The other way round costs a merged
-          # change whose image was never built, and this job failing at all
-          # leaves two required checks Pending forever.
+          # change whose image was never built.
+          #
+          # A *partial* list reaches that unsafe answer by a different route:
+          # `pulls/:number/files` truncates past 300 entries however hard
+          # `--paginate` asks, so a large diff can return its documentation
+          # files with the code files missing and read as documentation-only.
+          # The PR payload's own `changed_files` is the count that does not
+          # truncate, so a short list is treated as no list at all.
           docs_only=false
           files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
+          listed="$(grep -c . <<<"$files" || true)"
+          if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
+            echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
+            files=""
+          fi
           if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
             docs_only=true
           fi
@@ -754,6 +794,77 @@ jobs:
           fi
 
           echo "mode=$mode ($why)"
+          # One shot, at the end, into a file rather than `$GITHUB_OUTPUT`: a
+          # resolve that dies partway through must leave *nothing* behind
+          # rather than half a decision, and a later default appended to
+          # `$GITHUB_OUTPUT` would silently win over a good value already
+          # written there. The next step is the only writer of the outputs.
+          {
+            echo "mode=$mode"
+            echo "push=$push"
+            echo "stage=$stage"
+            echo "ref=$ref"
+            echo "tags=$tags"
+            echo "dev_tags=$dev_tags"
+            echo "why=$why"
+          } >"$RESOLVED"
+
+      # The other side of the boundary. No network, no `gh`, no `set -e`, and
+      # nothing to decide that was not already decided: it reads the resolver's
+      # answer out of a local file, defaults what is missing, writes the
+      # outputs.
+      # `continue-on-error` here too — not because this step is expected to
+      # fail, but because "the job cannot fail" has to hold for the whole job
+      # or it does not hold at all. If it somehow does fail, the outputs it
+      # managed to write stand and the image jobs run with an empty mode, which
+      # `container-image.yml` rejects loudly: a red required check is
+      # re-runnable, a Pending one is not.
+      - name: Decide
+        id: mode
+        continue-on-error: true
+        env:
+          RESOLVED: ${{ runner.temp }}/pr-image-mode.env
+          PR: ${{ github.event.pull_request.number }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          value() { sed -n "s/^$1=//p" "${RESOLVED:-/nonexistent}" 2>/dev/null | tail -n 1; }
+
+          mode="$(value mode)"
+          push="$(value push)"
+          stage="$(value stage)"
+          ref="$(value ref)"
+          tags="$(value tags)"
+          dev_tags="$(value dev_tags)"
+          why="$(value why)"
+
+          # `build` is what a resolve that did not finish produces, and
+          # `push=false` goes with it. Never `verify` or `pass`: both report a
+          # green check having built nothing, and a crash must not be able to
+          # reach an answer that proves nothing. A publishing fallback would be
+          # worse still — bytes under a tag chosen by a decision that did not
+          # finish.
+          #
+          # A *partial* file is rejected whole rather than read for the parts
+          # that made it: `why` is written last, so its absence is the
+          # resolver saying it did not finish, and `mode=verify` with the tag
+          # it was going to verify missing is worse than no answer at all.
+          case "$mode" in
+            build|verify|pass) ;;
+            *) mode="" ;;
+          esac
+          if [[ -z "$mode" || -z "$why" ]]; then
+            echo "::warning title=PR image mode fell back to build::The resolver did not finish, so the mode defaulted to a build that publishes nothing. Both image checks still run and still report — a skipped required check would stay Pending forever (ADR 0023 D33). The 'Work out the mode' step above says what went wrong."
+            mode=build
+            push=false
+            tags=""
+            dev_tags=""
+            why="the resolver did not finish"
+          fi
+          [[ "$push" == "true" ]] || push=false
+          [[ -n "$stage" ]] || stage="pr-${PR:-0}"
+          [[ -n "$ref" ]] || ref="$MERGE_SHA"
+
+          echo "mode=$mode push=$push stage=$stage ref=$ref (${why:-no reason recorded})"
           {
             echo "mode=$mode"
             echo "push=$push"
