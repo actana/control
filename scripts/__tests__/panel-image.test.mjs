@@ -344,12 +344,13 @@ describe("release workflow", () => {
     }
   });
 
-  // D33's "fix a typo without cutting a release" only works if the sync reads
-  // the branch it was dispatched from. Every other job pins the tag.
-  it("syncs descriptions from the dispatched ref, not the tag", () => {
-    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
-    expect(descriptions).toContain("actions/checkout@");
-    expect(descriptions).not.toContain("ref: ${{ needs.resolve.outputs.ref }}");
+  // "Fix a typo without cutting a release" used to be a `workflow_dispatch` of
+  // this file, and is now a weekly tick of housekeeping.yml (ADR 0023 D43). It
+  // still only works if the sync reads a branch rather than a tag — which
+  // there it does by never checking out a ref at all.
+  it("no longer carries the description sync", () => {
+    expect(workflow).not.toContain("  descriptions:");
+    expect(workflow).not.toContain("docs/images/");
   });
 
   // D34: one file for the whole tag, not four that have to be kept in step.
@@ -730,7 +731,12 @@ describe("core image", () => {
 // Docker Hub rejects an oversized description with a 400, which would only
 // surface as a red workflow after the fact. Catch it at the length instead.
 describe("docker hub descriptions", () => {
-  for (const image of ["panel", "core"]) {
+  // The sync moved out of release.yml and onto the weekly tick, covering all
+  // four repositories rather than the two a release publishes (ADR 0023 D43).
+  const housekeeping = readRepoFile(".github/workflows/housekeeping.yml");
+  const IMAGES = ["panel", "core", "panel-dev", "core-dev"];
+
+  for (const image of IMAGES) {
     it(`${image} has a description file within Docker Hub's 25000-byte limit`, () => {
       const body = readRepoFile(`docs/images/${image}.md`);
       expect(body.length).toBeGreaterThan(0);
@@ -738,25 +744,35 @@ describe("docker hub descriptions", () => {
     });
   }
 
-  it("syncs both images, and each short description fits in 100 bytes", () => {
-    expect(workflow).toContain("sync panel docs/images/panel.md");
-    expect(workflow).toContain("sync core docs/images/core.md");
-    for (const [, short] of workflow.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
+  it("syncs all four images, and each short description fits in 100 bytes", () => {
+    for (const image of IMAGES) {
+      expect(housekeeping).toContain(`sync ${image} docs/images/${image}.md`);
+    }
+    for (const [, short] of housekeeping.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
       expect(Buffer.byteLength(short, "utf8")).toBeLessThanOrEqual(100);
     }
+  });
+
+  // The `-dev` pages exist because their repositories are public and would
+  // otherwise describe themselves as releases (D36). The warning is the page.
+  it.each(["panel-dev", "core-dev"])("tells a reader not to deploy %s", (image) => {
+    const body = readRepoFile(`docs/images/${image}.md`).toLowerCase();
+    expect(body).toContain("do not deploy");
+    expect(body).toContain("not a release");
   });
 
   // D31/D33. One PAT does both jobs: an OAT can push images but answers
   // "Cannot log into an organization account" on /v2/users/login, so choosing
   // an OAT would mean paying for Team or Business *and still* making a PAT.
   it("authenticates the sync with the same PAT the image push uses", () => {
-    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    const descriptions = housekeeping.slice(housekeeping.indexOf("  descriptions:"));
     expect(descriptions).toContain("secrets.DOCKERHUB_TOKEN");
     expect(descriptions).toContain("secrets.DOCKERHUB_USERNAME");
     // The second credential is deleted, everywhere — a secret nothing reads is
     // a secret nobody rotates.
     for (const file of [
       ".github/workflows/release.yml",
+      ".github/workflows/housekeeping.yml",
       ".github/workflows/container-image.yml",
       "docs/REPO_SETUP.md",
       "docs/ci-cd.md",
@@ -772,15 +788,17 @@ describe("docker hub descriptions", () => {
     expect(setup.toLowerCase()).toContain("rotat");
   });
 
-  // D33. What the page waits for is the image being pullable, and that is the
-  // two publish jobs. Gating on `github-release` instead would let a red
-  // installer leg — which is about a tarball, not an image — leave both images
-  // published and both pages describing whatever was there before.
-  it("waits for the two publish jobs and nothing else", () => {
-    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
-    const needs = /^\s+needs: (.+)$/m.exec(descriptions);
-    expect(needs, "the descriptions job declares no needs").not.toBeNull();
-    expect(needs[1]).toBe("[panel, core]");
+  // ADR 0016 D33 gated the sync on the two release image publishes so a page
+  // could not describe a version nobody can pull. That rationale did not
+  // survive the move (D43) and must not be reconstructed: a `needs:` here
+  // would be it coming back, and the `-dev` pages have no publish to wait for.
+  it("waits for no publish job, because it no longer describes one release", () => {
+    const descriptions = housekeeping.slice(
+      housekeeping.indexOf("  descriptions:"),
+      housekeeping.indexOf("  dev-audit:"),
+    );
+    expect(descriptions).not.toMatch(/^\s+needs:/m);
+    expect(workflow).not.toContain("  descriptions:");
   });
 
   // D33. `actana/core` was a systemd fixture that needed --privileged, the host

@@ -15,8 +15,12 @@
 // revision of the count, not the drift this test exists to catch.
 //
 // It also pins the parts of `housekeeping.yml` that are load-bearing but
-// invisible in a green run: the cron a job is gated on, and the fact that the
-// two non-hermetic chores open an issue rather than failing a build (D38).
+// invisible in a green run: the cron a job is gated on, the fact that the
+// non-hermetic chores open an issue rather than failing a build (D38), and —
+// since ADR 0023 D42 — the fact that nothing on a clock publishes an image at
+// all. That last one is the whole immutability claim: a weekly rebuild pushing
+// over `:latest` falsifies it every Monday, silently, while the promotion
+// assertion keeps passing.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -36,6 +40,13 @@ const jobBlock = (source, name) => {
   const next = rest.search(/\n {2}[a-z][a-z0-9-]*:\n/);
   return next === -1 ? rest : rest.slice(0, next);
 };
+
+/** A block with its comment lines removed — what the runner actually reads. */
+const code = (block) =>
+  block
+    .split("\n")
+    .filter((line) => !line.trimStart().startsWith("#"))
+    .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
   it("is four entry points plus one reusable workflow — nothing else", () => {
@@ -67,9 +78,21 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
   });
 
   it("calls the reusable build from every path that builds an image", () => {
-    for (const file of ["ci.yml", "release.yml", "housekeeping.yml"]) {
+    for (const file of ["ci.yml", "release.yml"]) {
       expect(read(file)).toContain("uses: ./.github/workflows/container-image.yml");
     }
+  });
+
+  // ADR 0023 D42. `housekeeping.yml` used to be a third caller: it rebuilt the
+  // newest release every Monday and pushed over `:<version>` and `:latest`,
+  // which would overwrite a promoted digest with bytes no beta contained and
+  // no human approved. Nothing on a clock builds an image now, and nothing on
+  // a clock publishes one.
+  it("builds and publishes nothing from a cron", () => {
+    const source = read("housekeeping.yml");
+    expect(source).not.toContain("uses: ./.github/workflows/container-image.yml");
+    expect(source).not.toMatch(/^\s+push: true$/m);
+    expect(source).not.toMatch(/docker (push|buildx)/);
   });
 });
 
@@ -104,8 +127,7 @@ describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
   // image is not undoable, and `:latest` is a pointer with no history. A
   // reviewer who rejects on a Gatekeeper blocker has to be able to believe
   // nothing shipped, and that is only true while every publishing job sits
-  // downstream of the approval. `descriptions` is covered transitively — it
-  // needs `[panel, core]`.
+  // downstream of the approval.
   it("publishes no image until that leg is approved", () => {
     for (const image of ["panel", "core"]) {
       const job = jobBlock(source, image);
@@ -114,7 +136,14 @@ describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
       );
       expect(job).toContain("push: true");
     }
-    expect(jobBlock(source, "descriptions")).toMatch(/needs: \[[^\]]*panel[^\]]*\]/);
+  });
+
+  // ADR 0023 D43. The page sync is no longer a leaf of this workflow at all —
+  // it moved to housekeeping.yml and covers four repositories on a weekly
+  // tick. A `descriptions` job reappearing here would be the old gating
+  // rationale (ADR 0016 D33) coming back with it.
+  it("no longer syncs the Docker Hub pages", () => {
+    expect(source).not.toMatch(/^ {2}descriptions:$/m);
   });
 
   // container-image.yml is in the list because ci.yml calls it on every PR: a
@@ -131,7 +160,7 @@ describe("housekeeping.yml", () => {
   const source = read("housekeeping.yml");
 
   // The daily one is stale.yml's own cron, carried across unchanged; the
-  // weekly one is Monday, which is D10's cadence for the rebuild.
+  // weekly one is Monday, which is D10's cadence for the base check.
   const DAILY = "17 3 * * *";
   const WEEKLY = "0 7 * * 1";
 
@@ -142,29 +171,77 @@ describe("housekeeping.yml", () => {
 
   it("runs stale daily and everything else weekly", () => {
     expect(jobBlock(source, "stale")).toContain(DAILY);
-    for (const job of ["base-pins", "release-ref", "dev-audit", "harness-canary"]) {
+    for (const job of [
+      "base-pins",
+      "release-ref",
+      "dev-tag-sweep",
+      "descriptions",
+      "dev-audit",
+      "harness-canary",
+    ]) {
       expect(jobBlock(source, job), `${job} is not on the weekly cron`).toContain(WEEKLY);
     }
   });
 
-  // D10: the rebuild is what makes the digest pin honest, so it has to rebuild
-  // the *released* image and republish its tags — a build that pushes nothing
-  // proves the base still builds and ships none of the fixes it collected.
-  it("rebuilds and republishes the released Core image", () => {
-    const job = jobBlock(source, "core-rebuild");
-    expect(job).toContain("uses: ./.github/workflows/container-image.yml");
-    expect(job).toContain("image: core");
-    expect(job).toContain("push: true");
-    expect(job).toMatch(/tags: \$\{\{ needs\.release-ref\.outputs\.tags \}\}/);
+  // `release-detector` has no cron of its own — it is `needs: release-ref`,
+  // which does. Asserted rather than assumed, because a detector that runs on
+  // no schedule is indistinguishable from a green one.
+  it("hangs the detector off the resolver that carries the weekly cron", () => {
+    const job = jobBlock(source, "release-detector");
+    expect(job).toContain("needs: release-ref");
+    expect(job).toContain("if: needs.release-ref.outputs.ref != ''");
   });
 
-  // D37 and D38. Both of these are red for reasons no PR author caused and no
-  // PR author can fix, so the output is an issue, not a failed build.
-  it.each(["dev-audit", "harness-canary"])("opens an issue rather than gating (%s)", (name) => {
-    const job = jobBlock(source, name);
-    expect(job).toContain("issues: write");
+  // ADR 0023 D42. The rebuild became a detector: base drift or a new *fixable*
+  // CRITICAL/HIGH opens an issue, for both images, and nothing is published.
+  // Every clause here is one deleted line away from being false.
+  it("detects rather than republishes, for both images", () => {
+    const job = jobBlock(source, "release-detector");
+    expect(job).toMatch(/image: \[panel, core\]/);
+    expect(job).toContain("check-base-pins.mjs");
+    expect(job).toContain("scan-core-image.mjs");
     expect(job).toContain("gh issue create");
+    expect(job).toContain("issues: write");
+    expect(job).not.toContain("push: true");
   });
+
+  // D33/D38. The delete-capable credential is a second secret, and it never
+  // appears in a job that could touch a release repository.
+  it("sweeps the -dev tags with the cleanup token and nothing else", () => {
+    const job = jobBlock(source, "dev-tag-sweep");
+    expect(job).toContain("scripts/sweep-dev-tags.mjs");
+    expect(job).toContain("secrets.DOCKERHUB_CLEANUP_TOKEN");
+    // The push credential must not be in reach of the delete path.
+    expect(job).not.toContain("secrets.DOCKERHUB_TOKEN");
+    // And the cleanup token must not leak into any other job. Comments are
+    // stripped first: `jobBlock` runs to the next job key, so a block ends
+    // with the *following* job's explanatory header, and this file explains
+    // that credential at length.
+    for (const other of ["descriptions", "release-detector", "base-pins"]) {
+      expect(code(jobBlock(source, other)), `${other} can reach the delete credential`).not.toContain(
+        "DOCKERHUB_CLEANUP_TOKEN",
+      );
+    }
+  });
+
+  // D43. Four repositories, not the two the release workflow used to sync.
+  it("syncs all four Docker Hub pages", () => {
+    const job = jobBlock(source, "descriptions");
+    for (const image of ["panel", "core", "panel-dev", "core-dev"]) {
+      expect(job, `${image} is not synced`).toContain(`sync ${image} docs/images/${image}.md`);
+    }
+  });
+
+  // D37, D38 and D42. All three are red for reasons no PR author caused and no
+  // PR author can fix, so the output is an issue, not a failed build.
+  it.each(["dev-audit", "harness-canary", "release-detector"])(
+    "opens an issue rather than gating (%s)",
+    (name) => {
+      const job = jobBlock(source, name);
+      expect(job).toContain("issues: write");
+      expect(job).toContain("gh issue create");
+    },
+  );
 
   it("audits the whole dev tree, which is the half ci.yml's --prod audit skips", () => {
     const job = jobBlock(source, "dev-audit");
