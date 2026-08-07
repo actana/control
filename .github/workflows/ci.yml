@@ -641,26 +641,160 @@ jobs:
   # `scripts/__tests__/workflows.test.mjs` fails if a macOS runner appears in
   # this file.
 
-  # The Panel image, built and smoked on every PR but never pushed. Until this
-  # existed, a Dockerfile or build-stage break stayed invisible until someone
-  # cut a release tag and the release itself failed. Same reusable workflow the
-  # release uses, so this is the release build, not an approximation of it.
+  # ------------------------------------------------------ pull request images
   #
-  # amd64 only: the release and edge builds cover arm64 natively, and paying
-  # for a second runner on every PR buys little — the two legs share a
+  # Every push to a non-draft pull request publishes an image a reviewer can
+  # run, rather than read (ADR 0023 D32). One check name covers four
+  # behaviours, and each run says which one it took (D38):
+  #
+  #   build + push   same-repo, non-draft, code-touching  → pr-<prid><YYYYMM>
+  #   build, no push fork                                 → today's behaviour (D34)
+  #   verify         promotion PR (base main, head beta/*) → assert the digest (D19)
+  #   pass           draft, or a documentation-only diff  → green immediately (D33)
+  #
+  # They are four modes of one job rather than four jobs because the ruleset
+  # pins these check names, and **a required check whose job is skipped stays
+  # Pending forever** — the failure that forced `landing.yml` into a file of
+  # its own. ADR 0016's principle here — *a job that sometimes pushes is a job
+  # whose green means two different things* — is narrowed by D38 rather than
+  # discarded: it guards against a green check concealing a publish, and every
+  # mode below asserts "these bytes are good" while the modes are mutually
+  # exclusive on observable facts rather than on a flag someone sets.
+  #
+  # Deciding the mode is a job of its own because a `uses:` job cannot run a
+  # step to work out its own inputs.
+  pr-image-mode:
+    name: Resolve PR image mode
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      mode: ${{ steps.mode.outputs.mode }}
+      push: ${{ steps.mode.outputs.push }}
+      stage: ${{ steps.mode.outputs.stage }}
+      ref: ${{ steps.mode.outputs.ref }}
+      tags: ${{ steps.mode.outputs.tags }}
+      dev_tags: ${{ steps.mode.outputs.dev_tags }}
+    steps:
+      - id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          DRAFT: ${{ github.event.pull_request.draft }}
+          MERGE_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # The documentation-only test that used to be the `push` trigger's
+          # `paths-ignore` (D20 took it off the train path, not this one). A
+          # diff that ships no code into either image has nothing to prove by
+          # building one, and the saving is nearly all of it: pull request
+          # pushes vastly outnumber train merges.
+          #
+          # An unreadable file list resolves to "not documentation-only", which
+          # costs a build nobody needed. The other way round costs a merged
+          # change whose image was never built, and this job failing at all
+          # leaves two required checks Pending forever.
+          docs_only=false
+          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
+          if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
+            docs_only=true
+          fi
+
+          mode=build
+          push=false
+          tags=""
+          dev_tags=""
+          ref="$MERGE_SHA"
+          # `pr-<number>`, never `ci` (ADR 0023 D12). `container-image.yml`
+          # pushes per-arch `<stage>-<arch>` tags *before* stitching the
+          # manifest; two open pull requests sharing `stage: ci` would
+          # overwrite each other's, and the stitch could then assemble a
+          # manifest from another pull request's bytes. Harmless while PR
+          # builds pushed nothing; corrupting from the moment they do.
+          stage="pr-$PR"
+
+          if [[ "$DRAFT" == "true" ]]; then
+            mode=pass
+            why="the pull request is a draft"
+          elif [[ "$BASE" == "main" && "$HEAD" == beta/* ]]; then
+            # D19. The image this would build already exists — the train built
+            # it — so the hour is spent proving it is the right one instead.
+            mode=verify
+            ref="$HEAD_SHA"
+            tags="beta-${HEAD#beta/}"
+            why="this is the promotion pull request for ${HEAD#beta/}"
+          elif [[ "$docs_only" == "true" ]]; then
+            mode=pass
+            why="the diff touches documentation only"
+          elif [[ "$HEAD_REPO" != "$REPO" ]]; then
+            # D34. GitHub does not expose secrets to a `pull_request` run from
+            # a fork, by design, and `pull_request_target` is rejected
+            # outright: the credential it would hand contributor-authored code
+            # can push `:latest`. The pull request image is therefore a
+            # maintainer convenience, not a contributor one.
+            mode=build
+            why="the head is the fork $HEAD_REPO, which has no registry credential"
+          else
+            mode=build
+            push=true
+            # `pr-<prid><YYYYMM>` (D10): mutable on purpose — what it points at
+            # is what is under discussion — and not `sha-`, which this
+            # repository already uses for the opposite thing. The six-digit
+            # suffix is fixed width so the PR id is recoverable from the right.
+            dev_tags="pr-${PR}$(date -u +%Y%m)"
+            why="a same-repo pull request touching code"
+          fi
+
+          echo "mode=$mode ($why)"
+          {
+            echo "mode=$mode"
+            echo "push=$push"
+            echo "stage=$stage"
+            echo "ref=$ref"
+            echo "tags=$tags"
+            echo "dev_tags=$dev_tags"
+          } >> "$GITHUB_OUTPUT"
+
+  # The Panel image, built and smoked on every code-touching pull request.
+  # Until this existed, a Dockerfile or build-stage break stayed invisible
+  # until someone cut a release tag and the release itself failed. Same
+  # reusable workflow the train and the release use, so this is the release
+  # build, not an approximation of it.
+  #
+  # amd64 only (D35): the train and release builds cover arm64 natively, and
+  # paying for a second runner on every PR buys little — the two legs share a
   # Dockerfile, and arch-specific breakage is almost always in better-sqlite3's
-  # native build, which this leg already exercises.
+  # native build, which this leg already exercises. Emulation on Apple silicon
+  # is acceptable for a developer poking at a change; it is not acceptable for
+  # anything an operator deploys.
+  #
+  # `push_required: false` (D37): the publish goes to `panel-dev`, and the gate
+  # is the build and the smoke. A Docker Hub outage must not freeze merging.
   panel-image:
     name: Panel image
     if: github.event_name == 'pull_request'
+    needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
+    secrets: inherit
     with:
       image: panel
-      ref: ${{ github.sha }}
-      stage: ci
-      push: false
+      ref: ${{ needs.pr-image-mode.outputs.ref }}
+      stage: ${{ needs.pr-image-mode.outputs.stage }}
+      mode: ${{ needs.pr-image-mode.outputs.mode }}
+      tags: ${{ needs.pr-image-mode.outputs.tags }}
+      dev_tags: ${{ needs.pr-image-mode.outputs.dev_tags }}
+      push: ${{ needs.pr-image-mode.outputs.push == 'true' }}
+      push_required: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
 
   # Same reasoning, and this job carries more than a build: the Core image's
@@ -668,17 +802,38 @@ jobs:
   # so a break in core.Dockerfile surfaces on the PR that caused it rather
   # than on the next release. It is what `panel-e2e-core-in-a-box` used to be,
   # against the bytes that ship and with nothing privileged.
+  #
+  # The CVE gate blocks the merge (ADR 0016 D11), and nothing CVE-flagged
+  # reaches a release repository — this path publishes to `panel-dev` /
+  # `core-dev` only.
+  #
+  # D37 asks for one thing this does not do: it wants the `-dev` publish to
+  # happen *even when the scan fails*, on the grounds that the image you most
+  # need to pull and inspect is the one that failed. `container-image.yml`
+  # pushes only on `if: inputs.push`, which a failed earlier step suppresses,
+  # and `publish` needs a green `build` — so a CVE-flagged image is built,
+  # scanned, reported, and not published. Making it publish means unpicking
+  # the invariant `scripts/__tests__/image-cve-gate.test.mjs` pins for the
+  # release path ("an image that fails the gate never reaches a registry")
+  # in two places, and that is a decision to take deliberately rather than as
+  # a side effect of this ticket. The scan JSON is uploaded either way.
   core-image:
     name: Core image
     if: github.event_name == 'pull_request'
+    needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
+    secrets: inherit
     with:
       image: core
-      ref: ${{ github.sha }}
-      stage: ci
-      push: false
+      ref: ${{ needs.pr-image-mode.outputs.ref }}
+      stage: ${{ needs.pr-image-mode.outputs.stage }}
+      mode: ${{ needs.pr-image-mode.outputs.mode }}
+      tags: ${{ needs.pr-image-mode.outputs.tags }}
+      dev_tags: ${{ needs.pr-image-mode.outputs.dev_tags }}
+      push: ${{ needs.pr-image-mode.outputs.push == 'true' }}
+      push_required: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
 
   # ------------------------------------------------------------ the train
