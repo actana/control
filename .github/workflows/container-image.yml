@@ -6,12 +6,25 @@ name: Container image
 #   panel → the Panel web service, from deploy/panel.Dockerfile
 #   core  → the Core daemon, from deploy/core.Dockerfile
 #
-# and two workflows reuse it across three paths, so the bytes a PR validates
+# and two workflows reuse it across four paths, so the bytes a PR validates
 # are built exactly the way the bytes a release publishes are:
 #
-#   ci.yml      → build + smoke, amd64 only, no push  (every PR)
-#   ci.yml      → :edge and :sha-<short>              (every push to main)
-#   release.yml → :<version> and :latest              (every v* tag)
+#   ci.yml      → pr-<prid><YYYYMM> to `-dev`, amd64     (every PR push)
+#   ci.yml      → beta-x.y.z to the release repositories
+#                 and sha-<short> to `-dev`, multi-arch  (every train merge)
+#   release.yml → :<version> and :latest                 (every v* tag)
+#
+# `mode` (ADR 0023 D38) covers the two PR paths that build nothing: `verify`
+# asserts a published digest carries a given commit's revision label (D19), and
+# `pass` reports success immediately (draft or documentation-only, D33). Both
+# run the same jobs under the same names as a build — a required check whose
+# job is skipped stays Pending forever, which is the failure D33 exists to
+# avoid.
+#
+# Two repositories, one build. `tags` publishes to `<image>` and `dev_tags` to
+# `<image>-dev` from the same per-architecture bytes, so `sha-<short>` is a
+# handle on the *same* digest `beta-x.y.z` names rather than a second build of
+# the same commit (D11).
 #
 # Each architecture builds natively on a runner of its own kind. The Panel
 # image compiles better-sqlite3 during the build and the Core image bakes in a
@@ -41,15 +54,42 @@ on:
         type: string
         required: true
       stage:
-        description: "Discriminator for the intermediate per-arch tags (e.g. 0.1.0, edge)."
+        description: >-
+          Discriminator for the intermediate per-arch tags (e.g. 0.1.0,
+          beta-0.1.0, pr-64). Must be unique per concurrent build (ADR 0023
+          D12): two builds sharing one stage overwrite each other's per-arch
+          tags, and the manifest stitch can then assemble another build's bytes.
         type: string
         required: true
       tags:
-        description: "Space-separated final tags to publish (e.g. '0.1.0 latest'). Ignored when push is false."
+        description: "Space-separated final tags to publish to <image> (e.g. '0.1.0 latest'). Ignored when push is false."
         type: string
         default: ""
+      dev_tags:
+        description: >-
+          Space-separated final tags to publish to <image>-dev (e.g.
+          'sha-abc1234'), from the same per-arch bytes as `tags`. Ignored when
+          push is false.
+        type: string
+        default: ""
+      mode:
+        description: >-
+          What this call does, under one check name (ADR 0023 D38):
+          `build` builds, smokes and — when push is true — publishes;
+          `verify` builds nothing and asserts `tags`'s published digest carries
+          `ref` as its org.opencontainers.image.revision label (D19);
+          `pass` reports success immediately (D33).
+        type: string
+        default: build
       push:
         description: "Publish the image. False builds and smokes only."
+        type: boolean
+        default: true
+      push_required:
+        description: >-
+          Whether a failed publish fails the run. False keeps build + smoke —
+          the pinned required check — green when Docker Hub is unreachable, so
+          a registry outage cannot freeze merging. Release paths leave it true.
         type: boolean
         default: true
       matrix:
@@ -71,12 +111,17 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       image: ${{ steps.registry.outputs.image }}
+      dev_image: ${{ steps.registry.outputs.dev_image }}
+      scaffold_image: ${{ steps.registry.outputs.scaffold_image }}
     steps:
       - id: registry
         env:
           OWNER: ${{ github.repository_owner }}
           IMAGE: ${{ inputs.image }}
+          MODE: ${{ inputs.mode }}
           PUSH: ${{ inputs.push }}
+          TAGS: ${{ inputs.tags }}
+          DEV_TAGS: ${{ inputs.dev_tags }}
           # A repository variable, so a fork publishing under a different
           # Docker Hub org doesn't have to edit this file.
           DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
@@ -88,11 +133,45 @@ jobs:
             panel|core) ;;
             *) echo "unknown image '$IMAGE' — expected 'panel' or 'core'" >&2; exit 1 ;;
           esac
+          case "$MODE" in
+            build|verify|pass) ;;
+            *) echo "unknown mode '$MODE' — expected 'build', 'verify' or 'pass'" >&2; exit 1 ;;
+          esac
+          # A mode that builds nothing has nothing to publish. Catching the
+          # combination here rather than letting it push means a caller cannot
+          # turn a verification into a publish by passing one input twice.
+          if [[ "$MODE" != "build" && "$PUSH" == "true" ]]; then
+            echo "mode '$MODE' builds nothing and cannot push" >&2; exit 1
+          fi
 
           # Docker Hub requires a lowercase namespace.
           namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
           image="docker.io/${namespace,,}/${IMAGE}"
-          echo "image=$image" >> "$GITHUB_OUTPUT"
+          # `panel-dev` / `core-dev` (ADR 0023 D36): pre-merge and pre-release
+          # handles live apart from the repositories people deploy from, so the
+          # `descriptions` sync has a tag list worth reading and a
+          # wrong-repository pull is impossible.
+          dev_image="${image}-dev"
+          {
+            echo "image=$image"
+            echo "dev_image=$dev_image"
+          } >> "$GITHUB_OUTPUT"
+
+          # Where the per-arch scaffolding tags land (D12). They go beside the
+          # tags this build publishes: a build that publishes only to `-dev`
+          # leaves nothing at all in the repository people deploy from, which
+          # is what keeps `pr-64-amd64` off the release image's tag list — and
+          # what lets the `-dev` sweep own every tag it has to delete.
+          if [[ -n "${TAGS// }" ]]; then
+            scaffold_image="$image"
+          else
+            scaffold_image="$dev_image"
+          fi
+          echo "scaffold_image=$scaffold_image" >> "$GITHUB_OUTPUT"
+
+          if [[ "$PUSH" == "true" && -z "${TAGS// }${DEV_TAGS// }" ]]; then
+            echo "a pushing build must request at least one tag" >&2; exit 1
+          fi
 
           # A missing credential is decided here, before anything is built —
           # unlike a *broken* one, it costs nothing to catch early. Docker Hub
@@ -103,9 +182,11 @@ jobs:
             exit 1
           fi
           if [[ "$PUSH" == "true" ]]; then
-            echo "Publishing to $image."
+            if [[ -n "${TAGS// }" ]]; then echo "Publishing $TAGS to $image."; fi
+            if [[ -n "${DEV_TAGS// }" ]]; then echo "Publishing $DEV_TAGS to $dev_image."; fi
+            echo "Per-arch scaffolding goes to $scaffold_image."
           else
-            echo "Build and smoke only ($image, no push)."
+            echo "Mode '$MODE' ($image, no push)."
           fi
 
   build:
@@ -126,14 +207,91 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
+      # ----------------------------------------------------------------- mode
+
+      # A green check is self-describing in the log (ADR 0023 D38): four
+      # behaviours share one check name, and the only way to tell from the
+      # outside which one a run took is to say so.
+      - name: Announce the mode
+        env:
+          MODE: ${{ inputs.mode }}
+          PUSH: ${{ inputs.push }}
+          IMAGE: ${{ inputs.image }}
+          TAGS: ${{ inputs.tags }}
+          DEV_TAGS: ${{ inputs.dev_tags }}
+        run: |
+          set -euo pipefail
+          case "$MODE" in
+            build)
+              if [[ "$PUSH" == "true" ]]; then
+                echo "::notice title=${IMAGE} image — build + push::Building and smoking the ${IMAGE} image, then publishing ${TAGS} ${DEV_TAGS}."
+              else
+                echo "::notice title=${IMAGE} image — build, no push::Building and smoking the ${IMAGE} image. Nothing is published — a fork pull request has no registry credential, by design (ADR 0023 D34)."
+              fi
+              ;;
+            verify)
+              echo "::notice title=${IMAGE} image — verify::Building nothing. Asserting the published ${TAGS} carries this commit as its revision label (ADR 0023 D19)."
+              ;;
+            pass)
+              echo "::notice title=${IMAGE} image — pass::Nothing to build for this pull request (draft, or a documentation-only diff). Reported green rather than skipped, because a skipped required check stays Pending forever (ADR 0023 D33)."
+              ;;
+          esac
+
+      # D19/D16, the design's central claim on the pull request side. The
+      # promotion pull request would otherwise rebuild both images for an hour
+      # to produce bytes that already exist; instead the redundant work becomes
+      # the verification the design needs. `beta-x.y.z` moves on every train
+      # merge, so what is asserted is not "the tag exists" but "the digest it
+      # names was built from *this* commit" — a train that moved after the
+      # approver tested fails here rather than at the dispatch.
+      #
+      # Read through the daemon, by pulling the platform and asking it for the
+      # config. `imagetools inspect`'s Go struct is the reader this repository
+      # already learned not to trust for an image-config question
+      # (scripts/__tests__/panel-image.test.mjs), and a pull of an image that
+      # is about to be promoted is seconds against an hour saved.
+      - name: Verify the published digest carries this commit
+        if: inputs.mode == 'verify'
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          TAGS: ${{ inputs.tags }}
+          ARCH: ${{ matrix.arch }}
+          EXPECTED: ${{ inputs.ref }}
+        run: |
+          set -euo pipefail
+          ref="$IMAGE:${TAGS%% *}"
+          # Authenticated when a credential exists — an anonymous pull shares
+          # its rate limit with every other runner on the same egress address,
+          # and this check must not be flaky.
+          if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+          if ! docker pull --quiet --platform "linux/$ARCH" "$ref" >/dev/null; then
+            echo "::error title=No image to promote::$ref could not be pulled. The train's last publish never completed, so there is nothing to promote — re-run the train's image jobs and re-approve (ADR 0023 D21)."
+            exit 1
+          fi
+          digest="$(docker image inspect --format '{{json .RepoDigests}}' "$ref" | jq -r '.[0] // "unknown"')"
+          revision="$(docker image inspect --format '{{json .Config.Labels}}' "$ref" \
+            | jq -r '.["org.opencontainers.image.revision"] // ""')"
+          echo "$ref is $digest"
+          echo "  revision label: ${revision:-<none>}"
+          echo "  expected:       $EXPECTED"
+          if [[ "$revision" != "$EXPECTED" ]]; then
+            echo "::error title=The train moved; re-approve::$ref was built from ${revision:-an image with no revision label}, not from $EXPECTED. Something merged into the train after the image this pull request would promote was published. Wait for the train's publish to finish, then re-approve against the image it produces (ADR 0023 D16)."
+            exit 1
+          fi
+          echo "✅ $ref carries $EXPECTED — the promoted digest is the tested one."
+
       # ---------------------------------------------------------------- panel
 
       # The OCI labels live in the Dockerfile so a local build carries them too;
       # only source/revision are passed in, so a fork links to the fork.
       - name: Build the Panel image
-        if: inputs.image == 'panel'
+        if: inputs.mode == 'build' && inputs.image == 'panel'
         env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
+          IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
           REPO: ${{ github.repository }}
@@ -149,9 +307,9 @@ jobs:
       # boot on a clean volume, first-boot setup, then destroy the container
       # and prove the volume alone carries the state.
       - name: Smoke — boots, sets up, survives container recreation
-        if: inputs.image == 'panel'
+        if: inputs.mode == 'build' && inputs.image == 'panel'
         env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
+          IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
         run: node scripts/smoke-panel-image.mjs --image "$IMAGE:$STAGE-$ARCH" --skip-build
@@ -159,19 +317,19 @@ jobs:
       # ----------------------------------------------------------------- core
 
       - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
-        if: inputs.image == 'core'
+        if: inputs.mode == 'build' && inputs.image == 'core'
         with:
           version: 11.1.2
           cache: true
 
       - name: Install dependencies
-        if: inputs.image == 'core'
+        if: inputs.mode == 'build' && inputs.image == 'core'
         run: pnpm install --frozen-lockfile
 
       # The Core image bakes in the tarball a release ships, for this runner's
       # architecture — which is why the two arches cannot share a build.
       - name: Build the Core tarball
-        if: inputs.image == 'core'
+        if: inputs.mode == 'build' && inputs.image == 'core'
         run: pnpm core:tarball
 
       # The tarball arrives as a named build context rather than in the main
@@ -183,9 +341,9 @@ jobs:
       # --privileged, no host cgroup, and no provision script hardcoding a
       # hostname. The labels say so.
       - name: Build the Core image
-        if: inputs.image == 'core'
+        if: inputs.mode == 'build' && inputs.image == 'core'
         env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
+          IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
           REPO: ${{ github.repository }}
@@ -208,7 +366,7 @@ jobs:
       # pulled, because the Panel image for this commit is a different job's
       # output and may not exist yet on a PR.
       - name: Build the Panel
-        if: inputs.image == 'core'
+        if: inputs.mode == 'build' && inputs.image == 'core'
         run: pnpm build
 
       # The acceptance criterion for the Core image (ADR 0016 D36), against the
@@ -222,9 +380,9 @@ jobs:
       # longer exists. It does not replace the installer e2e, which shares
       # nothing with it but the daemon binary.
       - name: Smoke — the image boots unprivileged and a Panel pairs with it
-        if: inputs.image == 'core'
+        if: inputs.mode == 'build' && inputs.image == 'core'
         env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
+          IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
         run: |
@@ -259,9 +417,9 @@ jobs:
       # measurement is hostage to an unrelated leg — a red smoke means nobody
       # sees the finding count at all.
       - name: Trivy — fixable CRITICAL/HIGH gate
-        if: always() && inputs.image == 'core'
+        if: always() && inputs.mode == 'build' && inputs.image == 'core'
         env:
-          IMAGE: ${{ needs.resolve.outputs.image }}
+          IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
           TRIVY_VERSION: 0.73.0
@@ -286,7 +444,7 @@ jobs:
       # Always, including on a failed gate: the JSON is how somebody works out
       # what to bump without re-running the build to see it.
       - name: Keep the scan
-        if: always() && inputs.image == 'core'
+        if: always() && inputs.mode == 'build' && inputs.image == 'core'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: trivy-core-${{ inputs.stage }}-${{ matrix.arch }}
@@ -300,38 +458,61 @@ jobs:
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-          IMAGE: ${{ needs.resolve.outputs.image }}
+          IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           STAGE: ${{ inputs.stage }}
           ARCH: ${{ matrix.arch }}
+          PUSH_REQUIRED: ${{ inputs.push_required }}
         run: |
           set -euo pipefail
+          # On a pull request the publish is a convenience and the build is the
+          # gate (ADR 0023 D32, D37): a Docker Hub outage must not freeze
+          # merging, so this step warns instead of failing and the required
+          # check stays green on the smoke it already passed. Every release
+          # path leaves push_required true, where a half-published image is
+          # exactly what has to stop the run.
+          fail() {
+            if [[ "$PUSH_REQUIRED" == "true" ]]; then
+              echo "::error title=$1::$2"
+              exit 1
+            fi
+            echo "::warning title=$1 (not blocking)::$2 The image was built and smoked; only its publish to the -dev repository failed."
+            exit 0
+          }
           # A broken credential fails here, before any tag is pushed — with
           # one registry there is no mirror posture to soften it, and nothing
           # has been half-published yet.
           if ! echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin; then
-            echo "::error title=Docker Hub login failed::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. The username depends on which kind of token you made. ORGANISATION access token (created under the org, app.docker.com/accounts/<org>): DOCKERHUB_USERNAME must be the ORGANISATION NAME — an OAT authenticates as the org, not as the person who created it, and OATs need a Team or Business subscription. PERSONAL access token (Account settings > Personal access tokens): DOCKERHUB_USERNAME is your own username, and that account needs push rights on the target repos. Either way the token needs Read & Write, and an account password will never work."
-            exit 1
+            fail "Docker Hub login failed" "DOCKERHUB_USERNAME / DOCKERHUB_TOKEN were rejected. The username depends on which kind of token you made. ORGANISATION access token (created under the org, app.docker.com/accounts/<org>): DOCKERHUB_USERNAME must be the ORGANISATION NAME — an OAT authenticates as the org, not as the person who created it, and OATs need a Team or Business subscription. PERSONAL access token (Account settings > Personal access tokens): DOCKERHUB_USERNAME is your own username, and that account needs push rights on the target repos. Either way the token needs Read & Write, and an account password will never work."
           fi
-          docker push "$IMAGE:$STAGE-$ARCH"
+          if ! docker push "$IMAGE:$STAGE-$ARCH"; then
+            fail "Docker Hub push failed" "$IMAGE:$STAGE-$ARCH could not be pushed."
+          fi
 
   publish:
     name: Publish the multi-arch manifest
     if: inputs.push
     needs: [resolve, build]
     runs-on: ubuntu-24.04
+    # Same trade as the per-arch push: on the pull request path the publish is
+    # a convenience, and this job is not a required check. Every release path
+    # leaves push_required true and this job blocking.
+    continue-on-error: ${{ !inputs.push_required }}
     steps:
       - name: Stitch per-arch tags into the release tags
         env:
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
           IMAGE: ${{ needs.resolve.outputs.image }}
+          DEV_IMAGE: ${{ needs.resolve.outputs.dev_image }}
+          SCAFFOLD_IMAGE: ${{ needs.resolve.outputs.scaffold_image }}
           IMAGE_KIND: ${{ inputs.image }}
           MATRIX: ${{ inputs.matrix }}
           STAGE: ${{ inputs.stage }}
           TAGS: ${{ inputs.tags }}
+          DEV_TAGS: ${{ inputs.dev_tags }}
         run: |
           set -euo pipefail
-          if [[ -z "${TAGS// }" ]]; then
+          if [[ -z "${TAGS// }${DEV_TAGS// }" ]]; then
             echo "no tags requested for a pushing build" >&2
             exit 1
           fi
@@ -346,11 +527,21 @@ jobs:
           arches="$(echo "$MATRIX" | jq -r '.include[].arch' | tr '\n' ' ')"
 
           sources=()
-          for arch in $arches; do sources+=("$IMAGE:$STAGE-$arch"); done
+          for arch in $arches; do sources+=("$SCAFFOLD_IMAGE:$STAGE-$arch"); done
+          # One stitch per destination repository, from one set of per-arch
+          # bytes: `sha-<short>` in `-dev` and `beta-x.y.z` in the release
+          # repository are then two names for one digest (ADR 0023 D11), which
+          # is the whole point of the immutable handle. A second build would
+          # produce a second digest and answer "which commit is this" wrongly.
           tag_args=()
           for tag in $TAGS; do tag_args+=(--tag "$IMAGE:$tag"); done
+          for tag in $DEV_TAGS; do tag_args+=(--tag "$DEV_IMAGE:$tag"); done
           docker buildx imagetools create "${tag_args[@]}" "${sources[@]}"
-          primary="$IMAGE:${TAGS%% *}"
+          if [[ -n "${TAGS// }" ]]; then
+            primary="$IMAGE:${TAGS%% *}"
+          else
+            primary="$DEV_IMAGE:${DEV_TAGS%% *}"
+          fi
           docker buildx imagetools inspect "$primary"
 
           # The Panel's HEALTHCHECK is a Docker extension to the OCI image
