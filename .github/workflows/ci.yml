@@ -4,30 +4,37 @@ on:
   pull_request:
   push:
     branches:
-      - main
-    # Carried across from images-edge.yml, whose jobs this workflow absorbed
-    # (ADR 0016 D30): a docs-only merge must not rebuild and republish two
-    # container images. On the `push` trigger only — a PR is gated on
-    # everything it changes, whatever it changes. The trade is that a
-    # docs-only merge skips the whole post-merge run, gates included; those
-    # gates already ran on the PR that produced the merge.
-    paths-ignore:
-      - "**.md"
-      - "docs/**"
-      - ".scratch/**"
-      - "designs/**"
-      # Same trade for the landing page: it ships no code into either image,
-      # and `landing.yml` is what publishes it. A copy fix on the front door
-      # should not rebuild and republish two containers.
-      - "landing/**"
-  # Also carried across: republishing `:edge` without a new commit, for when a
-  # registry was down or a run was cancelled. On a dispatch the gate jobs run
-  # too — that is the cheap half, and a dispatch is rare.
+      # The train, and nothing else (ADR 0023 D41). Nothing else in the
+      # repository triggers on a train merge, so without this `beta-x.y.z` —
+      # the tag the entire promotion depends on — would never be published.
+      #
+      # `main` is deliberately absent. Commits arrive there by a fast-forward
+      # of a train whose every commit this workflow already gated and
+      # published (D5), so a second run would re-prove what the train proved.
+      # Its `paths-ignore` block went with it: that block existed so a
+      # docs-only merge did not rebuild and republish `:edge`, and `:edge` is
+      # retired (D13). There is no path filter here either, on purpose (D20) —
+      # a docs-only merge that skipped the build would leave `beta-x.y.z`'s
+      # revision label naming an older commit, and the promotion assertion
+      # would then fail: a README fix would block the release.
+      #
+      # `landing.yml` keeps its own `push: main` trigger, which is what still
+      # deploys the front door.
+      - "beta/**"
+  # Republishing a train's images without a new commit, for when a registry
+  # was down or a run was cancelled. On a dispatch the gate jobs run too —
+  # that is the cheap half, and a dispatch is rare.
   workflow_dispatch:
 
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A train push must never cancel the one before it (ADR 0023 D7). `beta-x.y.z`
+  # moves per merge, so two merges landing 30 seconds apart can finish out of
+  # order and leave the moving tag on *older* bytes — silently, with both runs
+  # green. `release.yml` and `housekeeping.yml` take `false` for exactly this
+  # reason; a pull request keeps cancelling, because a superseded push has
+  # nothing to publish and nobody is waiting on its check.
+  group: ${{ startsWith(github.ref, 'refs/heads/beta/') && format('ci-train-{0}', github.ref) || format('ci-{0}', github.ref) }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/beta/') }}
 
 permissions:
   contents: read
@@ -473,44 +480,73 @@ jobs:
       push: false
       matrix: '{"include":[{"os":"ubuntu-24.04","arch":"amd64"}]}'
 
-  # ----------------------------------------------------------------- edge
+  # ------------------------------------------------------------ the train
   #
-  # A push to `main` publishes the unreleased images, so anyone can try what is
-  # about to ship without waiting for a version tag:
+  # Every merge into `beta/x.y.z` publishes the image a person will pull, run
+  # and approve — and promotion re-points that exact digest at `x.y.z` and
+  # `latest` (ADR 0023 D7, D16). Nothing is rebuilt between the thing that was
+  # approved and the thing that ships:
   #
-  #   :edge          always the latest main
-  #   :sha-<short>   the immutable pin for that exact commit
+  #   beta-x.y.z    panel / core,          multi-arch, moves per merge
+  #   sha-<short>   panel-dev / core-dev,  multi-arch, never moves
   #
-  # This was images-edge.yml. ADR 0016 D30 folded it in here rather than keep a
-  # fourth entry point for jobs that differ from the PR build only in which
-  # tags come out the other end: same reusable workflow, same build, same
-  # smoke, same registries. Nothing here moves `:latest` — that stays the
-  # property of a version tag.
+  # These sit structurally where `panel-image-edge` / `core-image-edge` sat —
+  # same reusable workflow, same build, same smoke, new tags — which keeps ADR
+  # 0016's one-build-implementation property intact and makes this a
+  # substitution rather than a rewrite. `:edge` is retired, job and tag (D13):
+  # it published from `main`, and under the train model `main` is only ever a
+  # released version, so `:edge` would be a second name for `:latest`.
   #
-  # They are separate jobs from the two above, rather than the same jobs with
-  # conditional inputs, because the ruleset pins the PR jobs' check names, and
-  # a job that sometimes pushes is a job whose green means two different
-  # things. The two sets are mutually exclusive on `github.event_name`, so no
-  # single run ever builds an image twice.
+  # Nothing here moves `:latest` — that stays the property of a promotion, and
+  # a promotion publishes no bytes at all.
   #
-  # `!= 'pull_request'` rather than `== 'push'`, so `workflow_dispatch`
-  # republishes `:edge` the way images-edge.yml's own dispatch did.
-  edge-tags:
-    name: Resolve edge tags
-    if: github.event_name != 'pull_request'
+  # One build, two repositories. `sha-<short>` is the immutable handle on
+  # exactly the digest `beta-x.y.z` names (D11) — it answers "which commit
+  # introduced this", which is the question a misbehaving beta produces — and
+  # it lives in `-dev` because the sweep that deletes it needs a delete-capable
+  # credential, which D36 keeps permanently out of the repositories holding
+  # `latest`. Building it a second time would answer that question with a
+  # different digest.
+  #
+  # `startsWith(github.ref, 'refs/heads/beta/')` rather than `!= 'pull_request'`,
+  # so a `workflow_dispatch` republishes a train — the images-edge.yml
+  # affordance, kept — while a dispatch on any other branch runs the gates and
+  # publishes nothing.
+  train-tags:
+    name: Resolve train tags
+    if: startsWith(github.ref, 'refs/heads/beta/')
     runs-on: ubuntu-24.04
     outputs:
+      version: ${{ steps.tags.outputs.version }}
       tags: ${{ steps.tags.outputs.tags }}
+      dev_tags: ${{ steps.tags.outputs.dev_tags }}
+      stage: ${{ steps.tags.outputs.stage }}
     steps:
       - id: tags
         env:
+          BRANCH: ${{ github.ref_name }}
           SHA: ${{ github.sha }}
-        run: echo "tags=edge sha-${SHA:0:7}" >> "$GITHUB_OUTPUT"
+        run: |
+          set -euo pipefail
+          version="${BRANCH#beta/}"
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Not a train branch::'$BRANCH' is not beta/x.y.z, so there is no version to publish under. A train's name is its version (ADR 0023 D3)."
+            exit 1
+          fi
+          {
+            echo "version=$version"
+            echo "tags=beta-$version"
+            echo "dev_tags=sha-${SHA:0:7}"
+            # Per train, not a bare `beta`: two trains exist while a hotfix is
+            # in flight (D22), and a shared stage would let them overwrite each
+            # other's per-arch tags (D12).
+            echo "stage=beta-$version"
+          } >> "$GITHUB_OUTPUT"
 
-  panel-image-edge:
-    name: Panel image (edge)
-    if: github.event_name != 'pull_request'
-    needs: edge-tags
+  panel-image-train:
+    name: Panel image (train)
+    if: startsWith(github.ref, 'refs/heads/beta/')
+    needs: train-tags
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -518,14 +554,15 @@ jobs:
     with:
       image: panel
       ref: ${{ github.sha }}
-      stage: edge
-      tags: ${{ needs.edge-tags.outputs.tags }}
+      stage: ${{ needs.train-tags.outputs.stage }}
+      tags: ${{ needs.train-tags.outputs.tags }}
+      dev_tags: ${{ needs.train-tags.outputs.dev_tags }}
       push: true
 
-  core-image-edge:
-    name: Core image (edge)
-    if: github.event_name != 'pull_request'
-    needs: edge-tags
+  core-image-train:
+    name: Core image (train)
+    if: startsWith(github.ref, 'refs/heads/beta/')
+    needs: train-tags
     uses: ./.github/workflows/container-image.yml
     permissions:
       contents: read
@@ -533,6 +570,7 @@ jobs:
     with:
       image: core
       ref: ${{ github.sha }}
-      stage: edge
-      tags: ${{ needs.edge-tags.outputs.tags }}
+      stage: ${{ needs.train-tags.outputs.stage }}
+      tags: ${{ needs.train-tags.outputs.tags }}
+      dev_tags: ${{ needs.train-tags.outputs.dev_tags }}
       push: true
