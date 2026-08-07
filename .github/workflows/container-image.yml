@@ -162,6 +162,26 @@ jobs:
           # leaves nothing at all in the repository people deploy from, which
           # is what keeps `pr-64-amd64` off the release image's tag list — and
           # what lets the `-dev` sweep own every tag it has to delete.
+          #
+          # That is true of the pull request path and **not** of the two paths
+          # that publish a release tag. Both leave their scaffolding in the
+          # repository people deploy from, permanently:
+          #
+          #   release  <version>-amd64, <version>-arm64   one pair per release
+          #   train    beta-x.y.z-amd64, beta-x.y.z-arm64 one pair per version
+          #
+          # The release-side pair is pre-existing; the train's is new here, and
+          # is a small regression on `:edge`, which overwrote one fixed
+          # `edge-amd64` / `edge-arm64` pair instead of accumulating. It is
+          # accepted rather than overlooked. Sending it to `-dev` instead would
+          # not fix it: `scripts/lib/dev-tag-sweep.mjs` classifies exactly
+          # `pr-<n>-<arch>`, `pr-<n><YYYYMM>` and `sha-<short>`, and names
+          # `beta-0.1.0` as a tag it must *never* delete — so the litter would
+          # only move to a repository that also keeps it, under a name the
+          # sweep is deliberately blind to. Clearing it properly means a
+          # `train-scaffold` class in that classifier, which is #112's file and
+          # its own change; until then it is two tags per version, cleared by
+          # hand or by that follow-up.
           if [[ -n "${TAGS// }" ]]; then
             scaffold_image="$image"
           else
