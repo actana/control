@@ -472,40 +472,88 @@ describe("release workflow", () => {
   });
 });
 
-describe("the edge publish", () => {
+// The train publish is what the edge publish became (ADR 0023 D13): `:edge`
+// published from `main`, and under the train model `main` is only ever a
+// released version, so `:edge` would have been a second name for `:latest`.
+// The jobs sit where the edge jobs sat, reusing the same build — that is the
+// substitution ADR 0016's one-build-implementation property depends on, and
+// these tests are what stop it drifting back into a second implementation.
+describe("the train publish", () => {
   it("lives in ci.yml rather than a workflow of its own", () => {
     expect(fs.existsSync(path.join(repoRoot, ".github/workflows/images-edge.yml"))).toBe(false);
     expect(ciWorkflow).toContain("./.github/workflows/container-image.yml");
-    expect(ciWorkflow).toMatch(/branches:\s*\n\s*- main/);
+    expect(ciWorkflow).toMatch(/branches:\s*\n(?:\s*#.*\n)*\s*- "beta\/\*\*"/);
   });
 
-  it("publishes from a push to main, and a pull request never pushes", () => {
-    // The two sets of image jobs are mutually exclusive on the event, which is
-    // what stops a push to `main` building each image twice.
-    // The edge jobs read `!= 'pull_request'` rather than `== 'push'` so a
-    // workflow_dispatch republishes :edge, the way images-edge.yml's own
-    // dispatch trigger did.
+  it("has retired :edge and the sha- tag on main, job and tag", () => {
+    // The prose is allowed to say what was retired; the code is not allowed to
+    // still do it. `main` no longer triggers this workflow at all (D41).
+    const code = ciWorkflow
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(code).not.toContain("edge");
+    expect(code).not.toMatch(/^ {6}- main$/m);
+  });
+
+  it("publishes from a train push, and only from a train push", () => {
+    // The two sets of image jobs are mutually exclusive — one reads the event,
+    // the other the ref — which is what stops any single run building an image
+    // twice. The train jobs key on the ref rather than on `!= 'pull_request'`
+    // so a `workflow_dispatch` republishes a train the way images-edge.yml's
+    // own dispatch did, while a dispatch anywhere else publishes nothing.
     for (const [job, condition] of [
-      ["panel-image:", "== 'pull_request'"],
-      ["core-image:", "== 'pull_request'"],
-      ["panel-image-edge:", "!= 'pull_request'"],
-      ["core-image-edge:", "!= 'pull_request'"],
+      ["panel-image:", "github.event_name == 'pull_request'"],
+      ["core-image:", "github.event_name == 'pull_request'"],
+      ["panel-image-train:", "startsWith(github.ref, 'refs/heads/beta/')"],
+      ["core-image-train:", "startsWith(github.ref, 'refs/heads/beta/')"],
     ]) {
       const start = ciWorkflow.indexOf(`\n  ${job}`);
       expect(start, `ci.yml has no ${job} job`).toBeGreaterThan(-1);
-      expect(ciWorkflow.slice(start, start + 200)).toContain(
-        `github.event_name ${condition}`,
-      );
+      expect(ciWorkflow.slice(start, start + 300)).toContain(condition);
     }
-    expect(ciWorkflow).toContain("push: false");
   });
 
-  it("tags :edge and an immutable per-commit tag, and never moves :latest", () => {
-    // Assert on the tags the workflow actually emits, not on the file text —
-    // the prose above the trigger says the word "latest" on purpose.
-    const tags = ciWorkflow.match(/^\s*run: echo "tags=(.*?)"/m)?.[1];
-    expect(tags).toBe("edge sha-${SHA:0:7}");
-    expect(tags).not.toContain("latest");
+  // D7. `beta-x.y.z` moves per merge and lives in the repositories people
+  // deploy from; `sha-<short>` never moves and lives in `-dev`, because the
+  // sweep that deletes it needs a credential D36 keeps out of the release
+  // repositories. Both come off one build, so they name one digest (D11).
+  it("tags beta-x.y.z and an immutable per-commit tag, and never moves :latest", () => {
+    // Read out of `train-tags` specifically: `pr-image-mode` emits outputs of
+    // the same names, and matching the file at large would assert on whichever
+    // job happens to come first.
+    const trainTags = ciWorkflow.slice(
+      ciWorkflow.indexOf("\n  train-tags:"),
+      ciWorkflow.indexOf("\n  panel-image-train:"),
+    );
+    const emitted = trainTags.match(/echo "tags=(.*?)"/)?.[1];
+    const emittedDev = trainTags.match(/echo "dev_tags=(.*?)"/)?.[1];
+    expect(emitted).toBe("beta-$version");
+    expect(emittedDev).toBe("sha-${SHA:0:7}");
+    for (const job of ["panel-image-train:", "core-image-train:"]) {
+      const block = ciWorkflow.slice(ciWorkflow.indexOf(`\n  ${job}`), ciWorkflow.length);
+      expect(block).toContain("tags: ${{ needs.train-tags.outputs.tags }}");
+      expect(block).toContain("dev_tags: ${{ needs.train-tags.outputs.dev_tags }}");
+    }
+    expect(emitted).not.toContain("latest");
+    expect(emittedDev).not.toContain("latest");
+  });
+
+  // D20. A documentation-only merge must still republish: otherwise
+  // `beta-x.y.z`'s revision label names an older commit and the promotion
+  // assertion fails, so a README fix would block the release.
+  it("rebuilds a train merge unconditionally", () => {
+    expect(ciWorkflow).not.toContain("paths-ignore:");
+  });
+
+  // D7 again, from the other side: two merges landing 30 seconds apart must
+  // not finish out of order and leave the moving tag on older bytes.
+  it("never cancels a train publish in flight", () => {
+    const concurrency = ciWorkflow.slice(
+      ciWorkflow.indexOf("\nconcurrency:"),
+      ciWorkflow.indexOf("\npermissions:"),
+    );
+    expect(concurrency).toContain("cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/beta/') }}");
   });
 
   it("publishes the Core image alongside the Panel", () => {
@@ -513,6 +561,58 @@ describe("the edge publish", () => {
       expect(wf).toContain("image: panel");
       expect(wf).toContain("image: core");
     }
+  });
+});
+
+// The pull request image (ADR 0023 D32–D38). One check name, four behaviours,
+// and the two that build nothing are the load-bearing ones: a required check
+// whose job is *skipped* stays Pending forever and blocks the pull request
+// permanently, which is why "nothing to build" is an early successful exit
+// rather than a job-level `if:`.
+describe("the pull request image", () => {
+  const modeJob = ciWorkflow.slice(
+    ciWorkflow.indexOf("\n  pr-image-mode:"),
+    ciWorkflow.indexOf("\n  panel-image:"),
+  );
+
+  it("resolves all four modes, and announces the one it took", () => {
+    for (const mode of ["build", "verify", "pass"]) {
+      expect(modeJob, `no ${mode} mode`).toContain(`mode=${mode}`);
+    }
+    // The fork case is the fourth: build, with the push withheld (D34).
+    expect(modeJob).toContain("HEAD_REPO");
+    for (const mode of ["build", "verify", "pass"]) {
+      expect(imageWorkflow, `${mode} is never announced`).toMatch(
+        new RegExp(`::notice title=.*image — ${mode}`),
+      );
+    }
+  });
+
+  // D12, and the trap that makes it more than tidiness. `container-image.yml`
+  // pushes per-arch `<stage>-<arch>` tags *before* stitching the manifest, so
+  // two open pull requests sharing `stage: ci` would overwrite each other's —
+  // and the stitch could assemble a manifest from another pull request's
+  // bytes. Harmless while PR builds pushed nothing; corrupting now they do.
+  it("discriminates the scaffolding tags per pull request, never `ci`", () => {
+    expect(modeJob).toContain('stage="pr-$PR"');
+    expect(ciWorkflow).not.toMatch(/^ {6}stage: ci$/m);
+  });
+
+  // D10. Mutable on purpose — what it points at is what is under discussion —
+  // and not `sha-`, which this repository already uses for the opposite thing.
+  it("tags pr-<prid><YYYYMM> into the -dev repositories only", () => {
+    expect(modeJob).toContain('dev_tags="pr-${PR}$(date -u +%Y%m)"');
+    expect(modeJob).not.toMatch(/^\s*tags="pr-/m);
+  });
+
+  // D37/D32: the gate is the build and the smoke. A Docker Hub outage must
+  // not freeze merging, so the publish cannot fail the required check.
+  it("cannot fail the required check on a publish", () => {
+    for (const job of ["panel-image:", "core-image:"]) {
+      const start = ciWorkflow.indexOf(`\n  ${job}`);
+      expect(ciWorkflow.slice(start, start + 900)).toContain("push_required: false");
+    }
+    expect(imageWorkflowCode).toContain("continue-on-error: ${{ !inputs.push_required }}");
   });
 });
 

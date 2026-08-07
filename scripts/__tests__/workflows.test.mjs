@@ -50,13 +50,22 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
 
   it("keeps the landing deploy off pull requests and out of ci.yml", () => {
     const source = read("landing.yml");
-    // The CDN serves `main`, the same rule the `:edge` tags follow. A PR-side
-    // deploy would publish an unmerged front door.
+    // The CDN serves `main`. A PR-side deploy would publish an unmerged front
+    // door.
     expect(source).not.toMatch(/^ {2}pull_request:/m);
     expect(source).toMatch(/^ {4}branches:\n {6}- main$/m);
     expect(source).toMatch(/^ {6}- "landing\/\*\*"$/m);
-    // And ci.yml must not rebuild two images for a copy fix on the page.
-    expect(read("ci.yml")).toMatch(/^ {6}- "landing\/\*\*"$/m);
+    // ci.yml used to carry the same `landing/**` exclusion, so a copy fix on
+    // the page did not rebuild two images for `:edge`. Its `push: main`
+    // trigger is gone with `:edge` (ADR 0023 D13, D41) and the train path
+    // takes no path filter at all (D20) — a documentation-only merge that
+    // skipped the build would leave `beta-x.y.z`'s revision label naming an
+    // older commit, and the promotion assertion would fail. The saving moved
+    // to the pull request side, where `pr-image-mode` resolves the same
+    // exclusion list into the `pass` mode (D33).
+    const ci = read("ci.yml");
+    expect(ci).not.toMatch(/^ {4}paths-ignore:$/m);
+    expect(ci).toMatch(/\^landing\//);
   });
 
   it("keeps container-image.yml reusable rather than a fourth entry point", () => {
