@@ -245,7 +245,12 @@ jobs:
           # answer" into "no other train exists", and the surviving train would
           # be stranded silently with nothing to say so (D24).
           all_trains="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
-          survivors="$(grep -vx "$TRAIN" <<<"$all_trains" || true)"
+          # `-F` as well as `-x`: without it the train is a basic regular
+          # expression and the dots in `beta/0.1.0` are wildcards, so a branch
+          # named `beta/0x1x0` would be filtered out of `survivors` and the
+          # hotfix state would go undetected — the surviving train never
+          # rebased (D24) and a second train cut beside it (D25).
+          survivors="$(grep -Fvx "$TRAIN" <<<"$all_trains" || true)"
           survivor_count="$(grep -c . <<<"$survivors" || true)"
           hotfix=false
           survivor=""
@@ -536,6 +541,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
@@ -575,6 +596,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
@@ -635,6 +672,22 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
@@ -709,9 +762,20 @@ jobs:
             "before anything merges if the next release is not $version." \
             > "$RUNNER_TEMP/cut-message.txt"
 
-          git -c user.name="${APP_SLUG}[bot]" \
-              -c user.email="${APP_SLUG}[bot]@users.noreply.github.com" \
-              commit -a -F "$RUNNER_TEMP/cut-message.txt"
+          # Nothing to rewrite is not nothing to do. If the four manifests
+          # already read `$version` — a re-run after the push below failed, or
+          # `main` already sitting on the guessed next minor — the loop above
+          # has just confirmed the state this commit exists to reach, and the
+          # only work left is the push. `git commit -a` exits non-zero on an
+          # empty commit, so under `set -e` it would turn that recoverable
+          # re-run into a red job one line short of finishing.
+          if git diff --quiet; then
+            echo "::notice title=The manifests already carry $version::Nothing to rewrite, so nothing to commit. Cutting \`$NEXT\` at the commit that already satisfies D3."
+          else
+            git -c user.name="${APP_SLUG}[bot]" \
+                -c user.email="${APP_SLUG}[bot]@users.noreply.github.com" \
+                commit -a -F "$RUNNER_TEMP/cut-message.txt"
+          fi
 
           git push origin "HEAD:refs/heads/$NEXT"
           echo "✅ cut \`$NEXT\` from main. Its first push publishes beta-$version, so the train has an image before anything merges into it (ADR 0023 D7)."
@@ -761,6 +825,22 @@ jobs:
       # The comment on every open pull request into the rebased train (D24).
       pull-requests: write
     steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token
         with:
@@ -894,8 +974,19 @@ jobs:
           namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
           namespace="${namespace,,}"
 
+          # The event filter is the question being asked, not decoration, so it
+          # is an argument. The first loop asks "did the force-push trigger a
+          # run", which is `event=push` and nothing else. The wait below asks
+          # "has the republish finished", which must not filter on `push` at
+          # all: a run created by `POST /actions/workflows/{id}/dispatches`
+          # carries `workflow_dispatch`, so a `push` filter would return empty
+          # on every poll until the two-hour deadline and fail the job naming
+          # an empty status — hours after the republish it dispatched had in
+          # fact succeeded.
           runs_for_tip() {
-            gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=$SURVIVOR&event=push&head_sha=$NEW_TIP&per_page=1" \
+            local event_filter=""
+            [[ -n "${1:-}" ]] && event_filter="&event=$1"
+            gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=$SURVIVOR${event_filter}&head_sha=$NEW_TIP&per_page=1" \
               --jq '.workflow_runs[0] | select(.) | "\(.id) \(.status) \(.conclusion // "pending") \(.html_url)"' 2>/dev/null || true
           }
 
@@ -906,7 +997,7 @@ jobs:
           # un-promotable — the exact failure this step exists to prevent.
           run=""
           for _ in $(seq 1 12); do
-            run="$(runs_for_tip)"
+            run="$(runs_for_tip push)"
             [[ -n "$run" ]] && break
             sleep 10
           done
@@ -920,10 +1011,12 @@ jobs:
           deadline=$(( SECONDS + 7200 ))
           status=""; conclusion=""; url=""
           while (( SECONDS < deadline )); do
+            # Unfiltered: a dispatched run has the tip as its head SHA, but its
+            # event is `workflow_dispatch`, not `push`. Either one answers the
+            # question this loop is asking.
             run="$(runs_for_tip)"
             if [[ -z "$run" ]]; then
-              # A dispatched run has the tip as its head SHA too, but takes a
-              # moment to register.
+              # A dispatched run takes a moment to register.
               sleep 30
               continue
             fi
