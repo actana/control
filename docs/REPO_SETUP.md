@@ -27,25 +27,36 @@ visibility is flipped from private to public.
 
 ## 2. Secrets, variables, and environments
 
-Set under **Settings → Secrets and variables → Actions** — except the
-environment at the end of this section, which lives under **Settings →
-Environments**.
+The secrets and the variable are set under **Settings → Secrets and variables →
+Actions**. Three things in this section are not: the GitHub App is created
+under the org's **Developer settings**, the two `-dev` image repositories are
+created on **Docker Hub**, and the environment at the end lives under
+**Settings → Environments**. Each subsection says which.
+
+Every item here is a prerequisite of the ordered cutover in
+[§3](#the-cutover-in-order) — that is the sequence these are done *in*; this
+section is what each one is.
 
 | Name | Kind | Needed for |
 | --- | --- | --- |
 | `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
 | `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read & Write`, not the account password |
+| `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second**, delete-capable PAT |
+| `APP_ID` | Secret | The GitHub App's numeric id. Every job in `promote.yml` that pushes |
+| `APP_PRIVATE_KEY` | Secret | That App's private key, the whole PEM. Same jobs — **both or neither** |
 | `DOCKERHUB_NAMESPACE` | Variable | Docker Hub org to publish under. Optional; defaults to the GitHub owner (`actana`) |
 
-With these set, both images publish to `docker.io/actana/panel` and
-`docker.io/actana/core`, and each image's Docker Hub page is rewritten from
-`docs/images/`.
+With the Docker Hub pair set, both images publish to `docker.io/actana/panel`
+and `docker.io/actana/core`, and each image's Docker Hub page is rewritten from
+`docs/images/`. With the App pair set, a promotion can write to `main`. Neither
+pair substitutes for the other, and a missing one is a different failure: the
+Docker Hub pair fails a build, the App pair fails a promotion.
 
 Docker Hub is the **only** registry
 ([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired),
-so the pair is required wherever images are published: a release or edge build
-without it fails before anything is built. PR builds never push and need no
-credentials, so a fork gets green PRs with nothing set. See
+so the pair is required wherever images are published: a train build or a
+release without it fails before anything is built. PR builds never push and
+need no credentials, so a fork gets green PRs with nothing set. See
 [`ci-cd.md`](ci-cd.md).
 
 ### It must be a *personal* access token, and one token does both jobs
@@ -101,6 +112,30 @@ images. `gh workflow run housekeeping.yml --repo actana/control -f
 chore=descriptions` proves it still updates the Docker Hub pages. Then delete
 the old token in Docker Hub.
 
+### The two `-dev` image repositories
+
+`actana/panel-dev` and `actana/core-dev`, both **public**, created by hand on
+Docker Hub. They are not optional and not cosmetic: a pull request build pushes
+`pr-<prid><YYYYMM>` and a train push pushes `sha-<short>`, and with no
+repository to push to, the build fails at the push ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D36).
+
+They are separate repositories rather than extra tags on `actana/panel` and
+`actana/core` for three reasons: the `descriptions` job exists to make the two
+release pages presentable and hundreds of `pr-*` tags undo that; a
+wrong-repository pull becomes impossible rather than merely unlikely; and it is
+what bounds the blast radius of the delete credential below.
+
+- [ ] Create `panel-dev` and `core-dev` under the same namespace as the release
+      repositories, **public**
+- [ ] Confirm `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` can push to both — the
+      same pair does release and `-dev` pushes, there is no third credential
+- [ ] Leave their descriptions empty. The weekly `descriptions` chore fills
+      both the short description and the full page from
+      [`docs/images/panel-dev.md`](images/panel-dev.md) and
+      [`core-dev.md`](images/core-dev.md); typing something now only creates a
+      thing to disagree with
+
 ### `DOCKERHUB_CLEANUP_TOKEN` — the second, delete-capable token
 
 The weekly `dev-tag-sweep` chore deletes stale `pr-*` and `sha-*` tags from
@@ -128,6 +163,119 @@ that list the way you would treat a production database credential.
 
 Unset, the chore skips with a notice rather than failing — which is the right
 answer on a fork, and the wrong answer to ignore here.
+
+### `APP_ID` and `APP_PRIVATE_KEY` — the GitHub App that writes to `main`
+
+**If a promotion just failed with *"APP_ID and APP_PRIVATE_KEY must both be
+set"*, this subsection is the answer.** Both are repository secrets under
+**Settings → Secrets and variables → Actions**, and both come from one GitHub
+App. Setting one is the same as setting neither: every pushing job in
+[`promote.yml`](../.github/workflows/promote.yml) checks for both and fails the
+run when either is empty.
+
+Live today: the App is **`actana-release-train`**, owned by the `actana` org and
+installed on `actana/control` with `repository_selection: selected`. Its app id
+is **`4516237`** — that is the value of `APP_ID`, and it is also the number §3's
+payloads want substituted for `"actor_id": 0`. Confirm rather than trust it:
+
+```bash
+gh api repos/actana/control/rulesets/20390421 \
+  --jq '.bypass_actors[] | select(.actor_type=="Integration") | .actor_id'
+```
+
+#### Why it cannot be `GITHUB_TOKEN`
+
+Two reasons, and **the first fails silently** ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D39):
+
+- **GitHub does not trigger workflows from pushes made with the default
+  `GITHUB_TOKEN`.** A promotion pushing `vx.y.z` with it produces a tag and no
+  release, with nothing red anywhere; the fast-forward of `main` likewise never
+  fires [`landing.yml`](../.github/workflows/landing.yml), so a landing-page
+  change merged through a train quietly stops deploying.
+- `main` and `beta/*` require a pull request before merging, so a direct push
+  needs a **bypass actor**, and `GITHUB_TOKEN` cannot be one.
+
+That is why the credential check is an error and never a fallback. The fallback
+is the failure this design exists to prevent, and it is the one that looks
+green.
+
+#### What the App does with it
+
+Six operations, all of them in `promote.yml` where they can be read: it writes
+the train-cut commit, fast-forwards `main`, pushes the `vx.y.z` tag, creates
+the `release/x.y` line, deletes the promoted train, and force-pushes the
+post-hotfix rebase of a surviving train — commenting on that train's open pull
+requests as it does (D24). Nothing else in the repository uses it. `ci.yml`,
+`release.yml`, `housekeeping.yml` and `landing.yml` all run on `GITHUB_TOKEN`,
+because none of them writes to a protected ref.
+
+#### Creating it, if it does not exist
+
+- [ ] **Org settings → Developer settings → GitHub Apps → New GitHub App.**
+      Owner is the **org**, not a person — an App owned by an individual dies
+      with that account, which is the failure mode the Docker Hub PAT already
+      has and this one need not
+- [ ] **No webhook.** Uncheck *Active*; it receives no events and never should.
+      The live App reports `events: []`
+- [ ] **Repository permissions — exactly four**, the table below
+- [ ] **Install it on `actana/control`** — *Only select repositories*, not *All*
+- [ ] **Generate a private key** and download the `.pem`. GitHub shows it once
+- [ ] **Set both secrets**, with the commands below
+- [ ] Delete the local `.pem` once the secret is set
+- [ ] Make it a **bypass actor** on the `main`, `beta/*` and `refs/tags/v*`
+      rulesets — §3, and the reason three payloads carry an `actor_id`
+      placeholder at all
+
+The four permissions:
+
+| Permission | Level | Why |
+| --- | --- | --- |
+| Contents | Read & write | Every push: the train-cut commit, the branches, the tag |
+| Workflows | Read & write | **The one that is easy to miss.** Without it, any promotion whose train touched `.github/workflows/` is rejected — and only that one, so it looks like an unrelated fault |
+| Pull requests | Read & write | The comment on each open pull request into a rebased train (D24) |
+| Metadata | Read-only | Mandatory; GitHub adds it for you |
+
+Nothing beyond those four. The App is a bypass actor on the branch that
+everything ships from, so its permission list is the blast radius.
+
+```bash
+gh secret set APP_ID          --repo actana/control --body 4516237
+gh secret set APP_PRIVATE_KEY --repo actana/control < actana-release-train.private-key.pem
+```
+
+`APP_PRIVATE_KEY` is the **entire** PEM, including the `-----BEGIN…` and
+`-----END…` lines and every newline between them. Piping the file in is what
+keeps them; pasting into the web form works too, pasting a single line does
+not — and a mangled key is invisible until the first promotion tries to use it.
+
+#### Two things to verify, because neither is visible from outside
+
+Actions secrets are write-only, so a truncated key and a correct one look
+identical from the settings page. Both of these were carried forward unverified
+from #108.
+
+- [ ] **An App push actually triggers a workflow.** This is the assumption the
+      entire promotion rests on. Push a trivial commit to a throwaway branch
+      using a token minted from these two secrets, and watch a workflow start.
+      Do it before the first promotion, not during it
+- [ ] **The private key is a complete, valid PEM.** The same throwaway run
+      proves it: `actions/create-github-app-token` fails loudly on a malformed
+      key, which is the only cheap way to find out
+
+#### Rotating the key
+
+Same posture as the Docker Hub PAT, with one difference in its favour: the App
+belongs to the org rather than to a person, so a maintainer leaving does not
+strand it.
+
+- [ ] Generate the new key **first**, set the secret, then delete the old key in
+      the App's settings. An App may hold more than one key at a time, so there
+      is no window in which promotion is broken
+- [ ] Rotate immediately if the `.pem` was ever written somewhere it should not
+      have been. A leaked App key is push access to `main` that bypasses the
+      ruleset — treat it as the most dangerous credential in the repository
+- [ ] Prove the new key before deleting the old one, the same way as above
 
 ### The `macos-release` environment — the one human gate in a release
 
@@ -225,12 +373,94 @@ without a pull request.
       most recent merged pull request before applying `main.json`, because the
       whole enforcement story rests on that one check name existing.
 - [ ] **The App exists and its id is to hand.** `APP_ID` and `APP_PRIVATE_KEY`
-      are set (#108, closed). `APP_ID`'s value is the number the payloads want.
+      are set (#108, closed). `APP_ID`'s value is the number the payloads want,
+      and §2 has where to read it and what to do when it is missing.
 - [ ] **All of #109–#113 are merged.** Applying `main.json` is the moment
       "pull requests to `main` only from `beta/*`" stops being advisory, and
       from that moment any foundation pull request still open cannot merge.
 - [ ] Everything below is run by a human with admin rights, from a clone, after
       the merge to `main`. **No workflow and no agent branch applies rulesets.**
+
+### The cutover, in order
+
+The admin-console steps and the code steps interlock, and three of the
+interlocks are sharp enough to be worth stating before the list rather than
+inside it ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) § *Sequencing*, which
+this expands rather than restates):
+
+- **A required check that names nothing is Pending forever**, so `main.json`
+  cannot be applied before `Train rules` has been watched running green.
+- **A missing environment is not a red build.** GitHub auto-creates a
+  referenced environment with no protection rules, so a first promotion run
+  before `macos-release` exists sails through the human gate silently.
+- **The tag ruleset is the last thing a promotion touches and the worst place
+  to fail.** If the App is not a bypass actor there, the run stops *after* it
+  has already fast-forwarded `main`.
+
+Steps 1–4 are reversible. From step 5 the repository is enforcing, and from
+step 9 something is published that cannot be unpublished.
+
+| # | Step | Where | Reversible? |
+| --- | --- | --- | --- |
+| 1 | The GitHub App exists, is installed, and `APP_ID` / `APP_PRIVATE_KEY` are set | §2 | yes |
+| 2 | `panel-dev` and `core-dev` exist; the Docker Hub pair and `DOCKERHUB_CLEANUP_TOKEN` are set | §2 | yes |
+| 3 | `macos-release` exists with at least one required reviewer | §2 | yes |
+| 4 | This effort is merged to `main` by the old process — one pull request, the whole of #107 | — | yes |
+| 5 | `Train rules` watched green on that merge | — | n/a |
+| 6 | `beta.json`, `release.json`, `main.json`, `tag-release-cut.json` applied, in that order | §3a–§3e | by hand |
+| 7 | The two binding checks pass | §3 *Verify it actually binds* | n/a |
+| 8 | `beta/0.1.0` cut | #115 | yes |
+| 9 | The first promotion is dispatched and approved | `ci-cd.md` | **no** |
+
+- [ ] **1. The App.** Created, installed on `actana/control` with the four
+      permissions, both secrets set, and an App push confirmed to trigger a
+      workflow ([§2](#2-secrets-variables-and-environments)). Everything from
+      step 6 onwards assumes the id in `APP_ID` is real, because it is what
+      gets substituted into three payloads.
+- [ ] **2. The image repositories and their credentials.** `panel-dev` and
+      `core-dev` public, `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` able to push
+      to all four, `DOCKERHUB_CLEANUP_TOKEN` set and proved with a dry run.
+      Before step 4, so the merge's own builds have somewhere to push.
+- [ ] **3. The `macos-release` environment, with required reviewers.** Before
+      the first promotion and therefore before step 9 — but do it here, while
+      it is a checklist item rather than a thing remembered at 2am. `GET
+      /repos/actana/control/environments` returning `total_count: 0` means it
+      does not exist.
+- [ ] **4. Merge the effort to `main`.** One pull request, by the process that
+      is live today, while `main` still accepts a pull request from a
+      non-`beta/*` head. **This is the step that must precede step 6**: after
+      `main.json` is applied, this pull request could not be merged.
+- [ ] **5. Watch `Train rules` go green on that merge.** Not on an earlier run
+      — on the merge that put it on `main`. This is the check `main.json` is
+      about to make required, and the one that turns "only a train may target
+      `main`" from a sentence in an ADR into something enforced.
+- [ ] **6. Apply the rulesets, in the order §3a–§3e gives them.** Trains first,
+      release lines second, `main` third, tags last. `beta/*` before `main`
+      because step 8 cuts a train into a ruleset that should already exist;
+      tags last because that payload's only change is adding the bypass actor,
+      and it is cheap to re-apply if the id was wrong.
+- [ ] **7. Prove it binds** — [*Verify it actually
+      binds*](#verify-it-actually-binds), below. A throwaway non-`beta/*` pull
+      request into `main` is blocked, and a direct push to `main` is refused
+      **for the repo owner**. Neither is answered by reading the settings page
+      back.
+- [ ] **8. Cut `beta/0.1.0`** (#115). The first train, and the first thing to
+      confirm that a `beta/*` head passes `Conventions` — which can only be
+      confirmed against a real train.
+- [ ] **9. Promote it.** Work
+      [`beta-acceptance-checklist.md`](beta-acceptance-checklist.md) and
+      [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md)
+      against `beta-0.1.0`, then dispatch `promote.yml`. **This step publishes**
+      — an image push cannot be undone and `:latest` has no history. Everything
+      above exists so that the person approving it is approving something real.
+
+Two items are deliberately *not* in this sequence. Creating the
+`@actana/maintainers` team (§1) is a prerequisite for flipping
+`require_code_owner_review` to `true`, not for the cutover — every payload
+ships with it `false` precisely so the team's absence cannot block this. And
+`Dependency Audit` is red repository-wide and stays required; it is a known
+condition to note before step 9, not a gate to fix first.
 
 ### Substituting the App id
 
