@@ -176,7 +176,7 @@ export function extractToken(stdout, context, die) {
  *
  * `ws` is required here rather than imported at module scope so that importing
  * this module costs nothing but node builtins. smoke-panel-image.mjs pulls in
- * only `makeDie` and `pickFreePort`, and the release/edge workflows run it
+ * only `makeDie` and `pickFreePort`, and the train and release workflows run it
  * against a checkout with no `node_modules` — a top-level `import { WebSocket }
  * from "ws"` made that fail before the image was ever pushed.
  */

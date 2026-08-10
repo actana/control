@@ -46,9 +46,11 @@ const imageWorkflowCode = imageWorkflow
   .split("\n")
   .filter((line) => !line.trimStart().startsWith("#"))
   .join("\n");
-// The edge publish is a push-to-`main` condition inside ci.yml, not a workflow
+// The edge publish was a push-to-`main` condition inside ci.yml, not a workflow
 // of its own — ADR 0016 D30 deleted images-edge.yml for being a fourth entry
-// point to jobs that differ only in which tags come out the other end.
+// point to jobs that differ only in which tags come out the other end. The
+// train publish replaced it in place (ADR 0023 D13); see "the train publish"
+// below.
 const ciWorkflow = readRepoFile(".github/workflows/ci.yml");
 const coreDockerfile = readRepoFile("deploy/core.Dockerfile");
 // Named apart from `compose.services.core`: one is the image's instructions,
