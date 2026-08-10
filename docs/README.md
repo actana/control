@@ -79,10 +79,15 @@ routing around it.
 - [`core-linux-rehearsal.md`](core-linux-rehearsal.md) — rehearsing a Linux install
 - [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) — the macOS
   checks a runner cannot perform (Gatekeeper, and reboot/logout persistence).
-  **This one is the release gate**: a `v*` tag pauses on the `macos-release`
+  **This one is the release gate**: a release pauses on the `macos-release`
   environment until a reviewer works through it on real Apple hardware, and
   nothing — images, `:latest`, Release or tarballs — publishes until they
-  approve
+  approve. *Where* that pause sits is moving
+  ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D15): it is no
+  longer `release.yml`'s `tarball-macos` job, and pushing a `v*` tag now fires
+  nothing at all (D40). It becomes the first step of `promote.yml` (#111),
+  which gates the fast-forward onto `main` as well. Exactly one pause exists
+  either way, and the checklist itself is unchanged
 - [`local-build-screen-recording.md`](local-build-screen-recording.md)
 
 ## Historical record
