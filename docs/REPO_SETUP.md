@@ -17,6 +17,9 @@ visibility is flipped from private to public.
       [`.github/CODEOWNERS`](../.github/CODEOWNERS) names it; if the team does
       not exist GitHub assigns nobody, and with "Require review from Code
       Owners" enabled no PR can ever be approved.
+      **Still missing:** `GET /orgs/actana/teams/maintainers` returns 404, so
+      every ruleset in §3 ships with `require_code_owner_review: false`. That
+      flag is the thing to revisit the moment this box is ticked.
 - [ ] Confirm the org/repo slug is `actana/control` everywhere
       (`grep -rn "actana/control"` should match; `grep -rn "AgentSystemLabs"`
       should match **only** `NOTICE`, `docs/upstream/`, `docs/agents/upstream-harvest.md`,
@@ -137,6 +140,13 @@ holds no secrets at all; the only thing it carries is a list of people.
 > the whole release would publish unreviewed, silently. `GET
 > /repos/actana/control/environments` returning `total_count: 0` means the gate
 > described below does not exist yet.
+>
+> **It returns `total_count: 0` today.** The repository has no environments at
+> all — not `macos-release`, not any other. `promote.yml` has landed and its
+> first job declares `environment: macos-release`, so the next promotion
+> dispatch will auto-create it unprotected and run straight through the human
+> gate. Creating it, **with at least one required reviewer**, is a prerequisite
+> for the first promotion, not a tidy-up after it.
 
 - [ ] Create an environment named exactly **`macos-release`**
 - [ ] **Required reviewers** → the people who own a Mac and can run the
@@ -152,10 +162,10 @@ holds no secrets at all; the only thing it carries is a list of people.
 > 0023](adr/0023-release-trains-and-digest-promotion.md) D15 the pause is the
 > **first** thing `promote.yml` does, so the fast-forward onto `main` is
 > downstream of the human as well and `main` never contains unapproved code.
-> Exactly one pause exists either way. Until `promote.yml` lands (#111) the
-> environment is configured and referenced by nothing, which is inert — set it
-> up regardless, because the promotion workflow is what will reference it and a
-> missing environment is silently unprotected rather than red.
+> Exactly one pause exists either way. `promote.yml` has since landed (#111),
+> so the environment is now referenced by a real job — the inertness that made
+> it safe to defer is gone, and the missing environment is silently unprotected
+> rather than red.
 >
 > The rest of this section is unchanged by that move: same environment name,
 > same reviewers, same checklist. What changes is *when* the reviewer is asked
@@ -180,26 +190,241 @@ reviewer who rejects on a Gatekeeper blocker must be able to believe nothing
 shipped. The cost is that a release is as slow as its reviewer, which is the
 cheaper side of the trade.
 
-## 3. Branch ruleset for `main` (Settings → Rules → Rulesets)
+## 3. Branch rulesets (Settings → Rules → Rulesets)
 
-- [ ] **Restrict deletions** and **block force pushes**
-- [ ] **Require a pull request before merging**
-  - [ ] Required approvals: **1**
-  - [ ] **Dismiss stale approvals** when new commits are pushed
-  - [ ] **Require review from Code Owners** _(only after step 1's team exists)_
-  - [ ] Require approval of the most recent reviewable push
-  - [ ] **Require conversation resolution** before merging
-- [ ] **Require status checks to pass** (and require branches to be up to date):
-  - [ ] `Conventions` — PR title, commit messages, and branch name, in one job
-  - [ ] `Typecheck`, `Unit Tests`, `Lint`, `Secret Scan`, `Dependency Audit`
-  - [ ] `Panel image` and `Core image` — the PR container builds
-  - [ ] The E2E legs you want blocking. They are slow; a common split is to
-        require the fast four plus both image builds, and let the installer
-        matrix run without blocking.
-- [ ] **Require linear history**
-- [ ] Do **not** add bypass actors (or restrict to break-glass admins only)
+Four branch rulesets and one tag ruleset, applied from the JSON payloads in
+[`rulesets/`](rulesets/) rather than clicked into the form. The reason is
+restorability: a ruleset assembled in a web form is a configuration nobody can
+diff, nobody can review, and nobody can put back after somebody edits it at
+11pm. The payloads are the source of truth; this section is the order to apply
+them in and the preconditions that make each one safe.
 
-Optional: a second ruleset on branch **creation** restricting new branch names
+| Ruleset | Payload | Applies to |
+| --- | --- | --- |
+| Protect main | [`rulesets/main.json`](rulesets/main.json) | `main` — update of existing **20390421** |
+| Trains — `beta/*` | [`rulesets/beta.json`](rulesets/beta.json) | `refs/heads/beta/**` — new |
+| Release lines — `release/*` | [`rulesets/release.json`](rulesets/release.json) | `refs/heads/release/**` — new |
+| Retired release lines | [`rulesets/release-retired.json`](rulesets/release-retired.json) | one named retired line — new, one per retirement |
+| Release tags | [`rulesets/tag-release-cut.json`](rulesets/tag-release-cut.json) | `refs/tags/v*` — update of existing **20390424** |
+
+The model these encode is [ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D1, D2, D5, D24, D27,
+D39: work reaches `main` only by promoting a train, a train is a `beta/x.y.z`
+branch, and the App is the one identity allowed to write to protected refs
+without a pull request.
+
+### Before you apply anything
+
+> **Getting the order wrong locks the repository.** A required check whose job
+> has never run leaves every pull request Pending forever — not red, Pending —
+> including the pull request that would remove the requirement. There is no
+> way out except an admin editing the ruleset by hand.
+
+- [ ] **`Train rules` has been watched running green at least once.** It has:
+      it reports `success` on #116, #130 and #131. Confirm it still does on the
+      most recent merged pull request before applying `main.json`, because the
+      whole enforcement story rests on that one check name existing.
+- [ ] **The App exists and its id is to hand.** `APP_ID` and `APP_PRIVATE_KEY`
+      are set (#108, closed). `APP_ID`'s value is the number the payloads want.
+- [ ] **All of #109–#113 are merged.** Applying `main.json` is the moment
+      "pull requests to `main` only from `beta/*`" stops being advisory, and
+      from that moment any foundation pull request still open cannot merge.
+- [ ] Everything below is run by a human with admin rights, from a clone, after
+      the merge to `main`. **No workflow and no agent branch applies rulesets.**
+
+### Substituting the App id
+
+Three payloads carry `"actor_id": 0`. Zero is not a valid App id; it is a
+tripwire, so a payload applied without substitution fails at the API instead of
+installing a ruleset whose bypass actor silently does not resolve. Substitute
+it on the way in:
+
+```bash
+export APP_ID=…            # the value of the APP_ID secret
+apply() {                  # apply <payload> [ruleset-id]
+  jq --argjson app "$APP_ID" \
+     '(.bypass_actors[]? | select(.actor_id == 0)).actor_id = $app' "$1" \
+  | if [ -n "${2:-}" ]
+    then gh api --method PUT  "repos/actana/control/rulesets/$2" --input -
+    else gh api --method POST "repos/actana/control/rulesets"    --input -
+    fi
+}
+```
+
+### 3a. `beta/*` — the trains
+
+- [ ] `apply docs/rulesets/beta.json`
+
+Restrict deletions, block force pushes, require a pull request, **1 approval**,
+**dismiss stale approvals on new commits**, require conversation resolution.
+
+Dismiss-stale is not housekeeping here. It is the human-side guard behind
+digest verification: an approval is a statement about a specific tree, and a
+further merge into the train makes it a statement about something the approver
+never saw. An approval must not survive the thing it approved.
+
+**"Require branches to be up to date" is off**, deliberately, and this is the
+one place the setting differs from `main`. Several pull requests are open into
+one train at a time. With strict on, merging any one of them invalidates every
+other, and each would re-run the full E2E and installer matrix serially before
+it could merge again — turning a train into a queue that gets slower the more
+people use it. The train is protected by the gates re-running on merge to
+`beta/*`, not by everyone rebasing at each other.
+
+**The E2E and installer legs are not required here.** They are required on
+`main`, which sees one pull request per release. On the trains, the bar is the
+fast set plus both image builds — the same list `main` has minus the slow legs:
+
+`Conventions`, `Train rules`, `Typecheck`, `Unit Tests`, `Lint`, `Secret Scan`,
+`Dependency Audit`, `Panel image / Resolve registries`, `Panel image / Build +
+smoke (amd64)`, `Core image / Resolve registries`, `Core image / Build + smoke
+(amd64)`.
+
+**The GitHub App is the sole bypass actor** (D24, D39). It needs to be, and for
+three named operations only: it writes the train-cut commit, it force-pushes
+the post-hotfix rebase, and it deletes the promoted train. That is the
+documented exception to "no force-push" — one non-human identity, three
+operations, all of them in `promote.yml` where they can be read. No human and
+no admin role is a bypass actor on this ruleset.
+
+### 3b. `release/*` — the maintenance lines
+
+- [ ] `apply docs/rulesets/release.json`
+
+Same shape as the trains: restrict deletions, block force pushes, require a
+pull request, 1 approval, dismiss stale, conversation resolution, same required
+checks. No bypass actor — nothing in `promote.yml` force-pushes a release line;
+it only creates one, and creation is not restricted here.
+
+> **The forward-fix-first check (D29) is not in this list, because it does not
+> exist yet.** D29 wants a required check on `release/*` pull requests
+> asserting by patch-id that the fix is already on `main`. `Train rules`
+> covers the other half of the release-line rules — D26 and D31's supported-line
+> window — but nothing implements the patch-id assertion. Adding a check name
+> for a job that does not exist is exactly the failure this section opens with.
+> Implement it, watch it green, then add the context to
+> [`rulesets/release.json`](rulesets/release.json) and re-apply.
+
+There are no `release/*` branches yet, so this ruleset governs nothing on the
+day it is applied. Apply it anyway — it needs to be in place *before* the first
+line is cut, not after.
+
+### 3c. Retiring a release line (D27)
+
+A line that has fallen out of the supported window becomes **read-only**: no
+pushes, no deletion, no force-push. [`release-retired.json`](rulesets/release-retired.json)
+is a template, not a standing ruleset — it names one line explicitly, because a
+pattern would need to encode which lines are retired, and that is a list that
+goes stale in a way nobody notices until someone pushes to a dead line.
+
+- [ ] On each retirement: copy the payload, replace
+      `refs/heads/release/0.0-PLACEHOLDER` with the real ref, rename the
+      ruleset to name the line, `apply` it, and commit the copy beside the
+      others.
+
+### 3d. `main`
+
+- [ ] `apply docs/rulesets/main.json 20390421`
+
+What changes from the ruleset that is live today:
+
+- **`Train rules` is added to the required checks.** This is the point of the
+  ticket. GitHub rulesets cannot restrict which branch a pull request comes
+  *from*; the check is the mechanism (D1). Without it, "only a train may target
+  `main`" is a sentence in an ADR.
+- **"Require branches to be up to date" goes on** (`strict_required_status_checks_policy: true`,
+  currently `false`). Free here, where the only pull request into `main` is the
+  promotion, and it is a fast-forward by construction.
+- **The App becomes a bypass actor.** It performs the fast-forward. Without
+  this, `promote.yml` fails as a ruleset violation on every release.
+- **Required approvals goes 0 → 1, with dismiss-stale on.** This settles #16's
+  open question. The solo-maintainer trade-off that made 0 defensible no longer
+  applies: a second person reviews the train's pull requests and approves the
+  promotion.
+- **Conversation resolution is required.**
+
+The existing required checks are kept exactly as named, all sixteen contexts
+listed in [`main.json`](rulesets/main.json) — nothing is dropped or renamed,
+including the slow legs, and `Train rules` is the only addition.
+
+> **On the two image checks.** Tickets and ADRs call these `Panel image` and
+> `Core image`, and those are the job names — but `panel-image` and
+> `core-image` are calls into the reusable `container-image.yml`, so the checks
+> GitHub actually records are `Panel image / Resolve registries` and `Panel
+> image / Build + smoke (amd64)` (and the same pair for Core). The payload
+> carries the recorded names. `Panel image / Publish the multi-arch manifest`
+> is deliberately not required: it is skipped on pull requests from forks and
+> on runs that do not push.
+
+> **`Dependency Audit` is currently failing** repository-wide, and has been for
+> longer than this effort — it is red on #130 and #131. It is already required
+> on `main` and stays required; this ticket neither introduces nor fixes it.
+> Note it before the first promotion, because it is a required check that is
+> currently red.
+
+**"Require review from Code Owners" is off, on every ruleset above.** It is not
+an oversight. [`.github/CODEOWNERS`](../.github/CODEOWNERS) routes every path
+to `@actana/maintainers`, and **that team does not exist** — verified against
+the org: `GET /orgs/actana/teams/maintainers` returns 404. Turning code-owner
+review on while the team is missing makes every pull request in the repository
+permanently unapprovable, because GitHub assigns the review to nobody and then
+waits for nobody to approve. Create the team (§1), then flip
+`require_code_owner_review` to `true` in each payload and re-apply. Not before.
+
+**"Require approval of the most recent reviewable push" is also off**, matching
+what is live today. Dismiss-stale already covers the concern this ticket names,
+and require-last-push-approval interacts badly with a promotion whose last push
+is made by the App. Turn it on once the maintainers team exists and there is
+reliably more than one human who can approve.
+
+### 3e. The tag ruleset
+
+- [ ] `apply docs/rulesets/tag-release-cut.json 20390424`
+
+Ruleset **20390424** restricts *creation* of `refs/tags/v*` to the admin role
+and today has **zero bypass actors**. The App pushes the version tag during
+promotion, so it must be added here too, or the promotion fails at the tag
+after it has already fast-forwarded `main` — the worst place in the sequence to
+stop. This is the only change to that ruleset; the `creation` rule and the ref
+pattern are untouched.
+
+Ruleset **20390423** ("Release tags are immutable") is not touched by this
+effort.
+
+### Verify it actually binds
+
+Two checks, both of which must be done **after** applying and **before** the
+first promotion. Neither can be done from a branch, and neither is satisfied by
+reading the settings page back — the settings page is what you already know.
+
+- [ ] **A pull request into `main` from a non-`beta/*` head is actually
+      blocked.** Push a throwaway branch, open a pull request against `main`,
+      and confirm `Train rules` fails with *"Only a train may target main"* and
+      that the merge button is disabled — not merely that a warning appears.
+      Close it without merging. This is the assertion that D1 is enforced
+      rather than described.
+- [ ] **A direct push to `main` is rejected for the repo owner**, not merely
+      for a contributor. From an admin clone: `git push origin main` on any
+      trivial commit must be refused by the remote. A protection that binds
+      contributors and waves through the owner is the failure mode this check
+      exists to catch, and it is invisible unless the owner is the one who
+      tries it. `current_user_can_bypass` on the ruleset should read `never`.
+- [ ] **A promotion pull request (head `beta/*`) passes `Conventions`.** The
+      branch-name allowlist has to be live first, so this can only be confirmed
+      against a real train — the first one is #115.
+
+### What this means for an agent session
+
+There is no longer a path from a working tree to `main` that does not go
+through a pull request, and that includes the repo owner's. An admin cannot
+just push: the ruleset binds admins, the App's bypass is scoped to the three
+operations `promote.yml` performs, and every other change is a branch and a
+pull request. An agent session that finds itself wanting to push to `main` has
+mis-modelled the repository, not hit a permissions bug. The train-model half of
+this — which branch to cut and where a change belongs — is in
+[`CONTRIBUTING.md`](../CONTRIBUTING.md).
+
+Optional, still: a ruleset on branch **creation** restricting new branch names
 to the allowed prefixes. GitHub enforces that natively, which turns the
 `Conventions` job's branch-name step into a friendly error rather than the only
 gate.
