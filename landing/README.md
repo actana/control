@@ -79,8 +79,9 @@ Two notes on the artwork:
 
 `.github/workflows/landing.yml` uploads this folder to Bunny Edge Storage and
 purges the pull zone, on push to `main` under `landing/**` and on
-`workflow_dispatch`. Pull requests do not deploy: the CDN serves `main`, the
-same rule the container `:edge` tags follow.
+`workflow_dispatch`. Pull requests do not deploy: the CDN serves `main`, and
+`main` is only ever released code — the same rule the container tags follow,
+where a published tag names something a person approved.
 
 There is no PR-side check, because there is no build to break. If one ever
 appears — a link check, an HTML lint — it belongs in that workflow on a
