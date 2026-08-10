@@ -1,6 +1,10 @@
 name: Housekeeping
 
-# The third and last workflow (ADR 0016 D34), and the one that is not a check.
+# The third entry point (ADR 0016 D34), and the one that is not a check. Third
+# but no longer last: D34's count has been revised twice — `landing.yml` is the
+# fourth (docs/landing-page.md §7) and `promote.yml` the fifth (ADR 0023). Five
+# entry points plus the reusable `container-image.yml`; see docs/ci-cd.md
+# § "At a glance".
 #
 # Seven chores on two schedules. What they have in common is not their subject —
 # they share nothing — but their relationship to a pull request: **none of them
@@ -410,8 +414,10 @@ jobs:
       #
       # Duplicated from container-image.yml rather than shared: that file is a
       # `workflow_call` reusable workflow, which cannot lend a single step to a
-      # caller, and a composite action would be a fifth entry point in a
-      # directory whose count D34 fixes at four.
+      # caller, and a composite action would be one more moving part in a
+      # directory whose count D34 fixes — at five now, as amended by ADR 0023,
+      # not the four it fixed originally. The argument is the count being
+      # deliberate, not the number it currently holds.
       - name: Install Trivy
         env:
           TRIVY_VERSION: 0.73.0

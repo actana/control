@@ -77,8 +77,10 @@ docker compose restart
 
 - [ ] [`CHANGELOG.md`](../CHANGELOG.md) has an entry for this version
 - [ ] Its entries match what actually merged into the train —
-      `git log --oneline main..beta-x.y.z` is the source, since every squash
-      commit's subject is a PR title
+      `git log --oneline origin/main..origin/beta/x.y.z` is the source, since
+      every squash commit's subject is a PR title. **The git ref is
+      `beta/x.y.z` with a slash**; `beta-x.y.z` is the Docker tag and is not a
+      revision this command can resolve
 - [ ] Anything user-visible in that log is in the CHANGELOG, and nothing in the
       CHANGELOG is absent from the log
 - [ ] Breaking changes are called out as such

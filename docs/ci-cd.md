@@ -1157,11 +1157,20 @@ pnpm core:image:smoke       # builds deploy/core.Dockerfile, then pairs a Panel 
 Commit conventions, without installing anything permanently:
 
 ```bash
+base=origin/beta/0.2.0          # the branch you targeted — the open train, not main
 d=$(mktemp -d) && cp commitlint.config.mjs "$d"
 (cd "$d" && npm init -y >/dev/null && npm install @commitlint/cli @commitlint/config-conventional)
 "$d"/node_modules/.bin/commitlint --config "$d"/commitlint.config.mjs \
-  --cwd "$PWD" --from origin/main --to HEAD --verbose
+  --cwd "$PWD" --from "$(git merge-base "$base" HEAD)" --to HEAD --verbose
 ```
+
+`--from` is the merge-base with **the branch this pull request targets**, which
+under the train model is the open train and not `main`
+([`CONTRIBUTING.md`](../CONTRIBUTING.md#branch-naming)). `--from origin/main`
+would lint every commit already merged into the train as well as your own, and
+bounce you for somebody else's message. The merge-base is also what the
+`Conventions` job passes: it reads `github.event.pull_request.base.sha`, which
+is that same commit.
 
 The detour through a temp directory is not ceremony: this is a pnpm workspace,
 and the root `package.json` declares `workspace:*` dependencies that npm
