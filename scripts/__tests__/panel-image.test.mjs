@@ -315,17 +315,34 @@ describe("reference compose", () => {
 });
 
 describe("release workflow", () => {
-  it("builds the image on version tags, like the Core release", () => {
-    expect(workflow).toMatch(/tags:\s*\n\s*- "v\*"/);
+  // The Panel image ships on a version tag — but the tag no longer *triggers*
+  // anything (ADR 0023 D40). `promote.yml` calls this workflow and pushes the
+  // tag as a record; a `push: tags` trigger beside that would fire a second
+  // release run that the first could not even block. What is asserted here is
+  // what did not change: the release is still entered with a `v*` tag, and it
+  // is that tag the image jobs publish under. The trigger itself is pinned in
+  // scripts/__tests__/workflows.test.mjs.
+  it("publishes the image for a version tag it is handed, not one it watches", () => {
+    expect(workflow).toMatch(/^ {2}workflow_call:$/m);
+    expect(workflow).not.toMatch(/tags:\s*\n\s*- "v\*"/);
+    expect(workflow).toMatch(/description: "Tag to .*\(e\.g\. v0\.1\.0\)/);
   });
 
   it("delegates the build to the shared image workflow", () => {
     expect(workflow).toContain("./.github/workflows/container-image.yml");
   });
 
-  it("publishes :latest alongside the version, but never for a prerelease", () => {
-    expect(workflow).toContain("$version latest");
-    expect(workflow).toMatch(/version.*==.*\*-\*/);
+  // `tags="$version latest"` for anything without a `-` in it used to live
+  // here as two lines of shell, and it was the whole of the `latest` rule —
+  // no highest-version test, so a backport of an old line would have moved
+  // `:latest` backwards for every operator (D28). The decision moved to
+  // scripts/lib/release-latest.mjs, where the prerelease case is one of three
+  // and all of them are covered by scripts/__tests__/release-latest.test.mjs.
+  // What this file asserts is the wiring: one decision, reaching the images.
+  it("takes its tag list from the tested latest guard, not from inline shell", () => {
+    expect(workflow).toContain("node scripts/release-tags.mjs");
+    expect(workflow).not.toContain("$version latest");
+    expect(workflow).toContain("tags: ${{ needs.resolve.outputs.tags }}");
   });
 
   // D30 lives in the tag regex as much as in the tag list: `v0` and `v0.1`

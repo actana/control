@@ -105,19 +105,28 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
   });
 });
 
-// The macOS cost posture (decision #14) and the approval gate (D28, as
-// amended) are both invisible in a green run: a release that quietly built its
-// mac tarball without waiting for a person looks exactly like one that waited,
-// and a macOS runner that crept into the PR path looks exactly like a slow PR
-// until the bill arrives. Both are one deleted line away, so both are pinned.
+// The macOS cost posture (decision #14) is invisible in a green run: a macOS
+// runner that crept into the PR path looks exactly like a slow PR until the
+// bill arrives. It is one added line away, so it is pinned.
 describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
   const source = read("release.yml");
 
-  it("builds mac-arm64 behind the macos-release environment", () => {
+  // ADR 0023 D15. The approval environment that used to sit on this leg is
+  // gone: the pause moved to the head of `promote.yml`, upstream of this whole
+  // workflow, so the fast-forward onto `main` is downstream of the human too.
+  // **Exactly one pause exists.** This assertion is the inverse of the one it
+  // replaces, and it is here for the same reason that one was: a second pause
+  // reappearing here would be invisible in a green run — it would look like a
+  // release nobody had got round to approving yet.
+  it("builds mac-arm64 with no approval environment of its own (D15)", () => {
     const job = jobBlock(source, "tarball-macos");
-    expect(job).toContain("environment: macos-release");
+    expect(job).not.toContain("environment:");
     expect(job).toMatch(/runs-on: macos-/);
     expect(job).toContain("TARGET: mac-arm64");
+  });
+
+  it("leaves no approval environment anywhere in the release", () => {
+    expect(code(source)).not.toContain("macos-release");
   });
 
   it("holds the release behind that leg, so SHA256SUMS covers every asset", () => {
@@ -132,15 +141,15 @@ describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
     );
   });
 
-  // The reason this matters more than the ordering it looks like: pushing an
-  // image is not undoable, and `:latest` is a pointer with no history. A
-  // reviewer who rejects on a Gatekeeper blocker has to be able to believe
-  // nothing shipped, and that is only true while every publishing job sits
-  // downstream of the approval.
-  it("publishes no image until that leg is approved", () => {
+  // The ordering outlives the approval that motivated it (D15). Pushing an
+  // image is not undoable and `:latest` is a pointer with no history, so an
+  // image published beside a GitHub Release missing a third of its tarballs is
+  // a state nothing can walk back — and `install.sh` reads exactly that
+  // Release. A release is atomic or it is not a release.
+  it("publishes no image until every tarball the release needs exists", () => {
     for (const image of ["panel", "core"]) {
       const job = jobBlock(source, image);
-      expect(job, `${image} publishes ahead of the approval`).toMatch(
+      expect(job, `${image} publishes ahead of the mac tarball`).toMatch(
         /needs: \[[^\]]*tarball-macos[^\]]*\]/,
       );
       expect(job).toContain("push: true");
@@ -162,6 +171,176 @@ describe("the macOS release leg (ADR 0016 D28, as amended)", () => {
     for (const file of ["ci.yml", "housekeeping.yml", "container-image.yml"]) {
       expect(read(file), `${file} runs a job on macOS`).not.toMatch(/runs-on:.*macos/);
     }
+  });
+});
+
+// Everything here is invisible in a green run and expensive when wrong. A
+// second release run racing the first looks like a slow release; a promotion
+// that quietly rebuilt looks like a promotion; a backport that moved `latest`
+// looks like a successful backport, right up until every existing user is told
+// to downgrade.
+describe("release.yml's trigger and its two modes (ADR 0023 D17, D26, D28, D40)", () => {
+  const source = read("release.yml");
+  const body = code(source);
+
+  // D40. The tag trigger is gone and its absence is load-bearing: promote.yml
+  // calls this workflow *and* pushes the tag, so a `push: tags` trigger would
+  // fire a second run — one that would not even serialise against the first,
+  // because the two resolve `github.ref_name` differently.
+  it("has no tag trigger, takes a workflow_call, and keeps its dispatch", () => {
+    expect(body).not.toMatch(/^ {2}push:$/m);
+    expect(body).not.toMatch(/^ {6}- "v\*"$/m);
+    expect(body).toMatch(/^ {2}workflow_call:$/m);
+    expect(body).toMatch(/^ {2}workflow_dispatch:$/m);
+  });
+
+  // The other half of D40's trap, and the reason the trigger alone is not
+  // enough: `github.ref_name` is the tag under a push and the caller's ref
+  // under a `workflow_call`. Anything keyed on it takes two different values
+  // for one release, so nothing here reads it at all.
+  it("keys concurrency on the version rather than on github.ref_name", () => {
+    expect(body).toMatch(/^ {2}group: release-\$\{\{ inputs\.tag \}\}$/m);
+    expect(body).toMatch(/^ {2}cancel-in-progress: false$/m);
+    expect(body, "github.ref_name resolves differently under workflow_call").not.toContain(
+      "github.ref_name",
+    );
+  });
+
+  // D26. The mode is a fact about where the tag lives, read off the branch
+  // graph — not an input, not a label, and so not a thing anyone can forget to
+  // set during the incident that produced the backport.
+  it("picks its mode from where the tag lives, and says which in the log", () => {
+    const job = code(jobBlock(source, "resolve"));
+    expect(job).toContain("git merge-base --is-ancestor");
+    expect(job).toContain("origin/main");
+    expect(job).toMatch(/--list 'origin\/release\/\*'/);
+    expect(job).toContain("mode=promote");
+    expect(job).toContain("mode=backport");
+    expect(job).toContain("::notice title=Promote mode::");
+    expect(job).toContain("::notice title=Backport mode::");
+  });
+
+  // D17. Both image jobs are one call in two modes: `promote` retags,
+  // `build` builds. The names are pinned by the "Protect main" ruleset — the
+  // same two names ci.yml's required checks use — so they are asserted
+  // literally here. A rename blocks every pull request in the repository until
+  // an admin updates the ruleset.
+  it("keeps the two pinned check names and hands both modes to the same call", () => {
+    for (const [job, name] of [
+      ["panel", "Panel image"],
+      ["core", "Core image"],
+    ]) {
+      const block = jobBlock(source, job);
+      expect(block, `${job} lost its pinned check name`).toContain(`name: ${name}`);
+      expect(block).toContain("uses: ./.github/workflows/container-image.yml");
+      expect(block).toContain("mode: ${{ needs.resolve.outputs.image_mode }}");
+      expect(block).toContain("source_tag: ${{ needs.resolve.outputs.source_tag }}");
+      // The commit, not the tag: promote mode asserts the digest's revision
+      // label against it (D16) and backport mode builds it.
+      expect(block).toContain("ref: ${{ needs.resolve.outputs.sha }}");
+    }
+    // ci.yml's copies of the same two names, which is what makes them pinned.
+    const ci = read("ci.yml");
+    expect(ci).toContain("name: Panel image");
+    expect(ci).toContain("name: Core image");
+  });
+
+  // D28, surface one. The old code emitted `tags="$version latest"` for
+  // anything without a `-` in it — no highest-version test anywhere — and this
+  // asserts that shell is gone rather than merely bypassed.
+  it("takes the latest decision from the tested module, not from a shell default", () => {
+    const job = code(jobBlock(source, "resolve"));
+    expect(job).toContain("node scripts/release-tags.mjs");
+    expect(job).not.toMatch(/tags=\$version latest/);
+  });
+
+  // D28, surface two — the one that reaches `install.sh` and the in-product
+  // update checker. `gh release create` defaults `make_latest` to true, so an
+  // absent flag is the bug; it is passed explicitly on both the create and the
+  // re-run paths.
+  it("passes --latest explicitly to gh release, on create and on edit", () => {
+    const job = code(jobBlock(source, "github-release"));
+    expect(job).toContain('--latest="$RELEASE_LATEST"');
+    expect(job).toContain('--prerelease="$RELEASE_PRERELEASE"');
+    expect(job).toMatch(/gh release create[^]*--latest=/);
+    expect(job).toMatch(/gh release edit[^]*--latest=/);
+  });
+
+  // D28's assertion, on both surfaces, in the two jobs that own them. The
+  // rule itself is structural in scripts/lib/release-latest.mjs and covered by
+  // scripts/__tests__/release-latest.test.mjs; what is pinned here is that the
+  // workflow re-checks it at the point of publishing rather than trusting an
+  // upstream output to still be right.
+  it("refuses a backport that carries latest, on the docker tags and on GitHub", () => {
+    const resolve = code(jobBlock(source, "resolve"));
+    expect(resolve).toContain("A backport must never move latest");
+    const release = code(jobBlock(source, "github-release"));
+    expect(release).toContain('"$RELEASE_MODE" == "backport"');
+    expect(release).toContain("A backport must never be the GitHub latest release");
+  });
+});
+
+describe("container-image.yml's promote mode (ADR 0023 D16, D17)", () => {
+  const source = read("container-image.yml");
+  const body = code(source);
+
+  it("retags an existing digest and builds nothing", () => {
+    expect(body).toMatch(/^ {2} {4}source_tag:$/m);
+    const publish = code(jobBlock(source, "publish"));
+    expect(publish).toContain('sources+=("$IMAGE:$SOURCE_TAG")');
+    expect(publish).toContain("docker buildx imagetools create");
+    // Every build step is gated on `build` mode, so a promotion runs none of
+    // them. Asserted as a count rather than by name: a new build step added
+    // without the gate is exactly the regression that would make a promotion
+    // start producing bytes.
+    const build = jobBlock(source, "build");
+    const dockerBuilds = [...build.matchAll(/^ {8}run: \|?[^]*?docker build /gm)];
+    for (const step of build.split(/\n {6}- /).slice(1)) {
+      if (!/docker build /.test(step)) continue;
+      expect(step, "a build step that a promotion would run").toContain(
+        "if: inputs.mode == 'build'",
+      );
+    }
+    expect(dockerBuilds.length).toBeGreaterThan(0);
+  });
+
+  it("asserts the revision label before anything is re-pointed", () => {
+    const build = code(jobBlock(source, "build"));
+    expect(build).toContain("if: inputs.mode == 'verify' || inputs.mode == 'promote'");
+    expect(build).toContain("org.opencontainers.image.revision");
+    expect(build).toContain("Refusing to promote a digest built from another commit");
+    // The retag lives in `publish`, which needs `build` — so the assertion is
+    // upstream of every tag it protects, on every architecture.
+    expect(code(jobBlock(source, "publish"))).toContain("needs: [resolve, build]");
+  });
+
+  // A promotion has no per-arch bytes of its own: it must never push a
+  // scaffolding tag, and it must never be able to reach the build path's push
+  // with an empty stage.
+  it("pushes no per-arch scaffolding when it built no per-arch bytes", () => {
+    expect(body).toContain("if: inputs.push && inputs.mode == 'build'");
+  });
+
+  // The mode that publishes without building is the one whose inputs cannot be
+  // assumed: no source is nothing to promote, and `push: false` would be a
+  // green check for having done nothing at all.
+  it("refuses a promotion with nothing to promote, and a build carrying a source", () => {
+    const resolve = code(jobBlock(source, "resolve"));
+    expect(resolve).toContain("Nothing to promote");
+    expect(resolve).toContain("source_tag outside promote mode");
+    expect(resolve).toMatch(/build\|promote\|verify\|pass/);
+  });
+
+  // The label D16 compares against has to name the commit that is *in* the
+  // image. `github.sha` is the commit the event named, and on the backport
+  // path those differ — a dispatch on the default branch building a
+  // `release/x.y` commit.
+  it("labels the revision from the checkout rather than from the event", () => {
+    const build = code(jobBlock(source, "build"));
+    expect(build).toContain('revision="$(git rev-parse HEAD)"');
+    expect(build).toContain('--build-arg "IMAGE_REVISION=$revision"');
+    expect(build).toContain('--label "org.opencontainers.image.revision=$revision"');
+    expect(build).not.toContain("SHA: ${{ github.sha }}");
   });
 });
 

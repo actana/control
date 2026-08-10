@@ -9,7 +9,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing — it gates |
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `main` | `:edge`, `:sha-<short>` |
-| [`release.yml`](../.github/workflows/release.yml) | `v*` tag | Core tarballs + checksums, `:<version>`, `:latest`, the GitHub Release, each image's Docker Hub page |
+| [`release.yml`](../.github/workflows/release.yml) | `workflow_call` from the promotion, or a dispatch — **not** a `v*` tag ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D40) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a rebuilt-and-republished Core image, a `NODE_VERSION` bump PR, and an issue for anything the dev-tree audit or the Harness canary found |
 | [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
@@ -553,15 +553,42 @@ deleting it.
 
 ## Cutting a release
 
+> **This section describes the pre-train flow and is being replaced.** Under
+> [ADR 0023](adr/0023-release-trains-and-digest-promotion.md) a release is a
+> **promotion**, not a tag push: `promote.yml` pauses for the human,
+> fast-forwards `main`, pushes `vx.y.z` as a record and calls `release.yml` by
+> `workflow_call`. Two clauses of that are already true in `release.yml` and
+> contradict what follows, so they are stated here rather than left to
+> surprise someone:
+>
+> - **Pushing a `v*` tag does nothing at all** (D40). The tag trigger is gone;
+>   keeping it beside the `workflow_call` would fire two racing release runs.
+>   `gh workflow run release.yml -f tag=v0.1.0` is how a release is driven by
+>   hand, and it is how a backport releases at all.
+> - **The macOS leg no longer waits for anybody** (D15). The pause moved to the
+>   head of `promote.yml`, which is upstream of the whole release — so it now
+>   also gates the fast-forward onto `main`. Exactly one pause exists.
+>
+> The full rewrite of this page — the train model, the tag ladder and the
+> rollback runbook — is #113.
+
 ```bash
-git tag v0.1.0 && git push origin v0.1.0
+gh workflow run release.yml --repo actana/control -f tag=v0.1.0
 ```
 
-That fires `release.yml`: the two Linux tarball legs and the installer e2e run
-straight away, the mac leg waits for a person (below), and once it is approved
-the two image builds, the GitHub Release and each image's Docker Hub page
-follow. If one needs rebuilding, the workflow accepts a `workflow_dispatch`
-with the tag name — the tag must already exist on origin.
+The two Linux tarball legs and the installer e2e run straight away, the mac
+tarball builds alongside them, and the two image jobs and the GitHub Release
+follow. Each image's Docker Hub page is no longer part of it — that syncs on a
+weekly clock now (D43). The tag must already exist on origin.
+
+`release.yml` resolves one of **two modes** from where that tag lives (D26). A
+tag reachable from `main` is a **promotion**: the image jobs re-point the
+`beta-x.y.z` digest a human already ran at `<version>` and build nothing, after
+asserting the digest was built from the promoted commit (D16, D17). A tag on a
+`release/*` branch is a **backport**: no beta train exists for an old line, so
+its images are built from that branch — the one documented exception in the
+design, and it keeps the CVE gate. A backport never moves `:latest`, on Docker
+Hub or on GitHub (D28).
 
 `release.yml` attaches nothing until its arm64 installer legs are green
 (see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
@@ -576,9 +603,11 @@ in `release.yml`, so both are yours:
   before you push the tag.
 - **The `macos-release` environment exists with required reviewers on it.**
   Without it there is no pause at all: GitHub auto-creates a referenced
-  environment with no protection rules, so the mac leg runs immediately and the
-  release publishes unreviewed — silently, not as a red build. See
-  [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+  environment with no protection rules, so the gated job runs immediately and
+  the release publishes unreviewed — silently, not as a red build. The
+  environment is no longer referenced from `release.yml` (D15); it is
+  `promote.yml` that will hold it, and until that lands nothing references it.
+  See [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
 `resolve` does fail the run outright when `DOCKERHUB_USERNAME` or
 `DOCKERHUB_TOKEN` is missing on `actana/control`, before anything is built —
@@ -586,16 +615,19 @@ that one the workflow does check.
 
 ### The approval pause — a release waits for a person
 
-The `tarball-macos` job declares `environment: macos-release`, and that
-environment has required reviewers. So a tag push does **not** produce a
-release on its own: the job goes to **waiting** the moment the run starts, and
-only the unpublished machine work — the Linux tarballs and the installer e2e —
-proceeds while it waits.
+> **The pause has moved out of `release.yml` (ADR 0023 D15).** What follows
+> describes it correctly except for *where* it sits: it is the first step of
+> `promote.yml` rather than the `tarball-macos` job, which means it now gates
+> the fast-forward onto `main` as well, and the reviewer builds their tarball
+> from the train tip rather than from the tag. Exactly one pause exists.
+
+The gated job goes to **waiting** the moment the run starts, and only
+unpublished machine work proceeds while it waits.
 
 **Nothing leaves the repository until a reviewer approves.** Every publishing
-job sits downstream of that leg: `github-release` needs it, and so do `panel`
-and `core`. No image, no moved `:latest`, no GitHub Release
-([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended).
+job sits downstream of the pause: no image, no moved `:latest`, no GitHub
+Release ([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended; ADR 0023
+D15).
 
 That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
@@ -607,9 +639,9 @@ worse than a release that is late.
 The pause is the manual test window, not a rubber stamp. Before approving,
 the reviewer:
 
-1. Builds the tarball on their own Mac from the tagged commit —
+1. Builds the tarball on their own Mac from the commit under review —
    `pnpm core:tarball` on Apple silicon produces exactly the `mac-arm64` asset
-   the waiting leg will. The leg has not run yet, so there is nothing to
+   the release will. Nothing has been built yet, so there is nothing to
    download.
 2. Works through
    [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md)

@@ -495,8 +495,10 @@ jobs:
   # The release-tarball seam (core-installer issue 01): the artifact
   # operators actually download must extract and boot on its own — bundled Node,
   # bundled natives, no system Node, no network. Built here on every PR for the
-  # runner's own platform so a broken tarball is caught before tag time;
-  # release.yml builds and smokes both released targets on a tag push.
+  # runner's own platform so a broken tarball is caught before release time;
+  # release.yml builds and smokes both released targets when a release runs —
+  # called from the promotion or dispatched by hand, never on a tag push
+  # (ADR 0023 D40).
   #
   # This is now the only boot-and-dial smoke on a PR. There was a second —
   # `smoke-standalone-core.mjs`, against the unpacked bundle — but it made the
@@ -643,8 +645,10 @@ jobs:
   # release target again (ADR 0016 D28, as amended) does not change that. D35
   # took the macOS legs off the PR gate because they were 72% of the bill at
   # 10× billing, and that is the decision this file keeps: zero macOS minutes
-  # on a pull request. The one mac leg lives in release.yml, runs on a tag, and
-  # waits on a human approval; `e2e-actana-setup-macos.mjs` stays deleted, and
+  # on a pull request. The one mac leg lives in release.yml and now builds
+  # alongside the Linux legs — the human approval moved out of it to the head of
+  # `promote.yml` (ADR 0023 D15, landing in #111), which is upstream of the
+  # whole release; `e2e-actana-setup-macos.mjs` stays deleted, and
   # docs/core-macos-prerelease-checklist.md is what a person runs instead.
   # `scripts/__tests__/workflows.test.mjs` fails if a macOS runner appears in
   # this file.

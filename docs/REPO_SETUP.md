@@ -131,10 +131,10 @@ answer on a fork, and the wrong answer to ignore here.
 Set under **Settings → Environments**, not under Secrets and variables. It
 holds no secrets at all; the only thing it carries is a list of people.
 
-> **Do this before the first `v*` tag, not after.** A missing environment is
+> **Do this before the first promotion, not after.** A missing environment is
 > not a red build — GitHub auto-creates a referenced environment with **no
-> protection rules** on first use, so the mac leg would run immediately and the
-> whole release would publish unreviewed, silently. `GET
+> protection rules** on first use, so the gated job would run immediately and
+> the whole release would publish unreviewed, silently. `GET
 > /repos/actana/control/environments` returning `total_count: 0` means the gate
 > described below does not exist yet.
 
@@ -142,30 +142,43 @@ holds no secrets at all; the only thing it carries is a list of people.
 - [ ] **Required reviewers** → the people who own a Mac and can run the
       checklist. At least one, and give it more than one — until somebody
       approves, nothing a release would publish is published
-- [ ] Leave **deployment branches** unrestricted: the job that uses it runs on
-      a `v*` tag, and a branch restriction would refuse the tag
+- [ ] Leave **deployment branches** unrestricted: a branch restriction would
+      refuse the ref the gated job runs on
 - [ ] Confirm it took: `gh api repos/actana/control/environments --jq
       '.environments[].name'` lists `macos-release`
 
-`release.yml`'s `tarball-macos` job declares this environment, so on a tag push
-it enters **waiting** and burns no runner minutes until it is approved
-([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended). Approval is not a
-formality: the reviewer runs
+> **The job that declares this environment is moving.** `release.yml`'s
+> `tarball-macos` no longer declares it: under [ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) D15 the pause is the
+> **first** thing `promote.yml` does, so the fast-forward onto `main` is
+> downstream of the human as well and `main` never contains unapproved code.
+> Exactly one pause exists either way. Until `promote.yml` lands (#111) the
+> environment is configured and referenced by nothing, which is inert — set it
+> up regardless, because the promotion workflow is what will reference it and a
+> missing environment is silently unprotected rather than red.
+>
+> The rest of this section is unchanged by that move: same environment name,
+> same reviewers, same checklist. What changes is *when* the reviewer is asked
+> — before the promotion is dispatched, against the train tip, rather than
+> after a tag is pushed. By D16's assertion that is the same commit, and it is
+> available earlier.
+
+Approval is not a formality: the reviewer runs
 [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) on
 real Apple hardware — Gatekeeper on an unsigned bundle, and whether the
 LaunchAgent survives a reboot and a logout — none of which a runner that is
 destroyed rather than restarted can answer. Clicking approve is the statement
 that it passed.
 
-**What a reviewer's approval actually controls: everything a release
-publishes.** `github-release` needs that job, and so do the `panel` and `core`
-image builds. So a rejection stops the GitHub Release, the tarballs, both
-images and `:latest`. (The Docker Hub pages are no longer downstream of it —
-they sync on a weekly clock now, and a page is not a published artifact.) That
-is the property worth protecting: an image push cannot be undone
-and `:latest` has no history, so a reviewer who rejects on a Gatekeeper blocker
-must be able to believe nothing shipped. The cost is that a release is as slow
-as its reviewer, which is the cheaper side of the trade.
+**What a reviewer's approval controls: everything a release publishes.** With
+the pause at the head of promotion, that is the whole of it — the fast-forward,
+the tag, both images and `:latest`, the GitHub Release and its tarballs.
+(The Docker Hub pages are not downstream of it — they sync on a weekly clock
+now, and a page is not a published artifact.) That is the property worth
+protecting: an image push cannot be undone and `:latest` has no history, so a
+reviewer who rejects on a Gatekeeper blocker must be able to believe nothing
+shipped. The cost is that a release is as slow as its reviewer, which is the
+cheaper side of the trade.
 
 ## 3. Branch ruleset for `main` (Settings → Rules → Rulesets)
 
@@ -241,10 +254,13 @@ single squashed commit, and every one of those tags drags the upstream Electron
 history behind it. They are **deleted on sight, not merely left unpushed**,
 because leaving them in a clone is a loaded gun:
 
-- [`release.yml`](../.github/workflows/release.yml) triggers on `v*`, so a
-  single `git push --tags` would both re-import the upstream history into a
-  repository that was squashed on purpose **and** fire 102 release runs —
-  each one publishing tarballs, two images and a GitHub Release.
+- A single `git push --tags` would re-import the upstream history into a
+  repository that was squashed on purpose. It no longer fires 102 release runs
+  as well: [`release.yml`](../.github/workflows/release.yml) has no `push:
+  tags` trigger, and a stray `v*` tag now does nothing at all ([ADR
+  0023](adr/0023-release-trains-and-digest-promotion.md) D40). That is the
+  reason the clause was written the way it was, and it is worth keeping in mind
+  when reading the rest of this warning.
 - They sort above `0.1.0`, so `git describe` and any future mirror would report
   a version this product has never released.
 
