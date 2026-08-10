@@ -1,4 +1,6 @@
-// What the `-dev` tag sweep is allowed to delete, and why (ADR 0023 D33, D38).
+// What the `-dev` tag sweep is allowed to delete, and why (ADR 0023 D45, and
+// D38 — *the delete-capable credential*, the first of the two clauses numbered
+// D38).
 //
 // Docker Hub has no automatic tag garbage collection and no undelete. This
 // module is the whole decision — which repository may be swept, which tag

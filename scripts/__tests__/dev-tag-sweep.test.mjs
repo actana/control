@@ -1,4 +1,5 @@
-// The `-dev` tag sweep's decisions (ADR 0023 D33, D38).
+// The `-dev` tag sweep's decisions (ADR 0023 D45, and D38 — *the
+// delete-capable credential*).
 //
 // This is a destructive unattended cron against a registry with no undelete,
 // and — because Docker Hub personal access tokens carry an account-wide

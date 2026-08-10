@@ -6,13 +6,32 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
-// D34's count is now **four** entry points. `landing.yml` deploys `landing/`
-// to the CDN behind control.actana.ai (docs/landing-page.md §7), and it could
-// not be folded into `ci.yml` behind a path filter: `ci.yml` is in the "Protect
-// main" ruleset's required checks, and a required check whose workflow is
-// filtered out of a run stays Pending forever, blocking every PR that does not
-// touch the filtered path. So the deploy is its own file — a deliberate
-// revision of the count, not the drift this test exists to catch.
+// **D34's count is now five entry points**, and both revisions were deliberate:
+//
+//   ci.yml           gates every pull request, and publishes the train's image
+//                    on every push to `beta/**` (ADR 0023 D41)
+//   release.yml      the tarballs, the images and the GitHub Release — entered
+//                    by `workflow_call` or a dispatch, never by a tag (D40)
+//   promote.yml      the fifth file, and the only thing that advances `main`:
+//                    pause, verify the digest, fast-forward, tag, release
+//                    (ADR 0023, amending D34)
+//   housekeeping.yml everything on a clock and nothing that gates
+//   landing.yml      the fourth file: `landing/` to the CDN behind
+//                    control.actana.ai (docs/landing-page.md §7)
+//
+// plus the one reusable `container-image.yml`, which every path that builds an
+// image calls and which is not an entry point because it has no trigger of its
+// own.
+//
+// `landing.yml` is a separate file rather than a path-filtered job inside
+// `ci.yml` for a reason that has since grown teeth: `ci.yml`'s checks are
+// required by the "Protect main" ruleset, and **a required check whose workflow
+// is filtered out of a run stays Pending forever**, blocking every pull request
+// that does not touch the filtered path. ADR 0023 D33 is the same failure
+// reached from the other side — it is why `Panel image` / `Core image` exit
+// early and green on a draft or a documentation-only diff instead of carrying a
+// job-level `if:`. One rule, two files, and the count revised twice rather than
+// drifted; see docs/ci-cd.md § "At a glance".
 //
 // It also pins the parts of `housekeeping.yml` that are load-bearing but
 // invisible in a green run: the cron a job is gated on, the fact that the
@@ -394,7 +413,8 @@ describe("housekeeping.yml", () => {
     expect(job).not.toContain("push: true");
   });
 
-  // D33/D38. The delete-capable credential is a second secret, and it never
+  // D45, and D38 (*the delete-capable credential*). The delete credential is a
+  // second secret, and it never
   // appears in a job that could touch a release repository.
   it("sweeps the -dev tags with the cleanup token and nothing else", () => {
     const job = jobBlock(source, "dev-tag-sweep");

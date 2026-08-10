@@ -564,7 +564,7 @@ jobs:
           gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
             --label needs-triage
 
-  # The `-dev` tag sweep (ADR 0023 D33).
+  # The `-dev` tag sweep (ADR 0023 D45).
   #
   # Docker Hub has no automatic tag garbage collection, so every push to every
   # pull request leaves a tag behind forever. This is the clock that empties
