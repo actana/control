@@ -239,8 +239,13 @@ jobs:
           # train exists at the moment this one promotes. A hotfix is an
           # expedited train (D22), so promoting one necessarily happens while
           # another train exists — and that train can no longer fast-forward.
-          survivors="$(git ls-remote --heads origin 'refs/heads/beta/*' \
-            | sed 's#.*refs/heads/##' | grep -vx "$TRAIN" || true)"
+          # Listed first and filtered second, so that a failing `ls-remote`
+          # fails this step. Folding `|| true` over the whole pipeline — which
+          # `grep`'s exit-1-on-no-match invites — would turn "origin did not
+          # answer" into "no other train exists", and the surviving train would
+          # be stranded silently with nothing to say so (D24).
+          all_trains="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
+          survivors="$(grep -vx "$TRAIN" <<<"$all_trains" || true)"
           survivor_count="$(grep -c . <<<"$survivors" || true)"
           hotfix=false
           survivor=""
@@ -649,7 +654,9 @@ jobs:
           APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
         run: |
           set -euo pipefail
-          existing="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##' || true)"
+          # No `|| true`: an `ls-remote` that failed must not read as "no train
+          # exists", which is the answer that cuts a second one (D2, D25).
+          existing="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
           if [[ -n "${existing// }" ]]; then
             echo "::notice title=A train already exists::$(tr '\n' ' ' <<<"$existing")— the invariant D25 protects already holds, so nothing is cut. This is the ordinary post-hotfix case."
             exit 0
