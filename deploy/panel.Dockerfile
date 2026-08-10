@@ -24,7 +24,7 @@
 # on bookworm's glibc 2.36 and ran on trixie's 2.41, which works only because
 # glibc is backward-compatible in that direction; the reverse breaks. Aligning
 # the stages removes the reliance rather than documenting it.
-FROM node:24.15.0-trixie AS build
+FROM node:26.7.0-trixie AS build
 
 RUN npm install -g pnpm@11.1.2
 
