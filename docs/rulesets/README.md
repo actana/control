@@ -40,6 +40,21 @@ ruleset with no working bypass. The real value is the `APP_ID` secret's value
 (see [`../REPO_SETUP.md`](../REPO_SETUP.md) §2). §3 has the `jq` line that
 substitutes it.
 
+The tripwire only catches the *unsubstituted* case. A **wrong** id is worse and
+quieter: `main.json` and `tag-release-cut.json` are full-body `PUT`s, so the
+body sent is the ruleset afterwards, and an id that is not the App's replaces
+the live bypass actor list rather than sitting beside it. The API answers 200
+and the apply reports success, having deleted the identity `promote.yml`
+depends on.
+
+[`preflight-app-id.sh`](preflight-app-id.sh) is the assertion against that. Run
+it from an admin clone before the first `apply`; it refuses, naming the
+mismatch, if `APP_ID` is not an App installed on the repository's owner, if a
+payload names some other App, or if a `PUT` would drop a bypass actor that is
+live today. It reads only — every call it makes is a `GET` — and nothing runs
+it automatically. [`../REPO_SETUP.md`](../REPO_SETUP.md) §3 puts it in the
+cutover sequence.
+
 ## Keeping these honest
 
 The `required_status_checks` contexts are check-run names, character for
