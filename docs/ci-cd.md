@@ -5,24 +5,39 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 
 ## At a glance
 
+**Five entry points and one reusable workflow** ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md), amending [ADR
+0016](adr/0016-the-0-1-0-shape.md) D34):
+
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
-| [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing — it gates |
-| [`ci.yml`](../.github/workflows/ci.yml) | push to `main` | `:edge`, `:sha-<short>` |
-| [`release.yml`](../.github/workflows/release.yml) | `workflow_call` from the promotion, or a dispatch — **not** a `v*` tag ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D40) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
+| [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `beta/**` | `beta-x.y.z` in `panel` / `core`, `sha-<short>` in `panel-dev` / `core-dev` |
+| [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, the next train |
+| [`release.yml`](../.github/workflows/release.yml) | `workflow_call` from the promotion, or a dispatch — **not** a `v*` tag (D40) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
-| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a rebuilt-and-republished Core image, a `NODE_VERSION` bump PR, and an issue for anything the dev-tree audit or the Harness canary found |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a `NODE_VERSION` bump PR, the `-dev` tag sweep, the four Docker Hub pages, and an issue for anything the release detector, the dev-tree audit or the Harness canary found |
 | [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
 
-`ci.yml` is one file doing two jobs, and the trigger is the difference. On a
-PR it gates and pushes nothing; on a push to `main` it publishes `:edge` and
-`:sha-<short>` from the same reusable build. That fold is [ADR
-0016](adr/0016-the-0-1-0-shape.md) D30 — an edge publish that differs from the
-PR build only in which tags come out the other end does not need a workflow
-file of its own. The repo conventions — PR title, commit messages, branch name
-— are the `Conventions` job inside it (D34).
+There is no `push: main` row, and its absence is the whole design. Commits
+reach `main` only by a promotion fast-forwarding a train whose every commit
+`ci.yml` already gated and published (D41), so a second run there would
+re-prove what the train proved. `:edge` is retired with it (D13): it published
+from `main`, and under the train model `main` is only ever a released version,
+so `:edge` would have been a second name for `:latest`.
 
-`housekeeping.yml` is everything on a clock and nothing that gates. Its five
+`ci.yml` is one file doing two jobs, and the trigger is the difference. On a
+pull request it gates, and publishes a `pr-` image a reviewer can run; on a
+push to a train it publishes the image a promotion will re-point. The repo
+conventions — PR title, commit messages, branch name — are the `Conventions`
+job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and the branch
+model itself is the `Train rules` job beside it.
+
+`promote.yml` is the fifth entry point, and the only thing in the repository
+that writes to `main`. It is described under [Cutting a
+release](#cutting-a-release).
+
+`housekeeping.yml` is everything on a clock and nothing that gates. Its seven
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
 described in full under [Housekeeping](#housekeeping).
@@ -39,12 +54,73 @@ forward: if the landing page ever grows a validation step, it belongs in
 never be added to the ruleset's required checks. The page has no build, so
 there is nothing to gate today. See [`landing-page.md`](landing-page.md) §7.
 
+**That reasoning is still true and now covers more than one job.** ADR 0023 D33
+is the same failure reached from the other side: `Panel image` and `Core image`
+are pinned required checks too, so "skip the build on a draft or a
+documentation-only diff" cannot be a job-level `if:` — a skipped required check
+stays Pending forever just the same. It is implemented as an early *successful*
+exit instead, which is why those checks go green in seconds on a docs PR rather
+than disappearing from the list. The mode a run took is announced in its log,
+so a green check is self-describing (D38, *one check name, four behaviours*).
+One rule, three places it bites; see [The pull request
+image](#the-pull-request-image-and-what-it-is-not).
+
 Both container images have **one** build implementation:
 [`container-image.yml`](../.github/workflows/container-image.yml), a reusable
-workflow called by the PR, edge, release, and weekly-rebuild paths with
-`image: panel` or `image: core`. That is deliberate — the bytes a PR validates
-are built exactly the way the bytes a release publishes are, rather than by a
-lookalike pipeline that drifts.
+workflow called by the PR, train and release paths with `image: panel` or
+`image: core`. That is deliberate — the bytes a PR validates are built exactly
+the way the bytes a release publishes are, rather than by a lookalike pipeline
+that drifts. It has no trigger of its own, which is why it is not a sixth entry
+point. Nothing on a clock calls it at all (D42).
+
+`scripts/__tests__/workflows.test.mjs` asserts this inventory: five entry
+points plus one reusable workflow, nothing else.
+
+## The train model
+
+Work does not go to `main`. It goes to a **train** — one `beta/x.y.z` branch,
+open at a time — and `main` accepts exactly one kind of change: the promotion
+of a whole train ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md)
+D1).
+
+```
+  PR ──squash──▶ beta/0.2.0 ──┬──▶ beta-0.2.0   (a person pulls this and approves)
+                              │
+                              └──▶ promotion ──▶ main (fast-forward) ──▶ 0.2.0, latest
+                                                                          ▲
+                                                        the same digest ──┘
+```
+
+Five things follow from that, and each is enforced rather than asked for:
+
+- **A pull request targets the open train, never `main`.** GitHub bases new
+  pull requests on the default branch, which is still `main` (D6) — so the
+  first PR anyone opens targets the wrong thing and has to be retargeted. The
+  `Train rules` check says so by name. It is a check rather than a ruleset
+  setting because **GitHub rulesets cannot restrict a pull request's source
+  branch**; no such setting exists.
+- **Exactly one train is open at a time, and nothing chose that.** Promotion is
+  a fast-forward (D5), which needs `main` to be an ancestor of the train tip.
+  The moment one train promotes, a second train cut from the same `main` is
+  behind a commit `main` has moved past and can never fast-forward again. The
+  check catches a stranded train on the pull request rather than at the
+  dispatch.
+- **There is a freeze window.** From the moment a train is frozen for approval
+  until it promotes, nothing merges anywhere. It is bounded by how fast
+  promotion runs, and it is written down in
+  [`CONTRIBUTING.md`](../CONTRIBUTING.md) rather than discovered mid-review.
+- **`main` advances only by fast-forward** — not a squash, not a merge commit.
+  A squash would collapse every PR in the train into one commit and produce a
+  `main` commit whose SHA differs from the tested one, which would make the
+  digest assertion unimplementable.
+- **The promotion pull request is a gate, not a merge.** Its checks and its
+  approval are the point; `promote.yml` performs the advance. Do not press
+  GitHub's merge button on it.
+
+All four package manifests — root, `packages/core`, `packages/panel`,
+`packages/shared` — carry the train's version, written by the cut itself, and a
+required check asserts all four still agree (D3). Nothing else should be
+editing them.
 
 ## The published images
 
@@ -52,9 +128,23 @@ lookalike pipeline that drifts.
 | --- | --- |
 | `actana/panel` | The Panel web service. **This is the one you deploy.** |
 | `actana/core` | The Core daemon. **A second, supported way to run a Core.** |
+| `actana/panel-dev` | Pre-merge and pre-release handles for the Panel. **Not released, not scanned-clean, do not deploy.** |
+| `actana/core-dev` | The same for the Core. |
 
-Both are published to Docker Hub (`docker.io/actana/…`) — the only registry
+All four are published to Docker Hub (`docker.io/actana/…`) — the only registry
 ([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md)).
+
+The split is by **audience**, and it is load-bearing rather than tidy: the
+`-dev` repositories hold handles for people debugging, the release repositories
+hold things people deploy. Two consequences fall out of that. A
+wrong-repository pull is impossible — `actana/core:latest` is never a
+pre-merge build, whatever anybody types. And the delete-capable credential that
+sweeps the `-dev` tags weekly is confined to two repository names that are not
+the ones holding `:latest`; Docker Hub personal access tokens carry an
+account-wide permission level rather than a repository list, so that
+hard-coded list is the only guard there is ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D36, D38 — *the
+delete-capable credential* — and D45).
 
 `actana/core` is built from [`../deploy/core.Dockerfile`](../deploy/core.Dockerfile)
 and is a Core you run rather than a machine you install one on: `tini` is PID 1
@@ -105,7 +195,7 @@ The product ships as three things, on one pipeline, from the same tag:
   tarball. `release.yml` → `linux-x64`, `linux-arm64` and `mac-arm64` with
   published checksums, which `install.sh` and `actana update` verify against.
 
-A tag therefore publishes exactly four release assets —
+A release therefore publishes exactly four release assets —
 `actana-core-<version>-linux-x64.tar.gz`,
 `actana-core-<version>-linux-arm64.tar.gz`,
 `actana-core-<version>-mac-arm64.tar.gz` and `SHA256SUMS`. `install.sh` is
@@ -123,19 +213,169 @@ shape, refusals included.
 
 The Panel and the Core are version-locked at runtime: the core-link
 handshake exchanges a protocol version, and a mismatched pair renders as "needs
-update" in the Panel. So tag both together — one `v*` tag builds both.
+update" in the Panel. They therefore ride the same train and promote together —
+one version, both images, and one `ACTANA_TAG` in the reference compose that
+moves both.
 
-## Container image tags
+The images on that release are **retagged, not rebuilt** — see [The digest
+guarantee](#the-digest-guarantee-where-it-starts-and-where-it-stops). The Core
+tarballs are not: they are built by the release, from the promoted commit, and
+the digest claim is about the container images only.
 
-| Tag | Moves | Use it for |
+## The tag ladder
+
+Five published tag classes, each answering exactly one question ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D7):
+
+| Tag | Repository | Published when | Moves | Arch |
+| --- | --- | --- | --- | --- |
+| `pr-<prid><YYYYMM>` | `panel-dev` / `core-dev` | every push to a non-draft, non-docs-only PR | per push | amd64 |
+| `sha-<short>` | `panel-dev` / `core-dev` | every train merge | never | multi-arch |
+| `beta-x.y.z` | `panel` / `core` | the train cut, and every train merge | per merge | multi-arch |
+| `x.y.z` | `panel` / `core` | promotion | never | multi-arch |
+| `latest` | `panel` / `core` | promotion of the highest version | per release | multi-arch |
+
+Read it as a ladder of decreasing mutability and increasing audience: `pr-` is
+what is under discussion, `beta-` is what is about to ship, `x.y.z` is what
+shipped, and `latest` is what an operator gets by typing nothing.
+
+- **`pr-<prid><YYYYMM>` means "the current state of that pull request"** and is
+  mutable on purpose (D10). The prefix is deliberately *not* `sha-`, which this
+  repository already uses for the opposite thing — an immutable commit pin —
+  and one prefix meaning both would misread exactly when it matters. The
+  six-digit month suffix is fixed-width so the PR id parses off the front. A
+  pull request open across a month boundary starts a new tag; the old one is
+  swept (D45).
+- **`sha-<short>` now lives in the `-dev` repositories** (D11), not beside
+  `beta-x.y.z`. It is the only immutable handle on pre-release bytes, and it
+  answers "which commit introduced this" — which is the question a misbehaving
+  beta produces. **So if you are bisecting a beta, pull from `actana/core-dev`
+  and `actana/panel-dev`, not from the release repositories.** It sits there
+  because the sweep that deletes it needs a delete-capable credential, and that
+  credential is kept permanently out of the repositories holding `latest`.
+- **`beta-x.y.z` is not a semver prerelease, and that is deliberate** (D8).
+  Semver's own form is `1.2.3-beta.1` and the tooling parses it correctly; this
+  shape was chosen because it matches the branch that produced it. The mismatch
+  is safe **only because betas never become GitHub Releases** (D9) — nothing
+  that parses versions ever sees one. If a beta ever gains a Release, that
+  clause has to be revisited before the change lands, not after.
+- **Betas are Docker-only.** No git tag, no GitHub Release, no Core tarballs.
+  The metal install path therefore has no beta channel: a beta is testable as a
+  container and in no other way.
+- **A prerelease version tag** (`v1.0.0-rc.1`) publishes `:1.0.0-rc.1` and
+  deliberately does **not** move `:latest`.
+
+### `<stage>-<arch>` tags are build scaffolding, not tags to pull
+
+You will see names like `pr-116-amd64`, `beta-0.2.0-arm64` and `0.2.0-amd64` in
+the registry. **They are not for you.**
+[`container-image.yml`](../.github/workflows/container-image.yml) pushes one
+per-architecture tag per leg and then stitches the multi-arch manifest over
+them; they are a real, visible, previously undocumented part of the registry,
+and they are an implementation detail of the stitch (D12). Pulling one gets you
+one architecture with no manifest in front of it.
+
+The `stage` discriminator has to be unique per concurrent build, which is why
+it is `pr-<number>` on the pull request path and `beta-x.y.z` on the train
+path rather than a shared literal. Two open pull requests sharing `stage: ci`
+would overwrite each other's per-architecture tags, and the stitch could then
+assemble a manifest out of another pull request's bytes. That was harmless
+while PR builds pushed nothing; it corrupts from the moment they do.
+
+The `-dev` sweep recognises `pr-<number>-<arch>` and cleans it up. The release
+repositories' scaffolding is left where it is — nothing unattended deletes from
+a repository holding `latest`.
+
+### The digest guarantee: where it starts, and where it stops
+
+**The digest guarantee runs from `beta-x.y.z` to `x.y.z`, and no further.**
+
+That is the whole claim this pipeline exists to make, and it is worth stating
+in its narrow form because it is exactly the kind of claim that grows in the
+retelling until somebody relies on a link in the chain that was never there.
+
+What is true:
+
+- A train merge builds an image and publishes it as `beta-x.y.z`.
+- A person pulls **that** image, runs it, and works the [beta acceptance
+  checklist](beta-acceptance-checklist.md) against it.
+- Promotion resolves `beta-x.y.z` to a digest, asserts the image's
+  `org.opencontainers.image.revision` label equals the promotion pull request's
+  head SHA, and only then re-points `<version>` and `latest` at **that same
+  digest** with `docker buildx imagetools create` (D16, D17).
+- Nothing is built in between. A promotion cannot produce different bytes
+  because it produces no bytes.
+
+What is **not** true, and never was:
+
+- **The `pr-` image is not the beta image.** Pull requests squash-merge, so a
+  train commit is a *new* commit and its image is a fresh build. Different
+  bytes, deliberately (D18). The `pr-` image is a convenience for reviewing a
+  change; the beta image is the artifact that gets promoted.
+- **The guarantee does not reach backwards past the train merge**, and it does
+  not reach forwards past `x.y.z` either — `latest` is a pointer that moves,
+  and the next release moves it.
+- **A backport is the one documented exception.** No beta train exists for an
+  old line, so there is no digest to promote and its images are built from the
+  release branch. See [Backports and the supported
+  lines](#backports-and-the-supported-lines).
+
+The assertion is made twice, on purpose: once in `promote.yml` **before**
+`main` moves — which is what stops an unapproved commit reaching `main` at all
+— and again inside `container-image.yml` immediately before the retag. Both
+run on every architecture and both images, because the manifest is per-platform
+and a half-verified release is not a verified one.
+
+If the train moved after the approver tested it, the assertion fails with *"the
+train moved; re-approve"* and nothing is published. That is the design working.
+
+## The pull request image, and what it is not
+
+Every push to a non-draft pull request publishes an image a reviewer can *run*
+rather than read ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md)
+D32). It is the half of the design that is useful on its own, and it comes with
+three limits worth knowing before you file one of them as a bug.
+
+`Panel image` and `Core image` are two pinned required check names covering
+four behaviours, and every run announces which one it took (D38, *one check
+name, four behaviours*):
+
+| Mode | When | What happens |
 | --- | --- | --- |
-| `:latest` | on every non-prerelease version tag | the default; what the reference compose pulls |
-| `:<version>` e.g. `:0.1.0` | never | pinning a deployment |
-| `:edge` | on every push to `main` | trying what is about to ship |
-| `:sha-<short>` | never | pinning to an exact commit, e.g. to bisect |
+| build + push | same-repo, non-draft, touches code | `pr-<prid><YYYYMM>` to `panel-dev` / `core-dev` |
+| build, no push | the head is a fork | built and smoked; nothing published (D34) |
+| verify | the promotion pull request | the digest assertion instead of an hour of rebuilding (D19) |
+| pass | draft, or a documentation-only diff | green immediately, having built nothing (D33) |
 
-A prerelease tag (`v1.0.0-rc.1`) publishes `:1.0.0-rc.1` and deliberately does
-**not** move `:latest`.
+They are four modes of one job rather than four jobs precisely because the
+ruleset pins these names — the same reason `landing.yml` is its own file.
+
+**Fork pull requests build without pushing, and that is by design.** GitHub
+does not expose repository secrets to a `pull_request` run from a fork.
+`pull_request_target` — which would run the base branch's workflow with secrets
+against contributor-authored code — is rejected outright: the Docker Hub
+credential it would expose can push `:latest` and rewrite both public image
+pages, and a malicious Dockerfile or `postinstall` script is all it would take.
+So **the pull request image is a maintainer convenience, not a contributor
+one.** A fork PR with a green image check and no image behind it is working
+correctly.
+
+**PR images are amd64 only** (D35). Everything an operator deploys is
+multi-arch and built natively; the arch-specific failure is almost always the
+`better-sqlite3` build, which the amd64 leg already exercises. Emulation is
+acceptable for a developer poking at a change and is not acceptable for
+`beta-x.y.z`, `x.y.z` or `latest`.
+
+**A CVE-flagged image still fails the merge.** The gate is unchanged — a
+fixable CRITICAL or HIGH blocks the pull request — but the intent (D37) is that
+the image still reaches `-dev`, because the image you most need to pull and
+inspect is the one that failed the scan. As built, a failed scan suppresses the
+push, so today that image is built, scanned, reported and *not* published; the
+scan JSON is uploaded either way. Changing it means unpicking the invariant
+`scripts/__tests__/image-cve-gate.test.mjs` pins for the release path — "an
+image that fails the gate never reaches a registry" — which is a decision to
+take deliberately rather than as a side effect. Nothing CVE-flagged reaches a
+release repository under either reading.
 
 ## Architectures
 
@@ -443,8 +683,8 @@ own keys publishes under its own namespace with no edit to any workflow; see
 Docker Hub as the sole registry is a decision about **publishing**. Pulling
 the Panel's runtime base from `gcr.io/distroless/nodejs24` is a different thing
 in a different direction: an availability and rate-limit dependency on Google's
-registry, on **every single build** — every PR that touches the Panel image,
-every push to `main`, every release, and every weekly rebuild. It is accepted
+registry, on **every single build** — every PR that touches the Panel image and
+every merge into a train. It is accepted
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D26) and written down here so that
 during an outage it is a known dependency rather than a surprise.
 
@@ -474,9 +714,8 @@ Two registries are therefore in play, doing two different jobs:
 
 ## Housekeeping
 
-[`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the third and
-last workflow ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34) and the only one
-that is not a check. Seven chores on two crons:
+[`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the only entry
+point that is not a check and not a publish. Seven chores on two crons:
 
 | Job | Cron | What it does |
 | --- | --- | --- |
@@ -498,7 +737,7 @@ them. Jobs are gated on `github.event.schedule`, which is how one file carries
 two cadences; `workflow_dispatch` takes a `chore` input naming one of them, or
 `weekly` for the six that share the Monday tick.
 `scripts/__tests__/workflows.test.mjs` reads the file and asserts each job is on
-the cron it claims — and that the directory still holds exactly three entry
+the cron it claims — and that the directory still holds exactly five entry
 points plus `container-image.yml`.
 
 **Nothing on a clock publishes an image.** This file used to rebuild the newest
@@ -546,68 +785,179 @@ exact-match list of two names, re-asserted immediately before every delete call,
 refusing to run when empty. `DOCKERHUB_CLEANUP_TOKEN` is a *second* credential
 from the one the image push uses, and it can delete from the release
 repositories too: Docker Hub personal access tokens carry an account-wide
-permission level rather than a repository list (ADR 0023 D38, as amended), so
-that list is the only guard there is. `gh workflow run housekeeping.yml -f
-chore=dev-tag-sweep -f dry-run=true` reports what it would delete without
-deleting it.
+permission level rather than a repository list ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D38 — *the
+delete-capable credential*, as amended), so that list is the only guard there
+is. `gh workflow run housekeeping.yml -f chore=dev-tag-sweep -f dry-run=true`
+reports what it would delete without deleting it.
+
+What goes: a pull request's images when it closes, last month's `pr-` tag when
+the month rolls (D10), and anything unclaimed at 30 days — `sha-<short>` pins
+included, because they are a debugging handle rather than an archive. The set
+of open pull requests is a required input and never an optional one: "we could
+not list them" must not read as "they are all closed", which is how a sweep
+deletes every open review's image at once. A dry run reports the keeps as well
+as the deletions, because a sweep that printed only its deletions would look
+identical to one whose tag listing was silently truncated. The whole clause is
+D45.
 
 ## Cutting a release
 
-> **This section describes the pre-train flow and is being replaced.** Under
-> [ADR 0023](adr/0023-release-trains-and-digest-promotion.md) a release is a
-> **promotion**, not a tag push: `promote.yml` pauses for the human,
-> fast-forwards `main`, pushes `vx.y.z` as a record and calls `release.yml` by
-> `workflow_call`. Two clauses of that are already true in `release.yml` and
-> contradict what follows, so they are stated here rather than left to
-> surprise someone:
->
-> - **Pushing a `v*` tag does nothing at all** (D40). The tag trigger is gone;
->   keeping it beside the `workflow_call` would fire two racing release runs.
->   `gh workflow run release.yml -f tag=v0.1.0` is how a release is driven by
->   hand, and it is how a backport releases at all.
-> - **The macOS leg no longer waits for anybody** (D15). The pause moved to the
->   head of `promote.yml`, which is upstream of the whole release — so it now
->   also gates the fast-forward onto `main`. Exactly one pause exists.
->
-> The full rewrite of this page — the train model, the tag ladder and the
-> rollback runbook — is #113.
+A release is a **promotion**, not a tag push. Nothing is rebuilt: the images an
+operator pulls are the ones a person already ran. The whole flow is four
+things, and only the first and third need a human.
+
+```
+  cut the train  ──▶  merge PRs into it  ──▶  freeze + accept  ──▶  promote
+   (workflow)          (each publishes         (a person)           (dispatch)
+                        beta-x.y.z)
+```
+
+### Cutting a train
+
+Normally you do not: `promote.yml` cuts the next one automatically after every
+promotion, so a train is always open and work can always be proposed (D25). The
+guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
+the next release is a patch, or a major, delete the branch and re-cut it before
+anything merges into it.
+
+The cut creates `beta/x.y.z` from `main` and writes that version into all four
+manifests in its first commit (D3). Do not hand-edit those files: hand-editing
+four manifests is how three of them end up disagreeing, and the one that
+disagrees is found at promotion, by a person. A required check on the train
+asserts all four equal the branch's version.
+
+A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
+still has an image to promote, because **the cut itself publishes one** (D7).
+
+### Working the train, and the freeze window
+
+Every pull request targets the open train. Every merge into it republishes
+`beta-x.y.z` (multi-arch, in the release repositories) and `sha-<short>` (in
+the `-dev` ones). There are no path filters on that build, deliberately (D20):
+a documentation-only merge that skipped it would leave `beta-x.y.z`'s revision
+label naming an older commit, the promotion assertion would fail, and a README
+fix would block the release.
+
+**The freeze window** starts when the train is frozen for acceptance and ends
+when it promotes: nothing merges anywhere in between. It exists because
+`beta-x.y.z` moves on every merge, so a merge landing after the approver
+finished testing would either promote untested bytes or — since it does not —
+fail the digest assertion and cost the acceptance run. Its length is however
+long promotion takes. See [`CONTRIBUTING.md`](../CONTRIBUTING.md).
+
+If a train merge's image build goes red, `beta-x.y.z` does not move and the
+train is quietly un-promotable. That is not left to surface at the dispatch,
+after somebody has already worked the checklist against a stale image: the
+failure opens an issue, and the `Train rules` check blocks the promotion pull
+request while the train's latest push is red (D21).
+
+### Accepting the beta
+
+Pull `beta-x.y.z`, run it, and work
+[`beta-acceptance-checklist.md`](beta-acceptance-checklist.md). This is the
+human gate the whole design is built around — the image you approve is, byte
+for byte, the image that ships.
+
+The macOS pre-release checklist is worked at the same time, against the
+**train tip** rather than against a tag that does not exist yet. By the digest
+assertion that is the same commit, and it is available earlier.
+
+### Promotion
+
+Open a pull request from `beta/x.y.z` into `main`, let it go green, get it
+approved — then dispatch:
+
+```bash
+gh workflow run promote.yml --repo actana/control -f train=beta/0.1.0
+```
+
+**That pull request is a gate, not a merge. Do not press the merge button.** A
+squash would produce a `main` commit whose SHA differs from the tested one,
+which is exactly what the digest assertion cannot survive. GitHub closes the
+pull request as merged on its own once its commits are reachable from `main`,
+which the fast-forward makes true.
+
+Its image checks do not rebuild anything, either. `Panel image` and `Core
+image` are required on every pull request, and on a promotion they would
+otherwise spend an hour producing bytes that already exist — so on a promotion
+pull request they perform the digest assertion instead (D19). Seconds, same
+check names, still green.
+
+`promote.yml` then runs, in this order:
+
+1. **The human pause.** A job gated on the `macos-release` environment, and
+   everything else in the file is downstream of it — so `main` never contains
+   unapproved code.
+2. **Verify the digest** — every architecture, both images, against the
+   promotion pull request's head SHA. The design reduces to this step.
+3. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
+   commit; a non-fast-forward is an error, never a fallback.
+4. **Push `vx.y.z`** as a record — it triggers nothing — then call `release.yml`
+   by `workflow_call`.
+5. **Cut `release/x.y`** if the line has none, **delete the promoted train**,
+   and **cut the next train**.
+
+Every push in that workflow is made with the GitHub App identity and never with
+`GITHUB_TOKEN`, and that is not a preference. **GitHub does not trigger
+workflows from pushes made with the default token**, so a promotion using it
+would push `vx.y.z` and produce no release, and would fast-forward `main`
+without ever firing `landing.yml` — a landing-page change merged through a
+train would quietly stop deploying, with nothing red anywhere (D39).
+
+**Re-running after a failure.** Up to and including the fast-forward, a failed
+run is re-runnable from the top: the promotion pull request is still open and
+nothing is published. **After** it, it is not — `main` has moved, GitHub has
+closed the pull request as merged, and the workflow will refuse. Recovery is
+then per-step and manual: `gh workflow run release.yml -f tag=vx.y.z` re-runs
+the publish, and the branch housekeeping is a `git push` each.
+
+### What `release.yml` does with the tag
 
 ```bash
 gh workflow run release.yml --repo actana/control -f tag=v0.1.0
 ```
+
+That is the by-hand entry point, and the only way a backport releases at all.
+**Pushing a `v*` tag does nothing** (D40): there is no tag trigger, because
+keeping one beside the `workflow_call` would fire two release runs that could
+not even block each other — `github.ref_name` is the tag under a tag push and
+the *caller's* ref under a `workflow_call`, so the two would take different
+concurrency keys and race to build the same tarballs and create the same
+Release. A stray hand-pushed tag now does nothing at all, which is a stronger
+property than a check that catches it.
+
+`release.yml` resolves one of **two modes** from where the tag lives, and says
+which in the log:
+
+- **promote** — the tag is reachable from `main`. The image jobs re-point the
+  `beta-x.y.z` digest at `<version>` (and `latest`, when the guard allows it)
+  and build nothing, after asserting the digest was built from the promoted
+  commit.
+- **backport** — the tag is on a `release/*` branch. Its images are built from
+  that branch, because no beta digest exists to promote.
 
 The two Linux tarball legs and the installer e2e run straight away, the mac
 tarball builds alongside them, and the two image jobs and the GitHub Release
 follow. Each image's Docker Hub page is no longer part of it — that syncs on a
 weekly clock now (D43). The tag must already exist on origin.
 
-`release.yml` resolves one of **two modes** from where that tag lives (D26). A
-tag reachable from `main` is a **promotion**: the image jobs re-point the
-`beta-x.y.z` digest a human already ran at `<version>` and build nothing, after
-asserting the digest was built from the promoted commit (D16, D17). A tag on a
-`release/*` branch is a **backport**: no beta train exists for an old line, so
-its images are built from that branch — the one documented exception in the
-design, and it keeps the CVE gate. A backport never moves `:latest`, on Docker
-Hub or on GitHub (D28).
-
 `release.yml` attaches nothing until its arm64 installer legs are green
 (see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
-so a tag takes a few minutes longer than the tarball builds alone.
+so a release takes a few minutes longer than the tarball builds alone.
 
 **Two preconditions the workflow does not check for you.** Neither is enforced
 in `release.yml`, so both are yours:
 
-- **CI is green on the commit you are tagging.** There is no `release-gate` job
-  reading the tagged commit's check runs — a tag on a red commit builds and
-  publishes exactly like a tag on a green one. Look at the commit's checks
-  before you push the tag.
+- **CI is green on the commit being released.** There is no `release-gate` job
+  reading the tagged commit's check runs. On the promotion path the train's own
+  checks and the promotion pull request cover this; on a hand-driven dispatch
+  they do not.
 - **The `macos-release` environment exists with required reviewers on it.**
   Without it there is no pause at all: GitHub auto-creates a referenced
-  environment with no protection rules, so the gated job runs immediately and
-  the release publishes unreviewed — silently, not as a red build. The
-  environment is no longer referenced from `release.yml` (D15); it is
-  `promote.yml` that will hold it, and until that lands nothing references it.
-  See [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+  environment with **no protection rules**, so the gated job runs immediately
+  and the promotion waves itself through — silently, and green. It is
+  `promote.yml` that holds it. See [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
 `resolve` does fail the run outright when `DOCKERHUB_USERNAME` or
 `DOCKERHUB_TOKEN` is missing on `actana/control`, before anything is built —
@@ -615,52 +965,177 @@ that one the workflow does check.
 
 ### The approval pause — a release waits for a person
 
-> **The pause has moved out of `release.yml` (ADR 0023 D15).** What follows
-> describes it correctly except for *where* it sits: it is the first step of
-> `promote.yml` rather than the `tarball-macos` job, which means it now gates
-> the fast-forward onto `main` as well, and the reviewer builds their tarball
-> from the train tip rather than from the tag. Exactly one pause exists.
+The pause is the first job of `promote.yml`, and every other job in the file is
+downstream of it — including the fast-forward, so `main` never contains
+unapproved code. **Exactly one pause exists.** It used to sit on `release.yml`'s
+macOS tarball leg; it moved (D15), and a second one reappearing anywhere would
+be invisible in a green run, because it would look like a release nobody had
+got round to approving yet.
 
-The gated job goes to **waiting** the moment the run starts, and only
-unpublished machine work proceeds while it waits.
+The gated job goes to **waiting** the moment the run starts.
 
-**Nothing leaves the repository until a reviewer approves.** Every publishing
-job sits downstream of the pause: no image, no moved `:latest`, no GitHub
-Release ([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended; ADR 0023
-D15).
+**Nothing leaves the repository until a reviewer approves.** No image moves, no
+`:latest` moves, no GitHub Release appears, and `main` does not advance.
 
 That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
 `:latest` is a pointer with no history to roll back to. A reviewer who hits a
-blocker and rejects has to be able to believe nothing shipped. For the same
-reason a `SHA256SUMS` covering fewer architectures than the docs promise is
-worse than a release that is late.
+blocker and rejects has to be able to believe nothing shipped.
 
-The pause is the manual test window, not a rubber stamp. Before approving,
-the reviewer:
+The pause is the manual test window, not a rubber stamp. Before dispatching and
+approving, the reviewer:
 
-1. Builds the tarball on their own Mac from the commit under review —
+1. Works [`beta-acceptance-checklist.md`](beta-acceptance-checklist.md) against
+   the `beta-x.y.z` images — pull, compose up, pair a Core, check the CHANGELOG.
+2. Builds the macOS tarball on their own Mac from the train tip —
    `pnpm core:tarball` on Apple silicon produces exactly the `mac-arm64` asset
-   the release will. Nothing has been built yet, so there is nothing to
-   download.
-2. Works through
+   the release will — and works
    [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md)
-   against it — Gatekeeper on an unsigned bundle, the LaunchAgent surviving a
+   against it: Gatekeeper on an unsigned bundle, the LaunchAgent surviving a
    reboot and a logout, the lifecycle verbs, a clean uninstall. Ten minutes.
-3. Approves in the run's UI. Only then does the mac leg spend a runner minute,
-   and only then do the images and the Release publish.
+3. Approves in the run's UI. Only then does anything publish.
 
 An unticked box is a reason to **reject**: no release is better than one whose
 macOS asset a person could not get working, because the assets an operator
 downloads are the ones somebody said work. Who may approve is set up once, as
 an admin step: [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
-Because of the wait, a release no longer "lands in under six minutes" — the
+Because of the wait, a release does not "land in under six minutes" — the
 automated part still does, and the rest is however long the person takes.
 
-Push one tag deliberately, never `git push --tags` — a clone made from the fork
-parent carries tags that would fire a release run each for versions this
-repository never made; see [`REPO_SETUP.md`](REPO_SETUP.md) §6.
+Never `git push --tags` — a clone made from the fork parent carries tags that
+would collide with versions this repository never made; see
+[`REPO_SETUP.md`](REPO_SETUP.md) §6.
+
+### Hotfix trains
+
+**A hotfix is an expedited train, not a bypass.** Cut `beta/x.y.z+1` from
+`main`, cherry-pick the fix, and run the normal flow at speed. There is no
+second publish path, and that is the point: a second path would be the one
+used under time pressure, which is exactly when the machinery most needs to be
+the one everybody has exercised. If it is too slow, the answer is faster CI.
+
+Nothing is labelled "hotfix". The condition that matters is *a train was
+promoted while another train existed*, which the workflow can see for itself
+(D23) — a flag would have to be set by a human during an incident, which is
+when it would be forgotten.
+
+Promoting the hotfix strands the train that was already open: `main` moves past
+its ancestor, so it can never fast-forward again. `promote.yml` therefore
+**rebases the surviving train onto the new `main` and force-pushes it** — the
+one exception to `beta/*` branch protection, and the only force-push in the
+system (D24). Two obligations come with that rebase, and the workflow honours
+both because neither is the natural way to write one:
+
+- **The train's images are republished.** Every commit SHA on the train
+  changed, so `beta-x.y.z` names an image whose revision label points at a
+  commit that no longer exists. Left alone, the digest assertion fails at *that*
+  train's promotion — long after the cause, and reading as "the train moved"
+  when nothing moved. The workflow waits for the republish and then checks the
+  registry, because "the push triggered a workflow" is exactly the assumption
+  that is invisible when it is false.
+- **Every open pull request into that train is told**, because its base was
+  rewritten without it being asked. Approvals survive — they attach to the head
+  — but conflicts can appear, and only the author can resolve them.
+
+No next train is cut after a hotfix promotion: a train already exists, so the
+invariant already holds (D25).
+
+**If the rebase conflicts**, the workflow fails loudly and does not try to
+resolve anything. The fallback is: abandon the surviving train, re-cut it from
+`main`, and cherry-pick its squash commits. `main`, the tag and the release are
+unaffected and correct — only that train needs the work.
+
+### Backports and the supported lines
+
+Backports are **the one documented exception to digest promotion**, and the
+exception is bounded.
+
+A severe bug's fix for current users rides a hotfix train, with the guarantee
+intact. Users on an older line are served by a cherry-pick pull request into
+that line's `release/x.y` branch, which publishes its own patch release **built
+from the release branch** — no beta train exists for an old version, so there is
+no beta digest to promote. The gate is pull request review plus full CI plus a
+human-tested release candidate.
+
+- **Release branches are named for the line, `release/x.y`** (D27). A branch
+  cut at `1.2.0` that later publishes `1.2.4` is not `release/1.2.0`. Naming it
+  for the minor line keeps the name true and makes "the supported lines"
+  computable by listing and sorting `release/*`. `promote.yml` cuts the branch
+  on the first promotion of a line and leaves it where it is on every later one
+  — it marks where the line began, not where its newest patch is. Retired lines
+  keep their branches as history.
+- **The supported set is the last two minor lines.** **While the product is
+  pre-1.0 it is the current line only** (D31): a `0.x` minor bump *is* the
+  breaking change under semver, so backporting across `0.x` minors would be
+  backporting across breaking changes. Backports begin meaning something at
+  `1.0`. Anything older gets "upgrade to latest", which the one-command
+  installer and the compose setup make cheap. The `Train rules` check computes
+  the supported set and refuses a pull request based on a line outside it.
+- **Forward-fix first, backport second, and the order is enforced** (D29). A
+  fix that lands on a release line but never on `main` is reintroduced by the
+  next minor — the classic silent backport regression. A required check on
+  `release/*` pull requests asserts the fix already exists on `main` by
+  patch-id, and a weekly housekeeping job diffs the release lines against `main`
+  to catch one that is later reverted.
+- **A backport publishes a release candidate first** (D30). `1.2.4-rc.1` is
+  built from the release branch and pulled by a human before the real tag. It
+  keeps "somebody ran these bytes" true of every published release rather than
+  most of them — which would otherwise be false for precisely the releases
+  carrying urgent fixes to the most conservative users.
+- **A backport never moves `latest`, on Docker Hub or on GitHub** (D28), and
+  two independent assertions enforce it. This is the failure that reaches every
+  existing user: publishing `1.2.4` after `1.4.0` would move `:latest`
+  backwards *and* make `/releases/latest` answer `v1.2.4` — which is what
+  `install.sh` installs by default and what the in-product update checker
+  compares against. Every 1.4.x user would be told to downgrade. Both library
+  defaults do the wrong thing here and neither was written by anyone, so
+  `--latest` is always passed explicitly and never defaulted.
+
+### Rolling back
+
+**Rollback re-points `latest` and flips the GitHub Release's latest flag.
+Nothing else.** ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D44.)
+
+```bash
+# 1. Point :latest back at the last good version, on both images.
+#    A retag, not a rebuild — the same command a promotion uses.
+docker buildx imagetools create -t actana/panel:latest actana/panel:0.1.3
+docker buildx imagetools create -t actana/core:latest  actana/core:0.1.3
+
+# 2. Make /releases/latest answer the last good version.
+#    install.sh and the in-product update checker both read this endpoint.
+gh release edit v0.1.3 --repo actana/control --latest
+```
+
+Then verify both surfaces, because these are the two an operator actually
+reaches:
+
+```bash
+docker buildx imagetools inspect actana/panel:latest   # digest == 0.1.3's
+gh release view --repo actana/control --json tagName --jq .tagName
+```
+
+**`main`, the `vx.y.z` tag, and the release branch are never rewritten.** Not
+reverted-by-force, not deleted, not moved. They are the record of what
+happened, and the instinct at 2am is precisely to rewrite them — which is why
+this is written down rather than left to judgement. `0.1.4` remains in the
+record as a version that shipped and was rolled back, because losing the
+ability to reason about the incident afterwards is a worse outcome than a bad
+version staying in the history.
+
+Rollback stops new pulls from getting bad bytes. It is not the fix. **The fix
+goes forward, through a hotfix train** — see above — and it is what re-points
+`latest` at something newer than the version you rolled back to.
+
+Two things rollback does not do, and cannot:
+
+- **It does not un-pull anything.** Operators pinned to `0.1.4`, or who pulled
+  `latest` while it pointed there, are unaffected by the retag and need to be
+  told. `:latest` is a pointer with no history.
+- **It does not touch `beta-x.y.z` or the open train.** Those describe work in
+  progress, not what shipped.
 
 ## Running CI locally
 
@@ -682,11 +1157,20 @@ pnpm core:image:smoke       # builds deploy/core.Dockerfile, then pairs a Panel 
 Commit conventions, without installing anything permanently:
 
 ```bash
+base=origin/beta/0.2.0          # the branch you targeted — the open train, not main
 d=$(mktemp -d) && cp commitlint.config.mjs "$d"
 (cd "$d" && npm init -y >/dev/null && npm install @commitlint/cli @commitlint/config-conventional)
 "$d"/node_modules/.bin/commitlint --config "$d"/commitlint.config.mjs \
-  --cwd "$PWD" --from origin/main --to HEAD --verbose
+  --cwd "$PWD" --from "$(git merge-base "$base" HEAD)" --to HEAD --verbose
 ```
+
+`--from` is the merge-base with **the branch this pull request targets**, which
+under the train model is the open train and not `main`
+([`CONTRIBUTING.md`](../CONTRIBUTING.md#branch-naming)). `--from origin/main`
+would lint every commit already merged into the train as well as your own, and
+bounce you for somebody else's message. The merge-base is also what the
+`Conventions` job passes: it reads `github.event.pull_request.base.sha`, which
+is that same commit.
 
 The detour through a temp directory is not ceremony: this is a pnpm workspace,
 and the root `package.json` declares `workspace:*` dependencies that npm
@@ -696,11 +1180,26 @@ with the config copied alongside, so `extends` still resolves — is what the
 
 ## Notes for forks
 
-The PR path works in a fork with no configuration: a PR build never pushes,
-so it needs no registry credentials at all. Publishing — the edge tags on a
-push to `main`, and releases — requires setting `DOCKERHUB_USERNAME` /
-`DOCKERHUB_TOKEN` (and optionally `DOCKERHUB_NAMESPACE`) on the fork; without
-them a pushing build fails in `resolve` with an annotation naming the fix.
+A fork with no configuration still gets green pull request checks: a fork's PR
+build never pushes, so it needs no registry credentials at all. Publishing —
+the `pr-` images, the train's `beta-x.y.z` and `sha-<short>`, and releases —
+requires setting `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` (and usually
+`DOCKERHUB_NAMESPACE`) on the fork; without them a pushing build fails in
+`resolve` with an annotation naming the fix. The `-dev` tag sweep also needs
+`DOCKERHUB_CLEANUP_TOKEN`, and skips with a notice rather than failing when it
+is absent.
 
-PRs *from* a fork run without repository secrets — that is fine, because the
-PR build is the non-pushing one.
+The image name is derived from the namespace variable, never hardcoded, so a
+fork publishes under its own account with no edit to any workflow — and
+`ACTANA_IMAGE_NAMESPACE` in the reference compose points at it from the other
+end.
+
+PRs *from* a fork run without repository secrets even on this repository — that
+is fine for the gate, and it is why the pull request image is a maintainer
+convenience rather than a contributor one. See [The pull request
+image](#the-pull-request-image-and-what-it-is-not).
+
+Promotion needs more than credentials: `promote.yml` pushes with a GitHub App
+that must exist and be a bypass actor on the `main` and `beta/*` rulesets. A
+fork that has not set one up can run the gates and publish images, and cannot
+promote. See [`REPO_SETUP.md`](REPO_SETUP.md) §2.

@@ -1,0 +1,35 @@
+# Pull the pre-merge pull request images instead of the released ones.
+#
+#   ACTANA_TAG=pr-116202608 docker compose \
+#     -f docker-compose.yml -f docker-compose.dev-images.yml up -d
+#
+# **These images are not releases.** They are built from an open pull request,
+# have not been approved by anybody, may carry a failing CVE scan, and may not
+# work at all. Do not point this at a data directory you care about — bring it
+# up somewhere disposable, look at the change, and `docker compose down -v`.
+#
+# This is an override file rather than another variable in the compose file
+# because `-dev` is a different **repository**, not a different tag:
+# `actana/panel-dev` is where the pull request images go, so that the release
+# repositories' tag lists stay presentable and the delete-capable credential
+# that sweeps the `-dev` tags weekly is never pointed at a repository holding
+# `:latest`. A tag variable cannot reach across a repository name; a four-line
+# override can.
+#
+# `ACTANA_TAG` is required here and has no default, deliberately: there is no
+# `latest` in a `-dev` repository, so a default would resolve to a tag that
+# does not exist and fail at the pull with nothing useful to say. The tag is on
+# the pull request itself — the `Panel image` / `Core image` checks announce
+# the mode they took and the tag they pushed.
+#
+# Both services move together, from the same variable, for the same reason the
+# release compose does it: Panel and Core are version-locked, and a
+# `pr-` image of one beside a released build of the other is a pair nobody
+# tested. Fork pull requests publish no image at all — see
+# docs/images/panel-dev.md.
+services:
+  panel:
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/panel-dev:${ACTANA_TAG:?set ACTANA_TAG to the pull request image tag, e.g. pr-116202608}
+
+  core:
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core-dev:${ACTANA_TAG:?set ACTANA_TAG to the pull request image tag, e.g. pr-116202608}

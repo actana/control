@@ -30,10 +30,10 @@ You do not need the clone. Copying `docker-compose.yml` alone to a bare VM
 works identically — plus `mkdir repos` beside it, for the bind mount the `core`
 service names. Every path in the file is relative to the file.
 
-> **Pre-release.** The file pulls `actana/panel:latest` and `actana/core:latest`,
-> and no `v*` tag has been published yet, so those two tags do not exist. Until
-> the first release, change both `image:` lines to `:edge` — the tag CI moves on
-> every push to `main`.
+> **Pre-release.** The file pulls `:latest` for both services, and no release
+> has been published yet, so that tag does not exist. Until the first release,
+> run against the open train's beta image — `ACTANA_TAG=beta-0.1.0 docker
+> compose up -d`. See [Choosing a version](#choosing-a-version) below.
 
 ### What that actually started
 
@@ -150,6 +150,67 @@ Cores on the machines that already have your code — `curl … install.sh | sh`
 a laptop or a build box, paired to this same Panel. See
 [`INSTALL.md`](../INSTALL.md).
 
+## Choosing a version
+
+Both `image:` lines read one variable:
+
+```yaml
+panel:
+  image: ${ACTANA_IMAGE_NAMESPACE:-actana}/panel:${ACTANA_TAG:-latest}
+core:
+  image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
+```
+
+**`ACTANA_TAG` moves both services together, and that is the point of it being
+one variable.** The Panel and its Cores are version-locked: the core-link
+handshake exchanges a protocol version, and a mismatched pair renders as "needs
+update" in the Panel rather than degrading quietly. A Panel on `0.2.0` beside a
+Core on `0.1.0` is a combination that never shipped and that nobody tested, so
+the file does not make it convenient to type.
+
+| Set | Get |
+| --- | --- |
+| nothing | `:latest` — the current release |
+| `ACTANA_TAG=0.1.0` | that release, pinned. What a real deployment should do |
+| `ACTANA_TAG=beta-0.2.0` | the open train — the next release, for testing |
+
+```bash
+ACTANA_TAG=0.1.0 docker compose up -d
+```
+
+Put it in `.env` beside the compose file to make it stick. `docker compose
+pull && docker compose up -d` then upgrades within whatever you pinned, which
+for a pinned version means it does nothing until you change the pin — that is
+the intended behaviour of a pin.
+
+`beta-<version>` is a real multi-arch build of the release train, and it is the
+same digest that promotion re-points at `<version>` and `:latest` when the
+train ships. Nothing is rebuilt in between, so a beta you have run is the
+release you will get. That guarantee starts at `beta-x.y.z` and stops at
+`x.y.z` — see [`../docs/ci-cd.md`](../docs/ci-cd.md).
+
+`ACTANA_IMAGE_NAMESPACE` exists for a fork publishing under its own Docker Hub
+account. It defaults to `actana` and most deployments never set it.
+
+### Pre-merge pull request images
+
+Images built from an open pull request live in *different repositories* —
+`actana/panel-dev` and `actana/core-dev` — so a tag alone cannot reach them.
+[`docker-compose.dev-images.yml`](docker-compose.dev-images.yml) is the
+override that does:
+
+```bash
+ACTANA_TAG=pr-116202608 docker compose \
+  -f docker-compose.yml -f docker-compose.dev-images.yml up -d
+```
+
+**Somewhere disposable, not here.** Those images have not been released or
+approved by anybody, may carry a failing CVE scan, and may not work at all.
+Bring one up in a scratch directory, look at the change, and `docker compose
+down -v`. The tag is on the pull request itself — the `Panel image` and `Core
+image` checks each announce the tag they pushed. Fork pull requests publish no
+image at all; that is by design, not a failure.
+
 ## Configuration
 
 Copy [`.env.example`](.env.example) to `.env` beside the compose file. Every
@@ -157,6 +218,8 @@ value in it is optional — `docker compose up -d` works with no `.env` at all.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
+| `ACTANA_TAG` | `latest` | The image tag **both** services pull. See [Choosing a version](#choosing-a-version) — one variable, because Panel and Core are version-locked. |
+| `ACTANA_IMAGE_NAMESPACE` | `actana` | The Docker Hub namespace both images come from. For a fork that publishes its own; most deployments never set it. |
 | `AC_SECRETS_KEY` | generated at `/data/secrets.key` | 32-byte key (hex or base64, e.g. `openssl rand -hex 32`) sealing each Core's stored credentials. Set it to keep the key **out of** `panel-data`, so a copied volume or a backup alone cannot open your fleet credentials. Losing whichever key is in use means re-pairing every Core. |
 | `ACTANA_UPDATE_CHECK` | on | `0`, `false` or `off` stops the daily release check on both services. |
 

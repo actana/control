@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Sweep stale tags out of the two `-dev` image repositories (ADR 0023 D33).
+// Sweep stale tags out of the two `-dev` image repositories (ADR 0023 D45).
 //
 // Docker Hub has no automatic tag garbage collection: every push to every pull
 // request leaves a tag behind forever, and `panel-dev` / `core-dev` would
