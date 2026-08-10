@@ -1,0 +1,1068 @@
+name: Promote
+
+# The fifth entry point (ADR 0023, amending ADR 0016 D34). It is the only thing
+# that advances `main`, and it is where the design's central guarantee is
+# enforced.
+#
+#   pause ── resolve ── verify ── advance ── release ─┬─ release-line
+#   (human)                       (ff + tag) (call)   ├─ retire-train ─┬─ next-train
+#                                                     │                └─ rebase-train
+#                                                     └─
+#
+# The order of the first four is the design (D15, D16, D5, D40):
+#
+#   1. **The human pause is first.** A job declaring `environment:
+#      macos-release` and nothing else of consequence. Everything below is
+#      downstream of it, so `main` never contains unapproved code — where the
+#      old shape (ADR 0016's environment on `release.yml`'s macOS leg) already
+#      had the commit on `main` by the time anybody was asked.
+#   2. **Verify the digest before anything moves.** `beta-x.y.z` moves on every
+#      train merge, so promotion resolves it to a digest and asserts the
+#      image's `org.opencontainers.image.revision` label equals the promotion
+#      pull request's head SHA. The whole design reduces to this clause.
+#   3. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
+#      commit; a non-fast-forward is an error, never a merge (D5).
+#   4. **Push `vx.y.z`** as a record, *then* call `release.yml` by
+#      `workflow_call` (D40). The tag triggers nothing — `release.yml` has no
+#      tag trigger — but `release.yml`'s `resolve` requires it to exist and
+#      reads promote-vs-backport mode off where it lives, so the order is not
+#      cosmetic.
+#
+# ── The identity, and the way this ships broken and looks fine (D39) ─────────
+#
+# **Every push here is made with the GitHub App token, and none with
+# `GITHUB_TOKEN`.** GitHub does not trigger workflows from pushes made with the
+# default token, so a promotion using it would push `vx.y.z` and produce no
+# release, and would fast-forward `main` without ever firing `landing.yml` — a
+# landing-page change merged through a train would quietly stop deploying. There
+# would be nothing red anywhere. This is the single most likely way to ship this
+# workflow broken and have it look green, which is why the App token is minted
+# per job that pushes and why `check-app-credentials` fails loudly rather than
+# falling back to anything.
+#
+# `GITHUB_TOKEN` is still used, deliberately and only, for *reading* the
+# promotion pull request and for *commenting* on the pull requests a rebase
+# rewrote. Neither is a push, neither needs to trigger a workflow, and keeping
+# them off the App means this workflow needs no App permission beyond the
+# `contents: write` #108 provisioned.
+#
+# ── What this workflow does not do ──────────────────────────────────────────
+#
+# * **It does not close the promotion pull request.** GitHub closes it as merged
+#   on its own once its commits are reachable from `main`, which the
+#   fast-forward makes true. A cleanup step would be a second thing to go wrong.
+# * **It does not check that the train has merges in it.** A zero-merge train is
+#   legitimate — `beta/0.1.0` is expected to be one — and it still has an image,
+#   because the cut publishes one (D7). A "must have merges" guard would refuse
+#   the maiden voyage.
+# * **It does not resolve `beta-x.y.z` a second time to decide what to promote.**
+#   The comparison is always against the promotion pull request's head SHA.
+#   Resolving the tag twice — asking the tag what it points at and then checking
+#   the tag points at it — is the bug D16 exists to prevent.
+#
+# ── Re-running after a partial failure ──────────────────────────────────────
+#
+# Up to and including `advance`, a failed run is re-runnable from the top: the
+# promotion pull request is still open and nothing is published. **After**
+# `advance`, it is not — `main` has moved, so GitHub has closed the promotion
+# pull request as merged and `resolve` will refuse (by design: the pull request
+# is the gate). From there the recovery is per-step and manual:
+# `gh workflow run release.yml -f tag=vx.y.z` re-runs the publish, and the
+# branch housekeeping below is a `git push` each. That is deliberate — a
+# promotion that could half-run twice is worse than one that stops and says so.
+on:
+  # D14. A dispatch, and nothing else. Auto-running on review approval was
+  # considered and rejected: promotion publishes to the world, and "approved by
+  # accident" is a failure mode worth designing out.
+  workflow_dispatch:
+    inputs:
+      train:
+        description: "Train branch to promote (e.g. beta/0.1.0)"
+        required: true
+        type: string
+
+concurrency:
+  # Keyed on the train, and never cancelling. Two promotions of one train would
+  # race on the same fast-forward; a second promotion cancelling the first
+  # mid-publish would leave `main` advanced with no release behind it.
+  group: promote-${{ inputs.train }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  # ─────────────────────────────────────────────────────────── 1. the human
+  #
+  # D15. The first job, and the only one that declares an environment. Its
+  # steps are trivial on purpose: what matters is that the job exists, that it
+  # is gated on `macos-release`, and that every other job in this file is
+  # downstream of it. The reviewer has already run
+  # docs/core-macos-prerelease-checklist.md on real Apple hardware against the
+  # **train tip** — the same commit this promotes, by the assertion in
+  # `verify`, and available to them earlier than a tag that does not exist yet.
+  #
+  # The input is validated here rather than before the pause, because there is
+  # no "before": a job with an `environment:` blocks before its first step
+  # runs, so anything upstream of the pause would be a job `main` is not
+  # protected from. A typo'd train name therefore costs one approval click and
+  # fails immediately after it, loudly. That is the cheaper side of the trade.
+  #
+  # **`macos-release` must exist with a required reviewer before this runs.**
+  # GitHub auto-creates an environment it sees referenced and gives it **no
+  # protection rules**, so a missing environment does not fail — it waves the
+  # promotion through unattended and green, which is the one outcome this job
+  # exists to prevent.
+  pause:
+    name: Approve the promotion
+    runs-on: ubuntu-24.04
+    environment: macos-release
+    timeout-minutes: 10
+    steps:
+      - name: Announce what a reviewer just approved
+        env:
+          TRAIN: ${{ inputs.train }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$TRAIN" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Not a train branch::'$TRAIN' is not \`beta/x.y.z\`. A train's name is its version (ADR 0023 D3), and the version is what this promotion publishes."
+            exit 1
+          fi
+          version="${TRAIN#beta/}"
+          echo "::notice title=Promotion approved::$ACTOR dispatched the promotion of $TRAIN and a reviewer approved it. Everything downstream of this job — the digest verification, the fast-forward of main, the tag, and every published image — is downstream of that approval (ADR 0023 D15)."
+          {
+            echo "### Promoting \`$TRAIN\` → \`$version\`"
+            echo
+            echo "The macOS checklist was worked against the train tip before this was dispatched."
+            echo "Nothing has been published yet: the next job asserts the beta digest was built"
+            echo "from the commit this promotes, and the fast-forward happens only after it passes."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ──────────────────────────────────────────────────── 2. the facts, gathered
+  #
+  # Everything the rest of the file branches on is decided here, from the ref
+  # graph and the pull request — not from inputs, and not from labels. In
+  # particular the hotfix condition (D23): *a train was promoted while another
+  # train existed* is a thing this job can see, so there is nothing for a human
+  # to set during an incident, which is when it would be forgotten.
+  resolve:
+    name: Resolve the promotion
+    needs: pause
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      train: ${{ steps.facts.outputs.train }}
+      version: ${{ steps.facts.outputs.version }}
+      head_sha: ${{ steps.facts.outputs.head_sha }}
+      pr: ${{ steps.facts.outputs.pr }}
+      release_line: ${{ steps.facts.outputs.release_line }}
+      next_train: ${{ steps.facts.outputs.next_train }}
+      hotfix: ${{ steps.facts.outputs.hotfix }}
+      survivor: ${{ steps.facts.outputs.survivor }}
+    steps:
+      # Every branch and every tag: two of the three questions below — is this
+      # a fast-forward, and does another train exist — are questions about the
+      # whole ref graph rather than about one commit.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - id: facts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TRAIN: ${{ inputs.train }}
+        run: |
+          set -euo pipefail
+          version="${TRAIN#beta/}"
+
+          if ! git rev-parse -q --verify "refs/remotes/origin/${TRAIN}^{commit}" >/dev/null; then
+            echo "::error title=No such train::\`$TRAIN\` is not a branch on origin. Promotion promotes an open train (ADR 0023 D1)."
+            exit 1
+          fi
+
+          # The promotion pull request is the gate (D5): its checks and its
+          # approval are the point, and a workflow performs the advance. It is
+          # also where the SHA D16 verifies against comes from, so its absence
+          # is fatal rather than a warning.
+          pr_json="$(gh pr list --repo "$REPO" --base main --head "$TRAIN" --state open \
+            --json number,headRefOid,url --limit 10)"
+          count="$(jq 'length' <<<"$pr_json")"
+          if [[ "$count" == "0" ]]; then
+            echo "::error title=No open promotion pull request::There is no open pull request from \`$TRAIN\` into \`main\`. That pull request is the gate — its checks and its approval are what promotion consumes, and its head SHA is what the beta digest is verified against (ADR 0023 D5, D16). Open it and let it go green. If this train has already promoted, re-run the publish with \`gh workflow run release.yml -f tag=v$version\` instead."
+            exit 1
+          fi
+          if [[ "$count" != "1" ]]; then
+            echo "::error title=More than one promotion pull request::$count open pull requests have \`$TRAIN\` as their head and \`main\` as their base. Promotion consumes exactly one gate; close the extras."
+            jq -r '.[] | "  " + .url' <<<"$pr_json"
+            exit 1
+          fi
+          pr="$(jq -r '.[0].number' <<<"$pr_json")"
+          head_sha="$(jq -r '.[0].headRefOid' <<<"$pr_json")"
+
+          # The checkout brought the refs that existed when this job started,
+          # and the pull request was read a moment later. Fetch the train again
+          # so the ancestry questions below are asked about an object that is
+          # actually here.
+          git fetch --force origin "+refs/heads/$TRAIN:refs/remotes/origin/$TRAIN" \
+            '+refs/heads/main:refs/remotes/origin/main'
+          if ! git cat-file -e "$head_sha^{commit}" 2>/dev/null; then
+            echo "::error title=The promotion pull request's head is not on origin::#$pr says its head is $head_sha, which is not reachable from \`$TRAIN\` on origin. The branch moved while this ran; dispatch again once it settles."
+            exit 1
+          fi
+
+          # Read from the pull request, not from the branch. They are the same
+          # commit while nothing is merging, and when they differ it is because
+          # the train moved — which is exactly the state D16 refuses, and the
+          # state a re-resolution of the branch would paper over.
+          tip="$(git rev-parse "refs/remotes/origin/$TRAIN")"
+          if [[ "$head_sha" != "$tip" ]]; then
+            echo "::notice title=The train moved after this pull request was read::Pull request #$pr is at $head_sha; origin/$TRAIN is at $tip. The promotion continues against $head_sha — the commit the gate covers — and the digest assertion below is what decides whether it is still the tested one."
+          fi
+
+          # D5. `main` advances by fast-forward or not at all. Checked here so
+          # a dead train is refused before anything is published, and checked
+          # again immediately before the push.
+          if ! git merge-base --is-ancestor "refs/remotes/origin/main" "$head_sha"; then
+            echo "::error title=Not a fast-forward::\`main\` is not an ancestor of $head_sha, so this train can never fast-forward and can never be promoted (ADR 0023 D2, D5). A squash or a merge commit is not the fallback — it is the thing D5 exists to refuse. Another train was promoted past this one: abandon it, re-cut from \`main\` and cherry-pick its squash commits, or wait for the post-hotfix rebase (D24)."
+            exit 1
+          fi
+
+          # D23. The hotfix condition, observed rather than declared: another
+          # train exists at the moment this one promotes. A hotfix is an
+          # expedited train (D22), so promoting one necessarily happens while
+          # another train exists — and that train can no longer fast-forward.
+          # Listed first and filtered second, so that a failing `ls-remote`
+          # fails this step. Folding `|| true` over the whole pipeline — which
+          # `grep`'s exit-1-on-no-match invites — would turn "origin did not
+          # answer" into "no other train exists", and the surviving train would
+          # be stranded silently with nothing to say so (D24).
+          all_trains="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
+          # `-F` as well as `-x`: without it the train is a basic regular
+          # expression and the dots in `beta/0.1.0` are wildcards, so a branch
+          # named `beta/0x1x0` would be filtered out of `survivors` and the
+          # hotfix state would go undetected — the surviving train never
+          # rebased (D24) and a second train cut beside it (D25).
+          survivors="$(grep -Fvx "$TRAIN" <<<"$all_trains" || true)"
+          survivor_count="$(grep -c . <<<"$survivors" || true)"
+          hotfix=false
+          survivor=""
+          if [[ "$survivor_count" -gt 1 ]]; then
+            echo "::error title=More than one surviving train::$survivor_count trains exist besides \`$TRAIN\`. Exactly one train is open at a time, and a hotfix makes that two (ADR 0023 D2, D22); three is a state the model has no answer for, and the rebase below would have to guess which one survives. Nothing has been published — delete the trains that should not exist and dispatch again."
+            echo "$survivors" | sed 's/^/  /'
+            exit 1
+          fi
+          if [[ "$survivor_count" == "1" ]]; then
+            hotfix=true
+            survivor="$survivors"
+            echo "::notice title=Hotfix promotion::\`$survivor\` exists, so this promotion strands it: \`main\` moves past its ancestor and it can no longer fast-forward (ADR 0023 D2). It will be rebased onto the new \`main\` and force-pushed, its images republished, and every open pull request into it told (D24). No auto-cut: a train already exists (D25)."
+          fi
+
+          # `x.y` — the line, not the patch (D27). A branch cut at 1.2.0 that
+          # then publishes 1.2.4 is not `release/1.2.0`.
+          release_line="release/${version%.*}"
+          # The next minor, as a default rather than a commitment (D25).
+          major="${version%%.*}"
+          minor="${version#*.}"; minor="${minor%%.*}"
+          next_train="beta/${major}.$((minor + 1)).0"
+
+          {
+            echo "train=$TRAIN"
+            echo "version=$version"
+            echo "head_sha=$head_sha"
+            echo "pr=$pr"
+            echo "release_line=$release_line"
+            echo "next_train=$next_train"
+            echo "hotfix=$hotfix"
+            echo "survivor=$survivor"
+          } | tee -a "$GITHUB_OUTPUT"
+
+  # ──────────────────────────────────────── 3. the clause the design reduces to
+  #
+  # D16. `beta-x.y.z` moves on every train merge, so "retag whatever it points
+  # at" would promote untested bytes whenever somebody merged after the
+  # approver tested. This resolves the tag to a digest and asserts the image's
+  # `org.opencontainers.image.revision` label equals **the promotion pull
+  # request's head SHA** — the commit the reviewer worked the checklist
+  # against, and the commit `main` is about to become.
+  #
+  # The comparison is against that SHA and never against the tag's own pointer:
+  # asking the registry what `beta-x.y.z` names and then checking that
+  # `beta-x.y.z` names it is a tautology, and it is precisely the bug this
+  # clause exists to prevent.
+  #
+  # Every architecture, because the manifest is per-platform and the promotion
+  # re-points all of them at once. Both images, because a release publishes
+  # both and a half-verified release is not a verified one.
+  #
+  # `release.yml` will assert this again inside `container-image.yml`'s promote
+  # mode, immediately before the retag (D17). That is not redundant with this:
+  # this one runs **before** `main` moves, and is what stops an unapproved
+  # commit reaching `main` at all.
+  verify:
+    name: Verify the ${{ matrix.image }} digest (linux/${{ matrix.arch }})
+    needs: [pause, resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    strategy:
+      # Let all four report. "The train moved" is one fact about one train, and
+      # seeing it on one leg while three others are still running reads as a
+      # flake rather than as the answer.
+      fail-fast: false
+      matrix:
+        image: [panel, core]
+        arch: [amd64, arm64]
+    steps:
+      - name: Assert the beta digest was built from the promoted commit
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+          IMAGE: ${{ matrix.image }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          EXPECTED: ${{ needs.resolve.outputs.head_sha }}
+          PR: ${{ needs.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          ref="docker.io/${namespace,,}/${IMAGE}:beta-${VERSION}"
+
+          # Authenticated when a credential exists — an anonymous pull shares
+          # its rate limit with every other runner on the same egress address,
+          # and the assertion the design reduces to must not be flaky.
+          if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+
+          if ! docker pull --quiet --platform "linux/$ARCH" "$ref" >/dev/null; then
+            echo "::error title=No image to promote::$ref could not be pulled at linux/$ARCH. The train's last publish never completed, so there is nothing to promote — re-run the train's image jobs, confirm the new image, and dispatch again (ADR 0023 D21)."
+            exit 1
+          fi
+
+          # Read through the daemon rather than through `imagetools inspect`,
+          # whose Go struct this repository already learned not to trust for an
+          # image-config question (scripts/__tests__/panel-image.test.mjs).
+          digest="$(docker image inspect --format '{{json .RepoDigests}}' "$ref" | jq -r '.[0] // "unknown"')"
+          revision="$(docker image inspect --format '{{json .Config.Labels}}' "$ref" \
+            | jq -r '.["org.opencontainers.image.revision"] // ""')"
+          echo "$ref at linux/$ARCH is $digest"
+          echo "  revision label: ${revision:-<none>}"
+          echo "  expected:       $EXPECTED  (head of promotion pull request #$PR)"
+
+          if [[ "$revision" != "$EXPECTED" ]]; then
+            echo "::error title=The train moved; re-approve::$ref at linux/$ARCH was built from ${revision:-an image with no revision label}, not from $EXPECTED — the head of promotion pull request #$PR. Something merged into the train after the image the reviewer ran was published, or that publish never finished. Nothing has been promoted: \`main\` has not moved and no tag exists. Wait for the train's publish to finish, re-work the acceptance against the image it produces, re-approve, and dispatch again (ADR 0023 D16)."
+            exit 1
+          fi
+          echo "✅ $ref at linux/$ARCH carries $EXPECTED — the digest about to be promoted is the one that was tested."
+
+  # ─────────────────────────────────── 4. the advance, and the record of it
+  #
+  # The only job in this repository that writes to `main`, and the reason the
+  # App identity exists (D39). Two pushes, in this order:
+  #
+  #   1. the fast-forward of `main` to the verified commit (D5), which fires
+  #      `landing.yml` — and fires nothing else, because ADR 0023 D41 took
+  #      `ci.yml`'s `push: main` trigger away: every commit arriving here was
+  #      already gated and published by the train.
+  #   2. `vx.y.z` (D40), which triggers nothing at all — `release.yml` has no
+  #      tag trigger — and exists as the record. It is pushed **before**
+  #      `release.yml` is invoked because `release.yml`'s `resolve` requires
+  #      the tag to exist and reads its mode from where it lives: reachable
+  #      from `main` is a promotion, and this order is what makes that true.
+  #
+  # Both are pushed with the App token. With `GITHUB_TOKEN` they would both
+  # succeed and both trigger nothing: a tag with no release, and a `main` that
+  # stopped deploying the landing page, with nothing red anywhere.
+  advance:
+    name: Fast-forward main and push the version tag
+    needs: [resolve, verify]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      # A missing App credential must be an error and never a fallback. The
+      # fallback — `GITHUB_TOKEN` — is the failure this whole design guards
+      # against, and it is the one that looks green.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so the tag would appear with no release and the fast-forward would never fire landing.yml — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          # The push identity for every `git push` in this job. `persist-credentials`
+          # defaults to true; it is named because this is the line that decides
+          # whether this workflow works at all.
+          persist-credentials: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Fast-forward main to the verified commit
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          TRAIN: ${{ needs.resolve.outputs.train }}
+          PR: ${{ needs.resolve.outputs.pr }}
+        run: |
+          set -euo pipefail
+          git fetch --force --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            echo "::error title=The verified commit is not on origin::$HEAD_SHA is not reachable from any branch on origin. \`$TRAIN\` was deleted or rewritten while this promotion ran; nothing has been published."
+            exit 1
+          fi
+
+          # Already there — a re-run after a later job failed, or two
+          # dispatches. Not an error: `main` containing the verified commit is
+          # this step's whole purpose.
+          if git merge-base --is-ancestor "$HEAD_SHA" refs/remotes/origin/main; then
+            echo "::notice title=main already contains this train::$HEAD_SHA is already reachable from main. Nothing to fast-forward."
+            exit 0
+          fi
+
+          # Re-asserted immediately before the push, against the refs fetched a
+          # moment ago. `resolve` checked it too; between the two a hotfix may
+          # have promoted, and this is the check that is actually load-bearing.
+          if ! git merge-base --is-ancestor refs/remotes/origin/main "$HEAD_SHA"; then
+            echo "::error title=Not a fast-forward::\`main\` is not an ancestor of $HEAD_SHA. Something advanced \`main\` while this promotion was running. A squash or a merge commit is not the fallback (ADR 0023 D5) — nothing has been published, and this train now needs re-cutting from \`main\`."
+            exit 1
+          fi
+
+          # The SHA, not the branch. Pushing `origin $TRAIN:main` would publish
+          # whatever the train tip is *now*; this publishes the commit the
+          # reviewer approved and the digest assertion covered, and a train
+          # that moved in between simply does not reach `main`.
+          #
+          # No `--force` anywhere: the server refuses a non-fast-forward too,
+          # and that second opinion is worth keeping.
+          echo "Fast-forwarding main to $HEAD_SHA (head of promotion pull request #$PR, train $TRAIN)"
+          if ! output="$(git push origin "$HEAD_SHA:refs/heads/main" 2>&1)"; then
+            echo "$output"
+            echo "::error title=The fast-forward was refused::\`main\` requires a pull request before merging, so this push needs the App to be a **bypass actor** on the \`main\` ruleset (ADR 0023 D39, docs/REPO_SETUP.md §3). Nothing has been published: no tag exists and no image has moved."
+            exit 1
+          fi
+          echo "$output"
+          echo "✅ main is $HEAD_SHA. Pull request #$PR closes itself as merged — GitHub does that once the commits are reachable, and nothing here needs to (ADR 0023 D14)."
+
+      - name: Push the version tag
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          # What the App is called. The tagger is derived from it so the record
+          # names the same actor that pushed it.
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          git fetch --force --prune --tags origin >/dev/null 2>&1 || true
+
+          if existing="$(git rev-parse -q --verify "refs/tags/$tag^{commit}")"; then
+            if [[ "$existing" == "$HEAD_SHA" ]]; then
+              echo "::notice title=Tag already pushed::$tag already names $HEAD_SHA. Continuing — the release below is the part that had not finished."
+              exit 0
+            fi
+            echo "::error title=Tag exists on another commit::$tag already names $existing, not $HEAD_SHA. Release tags are immutable and are the record of what shipped (ADR 0023 D44); this promotion cannot claim a version somebody else's commit already holds."
+            exit 1
+          fi
+
+          # Annotated, so the record carries who promoted what and when.
+          # `release.yml` resolves either shape with `^{commit}`.
+          git -c user.name="${APP_SLUG:-actana-release}[bot]" \
+              -c user.email="${APP_SLUG:-actana-release}[bot]@users.noreply.github.com" \
+              tag -a "$tag" "$HEAD_SHA" -m "$tag"
+          # The tag ruleset restricts *creation* of `refs/tags/v*` to the admin
+          # role, so this push is refused outright — loudly, not silently —
+          # until the App is a bypass actor on it too. That is a repository
+          # setting, not something this file can arrange, and it is the one
+          # prerequisite that bites after `main` has already moved.
+          if ! output="$(git push origin "refs/tags/$tag" 2>&1)"; then
+            echo "$output"
+            echo "::error title=The tag push was refused::Creating \`refs/tags/v*\` is restricted by the 'Release tags — only admins cut releases' ruleset, which needs the App added as a **bypass actor** (ADR 0023 D39). \`main\` has already been fast-forwarded to $HEAD_SHA and that is correct and keeps; only the tag and the release are missing. Add the bypass actor, then \`git tag $tag $HEAD_SHA && git push origin $tag\` and \`gh workflow run release.yml -f tag=$tag\`."
+            exit 1
+          fi
+          echo "$output"
+          echo "✅ $tag is on origin, naming $HEAD_SHA. It triggers nothing (ADR 0023 D40) — the release below is invoked by workflow_call."
+
+  # ────────────────────────────────────────────────────────── 5. the release
+  #
+  # D40. `release.yml` by `workflow_call`, with the tag pushed above.
+  #
+  # `permissions: contents: write` is required and is not a copy-paste of the
+  # caller's default: **a reusable workflow cannot exceed the grant its caller
+  # gives it**, this file's top-level grant is `contents: read`, and
+  # `release.yml`'s `github-release` job needs `contents: write` to create the
+  # Release and attach the four assets. Without this line the release runs to
+  # its last job and fails there, after both images have been published — the
+  # most expensive place in the design to discover a permissions typo.
+  #
+  # `secrets: inherit` for the same reason in a different currency: the Docker
+  # Hub credential, without which `resolve` refuses before anything is built.
+  release:
+    name: Release
+    needs: [resolve, advance]
+    uses: ./.github/workflows/release.yml
+    permissions:
+      contents: write
+    secrets: inherit
+    with:
+      tag: v${{ needs.resolve.outputs.version }}
+
+  # ──────────────────────────────────────────────────── 6. the line's branch
+  #
+  # D27. `release/x.y` — named for the *line*, not the patch: a branch cut at
+  # 1.2.0 that then publishes 1.2.4 is not `release/1.2.0`. It is what a
+  # backport is cut from and what makes "the supported lines" computable by
+  # listing and sorting `release/*` (D26, D31).
+  #
+  # Created only when it does not exist: the second promotion on a line
+  # (0.1.0 → 0.1.1) must not move the branch backwards or forwards. It stays
+  # where the line began, and backports build from its own history.
+  release-line:
+    name: Cut the release line
+    needs: [resolve, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Create release/x.y if the line has none
+        env:
+          LINE: ${{ needs.resolve.outputs.release_line }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --heads origin "refs/heads/$LINE" >/dev/null 2>&1; then
+            echo "::notice title=Release line already exists::\`$LINE\` is already on origin and is left where it is. It marks where the line began, not where its newest patch is (ADR 0023 D27)."
+            exit 0
+          fi
+          git push origin "$HEAD_SHA:refs/heads/$LINE"
+          echo "✅ cut \`$LINE\` at $HEAD_SHA."
+
+  # ────────────────────────────────────────────────────── 7. the train is gone
+  #
+  # D4. A train is disposable and is deleted on promotion: its commits live on
+  # `main` now, and the branch itself carries no information. Disposability is
+  # also what makes squash-merging *into* it safe — the classic GitFlow failure
+  # needs the branch to survive the merge, and this one does not.
+  #
+  # Deleted after the release rather than before, so a failed publish leaves
+  # the branch to look at.
+  retire-train:
+    name: Delete the promoted train
+    needs: [resolve, release]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      # Full history: the guard below asks whether the train's tip is reachable
+      # from `main`, which a shallow clone cannot answer.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Delete the train branch
+        env:
+          TRAIN: ${{ needs.resolve.outputs.train }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if ! git ls-remote --exit-code --heads origin "refs/heads/$TRAIN" >/dev/null 2>&1; then
+            echo "::notice title=Train already deleted::\`$TRAIN\` is not on origin. Nothing to do."
+            exit 0
+          fi
+          # Refuse to delete a branch that has grown past what was promoted.
+          # Everything on the train is on `main` (D4) — unless something merged
+          # into it after the fast-forward, in which case deleting it would
+          # take real work with it.
+          tip="$(git ls-remote --heads origin "refs/heads/$TRAIN" | cut -f1)"
+          git fetch --force origin "+refs/heads/$TRAIN:refs/remotes/origin/$TRAIN" >/dev/null
+          git fetch --force origin '+refs/heads/main:refs/remotes/origin/main' >/dev/null
+          if ! git merge-base --is-ancestor "$tip" refs/remotes/origin/main; then
+            echo "::error title=The train grew after it was promoted::\`$TRAIN\` is at $tip, which is not reachable from \`main\` — something merged into it after the fast-forward to $HEAD_SHA. Deleting it would throw that work away. Retarget it at the open train and delete \`$TRAIN\` by hand (ADR 0023 D4)."
+            exit 1
+          fi
+          git push origin --delete "$TRAIN"
+          echo "✅ \`$TRAIN\` is gone. Its commits are on \`main\`; the branch carried nothing else (ADR 0023 D4)."
+
+  # ─────────────────────────────────────────────────────── 8. the next train
+  #
+  # D25. A train is always open, so the repository never enters a state where
+  # work cannot be proposed. The cut writes the version into all four manifests
+  # in its first commit (D3) — an administrative decision written by a machine,
+  # because hand-editing four files is how three of them end up disagreeing,
+  # and `ci.yml`'s train rules assert all four equal the branch's version.
+  #
+  # **Skipped when a train already exists**, which is exactly the post-hotfix
+  # case: the invariant already holds and there is nothing to cut. The condition
+  # is the observed hotfix state from `resolve` (D23), re-checked here against
+  # origin because the two are minutes apart and an administrator may have cut
+  # one by hand in between.
+  #
+  # The guessed version is a default, not a commitment: an administrator may
+  # delete this branch and re-cut it before anything merges.
+  next-train:
+    name: Cut the next train
+    needs: [resolve, release, retire-train]
+    if: needs.resolve.outputs.hotfix == 'false'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Cut beta/<next-minor>.0 from main with the four versions written
+        env:
+          NEXT: ${{ needs.resolve.outputs.next_train }}
+          PROMOTED: ${{ needs.resolve.outputs.version }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          # No `|| true`: an `ls-remote` that failed must not read as "no train
+          # exists", which is the answer that cuts a second one (D2, D25).
+          existing="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
+          if [[ -n "${existing// }" ]]; then
+            echo "::notice title=A train already exists::$(tr '\n' ' ' <<<"$existing")— the invariant D25 protects already holds, so nothing is cut. This is the ordinary post-hotfix case."
+            exit 0
+          fi
+
+          version="${NEXT#beta/}"
+          git fetch --force origin '+refs/heads/main:refs/remotes/origin/main'
+          git checkout -B "$NEXT" refs/remotes/origin/main
+
+          # D3. All four manifests, edited in place rather than reserialised:
+          # `jq` would reformat files it was only asked to change one line of,
+          # and the diff a reviewer reads on the promotion pull request should
+          # be four lines.
+          files=(package.json packages/core/package.json packages/panel/package.json packages/shared/package.json)
+          VERSION="$version" node -e '
+            const fs = require("node:fs");
+            const version = process.env.VERSION;
+            let changed = 0;
+            for (const file of process.argv.slice(1)) {
+              const before = fs.readFileSync(file, "utf8");
+              const after = before.replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${version}"`);
+              if (after === before) continue;
+              fs.writeFileSync(file, after);
+              changed += 1;
+            }
+            console.log(`rewrote ${changed} of ${process.argv.length - 1} manifests`);
+          ' "${files[@]}"
+
+          for file in "${files[@]}"; do
+            found="$(jq -r .version "$file")"
+            if [[ "$found" != "$version" ]]; then
+              echo "::error title=The cut did not write a version::$file says $found, not $version. All four manifests carry the train's version and a required check on the train asserts it (ADR 0023 D3), so a train cut with a manifest missed cannot merge anything."
+              exit 1
+            fi
+            echo "  ✅ $file is $version"
+          done
+
+          # Conventional Commits, because this commit reaches `main` through
+          # the next promotion pull request and `ci.yml`'s Conventions job
+          # lints every commit in it — not just the title. Body lines stay
+          # inside commitlint's 100-column `body-max-line-length`.
+          printf '%s\n' \
+            "chore(release): cut $NEXT" \
+            "" \
+            "All four manifests carry the train's version (ADR 0023 D3). Cut from main" \
+            "after promoting $PROMOTED, so a train is always open and work can always be" \
+            "proposed (D25)." \
+            "" \
+            "The version is a default, not a commitment: delete and re-cut this branch" \
+            "before anything merges if the next release is not $version." \
+            > "$RUNNER_TEMP/cut-message.txt"
+
+          # Nothing to rewrite is not nothing to do. If the four manifests
+          # already read `$version` — a re-run after the push below failed, or
+          # `main` already sitting on the guessed next minor — the loop above
+          # has just confirmed the state this commit exists to reach, and the
+          # only work left is the push. `git commit -a` exits non-zero on an
+          # empty commit, so under `set -e` it would turn that recoverable
+          # re-run into a red job one line short of finishing.
+          if git diff --quiet; then
+            echo "::notice title=The manifests already carry $version::Nothing to rewrite, so nothing to commit. Cutting \`$NEXT\` at the commit that already satisfies D3."
+          else
+            git -c user.name="${APP_SLUG}[bot]" \
+                -c user.email="${APP_SLUG}[bot]@users.noreply.github.com" \
+                commit -a -F "$RUNNER_TEMP/cut-message.txt"
+          fi
+
+          git push origin "HEAD:refs/heads/$NEXT"
+          echo "✅ cut \`$NEXT\` from main. Its first push publishes beta-$version, so the train has an image before anything merges into it (ADR 0023 D7)."
+
+  # ───────────────────────────────────────────────── 9. the post-hotfix rebase
+  #
+  # D24. A hotfix is an expedited train (D22), so promoting one necessarily
+  # happens while another train exists — and that train can no longer
+  # fast-forward, because `main` has moved past its ancestor (D2). The workflow
+  # rebases it onto the new `main` and force-pushes it. **This is the one
+  # exception to `beta/*` protection**: no force-push except this job, after a
+  # hotfix.
+  #
+  # Two obligations attach, and both are here because neither is the natural
+  # way to write a rebase:
+  #
+  #   * **Republish `beta-x.y.z` and `sha-<short>` — the last thing this job
+  #     does.** Every commit SHA on the train changed, so the tag now names an
+  #     image whose revision label points at a commit that is no longer
+  #     reachable. Left there, D16's assertion fails at *that* train's
+  #     promotion, long after the cause, and reads as "the train moved" when
+  #     nothing moved. Rebase-then-forget-the-image is the natural shape and it
+  #     is wrong.
+  #   * **Comment on every open pull request into the train.** Their base was
+  #     rewritten without them being told. Approvals survive — they attach to
+  #     the head — but conflicts can appear, and the author is the only person
+  #     who can resolve them.
+  #
+  # Where the rebase conflicts, this fails loudly and names the fallback:
+  # abandon the train, re-cut from `main`, cherry-pick the squash commits. It
+  # does not try to resolve anything.
+  rebase-train:
+    name: Rebase the surviving train onto main
+    needs: [resolve, release, retire-train]
+    if: needs.resolve.outputs.hotfix == 'true'
+    runs-on: ubuntu-24.04
+    # The last step waits for the train's images to be rebuilt and republished,
+    # which is a full multi-arch build of both images.
+    timeout-minutes: 150
+    permissions:
+      contents: read
+      # The republish step reads `ci.yml`'s runs to know whether the
+      # force-push triggered one, and dispatches `ci.yml` itself when it did
+      # not. Both are the Actions API, and neither is available under the
+      # default `contents: read` alone.
+      actions: write
+      # The comment on every open pull request into the rebased train (D24).
+      pull-requests: write
+    steps:
+      # Same guard as `advance`. `create-github-app-token` does error on an
+      # empty `app-id`, so this is not the difference between failing and
+      # falling back — it is the difference between an operator reading the
+      # action's generic message and reading why `GITHUB_TOKEN` is not the
+      # answer (D39). Every job that pushes says it.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
+            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
+            exit 1
+          fi
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Rebase the survivor onto the new main and force-push it
+        id: rebase
+        env:
+          SURVIVOR: ${{ needs.resolve.outputs.survivor }}
+          PROMOTED: ${{ needs.resolve.outputs.version }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          git fetch --force --prune origin '+refs/heads/*:refs/remotes/origin/*'
+          old_tip="$(git rev-parse "refs/remotes/origin/$SURVIVOR")"
+          main_tip="$(git rev-parse refs/remotes/origin/main)"
+          echo "old_tip=$old_tip" >> "$GITHUB_OUTPUT"
+
+          if git merge-base --is-ancestor "$main_tip" "$old_tip"; then
+            echo "::notice title=Nothing to rebase::\`$SURVIVOR\` already contains main ($main_tip). It can still fast-forward, so the hotfix did not strand it."
+            echo "rebased=false" >> "$GITHUB_OUTPUT"
+            echo "new_tip=$old_tip" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          git checkout -B "$SURVIVOR" "refs/remotes/origin/$SURVIVOR"
+          # Plain `git rebase <upstream>`: git works out the fork point itself
+          # and drops commits already patch-identical on `main`, which is the
+          # ordinary case for a train whose fix was cherry-picked into the
+          # hotfix.
+          if ! git -c user.name="${APP_SLUG}[bot]" \
+                   -c user.email="${APP_SLUG}[bot]@users.noreply.github.com" \
+                   rebase "$main_tip"; then
+            git rebase --abort || true
+            echo "::error title=The post-hotfix rebase conflicts::\`$SURVIVOR\` does not rebase cleanly onto \`main\` at $main_tip after promoting $PROMOTED, and this workflow does not resolve conflicts. The fallback is in ADR 0023 D24 and docs/ci-cd.md: **abandon \`$SURVIVOR\`, re-cut the train from \`main\`, and cherry-pick its squash commits.** \`main\`, the tag and the release are unaffected and correct — only the surviving train needs the work. Until it is re-cut, its \`beta-\` image still names commits that are no longer reachable, so it cannot be promoted (D16)."
+            exit 1
+          fi
+
+          new_tip="$(git rev-parse HEAD)"
+          # `--force-with-lease` against the tip this job read: a merge that
+          # landed on the survivor while the rebase ran must lose the push, not
+          # the commit. The one exception to `beta/*` protection is this push,
+          # and it is still not licence to overwrite work nobody has seen.
+          #
+          # This push is made with the App token, and that is what re-triggers
+          # `ci.yml` on the train — which is what republishes the two tags the
+          # last step of this job waits for. With GITHUB_TOKEN it would push
+          # and trigger nothing, and the images would silently stay wrong.
+          git push --force-with-lease="refs/heads/$SURVIVOR:$old_tip" origin "HEAD:refs/heads/$SURVIVOR"
+          {
+            echo "rebased=true"
+            echo "new_tip=$new_tip"
+          } >> "$GITHUB_OUTPUT"
+          echo "✅ \`$SURVIVOR\` rebased from $old_tip onto $main_tip; its tip is now $new_tip."
+
+      # Their base was rewritten without them being told. Approvals survive —
+      # they attach to the head — but conflicts can appear, and the author is
+      # the only person who can resolve them. `GITHUB_TOKEN` posts these: a
+      # comment is not a push and does not need to trigger anything, which
+      # keeps this workflow inside the App permissions #108 provisioned.
+      - name: Tell every open pull request into the train
+        if: steps.rebase.outputs.rebased == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SURVIVOR: ${{ needs.resolve.outputs.survivor }}
+          PROMOTED: ${{ needs.resolve.outputs.version }}
+          OLD_TIP: ${{ steps.rebase.outputs.old_tip }}
+          NEW_TIP: ${{ steps.rebase.outputs.new_tip }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          prs="$(gh pr list --repo "$REPO" --base "$SURVIVOR" --state open --json number --jq '.[].number')"
+          if [[ -z "${prs// }" ]]; then
+            echo "No open pull requests into \`$SURVIVOR\` — nobody to tell."
+            exit 0
+          fi
+          # Built with printf rather than a heredoc: a heredoc terminator has
+          # to sit at column zero, and a comment body indented to match this
+          # file renders on GitHub as a code block.
+          body="$(printf '%s\n' \
+            "**The base of this pull request was rewritten.** \`$PROMOTED\` was promoted while" \
+            "\`$SURVIVOR\` was open, so \`main\` moved past this train's ancestor and the train" \
+            "could no longer fast-forward. It has been rebased onto the new \`main\` and" \
+            "force-pushed — the one exception to \`beta/*\` protection (ADR 0023 D24)." \
+            "" \
+            "- \`$SURVIVOR\` was \`$OLD_TIP\`, and is now \`$NEW_TIP\`." \
+            "- Your approval is unaffected: approvals attach to the head, which did not move." \
+            "- **Conflicts may have appeared.** Rebase onto the new base and re-push if GitHub" \
+            "  now reports one." \
+            "- The rebase is [this run]($RUN_URL).")"
+          for pr in $prs; do
+            gh pr comment "$pr" --repo "$REPO" --body "$body"
+            echo "  ✅ told #$pr"
+          done
+
+      # The obligation that is easiest to forget and worst to forget (D24).
+      # Every commit SHA on the train changed, so `beta-x.y.z` names an image
+      # whose `org.opencontainers.image.revision` label points at a commit that
+      # is no longer reachable — and `sha-<short>` names the old commit by
+      # name. Left alone, this train cannot be promoted: D16's assertion fails
+      # at *its* promotion, long after the cause, and reads as "the train
+      # moved" when nothing did.
+      #
+      # The force-push above was made with the App token, so it triggered
+      # `ci.yml` (`push: beta/**`), which rebuilds and republishes both tags.
+      # This step waits for that run and then checks the registry, because
+      # "the push triggered a workflow" is exactly the assumption that is
+      # invisible when it is false.
+      - name: Republish beta-x.y.z and sha-<short> for the rebased train
+        if: steps.rebase.outputs.rebased == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SURVIVOR: ${{ needs.resolve.outputs.survivor }}
+          NEW_TIP: ${{ steps.rebase.outputs.new_tip }}
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          version="${SURVIVOR#beta/}"
+          short="${NEW_TIP:0:7}"
+          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
+          namespace="${namespace,,}"
+
+          # The event filter is the question being asked, not decoration, so it
+          # is an argument. The first loop asks "did the force-push trigger a
+          # run", which is `event=push` and nothing else. The wait below asks
+          # "has the republish finished", which must not filter on `push` at
+          # all: a run created by `POST /actions/workflows/{id}/dispatches`
+          # carries `workflow_dispatch`, so a `push` filter would return empty
+          # on every poll until the two-hour deadline and fail the job naming
+          # an empty status — hours after the republish it dispatched had in
+          # fact succeeded.
+          runs_for_tip() {
+            local event_filter=""
+            [[ -n "${1:-}" ]] && event_filter="&event=$1"
+            gh api "repos/$REPO/actions/workflows/ci.yml/runs?branch=$SURVIVOR${event_filter}&head_sha=$NEW_TIP&per_page=1" \
+              --jq '.workflow_runs[0] | select(.) | "\(.id) \(.status) \(.conclusion // "pending") \(.html_url)"' 2>/dev/null || true
+          }
+
+          # Give the push trigger a couple of minutes to produce a run before
+          # concluding it did not. A dispatch is the belt to that braces: if
+          # the run never appears, the republish still has to happen, and a
+          # workflow that gave up here would leave the train quietly
+          # un-promotable — the exact failure this step exists to prevent.
+          run=""
+          for _ in $(seq 1 12); do
+            run="$(runs_for_tip push)"
+            [[ -n "$run" ]] && break
+            sleep 10
+          done
+          if [[ -z "$run" ]]; then
+            echo "::warning title=The force-push triggered no CI run::No ci.yml push run for $NEW_TIP on $SURVIVOR after two minutes. Dispatching ci.yml on the train instead. If this recurs, the App token is not what pushed — a push made with GITHUB_TOKEN triggers nothing (ADR 0023 D39)."
+            gh workflow run ci.yml --repo "$REPO" --ref "$SURVIVOR"
+            sleep 20
+          fi
+
+          # Then wait it out. A train's image build is both images, multi-arch.
+          deadline=$(( SECONDS + 7200 ))
+          status=""; conclusion=""; url=""
+          while (( SECONDS < deadline )); do
+            # Unfiltered: a dispatched run has the tip as its head SHA, but its
+            # event is `workflow_dispatch`, not `push`. Either one answers the
+            # question this loop is asking.
+            run="$(runs_for_tip)"
+            if [[ -z "$run" ]]; then
+              # A dispatched run takes a moment to register.
+              sleep 30
+              continue
+            fi
+            read -r _ status conclusion url <<<"$run"
+            [[ "$status" == "completed" ]] && break
+            echo "  ci.yml for $short is $status ($url)"
+            sleep 30
+          done
+
+          if [[ "$status" != "completed" ]]; then
+            echo "::error title=The republish did not finish in time::ci.yml for $SURVIVOR at $NEW_TIP is still $status ($url). The rebase itself is done and correct; the train's images are not republished, so \`beta-$version\` still names an image built from a commit that no longer exists and the train cannot be promoted (ADR 0023 D16, D24). Watch that run, or re-run it, until both tags name $NEW_TIP."
+            exit 1
+          fi
+          if [[ "$conclusion" != "success" ]]; then
+            echo "::error title=The republish failed::ci.yml for $SURVIVOR at $NEW_TIP concluded '$conclusion' ($url). \`beta-$version\` and \`sha-$short\` were not republished, so the train's image was built from commits the rebase made unreachable and the train is un-promotable until this is fixed (ADR 0023 D21, D24)."
+            exit 1
+          fi
+
+          if [[ -n "$DOCKERHUB_TOKEN" && -n "$DOCKERHUB_USERNAME" ]]; then
+            echo "$DOCKERHUB_TOKEN" | docker login docker.io --username "$DOCKERHUB_USERNAME" --password-stdin
+          fi
+
+          # A green run is not the assertion — the two tags naming the rebased
+          # tip is. `beta-x.y.z` is what a promotion resolves (D16) and
+          # `sha-<short>` is the immutable handle on the same bytes (D11); a
+          # republish that moved one and not the other leaves the pair lying
+          # about each other.
+          failed=0
+          for image in panel core; do
+            for ref in "docker.io/$namespace/$image:beta-$version" "docker.io/$namespace/$image-dev:sha-$short"; do
+              if ! docker pull --quiet "$ref" >/dev/null; then
+                echo "::error title=A tag the rebase owes is missing::$ref does not exist after the republish (ADR 0023 D24)."
+                failed=1
+                continue
+              fi
+              revision="$(docker image inspect --format '{{json .Config.Labels}}' "$ref" \
+                | jq -r '.["org.opencontainers.image.revision"] // ""')"
+              if [[ "$revision" != "$NEW_TIP" ]]; then
+                echo "::error title=A republished tag still names the pre-rebase commit::$ref carries ${revision:-no revision label}, not $NEW_TIP. Promotion of $SURVIVOR would fail its digest assertion against a commit that is no longer reachable, long after this rebase (ADR 0023 D16, D24)."
+                failed=1
+                continue
+              fi
+              echo "  ✅ $ref names $NEW_TIP"
+            done
+          done
+          if (( failed )); then
+            exit 1
+          fi
+          echo "✅ \`beta-$version\` and \`sha-$short\` name the rebased tip. The train is promotable again."

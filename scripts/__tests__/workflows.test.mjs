@@ -49,12 +49,13 @@ const code = (block) =>
     .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is four entry points plus one reusable workflow — nothing else", () => {
+  it("is five entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
       "ci.yml",
       "container-image.yml",
       "housekeeping.yml",
       "landing.yml",
+      "promote.yml",
       "release.yml",
     ]);
   });
