@@ -27,6 +27,8 @@ machine, then paste that machine's pairing token into the Panel.
 | Learn the vocabulary reviewers use | [`../CONTEXT.md`](../CONTEXT.md) |
 | Understand why the architecture is the way it is | [`adr/`](adr/) |
 | Know what CI will run and what it publishes | [`ci-cd.md`](ci-cd.md) |
+| Work out which branch your PR should target | [`../CONTRIBUTING.md#where-your-pr-goes-the-open-train-not-main`](../CONTRIBUTING.md#where-your-pr-goes-the-open-train-not-main) |
+| Understand the release train and the tag ladder | [`ci-cd.md#the-train-model`](ci-cd.md#the-train-model) |
 | Report a security problem | [`../SECURITY.md`](../SECURITY.md) |
 | Ask a question or get help | [`../SUPPORT.md`](../SUPPORT.md) |
 | Know who decides what | [`../GOVERNANCE.md`](../GOVERNANCE.md) |
@@ -42,6 +44,9 @@ carries the invariants a reviewer will hold you to.
 | Set up the GitHub repo: secrets, rulesets, labels, teams | [`REPO_SETUP.md`](REPO_SETUP.md) |
 | Add Docker Hub publishing keys | [`REPO_SETUP.md#2-secrets-variables-and-environments`](REPO_SETUP.md#2-secrets-variables-and-environments) |
 | Cut a release | [`ci-cd.md#cutting-a-release`](ci-cd.md#cutting-a-release) |
+| Accept a beta before promoting it | [`beta-acceptance-checklist.md`](beta-acceptance-checklist.md) |
+| Roll a bad release back | [`ci-cd.md#rolling-back`](ci-cd.md#rolling-back) |
+| Ship a fix to an older line | [`ci-cd.md#backports-and-the-supported-lines`](ci-cd.md#backports-and-the-supported-lines) |
 | Know why this repo has no tag before `v0.1.0` | [`REPO_SETUP.md#6-tag-history`](REPO_SETUP.md#6-tag-history) |
 
 ## Architecture decisions
@@ -66,6 +71,20 @@ routing around it.
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
 | [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
 | [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows |
+| [0017](adr/0017-remembered-session-settings-are-core-facts.md) | Remembered session settings are Core facts |
+| [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired |
+| [0018](adr/0018-the-task-mutation-frame-carries-delete.md) | The task mutation frame carries delete |
+| [0019](adr/0019-archived-rows-cross-the-core-link-on-their-own-path.md) | Archived rows cross the core-link on their own path |
+| [0020](adr/0020-the-core-detects-its-own-harness-status.md) | The Core detects its own Harness status |
+| [0021](adr/0021-installing-a-harness-is-a-panel-gesture.md) | Installing a Harness is a Panel gesture |
+| [0022](adr/0022-a-core-owned-project-has-a-panel-side-presentation-row.md) | A Core-owned project has a Panel-side presentation row |
+| [0023](adr/0023-release-trains-and-digest-promotion.md) | Release trains and digest promotion |
+
+**Two files claim 0018**, as the table shows. It is a pre-existing collision,
+not breakage, and **nothing is renumbered** — every citation in the CI files
+points at the registry one. [`adr/README.md`](adr/README.md) explains it, and
+records the same situation one level down inside ADR 0023, where two clauses
+claim D38. Cite 0018 by file name or title, never by number alone.
 
 ## Reference
 
@@ -76,6 +95,10 @@ routing around it.
 
 ## Release and platform checklists
 
+- [`beta-acceptance-checklist.md`](beta-acceptance-checklist.md) — pull
+  `beta-x.y.z`, compose up, pair a Core, check the CHANGELOG. **Worked before
+  every promotion**: the image approved here is byte-for-byte the image that
+  ships, because promotion retags rather than rebuilds.
 - [`core-linux-rehearsal.md`](core-linux-rehearsal.md) — rehearsing a Linux install
 - [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md) — the macOS
   checks a runner cannot perform (Gatekeeper, and reboot/logout persistence).
