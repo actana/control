@@ -519,9 +519,11 @@ The live-ruleset read has a quieter version of the same problem: GitHub redacts
 `bypass_actors` to `null` for a token that can read the ruleset but is not an
 admin of the repository, and a 200 carrying `null` looks exactly like a
 ruleset with no bypass actors. So the script asserts the shape of what came
-back — the body parses, the `bypass_actors` key is present, and it is an array
-— and refuses by name when it is not. An unreadable answer is the case this
-check exists for, not a pass. **Run it as a repository admin**; if either read
+back — the body parses, the `bypass_actors` key is present, it is an array, and
+every entry in it is an object — and refuses by name when it is not. The
+installations read is asserted the same way, so a body it cannot parse is
+reported as not knowing rather than as `actana` having no App installed. An
+unreadable answer is the case this check exists for, not a pass. **Run it as a repository admin**; if either read
 comes back unreadable, the check refuses and you apply nothing, rather than
 being told a destructive `PUT` is safe by a guard that could not see what the
 `PUT` would delete.

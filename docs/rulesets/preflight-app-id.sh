@@ -69,17 +69,40 @@ esac
 #    the App's own JWT — so the question is asked of the org. Failing to ask it
 #    is a refusal, not a pass: an unreadable answer is the case this exists for.
 
-installs="$(gh api "orgs/$OWNER/installations" \
-  --jq '.installations[] | [.app_id, .app_slug, .repository_selection] | @tsv' 2>&1)" || die \
+installs_json="$(gh api "orgs/$OWNER/installations" 2>&1)" || die \
   "Could not list the App installations on $OWNER." \
-  "$installs" \
+  "$installs_json" \
   "" \
   "This needs the admin:org scope, which the admin doing the cutover has:" \
   "  gh auth refresh -h github.com -s admin:org" \
   "Do not skip this and apply anyway — it is the assertion, not a formality."
 
+# The same rule the live-ruleset read below follows, applied here for the same
+# reason: a 200 is not an answer. An empty body, a whitespace-only body, an
+# `installations` key that is absent, null or not a list all reduce to "no
+# installations found" — which reads identically to "$OWNER has no App
+# installed" and is not the same claim at all. Assert the shape, so the two
+# cases get two different messages.
+printf '%s' "$installs_json" |
+  jq -e 'type == "object" and has("installations")
+         and (.installations | type == "array" and all(type == "object"))' \
+  >/dev/null 2>&1 || die \
+  "The App installations on $OWNER read back unusably." \
+  "The request succeeded, so this is not a network failure: the body was empty" \
+  "or unparseable, or it carried no \`installations\` list to read." \
+  "This is not an answer of 'no App is installed' — it is not knowing whether" \
+  "one is, which is the case this check exists for." \
+  "" \
+  "Re-run with the admin:org scope and confirm the read returns a list:" \
+  "  gh auth refresh -h github.com -s admin:org"
+
+installs="$(printf '%s' "$installs_json" |
+  jq -r '.installations[] | [.app_id, .app_slug, .repository_selection] | @tsv')"
+
 [ -n "$installs" ] || die "No GitHub App is installed on $OWNER." \
-  "The payloads name one as their only bypass actor, so there is nothing for" \
+  "The read came back readable and empty, so this is an installation list with" \
+  "nothing in it — not a list that could not be read." \
+  "The payloads name an App as their only bypass actor, so there is nothing for" \
   "APP_ID=$APP_ID to be. Install the App first (§2, step 1 of the cutover)."
 
 installed_line="$(printf '%s\n' "$installs" | awk -F'\t' \
@@ -169,13 +192,31 @@ for payload in "${payloads[@]}"; do
   # read the ruleset but is not an admin, so this is the likely case, not the
   # exotic one. Same rule as the installations call above: an answer that
   # cannot be read is a refusal, not a pass.
+  #
+  # The entries are asserted too, not just the array around them. A list
+  # carrying something that is not an object passes `type == "array"`, and the
+  # comparison below then renders it through .actor_type/.actor_id/.bypass_mode
+  # into a string like `null:null:null` — so the script still refuses, but
+  # names a bypass actor that does not exist rather than the malformed read
+  # that invented it. Refuse where the fault is.
+  #
+  # The three keys are asserted for the same reason: an entry that is an object
+  # but carries only `actor_id` renders as `null:4516237:null`, which is the
+  # same invented actor by a different route. Presence, not value — GitHub
+  # returns `"actor_id": null` for a DeployKey bypass actor, and that is a real
+  # actor this must keep comparing rather than refuse on.
   printf '%s' "$live_json" |
-    jq -e 'type == "object" and has("bypass_actors") and (.bypass_actors | type == "array")' \
+    jq -e 'type == "object" and has("bypass_actors")
+           and (.bypass_actors | type == "array" and all(
+                 type == "object" and has("actor_type") and has("actor_id")
+                 and has("bypass_mode")))' \
     >/dev/null 2>&1 || die \
     "Live ruleset $ruleset_id ($name's target) read back without a usable bypass_actors list." \
     "The request succeeded, so this is not a network failure: either the response" \
     "was empty or unparseable, or the token can read the ruleset but not its" \
-    "bypass actors — GitHub redacts them to null for non-admins." \
+    "bypass actors — GitHub redacts them to null for non-admins — or the list" \
+    "came back holding entries that are not bypass actor objects (an object" \
+    "carrying actor_type, actor_id and bypass_mode)." \
     "An answer that cannot be read is not an answer of 'no bypass actors'." \
     "" \
     "Re-run as an admin of $REPO:" \
