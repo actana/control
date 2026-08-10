@@ -753,6 +753,12 @@ jobs:
     timeout-minutes: 150
     permissions:
       contents: read
+      # The republish step reads `ci.yml`'s runs to know whether the
+      # force-push triggered one, and dispatches `ci.yml` itself when it did
+      # not. Both are the Actions API, and neither is available under the
+      # default `contents: read` alone.
+      actions: write
+      # The comment on every open pull request into the rebased train (D24).
       pull-requests: write
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
