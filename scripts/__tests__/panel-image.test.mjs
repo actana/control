@@ -212,10 +212,54 @@ describe("reference compose", () => {
   const panel = compose.services.panel;
   const coreService = compose.services.core;
 
+  // ADR 0023. Both images are templated on one tag variable that defaults to
+  // `latest`, so a clean checkout still builds nothing and still pulls the
+  // current release — and `ACTANA_TAG=beta-0.2.0` moves *both* services.
+  //
+  // One variable, not two, is the assertion that matters: the Panel and its
+  // Cores are version-locked, and a compose file offering `ACTANA_PANEL_TAG`
+  // beside `ACTANA_CORE_TAG` would make a pair nobody ever tested a single
+  // typo away. Written as a literal rather than built from the constants,
+  // because the default is what a checkout with no `.env` resolves to and a
+  // template that quietly lost its default would still match a looser pattern.
+  const panelName = PANEL_IMAGE.split("/").pop();
+  const coreName = CORE_IMAGE.split("/").pop();
+
   it("runs the published images, so a clean checkout builds nothing", () => {
-    expect(panel.image).toBe(`${PANEL_IMAGE}:latest`);
-    expect(coreService.image).toBe(`${CORE_IMAGE}:latest`);
+    expect(panel.image).toBe(
+      `\${ACTANA_IMAGE_NAMESPACE:-actana}/${panelName}:\${ACTANA_TAG:-latest}`,
+    );
+    expect(coreService.image).toBe(
+      `\${ACTANA_IMAGE_NAMESPACE:-actana}/${coreName}:\${ACTANA_TAG:-latest}`,
+    );
     expect(Object.keys(compose.services)).toEqual(["panel", "core"]);
+  });
+
+  it("moves both services from one tag variable, because they are version-locked", () => {
+    const tagVariables = [...composeText.matchAll(/\$\{(ACTANA_[A-Z_]*TAG)[:}]/g)].map(
+      (match) => match[1],
+    );
+    expect(tagVariables.length).toBeGreaterThan(0);
+    expect([...new Set(tagVariables)]).toEqual(["ACTANA_TAG"]);
+    // Documented where an operator looks for it, not only in a comment.
+    expect(readRepoFile("deploy/.env.example")).toContain("ACTANA_TAG=");
+  });
+
+  // The `-dev` repositories are a different repository name, not a different
+  // tag, so `ACTANA_TAG` alone cannot reach them (ADR 0023 D36). The override
+  // that can must require the tag rather than default it: there is no
+  // `latest` in a `-dev` repository, so a default would resolve to a tag that
+  // does not exist and fail at the pull with nothing useful to say.
+  it("reaches the pre-merge images with an override that demands a tag", () => {
+    const override = readRepoFile("deploy/docker-compose.dev-images.yml");
+    const dev = composeFacts(override);
+    expect(dev.services.panel.image).toContain(`/${panelName}-dev:`);
+    expect(dev.services.core.image).toContain(`/${coreName}-dev:`);
+    for (const service of ["panel", "core"]) {
+      expect(dev.services[service].image, `${service} defaults its -dev tag`).toContain(
+        "${ACTANA_TAG:?",
+      );
+    }
   });
 
   it("publishes the Panel on loopback, and names no TLS terminator at all", () => {
