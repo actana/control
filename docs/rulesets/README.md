@@ -12,6 +12,16 @@ restorable form of the same thing.
 | [`release.json`](release.json) | `refs/heads/release/**` | `POST` — new ruleset |
 | [`release-retired.json`](release-retired.json) | one retired line, named explicitly | `POST` — template, one per retirement |
 | [`tag-release-cut.json`](tag-release-cut.json) | `refs/tags/v*` | `PUT` over existing ruleset **20390424** |
+| [`tag-immutable.json`](tag-immutable.json) | `refs/tags/v*` | not applied — the capture of live ruleset **20390423** |
+
+`tag-immutable.json` is here for restorability rather than for the cutover.
+Ruleset 20390423 ("Release tags are immutable") is unchanged by this effort and
+nothing in §3 applies it; without it committed, a clone could restore four of
+the five live rulesets and the fifth would exist only in the web form. It is a
+verbatim capture of what is live — `GET /repos/actana/control/rulesets/20390423`
+reduced to the fields the create/update API takes. Applying it would be a
+`POST` if 20390423 has been lost and a `PUT` over 20390423 if it has been
+edited; either is a deliberate restore, not a step in the cutover.
 
 **Nothing here is applied by CI, and nothing here should be applied from a
 branch.** These files are data. Applying them is an admin step, taken
@@ -29,6 +39,21 @@ applied without substitution fails at the API rather than quietly installing a
 ruleset with no working bypass. The real value is the `APP_ID` secret's value
 (see [`../REPO_SETUP.md`](../REPO_SETUP.md) §2). §3 has the `jq` line that
 substitutes it.
+
+The tripwire only catches the *unsubstituted* case. A **wrong** id is worse and
+quieter: `main.json` and `tag-release-cut.json` are full-body `PUT`s, so the
+body sent is the ruleset afterwards, and an id that is not the App's replaces
+the live bypass actor list rather than sitting beside it. The API answers 200
+and the apply reports success, having deleted the identity `promote.yml`
+depends on.
+
+[`preflight-app-id.sh`](preflight-app-id.sh) is the assertion against that. Run
+it from an admin clone before the first `apply`; it refuses, naming the
+mismatch, if `APP_ID` is not an App installed on the repository's owner, if a
+payload names some other App, or if a `PUT` would drop a bypass actor that is
+live today. It reads only — every call it makes is a `GET` — and nothing runs
+it automatically. [`../REPO_SETUP.md`](../REPO_SETUP.md) §3 puts it in the
+cutover sequence.
 
 ## Keeping these honest
 

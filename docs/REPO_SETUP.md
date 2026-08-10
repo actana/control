@@ -375,6 +375,15 @@ without a pull request.
 - [ ] **The App exists and its id is to hand.** `APP_ID` and `APP_PRIVATE_KEY`
       are set (#108, closed). `APP_ID`'s value is the number the payloads want,
       and §2 has where to read it and what to do when it is missing.
+- [ ] **`preflight-app-id.sh` exits 0.** `export APP_ID=…` and run
+      [`rulesets/preflight-app-id.sh`](rulesets/preflight-app-id.sh) before the
+      first `apply`. `main.json` and `tag-release-cut.json` are full-body
+      `PUT`s: a wrong id does not fail at the API the way `0` does, it replaces
+      the live bypass actor list and returns 200. The script asserts that
+      `APP_ID` is an App actually installed on the owner, that no payload names
+      a different one, and that no `PUT` would drop a bypass actor that is live
+      today — and refuses, naming the mismatch, if any of that does not hold.
+      It reads only; nothing runs it for you.
 - [ ] **All of #109–#113 are merged.** Applying `main.json` is the moment
       "pull requests to `main` only from `beta/*`" stops being advisory, and
       from that moment any foundation pull request still open cannot merge.
@@ -439,7 +448,12 @@ step 9 something is published that cannot be unpublished.
       release lines second, `main` third, tags last. `beta/*` before `main`
       because step 8 cuts a train into a ruleset that should already exist;
       tags last because that payload's only change is adding the bypass actor,
-      and it is cheap to re-apply if the id was wrong.
+      and it is cheap to re-apply if the id was wrong. **Run
+      [`rulesets/preflight-app-id.sh`](rulesets/preflight-app-id.sh) first and
+      apply nothing unless it exits 0** — it is the one check that happens
+      before a write rather than after, and the `main.json` `PUT` is not cheap
+      to re-apply if the id was wrong: it will have replaced the live bypass
+      actor list on the way through.
 - [ ] **7. Prove it binds** — [*Verify it actually
       binds*](#verify-it-actually-binds), below. A throwaway non-`beta/*` pull
       request into `main` is blocked, and a direct push to `main` is refused
@@ -471,6 +485,12 @@ it on the way in:
 
 ```bash
 export APP_ID=…            # the value of the APP_ID secret
+
+# Before the first apply. Exits non-zero, naming the mismatch, if APP_ID is not
+# an App installed on `actana`, if a payload names a different one, or if a PUT
+# would delete a bypass actor that is live today. Reads only.
+docs/rulesets/preflight-app-id.sh   # must exit 0 — if it does not, apply nothing
+
 apply() {                  # apply <payload> [ruleset-id]
   jq --argjson app "$APP_ID" \
      '(.bypass_actors[]? | select(.actor_id == 0)).actor_id = $app' "$1" \
@@ -480,6 +500,33 @@ apply() {                  # apply <payload> [ruleset-id]
     fi
 }
 ```
+
+**The tripwire only catches the unsubstituted case. A wrong id is quieter.**
+Two of these payloads are full-body `PUT`s, so `bypass_actors` is replaced
+wholesale rather than added to: an id that is not the App's does not 422, it
+returns 200 having deleted the live bypass actor — a destructive outcome from a
+config apply that reports success, and one nothing surfaces again until the
+next promotion fails on a ruleset violation. `preflight-app-id.sh` is the
+assertion that happens *before* the write; it resolves the App installed on
+`actana` from the API rather than trusting the number in the shell, refuses on
+a mismatch instead of continuing, and refuses just as hard when it cannot read
+the answer at all — on **both** of the reads it depends on, not just the first.
+
+That second part is worth being precise about, because an exit code is only
+worth as much as the reads behind it. Listing installations wants the
+`admin:org` scope, and a token without it gets a 404 rather than an empty list.
+The live-ruleset read has a quieter version of the same problem: GitHub redacts
+`bypass_actors` to `null` for a token that can read the ruleset but is not an
+admin of the repository, and a 200 carrying `null` looks exactly like a
+ruleset with no bypass actors. So the script asserts the shape of what came
+back — the body parses, the `bypass_actors` key is present, it is an array, and
+every entry in it is an object — and refuses by name when it is not. The
+installations read is asserted the same way, so a body it cannot parse is
+reported as not knowing rather than as `actana` having no App installed. An
+unreadable answer is the case this check exists for, not a pass. **Run it as a repository admin**; if either read
+comes back unreadable, the check refuses and you apply nothing, rather than
+being told a destructive `PUT` is safe by a guard that could not see what the
+`PUT` would delete.
 
 ### 3a. `beta/*` — the trains
 
@@ -554,7 +601,13 @@ goes stale in a way nobody notices until someone pushes to a dead line.
 
 ### 3d. `main`
 
+- [ ] `docs/rulesets/preflight-app-id.sh docs/rulesets/main.json` — exits 0
 - [ ] `apply docs/rulesets/main.json 20390421`
+
+The pre-flight is repeated here rather than left to *Before you apply anything*
+because this is the destructive `PUT`: the payload is the whole ruleset
+afterwards, including its bypass actor list, and 20390421 is the ruleset the
+promotion cannot work without.
 
 What changes from the ruleset that is live today:
 
@@ -609,17 +662,62 @@ reliably more than one human who can approve.
 
 ### 3e. The tag ruleset
 
+- [ ] **Decide the admin-bypass question below before running this**, then
+  `docs/rulesets/preflight-app-id.sh docs/rulesets/tag-release-cut.json`
 - [ ] `apply docs/rulesets/tag-release-cut.json 20390424`
 
-Ruleset **20390424** restricts *creation* of `refs/tags/v*` to the admin role
-and today has **zero bypass actors**. The App pushes the version tag during
-promotion, so it must be added here too, or the promotion fails at the tag
-after it has already fast-forwarded `main` — the worst place in the sequence to
-stop. This is the only change to that ruleset; the `creation` rule and the ref
-pattern are untouched.
+Ruleset **20390424** restricts *creation* of `refs/tags/v*` to the admin role.
+The App pushes the version tag during promotion, so it must be added here, or
+the promotion fails at the tag after it has already fast-forwarded `main` — the
+worst place in the sequence to stop. The `creation` rule and the ref pattern
+are untouched by the payload.
+
+> [!WARNING]
+> **Open decision — this apply deletes a live bypass actor, and the pre-flight
+> will refuse until someone resolves it.**
+>
+> Read with an admin token, live 20390424 carries a bypass actor that
+> `tag-release-cut.json` does not:
+>
+> ```
+> RepositoryRole:5:always
+> ```
+>
+> Because this is a full-body `PUT`, applying the payload as committed replaces
+> `bypass_actors` wholesale and removes that admin bypass — it does not sit
+> beside it. `preflight-app-id.sh` refuses on exactly this, which is the guard
+> working as intended and not a defect in it:
+>
+> ```
+> ❌ Applying tag-release-cut.json over live ruleset 20390424 would delete a bypass actor.
+>      RepositoryRole:5:always
+> ```
+>
+> This is a decision for whoever owns the repository's protection, and it is
+> deliberately left open here rather than resolved by editing the payload:
+>
+> - **If that admin bypass is meant to survive**, add it to
+>   `docs/rulesets/tag-release-cut.json` alongside the App actor, commit it, and
+>   re-run the pre-flight until it exits 0.
+> - **If it is meant to go**, remove it in the admin console first, as its own
+>   deliberate act with its own audit trail — not as a silent side effect of a
+>   config apply — and then re-run the pre-flight.
+>
+> Do not apply this payload while the pre-flight refuses. Note also that a
+> non-admin token reads this ruleset's `bypass_actors` back as `null`, which is
+> why the pre-flight now asserts the shape of that read: the earlier claim that
+> 20390424 has zero bypass actors was an artifact of reading it without admin
+> rights.
 
 Ruleset **20390423** ("Release tags are immutable") is not touched by this
-effort.
+effort — nothing here applies it and nothing here changes it. Its payload is
+committed anyway, as
+[`rulesets/tag-immutable.json`](rulesets/tag-immutable.json), captured verbatim
+from the live ruleset. The point of `rulesets/` is that a clone can restore the
+repository's protection; leaving one of the five out meant the fifth existed
+only in the web form, which is the thing this section is against. Restoring it
+is a `POST` if it has been deleted and a `PUT` over 20390423 if it has been
+edited — a deliberate act, not a cutover step.
 
 ### Verify it actually binds
 
