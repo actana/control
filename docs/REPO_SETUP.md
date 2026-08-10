@@ -510,8 +510,21 @@ next promotion fails on a ruleset violation. `preflight-app-id.sh` is the
 assertion that happens *before* the write; it resolves the App installed on
 `actana` from the API rather than trusting the number in the shell, refuses on
 a mismatch instead of continuing, and refuses just as hard when it cannot read
-the answer at all (listing installations wants the `admin:org` scope — an
-unreadable answer is the case it exists for, not a pass).
+the answer at all — on **both** of the reads it depends on, not just the first.
+
+That second part is worth being precise about, because an exit code is only
+worth as much as the reads behind it. Listing installations wants the
+`admin:org` scope, and a token without it gets a 404 rather than an empty list.
+The live-ruleset read has a quieter version of the same problem: GitHub redacts
+`bypass_actors` to `null` for a token that can read the ruleset but is not an
+admin of the repository, and a 200 carrying `null` looks exactly like a
+ruleset with no bypass actors. So the script asserts the shape of what came
+back — the body parses, the `bypass_actors` key is present, and it is an array
+— and refuses by name when it is not. An unreadable answer is the case this
+check exists for, not a pass. **Run it as a repository admin**; if either read
+comes back unreadable, the check refuses and you apply nothing, rather than
+being told a destructive `PUT` is safe by a guard that could not see what the
+`PUT` would delete.
 
 ### 3a. `beta/*` — the trains
 
@@ -647,14 +660,52 @@ reliably more than one human who can approve.
 
 ### 3e. The tag ruleset
 
+- [ ] **Decide the admin-bypass question below before running this**, then
+  `docs/rulesets/preflight-app-id.sh docs/rulesets/tag-release-cut.json`
 - [ ] `apply docs/rulesets/tag-release-cut.json 20390424`
 
-Ruleset **20390424** restricts *creation* of `refs/tags/v*` to the admin role
-and today has **zero bypass actors**. The App pushes the version tag during
-promotion, so it must be added here too, or the promotion fails at the tag
-after it has already fast-forwarded `main` — the worst place in the sequence to
-stop. This is the only change to that ruleset; the `creation` rule and the ref
-pattern are untouched.
+Ruleset **20390424** restricts *creation* of `refs/tags/v*` to the admin role.
+The App pushes the version tag during promotion, so it must be added here, or
+the promotion fails at the tag after it has already fast-forwarded `main` — the
+worst place in the sequence to stop. The `creation` rule and the ref pattern
+are untouched by the payload.
+
+> [!WARNING]
+> **Open decision — this apply deletes a live bypass actor, and the pre-flight
+> will refuse until someone resolves it.**
+>
+> Read with an admin token, live 20390424 carries a bypass actor that
+> `tag-release-cut.json` does not:
+>
+> ```
+> RepositoryRole:5:always
+> ```
+>
+> Because this is a full-body `PUT`, applying the payload as committed replaces
+> `bypass_actors` wholesale and removes that admin bypass — it does not sit
+> beside it. `preflight-app-id.sh` refuses on exactly this, which is the guard
+> working as intended and not a defect in it:
+>
+> ```
+> ❌ Applying tag-release-cut.json over live ruleset 20390424 would delete a bypass actor.
+>      RepositoryRole:5:always
+> ```
+>
+> This is a decision for whoever owns the repository's protection, and it is
+> deliberately left open here rather than resolved by editing the payload:
+>
+> - **If that admin bypass is meant to survive**, add it to
+>   `docs/rulesets/tag-release-cut.json` alongside the App actor, commit it, and
+>   re-run the pre-flight until it exits 0.
+> - **If it is meant to go**, remove it in the admin console first, as its own
+>   deliberate act with its own audit trail — not as a silent side effect of a
+>   config apply — and then re-run the pre-flight.
+>
+> Do not apply this payload while the pre-flight refuses. Note also that a
+> non-admin token reads this ruleset's `bypass_actors` back as `null`, which is
+> why the pre-flight now asserts the shape of that read: the earlier claim that
+> 20390424 has zero bypass actors was an artifact of reading it without admin
+> rights.
 
 Ruleset **20390423** ("Release tags are immutable") is not touched by this
 effort — nothing here applies it and nothing here changes it. Its payload is

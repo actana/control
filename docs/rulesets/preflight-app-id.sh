@@ -161,6 +161,27 @@ for payload in "${payloads[@]}"; do
     "$live_json" \
     "Without it there is no way to know what the PUT would replace."
 
+  # A 200 is not an answer. An empty body, a whitespace-only body, a redacted
+  # `"bypass_actors": null` and a response with the key absent all reduce to an
+  # empty actor list below, and an empty list is indistinguishable from "this
+  # ruleset has no bypass actors" — which is the one thing that must not be
+  # assumed here. GitHub redacts bypass_actors to null for a token that can
+  # read the ruleset but is not an admin, so this is the likely case, not the
+  # exotic one. Same rule as the installations call above: an answer that
+  # cannot be read is a refusal, not a pass.
+  printf '%s' "$live_json" |
+    jq -e 'type == "object" and has("bypass_actors") and (.bypass_actors | type == "array")' \
+    >/dev/null 2>&1 || die \
+    "Live ruleset $ruleset_id ($name's target) read back without a usable bypass_actors list." \
+    "The request succeeded, so this is not a network failure: either the response" \
+    "was empty or unparseable, or the token can read the ruleset but not its" \
+    "bypass actors — GitHub redacts them to null for non-admins." \
+    "An answer that cannot be read is not an answer of 'no bypass actors'." \
+    "" \
+    "Re-run as an admin of $REPO:" \
+    "  gh auth refresh -h github.com -s admin:org" \
+    "and confirm the read returns a bypass_actors array before applying anything."
+
   live_actors="$(printf '%s' "$live_json" |
     jq -r '[.bypass_actors[]? | "\(.actor_type):\(.actor_id):\(.bypass_mode)"] | sort | .[]')"
 
