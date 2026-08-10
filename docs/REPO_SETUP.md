@@ -619,7 +619,14 @@ stop. This is the only change to that ruleset; the `creation` rule and the ref
 pattern are untouched.
 
 Ruleset **20390423** ("Release tags are immutable") is not touched by this
-effort.
+effort — nothing here applies it and nothing here changes it. Its payload is
+committed anyway, as
+[`rulesets/tag-immutable.json`](rulesets/tag-immutable.json), captured verbatim
+from the live ruleset. The point of `rulesets/` is that a clone can restore the
+repository's protection; leaving one of the five out meant the fifth existed
+only in the web form, which is the thing this section is against. Restoring it
+is a `POST` if it has been deleted and a `PUT` over 20390423 if it has been
+edited — a deliberate act, not a cutover step.
 
 ### Verify it actually binds
 

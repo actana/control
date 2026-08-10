@@ -12,6 +12,16 @@ restorable form of the same thing.
 | [`release.json`](release.json) | `refs/heads/release/**` | `POST` — new ruleset |
 | [`release-retired.json`](release-retired.json) | one retired line, named explicitly | `POST` — template, one per retirement |
 | [`tag-release-cut.json`](tag-release-cut.json) | `refs/tags/v*` | `PUT` over existing ruleset **20390424** |
+| [`tag-immutable.json`](tag-immutable.json) | `refs/tags/v*` | not applied — the capture of live ruleset **20390423** |
+
+`tag-immutable.json` is here for restorability rather than for the cutover.
+Ruleset 20390423 ("Release tags are immutable") is unchanged by this effort and
+nothing in §3 applies it; without it committed, a clone could restore four of
+the five live rulesets and the fifth would exist only in the web form. It is a
+verbatim capture of what is live — `GET /repos/actana/control/rulesets/20390423`
+reduced to the fields the create/update API takes. Applying it would be a
+`POST` if 20390423 has been lost and a `PUT` over 20390423 if it has been
+edited; either is a deliberate restore, not a step in the cutover.
 
 **Nothing here is applied by CI, and nothing here should be applied from a
 branch.** These files are data. Applying them is an admin step, taken
