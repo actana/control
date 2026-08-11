@@ -26,7 +26,9 @@ import {
 // happen to be registered. The real ones — `ptySubscribe` / `ptyUnsubscribe`
 // from #142 — are covered further down, including the fallback a capability-less
 // Core gets and the ready-before-authOk ordering the reconnect resend needs.
-// `claim` (D6) joins them when the Session lock lands.
+// The Session lock's `claim` / `release` / `forceTakeover` (issue 144, D3–D7)
+// joined them, with the same consult-the-gate-and-degrade shape — covered at
+// the bottom of this file.
 
 type Listener = (...args: unknown[]) => void;
 
@@ -298,15 +300,20 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
   });
 
   describe("the gate's frame registry", () => {
-    it("holds exactly the PTY subscription frames — the claim frame is not here yet", () => {
+    it("holds exactly the PTY subscription frames and the Session lock's three", () => {
       // Exact membership, not a superset check: this set is the whole statement
       // of what this build refuses to send to a single-connection Core, so a
       // type appearing here without the ticket that owns it, or one quietly
-      // dropping out, is the thing to notice. `claim` (D6) joins when the
-      // Session lock lands.
+      // dropping out, is the thing to notice. `claim` / `release` /
+      // `forceTakeover` (D3–D7) joined when the Session lock landed (issue 144)
+      // — a Core that evicts every client but one has nothing for a lock to
+      // arbitrate between, and no table to put a claim in.
       expect([...MULTI_CONNECTION_ONLY_FRAME_TYPES].sort()).toEqual([
+        "claim",
+        "forceTakeover",
         "ptySubscribe",
         "ptyUnsubscribe",
+        "release",
       ]);
     });
   });
@@ -452,6 +459,120 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
       readyWithCapability();
       socket.receive({ type: "authOk", coreId: "core_1", exp: Date.now() + 60_000 });
       expect(socket.framesOfType("ptySubscribe")).toHaveLength(2);
+    });
+  });
+  /**
+   * The Session lock over the gate (issue 144, ADR 0024 D3–D7, D10).
+   *
+   * `claim` / `release` / `forceTakeover` are multi-connection-only in the
+   * strictest sense of the phrase: a single-connection Core evicts every client
+   * but one, so it has nothing for a lock to arbitrate between and no table to
+   * put a claim in. The frames are in the gated set, and the three methods
+   * consult the gate themselves rather than reaching the backstop rejection —
+   * because a caller asking "may I write this Session?" has a real answer
+   * waiting for it on such a Core, and that answer is "yes, there is no lock
+   * here", which an exception cannot carry.
+   */
+  describe("the Session lock's frames", () => {
+    beforeEach(() => {
+      client = makeClient();
+    });
+
+    it("puts claim, release and forceTakeover on the wire for a Core that announces it", async () => {
+      readyWithCapability();
+
+      const claim = client.claim("task_1");
+      const claimFrame = socket.framesOfType("claim").at(-1)!;
+      socket.receive({ type: "claimResult", reqId: claimFrame.reqId, taskId: "task_1", granted: true });
+      await expect(claim).resolves.toEqual({ supported: true, granted: true });
+
+      const release = client.release("task_1");
+      const releaseFrame = socket.framesOfType("release").at(-1)!;
+      socket.receive({
+        type: "releaseResult",
+        reqId: releaseFrame.reqId,
+        taskId: "task_1",
+        released: true,
+      });
+      await expect(release).resolves.toEqual({ supported: true, released: true });
+
+      const takeover = client.forceTakeover("task_1");
+      const takeoverFrame = socket.framesOfType("forceTakeover").at(-1)!;
+      socket.receive({
+        type: "forceTakeoverResult",
+        reqId: takeoverFrame.reqId,
+        taskId: "task_1",
+        takenFrom: "another-connection",
+      });
+      await expect(takeover).resolves.toEqual({
+        supported: true,
+        takenFrom: "another-connection",
+      });
+    });
+
+    it("carries a denied claim back as an answer, not as a rejection", async () => {
+      // The Session being held by another client is the answer to the question
+      // asked. Only a *mutation* refused for the lock throws, and that arrives
+      // as an `error` frame carrying `session-locked`.
+      readyWithCapability();
+      const claim = client.claim("task_1");
+      const frame = socket.framesOfType("claim").at(-1)!;
+      socket.receive({ type: "claimResult", reqId: frame.reqId, taskId: "task_1", granted: false });
+      await expect(claim).resolves.toEqual({ supported: true, granted: false });
+    });
+
+    it("sends nothing at all to a Core that never announced the capability", async () => {
+      readyWithout();
+
+      await expect(client.claim("task_1")).resolves.toEqual({
+        supported: false,
+        granted: false,
+      });
+      await expect(client.release("task_1")).resolves.toEqual({
+        supported: false,
+        released: false,
+      });
+      await expect(client.forceTakeover("task_1")).resolves.toEqual({
+        supported: false,
+        takenFrom: "nobody",
+      });
+
+      expect(socket.framesOfType("claim")).toHaveLength(0);
+      expect(socket.framesOfType("release")).toHaveLength(0);
+      expect(socket.framesOfType("forceTakeover")).toHaveLength(0);
+    });
+
+    it("distinguishes 'no lock on this Core' from 'someone else holds it'", async () => {
+      // The one confusion that would matter downstream: `supported: false` and
+      // `granted: false` both carry a false, and reading them the same way
+      // renders a single-connection Core permanently read-only to the operator
+      // who is in fact its only client.
+      readyWithout();
+      const unsupported = await client.claim("task_1");
+
+      client = makeClient();
+      readyWithCapability();
+      const denied = client.claim("task_1");
+      const frame = socket.framesOfType("claim").at(-1)!;
+      socket.receive({ type: "claimResult", reqId: frame.reqId, taskId: "task_1", granted: false });
+
+      expect(unsupported).toEqual({ supported: false, granted: false });
+      await expect(denied).resolves.toEqual({ supported: true, granted: false });
+    });
+
+    it("closes the gate again when the link drops, so nothing queues past a reconnect", async () => {
+      // Same reason `ptySubscribe` re-reads it: between a drop and the next
+      // `ready` the answer is unknown, and a stale yes would let a lock frame
+      // onto the reconnect queue, which the reopen drains unconditionally —
+      // before the new `ready` says whether this Core can answer it.
+      readyWithCapability();
+      socket.close();
+
+      await expect(client.claim("task_1")).resolves.toEqual({
+        supported: false,
+        granted: false,
+      });
+      expect(socket.framesOfType("claim")).toHaveLength(0);
     });
   });
 });
