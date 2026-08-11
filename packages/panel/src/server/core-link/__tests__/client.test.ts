@@ -173,6 +173,10 @@ describe("PtyCoreLinkServer", () => {
   });
 
   it("wires core events as data/exit frames", () => {
+    // Since issue 142 a Core streams a PTY only to the connections that asked
+    // for it, so the subscription is what makes this connection a recipient at
+    // all — without it the frames below go nowhere.
+    pair.server.receive({ type: "ptySubscribe", reqId: "sub1", ptyId: "p1" });
     core.emitEvent({ type: "data", ptyId: "p1", data: "hello", seq: 1 });
     expect(pair.server.lastSent()).toEqual({
       type: "data",
@@ -1983,6 +1987,109 @@ describe("core-link heartbeat", () => {
     vi.advanceTimersByTime(60_000);
     expect(socket.terminated).toBe(true);
 
+    client.close();
+  });
+});
+
+/**
+ * PTY subscriptions on the Panel's side of the link (issue 142, ADR 0024 D2).
+ *
+ * The link is the only thing that knows when its socket dropped, and a Core
+ * hangs subscriptions off the connection — so re-establishing them is the
+ * client's job, not something the router or a browser can be asked to notice.
+ */
+describe("PtyCoreLinkClient pty subscriptions", () => {
+  let pair: FakeWebSocketPair;
+
+  beforeEach(() => {
+    pair = new FakeWebSocketPair();
+  });
+
+  function makeClient(): PtyCoreLinkClient {
+    const client = new PtyCoreLinkClient({
+      url: "ws://127.0.0.1:0",
+      createSocket: () => pair.client as unknown as ClientWebSocketLike,
+      reconnectInitialMs: 10_000,
+      reconnectMaxMs: 10_000,
+      storage: makeMemoryStorage(),
+      cursorStorageKey: "mc.coreLink.lastEventId",
+    });
+    pair.openClient();
+    return client;
+  }
+
+  /**
+   * Fire a subscription call the way every caller does: the answer is a frame
+   * nobody here is going to send, and a link that drops rejects whatever it had
+   * in flight. What is asserted is what went out on the wire.
+   */
+  function fire(promise: Promise<void>): void {
+    void promise.catch(() => {});
+  }
+
+  function ptyFrames(): Array<Record<string, unknown>> {
+    return pair.client.sent
+      .map((s) => JSON.parse(s) as Record<string, unknown>)
+      .filter((f) => f.type === "ptySubscribe" || f.type === "ptyUnsubscribe");
+  }
+
+  it("asks the Core for a pty, carrying the catch-up contract", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1", { catchUp: true }));
+
+    expect(ptyFrames()).toMatchObject([
+      { type: "ptySubscribe", ptyId: "pty_1", catchUp: true },
+    ]);
+    client.close();
+  });
+
+  it("asks once for a pty it already holds", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1"));
+    fire(client.ptySubscribe("pty_1"));
+
+    expect(ptyFrames()).toHaveLength(1);
+    client.close();
+  });
+
+  it("re-asks for every held pty when the link comes back", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1"));
+    fire(client.ptySubscribe("pty_2"));
+    fire(client.ptyUnsubscribe("pty_1"));
+    pair.client.sent.length = 0;
+
+    pair.closeClient();
+    pair.openClient();
+
+    // Only what is still held, and live rather than holding: nothing here is
+    // going to send the `replay` a hold waits for, and a hold nobody releases
+    // is a pane that never repaints.
+    expect(ptyFrames()).toMatchObject([
+      { type: "ptySubscribe", ptyId: "pty_2", catchUp: false },
+    ]);
+    client.close();
+  });
+
+  it("does not re-ask for a pty it has released", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1"));
+    fire(client.ptyUnsubscribe("pty_1"));
+    expect(ptyFrames().at(-1)).toMatchObject({ type: "ptyUnsubscribe", ptyId: "pty_1" });
+    pair.client.sent.length = 0;
+
+    pair.closeClient();
+    pair.openClient();
+
+    expect(ptyFrames()).toEqual([]);
+    client.close();
+  });
+
+  it("sends nothing for a release of a pty it never held", () => {
+    const client = makeClient();
+    fire(client.ptyUnsubscribe("pty_never"));
+
+    expect(ptyFrames()).toEqual([]);
     client.close();
   });
 });

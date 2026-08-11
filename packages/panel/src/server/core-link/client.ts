@@ -189,6 +189,14 @@ export class PtyCoreLinkClient {
   /** In-memory mirror of the persisted cursor; updated on every event/replay. */
   private lastEventId = 0;
   private subscribed = false;
+  /**
+   * The PTYs this link has asked the Core for (issue 142). PTY output fans out
+   * by subscription now, so this set is the difference between a pane that
+   * renders and one that sits blank — and it is connection state on the Core,
+   * which means it does not survive a reconnect. The client re-sends it on
+   * every open; nothing above it has to know the socket ever dropped.
+   */
+  private readonly subscribedPtys = new Set<string>();
   /** True once the server has accepted this connection's `auth` frame. */
   private authenticated = false;
   /** Heartbeat timer; non-null only while a ping-capable socket is open. */
@@ -272,6 +280,7 @@ export class PtyCoreLinkClient {
         // No bearer configured (tests) — go straight to the event-cursor
         // subscribe so the Core streams the replay tail.
         this.sendSubscribe();
+        this.resendPtySubscriptions();
       }
       // Flush any RPCs that were queued while the WS wasn't open (e.g. the
       // first pty.* call after a reconnect, before the WS handshake
@@ -479,6 +488,10 @@ export class PtyCoreLinkClient {
       // the server's auth gate lets the subscribe through.
       this.subscribed = false;
       this.sendSubscribe();
+      // PTY subscriptions die with the Core-side connection, so they are
+      // re-established here — after `auth`, for the same reason `subscribe` is:
+      // the Core refuses a pre-auth `ptySubscribe`.
+      this.resendPtySubscriptions();
       for (const cb of this.authOkListeners) cb({ coreId, exp });
       return;
     }
@@ -740,6 +753,54 @@ export class PtyCoreLinkClient {
   }
 
   /**
+   * Ask this Core for one PTY's byte stream (issue 142, ADR 0024 D2). Until a
+   * link subscribes, `onData`/`onExit` never fire for that `ptyId` — a Core
+   * fans output out to the connections that asked and to no others.
+   *
+   * `catchUp` says a `replay` for this PTY follows and the Core must hold the
+   * live stream until it has been served, so the caller never paints live bytes
+   * in front of its own scrollback. A caller that sets it owes that replay;
+   * nothing else releases the hold.
+   *
+   * The set is remembered and re-sent on every reconnect, because the Core
+   * hangs subscriptions off the connection. Idempotent on both sides: a second
+   * call for a PTY already subscribed is a no-op here and an ack there.
+   */
+  ptySubscribe(ptyId: string, opts: { catchUp?: boolean } = {}): Promise<void> {
+    if (this.subscribedPtys.has(ptyId)) return Promise.resolve();
+    this.subscribedPtys.add(ptyId);
+    return this.rpc({
+      type: "ptySubscribe",
+      reqId: "",
+      ptyId,
+      catchUp: opts.catchUp === true,
+    }).then(() => undefined);
+  }
+
+  /** Stop receiving one PTY's stream. Idempotent; see {@link ptySubscribe}. */
+  ptyUnsubscribe(ptyId: string): Promise<void> {
+    if (!this.subscribedPtys.delete(ptyId)) return Promise.resolve();
+    return this.rpc({ type: "ptyUnsubscribe", reqId: "", ptyId }).then(() => undefined);
+  }
+
+  /**
+   * Re-ask for every PTY this link had, on a connection that has just come up.
+   *
+   * `catchUp` is deliberately not set. A hold is released by a `replay` from
+   * the same client, and nothing here is going to send one — the surfaces that
+   * replay do it off their own reconnect, one layer up, and a hold nobody
+   * releases is a pane that stays blank forever. Going live immediately is also
+   * exactly what this path did before subscriptions existed.
+   */
+  private resendPtySubscriptions(): void {
+    for (const ptyId of this.subscribedPtys) {
+      void this.rpc({ type: "ptySubscribe", reqId: "", ptyId, catchUp: false }).catch(() => {
+        /* the socket died again; the next open re-sends the whole set */
+      });
+    }
+  }
+
+  /**
    * List every project on this Core as a live snapshot (issue 07 — per-Core
    * navigation). The Core is the source of truth; the Panel holds none. The
    * returned `path` is a VM path — only the Core can validate it.
@@ -923,6 +984,9 @@ function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return msg.sessions;
     case "agentsAvailabilityListResult":
       return msg.availability;
+    case "ptySubscribeAck":
+    case "ptyUnsubscribeAck":
+      return { ptyId: msg.ptyId, subscribed: msg.subscribed };
     case "error":
       throw new Error(msg.message);
     default:

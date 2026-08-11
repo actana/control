@@ -83,6 +83,10 @@ _Avoid_: message, notification (a notification is one *use* of an Event)
 The single number the Panel stores per Core — the highest Event id it has seen. Sent on reconnect to request the replay tail. The only per-Core state on the Panel beyond the Core registry.
 _Avoid_: offset, sequence number
 
+**PTY subscription** (per Core link):
+One Core client's standing request for one PTY's byte stream. A Core sends a PTY's `data` and `exit` to the connections that asked for it and to no others, so a client attached to one Session never receives another's output. Held on the connection, so it dies with the socket and is re-asked for on reconnect. Catch-up is the existing `replay { ptyId, sinceSeq }`, ordered behind the subscription rather than in front of it (ADR 0024 D2).
+_Avoid_: channel, stream registration, attach (an attach is the Panel gesture; this is what it asks for)
+
 ### Panel views
 
 **Fleet view**:

@@ -35,6 +35,12 @@ class FakeClient implements CoreLinkClientLike {
   onEvent() {
     return () => {};
   }
+  ptySubscribe() {
+    return Promise.resolve();
+  }
+  ptyUnsubscribe() {
+    return Promise.resolve();
+  }
 
   onAuthOk(cb: Emitters["authOk"]) {
     this.emit.authOk = cb;

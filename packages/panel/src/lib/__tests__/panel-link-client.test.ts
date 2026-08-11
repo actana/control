@@ -269,6 +269,155 @@ describe("panel link · reconnect and replay", () => {
   });
 });
 
+describe("panel link · the ptys a tab is rendering", () => {
+  /** Answer whatever the tab last asked for, so its claim resolves. */
+  function ack(socket: FakeSocket, coreId: string, ptyId: string): void {
+    const asked = socket
+      .outgoing(coreId)
+      .filter((f) => f.type === "ptySubscribe" || f.type === "ptyUnsubscribe");
+    const last = asked.at(-1) as { type: string; reqId: string };
+    socket.push({
+      t: "core",
+      coreId,
+      frame:
+        last.type === "ptySubscribe"
+          ? { type: "ptySubscribeAck", reqId: last.reqId, ptyId, subscribed: true, holding: false }
+          : { type: "ptyUnsubscribeAck", reqId: last.reqId, ptyId, subscribed: false },
+    });
+  }
+
+  function ptyFrames(socket: FakeSocket, coreId: string) {
+    return socket
+      .outgoing(coreId)
+      .filter((f) => f.type === "ptySubscribe" || f.type === "ptyUnsubscribe")
+      .map((f) => ({ ...f, reqId: undefined }));
+  }
+
+  it("asks for a pty the moment a pane claims it", async () => {
+    const link = client();
+    const socket = live();
+    const claimed = link.ptySubscribe("core_a", "pty_1", { catchUp: true });
+    ack(socket, "core_a", "pty_1");
+    await claimed;
+
+    expect(ptyFrames(socket, "core_a")).toEqual([
+      { type: "ptySubscribe", ptyId: "pty_1", catchUp: true, reqId: undefined },
+    ]);
+    link.close();
+  });
+
+  it("re-asks for every pty a pane is still rendering when the link comes back", async () => {
+    const link = client();
+    const first = live();
+    const claimed = link.ptySubscribe("core_a", "pty_1", { catchUp: true });
+    ack(first, "core_a", "pty_1");
+    await claimed;
+
+    // The service gave this tab's claims back the moment the socket died, and
+    // the panes never noticed — nothing above this layer re-claims.
+    first.drop();
+    vi.advanceTimersByTime(20);
+    const second = live();
+
+    expect(ptyFrames(second, "core_a")).toEqual([
+      // No `catchUp`: the pane's own reattach sends the replay that would
+      // release a hold, and a hold nobody releases is a pane that never paints.
+      { type: "ptySubscribe", ptyId: "pty_1", catchUp: false, reqId: undefined },
+    ]);
+    link.close();
+  });
+
+  it("paints the pty again after the reconnect it re-asked on", async () => {
+    const link = client();
+    const first = live();
+    const claimed = link.ptySubscribe("core_a", "pty_1", { catchUp: true });
+    ack(first, "core_a", "pty_1");
+    await claimed;
+    const painted: string[] = [];
+    link.onPtyData(({ ptyId, data }) => painted.push(`${ptyId}:${data}`));
+
+    first.drop();
+    vi.advanceTimersByTime(20);
+    const second = live();
+    // What the service sends once the Core has been re-subscribed underneath.
+    second.push({
+      t: "core",
+      coreId: "core_a",
+      frame: { type: "data", ptyId: "pty_1", data: "alive", seq: 4 },
+    });
+
+    expect(painted).toEqual(["pty_1:alive"]);
+    link.close();
+  });
+
+  it("does not re-ask for a pty the pane let go of", async () => {
+    const link = client();
+    const first = live();
+    const claimed = link.ptySubscribe("core_a", "pty_1");
+    ack(first, "core_a", "pty_1");
+    await claimed;
+    const released = link.ptyUnsubscribe("core_a", "pty_1");
+    ack(first, "core_a", "pty_1");
+    await released;
+
+    first.drop();
+    vi.advanceTimersByTime(20);
+
+    expect(ptyFrames(live(), "core_a")).toEqual([]);
+    link.close();
+  });
+
+  it("asks once for a pty two panes in the same tab render", async () => {
+    const link = client();
+    const socket = live();
+    const first = link.ptySubscribe("core_a", "pty_1", { catchUp: true });
+    ack(socket, "core_a", "pty_1");
+    await first;
+    // A pane rebuilding on the same pty claims again; counting it twice would
+    // strand the subscription when only one release follows.
+    await link.ptySubscribe("core_a", "pty_1", { catchUp: true });
+
+    expect(ptyFrames(socket, "core_a")).toHaveLength(1);
+    link.close();
+  });
+
+  it("keeps a claim made while the link was down, and asks on the new one", async () => {
+    const link = client();
+    live().drop();
+    link.ptySubscribe("core_a", "pty_1", { catchUp: true }).catch(() => {});
+    vi.advanceTimersByTime(20);
+    const second = live();
+
+    expect(
+      ptyFrames(second, "core_a").filter((f) => f.type === "ptySubscribe"),
+    ).not.toHaveLength(0);
+    link.close();
+  });
+
+  it("keeps each Core's claims apart", async () => {
+    const link = client();
+    const first = live();
+    const a = link.ptySubscribe("core_a", "pty_1");
+    ack(first, "core_a", "pty_1");
+    await a;
+    const b = link.ptySubscribe("core_b", "pty_2");
+    ack(first, "core_b", "pty_2");
+    await b;
+
+    first.drop();
+    vi.advanceTimersByTime(20);
+    const second = live();
+
+    expect(ptyFrames(second, "core_a")).toEqual([
+      { type: "ptySubscribe", ptyId: "pty_1", catchUp: false, reqId: undefined },
+    ]);
+    expect(ptyFrames(second, "core_b")).toEqual([
+      { type: "ptySubscribe", ptyId: "pty_2", catchUp: false, reqId: undefined },
+    ]);
+    link.close();
+  });
+});
+
 describe("panel link · watching", () => {
   it("subscribes a Core once however many views watch it", () => {
     const link = client();
