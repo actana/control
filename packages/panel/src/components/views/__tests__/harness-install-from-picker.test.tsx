@@ -36,8 +36,12 @@ const bridge = {
 
 vi.mock("~/lib/panel-bridge", () => ({ getPanelBridge: () => bridge }));
 vi.mock("~/queries", () => ({ useSettings: () => ({ data: undefined }) }));
+// Mutable, so a test can put the registry poll's answer through a rename
+// (issue 19) rather than only ever seeing the name a Core paired with.
+let CORES = [{ id: "core_a", label: "Core A" }];
+
 vi.mock("~/lib/use-fleet", () => ({
-  useCores: () => ({ cores: [{ id: "core_a", label: "Core A" }] }),
+  useCores: () => ({ cores: CORES }),
 }));
 vi.mock("~/lib/api", () => ({ api: { getKeybindings: async () => ({ bindings: {} }) } }));
 
@@ -114,6 +118,7 @@ function installButton(): HTMLElement {
 describe("installing a missing Harness from the picker (issue 83)", () => {
   beforeEach(() => {
     AVAILABILITY = availability({ status: "missing", reason: "not-found" });
+    CORES = [{ id: "core_a", label: "Core A" }];
     listeners.clear();
     __resetCliAvailabilityStoresForTests();
     bridge.installHarness.mockClear();
@@ -130,6 +135,37 @@ describe("installing a missing Harness from the picker (issue 83)", () => {
     expect(installButton()).toBeTruthy();
     expect(row("Claude Code").hasAttribute("disabled")).toBe(false);
     expect(screen.getByText("CLI not found on PATH.")).toBeTruthy();
+  });
+
+  // Issue 19: the alias is Panel-local and editable, and this dialog resolves it
+  // per render for its install copy. So an operator who renamed a machine is
+  // told to install on the name they use for it now, not the one it paired with.
+  it("names the Core by its current alias after a rename", async () => {
+    // A fresh element each time: React skips a re-render handed back the same
+    // element object, and it is the re-render that re-resolves the alias.
+    const ui = () => (
+      <KeybindingsProvider>
+        <NewHarnessDialog
+          open
+          project={PROJECT}
+          coreId="core_a"
+          onClose={() => {}}
+          onStart={() => {}}
+          onPersistRemember={() => {}}
+        />
+      </KeybindingsProvider>
+    );
+    const { rerender } = render(ui());
+    await act(async () => {});
+    expect(installButton().title).toMatch(/ on Core A$/);
+
+    // The registry poll comes back with the operator's new name for that Core.
+    CORES = [{ id: "core_a", label: "build-box" }];
+    await act(async () => {
+      rerender(ui());
+    });
+
+    expect(installButton().title).toMatch(/ on build-box$/);
   });
 
   it("asks the Core that owns the picker's Task to install that Harness", async () => {

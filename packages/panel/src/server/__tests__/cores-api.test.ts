@@ -391,6 +391,55 @@ describe("Cores API", () => {
     }, 20_000);
   });
 
+  describe("renaming a Core", () => {
+    it("renames in place and shows the new alias in the list", async () => {
+      const { id } = await pair("prod-vm-1");
+      const response = await call(`/api/cores/${id}`, { method: "PATCH", json: { label: "build-box" } });
+      expect(response.status).toBe(200);
+      expect((await response.json()) as { core: { label: string } }).toMatchObject({
+        core: { id, label: "build-box" },
+      });
+      const body = (await (await call("/api/cores")).json()) as { cores: { label: string }[] };
+      expect(body.cores[0]?.label).toBe("build-box");
+    }, 20_000);
+
+    it("normalizes the way pairing does — trimmed, capped, host when empty", async () => {
+      const { id } = await pair();
+      const labelAfter = async (label: string): Promise<string> => {
+        const res = await call(`/api/cores/${id}`, { method: "PATCH", json: { label } });
+        return ((await res.json()) as { core: { label: string } }).core.label;
+      };
+      expect(await labelAfter("  spaced out  ")).toBe("spaced out");
+      expect(await labelAfter("x".repeat(200))).toBe("x".repeat(120));
+      expect(await labelAfter("   ")).toBe("127.0.0.1");
+    }, 20_000);
+
+    it("leaves the link alone — renaming is a Panel-local write", async () => {
+      const { id } = await pair();
+      await vi.waitFor(async () => expect((await dialOf(id)).state).toBe("connected"), {
+        timeout: 10_000,
+      });
+      const seenAt = (await dialOf(id)).lastSeenAt;
+      expect((await call(`/api/cores/${id}`, { method: "PATCH", json: { label: "build-box" } })).status).toBe(200);
+      const dial = await dialOf(id);
+      expect(dial.state).toBe("connected");
+      expect(dial.lastSeenAt).toBe(seenAt);
+    }, 30_000);
+
+    it("rejects a body with no label, and an anonymous caller", async () => {
+      const { id } = await pair();
+      expect((await call(`/api/cores/${id}`, { method: "PATCH", json: {} })).status).toBe(400);
+      expect(
+        (await call(`/api/cores/${id}`, { method: "PATCH", anonymous: true, json: { label: "x" } })).status,
+      ).toBe(401);
+    }, 20_000);
+
+    it("404s on an id it doesn't know", async () => {
+      const response = await call("/api/cores/core_nope", { method: "PATCH", json: { label: "x" } });
+      expect(response.status).toBe(404);
+    });
+  });
+
   describe("removing a Core", () => {
     it("drops the registry row, its secrets, and its cursor", async () => {
       const { id } = await pair();

@@ -17,6 +17,7 @@ const {
   listCores,
   registerCoreFromRegistrationBlob,
   removeCore,
+  renameCore,
 } = await import("../cores");
 
 const BEARER = "bearer.eyJjb3JlSWQiOiJjb3JlXzEifQ.sig";
@@ -163,6 +164,47 @@ describe("Core registry", () => {
       advanceCoreCursor(core.id, Number.NaN);
       advanceCoreCursor(core.id, -1);
       expect(getCore(core.id)?.lastEventId).toBe(42);
+    });
+  });
+
+  describe("renaming", () => {
+    it("takes the operator's alias and bumps updated_at", () => {
+      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      // Age the row first: registration and the rename can land in the same
+      // millisecond, and a bump asserted against the wall clock would flake.
+      getPanelDb().prepare("UPDATE cores SET updated_at = 0 WHERE id = ?").run(core.id);
+      const renamed = renameCore(core.id, "build-box");
+      expect(renamed?.label).toBe("build-box");
+      expect(getCore(core.id)?.label).toBe("build-box");
+      expect(renamed?.updatedAt).toBeGreaterThan(0);
+    });
+
+    it("trims and caps at 120 characters, like registration does", () => {
+      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      expect(renameCore(core.id, "  spaced out  ")?.label).toBe("spaced out");
+      expect(renameCore(core.id, "x".repeat(200))?.label).toBe("x".repeat(120));
+    });
+
+    it("falls back to the endpoint host rather than leaving a blank row", () => {
+      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      expect(renameCore(core.id, "   ")?.label).toBe("10.0.0.5");
+      expect(renameCore(core.id, "")?.label).toBe("10.0.0.5");
+    });
+
+    it("touches nothing but the label — endpoint, cursor and secrets are left alone", () => {
+      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      advanceCoreCursor(core.id, 17);
+      renameCore(core.id, "build-box");
+      const after = getCore(core.id);
+      expect(after?.endpoint).toBe("wss://10.0.0.5:7777");
+      expect(after?.lastEventId).toBe(17);
+      expect(after?.createdAt).toBe(core.createdAt);
+      expect(getCoreSecrets(core.id)?.bearer).toBe(BEARER);
+    });
+
+    it("reports an unknown id rather than writing a row", () => {
+      expect(renameCore("core_nope", "build-box")).toBeNull();
+      expect(coreRowCount()).toBe(0);
     });
   });
 

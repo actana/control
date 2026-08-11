@@ -34,6 +34,8 @@ export function CoresSettingsPage() {
   const [pendingRemoval, setPendingRemoval] = useState<CoreWithDial | null>(null);
   const [removing, setRemoving] = useState(false);
 
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
   // A poll that lands after unmount must not write to a dead component.
   const mounted = useRef(true);
   useEffect(() => {
@@ -79,6 +81,31 @@ export function CoresSettingsPage() {
       setRegisterError(err instanceof Error ? err.message : "Could not pair that Core.");
     } finally {
       setRegistering(false);
+    }
+  };
+
+  /**
+   * Rename a Core. Panel-local and nothing more: the alias is this Panel's name
+   * for the machine, so the write lands in the registry and the list re-reads
+   * it. The Core is not told, and another Panel paired to it keeps its own name.
+   *
+   * Returns whether it stuck, so the row only leaves edit mode on a write that
+   * landed — a rejected rename keeps the operator's text in front of them.
+   */
+  const handleRename = async (core: CoreWithDial, label: string): Promise<boolean> => {
+    setRenamingId(core.id);
+    try {
+      const { core: renamed } = await api.renameCore(core.id, label);
+      await refresh();
+      // Quote what was stored, not what was typed: an operator who emptied the
+      // box gets the endpoint host back, and the toast should say so.
+      toast.success(`Core renamed to "${renamed.label}".`);
+      return true;
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : "Failed to rename Core.");
+      return false;
+    } finally {
+      if (mounted.current) setRenamingId(null);
     }
   };
 
@@ -135,6 +162,8 @@ export function CoresSettingsPage() {
                     core={core}
                     onRemove={() => setPendingRemoval(core)}
                     removing={removing && pendingRemoval?.id === core.id}
+                    onRename={(label) => handleRename(core, label)}
+                    renaming={renamingId === core.id}
                   />
                 ))}
               </div>
@@ -222,15 +251,54 @@ function ErrorBox({ children }: { children: React.ReactNode }) {
   );
 }
 
+/**
+ * What the service will fall back to if the alias is saved empty — shown as the
+ * placeholder so clearing the box reads as a choice rather than an accident.
+ * Mirrors `labelFor` on the server, down to surviving an unparseable endpoint.
+ */
+function endpointHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).hostname || endpoint;
+  } catch {
+    return endpoint;
+  }
+}
+
+/**
+ * One Core in the list. The alias is editable in place — it is the only field
+ * here that is the Panel's to change, and the operator's read of the fleet
+ * depends on it. Endpoint and credentials are what the pairing token said they
+ * were; changing those means a fresh token.
+ */
 function CoreRow({
   core,
   onRemove,
   removing,
+  onRename,
+  renaming,
 }: {
   core: CoreWithDial;
   onRemove: () => void;
   removing: boolean;
+  onRename: (label: string) => Promise<boolean>;
+  renaming: boolean;
 }) {
+  // Non-null is the edit mode flag *and* the draft: an empty string is a state
+  // the operator can legitimately be in (it saves as the endpoint host), so
+  // "editing" can't be `draft !== ""`.
+  const [draft, setDraft] = useState<string | null>(null);
+  const editing = draft !== null;
+
+  const commit = async () => {
+    if (draft === null) return;
+    // Nothing to write, and no toast worth showing for it.
+    if (draft.trim() === core.label) {
+      setDraft(null);
+      return;
+    }
+    if (await onRename(draft)) setDraft(null);
+  };
+
   return (
     <div style={{ display: "flex", flexDirection: "column" }}>
     <div
@@ -255,7 +323,39 @@ function CoreRow({
             flexWrap: "wrap",
           }}
         >
-          <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>{core.label}</span>
+          {editing ? (
+            <input
+              autoFocus
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") void commit();
+                else if (e.key === "Escape") setDraft(null);
+              }}
+              disabled={renaming}
+              aria-label={`Name for Core ${core.label}`}
+              // The same 120 the service caps at, so the box can't accept
+              // characters the registry would silently drop.
+              maxLength={120}
+              placeholder={endpointHost(core.endpoint)}
+              style={{
+                flex: 1,
+                minWidth: 120,
+                background: "var(--surface-1)",
+                border: "1px solid var(--accent)",
+                borderRadius: 5,
+                outline: 0,
+                color: "var(--text)",
+                padding: "3px 8px",
+                fontSize: 13,
+                fontWeight: 600,
+              }}
+            />
+          ) : (
+            <span style={{ fontSize: 13, fontWeight: 600, color: "var(--text)" }}>
+              {core.label}
+            </span>
+          )}
           <DialBadge dial={core.dial} />
         </div>
         <div
@@ -274,16 +374,46 @@ function CoreRow({
           )}
         </div>
       </div>
-      <Btn
-        variant="ghost"
-        size="sm"
-        icon={removing ? undefined : "trash"}
-        onClick={onRemove}
-        disabled={removing}
-        aria-label={`Remove Core ${core.label}`}
-      >
-        {removing ? "Removing…" : "Remove"}
-      </Btn>
+      {editing ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <Btn variant="accent" size="sm" onClick={() => void commit()} disabled={renaming}>
+            {renaming ? "Saving…" : "Save"}
+          </Btn>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon="x"
+            onClick={() => setDraft(null)}
+            disabled={renaming}
+            aria-label={`Cancel renaming Core ${core.label}`}
+          >
+            Cancel
+          </Btn>
+        </div>
+      ) : (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon="pencil"
+            onClick={() => setDraft(core.label)}
+            disabled={removing}
+            aria-label={`Rename Core ${core.label}`}
+          >
+            Rename
+          </Btn>
+          <Btn
+            variant="ghost"
+            size="sm"
+            icon={removing ? undefined : "trash"}
+            onClick={onRemove}
+            disabled={removing}
+            aria-label={`Remove Core ${core.label}`}
+          >
+            {removing ? "Removing…" : "Remove"}
+          </Btn>
+        </div>
+      )}
     </div>
       {/* The chore, where the operator manages Cores: the command that closes
           the version gap, one click from the clipboard. */}

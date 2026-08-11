@@ -165,6 +165,17 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ registrationBlob }),
     }),
+  /**
+   * Rename a Core. The alias is the Panel's own name for the machine, so this
+   * writes to the registry and stops there — nothing reaches the Core. The
+   * response carries the normalized label (trimmed, 120 chars, endpoint host
+   * when empty), which is what to render rather than what was typed.
+   */
+  renameCore: (id: string, label: string) =>
+    req<{ core: CoreWithDial }>(`/api/cores/${id}`, {
+      method: "PATCH",
+      body: JSON.stringify({ label }),
+    }),
   removeCore: (id: string) => req<void>(`/api/cores/${id}`, { method: "DELETE" }),
 
   listProjects: () => req<{ projects: ProjectWithCounts[] }>("/api/projects"),
