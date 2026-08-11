@@ -7,17 +7,48 @@
 // Loopback-only (trusted) — no auth yet. A later issue adds mTLS + bearer auth
 // before the same server listens on a non-loopback interface.
 //
-// A single connection is expected at a time (the Panel). When the Panel
-// disconnects (renderer reload, app sleep), `core.setEmitTarget(null)` stops
-// output delivery — the PTY buffer retains everything for replay on reconnect.
+// Many connections are accepted at once (issue 141, ADR 0024 D1): the Panel,
+// the CLI, an SDK automation. Each gets its own {@link ActiveConnection} — its
+// own auth state, event cursor, poll loop, heartbeat and PTY subscription set —
+// and a new connection never closes an existing one. `PtyCore` state (PTYs,
+// tasks, the event log) is untouched by a connection arriving or leaving. When
+// the last connection goes, `core.setEmitTarget(null)` stops output delivery —
+// the PTY buffer retains everything for replay on reconnect.
+//
+// PTY output fans out *by subscription* (issue 142, ADR 0024 D2). The Core
+// still installs one emit target, but a connection receives a PTY's `data` and
+// `exit` only after asking for that `ptyId` — see {@link PtySubscription}.
+//
+// Every Session has at most one writer (issue 144, ADR 0024 D3–D7, D10). The
+// `claim` / `release` / `forceTakeover` frames name a Session by `taskId`, the
+// {@link SessionLockTable} records which connection holds it, and the
+// mutation frames this server serves — `write`, `kill`, and every `tasksMutate`
+// addressed at a Session — are refused when *another* connection holds it. The
+// gate is here, on the client-facing frames, and nowhere else: `PtyCore.kill`
+// has callers inside the Core (the PTY exit paths, the task writer) that are
+// nobody's client, and a gate down there would have the Core refuse itself.
+//
+// That lock state is **published, not discovered by failing** (issue 145, ADR
+// 0024 D8). Every Session snapshot this server sends is stamped with the lock as
+// the *receiving* connection must be told it — "can you write to this", never
+// "who holds it" — and every change to the table appends a dedicated
+// `session:lockChanged` event, which replays by cursor like every other event.
+// A refusal cannot do either job: it arrives only after the mutation it refuses,
+// so a Reader would render an editable terminal until the operator typed into
+// it, and the loser of a force takeover would learn of it on its next keystroke.
 
 import log from "./log";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   HARNESS_INSTALL_FAILED_EVENT_KIND,
+  SESSION_LOCKED_ERROR_CODE,
+  SESSION_LOCK_CHANGED_EVENT_KIND,
   parseCoreLinkRequestFrame,
   serializeCoreLinkFrame,
+  type CoreLinkSessionLock,
+  type CoreLinkSessionLockChangedPayload,
+  type CoreLinkSessionLockTransition,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
   type CoreLinkDirListing,
@@ -35,8 +66,9 @@ import {
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
-import type { PtyCore } from "./pty-manager";
+import type { PtyCore, PtyCoreEvent } from "./pty-manager";
 import { CoreTaskWriter } from "./core-task-writer";
+import { SessionLockTable } from "./session-lock-table";
 
 /**
  * The slice of the event-log store the server needs. The real implementation
@@ -285,6 +317,14 @@ export type PtyCoreLinkServerOptions = {
    * else to observe, since a real stale Core is a different build entirely.
    */
   protocolVersion?: string;
+  /**
+   * Announce the `multiConnection` capability on `ready`. Defaults to true —
+   * this build serves many connections (ADR 0024 D1), so it says so. Exists
+   * only so a test can stand up the capability-less Core a real fleet still
+   * has plenty of, the same way {@link protocolVersion} stands up a drifted
+   * one; a real old Core is a different build entirely.
+   */
+  announceMultiConnection?: boolean;
 };
 
 /**
@@ -351,15 +391,33 @@ const PROJECT_MUTATION_EVENT_KINDS: Record<CoreLinkProjectMutation["op"], string
 };
 /**
  * Heartbeat cadence, mirroring the Panel-side client. The Core must detect a
- * vanished Panel too: `setEmitTarget` points PTY output at whatever socket is
- * active, so a half-open connection means every chunk an agent produces is
- * written into a socket that will never deliver it — the pane looks frozen
- * while the agent runs on. Pinging every 15s both keeps NATs/firewalls from
- * reaping an idle link and bounds how long a dead one can hold the emit target.
+ * vanished client too: PTY output fans out to every registered connection, so a
+ * half-open one means every chunk an agent produces is written into a socket
+ * that will never deliver it — the pane looks frozen while the agent runs on.
+ * Pinging every 15s both keeps NATs/firewalls from reaping an idle link and
+ * bounds how long a dead connection stays in the registry.
+ *
+ * The heartbeat is per connection and reaps only its own: with a registry, a
+ * connection is stale because *it* has gone quiet, never because a newer one
+ * arrived (issue 141).
  */
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Terminate a connection after this long with no message or pong (3 pings). */
 const HEARTBEAT_TIMEOUT_MS = 45_000;
+
+/**
+ * How much of a PTY's live output one `catchUp` subscription may hold while it
+ * waits for its `replay` to be served.
+ *
+ * Overflow drops the OLDEST held chunks, which is the safe direction and not an
+ * arbitrary one: the replay that releases the hold is read from the PTY ring
+ * *after* the drop, so anything dropped here is still inside that window (the
+ * ring is `RING_LIMIT_BYTES`, an order of magnitude larger). The drain then
+ * filters by `nextSeq`, so a dropped chunk is delivered exactly once, by the
+ * replay, and never twice. If even the ring has rolled, `replayResult.from`
+ * already tells the client its tail has a hole in front of it.
+ */
+const PTY_HOLD_LIMIT_BYTES = 100_000;
 
 /**
  * Hosts the loopback core-link WebSocket server. One instance per Core
@@ -384,6 +442,7 @@ export class PtyCoreLinkServer {
   private readonly directoryPort: CoreDirectoryPort | null;
   private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
+  private readonly announceMultiConnection: boolean;
   /**
    * The one seam every task-row change goes through — the Panel's
    * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
@@ -391,8 +450,34 @@ export class PtyCoreLinkServer {
    * describes it (issue 84).
    */
   private readonly taskWriter: CoreTaskWriter;
-  private activeWs: WebSocketLike | null = null;
-  private connection: ActiveConnection | null = null;
+  /**
+   * Every core-link connection this Core is currently serving, keyed by its
+   * socket (issue 141, ADR 0024 D1). Insertion-ordered, so fan-out reaches
+   * clients in the order they connected. Replaces the old `activeWs` +
+   * single `connection` pair: a connection's state — auth, cursor, poll,
+   * heartbeat — is now the entry, and nothing about it is shared.
+   */
+  private readonly connections = new Map<WebSocketLike, ActiveConnection>();
+  /**
+   * Which connection may mutate which Session (issue 144, ADR 0024 D3–D7).
+   *
+   * One table for the whole Core, not one per connection: the question it
+   * answers is "who holds this Session", and every connection has to be able to
+   * ask it. Scoped to a Session and never Core-wide (D4) — different Sessions
+   * on one Core may be held by different clients at the same time, which is the
+   * ordinary case this effort exists to enable, not the contended one.
+   *
+   * In memory, dying with the Core (D12). There is nothing to persist: the PTYs
+   * these locks guard do not survive the daemon either.
+   */
+  private readonly sessionLocks = new SessionLockTable();
+  /**
+   * True while `core.setEmitTarget` holds this server's fan-out callback. One
+   * callback for the whole server, not one per connection — the target is a
+   * single global sink on `PtyCore`, so a per-connection one would have the
+   * newest connection silently steal every PTY's output from the rest.
+   */
+  private emitTargetInstalled = false;
 
   constructor(
     private readonly core: PtyCore,
@@ -411,6 +496,7 @@ export class PtyCoreLinkServer {
     this.directoryPort = opts.directoryPort ?? null;
     this.promptPort = opts.promptPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
+    this.announceMultiConnection = opts.announceMultiConnection ?? true;
     this.taskWriter =
       opts.taskWriter ??
       new CoreTaskWriter({
@@ -425,90 +511,306 @@ export class PtyCoreLinkServer {
   }
 
   private onConnection(ws: WebSocketLike): void {
-    // One connection at a time. If the Panel reconnects (renderer reload),
-    // drop the old connection first — the core's PTY state survives.
-    if (this.activeWs) {
-      try {
-        this.activeWs.removeAllListeners();
-        this.activeWs.close();
-      } catch {
-        /* already closed */
-      }
-    }
-    this.activeWs = ws;
-    this.connection = new ActiveConnection();
+    // Many connections at a time (ADR 0024 D1). A new connection — a second
+    // Panel tab, the CLI, a reconnecting renderer — is registered alongside
+    // whatever is already here, never in place of it. Nothing on `PtyCore`
+    // moves as a result.
+    const conn = new ActiveConnection(ws);
+    this.connections.set(ws, conn);
+    this.ensureEmitTarget();
 
-    // Wire core events → outgoing frames. PTY exit events are also appended
-    // to the event log (pty:exit lifecycle marker) so a reconnecting Panel
-    // learns which PTYs died while it was away.
-    this.core.setEmitTarget((event) => {
-      const frame: CoreLinkServerFrame =
-        event.type === "data"
-          ? { type: "data", ptyId: event.ptyId, data: event.data, seq: event.seq }
-          : { type: "exit", ptyId: event.ptyId, exitCode: event.exitCode, signal: event.signal };
-      this.send(ws, frame);
-      if (event.type === "exit") {
-        this.recordPtyExit(event);
-      }
+    // Send the ready frame immediately. It announces `multiConnection`
+    // because the registration above is exactly what the capability claims
+    // (ADR 0024 D11): this server keeps every connection it accepts. The
+    // protocol version does not move for it — a Core that omits the field is
+    // the single-connection build, which is a Core like any other.
+    this.send(ws, {
+      type: "ready",
+      version: this.protocolVersion,
+      ...(this.announceMultiConnection ? { multiConnection: { version: 1 as const } } : {}),
     });
 
-    // Send the ready frame immediately.
-    this.send(ws, { type: "ready", version: this.protocolVersion });
-
     // Start the live-event push poll for this connection. It stays silent
-    // until the Panel sends `subscribe`, then pushes new events past the
-    // connection's lastSentEventId.
-    this.connection.startPoll(() => this.pushLiveEvents(ws), this.liveEventPollMs);
+    // until the client sends `subscribe`, then pushes new events past this
+    // connection's own lastSentEventId.
+    conn.startPoll(() => this.pushLiveEvents(conn), this.liveEventPollMs);
 
     // Per-connection heartbeat. `lastInboundAt` advances on any frame from the
-    // Panel — an RPC, or the pong answering our ping — so a connection only
-    // dies here when the Panel is genuinely unreachable.
-    let lastInboundAt = Date.now();
-    const heartbeat = ws.ping
-      ? setInterval(() => {
-          if (this.activeWs !== ws) {
-            clearInterval(heartbeat!);
-            return;
-          }
-          if (Date.now() - lastInboundAt > HEARTBEAT_TIMEOUT_MS) {
-            clearInterval(heartbeat!);
-            log.warn("core-link.connection.stale", { idleMs: Date.now() - lastInboundAt });
-            try {
-              ws.terminate ? ws.terminate() : ws.close();
-            } catch {
-              /* already gone — the close handler still runs */
-            }
-            return;
-          }
+    // client — an RPC, or the pong answering our ping — so a connection only
+    // dies here when that client is genuinely unreachable. The registry
+    // membership check is the liveness question now: asking whether some other
+    // socket is "the active one" would reap healthy connections the moment a
+    // second client arrived.
+    if (ws.ping) {
+      conn.heartbeat = setInterval(() => {
+        if (this.connections.get(ws) !== conn) {
+          conn.stopHeartbeat();
+          return;
+        }
+        const idleMs = Date.now() - conn.lastInboundAt;
+        if (idleMs > HEARTBEAT_TIMEOUT_MS) {
+          conn.stopHeartbeat();
+          log.warn("core-link.connection.stale", { idleMs });
           try {
-            ws.ping?.();
+            ws.terminate ? ws.terminate() : ws.close();
           } catch {
-            /* the close handler will take it from here */
+            /* already gone — the close handler still runs */
           }
-        }, HEARTBEAT_INTERVAL_MS)
-      : null;
+          return;
+        }
+        try {
+          ws.ping?.();
+        } catch {
+          /* the close handler will take it from here */
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+      if (typeof conn.heartbeat.unref === "function") conn.heartbeat.unref();
+    }
     ws.on("pong", () => {
-      lastInboundAt = Date.now();
+      conn.lastInboundAt = Date.now();
     });
 
     ws.on("message", (raw) => {
-      lastInboundAt = Date.now();
-      this.onMessage(ws, raw);
+      conn.lastInboundAt = Date.now();
+      this.onMessage(conn, raw);
     });
     ws.on("close", () => {
-      if (heartbeat) clearInterval(heartbeat);
-      if (this.activeWs === ws) {
-        this.activeWs = null;
-        this.core.setEmitTarget(null);
-      }
-      if (this.connection) {
-        this.connection.stopPoll();
-        this.connection = null;
-      }
+      this.dropConnection(ws, conn);
     });
     ws.on("error", (err) => {
       log.warn("core-link.connection.error", { error: err.message });
     });
+  }
+
+  /**
+   * Retire one connection: its poll timer, its heartbeat, and the registry
+   * entry that holds its PTY subscriptions — and nothing else. Every other
+   * connection keeps its own; the defect this replaces cancelled a shared poll,
+   * so one client closing stopped live event push for whoever else was here.
+   *
+   * Subscriptions need no sweep of their own. They live on the
+   * {@link ActiveConnection}, so dropping it drops them, and a client that
+   * vanishes without unsubscribing leaves nothing behind (issue 142). The emit
+   * target is released only when the last connection goes, which is what makes
+   * a Core with no clients quiet again.
+   *
+   * **Session locks do need a sweep, and it has to be all of them** (issue 144,
+   * ADR 0024 D7). They live in a Core-wide table rather than on the connection,
+   * precisely so every connection can ask who holds what — which means dropping
+   * the connection does not drop them, and a connection may be holding several
+   * Sessions at once. A drop is one of the three ways a lock ends, and the other
+   * two are gestures a vanished client is in no position to make: a lock missed
+   * here is a Session no one can write and no one can release, until a human
+   * reaches for a force takeover or the Core restarts. ADR 0024 already accepts
+   * a stale connection holding its locks for as long as the heartbeat takes to
+   * reap it (45s); leaving one behind here would turn that bound into forever.
+   */
+  private dropConnection(ws: WebSocketLike, conn: ActiveConnection): void {
+    conn.stopHeartbeat();
+    conn.stopPoll();
+    // Unconditional, and before the identity guard below: this connection is
+    // over regardless of whether it is still the one in the registry, and a
+    // lock it holds has to go with it either way.
+    const released = this.sessionLocks.releaseAll(conn);
+    if (released.length > 0) {
+      log.info("core-link.session-lock.released-on-drop", { taskIds: released });
+    }
+    // A drop is one of the three ways a lock ends (D7), so it publishes like
+    // the other two (D8): one `session:lockChanged` per Session, after the
+    // sweep, so the log says `locked: false` because the table does. A client
+    // waiting for a Session a vanished holder was sitting on has no other way to
+    // learn it is claimable — nobody sent a frame for it to be answered by.
+    for (const taskId of released) this.recordSessionLockChange(taskId, "released");
+    // Guard on identity, not presence: a socket that was already replaced in
+    // the map must not evict its successor.
+    if (this.connections.get(ws) === conn) this.connections.delete(ws);
+    if (this.connections.size === 0) this.releaseEmitTarget();
+  }
+
+  /**
+   * Record this connection's client id and replace whatever connection last
+   * presented it: close the predecessor, and move its Session locks here
+   * (issue 146, ADR 0024 D9).
+   *
+   * **This is reaping, not authority, and not identity.** The id is a string a
+   * client made up. Nothing signs it, nothing verifies it, and this method is
+   * the only thing in the Core that reads it. What it can move is a Session
+   * lock — which is authority any authenticated connection can already take
+   * unconditionally with `forceTakeover` (D7), so a connection presenting
+   * somebody else's id gains nothing it could not have had by asking outright.
+   * That is the answer to "how do we stop a client claiming another's id", and
+   * it is D10's answer: the client on the other end of this socket holds the
+   * bearer, and a bearer holder can open a VM Shell Session and kill the
+   * process. A signature here would defend nothing and would quietly build the
+   * per-client credential D3 and D10 rejected.
+   *
+   * Nor does presenting an id authenticate anybody. `reclaim` is not `auth`, so
+   * the gate in {@link onMessage} refuses it — and drops the connection — from
+   * a client that has not presented its bearer first, exactly like every other
+   * frame. The id never substitutes for the bearer and never shortens the path
+   * to one.
+   *
+   * **The transfer is one step, and the order of these three lines is the whole
+   * ticket.** {@link SessionLockTable.transferAll} rewrites the holder in place
+   * — there is no instant at which those Sessions read as unlocked, so a third
+   * connection racing a `claim` (or an outright write against an unlocked
+   * Session, which D5/D11 allow) cannot land inside the handover. Only then is
+   * the predecessor closed. The reverse order is the bug this ticket exists to
+   * prevent: a drop runs `releaseAll`, which would unlock every one of those
+   * Sessions on the way out and leave them free for anybody for as long as the
+   * successor takes to notice. Run in this order, that same `releaseAll` finds
+   * nothing — the entries already name this connection.
+   *
+   * The predecessor is `terminate`d where the transport offers it, for the
+   * reason the heartbeat does: this socket is presumed already dead, and a
+   * half-open connection never completes a close handshake, so waiting on one
+   * would leave the ghost in the registry it was just evicted from.
+   *
+   * Every match is handled, not the first. One is all this can produce — a
+   * connection presenting an id is the only thing that records one — but a
+   * partial sweep here would leave a ghost holding a Session with nothing left
+   * to reap it but the heartbeat, which is the outcome the frame exists to
+   * avoid.
+   */
+  private reclaimFor(
+    conn: ActiveConnection,
+    clientId: string,
+  ): { replaced: boolean; taskIds: string[] } {
+    conn.clientId = clientId;
+    const predecessors: ActiveConnection[] = [];
+    for (const other of this.connections.values()) {
+      if (other !== conn && other.clientId === clientId) predecessors.push(other);
+    }
+    // Locks first, in one rewrite each — see above.
+    const taskIds: string[] = [];
+    for (const predecessor of predecessors) {
+      taskIds.push(...this.sessionLocks.transferAll(predecessor, conn));
+    }
+    // Then the socket. `dropConnection` is called rather than left to the close
+    // handler so the registry is correct the moment this frame is answered: a
+    // real `close()` is asynchronous, and a client that reconnects twice in
+    // quick succession would otherwise find its own ghost still listed. It is
+    // idempotent — the locks are already gone from `releaseAll`'s point of view.
+    for (const predecessor of predecessors) {
+      try {
+        predecessor.ws.terminate ? predecessor.ws.terminate() : predecessor.ws.close();
+      } catch {
+        /* already gone — the drop below is what actually retires it */
+      }
+      this.dropConnection(predecessor.ws, predecessor);
+    }
+    if (predecessors.length > 0) {
+      log.info("core-link.client-id.reclaimed", {
+        replaced: predecessors.length,
+        taskIds,
+      });
+    }
+    return { replaced: predecessors.length > 0, taskIds };
+  }
+
+  /**
+   * Install this server's single PTY-event sink on the Core, once.
+   *
+   * One callback for the whole server, not one per connection: the target is a
+   * single global sink on `PtyCore`, so a per-connection one would have the
+   * newest connection silently steal every PTY's output from the rest. Who
+   * actually receives a given PTY's bytes is decided downstream of it, in
+   * {@link fanOutPtyEvent}, from each connection's subscription set (issue 142,
+   * ADR 0024 D2).
+   */
+  private ensureEmitTarget(): void {
+    if (this.emitTargetInstalled) return;
+    this.emitTargetInstalled = true;
+    this.core.setEmitTarget((event) => this.fanOutPtyEvent(event));
+  }
+
+  private releaseEmitTarget(): void {
+    if (!this.emitTargetInstalled) return;
+    this.emitTargetInstalled = false;
+    this.core.setEmitTarget(null);
+  }
+
+  /**
+   * Deliver one PTY event to every *authenticated subscriber* of that PTY, and
+   * record an exit exactly once.
+   *
+   * Subscription is the whole point of D2 (issue 142): a connection that has
+   * not asked for this `ptyId` is skipped, so a CLI attached to one Session no
+   * longer receives every other Session's output on the machine. A connection
+   * mid-catch-up holds the event instead of receiving it — see
+   * {@link PtySubscription}.
+   *
+   * The event log is a fact about the machine, not about who was watching:
+   * appending per connection would write two `pty:exit` rows for one dead
+   * process and replay the exit twice to every reconnecting client — so the
+   * append stays outside the loop, fires once, and a connection being skipped
+   * (or there being no subscribers at all) never costs the log a row.
+   *
+   * The auth skip mirrors `pushLiveEvents`: with an `authVerifier` configured,
+   * a connection that has not proved identity gets nothing pushed at it. PTY
+   * output is strictly more sensitive than the event timeline, and a socket
+   * that presents no bearer and sends no frame never trips the message gate —
+   * answering pings keeps `lastInboundAt` fresh, so the heartbeat never reaps
+   * it either. Loopback Cores configure no verifier, where `authenticated` is
+   * irrelevant and every subscriber is served.
+   */
+  private fanOutPtyEvent(event: PtyCoreEvent): void {
+    const frame: CoreLinkServerFrame =
+      event.type === "data"
+        ? { type: "data", ptyId: event.ptyId, data: event.data, seq: event.seq }
+        : { type: "exit", ptyId: event.ptyId, exitCode: event.exitCode, signal: event.signal };
+    for (const conn of this.connections.values()) {
+      if (this.authVerifier && !conn.authenticated) continue;
+      const sub = conn.ptySubscriptions.get(event.ptyId);
+      if (!sub) continue;
+      if (sub.holding) {
+        sub.hold(event);
+        continue;
+      }
+      this.send(conn.ws, frame);
+      // The PTY is gone; so is any reason to keep tracking it on a connection
+      // that is not still owed a catch-up. Left in place, one entry per exited
+      // PTY per connection would accumulate for the life of a long-lived link.
+      if (event.type === "exit") conn.ptySubscriptions.delete(event.ptyId);
+    }
+    if (event.type === "exit") {
+      this.recordPtyExit(event);
+    }
+  }
+
+  /**
+   * Release a `catchUp` hold now that this connection's `replay` has been
+   * served, and put the connection's stream live.
+   *
+   * `nextSeq` is where the window ended — the seq the *next* chunk will get, so
+   * it is exclusive. A held chunk below it is already painted and is dropped
+   * rather than sent twice; `nextSeq` itself and everything past it is output
+   * that arrived *during* the gap this hold exists to close, and goes out in
+   * order behind the window.
+   *
+   * A held `exit` goes last and always goes: a PTY that died between the
+   * subscribe and the replay has no second exit to emit, and a subscriber that
+   * never learns about it waits forever on a dead process.
+   */
+  private drainPtyHold(conn: ActiveConnection, ptyId: string, nextSeq: number): void {
+    const sub = conn.ptySubscriptions.get(ptyId);
+    if (!sub || !sub.holding) return;
+    const { data, exit } = sub.release();
+    for (const chunk of data) {
+      if (chunk.seq < nextSeq) continue;
+      this.send(conn.ws, { type: "data", ptyId, data: chunk.data, seq: chunk.seq });
+    }
+    if (exit) {
+      this.send(conn.ws, {
+        type: "exit",
+        ptyId,
+        exitCode: exit.exitCode,
+        signal: exit.signal,
+      });
+      // Same reason as the live path in `fanOutPtyEvent`: the PTY is gone, and
+      // an entry for it would sit on this connection until the socket closed.
+      conn.ptySubscriptions.delete(ptyId);
+    }
   }
 
   /** Record a pty:exit event in the log (lifecycle marker for replay). */
@@ -557,21 +859,23 @@ export class PtyCoreLinkServer {
    * the poll loop once the connection has subscribed. Also advances the
    * connection cursor so the next tick only sees newer events.
    */
-  private pushLiveEvents(ws: WebSocketLike): void {
-    if (!this.connection || !this.connection.subscribed || !this.eventLog) return;
+  private pushLiveEvents(conn: ActiveConnection): void {
+    if (!conn.subscribed || !this.eventLog) return;
     // When auth is required, never push events until authenticated — a
     // pre-auth subscriber would learn the event timeline without proving
-    // identity.
-    if (this.authVerifier && !this.connection.authenticated) return;
-    const after = this.connection.lastSentEventId;
+    // identity. Per connection: one authenticated client does not open the
+    // stream for another that has not authenticated.
+    if (this.authVerifier && !conn.authenticated) return;
+    const after = conn.lastSentEventId;
     const tail = this.eventLog.readEventTail(after, EVENT_TAIL_LIMIT);
     for (const event of tail) {
-      this.send(ws, { type: "event", event });
-      this.connection.lastSentEventId = event.eventId;
+      this.send(conn.ws, { type: "event", event });
+      conn.lastSentEventId = event.eventId;
     }
   }
 
-  private async onMessage(ws: WebSocketLike, raw: unknown): Promise<void> {
+  private async onMessage(conn: ActiveConnection, raw: unknown): Promise<void> {
+    const ws = conn.ws;
     const data = typeof raw === "string" ? raw : String(raw);
     const frame = parseCoreLinkRequestFrame(data);
     if (!frame) {
@@ -582,7 +886,7 @@ export class PtyCoreLinkServer {
     // `auth` is always processed (it's how the connection authenticates). Any
     // other frame received before authentication, when an `authVerifier` is
     // configured, is rejected — the Panel must present its bearer first.
-    if (frame.type !== "auth" && this.authVerifier && !this.isAuthenticated()) {
+    if (frame.type !== "auth" && this.authVerifier && !conn.authenticated) {
       this.send(ws, { type: "error", reqId: frame.reqId, message: "not-authenticated" });
       // Drop the connection so the Panel's reconnect path re-presents `auth`
       // from a clean state instead of racing frames.
@@ -594,15 +898,11 @@ export class PtyCoreLinkServer {
       return;
     }
     try {
-      await this.dispatch(ws, frame);
+      await this.dispatch(conn, frame);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.send(ws, { type: "error", reqId: frame.reqId, message });
     }
-  }
-
-  private isAuthenticated(): boolean {
-    return this.connection?.authenticated ?? false;
   }
 
   /**
@@ -620,9 +920,144 @@ export class PtyCoreLinkServer {
     return null;
   }
 
-  private async dispatch(ws: WebSocketLike, frame: CoreLinkRequestFrame): Promise<void> {
+  /**
+   * Refuse a mutation aimed at a Session another connection holds, and say so
+   * (issue 144, ADR 0024 D4/D6). Returns true when the frame was refused and
+   * the caller must stop.
+   *
+   * The refusal is an `error` carrying {@link SESSION_LOCKED_ERROR_CODE},
+   * because the client has to tell it apart from the other way a mutation fails
+   * to land — "that Session is gone" — and those two arrive on different frames:
+   * a Session this Core no longer has answers with the ordinary
+   * `writeResult { ok: false }` / `killResult { ok: false }` /
+   * `tasksMutateResult { task: null }` it always did. One of them is worth
+   * retrying after a claim; the other never is.
+   *
+   * An **unlocked** Session is not refused. That is D11's compatibility promise
+   * doing its work: a client that never claims — every client that predates this
+   * — meets an unlocked Session and is served exactly as it is today. D6's "a
+   * mutation without the lock is an error" governs *acquisition*: a mutation
+   * never becomes a claim. It does not make an unclaimed Session unwritable.
+   */
+  private refuseLockedSession(
+    conn: ActiveConnection,
+    reqId: string,
+    taskId: string | null | undefined,
+  ): boolean {
+    if (this.sessionLocks.mayMutate(taskId, conn)) return false;
+    this.send(conn.ws, {
+      type: "error",
+      reqId,
+      code: SESSION_LOCKED_ERROR_CODE,
+      message: "Another Core client holds this Session's lock",
+    });
+    return true;
+  }
+
+  /**
+   * The same refusal for a frame that names a `ptyId` rather than a Session —
+   * `write` and `kill`.
+   *
+   * The `ptyId` is resolved to the Task it was spawned for, because that is what
+   * a lock is keyed by: a Session is its Task, and keying on the process would
+   * give one Session as many locks as it has had PTYs. A `ptyId` this Core has
+   * no PTY for resolves to null and is **not** refused — there is no Session
+   * there to be holding, and the call below is about to answer `ok: false`,
+   * which is precisely the "that Session is gone" answer the caller needs.
+   */
+  private refuseLockedPty(conn: ActiveConnection, reqId: string, ptyId: string): boolean {
+    return this.refuseLockedSession(conn, reqId, this.core.taskIdForPty(ptyId));
+  }
+
+  /**
+   * Stamp every Session snapshot on its way out with the lock as **this**
+   * connection must be told it (issue 145, ADR 0024 D8).
+   *
+   * Here rather than in a query port, for two reasons that are really one. The
+   * lock table is in memory and dies with the Core (D12), so no store has the
+   * fact to read; and the answer is different for every recipient — the same
+   * Session is `held-by-you` to its holder and `held-by-another` to everyone
+   * else — so there is no single value a shared read path could have returned.
+   * A snapshot is addressed at a connection, which is exactly where this belongs.
+   *
+   * The rows are copied rather than patched. They come from a query port whose
+   * real implementation reads SQLite fresh each call, but writing a
+   * per-connection field into an object a port might cache or hand to a second
+   * connection is the one way this could leak a holder to a watcher, and a spread
+   * costs nothing on a list a human is going to look at.
+   *
+   * A Core that does not announce `multiConnection` stamps nothing. It has told
+   * the client it has no lock table (D11), and publishing state for a table it
+   * says it does not have would be the same Core answering two ways.
+   */
+  private withPublishedLock<T extends { taskId: string; lock?: CoreLinkSessionLock }>(
+    conn: ActiveConnection,
+    rows: T[],
+  ): T[] {
+    if (!this.announceMultiConnection) return rows;
+    return rows.map((row) => ({ ...row, lock: this.sessionLocks.stateFor(row.taskId, conn) }));
+  }
+
+  /**
+   * Record a Session-lock change in the event log, so every other connection
+   * learns of it without asking (issue 145, ADR 0024 D8).
+   *
+   * A **dedicated kind**, on the precedent ADR 0022 set for
+   * `project:appearanceChanged`: widening `task:updated` to carry lock state
+   * would stop that frame documenting what changed, and a reconnecting client
+   * replaying a tail could not tell a takeover it must react to from a title
+   * edit it can ignore — which is the generic-field-patch failure ADR 0017 and
+   * ADR 0022 both rejected.
+   *
+   * The payload names no client (D3, D10). One row is read by every connection,
+   * so anything identifying in it would be broadcast to every watcher of this
+   * Core; "can I write to it now" is the snapshot's question, asked per
+   * connection, and this event is what tells a client the answer has moved.
+   *
+   * `locked` is read back off the table rather than inferred from the
+   * transition, so the log cannot drift from the state it describes.
+   */
+  private recordSessionLockChange(
+    taskId: string,
+    transition: CoreLinkSessionLockTransition,
+  ): void {
+    if (!this.announceMultiConnection || !this.eventLog) return;
+    const payload: CoreLinkSessionLockChangedPayload = {
+      taskId,
+      transition,
+      locked: this.sessionLocks.holderOf(taskId) !== null,
+    };
+    this.eventLog.appendEvent(SESSION_LOCK_CHANGED_EVENT_KIND, JSON.stringify(payload), {
+      taskId,
+      ptyId: null,
+    });
+  }
+
+  private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
+    const ws = conn.ws;
     switch (frame.type) {
       case "spawn": {
+        // Gated on the `taskId` the spawn names, which D4 does not enumerate —
+        // it lists `write`, `kill` and every task mutation. Gated anyway,
+        // because a `spawn` naming a Session another connection holds starts a
+        // *second* process on the Session that connection is driving, which is
+        // the interference D4 exists to prevent rather than a new one: two
+        // harnesses in one worktree is a worse outcome than the stray keystroke
+        // the lock was written for.
+        //
+        // The reading `resize` got does not transfer. A Reader has a real use
+        // for a resize — it is painting the scrollback into a viewport of its
+        // own — and no use at all for a spawn it may not then type into: the
+        // lock is keyed by `taskId` for every PTY kind, so the very next `write`
+        // to the PTY this frame would create comes back `session-locked`. A
+        // refusal here is the same answer, one round trip earlier and legible.
+        //
+        // A Session nobody holds is still spawned for anybody, so D5's window
+        // is untouched: a creator spawns without claiming exactly as before, and
+        // `tasksMutate`'s `create` — which names no existing Session — keeps its
+        // own carve-out. Only a `taskId` **another** connection holds is
+        // refused.
+        if (this.refuseLockedSession(conn, frame.reqId, frame.opts.taskId)) return;
         try {
           const { ptyId, hooksReportTurnStart } = await this.core.spawn(frame.opts);
           // `shellSession` is the VM Shell Session discriminant (issue 06):
@@ -632,6 +1067,15 @@ export class PtyCoreLinkServer {
           // reconnecting Panel can distinguish a VM-shell spawn from an
           // agent/session spawn when replaying the event tail.
           const shellSession = frame.opts.shellSession === true;
+          // The connection that spawned a PTY is subscribed to it, here, before
+          // its `spawned` answer goes out (issue 142). It could not have asked
+          // earlier — the id did not exist — and the harness starts printing
+          // immediately, so anything else loses the banner in the round trip
+          // between this answer and a `ptySubscribe` coming back. Live rather
+          // than holding: nothing precedes these bytes, so there is no
+          // scrollback to reconcile them against. Any other connection that
+          // wants this PTY still has to ask.
+          conn.subscribePty(ptyId, false);
           this.recordPtySpawn(ptyId, frame.opts.taskId, shellSession);
           // `hooksReportTurnStart` is what lets the Panel arm its
           // terminal-input fallback on reality rather than on the harness
@@ -645,18 +1089,116 @@ export class PtyCoreLinkServer {
         return;
       }
       case "write": {
+        if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
         const ok = this.core.write(frame.ptyId, frame.data);
         this.send(ws, { type: "writeResult", reqId: frame.reqId, ok });
         return;
       }
       case "resize": {
+        // Deliberately not gated. D4 names the mutations the lock covers —
+        // `write`, `kill`, and every task mutation addressed at the Session —
+        // and a resize is none of them: it is how a client tells the PTY the
+        // size of the viewport it is painting into, and every Reader has one.
+        // A Reader whose resize were refused would render the Session's
+        // scrollback reflowed to somebody else's terminal, which is a worse
+        // answer than the interference gating it would prevent. Widening D4 to
+        // cover it is an amendment to #140, not a call for this ticket.
         const ok = this.core.resize(frame.ptyId, frame.cols, frame.rows);
         this.send(ws, { type: "resizeResult", reqId: frame.reqId, ok });
         return;
       }
       case "kill": {
+        // The client-facing kill, and the only one that is gated. `PtyCore.kill`
+        // keeps answering its callers inside the Core — the PTY exit paths, the
+        // task writer — which hold no lock and are nobody's client.
+        if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
         const ok = this.core.kill(frame.ptyId);
         this.send(ws, { type: "killResult", reqId: frame.reqId, ok });
+        return;
+      }
+      // ─── Session lock (issue 144, ADR 0024 D3–D7, D10) ───
+      case "claim": {
+        // Read the prior state before taking it: a re-claim by the connection
+        // that already holds the Session is idempotent and changes nothing, and
+        // an event for it would be a lock change nobody made — the same reason
+        // `recordProjectMutation` appends only for a mutation that landed.
+        const alreadyHeld = this.sessionLocks.isHeldBy(frame.taskId, conn);
+        const { granted } = this.sessionLocks.claim(frame.taskId, conn);
+        // A denied claim leaves the holder untouched, so there is nothing to
+        // publish; the caller reads `granted: false` and the watchers were never
+        // wrong about anything.
+        if (granted && !alreadyHeld) this.recordSessionLockChange(frame.taskId, "claimed");
+        this.send(ws, {
+          type: "claimResult",
+          reqId: frame.reqId,
+          taskId: frame.taskId,
+          granted,
+        });
+        return;
+      }
+      case "release": {
+        const released = this.sessionLocks.release(frame.taskId, conn);
+        // Only a release that actually released something. A stale client
+        // releasing a lock it already lost is talking about the past, and
+        // publishing it would announce a transition that did not happen — to
+        // watchers, indistinguishable from the holder having just let go.
+        if (released) this.recordSessionLockChange(frame.taskId, "released");
+        this.send(ws, {
+          type: "releaseResult",
+          reqId: frame.reqId,
+          taskId: frame.taskId,
+          released,
+        });
+        return;
+      }
+      case "forceTakeover": {
+        const { takenFrom } = this.sessionLocks.forceTakeover(frame.taskId, conn);
+        if (takenFrom === "another-connection") {
+          // Worth a line in the Core's log even though nothing failed: this is
+          // the one lock transition an operator did not agree to, and the
+          // loser's in-flight keystrokes are gone (ADR 0024, known risks).
+          log.info("core-link.session-lock.force-takeover", { taskId: frame.taskId });
+        }
+        // Published in the vocabulary of the lock, not of the frame: a takeover
+        // of a Session nobody held is a `claimed`, because nobody was evicted
+        // and no watcher should be told otherwise. Taking a Session this
+        // connection already holds changes nothing and publishes nothing.
+        //
+        // This is the transition D8 exists for. The loser is not answered — it
+        // sent no frame — so without this event it would keep painting an
+        // editable terminal until its next keystroke came back `session-locked`.
+        // It learns here instead, on the ordinary event stream, having polled
+        // nothing.
+        if (takenFrom !== "this-connection") {
+          this.recordSessionLockChange(
+            frame.taskId,
+            takenFrom === "nobody" ? "claimed" : "taken-over",
+          );
+        }
+        this.send(ws, {
+          type: "forceTakeoverResult",
+          reqId: frame.reqId,
+          taskId: frame.taskId,
+          takenFrom,
+        });
+        return;
+      }
+      case "reclaim": {
+        // A `clientId` that is not a non-empty string is no id at all, not a
+        // shared one. Left ungated, two connections that both sent the field
+        // as `undefined` would match each other and reap in turn — which is
+        // the one way a frame this permissive can misfire.
+        const clientId = typeof frame.clientId === "string" ? frame.clientId : "";
+        const { replaced, taskIds } = clientId
+          ? this.reclaimFor(conn, clientId)
+          : { replaced: false, taskIds: [] as string[] };
+        this.send(ws, {
+          type: "reclaimResult",
+          reqId: frame.reqId,
+          clientId,
+          replaced,
+          taskIds,
+        });
         return;
       }
       case "killLaunchProcesses": {
@@ -690,21 +1232,48 @@ export class PtyCoreLinkServer {
           nextSeq: result.nextSeq,
           from: result.from,
         });
+        // This is the frame that releases a `catchUp` hold, and it releases it
+        // only after the window above has gone out. That ordering is the whole
+        // contract (issue 142): subscribe, hold, replay from the client's own
+        // `sinceSeq`, then drain — never the reverse, which would paint live
+        // bytes in front of the scrollback they belong after.
+        this.drainPtyHold(conn, frame.ptyId, result.nextSeq);
+        return;
+      }
+      case "ptySubscribe": {
+        const sub = conn.subscribePty(frame.ptyId, frame.catchUp === true);
+        this.send(ws, {
+          type: "ptySubscribeAck",
+          reqId: frame.reqId,
+          ptyId: frame.ptyId,
+          subscribed: true,
+          holding: sub.holding,
+        });
+        return;
+      }
+      case "ptyUnsubscribe": {
+        conn.unsubscribePty(frame.ptyId);
+        this.send(ws, {
+          type: "ptyUnsubscribeAck",
+          reqId: frame.reqId,
+          ptyId: frame.ptyId,
+          subscribed: false,
+        });
         return;
       }
       case "subscribe": {
         // Auth gate (re-checked here so a hand-rolled `subscribe` after auth
         // still works, but a pre-auth `subscribe` slipped past the message
         // gate is rejected rather than silently streaming the event tail).
-        if (this.authVerifier && !this.isAuthenticated()) {
+        if (this.authVerifier && !conn.authenticated) {
           this.send(ws, { type: "error", reqId: frame.reqId, message: "not-authenticated" });
           return;
         }
-        this.handleSubscribe(ws, frame);
+        this.handleSubscribe(conn, frame);
         return;
       }
       case "auth": {
-        this.handleAuth(ws, frame);
+        this.handleAuth(conn, frame);
         return;
       }
       // ─── Task / project / session / hook ops (issue 02 schema + issue 07
@@ -713,7 +1282,15 @@ export class PtyCoreLinkServer {
       // queryPort is configured (a PTY-only Core, or tests), both answer
       // with empty results so the Panel can round-trip them without errors.
       case "tasksList": {
-        const tasks = this.queryPort ? this.queryPort.listTasks(frame.projectId) : [];
+        // Stamped with this connection's own lock state (issue 145, D8). This
+        // is the frame a Panel hydrates its Fleet view from, so it is where a
+        // Reader's terminal is decided to be read-only — before a keystroke,
+        // which is the whole of what "published, not discovered by failing"
+        // buys over the refusal that would otherwise be the first news of it.
+        const tasks = this.withPublishedLock(
+          conn,
+          this.queryPort ? this.queryPort.listTasks(frame.projectId) : [],
+        );
         // The count of archived rows, never the rows — see ADR 0019. It rides
         // this answer because the Panel needs it continuously (to gate and
         // label the Archived tab), while the rows are wanted only when that
@@ -725,7 +1302,14 @@ export class PtyCoreLinkServer {
         return;
       }
       case "archivedTasksList": {
-        const tasks = this.queryPort ? this.queryPort.listArchivedTasks(frame.projectId) : [];
+        // Archived rows carry it too. A Session is claimable whatever its
+        // archived flag says — the lock is keyed by `taskId` and knows nothing
+        // about the column — so a snapshot that omitted it here would be the one
+        // list where "can I write to this" went unanswered.
+        const tasks = this.withPublishedLock(
+          conn,
+          this.queryPort ? this.queryPort.listArchivedTasks(frame.projectId) : [],
+        );
         this.send(ws, { type: "archivedTasksListResult", reqId: frame.reqId, tasks });
         return;
       }
@@ -735,6 +1319,16 @@ export class PtyCoreLinkServer {
         return;
       }
       case "tasksMutate": {
+        // "Every task mutation addressed at that Session" (D4). An `update` or
+        // a `delete` names a taskId and is therefore addressed at one; a
+        // `create` names no existing Session and so has none to be refused by —
+        // an automation holding one Session must still be able to start another.
+        if (
+          frame.mutation.op !== "create" &&
+          this.refuseLockedSession(conn, frame.reqId, frame.mutation.taskId)
+        ) {
+          return;
+        }
         if (!this.mutationPort) {
           this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task: null });
           return;
@@ -744,7 +1338,13 @@ export class PtyCoreLinkServer {
           // title generator) share one seam, so the row and the events that
           // describe it never come apart (issue 84).
           const task = this.taskWriter.mutate(frame.mutation);
-          this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task });
+          // The answer to a mutation is a Session snapshot like any other, so
+          // it carries the lock like any other — including the `create` that
+          // just made this Session, which comes back `unlocked` and says so.
+          // That is D5 on the wire: the creator got no privilege, and the client
+          // reads that rather than assuming either way.
+          const [stamped] = task ? this.withPublishedLock(conn, [task]) : [null];
+          this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task: stamped });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "error", reqId: frame.reqId, message });
@@ -752,6 +1352,15 @@ export class PtyCoreLinkServer {
         return;
       }
       case "harnessPrompt": {
+        // A task mutation addressed at a Session, so D4 covers it: the prompt
+        // reaches the title generator, which writes the task row's title
+        // through the same `taskWriter` a gated `tasksMutate` uses. The frame
+        // reads like telemetry and lands as a write, and "every task mutation
+        // addressed at that Session" is decided by where it lands. Small in
+        // consequence — the generator leaves a real or operator-set title alone
+        // — but a connection holding nothing must not rename a Session another
+        // connection is driving.
+        if (this.refuseLockedSession(conn, frame.reqId, frame.taskId)) return;
         // The Panel read this off the terminal because the harness's hooks
         // will not report it. Nothing is patched here; the Core decides on
         // its own whether the Session wants naming.
@@ -776,9 +1385,14 @@ export class PtyCoreLinkServer {
         return;
       }
       case "sessionsList": {
-        const sessions = this.mutationPort
-          ? this.mutationPort.listSessions(frame.projectId)
-          : [];
+        // The frame `actana session ls` reads (D8): a list of Sessions, each
+        // saying whether this client may write to it. Same stamp, same rule as
+        // `tasksList` — a CLI and a Panel asking about one Session are asking
+        // the same question and must not get different vocabularies for it.
+        const sessions = this.withPublishedLock(
+          conn,
+          this.mutationPort ? this.mutationPort.listSessions(frame.projectId) : [],
+        );
         this.send(ws, { type: "sessionsListResult", reqId: frame.reqId, sessions });
         return;
       }
@@ -918,10 +1532,10 @@ export class PtyCoreLinkServer {
    * cursor so the Panel's state machine stays consistent.
    */
   private handleSubscribe(
-    ws: WebSocketLike,
+    conn: ActiveConnection,
     frame: { type: "subscribe"; reqId: string; lastEventId: number },
   ): void {
-    const conn = this.connection ?? (this.connection = new ActiveConnection());
+    const ws = conn.ws;
     conn.subscribed = true;
     const fromEventId = frame.lastEventId;
     let lastSent = fromEventId;
@@ -948,9 +1562,10 @@ export class PtyCoreLinkServer {
    * `auth` frame is rejected — the loopback Panel never sends one.
    */
   private handleAuth(
-    ws: WebSocketLike,
+    conn: ActiveConnection,
     frame: { type: "auth"; reqId: string; bearer: string },
   ): void {
+    const ws = conn.ws;
     if (!this.authVerifier) {
       this.send(ws, {
         type: "authError",
@@ -963,7 +1578,8 @@ export class PtyCoreLinkServer {
     if (!result.ok) {
       this.send(ws, { type: "authError", reqId: frame.reqId, reason: result.reason });
       // Close so the Panel's reconnect path takes over. The close handler
-      // clears `connection`; a fresh `auth` lands on a fresh connection.
+      // drops this connection from the registry; a fresh `auth` lands on a
+      // fresh one, and every other client's authentication is unaffected.
       try {
         ws.close();
       } catch {
@@ -971,13 +1587,34 @@ export class PtyCoreLinkServer {
       }
       return;
     }
-    if (this.connection) this.connection.authenticated = true;
+    conn.authenticated = true;
     this.send(ws, {
       type: "authOk",
       reqId: frame.reqId,
       coreId: result.coreId,
       exp: result.exp,
     });
+  }
+
+  /**
+   * @internal How many PTY subscriptions this Core is holding, across every
+   * connection. Exists so a test can assert the leak the registry is supposed
+   * to make impossible: a client that disappears without unsubscribing leaves
+   * this at zero, and so does a PTY that exits.
+   */
+  ptySubscriptionCount(): number {
+    let total = 0;
+    for (const conn of this.connections.values()) total += conn.ptySubscriptions.size;
+    return total;
+  }
+
+  /**
+   * @internal How many Sessions are locked right now, across every connection.
+   * Exists so a test can assert the sweep D7 requires: a client that disappears
+   * holding several Sessions leaves this at zero.
+   */
+  sessionLockCount(): number {
+    return this.sessionLocks.heldCount();
   }
 
   private send(ws: WebSocketLike, frame: CoreLinkServerFrame): void {
@@ -988,29 +1625,146 @@ export class PtyCoreLinkServer {
     }
   }
 
+  /**
+   * Shut the server down, disarming every socket it is still serving.
+   *
+   * Dropping the registry is not enough: the `message` handler closes over its
+   * own {@link ActiveConnection}, not over `this.connections`, so a frame
+   * arriving after shutdown would still be dispatched in full — `spawn` and
+   * `kill` included — on a connection whose `authenticated` is still true.
+   * Before issue 141 `close()` nulled the single `connection` field and the
+   * auth gate went false with it; with a registry, the socket itself has to be
+   * taken out of the conversation. Removing the listeners is what actually does
+   * that — a close handshake still delivers whatever is already in flight — and
+   * the `close()` that follows is the polite half, telling the client this Core
+   * is going away rather than leaving it to notice a dead socket.
+   */
   close(): void {
-    if (this.connection) {
-      this.connection.stopPoll();
-      this.connection = null;
+    for (const conn of [...this.connections.values()]) {
+      conn.stopHeartbeat();
+      conn.stopPoll();
+      try {
+        conn.ws.removeAllListeners();
+        conn.ws.close();
+      } catch {
+        /* already gone — nothing left to disarm */
+      }
     }
-    this.core.setEmitTarget(null);
-    this.activeWs = null;
+    this.connections.clear();
+    // Locks die with the Core (D12). Nothing here is handed on to a next
+    // process, and a Core that comes back returns every Session to unlocked —
+    // the correct state for a Session with no running process behind it.
+    this.sessionLocks.clear();
+    this.releaseEmitTarget();
     this.server.close();
   }
 }
 
 /**
- * Per-connection live-event-push state. Tracks whether the Panel has
- * subscribed and the highest eventId it has been sent, so the poll loop only
- * pushes events the Panel hasn't seen.
+ * One PTY this connection has asked for, and — while it is catching up — the
+ * output it is owed but must not receive yet (issue 142, ADR 0024 D2).
+ *
+ * A `catchUp` subscription starts `holding`. Live `data`/`exit` for the PTY
+ * accumulate here instead of going out, until the connection's `replay` for
+ * that PTY is served; `release()` hands them over and puts the stream live for
+ * good. Without the hold, the bytes emitted between the subscription taking
+ * effect and the replay being served would arrive *before* the scrollback they
+ * come after, and the client would paint them in the wrong order.
+ *
+ * Holding is bounded by {@link PTY_HOLD_LIMIT_BYTES}; see that constant for why
+ * dropping the oldest is lossless here.
+ */
+class PtySubscription {
+  private data: Array<{ data: string; seq: number }> = [];
+  private bytes = 0;
+  private exit: { exitCode: number; signal?: number } | null = null;
+
+  constructor(public holding: boolean) {}
+
+  /** Take one event out of the live stream and keep it for the drain. */
+  hold(event: PtyCoreEvent): void {
+    if (event.type === "exit") {
+      this.exit = { exitCode: event.exitCode, signal: event.signal };
+      return;
+    }
+    this.data.push({ data: event.data, seq: event.seq });
+    this.bytes += event.data.length;
+    while (this.bytes > PTY_HOLD_LIMIT_BYTES && this.data.length > 0) {
+      this.bytes -= this.data.shift()!.data.length;
+    }
+  }
+
+  /** Everything held, in arrival order; the subscription goes live. */
+  release(): { data: Array<{ data: string; seq: number }>; exit: { exitCode: number; signal?: number } | null } {
+    const held = { data: this.data, exit: this.exit };
+    this.holding = false;
+    this.data = [];
+    this.bytes = 0;
+    this.exit = null;
+    return held;
+  }
+}
+
+/**
+ * One core-link connection's own state: whether it has authenticated, whether
+ * it has subscribed to the event log, the highest eventId it has been sent,
+ * which PTYs it wants the byte stream of, its live-event poll and its
+ * heartbeat. Every field here is private to one client — this shape always was
+ * per-connection; before issue 141 it was simply only ever instantiated once,
+ * and the server held the socket beside it.
+ *
+ * Nothing about a Session, a PTY or the event log lives here. Those are Core
+ * facts, shared by construction, and a connection arriving or leaving must not
+ * move any of them. That is also what makes subscriptions leak-proof: they are
+ * fields on this object, so a client that disappears without unsubscribing
+ * takes its whole subscription set with it when the connection is dropped —
+ * there is no server-level registry keyed by `ptyId` to go stale.
  */
 class ActiveConnection {
   subscribed = false;
+  /** PTYs this connection receives `data`/`exit` for, keyed by `ptyId`. */
+  readonly ptySubscriptions = new Map<string, PtySubscription>();
   /** True once an `auth` frame has been verified (issue 04). Always true for
    *  loopback (no `authVerifier` configured). */
   authenticated = false;
+  /**
+   * The client id this connection presented on its `reclaim` frame, or null
+   * from one that never presented one (issue 146, ADR 0024 D9).
+   *
+   * Reaping is the only thing it is read for: a later connection presenting the
+   * same string is treated as the same Core client reconnecting, so this one is
+   * closed and its Session locks move across. It is never checked against
+   * anything, never compared with the bearer, and grants nothing — see the
+   * commentary on {@link PtyCoreLinkServer.reclaimFor}.
+   */
+  clientId: string | null = null;
   lastSentEventId = 0;
+  /** Last time anything arrived from this client — a frame, or a pong. */
+  lastInboundAt = Date.now();
+  /** This connection's ping timer; only it may reap this connection. */
+  heartbeat: ReturnType<typeof setInterval> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(readonly ws: WebSocketLike) {}
+
+  /**
+   * Ask for a PTY's stream. Idempotent: an existing subscription is returned
+   * untouched, so a second `ptySubscribe` neither doubles delivery nor — more
+   * dangerously — re-arms a hold on a stream that is already live and would
+   * then never be released (nothing more is coming to release it).
+   */
+  subscribePty(ptyId: string, catchUp: boolean): PtySubscription {
+    const existing = this.ptySubscriptions.get(ptyId);
+    if (existing) return existing;
+    const sub = new PtySubscription(catchUp);
+    this.ptySubscriptions.set(ptyId, sub);
+    return sub;
+  }
+
+  /** Stop receiving a PTY's stream. Idempotent — unsubscribing twice is fine. */
+  unsubscribePty(ptyId: string): void {
+    this.ptySubscriptions.delete(ptyId);
+  }
 
   startPoll(fn: () => void, intervalMs: number): void {
     this.stopPoll();
@@ -1023,6 +1777,13 @@ class ActiveConnection {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
     }
   }
 }

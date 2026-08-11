@@ -754,6 +754,29 @@ export class PtyCore {
     return { ptyCount: targets.length, ports: portResults };
   }
 
+  /**
+   * The Task this PTY was spawned for, or null when this Core has no such PTY.
+   *
+   * The inverse of {@link findByTask}, and the lookup the core-link server's
+   * Session-lock gate is built on (issue 144, ADR 0024 D4): `write` and `kill`
+   * name a `ptyId`, the lock is keyed by the Session, and a Session is its Task.
+   *
+   * **A read, and only a read.** The lock lives on the client-facing frame, not
+   * in here: `PtyCore.kill` has callers inside the Core — the PTY exit paths and
+   * the task writer — that are nobody's client and hold nobody's lock, and a
+   * gate in this class would have the Core start refusing itself.
+   *
+   * Unlike `findByTask` this answers for **every** PTY, including project shells
+   * and VM Shell Sessions. `findByTask` skips those because handing a raw shell
+   * back to an agent reattach would be wrong; here the question is the opposite
+   * one — "whose Session would this mutation be touching?" — and a shell's
+   * answer is its own taskId, which is the id its own claim would name.
+   */
+  taskIdForPty(ptyId: string): string | null {
+    if (typeof ptyId !== "string" || !ptyId) return null;
+    return ptys.get(ptyId)?.taskId ?? null;
+  }
+
   findByTask(taskId: string): { ptyId: string | null } {
     if (typeof taskId !== "string" || !taskId) return { ptyId: null };
     let found: string | null = null;

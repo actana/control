@@ -127,8 +127,13 @@ These are load-bearing, not style preferences. Each is explained in
 - **Singular UI across Cores.** The same components render every Core's data.
   A Core on the Panel's own host gets no special path.
 - **The Panel and its Cores are version-locked.** A protocol mismatch renders
-  as "needs update", never a degraded or feature-detected mode.
-- **One core-link per Core, multiplexed.** No per-task channels.
+  as "needs update", never a degraded mode. The one exception is an additive
+  capability announced on `ready` whose absence yields today's behaviour
+  exactly (ADR 0024 D11).
+- **One core-link per Core client, multiplexed.** No per-task channels. A Core
+  serves many clients at once and a new connection evicts nobody (ADR 0024 D1).
+- **Many Readers, one writer, per Session.** Any client may watch a Session;
+  only the one holding its Session lock may mutate it.
 
 If your change contradicts an ADR in [`docs/adr/`](docs/adr/), say so in the PR
 rather than working around it. Reopening a decision is fine; doing it silently

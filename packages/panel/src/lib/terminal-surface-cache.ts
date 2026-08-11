@@ -46,6 +46,16 @@ export interface CachedTerminalControls {
   clear(): void;
   /** Write raw bytes to the surface's live PTY (tracks respawns). */
   writeToPty?(data: string): void;
+  /**
+   * Render this surface read-only, or editable again (issue 147).
+   *
+   * A **state of this terminal**, not a second terminal: the same xterm keeps
+   * painting every byte the Session produces, and only its input is taken away
+   * — `CONTEXT.md`'s Singular UI rule reaches inside a component as well as
+   * across Cores. Wired here because the pane sets it from React and the
+   * surface outlives any one render of it.
+   */
+  setReadOnly?(readOnly: boolean): void;
 }
 
 /**
