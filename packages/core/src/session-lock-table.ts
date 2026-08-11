@@ -127,10 +127,11 @@ export class SessionLockTable {
    * for, which is why it is a parameter and not a snapshot of the table.
    */
   stateFor(taskId: string, asker: SessionLockHolder): CoreLinkSessionLock {
+    const writable = this.mayMutate(taskId, asker);
     const current = this.holders.get(taskId);
-    if (current === undefined) return { writable: true, state: "unlocked" };
-    if (current === asker) return { writable: true, state: "held-by-you" };
-    return { writable: false, state: "held-by-another" };
+    if (current === undefined) return { writable, state: "unlocked" };
+    if (current === asker) return { writable, state: "held-by-you" };
+    return { writable, state: "held-by-another" };
   }
 
   /**
