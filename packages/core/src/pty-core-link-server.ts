@@ -628,6 +628,87 @@ export class PtyCoreLinkServer {
   }
 
   /**
+   * Record this connection's client id and replace whatever connection last
+   * presented it: close the predecessor, and move its Session locks here
+   * (issue 146, ADR 0024 D9).
+   *
+   * **This is reaping, not authority, and not identity.** The id is a string a
+   * client made up. Nothing signs it, nothing verifies it, and this method is
+   * the only thing in the Core that reads it. What it can move is a Session
+   * lock — which is authority any authenticated connection can already take
+   * unconditionally with `forceTakeover` (D7), so a connection presenting
+   * somebody else's id gains nothing it could not have had by asking outright.
+   * That is the answer to "how do we stop a client claiming another's id", and
+   * it is D10's answer: the client on the other end of this socket holds the
+   * bearer, and a bearer holder can open a VM Shell Session and kill the
+   * process. A signature here would defend nothing and would quietly build the
+   * per-client credential D3 and D10 rejected.
+   *
+   * Nor does presenting an id authenticate anybody. `reclaim` is not `auth`, so
+   * the gate in {@link onMessage} refuses it — and drops the connection — from
+   * a client that has not presented its bearer first, exactly like every other
+   * frame. The id never substitutes for the bearer and never shortens the path
+   * to one.
+   *
+   * **The transfer is one step, and the order of these three lines is the whole
+   * ticket.** {@link SessionLockTable.transferAll} rewrites the holder in place
+   * — there is no instant at which those Sessions read as unlocked, so a third
+   * connection racing a `claim` (or an outright write against an unlocked
+   * Session, which D5/D11 allow) cannot land inside the handover. Only then is
+   * the predecessor closed. The reverse order is the bug this ticket exists to
+   * prevent: a drop runs `releaseAll`, which would unlock every one of those
+   * Sessions on the way out and leave them free for anybody for as long as the
+   * successor takes to notice. Run in this order, that same `releaseAll` finds
+   * nothing — the entries already name this connection.
+   *
+   * The predecessor is `terminate`d where the transport offers it, for the
+   * reason the heartbeat does: this socket is presumed already dead, and a
+   * half-open connection never completes a close handshake, so waiting on one
+   * would leave the ghost in the registry it was just evicted from.
+   *
+   * Every match is handled, not the first. One is all this can produce — a
+   * connection presenting an id is the only thing that records one — but a
+   * partial sweep here would leave a ghost holding a Session with nothing left
+   * to reap it but the heartbeat, which is the outcome the frame exists to
+   * avoid.
+   */
+  private reclaimFor(
+    conn: ActiveConnection,
+    clientId: string,
+  ): { replaced: boolean; taskIds: string[] } {
+    conn.clientId = clientId;
+    const predecessors: ActiveConnection[] = [];
+    for (const other of this.connections.values()) {
+      if (other !== conn && other.clientId === clientId) predecessors.push(other);
+    }
+    // Locks first, in one rewrite each — see above.
+    const taskIds: string[] = [];
+    for (const predecessor of predecessors) {
+      taskIds.push(...this.sessionLocks.transferAll(predecessor, conn));
+    }
+    // Then the socket. `dropConnection` is called rather than left to the close
+    // handler so the registry is correct the moment this frame is answered: a
+    // real `close()` is asynchronous, and a client that reconnects twice in
+    // quick succession would otherwise find its own ghost still listed. It is
+    // idempotent — the locks are already gone from `releaseAll`'s point of view.
+    for (const predecessor of predecessors) {
+      try {
+        predecessor.ws.terminate ? predecessor.ws.terminate() : predecessor.ws.close();
+      } catch {
+        /* already gone — the drop below is what actually retires it */
+      }
+      this.dropConnection(predecessor.ws, predecessor);
+    }
+    if (predecessors.length > 0) {
+      log.info("core-link.client-id.reclaimed", {
+        replaced: predecessors.length,
+        taskIds,
+      });
+    }
+    return { replaced: predecessors.length > 0, taskIds };
+  }
+
+  /**
    * Install this server's single PTY-event sink on the Core, once.
    *
    * One callback for the whole server, not one per connection: the target is a
@@ -1099,6 +1180,24 @@ export class PtyCoreLinkServer {
           reqId: frame.reqId,
           taskId: frame.taskId,
           takenFrom,
+        });
+        return;
+      }
+      case "reclaim": {
+        // A `clientId` that is not a non-empty string is no id at all, not a
+        // shared one. Left ungated, two connections that both sent the field
+        // as `undefined` would match each other and reap in turn — which is
+        // the one way a frame this permissive can misfire.
+        const clientId = typeof frame.clientId === "string" ? frame.clientId : "";
+        const { replaced, taskIds } = clientId
+          ? this.reclaimFor(conn, clientId)
+          : { replaced: false, taskIds: [] as string[] };
+        this.send(ws, {
+          type: "reclaimResult",
+          reqId: frame.reqId,
+          clientId,
+          replaced,
+          taskIds,
         });
         return;
       }
@@ -1628,6 +1727,17 @@ class ActiveConnection {
   /** True once an `auth` frame has been verified (issue 04). Always true for
    *  loopback (no `authVerifier` configured). */
   authenticated = false;
+  /**
+   * The client id this connection presented on its `reclaim` frame, or null
+   * from one that never presented one (issue 146, ADR 0024 D9).
+   *
+   * Reaping is the only thing it is read for: a later connection presenting the
+   * same string is treated as the same Core client reconnecting, so this one is
+   * closed and its Session locks move across. It is never checked against
+   * anything, never compared with the bearer, and grants nothing — see the
+   * commentary on {@link PtyCoreLinkServer.reclaimFor}.
+   */
+  clientId: string | null = null;
   lastSentEventId = 0;
   /** Last time anything arrived from this client — a frame, or a pong. */
   lastInboundAt = Date.now();
