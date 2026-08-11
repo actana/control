@@ -79,6 +79,7 @@ routing around it.
 | [0021](adr/0021-installing-a-harness-is-a-panel-gesture.md) | Installing a Harness is a Panel gesture |
 | [0022](adr/0022-a-core-owned-project-has-a-panel-side-presentation-row.md) | A Core-owned project has a Panel-side presentation row |
 | [0023](adr/0023-release-trains-and-digest-promotion.md) | Release trains and digest promotion |
+| [0024](adr/0024-a-core-serves-many-clients-one-holds-a-sessions-write-lock.md) | A Core serves many clients, and one connection holds a Session's write lock |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

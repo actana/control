@@ -1,0 +1,60 @@
+# A Core serves many clients, and one connection holds a Session's write lock
+
+A Core accepted exactly one core-link connection. `PtyCoreLinkServer.onConnection` closed whatever socket was there before accepting a new one, and that was the correct shape for a system with one client. #129 gives it three — the Panel, the CLI, and SDK automations — and already listed the consequence under its own known risks: every new client competes with the Panel for the one connection, and `attach` holds it for as long as it is open. Flagged there, solved here. #129 phase 2 defers `session attach` to last for exactly this reason: on a single-connection Core, attaching from the CLI evicts the operator's Panel.
+
+The replacement is **not** many writers. A PTY is a byte stream with no notion of who typed; two clients writing to one harness interleave into nonsense, and an automation driving a session cannot tolerate a stray keystroke from a Panel tab left open in another window. So: **a Core serves many clients at once, and every Session has many Readers and at most one writer.**
+
+The twelve decisions below were settled in a design session and are recorded here so no ticket re-litigates them. Each carries a **D** number that its ticket cites. A ticket that needs one changed amends this record rather than settling it in a comment.
+
+## The decisions
+
+**D1 — A Core accepts many concurrent core-link connections.** The evict-on-connect branch goes. Each connection gets its own event cursor, subscription set and heartbeat — already how `ActiveConnection` is shaped; it was simply only ever instantiated once.
+
+**D2 — PTY output fans out per connection, by subscription.** `PtyCore.setEmitTarget` is a single global callback, so every PTY's `data` goes to the one socket. It becomes a registry, and a connection receives a PTY's stream only after asking for it. A CLI attached to one session must not receive every other session's output on the machine, continuously. Catch-up needs nothing new: `replay { ptyId, sinceSeq }` exists and `data` frames already carry `seq`.
+
+**D3 — The unit of write authority is the core-link connection.** Not a per-client credential, not a logical actor above the socket. There is exactly one Operator per Panel, so the parties that genuinely contend are *programs* — Panel, CLI, SDK automation — and each is exactly one connection. Two browser tabs are one human with two tabs; which of them drives is the Panel's own business, settled between Panel sessions inside the Panel, and never crosses the wire.
+
+**D4 — The lock is scoped to one Session and covers every mutation on it.** Not just `write`: `kill`, and every task mutation addressed at that Session. An automation whose session can be killed by an observer does not hold a lock in any useful sense. Deliberately *not* Core-wide — that would stop the Panel creating a project while a CLI runs a session, which is the ordinary case, not the contended one. Different Sessions on one Core may be held by different clients.
+
+**D5 — A Session starts unlocked, and its creator gets no privilege.** Auto-claiming on create makes "who owns this" depend on history the Core would have to keep, and leaves a Session nobody can claim when its creator exits. Unlocked is a real state; any connection may claim an unlocked Session.
+
+**D6 — Claiming is explicit.** A `claim` frame; a mutation without the lock is an error, never an implicit acquisition.
+
+**D7 — A lock ends on explicit release, on connection drop, or on force takeover. No idle timeout.** A long agent run is *idle by definition* — no mutations for many minutes is the success case — so an idle timeout would drop the lock exactly when losing it costs most. Force takeover exists because otherwise a hung client renders a Session unusable until its process dies.
+
+**D8 — Lock state is published, not discovered by failing.** It rides the Session snapshot and emits an event on every change. A read-only Panel tab must render the terminal non-editable *before* a keystroke, `actana session ls` must show it, and the loser of a force takeover must learn it when it happens rather than on its next write.
+
+**D9 — A connection presents a stable client id, used only for reaping.** Not for authority, not verified. With D1 the old evict-on-reconnect no longer runs, so a reloaded Panel tab leaves a socket alive for up to `HEARTBEAT_TIMEOUT_MS` (45s) still holding locks. A reconnecting connection presenting the same client id replaces its predecessor and inherits its locks.
+
+**D10 — The write lock is a coordination mechanism, not a security boundary.** The Core's only authentication is the bearer in the registration blob, and anyone holding it can open a VM Shell Session and `kill` the process directly. A lock defended against someone with a shell on the machine is theatre. This is the posture #129's F3 takes for path confinement: an accident guard, stated as one. Per-client credentials with revocation would be a separate effort with its own ADR, and are not a prerequisite for anything above.
+
+**D11 — `CORE_LINK_PROTOCOL_VERSION` does not move; the capability is announced on `ready`.** `ready` carries an optional `multiConnection: { version: 1 }`; absent means the old single-connection Core. A new client against an old Core sees no capability and behaves as today; an old client against a new Core works untouched — it never claims, and never notices it is no longer evicting anybody. Moving the minor would mark every Core in every fleet needs-update for a capability most will never exercise.
+
+**D12 — Locks live in memory and die with the Core.** Not persisted, because the PTYs they guard do not survive the daemon either. A Core restart returns every Session to unlocked, which is the correct state for a Session with no running process behind it.
+
+## Considered Options
+
+- **Many writers to one Session, with no lock at all (rejected).** The smallest change — remove the eviction branch and stop there. Rejected because a PTY has no notion of who typed: two clients writing to one harness interleave into a stream neither of them meant, and the failure is silent and unattributable. Read concurrency is what operators actually ask for; write concurrency is what nobody can use.
+- **A per-client credential, or a logical actor above the socket, as the unit of write authority (rejected, D3).** It sounds more principled and it buys nothing here: there is exactly one Operator per Panel, so the parties that contend are programs, and a program is exactly one connection. It would also make authority something the Core has to store, verify and revoke — see D10 for why that is a different effort.
+- **The creator of a Session holds it automatically (rejected, D5).** Convenient for the common case and wrong in the case that matters: it makes ownership depend on history the Core would have to keep, and a Session whose creator exited would be locked by nobody with no way to claim it.
+- **First mutation claims the lock implicitly (rejected, D6).** Saves a frame and defeats the purpose. With D5 in force nothing else guards a running automation, so one keystroke in a Panel tab left open in another window would take the Session out from under it — the exact failure this ADR exists to prevent.
+- **An idle timeout on the lock (rejected, D7).** The usual liveness answer, and this is the one domain where it inverts: a long agent run is idle by definition, so the timeout fires precisely on the healthy long-running case it would hurt most. Connection drop and force takeover cover the two real failures without it.
+- **Moving `CORE_LINK_PROTOCOL_VERSION` instead of announcing a capability on `ready` (rejected, D11).** Version-locking is this project's default and it is the wrong instrument here: the minor moving marks every Core in every fleet "needs update" over a capability most of them will never exercise, and the honest alternative — a capability whose absence yields exactly today's behaviour — costs one optional field.
+
+## The rule this amends
+
+`CONTEXT.md`'s Rules said the Panel and its Cores are version-locked — *"never a degraded or feature-detected mode"*. D11 is feature detection, and so is #129's F9 for the files surface, so the rule needed amending either way.
+
+**Narrowed, not deleted:** an additive surface may announce itself on `ready` **only where its absence yields today's behaviour exactly**, not a lesser one. `multiConnection` absent means single-connection eviction, which is precisely today. A capability that changes what an existing frame means is not additive and still moves the version.
+
+Two more Rules changes ride with it: `One Core link per Core, multiplexed` is restated as **per Core client**, and a new rule is added — **many Readers, one writer, per Session**. Four domain terms land alongside: **Core client**, **Core alias**, **Session lock**, **Reader**. Banned as synonyms: session owner, mutex, reservation, observer, spectator, participant, client session.
+
+## Consequences
+
+- **The Core gains contention it has never had.** Nothing in `PtyCore` expected two callers. The lock table, the subscription registry and the emit fan-out are all new shared state in a process whose assumptions have been effectively single-threaded. #129 flags the same class of risk for concurrent HTTP against a live WebSocket; the mitigations should be written once.
+- **Force takeover is unrecoverable by design.** The loser's in-flight keystrokes are gone. D8 makes it visible; nothing makes it undoable.
+- **The claim race is real and accepted.** D5 leaves a window between session start and first claim in which any client can take it. An automation must claim immediately after starting.
+- **No cap on connection count is specified.** A Core with a runaway client reconnecting in a loop accumulates sockets until the heartbeat reaps them.
+- **Reconnect defects stop hiding.** Evict-on-connect made a fresh socket always win, so a failed reconnect was indistinguishable from a successful one. Without it, a stale connection holds its Session locks while the heartbeat waits out its 45 seconds — which is why #139 is a hard blocker for this effort rather than a neighbour of it.
+- **VM Shell Sessions are assumed to follow the same rule** as harness Sessions. Not separately decided — the first ticket that touches one should confirm or amend D4.
+- **The decisions land across five steps, not one.** D1 and D12 ship with this record (#141): the connection registry, and locks that never outlive the process because there are none yet to persist. D2 and D11 are #142 and #143; the lock itself, its published state and the stable client id follow; the Panel's read-only rendering is last. Until D2 lands, every registered connection receives every PTY's output — an interim fan-out, chosen over a per-connection emit target that would leave the first client silent while it still looked healthy.

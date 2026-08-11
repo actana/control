@@ -7,9 +7,13 @@
 // Loopback-only (trusted) — no auth yet. A later issue adds mTLS + bearer auth
 // before the same server listens on a non-loopback interface.
 //
-// A single connection is expected at a time (the Panel). When the Panel
-// disconnects (renderer reload, app sleep), `core.setEmitTarget(null)` stops
-// output delivery — the PTY buffer retains everything for replay on reconnect.
+// Many connections are accepted at once (issue 141, ADR 0024 D1): the Panel,
+// the CLI, an SDK automation. Each gets its own {@link ActiveConnection} — its
+// own auth state, event cursor, poll loop and heartbeat — and a new connection
+// never closes an existing one. `PtyCore` state (PTYs, tasks, the event log) is
+// untouched by a connection arriving or leaving. When the last connection goes,
+// `core.setEmitTarget(null)` stops output delivery — the PTY buffer retains
+// everything for replay on reconnect.
 
 import log from "./log";
 import type { WebSocketServer, WebSocket } from "ws";
@@ -35,7 +39,7 @@ import {
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
-import type { PtyCore } from "./pty-manager";
+import type { PtyCore, PtyCoreEvent } from "./pty-manager";
 import { CoreTaskWriter } from "./core-task-writer";
 
 /**
@@ -351,11 +355,15 @@ const PROJECT_MUTATION_EVENT_KINDS: Record<CoreLinkProjectMutation["op"], string
 };
 /**
  * Heartbeat cadence, mirroring the Panel-side client. The Core must detect a
- * vanished Panel too: `setEmitTarget` points PTY output at whatever socket is
- * active, so a half-open connection means every chunk an agent produces is
- * written into a socket that will never deliver it — the pane looks frozen
- * while the agent runs on. Pinging every 15s both keeps NATs/firewalls from
- * reaping an idle link and bounds how long a dead one can hold the emit target.
+ * vanished client too: PTY output fans out to every registered connection, so a
+ * half-open one means every chunk an agent produces is written into a socket
+ * that will never deliver it — the pane looks frozen while the agent runs on.
+ * Pinging every 15s both keeps NATs/firewalls from reaping an idle link and
+ * bounds how long a dead connection stays in the registry.
+ *
+ * The heartbeat is per connection and reaps only its own: with a registry, a
+ * connection is stale because *it* has gone quiet, never because a newer one
+ * arrived (issue 141).
  */
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Terminate a connection after this long with no message or pong (3 pings). */
@@ -391,8 +399,21 @@ export class PtyCoreLinkServer {
    * describes it (issue 84).
    */
   private readonly taskWriter: CoreTaskWriter;
-  private activeWs: WebSocketLike | null = null;
-  private connection: ActiveConnection | null = null;
+  /**
+   * Every core-link connection this Core is currently serving, keyed by its
+   * socket (issue 141, ADR 0024 D1). Insertion-ordered, so fan-out reaches
+   * clients in the order they connected. Replaces the old `activeWs` +
+   * single `connection` pair: a connection's state — auth, cursor, poll,
+   * heartbeat — is now the entry, and nothing about it is shared.
+   */
+  private readonly connections = new Map<WebSocketLike, ActiveConnection>();
+  /**
+   * True while `core.setEmitTarget` holds this server's fan-out callback. One
+   * callback for the whole server, not one per connection — the target is a
+   * single global sink on `PtyCore`, so a per-connection one would have the
+   * newest connection silently steal every PTY's output from the rest.
+   */
+  private emitTargetInstalled = false;
 
   constructor(
     private readonly core: PtyCore,
@@ -425,90 +446,136 @@ export class PtyCoreLinkServer {
   }
 
   private onConnection(ws: WebSocketLike): void {
-    // One connection at a time. If the Panel reconnects (renderer reload),
-    // drop the old connection first — the core's PTY state survives.
-    if (this.activeWs) {
-      try {
-        this.activeWs.removeAllListeners();
-        this.activeWs.close();
-      } catch {
-        /* already closed */
-      }
-    }
-    this.activeWs = ws;
-    this.connection = new ActiveConnection();
-
-    // Wire core events → outgoing frames. PTY exit events are also appended
-    // to the event log (pty:exit lifecycle marker) so a reconnecting Panel
-    // learns which PTYs died while it was away.
-    this.core.setEmitTarget((event) => {
-      const frame: CoreLinkServerFrame =
-        event.type === "data"
-          ? { type: "data", ptyId: event.ptyId, data: event.data, seq: event.seq }
-          : { type: "exit", ptyId: event.ptyId, exitCode: event.exitCode, signal: event.signal };
-      this.send(ws, frame);
-      if (event.type === "exit") {
-        this.recordPtyExit(event);
-      }
-    });
+    // Many connections at a time (ADR 0024 D1). A new connection — a second
+    // Panel tab, the CLI, a reconnecting renderer — is registered alongside
+    // whatever is already here, never in place of it. Nothing on `PtyCore`
+    // moves as a result.
+    const conn = new ActiveConnection(ws);
+    this.connections.set(ws, conn);
+    this.ensureEmitTarget();
 
     // Send the ready frame immediately.
     this.send(ws, { type: "ready", version: this.protocolVersion });
 
     // Start the live-event push poll for this connection. It stays silent
-    // until the Panel sends `subscribe`, then pushes new events past the
-    // connection's lastSentEventId.
-    this.connection.startPoll(() => this.pushLiveEvents(ws), this.liveEventPollMs);
+    // until the client sends `subscribe`, then pushes new events past this
+    // connection's own lastSentEventId.
+    conn.startPoll(() => this.pushLiveEvents(conn), this.liveEventPollMs);
 
     // Per-connection heartbeat. `lastInboundAt` advances on any frame from the
-    // Panel — an RPC, or the pong answering our ping — so a connection only
-    // dies here when the Panel is genuinely unreachable.
-    let lastInboundAt = Date.now();
-    const heartbeat = ws.ping
-      ? setInterval(() => {
-          if (this.activeWs !== ws) {
-            clearInterval(heartbeat!);
-            return;
-          }
-          if (Date.now() - lastInboundAt > HEARTBEAT_TIMEOUT_MS) {
-            clearInterval(heartbeat!);
-            log.warn("core-link.connection.stale", { idleMs: Date.now() - lastInboundAt });
-            try {
-              ws.terminate ? ws.terminate() : ws.close();
-            } catch {
-              /* already gone — the close handler still runs */
-            }
-            return;
-          }
+    // client — an RPC, or the pong answering our ping — so a connection only
+    // dies here when that client is genuinely unreachable. The registry
+    // membership check is the liveness question now: asking whether some other
+    // socket is "the active one" would reap healthy connections the moment a
+    // second client arrived.
+    if (ws.ping) {
+      conn.heartbeat = setInterval(() => {
+        if (this.connections.get(ws) !== conn) {
+          conn.stopHeartbeat();
+          return;
+        }
+        const idleMs = Date.now() - conn.lastInboundAt;
+        if (idleMs > HEARTBEAT_TIMEOUT_MS) {
+          conn.stopHeartbeat();
+          log.warn("core-link.connection.stale", { idleMs });
           try {
-            ws.ping?.();
+            ws.terminate ? ws.terminate() : ws.close();
           } catch {
-            /* the close handler will take it from here */
+            /* already gone — the close handler still runs */
           }
-        }, HEARTBEAT_INTERVAL_MS)
-      : null;
+          return;
+        }
+        try {
+          ws.ping?.();
+        } catch {
+          /* the close handler will take it from here */
+        }
+      }, HEARTBEAT_INTERVAL_MS);
+      if (typeof conn.heartbeat.unref === "function") conn.heartbeat.unref();
+    }
     ws.on("pong", () => {
-      lastInboundAt = Date.now();
+      conn.lastInboundAt = Date.now();
     });
 
     ws.on("message", (raw) => {
-      lastInboundAt = Date.now();
-      this.onMessage(ws, raw);
+      conn.lastInboundAt = Date.now();
+      this.onMessage(conn, raw);
     });
     ws.on("close", () => {
-      if (heartbeat) clearInterval(heartbeat);
-      if (this.activeWs === ws) {
-        this.activeWs = null;
-        this.core.setEmitTarget(null);
-      }
-      if (this.connection) {
-        this.connection.stopPoll();
-        this.connection = null;
-      }
+      this.dropConnection(ws, conn);
     });
     ws.on("error", (err) => {
       log.warn("core-link.connection.error", { error: err.message });
     });
+  }
+
+  /**
+   * Retire one connection: its poll timer and its heartbeat, and nothing
+   * else. Every other connection keeps its own — the defect this replaces
+   * cancelled a shared poll, so one client closing stopped live event push for
+   * whoever else was here. The emit target is released only when the last
+   * connection goes, which is what makes a Core with no clients quiet again.
+   */
+  private dropConnection(ws: WebSocketLike, conn: ActiveConnection): void {
+    conn.stopHeartbeat();
+    conn.stopPoll();
+    // Guard on identity, not presence: a socket that was already replaced in
+    // the map must not evict its successor.
+    if (this.connections.get(ws) === conn) this.connections.delete(ws);
+    if (this.connections.size === 0) this.releaseEmitTarget();
+  }
+
+  /**
+   * Install this server's single PTY-event sink on the Core, once.
+   *
+   * **Interim behaviour (issue 141):** every registered connection receives
+   * every PTY's `data` and `exit`. Per-connection subscription is D2 and lands
+   * in its own ticket; until then a fan-out is the only correct stopgap, since
+   * `PtyCore.setEmitTarget` holds exactly one callback and setting it per
+   * connection would leave the *first* client silent while it still looked
+   * healthy — no close, no error, just no output.
+   */
+  private ensureEmitTarget(): void {
+    if (this.emitTargetInstalled) return;
+    this.emitTargetInstalled = true;
+    this.core.setEmitTarget((event) => this.fanOutPtyEvent(event));
+  }
+
+  private releaseEmitTarget(): void {
+    if (!this.emitTargetInstalled) return;
+    this.emitTargetInstalled = false;
+    this.core.setEmitTarget(null);
+  }
+
+  /**
+   * Deliver one PTY event to every *authenticated* connection, and record an
+   * exit exactly once. The event log is a fact about the machine, not about who
+   * was watching: appending per connection would write two `pty:exit` rows for
+   * one dead process and replay the exit twice to every reconnecting client —
+   * so the append stays outside the loop, and a connection being skipped never
+   * costs the log a row.
+   *
+   * The auth skip mirrors `pushLiveEvents`: with an `authVerifier` configured,
+   * a connection that has not proved identity gets nothing pushed at it. PTY
+   * output is strictly more sensitive than the event timeline, and a socket
+   * that presents no bearer and sends no frame never trips the message gate —
+   * answering pings keeps `lastInboundAt` fresh, so the heartbeat never reaps
+   * it either. Until this ticket the fan-out was the one push path that did not
+   * ask. Loopback Cores configure no verifier, where `authenticated` is
+   * irrelevant and every connection is served exactly as before.
+   */
+  private fanOutPtyEvent(event: PtyCoreEvent): void {
+    const frame: CoreLinkServerFrame =
+      event.type === "data"
+        ? { type: "data", ptyId: event.ptyId, data: event.data, seq: event.seq }
+        : { type: "exit", ptyId: event.ptyId, exitCode: event.exitCode, signal: event.signal };
+    for (const conn of this.connections.values()) {
+      if (this.authVerifier && !conn.authenticated) continue;
+      this.send(conn.ws, frame);
+    }
+    if (event.type === "exit") {
+      this.recordPtyExit(event);
+    }
   }
 
   /** Record a pty:exit event in the log (lifecycle marker for replay). */
@@ -557,21 +624,23 @@ export class PtyCoreLinkServer {
    * the poll loop once the connection has subscribed. Also advances the
    * connection cursor so the next tick only sees newer events.
    */
-  private pushLiveEvents(ws: WebSocketLike): void {
-    if (!this.connection || !this.connection.subscribed || !this.eventLog) return;
+  private pushLiveEvents(conn: ActiveConnection): void {
+    if (!conn.subscribed || !this.eventLog) return;
     // When auth is required, never push events until authenticated — a
     // pre-auth subscriber would learn the event timeline without proving
-    // identity.
-    if (this.authVerifier && !this.connection.authenticated) return;
-    const after = this.connection.lastSentEventId;
+    // identity. Per connection: one authenticated client does not open the
+    // stream for another that has not authenticated.
+    if (this.authVerifier && !conn.authenticated) return;
+    const after = conn.lastSentEventId;
     const tail = this.eventLog.readEventTail(after, EVENT_TAIL_LIMIT);
     for (const event of tail) {
-      this.send(ws, { type: "event", event });
-      this.connection.lastSentEventId = event.eventId;
+      this.send(conn.ws, { type: "event", event });
+      conn.lastSentEventId = event.eventId;
     }
   }
 
-  private async onMessage(ws: WebSocketLike, raw: unknown): Promise<void> {
+  private async onMessage(conn: ActiveConnection, raw: unknown): Promise<void> {
+    const ws = conn.ws;
     const data = typeof raw === "string" ? raw : String(raw);
     const frame = parseCoreLinkRequestFrame(data);
     if (!frame) {
@@ -582,7 +651,7 @@ export class PtyCoreLinkServer {
     // `auth` is always processed (it's how the connection authenticates). Any
     // other frame received before authentication, when an `authVerifier` is
     // configured, is rejected — the Panel must present its bearer first.
-    if (frame.type !== "auth" && this.authVerifier && !this.isAuthenticated()) {
+    if (frame.type !== "auth" && this.authVerifier && !conn.authenticated) {
       this.send(ws, { type: "error", reqId: frame.reqId, message: "not-authenticated" });
       // Drop the connection so the Panel's reconnect path re-presents `auth`
       // from a clean state instead of racing frames.
@@ -594,15 +663,11 @@ export class PtyCoreLinkServer {
       return;
     }
     try {
-      await this.dispatch(ws, frame);
+      await this.dispatch(conn, frame);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       this.send(ws, { type: "error", reqId: frame.reqId, message });
     }
-  }
-
-  private isAuthenticated(): boolean {
-    return this.connection?.authenticated ?? false;
   }
 
   /**
@@ -620,7 +685,8 @@ export class PtyCoreLinkServer {
     return null;
   }
 
-  private async dispatch(ws: WebSocketLike, frame: CoreLinkRequestFrame): Promise<void> {
+  private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
+    const ws = conn.ws;
     switch (frame.type) {
       case "spawn": {
         try {
@@ -696,15 +762,15 @@ export class PtyCoreLinkServer {
         // Auth gate (re-checked here so a hand-rolled `subscribe` after auth
         // still works, but a pre-auth `subscribe` slipped past the message
         // gate is rejected rather than silently streaming the event tail).
-        if (this.authVerifier && !this.isAuthenticated()) {
+        if (this.authVerifier && !conn.authenticated) {
           this.send(ws, { type: "error", reqId: frame.reqId, message: "not-authenticated" });
           return;
         }
-        this.handleSubscribe(ws, frame);
+        this.handleSubscribe(conn, frame);
         return;
       }
       case "auth": {
-        this.handleAuth(ws, frame);
+        this.handleAuth(conn, frame);
         return;
       }
       // ─── Task / project / session / hook ops (issue 02 schema + issue 07
@@ -918,10 +984,10 @@ export class PtyCoreLinkServer {
    * cursor so the Panel's state machine stays consistent.
    */
   private handleSubscribe(
-    ws: WebSocketLike,
+    conn: ActiveConnection,
     frame: { type: "subscribe"; reqId: string; lastEventId: number },
   ): void {
-    const conn = this.connection ?? (this.connection = new ActiveConnection());
+    const ws = conn.ws;
     conn.subscribed = true;
     const fromEventId = frame.lastEventId;
     let lastSent = fromEventId;
@@ -948,9 +1014,10 @@ export class PtyCoreLinkServer {
    * `auth` frame is rejected — the loopback Panel never sends one.
    */
   private handleAuth(
-    ws: WebSocketLike,
+    conn: ActiveConnection,
     frame: { type: "auth"; reqId: string; bearer: string },
   ): void {
+    const ws = conn.ws;
     if (!this.authVerifier) {
       this.send(ws, {
         type: "authError",
@@ -963,7 +1030,8 @@ export class PtyCoreLinkServer {
     if (!result.ok) {
       this.send(ws, { type: "authError", reqId: frame.reqId, reason: result.reason });
       // Close so the Panel's reconnect path takes over. The close handler
-      // clears `connection`; a fresh `auth` lands on a fresh connection.
+      // drops this connection from the registry; a fresh `auth` lands on a
+      // fresh one, and every other client's authentication is unaffected.
       try {
         ws.close();
       } catch {
@@ -971,7 +1039,7 @@ export class PtyCoreLinkServer {
       }
       return;
     }
-    if (this.connection) this.connection.authenticated = true;
+    conn.authenticated = true;
     this.send(ws, {
       type: "authOk",
       reqId: frame.reqId,
@@ -988,21 +1056,47 @@ export class PtyCoreLinkServer {
     }
   }
 
+  /**
+   * Shut the server down, disarming every socket it is still serving.
+   *
+   * Dropping the registry is not enough: the `message` handler closes over its
+   * own {@link ActiveConnection}, not over `this.connections`, so a frame
+   * arriving after shutdown would still be dispatched in full — `spawn` and
+   * `kill` included — on a connection whose `authenticated` is still true.
+   * Before issue 141 `close()` nulled the single `connection` field and the
+   * auth gate went false with it; with a registry, the socket itself has to be
+   * taken out of the conversation. Removing the listeners is what actually does
+   * that — a close handshake still delivers whatever is already in flight — and
+   * the `close()` that follows is the polite half, telling the client this Core
+   * is going away rather than leaving it to notice a dead socket.
+   */
   close(): void {
-    if (this.connection) {
-      this.connection.stopPoll();
-      this.connection = null;
+    for (const conn of [...this.connections.values()]) {
+      conn.stopHeartbeat();
+      conn.stopPoll();
+      try {
+        conn.ws.removeAllListeners();
+        conn.ws.close();
+      } catch {
+        /* already gone — nothing left to disarm */
+      }
     }
-    this.core.setEmitTarget(null);
-    this.activeWs = null;
+    this.connections.clear();
+    this.releaseEmitTarget();
     this.server.close();
   }
 }
 
 /**
- * Per-connection live-event-push state. Tracks whether the Panel has
- * subscribed and the highest eventId it has been sent, so the poll loop only
- * pushes events the Panel hasn't seen.
+ * One core-link connection's own state: whether it has authenticated, whether
+ * it has subscribed, the highest eventId it has been sent, its live-event poll
+ * and its heartbeat. Every field here is private to one client — this shape
+ * always was per-connection; before issue 141 it was simply only ever
+ * instantiated once, and the server held the socket beside it.
+ *
+ * Nothing about a Session, a PTY or the event log lives here. Those are Core
+ * facts, shared by construction, and a connection arriving or leaving must not
+ * move any of them.
  */
 class ActiveConnection {
   subscribed = false;
@@ -1010,7 +1104,13 @@ class ActiveConnection {
    *  loopback (no `authVerifier` configured). */
   authenticated = false;
   lastSentEventId = 0;
+  /** Last time anything arrived from this client — a frame, or a pong. */
+  lastInboundAt = Date.now();
+  /** This connection's ping timer; only it may reap this connection. */
+  heartbeat: ReturnType<typeof setInterval> | null = null;
   private timer: ReturnType<typeof setInterval> | null = null;
+
+  constructor(readonly ws: WebSocketLike) {}
 
   startPoll(fn: () => void, intervalMs: number): void {
     this.stopPoll();
@@ -1023,6 +1123,13 @@ class ActiveConnection {
     if (this.timer) {
       clearInterval(this.timer);
       this.timer = null;
+    }
+  }
+
+  stopHeartbeat(): void {
+    if (this.heartbeat) {
+      clearInterval(this.heartbeat);
+      this.heartbeat = null;
     }
   }
 }
