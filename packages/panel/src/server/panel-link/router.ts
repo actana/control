@@ -191,6 +191,11 @@ export class PanelLinkRouter {
    * already live gets no hold — and needs none: it is a tab that will replay
    * for itself, and the browser buffers its own live bytes while that replay is
    * in flight (see `pty-stream-router`).
+   *
+   * A Core that does not announce `multiConnection` is not an error path here:
+   * the client resolves this call without sending anything, because such a Core
+   * already fans that PTY out to every connection (ADR 0024 D11). The `catch`
+   * below is for a link that is genuinely down, not for that fallback.
    */
   claimPty(coreId: string, ptyId: string, catchUp: boolean): void {
     const state = this.cores.get(coreId);

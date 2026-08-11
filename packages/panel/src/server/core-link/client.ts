@@ -13,6 +13,8 @@
 import {
   CORE_LINK_PROTOCOL_VERSION,
   coreLinkProtocolCompatible,
+  readMultiConnectionCapability,
+  type CoreLinkMultiConnectionCapability,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkEvent,
   type CoreLinkProjectMutation,
@@ -27,6 +29,32 @@ import {
   type CoreLinkLaunchProcessKillResult,
   type CoreLinkPtyReplay,
 } from "../../../../shared/src/core-link-frames";
+
+/**
+ * Request frames that only mean anything against a Core announcing
+ * `multiConnection` on `ready` (ADR 0024 D11) — the one list
+ * {@link PtyCoreLinkClient.canSendMultiConnectionFrames} guards.
+ *
+ * `ptySubscribe` / `ptyUnsubscribe` (issue 142, D2) are the first entries: a
+ * Core that fans a PTY out per subscription is exactly a multi-connection Core,
+ * and one that never announced the capability has no subscription list to put a
+ * PTY on. The Session lock's `claim` (D6) joins them when that ticket lands.
+ *
+ * Being in this set is not the whole story for a frame with a caller that has
+ * something better to do than fail. A caller that can degrade consults
+ * {@link PtyCoreLinkClient.canSendMultiConnectionFrames} and takes the
+ * single-connection route itself — see {@link PtyCoreLinkClient.ptySubscribe},
+ * which does exactly that. The rejection below is the backstop for callers that
+ * ask without checking, not the designed path for the frames listed here.
+ *
+ * **The set gates only frames that flow through {@link PtyCoreLinkClient.request}
+ * / `rpc()`**, which is where the check lives — `sendSubscribe()`, `sendAuth()`
+ * and the reconnect queue drain build frames and write to the socket directly,
+ * and no entry here would stop them. So "add the type to this set" is the whole
+ * wiring step for an RPC frame, and only for an RPC frame.
+ */
+export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame["type"]> =
+  new Set<CoreLinkRequestFrame["type"]>(["ptySubscribe", "ptyUnsubscribe"]);
 
 export type PtyCoreLinkClientHandlers = {
   onData: (msg: { ptyId: string; data: string; seq: number }) => void;
@@ -65,6 +93,14 @@ export type PtyCoreLinkClientOptions = {
    * behind authentication.
    */
   bearer?: string;
+  /**
+   * Overrides {@link MULTI_CONNECTION_ONLY_FRAME_TYPES}. Exists only so a test
+   * can drive the rejection in {@link PtyCoreLinkClient.request} with a
+   * stand-in frame type: the real entries both degrade at their call sites
+   * rather than reach that backstop, so nothing in this build exercises it.
+   * Production never passes it.
+   */
+  multiConnectionOnlyFrameTypes?: ReadonlySet<string>;
 };
 
 export interface WebSocketLike {
@@ -181,6 +217,18 @@ export class PtyCoreLinkClient {
   >();
   /** The protocol version from this connection's `ready` frame; null before it. */
   private protocolVersion: string | null = null;
+  /**
+   * This Core's `multiConnection` capability, as announced on the current
+   * connection's `ready` frame; null when absent and before `ready` lands.
+   *
+   * Per Core because there is one client per registered Core, and re-read on
+   * every `ready` rather than remembered across connections: a Core can be
+   * downgraded, and a stale `true` here would send frames the Core no longer
+   * understands. Null until the frame arrives, so the gate below is closed
+   * during the window where the answer is genuinely unknown.
+   */
+  private multiConnection: CoreLinkMultiConnectionCapability | null = null;
+  private readonly multiConnectionOnlyFrameTypes: ReadonlySet<string>;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
@@ -218,6 +266,8 @@ export class PtyCoreLinkClient {
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.storage = resolveStorage(opts);
     this.bearer = opts.bearer ?? null;
+    this.multiConnectionOnlyFrameTypes =
+      opts.multiConnectionOnlyFrameTypes ?? MULTI_CONNECTION_ONLY_FRAME_TYPES;
     // The cursor is per-Core (CONTEXT.md "Event cursor": "the single number
     // the Panel stores per Core"). Derive the storage key from the core-link
     // URL so each registered Core gets its own cursor — a second Core on a
@@ -274,13 +324,21 @@ export class PtyCoreLinkClient {
       // happens in tests — a real Core always presents one).
       this.authenticated = false;
       this.subscribed = false;
+      // Forget the previous connection's capability: this one re-announces it
+      // on its own `ready`, and the Core on the other end may have been
+      // downgraded while we were away.
+      this.multiConnection = null;
       if (this.bearer) {
         this.sendAuth();
       } else {
         // No bearer configured (tests) — go straight to the event-cursor
-        // subscribe so the Core streams the replay tail.
+        // subscribe so the Core streams the replay tail. The PTY resend does
+        // NOT go here: the capability is not known until this connection's
+        // `ready` lands, and a resend that reads "unknown" takes the
+        // single-connection fallback and unsubscribes every held pane. It is
+        // driven from the `ready` handler instead, which is the earliest point
+        // the answer exists.
         this.sendSubscribe();
-        this.resendPtySubscriptions();
       }
       // Flush any RPCs that were queued while the WS wasn't open (e.g. the
       // first pty.* call after a reconnect, before the WS handshake
@@ -313,6 +371,12 @@ export class PtyCoreLinkClient {
       this.ready = false;
       this.subscribed = false;
       this.authenticated = false;
+      // Forget the capability the moment the link drops, not when the next one
+      // opens. Between those two points the answer is unknown, and a stale
+      // `true` would let a gated frame past `canSendMultiConnectionFrames()`
+      // onto `queuedFrames`, which the reopen drain writes to the socket
+      // unconditionally — before the new `ready` says whether it is allowed.
+      this.multiConnection = null;
       this.stopHeartbeat();
       this.rejectInFlight("core-link connection lost");
       if (this.closed) return;
@@ -466,6 +530,15 @@ export class PtyCoreLinkClient {
     // plumbing.
     if (type === "ready") {
       this.protocolVersion = typeof msg.version === "string" ? msg.version : null;
+      // Record the capability for this connection (ADR 0024 D11). Absent is a
+      // Core like any other — it does not touch `compatible` below, so nothing
+      // downstream can turn a missing capability into "needs update".
+      this.multiConnection = readMultiConnectionCapability(msg.multiConnection);
+      // With a bearer, the PTY resend waits for `authOk` — the Core refuses a
+      // pre-auth `ptySubscribe`. Without one there is no `authOk` coming, and
+      // this frame is the first moment the capability is known, so the resend
+      // belongs here. Either way it runs after the capability, never before.
+      if (!this.bearer) this.resendPtySubscriptions();
       const payload = {
         version: this.protocolVersion,
         compatible: coreLinkProtocolCompatible(this.protocolVersion),
@@ -490,7 +563,10 @@ export class PtyCoreLinkClient {
       this.sendSubscribe();
       // PTY subscriptions die with the Core-side connection, so they are
       // re-established here — after `auth`, for the same reason `subscribe` is:
-      // the Core refuses a pre-auth `ptySubscribe`.
+      // the Core refuses a pre-auth `ptySubscribe`. This is also after `ready`,
+      // which the Core sends as frame one on every connection, so the
+      // capability the resend is gated on is already recorded. That ordering is
+      // load-bearing rather than incidental — see the test that pins it.
       this.resendPtySubscriptions();
       for (const cb of this.authOkListeners) cb({ coreId, exp });
       return;
@@ -547,6 +623,19 @@ export class PtyCoreLinkClient {
     timeoutMs = DEFAULT_RPC_TIMEOUT_MS,
   ): Promise<CoreLinkResponseFrame> {
     if (this.closed) return Promise.reject(new Error("core-link client closed"));
+    // The gate (ADR 0024 D11). A multi-connection-only frame aimed at a Core
+    // that never announced the capability is refused here, before a reqId is
+    // allocated and before anything reaches the socket — the Core never sees
+    // it, so there is no error frame to tolerate. The rejection is for the
+    // caller that asked without checking; the supported path is to consult
+    // `canSendMultiConnectionFrames()` and take the single-connection route.
+    if (this.multiConnectionOnlyFrameTypes.has(frame.type) && !this.canSendMultiConnectionFrames()) {
+      return Promise.reject(
+        new Error(
+          `core-link frame ${frame.type} needs the multiConnection capability, which this Core does not announce`,
+        ),
+      );
+    }
     const reqId = `r${++this.reqSeq}`;
     const framed = { ...frame, reqId } as CoreLinkRequestFrame;
     return new Promise((resolve, reject) => {
@@ -684,6 +773,35 @@ export class PtyCoreLinkClient {
     return () => this.protocolVersionListeners.delete(cb);
   }
 
+  /**
+   * May this Core be sent frames that only a multi-connection Core understands
+   * — the Session lock's `claim`, the per-connection PTY subscription, and
+   * whatever else lands under ADR 0024?
+   *
+   * **The one predicate to consult before sending any such frame.** False means
+   * do not send it: not send-and-handle-the-error, not send-and-hope. The Core
+   * on the other end is a single-connection build that would answer an unknown
+   * frame with an error frame at best, and the caller is expected to have a
+   * single-connection path already — that path is what shipped before this
+   * capability existed.
+   *
+   * False before `ready` lands and after a drop, for as long as the answer is
+   * unknown. A caller that needs the capability at startup waits for
+   * {@link onProtocolVersion} rather than reading this on the first tick.
+   */
+  canSendMultiConnectionFrames(): boolean {
+    return this.multiConnection !== null;
+  }
+
+  /**
+   * This connection's `multiConnection` capability, or null. For callers that
+   * need the version rather than the yes/no — the gate is
+   * {@link canSendMultiConnectionFrames}.
+   */
+  multiConnectionCapability(): CoreLinkMultiConnectionCapability | null {
+    return this.multiConnection;
+  }
+
   private emitDisconnected(error?: string): void {
     for (const cb of this.disconnectedListeners) cb({ error });
   }
@@ -765,10 +883,27 @@ export class PtyCoreLinkClient {
    * The set is remembered and re-sent on every reconnect, because the Core
    * hangs subscriptions off the connection. Idempotent on both sides: a second
    * call for a PTY already subscribed is a no-op here and an ack there.
+   *
+   * **Against a Core that does not announce `multiConnection`, this sends
+   * nothing and resolves** (ADR 0024 D11). That is the deliberate
+   * single-connection fallback, not a swallowed failure: such a Core fans every
+   * PTY out to every connection, so the caller is already receiving the bytes
+   * it just asked for and the subscription it would send is a frame that Core
+   * has no vocabulary for. Resolving says what is true — this link renders that
+   * PTY — which is the only thing the caller acts on.
+   *
+   * The want is recorded either way, because this set is not a record of what
+   * the Core holds: it is what this link wants, and every connection re-derives
+   * its frames from it against *that* connection's announced capability. Drop
+   * the want when no frame goes out and a Core that gains the capability across
+   * a restart comes back fanning out to subscribers only, with nothing left
+   * anywhere that remembers to subscribe — the router binds a Core once, not
+   * once per reconnect, so this set is the only memory there is.
    */
   ptySubscribe(ptyId: string, opts: { catchUp?: boolean } = {}): Promise<void> {
     if (this.subscribedPtys.has(ptyId)) return Promise.resolve();
     this.subscribedPtys.add(ptyId);
+    if (!this.canSendMultiConnectionFrames()) return Promise.resolve();
     return this.rpc({
       type: "ptySubscribe",
       reqId: "",
@@ -777,9 +912,17 @@ export class PtyCoreLinkClient {
     }).then(() => undefined);
   }
 
-  /** Stop receiving one PTY's stream. Idempotent; see {@link ptySubscribe}. */
+  /**
+   * Stop receiving one PTY's stream. Idempotent; see {@link ptySubscribe}.
+   *
+   * Same fallback, for the same reason: against a capability-less Core there is
+   * no subscription to drop — its fan-out is unconditional and cannot be
+   * narrowed by a frame it does not know. Forgetting the want here is the whole
+   * of what this call can honestly do.
+   */
   ptyUnsubscribe(ptyId: string): Promise<void> {
     if (!this.subscribedPtys.delete(ptyId)) return Promise.resolve();
+    if (!this.canSendMultiConnectionFrames()) return Promise.resolve();
     return this.rpc({ type: "ptyUnsubscribe", reqId: "", ptyId }).then(() => undefined);
   }
 
@@ -791,8 +934,18 @@ export class PtyCoreLinkClient {
    * replay do it off their own reconnect, one layer up, and a hold nobody
    * releases is a pane that stays blank forever. Going live immediately is also
    * exactly what this path did before subscriptions existed.
+   *
+   * Callers must have the capability answer in hand before calling this, which
+   * is why it hangs off `authOk` (the Core's `ready` is frame one, so the
+   * capability is recorded before any auth answer can arrive) and off `ready`
+   * itself when no bearer is configured. Called any earlier it would read an
+   * unknown capability as absent and take the fallback below against a Core
+   * that does announce it — every held pane silently unsubscribed.
    */
   private resendPtySubscriptions(): void {
+    // The same deliberate single-connection fallback {@link ptySubscribe}
+    // takes: a Core without the capability is already sending these PTYs.
+    if (!this.canSendMultiConnectionFrames()) return;
     for (const ptyId of this.subscribedPtys) {
       void this.rpc({ type: "ptySubscribe", reqId: "", ptyId, catchUp: false }).catch(() => {
         /* the socket died again; the next open re-sends the whole set */

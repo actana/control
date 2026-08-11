@@ -166,9 +166,12 @@ describe("PtyCoreLinkServer", () => {
 
   it("sends a ready frame on connection with the protocol version", () => {
     // The server sent "ready" via pair.server.send() → pair.server.sent.
+    // It also announces `multiConnection` (issue 143, ADR 0024 D11): this build
+    // serves many connections, and says so without moving the version above.
     expect(pair.server.lastSent()).toEqual({
       type: "ready",
       version: CORE_LINK_PROTOCOL_VERSION,
+      multiConnection: { version: 1 },
     });
   });
 
@@ -1997,6 +2000,12 @@ describe("core-link heartbeat", () => {
  * The link is the only thing that knows when its socket dropped, and a Core
  * hangs subscriptions off the connection — so re-establishing them is the
  * client's job, not something the router or a browser can be asked to notice.
+ *
+ * Every Core here announces `multiConnection` on `ready`, because these frames
+ * are gated on it (issue 143, ADR 0024 D11) — a Core that fans a PTY out by
+ * subscription is a multi-connection Core by definition. What a Core WITHOUT
+ * the capability gets instead is the deliberate single-connection fallback,
+ * covered in `multiconnection-capability.test.ts`.
  */
 describe("PtyCoreLinkClient pty subscriptions", () => {
   let pair: FakeWebSocketPair;
@@ -2004,6 +2013,15 @@ describe("PtyCoreLinkClient pty subscriptions", () => {
   beforeEach(() => {
     pair = new FakeWebSocketPair();
   });
+
+  /** The Core's frame one on every connection, capability included. */
+  function announceReady(): void {
+    pair.client.receive({
+      type: "ready",
+      version: CORE_LINK_PROTOCOL_VERSION,
+      multiConnection: { version: 1 },
+    });
+  }
 
   function makeClient(): PtyCoreLinkClient {
     const client = new PtyCoreLinkClient({
@@ -2015,6 +2033,7 @@ describe("PtyCoreLinkClient pty subscriptions", () => {
       cursorStorageKey: "mc.coreLink.lastEventId",
     });
     pair.openClient();
+    announceReady();
     return client;
   }
 
@@ -2061,6 +2080,7 @@ describe("PtyCoreLinkClient pty subscriptions", () => {
 
     pair.closeClient();
     pair.openClient();
+    announceReady();
 
     // Only what is still held, and live rather than holding: nothing here is
     // going to send the `replay` a hold waits for, and a hold nobody releases
@@ -2080,6 +2100,7 @@ describe("PtyCoreLinkClient pty subscriptions", () => {
 
     pair.closeClient();
     pair.openClient();
+    announceReady();
 
     expect(ptyFrames()).toEqual([]);
     client.close();

@@ -560,9 +560,34 @@ export type CoreLinkEventFrame = { type: "event"; event: CoreLinkEvent };
  */
 export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId: number };
 
+/**
+ * The `multiConnection` capability, announced on `ready` (ADR 0024 D11).
+ *
+ * `version` is the capability's own number, independent of
+ * {@link CORE_LINK_PROTOCOL_VERSION} — it moves when the multi-connection
+ * surface itself changes shape, and nothing about it marks a Core stale.
+ */
+export type CoreLinkMultiConnectionCapability = { version: 1 };
+
 /** Response frame — correlates to a request via `reqId`. */
 export type CoreLinkResponseFrame =
-  | { type: "ready"; version: string }
+  | {
+      type: "ready";
+      version: string;
+      /**
+       * Present on a Core that serves many core-link connections at once
+       * (ADR 0024 D1). Absent means the single-connection Core: it evicts the
+       * previous socket on connect, holds no Session locks and has no
+       * per-connection subscriptions.
+       *
+       * Absence is a supported state, not a fault. Every frame that only makes
+       * sense against a multi-connection Core is withheld by the client when
+       * this is absent (see `MULTI_CONNECTION_ONLY_FRAME_TYPES` in the Panel's
+       * core-link client); everything else behaves exactly as it does today, so
+       * such a Core is connected and fully usable, never "needs update".
+       */
+      multiConnection?: CoreLinkMultiConnectionCapability;
+    }
   | {
       type: "spawned";
       reqId: string;
@@ -859,11 +884,17 @@ export type CoreLinkServerFrame =
  * and deliberately **does not move this version** (ADR 0024 D11). Every bump
  * above marks every Core in every fleet needs-update, and multi-connection is a
  * capability a one-Panel fleet never exercises. It is announced on `ready`
- * instead, by #143, which also gates the Panel's sends on it. Until that lands,
- * this file's version is the only thing a client has to go on, so a build
- * carrying these frames must be deployed to Panel and Core together — the
- * version-lock CONTEXT.md already states. Nothing here reads a capability;
- * adding one is #143's whole job and must not be duplicated here.
+ * instead, by #143 below, which also gates the Panel's sends on it, so these
+ * frames are never put on the wire to a Core that cannot answer them.
+ *
+ * Issue 143 adds the optional `multiConnection` capability to the `ready`
+ * frame and deliberately does NOT move this version (ADR 0024 D11). It is the
+ * first entry in this log that does not: the field is additive and its absence
+ * is the single-connection Core that shipped before it, which is exactly
+ * today's behaviour rather than a lesser one. Moving the minor would mark every
+ * Core in every fleet "needs update" to buy a capability a one-Panel fleet
+ * never exercises. A capability that changed what an existing frame means
+ * would not qualify, and the minor would move as it does above.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
@@ -888,6 +919,24 @@ export function coreLinkProtocolCompatible(reported: string | null | undefined):
   const ours = parseMajorMinor(CORE_LINK_PROTOCOL_VERSION);
   if (!ours) return false;
   return theirs.major === ours.major && theirs.minor === ours.minor;
+}
+
+/**
+ * Read the `multiConnection` capability off a raw `ready` frame, or null.
+ *
+ * Null for every shape that is not exactly `{ version: 1 }` — absent, a
+ * non-object, or a version this build does not know. An unrecognised future
+ * version reads as absent on purpose: the safe fallback is the single-connection
+ * behaviour that predates the capability, never a guess at what a higher version
+ * means. Unlike {@link coreLinkProtocolCompatible}, nothing here can mark a Core
+ * incompatible — a null answer withholds frames, it does not fail a Core.
+ */
+export function readMultiConnectionCapability(
+  raw: unknown,
+): CoreLinkMultiConnectionCapability | null {
+  if (!raw || typeof raw !== "object") return null;
+  const version = (raw as { version?: unknown }).version;
+  return version === 1 ? { version: 1 } : null;
 }
 
 function parseMajorMinor(version: string | null | undefined): { major: number; minor: number } | null {
