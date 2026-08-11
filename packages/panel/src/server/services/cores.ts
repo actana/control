@@ -69,9 +69,13 @@ function newCoreId(): string {
 }
 
 /**
- * A Core with no alias in its blob still needs something to be called in the
- * UI. The host is what the operator recognizes; they can't rename yet, so
- * getting this wrong means an unidentifiable row.
+ * Normalize an alias for the registry: trimmed, capped at 120 characters, and
+ * falling back to the endpoint's host when what's left is empty.
+ *
+ * Both ways in go through here — the label carried in a registration blob, and
+ * whatever the operator types into a rename — so neither can leave a row with
+ * nothing to identify it by. The host is the fallback because it is what the
+ * operator recognizes about a machine they haven't named themselves.
  */
 function labelFor(rawLabel: string, endpoint: string): string {
   const trimmed = rawLabel.trim();
@@ -153,6 +157,27 @@ export function registerCoreFromRegistrationBlob(raw: unknown): Core {
   const core = getCore(id);
   if (!core) throw new Error("failed to read back the registered Core");
   return core;
+}
+
+/**
+ * Rename a Core. Returns the updated row, or null for an unknown id.
+ *
+ * The alias is Panel-local presentation, not a Core fact (CONTEXT.md, "Core
+ * alias"): nothing is sent to the machine and no core-link frame carries it,
+ * so another Panel registered against the same Core keeps its own name for it.
+ * That is the point of the field, not drift.
+ *
+ * The label goes through {@link labelFor}, the same normalization registration
+ * uses — so an operator who clears the box gets the endpoint host back rather
+ * than a blank row, and the caller is handed what was actually stored.
+ */
+export function renameCore(id: string, label: string): Core | null {
+  const existing = getCore(id);
+  if (!existing) return null;
+  getPanelDb()
+    .prepare("UPDATE cores SET label = ?, updated_at = ? WHERE id = ?")
+    .run(labelFor(label, existing.endpoint), Date.now(), id);
+  return getCore(id);
 }
 
 /**

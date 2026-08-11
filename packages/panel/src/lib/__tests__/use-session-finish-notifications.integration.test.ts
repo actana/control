@@ -21,13 +21,16 @@ const h = vi.hoisted(() => ({
   mcToastCustom: vi.fn((..._args: unknown[]) => undefined),
   showOsNotification: vi.fn(async (..._args: unknown[]) => undefined),
   playDing: vi.fn((..._args: unknown[]) => undefined),
+  // Mutable, so a test can put the registry poll's answer through a rename
+  // (issue 19) rather than only ever seeing the name a Core paired with.
+  cores: [{ id: "core-a", label: "Core A" }],
 }));
 
 vi.mock("~/queries", () => ({
   useSettings: () => ({ data: h.settings }),
 }));
 vi.mock("~/lib/use-fleet", () => ({
-  useCores: () => ({ cores: [{ id: "core-a", label: "Core A" }] }),
+  useCores: () => ({ cores: h.cores }),
 }));
 vi.mock("~/lib/use-events", () => ({
   useServerEvents: (handler: (e: unknown) => void) => {
@@ -121,6 +124,7 @@ describe("useSessionFinishNotifications — integration", () => {
     h.sseHandler = null;
     h.fleetHandler = null;
     h.watched = [];
+    h.cores = [{ id: "core-a", label: "Core A" }];
     vi.clearAllMocks();
   });
 
@@ -145,6 +149,28 @@ describe("useSessionFinishNotifications — integration", () => {
       coreAlias: "Core A",
     });
     expect(hook.result.current.notifications).toHaveLength(1);
+    hook.unmount();
+  });
+
+  // Issue 19: the alias is Panel-local and editable. The subscription is keyed
+  // on *which* Cores exist, so a rename doesn't re-run it — the alias map is
+  // read through a ref refreshed on render instead. This is that path: a finish
+  // arriving after a rename has to be titled with the new name.
+  it("uses the Core's current alias after a rename", () => {
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 1, id: "task-1" })));
+    expect(toastText(0)).toContain("Remote Project on Core A");
+
+    // The registry poll comes back with the operator's new name for that Core.
+    h.cores = [{ id: "core-a", label: "build-box" }];
+    hook.rerender();
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 2, id: "task-2" })));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
+    expect(toastText(1)).toContain("Remote Project on build-box");
+    expect(loadSessionFinishNotifications().find((n) => n.id === "task-2")?.coreAlias).toBe(
+      "build-box",
+    );
     hook.unmount();
   });
 

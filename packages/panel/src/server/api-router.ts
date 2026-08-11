@@ -209,7 +209,14 @@ async function dispatch(
     if (method === "POST") return coresController.add(request);
   }
   let m = pathname.match(CORE_PATH);
-  if (m && method === "DELETE") return coresController.remove(decode(m[1]));
+  if (m) {
+    const id = decode(m[1]);
+    // PATCH is the alias, and only the alias: a Core's endpoint and credentials
+    // are what the registration blob said they were, and re-pairing is the only
+    // way to change them.
+    if (method === "PATCH") return coresController.rename(id, request);
+    if (method === "DELETE") return coresController.remove(id);
+  }
 
   // Projects
   if (pathname === "/api/projects") {
