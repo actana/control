@@ -316,6 +316,11 @@ function scriptedCore(): ScriptedCore {
       }
       return { ptyId: null };
     },
+    // The inverse (issue 144): which Session a `write`/`kill` would be
+    // touching, which is what the Core resolves before consulting the Session
+    // lock. Unlike `findByTask` it answers for every PTY, VM Shell Sessions
+    // included.
+    taskIdForPty: (ptyId: string) => ptys.get(ptyId)?.taskId ?? null,
     replay: (ptyId: string, sinceSeq?: number) => {
       const p = ptys.get(ptyId);
       if (!p) return { data: "", nextSeq: 0 };

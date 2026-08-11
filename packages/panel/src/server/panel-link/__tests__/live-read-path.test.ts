@@ -146,6 +146,9 @@ function mockCore(): PtyCore {
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: async () => ({ ptyCount: 0 }),
     findByTask: () => ({ ptyId: null }),
+    // Which Session a `write`/`kill` would touch (issue 144) — the lookup
+    // the Core's Session-lock gate resolves a ptyId through.
+    taskIdForPty: () => null,
     replay: () => ({ data: "", nextSeq: 0 }),
     killAll: () => {},
   } as unknown as PtyCore;

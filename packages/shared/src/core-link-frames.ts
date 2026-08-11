@@ -426,6 +426,67 @@ export type CoreLinkDirListing = {
   truncated: boolean;
 };
 
+// ─── Session lock (issue 144, ADR 0024 D3–D7, D10) ──────────────────────────
+//
+// One Session, at most one writer, and the writer is the **core-link
+// connection** (D3). The three frames below are the whole of how a connection
+// says so: `claim` takes an unlocked Session, `release` gives it back, and
+// `forceTakeover` takes one whoever holds it. All three are ordinary
+// reqId-correlated requests, and all three name a Session by its `taskId` —
+// the one identifier `tasksMutate` carries directly and `write`/`kill` resolve
+// to from their `ptyId`.
+//
+// A Session starts unlocked and its creator gets no privilege (D5), so the
+// window between a Session starting and its first claim is a real race in which
+// any connection can take it. That is accepted, not a defect: closing it would
+// mean reintroducing creator privilege, which was decided against. An
+// automation claims immediately after starting.
+//
+// Claiming is explicit (D6): no mutation ever acquires the lock. A mutation
+// aimed at a Session **another connection holds** is refused with
+// {@link SESSION_LOCKED_ERROR_CODE}; a mutation aimed at an **unlocked** Session
+// is served, which is what keeps a client that never claims — every client that
+// predates this — working exactly as it does today (D11).
+//
+// There is no idle timeout and there must not be one (D7). A long agent run is
+// idle by definition; the hung-client case is what `forceTakeover` is for.
+//
+// None of this is a security boundary (D10). The Core's only authentication is
+// the bearer in the registration blob, and anyone holding it can open a VM Shell
+// Session and kill the process directly. This is an accident guard.
+
+/**
+ * The `code` on an `error` frame refusing a mutation because another connection
+ * holds that Session's lock (ADR 0024 D4/D6).
+ *
+ * A code rather than a message match, because the client has to tell this apart
+ * from the other way a mutation fails to land: "that Session is gone". Those two
+ * answers arrive on different frames entirely — a refusal is this `error`, while
+ * a Session that no longer exists is the ordinary `writeResult { ok: false }` /
+ * `killResult { ok: false }` / `tasksMutateResult { task: null }` the Core has
+ * always sent — so a client can distinguish them without parsing prose, and one
+ * of them is worth retrying after a claim while the other never is.
+ */
+export const SESSION_LOCKED_ERROR_CODE = "session-locked";
+
+/**
+ * Machine-readable `error` codes. Open by construction (a plain string union
+ * with one member today) so a later refusal can name itself without every
+ * client having to learn the whole set: an unrecognised code reads as a plain
+ * error, which is what a client that ignores the field already does.
+ */
+export type CoreLinkErrorCode = typeof SESSION_LOCKED_ERROR_CODE;
+
+/**
+ * Who lost a Session to a `forceTakeover`.
+ *
+ * A takeover always succeeds — that is D7, and a result field saying "yes it
+ * worked" would carry no information. What varies is whether anybody was
+ * actually evicted, and a client should not report having taken a Session off
+ * another client when the Session was sitting unlocked.
+ */
+export type CoreLinkSessionTakenFrom = "nobody" | "another-connection" | "this-connection";
+
 // ─── Client → Server (Panel → Core) ──────────────────────────────────────
 
 export type CoreLinkRequestFrame =
@@ -477,6 +538,25 @@ export type CoreLinkRequestFrame =
   // the same subscribe-then-replay-from-a-cursor shape the event log uses.
   | { type: "ptySubscribe"; reqId: string; ptyId: string; catchUp?: boolean }
   | { type: "ptyUnsubscribe"; reqId: string; ptyId: string }
+  // ─── Session lock (issue 144, ADR 0024 D3–D7) ───
+  // See the commentary above {@link SESSION_LOCKED_ERROR_CODE}. All three name
+  // a Session by `taskId`, and all three are refused by a client that has not
+  // seen `multiConnection` on `ready` — a single-connection Core has no lock
+  // table to address.
+  //
+  // `claim` is idempotent for the connection that already holds the Session and
+  // denied (changing nothing) when another connection does. Getting past
+  // another holder is `forceTakeover` and nothing else, so a retry loop can
+  // never take a Session out from under a working client by accident.
+  | { type: "claim"; reqId: string; taskId: string }
+  // Releasing a Session this connection does not hold changes nothing and is
+  // not an error — a stale client saying so is talking about a lock it lost,
+  // not instructing the Core to unlock somebody else's Session.
+  | { type: "release"; reqId: string; taskId: string }
+  // Unconditional, immediate, and unrecoverable by design: the previous
+  // holder's in-flight keystrokes are gone and its next mutation is refused.
+  // This is the answer to a hung client — the reason D7 needs no idle timeout.
+  | { type: "forceTakeover"; reqId: string; taskId: string }
   // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
   | { type: "tasksList"; reqId: string; projectId?: string }
   // The Archived view's own read path (issue 62, ADR 0019). Deliberately a
@@ -644,6 +724,24 @@ export type CoreLinkResponseFrame =
       holding: boolean;
     }
   | { type: "ptyUnsubscribeAck"; reqId: string; ptyId: string; subscribed: false }
+  // ─── Session lock responses (issue 144, ADR 0024 D3–D7) ───
+  // A denied claim is a `claimResult { granted: false }`, not an `error`: the
+  // Session being held by another connection is an answer to the question, and
+  // the caller's next move (watch it, or force a takeover) is the same whether
+  // or not it was expecting one. The `error` frame is reserved for a *mutation*
+  // that was refused, which is the case a caller has to be able to tell apart
+  // from a Session that is gone.
+  | { type: "claimResult"; reqId: string; taskId: string; granted: boolean }
+  // `released: false` means this connection did not hold it — idempotent, not
+  // an error. A client releasing on teardown does not have to know whether it
+  // already lost the lock to a takeover.
+  | { type: "releaseResult"; reqId: string; taskId: string; released: boolean }
+  | {
+      type: "forceTakeoverResult";
+      reqId: string;
+      taskId: string;
+      takenFrom: CoreLinkSessionTakenFrom;
+    }
   // ─── Task / session / hook op responses (issue 02) ───
   // `tasks` carries active rows only. `archivedCount` is how many archived rows
   // the same scope holds — unconditional, and never accompanied by the rows
@@ -687,7 +785,14 @@ export type CoreLinkResponseFrame =
   // ─── Directory browsing (web-panel issue 06) ───
   | { type: "dirListResult"; reqId: string; listing: CoreLinkDirListing }
   | { type: "dirCreateResult"; reqId: string; path: string }
-  | { type: "error"; reqId?: string; message: string };
+  /**
+   * `code` is optional and additive (issue 144): it exists so a client can act
+   * on *why* a request failed without matching on prose. Absent on every error
+   * that shipped before it, which is why nothing may require it — a client
+   * reads the code when it is there and falls back to the message when it is
+   * not. See {@link SESSION_LOCKED_ERROR_CODE}, its first and so far only value.
+   */
+  | { type: "error"; reqId?: string; message: string; code?: CoreLinkErrorCode };
 
 /**
  * A flattened project snapshot carried over the core-link (issue 07). The
@@ -895,6 +1000,18 @@ export type CoreLinkServerFrame =
  * Core in every fleet "needs update" to buy a capability a one-Panel fleet
  * never exercises. A capability that changed what an existing frame means
  * would not qualify, and the minor would move as it does above.
+ *
+ * Issue 144 adds the Session lock's `claim` / `release` / `forceTakeover`
+ * frames, their results, and the optional `code` on `error` — and does NOT move
+ * this version either (ADR 0024 D11), for the same reason #142 and #143 did not.
+ * The three frames are gated by the `multiConnection` capability, so they are
+ * never put on the wire to a Core that has no lock table to address. The gating
+ * of `write` / `kill` / `tasksMutate` is additive in the sense the rule
+ * requires: it can only refuse a Session that some connection has explicitly
+ * claimed, and a client that never claims — every client that predates this —
+ * meets an unlocked Session and is served exactly as it is today. `code` is
+ * optional and absent from every error frame that shipped before it, so a client
+ * that has never heard of it reads the same `message` it always did.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
@@ -957,6 +1074,9 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "subscribe",
   "ptySubscribe",
   "ptyUnsubscribe",
+  "claim",
+  "release",
+  "forceTakeover",
   "tasksList",
   "archivedTasksList",
   "tasksMutate",

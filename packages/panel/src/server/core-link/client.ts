@@ -14,7 +14,9 @@ import {
   CORE_LINK_PROTOCOL_VERSION,
   coreLinkProtocolCompatible,
   readMultiConnectionCapability,
+  type CoreLinkErrorCode,
   type CoreLinkMultiConnectionCapability,
+  type CoreLinkSessionTakenFrom,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkEvent,
   type CoreLinkProjectMutation,
@@ -38,14 +40,18 @@ import {
  * `ptySubscribe` / `ptyUnsubscribe` (issue 142, D2) are the first entries: a
  * Core that fans a PTY out per subscription is exactly a multi-connection Core,
  * and one that never announced the capability has no subscription list to put a
- * PTY on. The Session lock's `claim` (D6) joins them when that ticket lands.
+ * PTY on. The Session lock's `claim` / `release` / `forceTakeover` (issue 144,
+ * D3–D7) joined them for the same reason in its own key: a single-connection
+ * Core has no lock table to address, because it evicts every client but one and
+ * therefore has nothing for a lock to arbitrate between.
  *
  * Being in this set is not the whole story for a frame with a caller that has
  * something better to do than fail. A caller that can degrade consults
  * {@link PtyCoreLinkClient.canSendMultiConnectionFrames} and takes the
- * single-connection route itself — see {@link PtyCoreLinkClient.ptySubscribe},
- * which does exactly that. The rejection below is the backstop for callers that
- * ask without checking, not the designed path for the frames listed here.
+ * single-connection route itself — see {@link PtyCoreLinkClient.ptySubscribe}
+ * and {@link PtyCoreLinkClient.claim}, which both do exactly that. The rejection
+ * below is the backstop for callers that ask without checking, not the designed
+ * path for the frames listed here.
  *
  * **The set gates only frames that flow through {@link PtyCoreLinkClient.request}
  * / `rpc()`**, which is where the check lives — `sendSubscribe()`, `sendAuth()`
@@ -54,7 +60,41 @@ import {
  * wiring step for an RPC frame, and only for an RPC frame.
  */
 export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame["type"]> =
-  new Set<CoreLinkRequestFrame["type"]>(["ptySubscribe", "ptyUnsubscribe"]);
+  new Set<CoreLinkRequestFrame["type"]>([
+    "ptySubscribe",
+    "ptyUnsubscribe",
+    "claim",
+    "release",
+    "forceTakeover",
+  ]);
+
+/**
+ * The rejection a caller gets when the Core answers a request with an `error`
+ * frame — carrying that frame's machine-readable {@link CoreLinkErrorCode}
+ * alongside its prose (issue 144).
+ *
+ * `code` exists precisely so a caller does not have to match on `message`, and
+ * a client that threw a bare `Error` would put the parsing back that the field
+ * was added to remove. It is optional on the wire and optional here: absent on
+ * every error that shipped before the field, so a reader takes the code when it
+ * is there and falls back to the message when it is not — never the reverse.
+ *
+ * `session-locked` is its first value and the reason this class exists now: a
+ * mutation refused because another Core client holds that Session throws,
+ * whereas a mutation aimed at a Session this Core no longer has resolves
+ * (`ok: false` / `task: null`). One of the two is worth retrying after a claim
+ * and the other never is, and telling them apart is the caller's whole job.
+ */
+export class CoreLinkRequestError extends Error {
+  /** The `code` off the `error` frame, when it carried one. */
+  readonly code?: CoreLinkErrorCode;
+
+  constructor(message: string, code?: CoreLinkErrorCode) {
+    super(message);
+    this.name = "CoreLinkRequestError";
+    this.code = code;
+  }
+}
 
 export type PtyCoreLinkClientHandlers = {
   onData: (msg: { ptyId: string; data: string; seq: number }) => void;
@@ -954,6 +994,79 @@ export class PtyCoreLinkClient {
   }
 
   /**
+   * Take this Session's write lock (issue 144, ADR 0024 D6).
+   *
+   * `granted: false` means another Core client holds it — an answer, not a
+   * failure, and the only way past it is {@link forceTakeover}. Idempotent for a
+   * link that already holds the Session.
+   *
+   * **Against a Core that does not announce `multiConnection`, this sends
+   * nothing and answers `{ supported: false, granted: false }`** — the same
+   * consult-the-gate-and-degrade shape {@link ptySubscribe} takes, and for the
+   * same kind of reason. Such a Core evicts every client but one, so there is
+   * nothing for a lock to arbitrate between and no table to put a claim in.
+   *
+   * `supported: false` must never be rendered as read-only. It says this Core
+   * has no Session lock at all, so every mutation this link makes will be
+   * served — the opposite of what `granted: false` says. A caller that treats
+   * the two the same makes a single-connection Core look permanently locked to
+   * an operator who is in fact its only client.
+   */
+  claim(taskId: string): Promise<{ supported: boolean; granted: boolean }> {
+    if (!this.canSendMultiConnectionFrames()) {
+      return Promise.resolve({ supported: false, granted: false });
+    }
+    return this.rpc({ type: "claim", reqId: "", taskId }).then((granted) => ({
+      supported: true,
+      granted: granted === true,
+    }));
+  }
+
+  /**
+   * Give this Session's write lock back (issue 144, ADR 0024 D7).
+   *
+   * `released: false` means this link did not hold it — idempotent, not an
+   * error, so a caller releasing on teardown does not have to know whether it
+   * had already lost the lock to a takeover. Same capability fallback as
+   * {@link claim}: nothing goes on the wire to a Core with no lock table, and
+   * `supported: false` says there was never a lock to give back.
+   */
+  release(taskId: string): Promise<{ supported: boolean; released: boolean }> {
+    if (!this.canSendMultiConnectionFrames()) {
+      return Promise.resolve({ supported: false, released: false });
+    }
+    return this.rpc({ type: "release", reqId: "", taskId }).then((released) => ({
+      supported: true,
+      released: released === true,
+    }));
+  }
+
+  /**
+   * Take this Session's write lock whoever holds it (issue 144, ADR 0024 D7).
+   *
+   * The answer to a hung client, and the reason the lock needs no idle timeout.
+   * Unrecoverable by design: the previous holder's in-flight keystrokes are gone
+   * and its next mutation is refused. `takenFrom` names who lost it so a caller
+   * can say so rather than infer it — taking an unheld Session is an ordinary
+   * claim by another name.
+   *
+   * Same capability fallback as {@link claim}, answering
+   * `takenFrom: "nobody"`: there was nobody to take it from, because there is no
+   * lock on such a Core to take.
+   */
+  forceTakeover(
+    taskId: string,
+  ): Promise<{ supported: boolean; takenFrom: CoreLinkSessionTakenFrom }> {
+    if (!this.canSendMultiConnectionFrames()) {
+      return Promise.resolve({ supported: false, takenFrom: "nobody" });
+    }
+    return this.rpc({ type: "forceTakeover", reqId: "", taskId }).then((takenFrom) => ({
+      supported: true,
+      takenFrom: (takenFrom ?? "nobody") as CoreLinkSessionTakenFrom,
+    }));
+  }
+
+  /**
    * List every project on this Core as a live snapshot (issue 07 — per-Core
    * navigation). The Core is the source of truth; the Panel holds none. The
    * returned `path` is a VM path — only the Core can validate it.
@@ -1140,8 +1253,23 @@ function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
     case "ptySubscribeAck":
     case "ptyUnsubscribeAck":
       return { ptyId: msg.ptyId, subscribed: msg.subscribed };
+    // The Session lock's three answers unwrap to the one field each carries
+    // beyond the taskId the caller already passed in (issue 144). A denied
+    // claim comes back here as `false` rather than as a rejection — it is an
+    // answer, not a failure, and only a *mutation* refused for the lock throws
+    // (that is an `error` frame, below, carrying `session-locked`).
+    case "claimResult":
+      return msg.granted;
+    case "releaseResult":
+      return msg.released;
+    case "forceTakeoverResult":
+      return msg.takenFrom;
+    // The code rides the rejection rather than being dropped at the boundary
+    // (issue 144): a caller can already tell "locked" (throws) from "gone"
+    // (resolves), and this is what lets it tell "locked" from any other error
+    // without reading the prose the field exists to spare it.
     case "error":
-      throw new Error(msg.message);
+      throw new CoreLinkRequestError(msg.message, msg.code);
     default:
       // `ready`, `subscribeAck`, the auth frames — not request/response answers
       // any typed method awaits. Resolving undefined matches the old behaviour
