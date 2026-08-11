@@ -622,10 +622,11 @@ export class PtyCoreLinkServer {
    * Release a `catchUp` hold now that this connection's `replay` has been
    * served, and put the connection's stream live.
    *
-   * `nextSeq` is where the window ended, so a held chunk at or below it is
-   * already painted and is dropped rather than sent twice; everything past it
-   * is output that arrived *during* the gap this hold exists to close, and goes
-   * out in order behind the window.
+   * `nextSeq` is where the window ended — the seq the *next* chunk will get, so
+   * it is exclusive. A held chunk below it is already painted and is dropped
+   * rather than sent twice; `nextSeq` itself and everything past it is output
+   * that arrived *during* the gap this hold exists to close, and goes out in
+   * order behind the window.
    *
    * A held `exit` goes last and always goes: a PTY that died between the
    * subscribe and the replay has no second exit to emit, and a subscriber that

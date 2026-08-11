@@ -40,6 +40,9 @@ export type CorePtyBridge = {
    * `catchUp` says a `replay` for this pty follows, and asks the Core to hold
    * the live stream until it has been served so the two never land out of
    * order. The claim path always sets it; see `pty-stream-router`.
+   *
+   * The link remembers what it is subscribed to and re-asks on every reconnect,
+   * so a pane claims once and keeps its stream across a dropped link.
    */
   subscribe: (ptyId: string, opts?: { catchUp?: boolean }) => Promise<void>;
   /** Stop receiving one pty's output. Idempotent, like {@link subscribe}. */
@@ -120,19 +123,11 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
       });
       return { data: result.data, nextSeq: result.nextSeq, from: result.from };
     },
-    subscribe: async (ptyId, opts) => {
-      await link.request<Answer<"ptySubscribeAck">>(coreId, {
-        type: "ptySubscribe",
-        ptyId,
-        catchUp: opts?.catchUp === true,
-      });
-    },
-    unsubscribe: async (ptyId) => {
-      await link.request<Answer<"ptyUnsubscribeAck">>(coreId, {
-        type: "ptyUnsubscribe",
-        ptyId,
-      });
-    },
+    // Through the link's own claim bookkeeping rather than a bare request: the
+    // service gives a tab's claims back when its socket dies, so the set has to
+    // live somewhere that sees the link come back and re-ask.
+    subscribe: (ptyId, opts) => link.ptySubscribe(coreId, ptyId, opts),
+    unsubscribe: (ptyId) => link.ptyUnsubscribe(coreId, ptyId),
     findByTask: async (taskId) => {
       const result = await link.request<Answer<"findByTaskResult">>(coreId, {
         type: "findByTask",

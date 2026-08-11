@@ -17,14 +17,25 @@ function fakeLink() {
   const watched: string[] = [];
   let answer: Record<string, unknown> = { type: "ok" };
 
+  const request = async (coreId: string, frame: Record<string, unknown>) => {
+    sent.push({ coreId, frame });
+    return answer;
+  };
+
   const link = {
     watch: (coreId: string) => {
       watched.push(coreId);
       return () => {};
     },
-    request: async (coreId: string, frame: Record<string, unknown>) => {
-      sent.push({ coreId, frame });
-      return answer;
+    request,
+    // The real client remembers the claim as well as sending it, so that a
+    // reconnect can re-ask; what the bridge is on the hook for is the frame and
+    // the Core it is addressed to. See `panel-link-client.test.ts` for the set.
+    ptySubscribe: async (coreId: string, ptyId: string, opts?: { catchUp?: boolean }) => {
+      await request(coreId, { type: "ptySubscribe", ptyId, catchUp: opts?.catchUp === true });
+    },
+    ptyUnsubscribe: async (coreId: string, ptyId: string) => {
+      await request(coreId, { type: "ptyUnsubscribe", ptyId });
     },
     onPtyData: (cb: (m: unknown) => void) => {
       dataListeners.push(cb);

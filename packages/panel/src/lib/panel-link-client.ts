@@ -94,6 +94,14 @@ export class PanelLinkClient {
   private readonly pending = new Map<string, Pending>();
   private readonly queued: string[] = [];
   private readonly watching = new Map<string, Watch>();
+  /**
+   * The PTYs this tab is rendering, as `coreId` → `ptyId`s. It lives here for
+   * the same reason the watch set does: this is the layer that sees the link
+   * come back. The service gives every claim back when a tab's socket dies, so
+   * a reconnect that re-sent only `subscribe` would leave the Core with no
+   * reason to send those PTYs and every pane on this tab quietly dead.
+   */
+  private readonly claimedPtys = new Map<string, Set<string>>();
 
   private readonly eventListeners = new Set<(msg: { coreId: string; event: CoreLinkEvent }) => void>();
   private readonly dataListeners = new Set<
@@ -168,6 +176,51 @@ export class PanelLinkClient {
     };
   }
 
+  /**
+   * Render one Core's PTY in this tab, and stop (issue 142). A Core sends a
+   * PTY's stream only to the connections that asked for it, so this is what
+   * `onPtyData` / `onPtyExit` are gated on — not a filter over everything the
+   * far machine happens to be producing.
+   *
+   * `catchUp` says a `replay` for this PTY follows, so the Core holds the live
+   * stream until it has been served and the pane never paints live bytes in
+   * front of its own scrollback. The claim path always sets it; see
+   * `pty-stream-router`.
+   *
+   * The set is remembered and re-sent on every open, exactly as the watch set
+   * is — see {@link resendPtySubscriptions}. Idempotent: a second claim on a
+   * PTY this tab already renders is a no-op here and an ack from the service,
+   * which is what keeps a pane rebuilding on the same PTY from counting twice.
+   */
+  async ptySubscribe(
+    coreId: string,
+    ptyId: string,
+    opts: { catchUp?: boolean } = {},
+  ): Promise<void> {
+    let claimed = this.claimedPtys.get(coreId);
+    if (!claimed) {
+      claimed = new Set();
+      this.claimedPtys.set(coreId, claimed);
+    }
+    if (claimed.has(ptyId)) return;
+    // Recorded before the ask, and kept even if the ask fails: a claim made
+    // while the link is down is exactly what the next open has to re-send.
+    claimed.add(ptyId);
+    await this.request(coreId, {
+      type: "ptySubscribe",
+      ptyId,
+      catchUp: opts.catchUp === true,
+    });
+  }
+
+  /** Stop rendering it. Idempotent; see {@link ptySubscribe}. */
+  async ptyUnsubscribe(coreId: string, ptyId: string): Promise<void> {
+    const claimed = this.claimedPtys.get(coreId);
+    if (!claimed?.delete(ptyId)) return;
+    if (claimed.size === 0) this.claimedPtys.delete(coreId);
+    await this.request(coreId, { type: "ptyUnsubscribe", ptyId });
+  }
+
   onEvent(cb: (msg: { coreId: string; event: CoreLinkEvent }) => void): () => void {
     this.eventListeners.add(cb);
     return () => this.eventListeners.delete(cb);
@@ -232,9 +285,11 @@ export class PanelLinkClient {
       if (this.socket !== socket) return;
       this.open = true;
       this.reconnectAttempt = 0;
-      // Re-subscribe every watched Core from where this tab got to. This is
-      // the whole of the replay contract on the browser side.
+      // Re-subscribe every watched Core from where this tab got to, and re-ask
+      // for every PTY it is rendering. This is the whole of the replay contract
+      // on the browser side.
       for (const coreId of this.watching.keys()) this.sendSubscribe(coreId);
+      this.resendPtySubscriptions();
       for (const frame of this.queued.splice(0)) this.rawSend(frame);
       for (const cb of this.connectionListeners) cb(true);
     });
@@ -291,6 +346,38 @@ export class PanelLinkClient {
         frame: { type: "subscribe", reqId: `sub${++this.reqSeq}`, lastEventId: cursor },
       }),
     );
+  }
+
+  /**
+   * Re-ask for every PTY this tab is rendering, on a link that has just come
+   * up. The service handed this tab's claims back when the old socket died and
+   * the panes never noticed — nothing above this layer re-claims, so without
+   * this the Core stops sending and every pane on the tab goes dead.
+   *
+   * `catchUp` is deliberately not set, for the same reason the core-link client
+   * leaves it off when it re-subscribes: a hold is released by a `replay`, and
+   * this is not the layer that sends one. The panes replay off their own
+   * reconnect one layer up and buffer whatever lands live while that replay is
+   * in flight (`pty-stream-router`), so going live immediately loses nothing —
+   * whereas a hold nobody releases is a pane that never paints again.
+   */
+  private resendPtySubscriptions(): void {
+    for (const [coreId, ptyIds] of this.claimedPtys) {
+      for (const ptyId of ptyIds) {
+        this.rawSend(
+          encodePanelLinkFrame({
+            t: "core",
+            coreId,
+            frame: {
+              type: "ptySubscribe",
+              reqId: `psub${++this.reqSeq}`,
+              ptyId,
+              catchUp: false,
+            },
+          }),
+        );
+      }
+    }
   }
 
   private write(frame: Parameters<typeof encodePanelLinkFrame>[0]): void {

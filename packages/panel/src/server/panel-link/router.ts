@@ -329,6 +329,12 @@ export class PanelLinkSession {
           reqId: inner.reqId,
           ptyId: inner.ptyId,
           subscribed: true,
+          // Not a claim about the Core: the router answers before (or without)
+          // asking it, so it cannot know whether a hold was armed on the shared
+          // link. It is reported as `false` because it is nothing this tab can
+          // act on — the tab's own `replay` releases whatever hold exists — and
+          // nothing in the Panel reads it. A tab that needs the truth would
+          // have to be told by the Core, which means not answering here.
           holding: false,
         },
       });

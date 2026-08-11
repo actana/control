@@ -18,6 +18,9 @@ import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { CoreLinkEvent, CoreLinkPtySpawnOptions } from "@actana/shared/core-link-frames";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
+import { PanelLinkClient, type PanelLinkSocketLike } from "~/lib/panel-link-client";
+import { corePtyBridgeFor } from "~/lib/core-pty-bridge";
+import { createPtyStreamRouter } from "~/lib/pty-stream-router";
 
 /**
  * Terminals in the browser, end to end: a tab spawns a PTY on a real Core
@@ -138,6 +141,71 @@ class Tab {
   close(): void {
     this.ws.close();
   }
+}
+
+// ─── A browser running the real client stack ────────────────────────────────
+//
+// `Tab` above speaks frames by hand, which is the right instrument for what the
+// service does with them. It cannot prove what the *browser* does, though —
+// what a tab re-sends when its socket comes back is a decision that lives in
+// `PanelLinkClient`, so the reconnect test drives the shipped client, the
+// shipped PTY bridge and the shipped stream router, and asserts on what a pane
+// would have painted.
+
+type Browser = {
+  link: PanelLinkClient;
+  /** Kill the socket and refuse the retries, the way a closed lid does. */
+  offline(): void;
+  /** Let the client's next attempt through. */
+  online(): void;
+};
+
+function adaptBrowserSocket(ws: WebSocket): PanelLinkSocketLike {
+  return {
+    get readyState() {
+      return ws.readyState;
+    },
+    send: (data: string) => ws.send(data),
+    close: () => ws.close(),
+    addEventListener: (type: string, cb: (arg: never) => void) => {
+      if (type === "message") {
+        ws.on("message", (raw) =>
+          (cb as unknown as (event: { data: unknown }) => void)({ data: String(raw) }),
+        );
+        return;
+      }
+      ws.on(type, () => (cb as unknown as () => void)());
+    },
+  } as PanelLinkSocketLike;
+}
+
+function openBrowser(): Browser {
+  let socket: WebSocket | null = null;
+  // The outage is held open rather than timed: the client retries as fast as it
+  // is told to, and a test that raced its backoff would assert on whichever
+  // side of the reconnect it happened to look at.
+  let offline = false;
+  const link = new PanelLinkClient({
+    url: `ws://127.0.0.1:${panelPort}${PANEL_LINK_PATH}?${PANEL_LINK_VERSION_PARAM}=${PANEL_LINK_PROTOCOL_VERSION}`,
+    reconnectInitialMs: 20,
+    reconnectMaxMs: 20,
+    createSocket: (url) => {
+      if (offline) throw new Error("the tab is offline");
+      socket = new WebSocket(url, { headers: { cookie: operatorSessionCookie() } });
+      return adaptBrowserSocket(socket);
+    },
+  });
+  browsers.push(link);
+  return {
+    link,
+    offline: () => {
+      offline = true;
+      socket?.terminate();
+    },
+    online: () => {
+      offline = false;
+    },
+  };
 }
 
 // ─── A Core whose PTYs are scripted ───────────────────────────────────────
@@ -377,6 +445,7 @@ async function startCore(label: string): Promise<CoreFixture> {
 
 const running: PtyCoreLinkServer[] = [];
 const tabs: Tab[] = [];
+const browsers: PanelLinkClient[] = [];
 const paired: string[] = [];
 
 async function pair(label = "prod-vm-1"): Promise<{ coreId: string; core: CoreFixture }> {
@@ -410,6 +479,9 @@ async function openTab(coreId?: string): Promise<Tab> {
   return tab;
 }
 
+// `satisfies` rather than a plain object: the reconnect test hands this to the
+// real bridge's `spawn`, which is typed, while the hand-rolled `Tab` still
+// sends it as a bag of fields.
 const HARNESS_SPAWN = {
   taskId: "task_1",
   cwd: "/srv/warehouse",
@@ -417,9 +489,10 @@ const HARNESS_SPAWN = {
   agent: "claude-code",
   cols: 100,
   rows: 30,
-};
+} satisfies CoreLinkPtySpawnOptions;
 
 afterEach(async () => {
+  for (const link of browsers.splice(0)) link.close();
   for (const tab of tabs.splice(0)) tab.close();
   for (const coreId of paired.splice(0)) {
     await handleApiRequest(
@@ -626,6 +699,36 @@ describe("terminals in the browser", () => {
 
     core.core.emit(ptyId, "live\n");
     await vi.waitFor(() => expect(arriving.output(coreId, ptyId)).toBe("live\n"), 5_000);
+  });
+
+  it("keeps a claimed pane live when the tab's own link drops and comes back", { timeout: 20_000 }, async () => {
+    const { coreId, core } = await pair();
+    const browser = openBrowser();
+    const bridge = corePtyBridgeFor(browser.link, coreId);
+    const streams = createPtyStreamRouter(bridge);
+
+    const { ptyId } = await bridge.spawn(HARNESS_SPAWN);
+    const painted: string[] = [];
+    streams.claim(ptyId, { data: (msg) => painted.push(msg.data), exit: () => {} });
+    core.core.emit(ptyId, "before the drop\n");
+    await vi.waitFor(() => expect(painted.join("")).toContain("before the drop"), 5_000);
+
+    // The tab's socket dies. The service gives back every pty this tab was
+    // rendering, and the Core deletes the subscription — the core-link never
+    // dropped, so nothing down there re-adds it.
+    browser.offline();
+    await vi.waitFor(() => expect(browser.link.isConnected()).toBe(false), 10_000);
+    await vi.waitFor(() => expect(core.server.ptySubscriptionCount()).toBe(0), 10_000);
+
+    // Coming back has to re-ask. Nothing above the link does: the pane still
+    // holds its claim and never noticed the gap, so if the link stays quiet
+    // this pty is dead for the rest of the session.
+    browser.online();
+    await vi.waitFor(() => expect(browser.link.isConnected()).toBe(true), 10_000);
+    await vi.waitFor(() => expect(core.server.ptySubscriptionCount()).toBe(1), 10_000);
+
+    core.core.emit(ptyId, "after the tab came back\n");
+    await vi.waitFor(() => expect(painted.join("")).toContain("after the tab came back"), 5_000);
   });
 
   it("reattaches after a dropped link with exactly what the tab missed", { timeout: 20_000 }, async () => {
