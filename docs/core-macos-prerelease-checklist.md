@@ -1,12 +1,23 @@
 # macOS Core — the release approval checklist
 
-> **This page is the gate.** `release.yml`'s `tarball-macos` job declares
-> `environment: macos-release`, and that environment has required reviewers, so
-> a tag push pauses there until a person approves it (ADR 0016 D28, as
-> amended). Working through this list on real Apple hardware **is** what the
-> reviewer is approving. Every publishing job needs that leg — the Release, the
-> tarballs, both images and `:latest` — so nothing publishes until they do. An
-> unticked box below is a reason to reject the release, not a note to file.
+> **This page is the gate.** The `macos-release` environment has required
+> reviewers, and the job that declares it pauses until a person approves.
+> Working through this list on real Apple hardware **is** what the reviewer is
+> approving. An unticked box below is a reason to reject the release, not a
+> note to file.
+>
+> **Where the pause sits is moving** ([ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) D15). It used to be
+> `release.yml`'s `tarball-macos` job, which paused after the tag was pushed;
+> it becomes the **first** step of `promote.yml`, so the fast-forward onto
+> `main` is downstream of the approval too and `main` never contains
+> unapproved code. Exactly one pause exists either way, and this checklist is
+> unchanged by the move. `release.yml` no longer carries the environment
+> (#110); `promote.yml` picks it up (#111).
+>
+> One practical difference for you: you build the tarball you are testing from
+> the **train tip** rather than from a tag that does not exist yet. By D16's
+> assertion that is the same commit, and it is available earlier.
 
 **Nothing automated can cover what follows**, which is why the gate is a person
 rather than a job. A GitHub runner is destroyed rather than restarted, and a
@@ -143,12 +154,12 @@ the two properties this checklist exists to protect, and an unticked box in
 either means the Mac Core in front of you is not fit to run — as does the
 Gatekeeper box in section 1. Any of those three is a **reject**.
 
-**Rejecting stops everything a tag would publish**, not just the macOS
+**Rejecting stops everything a release would publish**, not just the macOS
 tarball: no GitHub Release, no Linux tarballs, no `actana/panel` or
-`actana/core` image, no moved `:latest`, no Docker Hub description update.
-Every publishing job in `release.yml` sits downstream of the leg you are
-holding. Nothing needs rolling back, because nothing left the repository — the
-fix ships in the next tag.
+`actana/core` image, no moved `:latest`. With the pause at the head of
+promotion (ADR 0023 D15) it also stops the fast-forward itself, so `main` does
+not advance either. Nothing needs rolling back, because nothing left the
+repository — the fix rides the train and is promoted next time.
 
 Approving spends the runner minutes, then releases the images and the four
 assets in one go. Nothing else is waiting on you afterwards.

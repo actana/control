@@ -46,9 +46,11 @@ const imageWorkflowCode = imageWorkflow
   .split("\n")
   .filter((line) => !line.trimStart().startsWith("#"))
   .join("\n");
-// The edge publish is a push-to-`main` condition inside ci.yml, not a workflow
+// The edge publish was a push-to-`main` condition inside ci.yml, not a workflow
 // of its own — ADR 0016 D30 deleted images-edge.yml for being a fourth entry
-// point to jobs that differ only in which tags come out the other end.
+// point to jobs that differ only in which tags come out the other end. The
+// train publish replaced it in place (ADR 0023 D13); see "the train publish"
+// below.
 const ciWorkflow = readRepoFile(".github/workflows/ci.yml");
 const coreDockerfile = readRepoFile("deploy/core.Dockerfile");
 // Named apart from `compose.services.core`: one is the image's instructions,
@@ -212,10 +214,54 @@ describe("reference compose", () => {
   const panel = compose.services.panel;
   const coreService = compose.services.core;
 
+  // ADR 0023. Both images are templated on one tag variable that defaults to
+  // `latest`, so a clean checkout still builds nothing and still pulls the
+  // current release — and `ACTANA_TAG=beta-0.2.0` moves *both* services.
+  //
+  // One variable, not two, is the assertion that matters: the Panel and its
+  // Cores are version-locked, and a compose file offering `ACTANA_PANEL_TAG`
+  // beside `ACTANA_CORE_TAG` would make a pair nobody ever tested a single
+  // typo away. Written as a literal rather than built from the constants,
+  // because the default is what a checkout with no `.env` resolves to and a
+  // template that quietly lost its default would still match a looser pattern.
+  const panelName = PANEL_IMAGE.split("/").pop();
+  const coreName = CORE_IMAGE.split("/").pop();
+
   it("runs the published images, so a clean checkout builds nothing", () => {
-    expect(panel.image).toBe(`${PANEL_IMAGE}:latest`);
-    expect(coreService.image).toBe(`${CORE_IMAGE}:latest`);
+    expect(panel.image).toBe(
+      `\${ACTANA_IMAGE_NAMESPACE:-actana}/${panelName}:\${ACTANA_TAG:-latest}`,
+    );
+    expect(coreService.image).toBe(
+      `\${ACTANA_IMAGE_NAMESPACE:-actana}/${coreName}:\${ACTANA_TAG:-latest}`,
+    );
     expect(Object.keys(compose.services)).toEqual(["panel", "core"]);
+  });
+
+  it("moves both services from one tag variable, because they are version-locked", () => {
+    const tagVariables = [...composeText.matchAll(/\$\{(ACTANA_[A-Z_]*TAG)[:}]/g)].map(
+      (match) => match[1],
+    );
+    expect(tagVariables.length).toBeGreaterThan(0);
+    expect([...new Set(tagVariables)]).toEqual(["ACTANA_TAG"]);
+    // Documented where an operator looks for it, not only in a comment.
+    expect(readRepoFile("deploy/.env.example")).toContain("ACTANA_TAG=");
+  });
+
+  // The `-dev` repositories are a different repository name, not a different
+  // tag, so `ACTANA_TAG` alone cannot reach them (ADR 0023 D36). The override
+  // that can must require the tag rather than default it: there is no
+  // `latest` in a `-dev` repository, so a default would resolve to a tag that
+  // does not exist and fail at the pull with nothing useful to say.
+  it("reaches the pre-merge images with an override that demands a tag", () => {
+    const override = readRepoFile("deploy/docker-compose.dev-images.yml");
+    const dev = composeFacts(override);
+    expect(dev.services.panel.image).toContain(`/${panelName}-dev:`);
+    expect(dev.services.core.image).toContain(`/${coreName}-dev:`);
+    for (const service of ["panel", "core"]) {
+      expect(dev.services[service].image, `${service} defaults its -dev tag`).toContain(
+        "${ACTANA_TAG:?",
+      );
+    }
   });
 
   it("publishes the Panel on loopback, and names no TLS terminator at all", () => {
@@ -315,17 +361,34 @@ describe("reference compose", () => {
 });
 
 describe("release workflow", () => {
-  it("builds the image on version tags, like the Core release", () => {
-    expect(workflow).toMatch(/tags:\s*\n\s*- "v\*"/);
+  // The Panel image ships on a version tag — but the tag no longer *triggers*
+  // anything (ADR 0023 D40). `promote.yml` calls this workflow and pushes the
+  // tag as a record; a `push: tags` trigger beside that would fire a second
+  // release run that the first could not even block. What is asserted here is
+  // what did not change: the release is still entered with a `v*` tag, and it
+  // is that tag the image jobs publish under. The trigger itself is pinned in
+  // scripts/__tests__/workflows.test.mjs.
+  it("publishes the image for a version tag it is handed, not one it watches", () => {
+    expect(workflow).toMatch(/^ {2}workflow_call:$/m);
+    expect(workflow).not.toMatch(/tags:\s*\n\s*- "v\*"/);
+    expect(workflow).toMatch(/description: "Tag to .*\(e\.g\. v0\.1\.0\)/);
   });
 
   it("delegates the build to the shared image workflow", () => {
     expect(workflow).toContain("./.github/workflows/container-image.yml");
   });
 
-  it("publishes :latest alongside the version, but never for a prerelease", () => {
-    expect(workflow).toContain("$version latest");
-    expect(workflow).toMatch(/version.*==.*\*-\*/);
+  // `tags="$version latest"` for anything without a `-` in it used to live
+  // here as two lines of shell, and it was the whole of the `latest` rule —
+  // no highest-version test, so a backport of an old line would have moved
+  // `:latest` backwards for every operator (D28). The decision moved to
+  // scripts/lib/release-latest.mjs, where the prerelease case is one of three
+  // and all of them are covered by scripts/__tests__/release-latest.test.mjs.
+  // What this file asserts is the wiring: one decision, reaching the images.
+  it("takes its tag list from the tested latest guard, not from inline shell", () => {
+    expect(workflow).toContain("node scripts/release-tags.mjs");
+    expect(workflow).not.toContain("$version latest");
+    expect(workflow).toContain("tags: ${{ needs.resolve.outputs.tags }}");
   });
 
   // D30 lives in the tag regex as much as in the tag list: `v0` and `v0.1`
@@ -344,12 +407,13 @@ describe("release workflow", () => {
     }
   });
 
-  // D33's "fix a typo without cutting a release" only works if the sync reads
-  // the branch it was dispatched from. Every other job pins the tag.
-  it("syncs descriptions from the dispatched ref, not the tag", () => {
-    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
-    expect(descriptions).toContain("actions/checkout@");
-    expect(descriptions).not.toContain("ref: ${{ needs.resolve.outputs.ref }}");
+  // "Fix a typo without cutting a release" used to be a `workflow_dispatch` of
+  // this file, and is now a weekly tick of housekeeping.yml (ADR 0023 D43). It
+  // still only works if the sync reads a branch rather than a tag — which
+  // there it does by never checking out a ref at all.
+  it("no longer carries the description sync", () => {
+    expect(workflow).not.toContain("  descriptions:");
+    expect(workflow).not.toContain("docs/images/");
   });
 
   // D34: one file for the whole tag, not four that have to be kept in step.
@@ -472,40 +536,88 @@ describe("release workflow", () => {
   });
 });
 
-describe("the edge publish", () => {
+// The train publish is what the edge publish became (ADR 0023 D13): `:edge`
+// published from `main`, and under the train model `main` is only ever a
+// released version, so `:edge` would have been a second name for `:latest`.
+// The jobs sit where the edge jobs sat, reusing the same build — that is the
+// substitution ADR 0016's one-build-implementation property depends on, and
+// these tests are what stop it drifting back into a second implementation.
+describe("the train publish", () => {
   it("lives in ci.yml rather than a workflow of its own", () => {
     expect(fs.existsSync(path.join(repoRoot, ".github/workflows/images-edge.yml"))).toBe(false);
     expect(ciWorkflow).toContain("./.github/workflows/container-image.yml");
-    expect(ciWorkflow).toMatch(/branches:\s*\n\s*- main/);
+    expect(ciWorkflow).toMatch(/branches:\s*\n(?:\s*#.*\n)*\s*- "beta\/\*\*"/);
   });
 
-  it("publishes from a push to main, and a pull request never pushes", () => {
-    // The two sets of image jobs are mutually exclusive on the event, which is
-    // what stops a push to `main` building each image twice.
-    // The edge jobs read `!= 'pull_request'` rather than `== 'push'` so a
-    // workflow_dispatch republishes :edge, the way images-edge.yml's own
-    // dispatch trigger did.
+  it("has retired :edge and the sha- tag on main, job and tag", () => {
+    // The prose is allowed to say what was retired; the code is not allowed to
+    // still do it. `main` no longer triggers this workflow at all (D41).
+    const code = ciWorkflow
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("#"))
+      .join("\n");
+    expect(code).not.toContain("edge");
+    expect(code).not.toMatch(/^ {6}- main$/m);
+  });
+
+  it("publishes from a train push, and only from a train push", () => {
+    // The two sets of image jobs are mutually exclusive — one reads the event,
+    // the other the ref — which is what stops any single run building an image
+    // twice. The train jobs key on the ref rather than on `!= 'pull_request'`
+    // so a `workflow_dispatch` republishes a train the way images-edge.yml's
+    // own dispatch did, while a dispatch anywhere else publishes nothing.
     for (const [job, condition] of [
-      ["panel-image:", "== 'pull_request'"],
-      ["core-image:", "== 'pull_request'"],
-      ["panel-image-edge:", "!= 'pull_request'"],
-      ["core-image-edge:", "!= 'pull_request'"],
+      ["panel-image:", "github.event_name == 'pull_request'"],
+      ["core-image:", "github.event_name == 'pull_request'"],
+      ["panel-image-train:", "startsWith(github.ref, 'refs/heads/beta/')"],
+      ["core-image-train:", "startsWith(github.ref, 'refs/heads/beta/')"],
     ]) {
       const start = ciWorkflow.indexOf(`\n  ${job}`);
       expect(start, `ci.yml has no ${job} job`).toBeGreaterThan(-1);
-      expect(ciWorkflow.slice(start, start + 200)).toContain(
-        `github.event_name ${condition}`,
-      );
+      expect(ciWorkflow.slice(start, start + 300)).toContain(condition);
     }
-    expect(ciWorkflow).toContain("push: false");
   });
 
-  it("tags :edge and an immutable per-commit tag, and never moves :latest", () => {
-    // Assert on the tags the workflow actually emits, not on the file text —
-    // the prose above the trigger says the word "latest" on purpose.
-    const tags = ciWorkflow.match(/^\s*run: echo "tags=(.*?)"/m)?.[1];
-    expect(tags).toBe("edge sha-${SHA:0:7}");
-    expect(tags).not.toContain("latest");
+  // D7. `beta-x.y.z` moves per merge and lives in the repositories people
+  // deploy from; `sha-<short>` never moves and lives in `-dev`, because the
+  // sweep that deletes it needs a credential D36 keeps out of the release
+  // repositories. Both come off one build, so they name one digest (D11).
+  it("tags beta-x.y.z and an immutable per-commit tag, and never moves :latest", () => {
+    // Read out of `train-tags` specifically: `pr-image-mode` emits outputs of
+    // the same names, and matching the file at large would assert on whichever
+    // job happens to come first.
+    const trainTags = ciWorkflow.slice(
+      ciWorkflow.indexOf("\n  train-tags:"),
+      ciWorkflow.indexOf("\n  panel-image-train:"),
+    );
+    const emitted = trainTags.match(/echo "tags=(.*?)"/)?.[1];
+    const emittedDev = trainTags.match(/echo "dev_tags=(.*?)"/)?.[1];
+    expect(emitted).toBe("beta-$version");
+    expect(emittedDev).toBe("sha-${SHA:0:7}");
+    for (const job of ["panel-image-train:", "core-image-train:"]) {
+      const block = ciWorkflow.slice(ciWorkflow.indexOf(`\n  ${job}`), ciWorkflow.length);
+      expect(block).toContain("tags: ${{ needs.train-tags.outputs.tags }}");
+      expect(block).toContain("dev_tags: ${{ needs.train-tags.outputs.dev_tags }}");
+    }
+    expect(emitted).not.toContain("latest");
+    expect(emittedDev).not.toContain("latest");
+  });
+
+  // D20. A documentation-only merge must still republish: otherwise
+  // `beta-x.y.z`'s revision label names an older commit and the promotion
+  // assertion fails, so a README fix would block the release.
+  it("rebuilds a train merge unconditionally", () => {
+    expect(ciWorkflow).not.toContain("paths-ignore:");
+  });
+
+  // D7 again, from the other side: two merges landing 30 seconds apart must
+  // not finish out of order and leave the moving tag on older bytes.
+  it("never cancels a train publish in flight", () => {
+    const concurrency = ciWorkflow.slice(
+      ciWorkflow.indexOf("\nconcurrency:"),
+      ciWorkflow.indexOf("\npermissions:"),
+    );
+    expect(concurrency).toContain("cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/beta/') }}");
   });
 
   it("publishes the Core image alongside the Panel", () => {
@@ -513,6 +625,96 @@ describe("the edge publish", () => {
       expect(wf).toContain("image: panel");
       expect(wf).toContain("image: core");
     }
+  });
+});
+
+// The pull request image (ADR 0023 D32–D38). One check name, four behaviours,
+// and the two that build nothing are the load-bearing ones: a required check
+// whose job is *skipped* stays Pending forever and blocks the pull request
+// permanently, which is why "nothing to build" is an early successful exit
+// rather than a job-level `if:`.
+describe("the pull request image", () => {
+  const modeJob = ciWorkflow.slice(
+    ciWorkflow.indexOf("\n  pr-image-mode:"),
+    ciWorkflow.indexOf("\n  panel-image:"),
+  );
+
+  it("resolves all four modes, and announces the one it took", () => {
+    for (const mode of ["build", "verify", "pass"]) {
+      expect(modeJob, `no ${mode} mode`).toContain(`mode=${mode}`);
+    }
+    // The fork case is the fourth: build, with the push withheld (D34).
+    expect(modeJob).toContain("HEAD_REPO");
+    for (const mode of ["build", "verify", "pass"]) {
+      expect(imageWorkflow, `${mode} is never announced`).toMatch(
+        new RegExp(`::notice title=.*image — ${mode}`),
+      );
+    }
+  });
+
+  // D12, and the trap that makes it more than tidiness. `container-image.yml`
+  // pushes per-arch `<stage>-<arch>` tags *before* stitching the manifest, so
+  // two open pull requests sharing `stage: ci` would overwrite each other's —
+  // and the stitch could assemble a manifest from another pull request's
+  // bytes. Harmless while PR builds pushed nothing; corrupting now they do.
+  it("discriminates the scaffolding tags per pull request, never `ci`", () => {
+    expect(modeJob).toContain('stage="pr-$PR"');
+    expect(ciWorkflow).not.toMatch(/^ {6}stage: ci$/m);
+  });
+
+  // D10. Mutable on purpose — what it points at is what is under discussion —
+  // and not `sha-`, which this repository already uses for the opposite thing.
+  it("tags pr-<prid><YYYYMM> into the -dev repositories only", () => {
+    expect(modeJob).toContain('dev_tags="pr-${PR}$(date -u +%Y%m)"');
+    expect(modeJob).not.toMatch(/^\s*tags="pr-/m);
+  });
+
+  // D33 from the third direction. `panel-image` and `core-image` both carry
+  // `needs: pr-image-mode`, and a `needs:` whose upstream *fails* is reported
+  // as skipped — so a resolver that can fail is a required check that can
+  // stay Pending forever, which is the trap the four modes exist to avoid.
+  // The resolve is therefore split: a step that thinks and may fail, and a
+  // step that only reads a file and defaults what is missing. Both are
+  // `continue-on-error`, so no step's failure can reach the job's conclusion.
+  it("cannot leave the two image checks skipped", () => {
+    expect(modeJob.match(/continue-on-error: true/g) ?? []).toHaveLength(2);
+
+    // The fallback is a build that publishes nothing — never `verify` or
+    // `pass`, which report green having proved nothing, and never a push,
+    // which would put bytes under a tag nothing finished choosing.
+    const fallback = modeJob.slice(modeJob.indexOf("case \"$mode\" in"));
+    expect(fallback).toContain("mode=build");
+    expect(fallback).toContain("push=false");
+    expect(fallback).toMatch(/::warning title=PR image mode fell back to build/);
+  });
+
+  // The partial-list hole in the same resolver: `pulls/:number/files`
+  // truncates past 300 entries, and a documentation-only *slice* of a mixed
+  // diff reads as documentation-only — a merged change whose image was never
+  // built. `changed_files` off the PR payload is the count that cannot
+  // truncate, so a short list is treated as no list at all.
+  it("will not call a truncated file list documentation-only", () => {
+    expect(modeJob).toContain("CHANGED_FILES: ${{ github.event.pull_request.changed_files }}");
+    expect(modeJob).toContain('"$listed" -lt "${CHANGED_FILES:-0}"');
+    // Emptying `files` is what makes the truncated case fall through to
+    // `docs_only=false`; asserting the mechanism, not just the comparison.
+    // The window is the truncation guard itself — it ends where the test it
+    // guards begins, so a comparison that stopped emptying `files` fails here.
+    const guard = modeJob.slice(
+      modeJob.indexOf('"$listed" -lt'),
+      modeJob.indexOf("docs_only=true"),
+    );
+    expect(guard).toContain('files=""');
+  });
+
+  // D37/D32: the gate is the build and the smoke. A Docker Hub outage must
+  // not freeze merging, so the publish cannot fail the required check.
+  it("cannot fail the required check on a publish", () => {
+    for (const job of ["panel-image:", "core-image:"]) {
+      const start = ciWorkflow.indexOf(`\n  ${job}`);
+      expect(ciWorkflow.slice(start, start + 900)).toContain("push_required: false");
+    }
+    expect(imageWorkflowCode).toContain("continue-on-error: ${{ !inputs.push_required }}");
   });
 });
 
@@ -730,7 +932,12 @@ describe("core image", () => {
 // Docker Hub rejects an oversized description with a 400, which would only
 // surface as a red workflow after the fact. Catch it at the length instead.
 describe("docker hub descriptions", () => {
-  for (const image of ["panel", "core"]) {
+  // The sync moved out of release.yml and onto the weekly tick, covering all
+  // four repositories rather than the two a release publishes (ADR 0023 D43).
+  const housekeeping = readRepoFile(".github/workflows/housekeeping.yml");
+  const IMAGES = ["panel", "core", "panel-dev", "core-dev"];
+
+  for (const image of IMAGES) {
     it(`${image} has a description file within Docker Hub's 25000-byte limit`, () => {
       const body = readRepoFile(`docs/images/${image}.md`);
       expect(body.length).toBeGreaterThan(0);
@@ -738,25 +945,35 @@ describe("docker hub descriptions", () => {
     });
   }
 
-  it("syncs both images, and each short description fits in 100 bytes", () => {
-    expect(workflow).toContain("sync panel docs/images/panel.md");
-    expect(workflow).toContain("sync core docs/images/core.md");
-    for (const [, short] of workflow.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
+  it("syncs all four images, and each short description fits in 100 bytes", () => {
+    for (const image of IMAGES) {
+      expect(housekeeping).toContain(`sync ${image} docs/images/${image}.md`);
+    }
+    for (const [, short] of housekeeping.matchAll(/^\s+"(.+?)" \|\| rc=1$/gm)) {
       expect(Buffer.byteLength(short, "utf8")).toBeLessThanOrEqual(100);
     }
+  });
+
+  // The `-dev` pages exist because their repositories are public and would
+  // otherwise describe themselves as releases (D36). The warning is the page.
+  it.each(["panel-dev", "core-dev"])("tells a reader not to deploy %s", (image) => {
+    const body = readRepoFile(`docs/images/${image}.md`).toLowerCase();
+    expect(body).toContain("do not deploy");
+    expect(body).toContain("not a release");
   });
 
   // D31/D33. One PAT does both jobs: an OAT can push images but answers
   // "Cannot log into an organization account" on /v2/users/login, so choosing
   // an OAT would mean paying for Team or Business *and still* making a PAT.
   it("authenticates the sync with the same PAT the image push uses", () => {
-    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
+    const descriptions = housekeeping.slice(housekeeping.indexOf("  descriptions:"));
     expect(descriptions).toContain("secrets.DOCKERHUB_TOKEN");
     expect(descriptions).toContain("secrets.DOCKERHUB_USERNAME");
     // The second credential is deleted, everywhere — a secret nothing reads is
     // a secret nobody rotates.
     for (const file of [
       ".github/workflows/release.yml",
+      ".github/workflows/housekeeping.yml",
       ".github/workflows/container-image.yml",
       "docs/REPO_SETUP.md",
       "docs/ci-cd.md",
@@ -772,15 +989,17 @@ describe("docker hub descriptions", () => {
     expect(setup.toLowerCase()).toContain("rotat");
   });
 
-  // D33. What the page waits for is the image being pullable, and that is the
-  // two publish jobs. Gating on `github-release` instead would let a red
-  // installer leg — which is about a tarball, not an image — leave both images
-  // published and both pages describing whatever was there before.
-  it("waits for the two publish jobs and nothing else", () => {
-    const descriptions = workflow.slice(workflow.indexOf("  descriptions:"));
-    const needs = /^\s+needs: (.+)$/m.exec(descriptions);
-    expect(needs, "the descriptions job declares no needs").not.toBeNull();
-    expect(needs[1]).toBe("[panel, core]");
+  // ADR 0016 D33 gated the sync on the two release image publishes so a page
+  // could not describe a version nobody can pull. That rationale did not
+  // survive the move (D43) and must not be reconstructed: a `needs:` here
+  // would be it coming back, and the `-dev` pages have no publish to wait for.
+  it("waits for no publish job, because it no longer describes one release", () => {
+    const descriptions = housekeeping.slice(
+      housekeeping.indexOf("  descriptions:"),
+      housekeeping.indexOf("  dev-audit:"),
+    );
+    expect(descriptions).not.toMatch(/^\s+needs:/m);
+    expect(workflow).not.toContain("  descriptions:");
   });
 
   // D33. `actana/core` was a systemd fixture that needed --privileged, the host

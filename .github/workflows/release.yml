@@ -1,28 +1,63 @@
 name: Release
 
-# Everything a `v*` tag publishes: the three Core tarballs and their
-# SHA256SUMS, the Panel and Core images, the GitHub Release, and each image's
-# Docker Hub page. One file rather than four, because they are one event
-# (ADR 0016 D34).
+# Everything a release publishes: the three Core tarballs and their
+# SHA256SUMS, the Panel and Core images, and the GitHub Release. One file
+# rather than four, because they are one event (ADR 0016 D34).
 #
-#   resolve ─┬─ tarball ───────── installer-e2e ──────────┐
-#            │                                            │
-#            └─ tarball-macos ⏸ ─┬─ panel ─┬─ descriptions│
-#                                └─ core ──┴──────────────┴── github-release
+#   resolve ─┬─ tarball ──────── installer-e2e ─┐
+#            │                                  │
+#            └─ tarball-macos ─┬─ panel ────────┤
+#                              └─ core ─────────┴── github-release
 #
 # `panel` and `core` go through the reusable container-image.yml with
 # push: true, and both they and the tarball legs feed `github-release`.
-# `descriptions` is a leaf hanging off those two alone (D33): it describes an
-# image, so what it waits for is the image being pullable — nothing else.
 #
-# ⏸ is the deliberate one: `tarball-macos` declares `environment: macos-release`
-# and therefore waits for a human. See its own comment.
+# The Docker Hub pages are **not** here. `descriptions` moved to
+# housekeeping.yml and now covers all four repositories on a weekly tick (ADR
+# 0023 D43). ADR 0016 D33's reason for gating it on the two image publishes —
+# a page must not describe a version nobody can pull — did not move with it and
+# is not restated there: the `-dev` pages have nothing to do with a release,
+# and four pages that drift until someone happens to cut a release is the
+# larger problem.
 #
-# Everything that leaves this repository sits downstream of that ⏸ — the images
-# and their `:latest`, the Docker Hub pages, the GitHub Release and its assets.
-# Only the Linux build-and-test work runs while a reviewer decides, and none of
-# it is published. That is what makes "reject" a real answer: an image push is
-# not undoable, and `:latest` has no history to roll back to.
+# ── Two modes (ADR 0023 D17, D26) ────────────────────────────────────────────
+#
+# `resolve` picks one from where the tag lives, and says which in the log:
+#
+#   promote   the tag is reachable from `main`. `panel` and `core` re-point the
+#             verified `beta-x.y.z` digest at `<version>` (and `latest`) with
+#             `docker buildx imagetools create`, and **build nothing**. A
+#             promotion cannot produce different bytes because it produces no
+#             bytes — which is this ADR's central claim, and it reduces to the
+#             assertion that the digest's `org.opencontainers.image.revision`
+#             label equals the promoted commit before anything is retagged.
+#
+#   backport  the tag is on a `release/*` branch. No beta train exists for an
+#             old line, so there is no digest to promote and the images are
+#             built and pushed from that branch. It is the one documented
+#             exception in the design (D26), and it keeps every gate the build
+#             path has — the smoke, and the Trivy CVE gate that stands between
+#             a flagged image and a repository people deploy from.
+#
+# Both modes go through the same reusable workflow under the same two job
+# names. `Panel image` / `Core image` are also the names of ci.yml's pinned
+# required checks; the events differ so there is no clash, but a rename here
+# would be a rename of a pinned check name and neither moves.
+#
+# ── The human pause is no longer here (ADR 0023 D15) ─────────────────────────
+#
+# `tarball-macos` used to declare `environment: macos-release`, so that every
+# publishing job sat downstream of a person. That ordering is preserved and
+# strengthened rather than dropped: the pause moved to the head of
+# `promote.yml`, which is upstream of this entire workflow — so the
+# fast-forward onto `main` is downstream of the human too, and `main` never
+# contains unapproved code. Exactly one pause exists; two would be a worse
+# experience for no extra safety.
+#
+# The image jobs still wait on `tarball-macos`, now for a different reason: not
+# a gate on a person, but a gate on the release being whole. An image and its
+# `:latest` published beside a GitHub Release that is missing a third of its
+# tarballs is the failure this ordering still prevents.
 #
 # Exactly four assets (D28, as amended): actana-core-<version>-linux-x64.tar.gz,
 # actana-core-<version>-linux-arm64.tar.gz,
@@ -52,13 +87,37 @@ name: Release
 # A present-but-*broken* credential fails at the `docker login` in
 # container-image.yml, before any tag is pushed.
 
+# ── The trigger (ADR 0023 D40) ───────────────────────────────────────────────
+#
+# There is no `push: tags: v*` trigger, and its absence is load-bearing.
+# `promote.yml` invokes this workflow by `workflow_call` and *also* pushes
+# `vx.y.z` as a record. Keeping the tag trigger would fire **two release runs**
+# for one promotion, and they would not even block each other: `github.ref_name`
+# is the tag under a tag push and the *caller's* ref under a `workflow_call`,
+# so the two runs would take different concurrency keys and race to build the
+# same tarballs and create the same GitHub Release.
+#
+# It also removes the need for a guard rather than adding one: a stray
+# hand-pushed `v*` tag now does nothing at all, which is a stronger property
+# than a check that catches it.
 on:
-  push:
-    tags:
-      - "v*"
-  # Re-runs a whole tag: rebuilds the tarballs and images, re-attaches the
-  # assets, re-syncs the descriptions. Also how a description typo is fixed
-  # without cutting a release (D33).
+  # promote.yml, after the human pause and the fast-forward (D15, D40). The
+  # tag is pushed as a record before this is called, and `resolve` requires it
+  # to exist — every job downstream checks it out.
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to release (e.g. v0.1.0). Must already exist on origin."
+        type: string
+        required: true
+  # Re-runs a whole release: re-resolves the mode, rebuilds the tarballs,
+  # retags or rebuilds the images, re-attaches the assets. It is also the only
+  # way a backport releases at all (D26) and how its release candidate goes out
+  # (D30) — no promotion calls this for a `release/*` tag.
+  #
+  # A Docker Hub description typo is no longer fixed from here — merge the fix
+  # and the weekly `descriptions` chore publishes it, or `gh workflow run
+  # housekeeping.yml -f chore=descriptions` does it now (D43).
   workflow_dispatch:
     inputs:
       tag:
@@ -66,7 +125,14 @@ on:
         required: true
 
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  # Derived from the version, never from `github.ref_name` (D40). That
+  # expression resolves differently depending on how this workflow was
+  # entered, so two invocations for one version would take two different keys
+  # and run at the same time — which is exactly the race the dropped tag
+  # trigger would have caused. `inputs.tag` is the same string on both
+  # triggers, and `resolve` rejects anything that is not `vx.y.z`, so it *is*
+  # the version.
+  group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
 permissions:
@@ -82,48 +148,144 @@ jobs:
     outputs:
       ref: ${{ steps.ref.outputs.ref }}
       version: ${{ steps.ref.outputs.version }}
-      tags: ${{ steps.ref.outputs.tags }}
+      sha: ${{ steps.ref.outputs.sha }}
+      mode: ${{ steps.ref.outputs.mode }}
+      image_mode: ${{ steps.ref.outputs.image_mode }}
+      source_tag: ${{ steps.ref.outputs.source_tag }}
+      tags: ${{ steps.tags.outputs.tags }}
+      latest: ${{ steps.tags.outputs.latest }}
+      prerelease: ${{ steps.tags.outputs.prerelease }}
     steps:
+      # Every branch and every tag. Both questions this job answers are
+      # questions about the whole ref graph rather than about one commit:
+      # which mode this is, is "where does this tag live" (D26), and whether
+      # `latest` moves is "is this the highest released version" (D28).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # The checkout brings the refs that existed when this job started, and
+      # `promote.yml` pushes the tag immediately before invoking this workflow.
+      # A second fetch costs a moment and removes a race that would otherwise
+      # read as "no such tag" on a perfectly good promotion.
+      - name: Fetch every branch and tag
+        run: git fetch --force --prune --tags origin "+refs/heads/*:refs/remotes/origin/*"
+
       - id: ref
         env:
-          EVENT_NAME: ${{ github.event_name }}
           INPUT_TAG: ${{ inputs.tag }}
-          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            ref="$INPUT_TAG"
-          else
-            ref="$REF_NAME"
-          fi
+          ref="$INPUT_TAG"
           # All three components, and no `+build` metadata. `v0` and `v0.1`
           # would publish exactly the moving `:0` / `:0.1` tags D30 forbids,
           # and `+` is not a legal character in a Docker tag — nor would
-          # `v0.1.0+abc` read as a prerelease below, so it would move :latest.
+          # `v0.1.0+abc` read as a prerelease, so it would move :latest.
           if [[ ! "$ref" =~ ^v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "release ref must be a version tag like v0.1.0 or v1.0.0-rc.1 — all three components, no +build metadata" >&2
+            echo "::error title=Not a version tag::'$ref' is not a version tag like v0.1.0 or v1.0.0-rc.1 — all three components, no +build metadata."
             exit 1
           fi
           version="${ref#v}"
-          echo "ref=$ref" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
-          # `<version>` and `latest`, and no `0` / `0.1` ladder (D30): under
-          # semver a `0.x` minor bump *is* the breaking change, so a moving `:0`
-          # tag is a lie by construction. A prerelease (v1.0.0-rc.1) publishes
-          # its own version and must not move :latest.
-          if [[ "$version" == *-* ]]; then
-            echo "tags=$version" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags=$version latest" >> "$GITHUB_OUTPUT"
+
+          # The tag is the record a release leaves behind (D40), and every job
+          # downstream checks it out. Deciding its absence here means one
+          # actionable error rather than four checkout failures at once.
+          if ! sha="$(git rev-parse -q --verify "refs/tags/$ref^{commit}")"; then
+            echo "::error title=No such tag::$ref is not on origin. A release publishes an existing tag — promotion pushes it as a record before calling this workflow (ADR 0023 D40), and a dispatch needs it pushed first."
+            exit 1
           fi
+
+          # The mode, read off the branch graph and nothing else (D26). Not an
+          # input and not a label: "this is a backport" is a fact about where
+          # the tag lives, and a human-set flag would be the thing forgotten
+          # during the incident that produced the backport.
+          if git merge-base --is-ancestor "$sha" origin/main; then
+            mode=promote
+            image_mode=promote
+            source_tag="beta-$version"
+            echo "::notice title=Promote mode::$ref ($sha) is reachable from main, so the train published $source_tag and a human approved that digest. The image jobs retag it and build nothing (ADR 0023 D17); the retag is refused unless the digest's revision label is $sha (D16)."
+          else
+            lines="$(git branch --remotes --contains "$sha" --list 'origin/release/*' | sed 's/^[* ]*//' | tr '\n' ' ')"
+            if [[ -z "${lines// }" ]]; then
+              echo "::error title=Tag is on neither main nor a release line::$ref ($sha) is not reachable from main and is on no origin/release/* branch, so there is neither a beta digest to promote nor a release line to build from. A release tag lives in exactly one of those two places (ADR 0023 D26)."
+              exit 1
+            fi
+            mode=backport
+            image_mode=build
+            source_tag=""
+            echo "::notice title=Backport mode::$ref ($sha) is on ${lines% } and is not reachable from main, so no beta train ever published a digest for it. The images are built and pushed from the release line — the one documented exception to digest promotion (ADR 0023 D26). Every gate the build path has applies unchanged, the Trivy CVE gate included."
+          fi
+
+          {
+            echo "ref=$ref"
+            echo "version=$version"
+            echo "sha=$sha"
+            echo "mode=$mode"
+            echo "image_mode=$image_mode"
+            echo "source_tag=$source_tag"
+          } >> "$GITHUB_OUTPUT"
+
+      # The `latest` guard (D28) — the one that reaches end users. Both
+      # surfaces come from here: `tags` below feeds the docker tag list, and
+      # `latest` feeds `gh release create --latest=` in `github-release`. They
+      # are two renderings of one decision taken in
+      # scripts/lib/release-latest.mjs, which is where the rule is written down
+      # and unit-tested, because the failure is silent, reaches every existing
+      # user, and lies dormant until the first backport.
+      #
+      # The script's stdout is `key=value` and nothing else, so it pipes
+      # straight into $GITHUB_OUTPUT; `tee` keeps it in the log, and its
+      # reasoning goes to stderr.
+      - id: tags
+        env:
+          MODE: ${{ steps.ref.outputs.mode }}
+          RELEASE_VERSION: ${{ steps.ref.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/release-tags.mjs \
+            --mode "$MODE" --version "$RELEASE_VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      # Belt and braces, in D28's own words. The rule is already structural in
+      # the module — a backport never reaches the comparison that could answer
+      # `latest` — and it is re-asserted here because *these* are the values
+      # that flow into the two publishing jobs, and because a guard that only
+      # exists inside the thing it guards is one edit away from being gone.
+      - name: A backport moves latest on neither surface
+        env:
+          MODE: ${{ steps.ref.outputs.mode }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          LATEST: ${{ steps.tags.outputs.latest }}
+          RELEASE_REF: ${{ steps.ref.outputs.ref }}
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" != "backport" ]]; then
+            echo "$MODE $RELEASE_REF: the highest-version test decided latest=$LATEST, publishing '$TAGS'."
+            exit 0
+          fi
+          for tag in $TAGS; do
+            if [[ "$tag" == "latest" ]]; then
+              echo "::error title=A backport must never move latest::Backport $RELEASE_REF resolved the docker tags '$TAGS'. Publishing an old line's patch as :latest moves every operator's \`docker pull\` backwards, with no history to roll back to (ADR 0023 D28)."
+              exit 1
+            fi
+          done
+          if [[ "$LATEST" != "false" ]]; then
+            echo "::error title=A backport must never be the GitHub latest release::Backport $RELEASE_REF resolved latest=$LATEST. /releases/latest is what install.sh installs by default and what the in-product update checker compares against, so this would tell every user on a newer line to downgrade (ADR 0023 D28)."
+            exit 1
+          fi
+          echo "✅ backport $RELEASE_REF publishes '$TAGS' and passes --latest=false. Neither surface moves."
 
       # D31, amended by ADR 0018: Docker Hub is the only registry, so missing
       # credentials mean the images have nowhere to go — on any repo, fork or
       # not. The same one PAT serves both the `docker login` in
-      # container-image.yml and the description API below: an organization
-      # access token can push images but answers "Cannot log into an
-      # organization account" on POST /v2/users/login, so it would mean paying
-      # for Team or Business *and still* provisioning a PAT.
+      # container-image.yml and the description API housekeeping.yml calls: an
+      # organization access token can push images but answers "Cannot log into
+      # an organization account" on POST /v2/users/login, so it would mean
+      # paying for Team or Business *and still* provisioning a PAT.
       #
       # Checked before anything is built, deliberately — unlike a *broken*
       # credential, a missing one costs nothing to catch early.
@@ -140,13 +302,12 @@ jobs:
           exit 1
 
   # The two Linux legs. The mac leg is `tarball-macos` below rather than a third
-  # row here, for two reasons. `needs:` waits on a matrix job whole, so an
-  # approval pause on any row of this one would hold `installer-e2e` — a
-  # Linux-only check that has nothing to wait for — behind a human. And
-  # `environment:` is a job-level key, so putting it here at all would mean
-  # `environment: ${{ matrix.environment }}` with an empty string on the Linux
-  # rows: a load-bearing gate expressed as a value that is usually blank.
-  # Split, the manual checks and the Linux installer e2e run side by side.
+  # row here. It was split when it carried the approval environment — a
+  # job-level key that a matrix cannot express per row, and `needs:` waits on a
+  # matrix job whole, so the pause would have held `installer-e2e` behind a
+  # human for no reason. The environment is gone (ADR 0023 D15) and the split
+  # stays: the mac leg bills at 10×, and keeping it out of this matrix is what
+  # lets the Linux legs and the installer e2e run without waiting on it.
   tarball:
     name: Core tarball (${{ matrix.target }})
     needs: resolve
@@ -218,24 +379,24 @@ jobs:
           retention-days: 14
 
   # The macOS Core tarball — the only macOS minutes this repository spends
-  # (D28, as amended). It is release-only and never runs on a pull request:
-  # macOS runners bill at 10×, and three macOS legs were once 72% of the whole
-  # CI bill (D35). One leg, on a release cadence, behind a person.
+  # (ADR 0016 D28, as amended). It is release-only and never runs on a pull
+  # request: macOS runners bill at 10×, and three macOS legs were once 72% of
+  # the whole CI bill (D35). One leg, on a release cadence.
   #
-  # `environment: macos-release` is the gate. That environment carries required
-  # reviewers, so this job enters "waiting" the moment the tag is pushed and
-  # burns no minutes until someone approves it in the UI. The reviewer's job is
-  # not to click: it is to run docs/core-macos-prerelease-checklist.md on real
-  # Apple hardware — Gatekeeper behaviour on an unsigned bundle, reboot and
-  # logout persistence of the LaunchAgent — none of which a runner that is
-  # destroyed rather than restarted can answer. Approving is the statement that
-  # the checklist passed.
+  # It used to declare `environment: macos-release`, which held it — and
+  # therefore every publishing job downstream of it — until a human had run
+  # docs/core-macos-prerelease-checklist.md on real Apple hardware. **That
+  # environment is gone from here (ADR 0023 D15), and the pause is not.** It
+  # moved to the head of `promote.yml`, upstream of this whole workflow, which
+  # puts the fast-forward onto `main` downstream of the human as well: `main`
+  # never contains unapproved code, where before it already did by the time
+  # anyone was asked. Exactly one pause exists, and this is no longer it.
   #
-  # The whole release waits on it, deliberately — `github-release` needs this
-  # job, and the reason is on that job. A release is rare, and the pause is the
-  # manual test window. Setting the environment up is an admin step: see
-  # docs/REPO_SETUP.md §2. On a fork with no such environment configured,
-  # GitHub creates an unprotected one on first use and this leg simply runs.
+  # The reviewer therefore builds their macOS tarball from the train tip rather
+  # than from a tag that does not exist yet. By D16's assertion that is the
+  # same commit, and it is available earlier, which is strictly better for
+  # them. The checklist itself is unchanged and still the gate — it is simply
+  # worked before the promotion is dispatched.
   #
   # macos-15 is Apple silicon (macos-15-intel is the Intel label), which is what
   # makes this a build rather than a cross-compile: node-pty's darwin-arm64
@@ -243,7 +404,6 @@ jobs:
   tarball-macos:
     name: Core tarball (mac-arm64)
     needs: resolve
-    environment: macos-release
     runs-on: macos-15
     timeout-minutes: 30
     env:
@@ -356,22 +516,32 @@ jobs:
             --tarball "artifacts/core/actana-core-${{ needs.resolve.outputs.version }}-${{ matrix.target }}.tar.gz" \
             --distro ${{ matrix.distro }}
 
-  # The images do not wait on the `tarball` job: container-image.yml builds the
-  # Core tarball it bakes in itself, on the runner that will ship it. They are
-  # the long pole (~3½ min for both images, both arches, both registries), so
-  # running them beside the Linux tarball legs is what keeps the machine part
-  # of a release under six minutes.
+  # The two image jobs, in whichever of the two modes `resolve` picked.
   #
-  # They *do* wait on `tarball-macos`, which is the leg behind the
-  # `macos-release` approval, and that is the whole point of the gate: pushing
-  # an image is not undoable. `:latest` is a moving pointer with no history, so
-  # a reviewer who works the checklist, hits a blocker and rejects — exactly as
-  # docs/core-macos-prerelease-checklist.md instructs — has to be able to
-  # believe that nothing shipped. If these two jobs ran on `resolve` alone,
-  # `docker pull actana/core:latest` would already be serving the build they
-  # just declared unfit, and the README quickstart points there. The cost is
-  # that a release is as slow as its reviewer; the alternative is a rejection
-  # that does not reject anything.
+  # In **promote** mode neither builds anything: `container-image.yml` pulls
+  # the `beta-x.y.z` digest, asserts its `org.opencontainers.image.revision`
+  # label equals the promoted commit, and only then re-points `<version>` (and
+  # `latest`, when the guard allows it) at that same digest with `docker
+  # buildx imagetools create` — the command it already uses to stitch
+  # multi-arch manifests. Seconds, and no bytes (ADR 0023 D16, D17).
+  #
+  # In **backport** mode they are the ordinary build-and-push path against the
+  # release line, because no beta digest exists to promote (D26).
+  #
+  # They do not wait on the `tarball` job: container-image.yml builds the Core
+  # tarball it bakes in itself, on the runner that will ship it.
+  #
+  # They *do* wait on `tarball-macos`. That used to be the approval gate; since
+  # D15 moved the pause into `promote.yml` it is a different guarantee, and
+  # still one worth having: a release is atomic or it is not a release. An
+  # image and its `:latest` are not undoable, so publishing them before the
+  # macOS leg has produced the tarball `github-release` needs would mean a
+  # `:latest` pointing at a version whose GitHub Release is missing a third of
+  # its assets — with `install.sh` reading exactly that Release.
+  #
+  # `name:` on both is pinned by the "Protect main" ruleset (the same two check
+  # names ci.yml uses on pull requests). Renaming either blocks every pull
+  # request in the repository until an admin updates the ruleset.
   panel:
     name: Panel image
     needs: [resolve, tarball-macos]
@@ -381,8 +551,14 @@ jobs:
     secrets: inherit
     with:
       image: panel
-      ref: ${{ needs.resolve.outputs.ref }}
+      # The commit, not the tag. In promote mode this is what the beta
+      # digest's revision label has to equal (D16); in backport mode it is what
+      # gets checked out and built. A tag would resolve to the same object and
+      # say less.
+      ref: ${{ needs.resolve.outputs.sha }}
       stage: ${{ needs.resolve.outputs.version }}
+      mode: ${{ needs.resolve.outputs.image_mode }}
+      source_tag: ${{ needs.resolve.outputs.source_tag }}
       tags: ${{ needs.resolve.outputs.tags }}
       push: true
 
@@ -395,8 +571,10 @@ jobs:
     secrets: inherit
     with:
       image: core
-      ref: ${{ needs.resolve.outputs.ref }}
+      ref: ${{ needs.resolve.outputs.sha }}
       stage: ${{ needs.resolve.outputs.version }}
+      mode: ${{ needs.resolve.outputs.image_mode }}
+      source_tag: ${{ needs.resolve.outputs.source_tag }}
       tags: ${{ needs.resolve.outputs.tags }}
       push: true
 
@@ -408,13 +586,13 @@ jobs:
     # here for a different reason (D36): an arm64 tarball the one-liner cannot
     # install is not an asset worth attaching.
     #
-    # `tarball-macos` is in here for a third: it is the leg behind the
-    # `macos-release` approval. It is now redundant — `panel` and `core` need
-    # it too, so it is already transitive — and it is kept named because a
-    # `needs:` list is the only place a reader learns what a job waits for, and
-    # this is the job whose assets the approval most directly governs. A
-    # SHA256SUMS covering a subset of the architectures the docs promise is
-    # worse than a release that is late.
+    # `tarball-macos` is in here for a third: this job composes SHA256SUMS
+    # across all three targets and refuses anything but four assets, so the mac
+    # leg is a hard input rather than a nice-to-have. It is redundant as a
+    # `needs:` — `panel` and `core` wait on it too, so it is already transitive
+    # — and kept named because a `needs:` list is the only place a reader
+    # learns what a job waits for. A SHA256SUMS covering a subset of the
+    # architectures the docs promise is worse than a release that is late.
     needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
     runs-on: ubuntu-24.04
     permissions:
@@ -454,14 +632,44 @@ jobs:
       #
       # The upload path is create-or-upload idempotent, so it does not matter
       # whether the GitHub Release already exists when this runs.
+      #
+      # ── The second surface of the `latest` guard (ADR 0023 D28) ────────────
+      #
+      # `gh release create` was called here with no `--latest` flag at all, and
+      # the API defaults `make_latest` to **true**. That default is what makes
+      # a backport dangerous on this side: publishing `1.2.4` after `1.4.0`
+      # would make `/releases/latest` answer `v1.2.4`, which is the endpoint
+      # `install.sh` installs from by default and the one the in-product update
+      # checker compares against — so every 1.4.x user would be told an older
+      # version is available. `--latest` and `--prerelease` are therefore
+      # always passed explicitly, from the same decision that produced the
+      # docker tags, and never defaulted.
+      #
+      # `gh release edit` re-asserts both on the re-run path: `upload` cannot
+      # express them, and a Release created by hand carries whatever GitHub
+      # picked for it.
       - name: Attach to the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           RELEASE_REF: ${{ needs.resolve.outputs.ref }}
+          RELEASE_MODE: ${{ needs.resolve.outputs.mode }}
+          RELEASE_LATEST: ${{ needs.resolve.outputs.latest }}
+          RELEASE_PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         shell: bash
         run: |
           set -euo pipefail
+          # The same assertion `resolve` makes, at the surface it protects. A
+          # release job that trusted an upstream output to still be right is
+          # how the one guard that mattered gets bypassed by a later edit.
+          if [[ "$RELEASE_LATEST" != "true" && "$RELEASE_LATEST" != "false" ]]; then
+            echo "::error title=No explicit latest decision::resolve produced latest='$RELEASE_LATEST'. This flag is never defaulted — the API's default is true, which is the bug (ADR 0023 D28)."
+            exit 1
+          fi
+          if [[ "$RELEASE_MODE" == "backport" && "$RELEASE_LATEST" != "false" ]]; then
+            echo "::error title=A backport must never be the GitHub latest release::$RELEASE_REF is a backport and resolved --latest=$RELEASE_LATEST. /releases/latest is what the one-command installer resolves by default and what the in-product update checker compares against, so this would tell every user on a newer line to downgrade (ADR 0023 D28)."
+            exit 1
+          fi
           mapfile -t files < <(find core-tarballs -maxdepth 1 -type f \( -name '*.tar.gz' -o -name 'SHA256SUMS' \) | sort)
           if (( ${#files[@]} != 4 )); then
             echo "::error title=Wrong asset count::expected 4 assets (three tarballs + SHA256SUMS), found ${#files[@]}" >&2
@@ -470,123 +678,17 @@ jobs:
           fi
           echo "Attaching ${#files[@]} asset(s) to $RELEASE_REF:"
           printf '  %s\n' "${files[@]}"
+          echo "$RELEASE_MODE release: --latest=$RELEASE_LATEST --prerelease=$RELEASE_PRERELEASE"
 
           if gh release view "$RELEASE_REF" >/dev/null 2>&1; then
             gh release upload "$RELEASE_REF" "${files[@]}" --clobber
+            gh release edit "$RELEASE_REF" \
+              --latest="$RELEASE_LATEST" \
+              --prerelease="$RELEASE_PRERELEASE"
           else
             gh release create "$RELEASE_REF" "${files[@]}" \
               --title "$RELEASE_REF" \
+              --latest="$RELEASE_LATEST" \
+              --prerelease="$RELEASE_PRERELEASE" \
               --notes "Core tarballs for Linux and Apple-silicon macOS Cores. Verify with \`sha256sum -c SHA256SUMS\`."
           fi
-
-  # Docker Hub does not pull a README from GitHub on its own — the repository
-  # description is a field you PATCH through its API. This syncs one file per
-  # image, so `actana/panel` and `actana/core` each get their own page rather
-  # than sharing the source repo's README (which describes the project rather
-  # than either image).
-  #
-  #   docs/images/panel.md → docker.io/<ns>/panel
-  #   docs/images/core.md  → docker.io/<ns>/core
-  #
-  # Done with curl rather than a third-party action on purpose: this step
-  # handles a credential that can rewrite the public face of both images, and
-  # the repo pins every action it does trust by SHA.
-  #
-  # Gated on the two publish jobs and on nothing else (D33). The page describes
-  # an *image*, and the version it names has to be pullable when someone reads
-  # it — which is exactly what `panel` and `core` completing means. Hanging it
-  # off `github-release` instead would have been a stronger condition for the
-  # wrong reason: a red arm64 installer leg would then leave both images
-  # published and both pages describing whatever was there before, over a
-  # failure that has nothing to do with either image.
-  descriptions:
-    name: Docker Hub descriptions
-    needs: [panel, core]
-    runs-on: ubuntu-24.04
-    steps:
-      # Deliberately no `ref:` — the only job here that does not pin the tag.
-      # A description is a living page, not a versioned artifact: a tag push
-      # syncs that tag's files, and a `workflow_dispatch` from `main` syncs
-      # `main`'s, which is what makes "fix a typo without cutting a release"
-      # (D33) actually reach Docker Hub. Pinning the tag here would republish
-      # the typo.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-
-      - name: Push each image's README to Docker Hub
-        env:
-          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
-          OWNER: ${{ github.repository_owner }}
-          # The same one PAT the image push uses. `resolve` has already failed
-          # the run if it is missing on actana/control, so reaching the skip
-          # below means this is a fork.
-          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
-          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-
-          if [[ -z "$DOCKERHUB_TOKEN" || -z "$DOCKERHUB_USERNAME" ]]; then
-            echo "::notice title=Docker Hub descriptions skipped::DOCKERHUB_USERNAME / DOCKERHUB_TOKEN are not set. See docs/REPO_SETUP.md section 2."
-            exit 0
-          fi
-
-          namespace="${DOCKERHUB_NAMESPACE:-${OWNER,,}}"
-          namespace="${namespace,,}"
-
-          # A JWT, not the token itself — the /v2/repositories/ endpoints do not
-          # accept a raw PAT.
-          jwt="$(jq -n --arg u "$DOCKERHUB_USERNAME" --arg p "$DOCKERHUB_TOKEN" '{username:$u,password:$p}' \
-            | curl -sS -X POST -H 'Content-Type: application/json' -d @- \
-                https://hub.docker.com/v2/users/login/ \
-            | jq -r '.token // empty')"
-
-          if [[ -z "$jwt" ]]; then
-            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read & Write scope, from an account with Admin on the org. That one token serves the image push as well."
-            exit 1
-          fi
-
-          # short: what shows in search results. full: the page body.
-          # Docker Hub caps these at 100 and 25000 bytes; overflowing is a 400,
-          # so fail with the length rather than a bare API error.
-          sync() {
-            local repo="$1" file="$2" short="$3"
-            if [[ ! -f "$file" ]]; then
-              echo "::error title=Missing description file::$file"
-              return 1
-            fi
-            # Byte length, not ${#short}: that counts characters, and these
-            # strings contain multibyte punctuation. Docker's limit is bytes.
-            local short_bytes bytes
-            short_bytes="$(printf '%s' "$short" | wc -c)"
-            if (( short_bytes > 100 )); then
-              echo "::error title=Short description too long::$repo is $short_bytes bytes, max 100"
-              return 1
-            fi
-            bytes="$(wc -c < "$file")"
-            if (( bytes > 25000 )); then
-              echo "::error title=README too long::$file is $bytes bytes, max 25000"
-              return 1
-            fi
-
-            local status
-            status="$(jq -n --rawfile full "$file" --arg short "$short" \
-                        '{full_description:$full, description:$short}' \
-              | curl -sS -o /tmp/resp.json -w '%{http_code}' \
-                  -X PATCH \
-                  -H "Authorization: JWT $jwt" \
-                  -H 'Content-Type: application/json' \
-                  -d @- \
-                  "https://hub.docker.com/v2/repositories/${namespace}/${repo}/")"
-
-            if [[ "$status" != "200" ]]; then
-              echo "::error title=Failed to update $repo::HTTP $status — $(cat /tmp/resp.json)"
-              return 1
-            fi
-            echo "✅ ${namespace}/${repo} — $bytes bytes of README, short description set"
-          }
-
-          rc=0
-          sync panel docs/images/panel.md \
-            "Self-hosted web Panel for driving agentic coding work across your machines." || rc=1
-          sync core docs/images/core.md \
-            "The Actana Core daemon: the machine your agentic coding sessions actually run on." || rc=1
-          exit "$rc"

@@ -165,12 +165,14 @@ docker compose -f deploy/docker-compose.yml logs core <span class="cmt"># the re
             </div>
 
             <p class="install-note">
-              <b>Pre-release.</b> No <b>v*</b> tag is published yet, so
+              <b>Pre-release.</b> No release is published yet, so
               <b>:latest</b> and the installer’s <b>releases/latest</b> both 404.
-              Until the first release, run the Compose path against
-              <b>:edge</b> — the tag CI moves on every push to <b>main</b> — by
-              changing the two <b>image:</b> lines in
-              <b>deploy/docker-compose.yml</b>.
+              Until the first one, run the Compose path against the open release
+              train’s beta image — <b>ACTANA_TAG=beta-0.1.0 docker compose -f
+              deploy/docker-compose.yml up -d</b>, which moves the Panel and the
+              Core together. That tag is published when the first train is cut;
+              until then nothing is pullable yet. The installer one-liner works
+              from the first release onward.
               <a href="https://github.com/actana/control#quickstart">Quickstart →</a>
             </p>
           </div>

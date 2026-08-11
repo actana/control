@@ -67,11 +67,12 @@ repos.
 
 ## Quickstart
 
-> **Pre-release.** No `v*` tag is published yet, so `:latest` and the
-> installer's `releases/latest` both 404. Until the first release, run the
-> Compose path against **`:edge`** — the tag CI moves on every push to `main` —
-> by changing the two `image:` lines in `deploy/docker-compose.yml`. The
-> installer one-liner works from the first tag onward.
+> **Pre-release.** No release is published yet, so `:latest` and the
+> installer's `releases/latest` both 404. Until the first one, run the Compose
+> path against the open release train's beta image — `ACTANA_TAG=beta-0.1.0
+> docker compose -f deploy/docker-compose.yml up -d`, which moves the Panel and
+> the Core together. The installer one-liner works from the first release
+> onward.
 
 **Docker Compose** — a Panel and a Core on one network, which is the whole
 product in one command:

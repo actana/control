@@ -1,0 +1,18 @@
+{
+  "name": "Retired release lines — read-only",
+  "target": "branch",
+  "enforcement": "active",
+  "bypass_actors": [],
+  "conditions": {
+    "ref_name": {
+      "include": ["refs/heads/release/0.0-PLACEHOLDER"],
+      "exclude": []
+    }
+  },
+  "rules": [
+    { "type": "update" },
+    { "type": "deletion" },
+    { "type": "non_fast_forward" },
+    { "type": "creation" }
+  ]
+}

@@ -74,12 +74,21 @@ compose above brings both up together.
 
 | Tag | Moves |
 | --- | --- |
-| `latest` | every non-prerelease version tag |
+| `latest` | on the release of the highest version — the default |
 | `<version>`, e.g. `0.1.0` | never — pin deployments to this |
-| `edge` | every push to `main` |
-| `sha-<short>` | never — an exact commit |
+| `beta-<version>` | on every merge into that release's train — the next release, for testing |
 
 `linux/amd64` and `linux/arm64`, each built on a native runner.
+
+`<version>` is not a rebuild of `beta-<version>`: a release **re-points the
+same digest** a person already pulled, ran and approved. The bytes under
+`beta-0.1.0` and the bytes under `0.1.0` are identical, and the pipeline
+refuses to publish when they are not.
+
+Pre-merge builds of open pull requests live in a separate repository,
+[`actana/panel-dev`](https://hub.docker.com/r/actana/panel-dev), along with the
+`sha-<short>` commit pins. Nothing there is released, and nothing here is a
+pre-merge build.
 
 ## Links
 

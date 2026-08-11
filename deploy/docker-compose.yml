@@ -20,9 +20,26 @@
 # certificate from its own CA and requires the Panel's client certificate
 # (ADR 0002); that material is minted by the Core, travels in the registration
 # blob, and is never something you supply or renew.
+#
+# ── The two variables in the image names ─────────────────────────────────────
+#
+# `ACTANA_TAG` moves **both** services at once, and that is the whole reason it
+# is one variable rather than two. The Panel and the Core are version-locked —
+# the core-link handshake exchanges a protocol version and a mismatched pair
+# renders as "needs update" — so a Panel on one version beside a Core on
+# another is a combination that never ships and is not worth making easy to
+# type. Pin a release with `ACTANA_TAG=0.1.0`, or try the next one with
+# `ACTANA_TAG=beta-0.2.0`.
+#
+# `ACTANA_IMAGE_NAMESPACE` is for a fork that publishes under its own Docker
+# Hub account; it defaults to `actana` and most deployments never touch it.
+#
+# Pre-merge pull request images live in `-dev` repositories rather than these,
+# so they need a different repository name and not just a different tag. That
+# is `docker-compose.dev-images.yml` beside this file — see deploy/README.md.
 services:
   panel:
-    image: actana/panel:latest
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/panel:${ACTANA_TAG:-latest}
     restart: unless-stopped
     ports:
       # Loopback on purpose: this is plain HTTP. `localhost` is a secure
@@ -49,7 +66,10 @@ services:
   # host`, `tmpfs:` or `init:` — all four belonged to the systemd fixture this
   # replaced, and tini is PID 1 inside the image itself (ADR 0016 D14).
   core:
-    image: actana/core:latest
+    # The same `ACTANA_TAG` the Panel above reads. One variable, both services
+    # — they are version-locked and moving one without the other is a pair
+    # that never shipped.
+    image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
     restart: unless-stopped
     environment:
       # The address the Panel dials, and therefore the SAN in this Core's
@@ -89,7 +109,7 @@ services:
 #
 # >>> second Core
 #   core2:
-#     image: actana/core:latest
+#     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
 #     restart: unless-stopped
 #     environment:
 #       - ACTANA_PUBLIC_HOST=core2

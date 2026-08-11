@@ -239,8 +239,9 @@ on:
   workflow_dispatch: {}      # redeploy without a commit; also the first deploy
 ```
 
-- PRs do **not** deploy — the CDN serves `main`, the same rule the container
-  `:edge` tags follow. There is no PR-side check at all: the page has no
+- PRs do **not** deploy — the CDN serves `main`, and `main` is only ever
+  released code, which is the same rule the container tags follow. There is no
+  PR-side check at all: the page has no
   build, so there is nothing to gate that `git` doesn't already do. (If a
   validation step ever appears — link check, HTML lint — it goes in this
   workflow on a `pull_request` + same-paths trigger, and **must never** join
