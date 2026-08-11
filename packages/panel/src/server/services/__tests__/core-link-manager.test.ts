@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Core } from "~/shared/cores";
 import type { CoreSecrets } from "../cores";
 import { CoreLinkManager, type CoreCursor, type CoreLinkClientLike } from "../core-link-manager";
+import { CORE_LINK_PROTOCOL_VERSION } from "@actana/shared/core-link-frames";
 
 /**
  * The manager is driven through its injected seams: a fake core-link client and
@@ -233,6 +234,24 @@ describe("core-link manager", () => {
       client.emit.protocolVersion({ version: "0.8.0", compatible: true });
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       expect(h.manager.status("core_a").state).toBe("connected");
+    });
+
+    // Issue 143 / ADR 0024 D11. The capability rides `ready` alongside the
+    // version, so the risk this pins down is that a Core which announces no
+    // `multiConnection` gets read as stale. It is not stale: it is the
+    // single-connection Core, and the version it speaks is this one. The
+    // manager only ever sees `compatible`, which is exactly why it stays true.
+    it("reports a Core announcing no multiConnection capability as connected, not needs-update", () => {
+      h.manager.dial("core_a");
+      const client = h.clients.get("core_a")!;
+      // What a capability-less Core's `ready` yields: a version this Panel
+      // speaks, and no capability anywhere in the payload.
+      client.emit.protocolVersion({ version: CORE_LINK_PROTOCOL_VERSION, compatible: true });
+      client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
+      const status = h.manager.status("core_a");
+      expect(status.state).toBe("connected");
+      expect(status).not.toMatchObject({ state: "needs-update" });
+      expect(status).not.toHaveProperty("coreVersion");
     });
 
     it("still reports a dropped link as unreachable, not as needing an update", () => {
