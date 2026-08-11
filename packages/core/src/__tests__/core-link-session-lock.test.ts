@@ -114,6 +114,7 @@ function mockCore() {
   const ptyTasks = new Map<string, string>();
   const writes: Array<{ ptyId: string; data: string }> = [];
   const kills: string[] = [];
+  const spawns: string[] = [];
   let nextPty = 0;
   let target: ((event: PtyCoreEvent) => void) | null = null;
   const core = {
@@ -121,6 +122,7 @@ function mockCore() {
       target = fn;
     },
     spawn: async (opts: { taskId: string }) => {
+      spawns.push(opts.taskId);
       const ptyId = `pty-${++nextPty}`;
       ptyTasks.set(ptyId, opts.taskId);
       return { ptyId, hooksReportTurnStart: true };
@@ -144,8 +146,22 @@ function mockCore() {
     core: core as unknown as PtyCore,
     writes,
     kills,
+    spawns,
     ptyTasks,
     emit: (event: PtyCoreEvent) => target?.(event),
+  };
+}
+
+/**
+ * The seam `harnessPrompt` lands on. It records what reached it because that is
+ * the only way to tell a refusal from a prompt that was accepted and answered:
+ * the frame's own `accepted: false` also means "no port, or an empty prompt".
+ */
+function mockPromptPort() {
+  const submitted: Array<{ taskId: string; prompt: string }> = [];
+  return {
+    submitted,
+    port: { submitted: (taskId: string, prompt: string) => void submitted.push({ taskId, prompt }) },
   };
 }
 
@@ -180,6 +196,7 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
   let wss: FakeWebSocketServer;
   let core: ReturnType<typeof mockCore>;
   let mutationPort: ReturnType<typeof mockMutationPort>;
+  let promptPort: ReturnType<typeof mockPromptPort>;
   let server: PtyCoreLinkServer;
 
   /** Open a connection and return its socket. Each is one Core client (D3). */
@@ -201,11 +218,13 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
     wss = new FakeWebSocketServer();
     core = mockCore();
     mutationPort = mockMutationPort();
+    promptPort = mockPromptPort();
     server = new PtyCoreLinkServer(core.core, {
       port: 0,
       createServer: () => wss as unknown as WebSocketServerLike,
       eventLog: fakeEventLog().port,
       mutationPort,
+      promptPort: promptPort.port,
       liveEventPollMs: 10_000,
     });
   });
@@ -384,6 +403,101 @@ describe("the Session write lock (issue 144, ADR 0024 D3-D7, D10)", () => {
       });
 
       expect(other.answerTo("o1")).toMatchObject({ type: "tasksMutateResult" });
+    });
+  });
+
+  // ── The mutations D4 does not name in so many words ───────────────────────
+  //
+  // Neither of these appears in D4's list, and both are gated: one because it
+  // lands on the task row through the same writer a gated `tasksMutate` uses,
+  // the other because it starts a second process on a Session somebody else is
+  // driving. The ADR's consequences record both readings.
+  describe("harnessPrompt is a task mutation, whatever it reads like", () => {
+    it("refuses a prompt aimed at a Session another connection holds", async () => {
+      // It reaches the title generator, which writes the row's title through
+      // the same writer a gated `tasksMutate` uses — so a connection holding
+      // nothing must not rename a Session another connection is driving.
+      const holder = connect();
+      const other = connect();
+      await spawn(holder, "task-a");
+      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+
+      other.receive({ type: "harnessPrompt", reqId: "o1", taskId: "task-a", prompt: "rename me" });
+
+      expect(other.answerTo("o1")).toMatchObject({
+        type: "error",
+        code: SESSION_LOCKED_ERROR_CODE,
+      });
+      // Refused, not accepted-and-ignored: nothing reached the generator.
+      expect(promptPort.submitted).toHaveLength(0);
+    });
+
+    it("serves it for the holder, and on a Session nobody holds", async () => {
+      // The other half of the gate, and the D11 promise for this frame too: a
+      // client that never claims goes on submitting prompts exactly as today.
+      const holder = connect();
+      const stranger = connect();
+      await spawn(holder, "task-a");
+      await spawn(stranger, "task-b");
+      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+
+      holder.receive({ type: "harnessPrompt", reqId: "h2", taskId: "task-a", prompt: "mine" });
+      stranger.receive({ type: "harnessPrompt", reqId: "s1", taskId: "task-b", prompt: "unheld" });
+
+      expect(holder.answerTo("h2")).toMatchObject({ type: "harnessPromptResult", accepted: true });
+      expect(stranger.answerTo("s1")).toMatchObject({
+        type: "harnessPromptResult",
+        accepted: true,
+      });
+      expect(promptPort.submitted).toEqual([
+        { taskId: "task-a", prompt: "mine" },
+        { taskId: "task-b", prompt: "unheld" },
+      ]);
+    });
+  });
+
+  describe("spawn against a Session another connection holds", () => {
+    it("is refused before a second process exists", async () => {
+      // Two harnesses in one worktree is the interference the lock exists for,
+      // not a lesser cousin of it. And the `resize` reading does not transfer:
+      // the refusing connection could not have typed into the PTY it was
+      // asking for anyway, since the lock is keyed by taskId for every PTY kind.
+      const holder = connect();
+      const other = connect();
+      await spawn(holder, "task-a");
+      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+
+      other.receive({
+        type: "spawn",
+        reqId: "o1",
+        opts: { taskId: "task-a", cwd: "/w", command: "c" },
+      });
+
+      expect(other.answerTo("o1")).toMatchObject({
+        type: "error",
+        code: SESSION_LOCKED_ERROR_CODE,
+      });
+      // Refused rather than spawned-and-reported: the Core never started one.
+      expect(core.spawns).toEqual(["task-a"]);
+      expect(other.ofType("spawned")).toHaveLength(0);
+    });
+
+    it("still starts a Session nobody holds, from any connection (D5)", async () => {
+      // The creator gets no privilege, and gains no obligation either: a
+      // Session starts unlocked and anybody may spawn into it. A connection
+      // holding one Session can also start the next, the same carve-out
+      // `tasksMutate`'s `create` has.
+      const holder = connect();
+      const other = connect();
+      await spawn(holder, "task-a");
+      holder.receive({ type: "claim", reqId: "h1", taskId: "task-a" });
+
+      const strangerPty = await spawn(other, "task-b");
+      const nextPty = await spawn(holder, "task-c");
+
+      expect(strangerPty).not.toBe(nextPty);
+      expect(core.spawns).toEqual(["task-a", "task-b", "task-c"]);
+      expect(server.sessionLockCount()).toBe(1);
     });
   });
 

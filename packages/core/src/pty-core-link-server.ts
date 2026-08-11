@@ -873,6 +873,27 @@ export class PtyCoreLinkServer {
     const ws = conn.ws;
     switch (frame.type) {
       case "spawn": {
+        // Gated on the `taskId` the spawn names, which D4 does not enumerate —
+        // it lists `write`, `kill` and every task mutation. Gated anyway,
+        // because a `spawn` naming a Session another connection holds starts a
+        // *second* process on the Session that connection is driving, which is
+        // the interference D4 exists to prevent rather than a new one: two
+        // harnesses in one worktree is a worse outcome than the stray keystroke
+        // the lock was written for.
+        //
+        // The reading `resize` got does not transfer. A Reader has a real use
+        // for a resize — it is painting the scrollback into a viewport of its
+        // own — and no use at all for a spawn it may not then type into: the
+        // lock is keyed by `taskId` for every PTY kind, so the very next `write`
+        // to the PTY this frame would create comes back `session-locked`. A
+        // refusal here is the same answer, one round trip earlier and legible.
+        //
+        // A Session nobody holds is still spawned for anybody, so D5's window
+        // is untouched: a creator spawns without claiming exactly as before, and
+        // `tasksMutate`'s `create` — which names no existing Session — keeps its
+        // own carve-out. Only a `taskId` **another** connection holds is
+        // refused.
+        if (this.refuseLockedSession(conn, frame.reqId, frame.opts.taskId)) return;
         try {
           const { ptyId, hooksReportTurnStart } = await this.core.spawn(frame.opts);
           // `shellSession` is the VM Shell Session discriminant (issue 06):
@@ -1098,6 +1119,15 @@ export class PtyCoreLinkServer {
         return;
       }
       case "harnessPrompt": {
+        // A task mutation addressed at a Session, so D4 covers it: the prompt
+        // reaches the title generator, which writes the task row's title
+        // through the same `taskWriter` a gated `tasksMutate` uses. The frame
+        // reads like telemetry and lands as a write, and "every task mutation
+        // addressed at that Session" is decided by where it lands. Small in
+        // consequence — the generator leaves a real or operator-set title alone
+        // — but a connection holding nothing must not rename a Session another
+        // connection is driving.
+        if (this.refuseLockedSession(conn, frame.reqId, frame.taskId)) return;
         // The Panel read this off the terminal because the harness's hooks
         // will not report it. Nothing is patched here; the Core decides on
         // its own whether the Session wants naming.
