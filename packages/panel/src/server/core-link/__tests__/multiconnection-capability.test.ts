@@ -21,11 +21,12 @@ import {
 //     is not sent AT ALL. Not sent-and-tolerate-the-error: nothing reaches the
 //     socket, so the Core never has to answer for a frame it does not know.
 //
-// The frames that will populate the gate do not exist yet — `claim` is the lock
-// ticket's and the PTY subscription is #142's, which owns its name. So the gate
-// is exercised through the constructor seam with a stand-in type. When those
-// frames land, their types join MULTI_CONNECTION_ONLY_FRAME_TYPES and inherit
-// everything asserted here.
+// The gate's mechanics are exercised through the constructor seam with a
+// stand-in type, so they stay readable independently of whichever real frames
+// happen to be registered. The real ones — `ptySubscribe` / `ptyUnsubscribe`
+// from #142 — are covered further down, including the fallback a capability-less
+// Core gets and the ready-before-authOk ordering the reconnect resend needs.
+// `claim` (D6) joins them when the Session lock lands.
 
 type Listener = (...args: unknown[]) => void;
 
@@ -297,11 +298,160 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
   });
 
   describe("the gate's frame registry", () => {
-    it("is empty in this build — the claim and PTY-subscribe frames are not here yet", () => {
-      // Not a placeholder assertion: an empty set is what makes this ticket a
-      // no-op on the wire. If a frame type appears here without the ticket that
-      // owns it, that is the thing to notice.
-      expect([...MULTI_CONNECTION_ONLY_FRAME_TYPES]).toEqual([]);
+    it("holds exactly the PTY subscription frames — the claim frame is not here yet", () => {
+      // Exact membership, not a superset check: this set is the whole statement
+      // of what this build refuses to send to a single-connection Core, so a
+      // type appearing here without the ticket that owns it, or one quietly
+      // dropping out, is the thing to notice. `claim` (D6) joins when the
+      // Session lock lands.
+      expect([...MULTI_CONNECTION_ONLY_FRAME_TYPES].sort()).toEqual([
+        "ptySubscribe",
+        "ptyUnsubscribe",
+      ]);
+    });
+  });
+
+  /**
+   * The fallback a capability-less Core gets (ADR 0024 D11, review of #173).
+   *
+   * #142 put `.catch(() => {})` on every `ptySubscribe` call site, so a gated
+   * refusal is invisible and the pane paints anyway — but only because a
+   * pre-#142 Core fans every PTY out to every connection. That is the right
+   * behaviour arriving by accident, through a swallowed error. Here it is the
+   * decision: the client asks whether this Core can answer, and against one
+   * that cannot it sends nothing and resolves, because the bytes are already
+   * coming.
+   */
+  describe("the single-connection fallback for PTY subscriptions", () => {
+    beforeEach(() => {
+      client = makeClient();
+    });
+
+    it("puts no ptySubscribe on the wire for a Core that never announced it", async () => {
+      readyWithout();
+      await expect(client.ptySubscribe("pty_1", { catchUp: true })).resolves.toBeUndefined();
+      expect(socket.framesOfType("ptySubscribe")).toEqual([]);
+    });
+
+    it("resolves rather than rejecting — the caller is already receiving that PTY", async () => {
+      readyWithout();
+      // The distinction that matters: not a rejection anyone has to swallow.
+      // A caller that got a rejection here would be right to treat the pane as
+      // broken, and it is not.
+      await expect(client.ptySubscribe("pty_1")).resolves.toBeUndefined();
+      await expect(client.ptyUnsubscribe("pty_1")).resolves.toBeUndefined();
+      expect(socket.framesOfType("ptyUnsubscribe")).toEqual([]);
+    });
+
+    it("still paints the pane — the Core fans that PTY out unasked", async () => {
+      readyWithout();
+      const seen: { ptyId: string; data: string }[] = [];
+      client.onData((msg) => seen.push({ ptyId: msg.ptyId, data: msg.data }));
+
+      await client.ptySubscribe("pty_1", { catchUp: true });
+      // A single-connection Core streams every PTY to every connection without
+      // being asked. This is the whole reason the fallback is silence.
+      socket.receive({ type: "data", ptyId: "pty_1", data: "hello", seq: 1 });
+
+      expect(seen).toEqual([{ ptyId: "pty_1", data: "hello" }]);
+      expect(socket.framesOfType("ptySubscribe")).toEqual([]);
+    });
+
+    it("asks for real once that Core comes back announcing the capability", () => {
+      // Why the want is remembered even when no frame goes out. The Core is
+      // upgraded and restarts; the same client reconnects. Nothing else
+      // remembers this pane — the router binds a Core once, not once per
+      // reconnect — so if the fallback had dropped the want, this Core would
+      // now fan out to subscribers only and the pane would go dark.
+      readyWithout();
+      void client.ptySubscribe("pty_1");
+      expect(socket.framesOfType("ptySubscribe")).toEqual([]);
+
+      socket.close();
+      socket.open();
+      readyWithCapability();
+
+      expect(socket.framesOfType("ptySubscribe")).toMatchObject([
+        { ptyId: "pty_1", catchUp: false },
+      ]);
+    });
+
+    it("does not re-ask for a pty released while the Core could not hear it", () => {
+      readyWithout();
+      void client.ptySubscribe("pty_1");
+      void client.ptyUnsubscribe("pty_1");
+
+      socket.close();
+      socket.open();
+      readyWithCapability();
+
+      expect(socket.framesOfType("ptySubscribe")).toEqual([]);
+    });
+  });
+
+  /**
+   * The resend fires from `authOk` and is gated on a capability recorded by
+   * `ready`. Nothing in the client enforces that order — it holds because the
+   * Core sends `ready` as frame one. Pinned here, because if it ever stopped
+   * holding the resend would read "unknown" as "absent", take the fallback, and
+   * silently unsubscribe every held pane on a Core that does announce it.
+   */
+  describe("the reconnect resend and the ready/authOk ordering", () => {
+    function makeAuthedClient(): PtyCoreLinkClient {
+      socket = new FakeWebSocket();
+      const c = new PtyCoreLinkClient({
+        url: "ws://127.0.0.1:0",
+        createSocket: () => socket as unknown as ClientWebSocketLike,
+        reconnectInitialMs: 10_000,
+        reconnectMaxMs: 10_000,
+        storage: memoryStorage(),
+        bearer: "bearer-for-the-auth-path",
+      });
+      socket.open();
+      return c;
+    }
+
+    it("re-asks on authOk, because ready has already answered the capability", () => {
+      client = makeAuthedClient();
+      readyWithCapability();
+      socket.receive({ type: "authOk", coreId: "core_1", exp: Date.now() + 60_000 });
+      fireAndForget(client.ptySubscribe("pty_1"));
+      expect(socket.framesOfType("ptySubscribe")).toHaveLength(1);
+
+      socket.close();
+      socket.open();
+      // Frame one on the new connection, exactly as the Core sends it — then
+      // the auth answer that triggers the resend.
+      readyWithCapability();
+      socket.receive({ type: "authOk", coreId: "core_1", exp: Date.now() + 60_000 });
+
+      expect(socket.framesOfType("ptySubscribe")).toMatchObject([
+        { ptyId: "pty_1", catchUp: false },
+        { ptyId: "pty_1", catchUp: false },
+      ]);
+    });
+
+    it("self-refuses if authOk ever arrives first — the ordering is the guard", () => {
+      // Not a wish for this order, a demonstration of what the order buys. A
+      // Core that answered `auth` before it said `ready` would leave the resend
+      // with no capability to read, and the fallback would eat every held pane.
+      client = makeAuthedClient();
+      readyWithCapability();
+      socket.receive({ type: "authOk", coreId: "core_1", exp: Date.now() + 60_000 });
+      fireAndForget(client.ptySubscribe("pty_1"));
+
+      socket.close();
+      socket.open();
+      socket.receive({ type: "authOk", coreId: "core_1", exp: Date.now() + 60_000 });
+      expect(socket.framesOfType("ptySubscribe")).toHaveLength(1);
+
+      // And it recovers on the next connection that observes the real order,
+      // because the want outlived the connection that could not express it.
+      socket.close();
+      socket.open();
+      readyWithCapability();
+      socket.receive({ type: "authOk", coreId: "core_1", exp: Date.now() + 60_000 });
+      expect(socket.framesOfType("ptySubscribe")).toHaveLength(2);
     });
   });
 });

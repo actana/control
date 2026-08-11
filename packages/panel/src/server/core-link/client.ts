@@ -35,16 +35,17 @@ import {
  * `multiConnection` on `ready` (ADR 0024 D11) — the one list
  * {@link PtyCoreLinkClient.canSendMultiConnectionFrames} guards.
  *
- * **Empty on purpose, today.** The frames that belong here do not exist yet:
- * the Session lock's `claim` (D6) is a later ticket, and the per-connection PTY
- * subscription (D2) is issue 142, which owns that frame's name and shape. Each
- * adds its own type here as it lands and inherits the gate, its tests and its
- * reconnect behaviour without restating any of it. Adding a type to this set is
- * the whole wiring step — nothing else in the client needs to change.
+ * `ptySubscribe` / `ptyUnsubscribe` (issue 142, D2) are the first entries: a
+ * Core that fans a PTY out per subscription is exactly a multi-connection Core,
+ * and one that never announced the capability has no subscription list to put a
+ * PTY on. The Session lock's `claim` (D6) joins them when that ticket lands.
  *
- * Empty means the gate changes nothing about what this build sends, which is
- * the point: a Core without the capability sees byte-for-byte the traffic it
- * saw before this ticket.
+ * Being in this set is not the whole story for a frame with a caller that has
+ * something better to do than fail. A caller that can degrade consults
+ * {@link PtyCoreLinkClient.canSendMultiConnectionFrames} and takes the
+ * single-connection route itself — see {@link PtyCoreLinkClient.ptySubscribe},
+ * which does exactly that. The rejection below is the backstop for callers that
+ * ask without checking, not the designed path for the frames listed here.
  *
  * **The set gates only frames that flow through {@link PtyCoreLinkClient.request}
  * / `rpc()`**, which is where the check lives — `sendSubscribe()`, `sendAuth()`
@@ -53,7 +54,7 @@ import {
  * wiring step for an RPC frame, and only for an RPC frame.
  */
 export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame["type"]> =
-  new Set<CoreLinkRequestFrame["type"]>([]);
+  new Set<CoreLinkRequestFrame["type"]>(["ptySubscribe", "ptyUnsubscribe"]);
 
 export type PtyCoreLinkClientHandlers = {
   onData: (msg: { ptyId: string; data: string; seq: number }) => void;
@@ -329,9 +330,13 @@ export class PtyCoreLinkClient {
         this.sendAuth();
       } else {
         // No bearer configured (tests) — go straight to the event-cursor
-        // subscribe so the Core streams the replay tail.
+        // subscribe so the Core streams the replay tail. The PTY resend does
+        // NOT go here: the capability is not known until this connection's
+        // `ready` lands, and a resend that reads "unknown" takes the
+        // single-connection fallback and unsubscribes every held pane. It is
+        // driven from the `ready` handler instead, which is the earliest point
+        // the answer exists.
         this.sendSubscribe();
-        this.resendPtySubscriptions();
       }
       // Flush any RPCs that were queued while the WS wasn't open (e.g. the
       // first pty.* call after a reconnect, before the WS handshake
@@ -527,6 +532,11 @@ export class PtyCoreLinkClient {
       // Core like any other — it does not touch `compatible` below, so nothing
       // downstream can turn a missing capability into "needs update".
       this.multiConnection = readMultiConnectionCapability(msg.multiConnection);
+      // With a bearer, the PTY resend waits for `authOk` — the Core refuses a
+      // pre-auth `ptySubscribe`. Without one there is no `authOk` coming, and
+      // this frame is the first moment the capability is known, so the resend
+      // belongs here. Either way it runs after the capability, never before.
+      if (!this.bearer) this.resendPtySubscriptions();
       const payload = {
         version: this.protocolVersion,
         compatible: coreLinkProtocolCompatible(this.protocolVersion),
@@ -551,7 +561,10 @@ export class PtyCoreLinkClient {
       this.sendSubscribe();
       // PTY subscriptions die with the Core-side connection, so they are
       // re-established here — after `auth`, for the same reason `subscribe` is:
-      // the Core refuses a pre-auth `ptySubscribe`.
+      // the Core refuses a pre-auth `ptySubscribe`. This is also after `ready`,
+      // which the Core sends as frame one on every connection, so the
+      // capability the resend is gated on is already recorded. That ordering is
+      // load-bearing rather than incidental — see the test that pins it.
       this.resendPtySubscriptions();
       for (const cb of this.authOkListeners) cb({ coreId, exp });
       return;
@@ -868,10 +881,27 @@ export class PtyCoreLinkClient {
    * The set is remembered and re-sent on every reconnect, because the Core
    * hangs subscriptions off the connection. Idempotent on both sides: a second
    * call for a PTY already subscribed is a no-op here and an ack there.
+   *
+   * **Against a Core that does not announce `multiConnection`, this sends
+   * nothing and resolves** (ADR 0024 D11). That is the deliberate
+   * single-connection fallback, not a swallowed failure: such a Core fans every
+   * PTY out to every connection, so the caller is already receiving the bytes
+   * it just asked for and the subscription it would send is a frame that Core
+   * has no vocabulary for. Resolving says what is true — this link renders that
+   * PTY — which is the only thing the caller acts on.
+   *
+   * The want is recorded either way, because this set is not a record of what
+   * the Core holds: it is what this link wants, and every connection re-derives
+   * its frames from it against *that* connection's announced capability. Drop
+   * the want when no frame goes out and a Core that gains the capability across
+   * a restart comes back fanning out to subscribers only, with nothing left
+   * anywhere that remembers to subscribe — the router binds a Core once, not
+   * once per reconnect, so this set is the only memory there is.
    */
   ptySubscribe(ptyId: string, opts: { catchUp?: boolean } = {}): Promise<void> {
     if (this.subscribedPtys.has(ptyId)) return Promise.resolve();
     this.subscribedPtys.add(ptyId);
+    if (!this.canSendMultiConnectionFrames()) return Promise.resolve();
     return this.rpc({
       type: "ptySubscribe",
       reqId: "",
@@ -880,9 +910,17 @@ export class PtyCoreLinkClient {
     }).then(() => undefined);
   }
 
-  /** Stop receiving one PTY's stream. Idempotent; see {@link ptySubscribe}. */
+  /**
+   * Stop receiving one PTY's stream. Idempotent; see {@link ptySubscribe}.
+   *
+   * Same fallback, for the same reason: against a capability-less Core there is
+   * no subscription to drop — its fan-out is unconditional and cannot be
+   * narrowed by a frame it does not know. Forgetting the want here is the whole
+   * of what this call can honestly do.
+   */
   ptyUnsubscribe(ptyId: string): Promise<void> {
     if (!this.subscribedPtys.delete(ptyId)) return Promise.resolve();
+    if (!this.canSendMultiConnectionFrames()) return Promise.resolve();
     return this.rpc({ type: "ptyUnsubscribe", reqId: "", ptyId }).then(() => undefined);
   }
 
@@ -894,8 +932,18 @@ export class PtyCoreLinkClient {
    * replay do it off their own reconnect, one layer up, and a hold nobody
    * releases is a pane that stays blank forever. Going live immediately is also
    * exactly what this path did before subscriptions existed.
+   *
+   * Callers must have the capability answer in hand before calling this, which
+   * is why it hangs off `authOk` (the Core's `ready` is frame one, so the
+   * capability is recorded before any auth answer can arrive) and off `ready`
+   * itself when no bearer is configured. Called any earlier it would read an
+   * unknown capability as absent and take the fallback below against a Core
+   * that does announce it — every held pane silently unsubscribed.
    */
   private resendPtySubscriptions(): void {
+    // The same deliberate single-connection fallback {@link ptySubscribe}
+    // takes: a Core without the capability is already sending these PTYs.
+    if (!this.canSendMultiConnectionFrames()) return;
     for (const ptyId of this.subscribedPtys) {
       void this.rpc({ type: "ptySubscribe", reqId: "", ptyId, catchUp: false }).catch(() => {
         /* the socket died again; the next open re-sends the whole set */
