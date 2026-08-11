@@ -159,6 +159,19 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
       expect(client.canSendMultiConnectionFrames()).toBe(false);
     });
 
+    it("closes the moment the link drops, not when the next one opens", () => {
+      readyWithCapability();
+      expect(client.canSendMultiConnectionFrames()).toBe(true);
+
+      // The window the reconnect backoff lives in: closed, not yet reopened.
+      // The Core on the other end is gone and the next one may be a downgraded
+      // build, so the answer here is unknown — which is `false`, not the
+      // previous connection's `true`.
+      socket.close();
+      expect(client.canSendMultiConnectionFrames()).toBe(false);
+      expect(client.multiConnectionCapability()).toBe(null);
+    });
+
     it("picks the capability back up when an upgraded Core reconnects", () => {
       readyWithout();
       socket.close();
@@ -201,6 +214,30 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
       socket.open();
       readyWithCapability();
       expect(socket.framesOfType(GATED)).toHaveLength(0);
+    });
+
+    it("refuses it in the drop window, and nothing flushes when the socket reopens", async () => {
+      readyWithCapability();
+      // The link drops. Nothing has re-announced anything yet, so a frame asked
+      // for now must be refused outright — if the stale `true` let it past the
+      // gate it would land on the queue, and the reopen drain writes the queue
+      // to the socket unconditionally, before that connection's `ready`.
+      socket.close();
+      const refused = client.request({ type: GATED } as unknown as CoreLinkRequestFrame);
+      fireAndForget(refused);
+
+      // Reconnect to a Core that DOES announce the capability: the frame would
+      // be allowed if asked for now, so nothing about the new connection can
+      // explain a GATED frame on the wire. Only a flush of the queue could —
+      // which is why this assertion comes before the rejection one. A frame
+      // that slipped past the gate is still pending here, not rejected, so
+      // asserting the rejection first would fail as a timeout and say nothing
+      // about the wire.
+      socket.open();
+      readyWithCapability();
+      expect(socket.framesOfType(GATED)).toHaveLength(0);
+
+      await expect(refused).rejects.toThrow(/multiConnection capability/);
     });
 
     it("sends it once the Core announces the capability", () => {

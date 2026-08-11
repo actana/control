@@ -45,8 +45,15 @@ import {
  * Empty means the gate changes nothing about what this build sends, which is
  * the point: a Core without the capability sees byte-for-byte the traffic it
  * saw before this ticket.
+ *
+ * **The set gates only frames that flow through {@link PtyCoreLinkClient.request}
+ * / `rpc()`**, which is where the check lives — `sendSubscribe()`, `sendAuth()`
+ * and the reconnect queue drain build frames and write to the socket directly,
+ * and no entry here would stop them. So "add the type to this set" is the whole
+ * wiring step for an RPC frame, and only for an RPC frame.
  */
-export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<string> = new Set<string>([]);
+export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame["type"]> =
+  new Set<CoreLinkRequestFrame["type"]>([]);
 
 export type PtyCoreLinkClientHandlers = {
   onData: (msg: { ptyId: string; data: string; seq: number }) => void;
@@ -357,6 +364,12 @@ export class PtyCoreLinkClient {
       this.ready = false;
       this.subscribed = false;
       this.authenticated = false;
+      // Forget the capability the moment the link drops, not when the next one
+      // opens. Between those two points the answer is unknown, and a stale
+      // `true` would let a gated frame past `canSendMultiConnectionFrames()`
+      // onto `queuedFrames`, which the reopen drain writes to the socket
+      // unconditionally — before the new `ready` says whether it is allowed.
+      this.multiConnection = null;
       this.stopHeartbeat();
       this.rejectInFlight("core-link connection lost");
       if (this.closed) return;

@@ -250,7 +250,6 @@ describe("core-link manager", () => {
       client.emit.authOk({ coreId: "core_a", exp: Date.now() + 60_000 });
       const status = h.manager.status("core_a");
       expect(status.state).toBe("connected");
-      expect(status).not.toMatchObject({ state: "needs-update" });
       expect(status).not.toHaveProperty("coreVersion");
     });
 
