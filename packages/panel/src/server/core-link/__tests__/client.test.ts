@@ -112,6 +112,10 @@ function makeMockCore(): PtyCore & {
     })),
     killPtysUnderPath: vi.fn(async () => ({ ptyCount: 1 })),
     findByTask: vi.fn(() => ({ ptyId: "pty-test-1" })),
+    // Which Session a `write`/`kill` would touch (issue 144) — the lookup the
+    // Core's Session-lock gate resolves a ptyId through. Null here: this suite
+    // claims nothing, so every Session it touches is unlocked and served.
+    taskIdForPty: vi.fn(() => null),
     replay: vi.fn(() => ({ data: "buffered", nextSeq: 42 })),
     killAll: vi.fn(),
     _emit: null,

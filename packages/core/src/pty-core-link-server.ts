@@ -18,12 +18,22 @@
 // PTY output fans out *by subscription* (issue 142, ADR 0024 D2). The Core
 // still installs one emit target, but a connection receives a PTY's `data` and
 // `exit` only after asking for that `ptyId` — see {@link PtySubscription}.
+//
+// Every Session has at most one writer (issue 144, ADR 0024 D3–D7, D10). The
+// `claim` / `release` / `forceTakeover` frames name a Session by `taskId`, the
+// {@link SessionLockTable} records which connection holds it, and the
+// mutation frames this server serves — `write`, `kill`, and every `tasksMutate`
+// addressed at a Session — are refused when *another* connection holds it. The
+// gate is here, on the client-facing frames, and nowhere else: `PtyCore.kill`
+// has callers inside the Core (the PTY exit paths, the task writer) that are
+// nobody's client, and a gate down there would have the Core refuse itself.
 
 import log from "./log";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   HARNESS_INSTALL_FAILED_EVENT_KIND,
+  SESSION_LOCKED_ERROR_CODE,
   parseCoreLinkRequestFrame,
   serializeCoreLinkFrame,
   type CoreLinkHarnessAvailabilityMap,
@@ -45,6 +55,7 @@ import {
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot };
 import type { PtyCore, PtyCoreEvent } from "./pty-manager";
 import { CoreTaskWriter } from "./core-task-writer";
+import { SessionLockTable } from "./session-lock-table";
 
 /**
  * The slice of the event-log store the server needs. The real implementation
@@ -435,6 +446,19 @@ export class PtyCoreLinkServer {
    */
   private readonly connections = new Map<WebSocketLike, ActiveConnection>();
   /**
+   * Which connection may mutate which Session (issue 144, ADR 0024 D3–D7).
+   *
+   * One table for the whole Core, not one per connection: the question it
+   * answers is "who holds this Session", and every connection has to be able to
+   * ask it. Scoped to a Session and never Core-wide (D4) — different Sessions
+   * on one Core may be held by different clients at the same time, which is the
+   * ordinary case this effort exists to enable, not the contended one.
+   *
+   * In memory, dying with the Core (D12). There is nothing to persist: the PTYs
+   * these locks guard do not survive the daemon either.
+   */
+  private readonly sessionLocks = new SessionLockTable();
+  /**
    * True while `core.setEmitTarget` holds this server's fan-out callback. One
    * callback for the whole server, not one per connection — the target is a
    * single global sink on `PtyCore`, so a per-connection one would have the
@@ -556,10 +580,28 @@ export class PtyCoreLinkServer {
    * vanishes without unsubscribing leaves nothing behind (issue 142). The emit
    * target is released only when the last connection goes, which is what makes
    * a Core with no clients quiet again.
+   *
+   * **Session locks do need a sweep, and it has to be all of them** (issue 144,
+   * ADR 0024 D7). They live in a Core-wide table rather than on the connection,
+   * precisely so every connection can ask who holds what — which means dropping
+   * the connection does not drop them, and a connection may be holding several
+   * Sessions at once. A drop is one of the three ways a lock ends, and the other
+   * two are gestures a vanished client is in no position to make: a lock missed
+   * here is a Session no one can write and no one can release, until a human
+   * reaches for a force takeover or the Core restarts. ADR 0024 already accepts
+   * a stale connection holding its locks for as long as the heartbeat takes to
+   * reap it (45s); leaving one behind here would turn that bound into forever.
    */
   private dropConnection(ws: WebSocketLike, conn: ActiveConnection): void {
     conn.stopHeartbeat();
     conn.stopPoll();
+    // Unconditional, and before the identity guard below: this connection is
+    // over regardless of whether it is still the one in the registry, and a
+    // lock it holds has to go with it either way.
+    const released = this.sessionLocks.releaseAll(conn);
+    if (released.length > 0) {
+      log.info("core-link.session-lock.released-on-drop", { taskIds: released });
+    }
     // Guard on identity, not presence: a socket that was already replaced in
     // the map must not evict its successor.
     if (this.connections.get(ws) === conn) this.connections.delete(ws);
@@ -778,6 +820,55 @@ export class PtyCoreLinkServer {
     return null;
   }
 
+  /**
+   * Refuse a mutation aimed at a Session another connection holds, and say so
+   * (issue 144, ADR 0024 D4/D6). Returns true when the frame was refused and
+   * the caller must stop.
+   *
+   * The refusal is an `error` carrying {@link SESSION_LOCKED_ERROR_CODE},
+   * because the client has to tell it apart from the other way a mutation fails
+   * to land — "that Session is gone" — and those two arrive on different frames:
+   * a Session this Core no longer has answers with the ordinary
+   * `writeResult { ok: false }` / `killResult { ok: false }` /
+   * `tasksMutateResult { task: null }` it always did. One of them is worth
+   * retrying after a claim; the other never is.
+   *
+   * An **unlocked** Session is not refused. That is D11's compatibility promise
+   * doing its work: a client that never claims — every client that predates this
+   * — meets an unlocked Session and is served exactly as it is today. D6's "a
+   * mutation without the lock is an error" governs *acquisition*: a mutation
+   * never becomes a claim. It does not make an unclaimed Session unwritable.
+   */
+  private refuseLockedSession(
+    conn: ActiveConnection,
+    reqId: string,
+    taskId: string | null | undefined,
+  ): boolean {
+    if (this.sessionLocks.mayMutate(taskId, conn)) return false;
+    this.send(conn.ws, {
+      type: "error",
+      reqId,
+      code: SESSION_LOCKED_ERROR_CODE,
+      message: "Another Core client holds this Session's lock",
+    });
+    return true;
+  }
+
+  /**
+   * The same refusal for a frame that names a `ptyId` rather than a Session —
+   * `write` and `kill`.
+   *
+   * The `ptyId` is resolved to the Task it was spawned for, because that is what
+   * a lock is keyed by: a Session is its Task, and keying on the process would
+   * give one Session as many locks as it has had PTYs. A `ptyId` this Core has
+   * no PTY for resolves to null and is **not** refused — there is no Session
+   * there to be holding, and the call below is about to answer `ok: false`,
+   * which is precisely the "that Session is gone" answer the caller needs.
+   */
+  private refuseLockedPty(conn: ActiveConnection, reqId: string, ptyId: string): boolean {
+    return this.refuseLockedSession(conn, reqId, this.core.taskIdForPty(ptyId));
+  }
+
   private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
     const ws = conn.ws;
     switch (frame.type) {
@@ -813,18 +904,68 @@ export class PtyCoreLinkServer {
         return;
       }
       case "write": {
+        if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
         const ok = this.core.write(frame.ptyId, frame.data);
         this.send(ws, { type: "writeResult", reqId: frame.reqId, ok });
         return;
       }
       case "resize": {
+        // Deliberately not gated. D4 names the mutations the lock covers —
+        // `write`, `kill`, and every task mutation addressed at the Session —
+        // and a resize is none of them: it is how a client tells the PTY the
+        // size of the viewport it is painting into, and every Reader has one.
+        // A Reader whose resize were refused would render the Session's
+        // scrollback reflowed to somebody else's terminal, which is a worse
+        // answer than the interference gating it would prevent. Widening D4 to
+        // cover it is an amendment to #140, not a call for this ticket.
         const ok = this.core.resize(frame.ptyId, frame.cols, frame.rows);
         this.send(ws, { type: "resizeResult", reqId: frame.reqId, ok });
         return;
       }
       case "kill": {
+        // The client-facing kill, and the only one that is gated. `PtyCore.kill`
+        // keeps answering its callers inside the Core — the PTY exit paths, the
+        // task writer — which hold no lock and are nobody's client.
+        if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
         const ok = this.core.kill(frame.ptyId);
         this.send(ws, { type: "killResult", reqId: frame.reqId, ok });
+        return;
+      }
+      // ─── Session lock (issue 144, ADR 0024 D3–D7, D10) ───
+      case "claim": {
+        const { granted } = this.sessionLocks.claim(frame.taskId, conn);
+        this.send(ws, {
+          type: "claimResult",
+          reqId: frame.reqId,
+          taskId: frame.taskId,
+          granted,
+        });
+        return;
+      }
+      case "release": {
+        const released = this.sessionLocks.release(frame.taskId, conn);
+        this.send(ws, {
+          type: "releaseResult",
+          reqId: frame.reqId,
+          taskId: frame.taskId,
+          released,
+        });
+        return;
+      }
+      case "forceTakeover": {
+        const { takenFrom } = this.sessionLocks.forceTakeover(frame.taskId, conn);
+        if (takenFrom === "another-connection") {
+          // Worth a line in the Core's log even though nothing failed: this is
+          // the one lock transition an operator did not agree to, and the
+          // loser's in-flight keystrokes are gone (ADR 0024, known risks).
+          log.info("core-link.session-lock.force-takeover", { taskId: frame.taskId });
+        }
+        this.send(ws, {
+          type: "forceTakeoverResult",
+          reqId: frame.reqId,
+          taskId: frame.taskId,
+          takenFrom,
+        });
         return;
       }
       case "killLaunchProcesses": {
@@ -930,6 +1071,16 @@ export class PtyCoreLinkServer {
         return;
       }
       case "tasksMutate": {
+        // "Every task mutation addressed at that Session" (D4). An `update` or
+        // a `delete` names a taskId and is therefore addressed at one; a
+        // `create` names no existing Session and so has none to be refused by —
+        // an automation holding one Session must still be able to start another.
+        if (
+          frame.mutation.op !== "create" &&
+          this.refuseLockedSession(conn, frame.reqId, frame.mutation.taskId)
+        ) {
+          return;
+        }
         if (!this.mutationPort) {
           this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task: null });
           return;
@@ -1189,6 +1340,15 @@ export class PtyCoreLinkServer {
     return total;
   }
 
+  /**
+   * @internal How many Sessions are locked right now, across every connection.
+   * Exists so a test can assert the sweep D7 requires: a client that disappears
+   * holding several Sessions leaves this at zero.
+   */
+  sessionLockCount(): number {
+    return this.sessionLocks.heldCount();
+  }
+
   private send(ws: WebSocketLike, frame: CoreLinkServerFrame): void {
     try {
       ws.send(serializeCoreLinkFrame(frame));
@@ -1223,6 +1383,10 @@ export class PtyCoreLinkServer {
       }
     }
     this.connections.clear();
+    // Locks die with the Core (D12). Nothing here is handed on to a next
+    // process, and a Core that comes back returns every Session to unlocked —
+    // the correct state for a Session with no running process behind it.
+    this.sessionLocks.clear();
     this.releaseEmitTarget();
     this.server.close();
   }
