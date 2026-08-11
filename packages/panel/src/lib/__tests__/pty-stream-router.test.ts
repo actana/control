@@ -7,10 +7,12 @@ import {
   type PtyStreamTransport,
 } from "../pty-stream-router";
 
-function makeTransport(opts: { replay?: PtyReplayFn } = {}) {
+function makeTransport(opts: { replay?: PtyReplayFn; subscriptions?: boolean } = {}) {
   const dataCbs: Array<(msg: PtyDataMsg) => void> = [];
   const exitCbs: Array<(msg: PtyExitMsg) => void> = [];
   const reconnectCbs: Array<() => void> = [];
+  /** What the router asked the Core for, in order (issue 142). */
+  const ptyCalls: Array<{ op: "subscribe" | "unsubscribe"; ptyId: string; catchUp?: boolean }> = [];
   const transport: PtyStreamTransport = {
     onData: (cb) => {
       dataCbs.push(cb);
@@ -29,9 +31,22 @@ function makeTransport(opts: { replay?: PtyReplayFn } = {}) {
           },
         }
       : {}),
+    ...(opts.subscriptions
+      ? {
+          subscribe: (ptyId: string, o?: { catchUp?: boolean }) => {
+            ptyCalls.push({ op: "subscribe", ptyId, catchUp: o?.catchUp === true });
+            return Promise.resolve();
+          },
+          unsubscribe: (ptyId: string) => {
+            ptyCalls.push({ op: "unsubscribe", ptyId });
+            return Promise.resolve();
+          },
+        }
+      : {}),
   };
   return {
     transport,
+    ptyCalls,
     emitData: (msg: PtyDataMsg) => dataCbs.forEach((cb) => cb(msg)),
     emitExit: (msg: PtyExitMsg) => exitCbs.forEach((cb) => cb(msg)),
     reconnect: () => reconnectCbs.forEach((cb) => cb()),
@@ -334,5 +349,54 @@ describe("pty-stream-router", () => {
     expect(getPtyStreamRouter(t1.transport)).toBe(getPtyStreamRouter(t1.transport));
     expect(getPtyStreamRouter(t1.transport)).not.toBe(getPtyStreamRouter(t2.transport));
     expect(t1.listenerCount()).toBe(2);
+  });
+});
+
+/**
+ * A pane claims a pty when it starts rendering it, and since issue 142 that
+ * claim is also what tells the Core to send it at all. Without this, the Panel
+ * renders nothing: the Core fans output out by subscription now, and a pane
+ * that never asks is a pane that never paints.
+ */
+describe("pty-stream-router · asking the Core for what it renders", () => {
+  it("subscribes on claim and releases on unclaim", () => {
+    const t = makeTransport({ subscriptions: true });
+    const router = createPtyStreamRouter(t.transport);
+    const handlers = { data: () => undefined, exit: () => undefined };
+
+    const unclaim = router.claim("a", handlers);
+    expect(t.ptyCalls).toEqual([{ op: "subscribe", ptyId: "a", catchUp: true }]);
+
+    unclaim();
+    expect(t.ptyCalls.at(-1)).toEqual({ op: "unsubscribe", ptyId: "a" });
+  });
+
+  it("leaves the live claim alone when a replaced surface tears down", () => {
+    const t = makeTransport({ subscriptions: true });
+    const router = createPtyStreamRouter(t.transport);
+    const stale = router.claim("a", { data: () => undefined, exit: () => undefined });
+    router.claim("a", { data: () => undefined, exit: () => undefined });
+
+    // The surface that lost the pty unclaims after its successor took it. It
+    // must not take the successor's subscription down with it.
+    stale();
+
+    expect(t.ptyCalls.filter((c) => c.op === "unsubscribe")).toEqual([]);
+  });
+
+  it("claims a pty a transport with no subscriptions can still route", () => {
+    // A transport that hands over everything (no `subscribe`) keeps working —
+    // the claim is bookkeeping there, not a request.
+    const t = makeTransport();
+    const router = createPtyStreamRouter(t.transport);
+    const got: string[] = [];
+    const unclaim = router.claim("a", {
+      data: (msg) => got.push(msg.data),
+      exit: () => undefined,
+    });
+    t.emitData({ ptyId: "a", data: "x", seq: 1 });
+    unclaim();
+
+    expect(got).toEqual(["x"]);
   });
 });

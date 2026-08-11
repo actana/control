@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   attachTerminalKeyHandler,
+  setTerminalReadOnly,
   stripTerminalSelectionFormatting,
   terminalExitTaskStatus,
   wireTerminalFileDrop,
@@ -243,5 +244,50 @@ describe("wireTerminalFileDrop", () => {
     } as unknown as DragEvent;
     listeners.get("dragover")?.(pathDrag);
     expect(pathDrag.preventDefault).toHaveBeenCalledOnce();
+  });
+});
+
+describe("setTerminalReadOnly", () => {
+  // Read-only is a state of the SAME terminal (issue 147, CONTEXT.md's Singular
+  // UI): the surface keeps painting every byte, and only its input goes away.
+  function term() {
+    return {
+      options: {} as {
+        disableStdin?: boolean;
+        cursorBlink?: boolean;
+        cursorInactiveStyle?: string;
+      },
+      blurred: false,
+      blur() {
+        this.blurred = true;
+      },
+    };
+  }
+
+  it("stops xterm accepting keystrokes at all", () => {
+    const t = term();
+    setTerminalReadOnly(t, true);
+    // Before `onData`, so nothing is typed and nothing is echoed — the operator
+    // finds out by looking, not by pressing a key and watching it do nothing.
+    expect(t.options.disableStdin).toBe(true);
+  });
+
+  it("takes the cursor with it", () => {
+    const t = term();
+    setTerminalReadOnly(t, true);
+    // A blinking cursor is the strongest "type here" a terminal has, and one on
+    // a surface that accepts nothing is the affordance worse than none.
+    expect(t.options.cursorBlink).toBe(false);
+    expect(t.options.cursorInactiveStyle).toBe("none");
+    expect(t.blurred).toBe(true);
+  });
+
+  it("gives the terminal back when the Session is writable again", () => {
+    const t = term();
+    setTerminalReadOnly(t, true);
+    setTerminalReadOnly(t, false);
+    expect(t.options.disableStdin).toBe(false);
+    expect(t.options.cursorBlink).toBe(true);
+    expect(t.options.cursorInactiveStyle).toBe("outline");
   });
 });

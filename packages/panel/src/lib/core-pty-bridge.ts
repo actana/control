@@ -31,6 +31,22 @@ export type CorePtyBridge = {
   kill: (ptyId: string) => Promise<boolean>;
   /** The output this pty has buffered — all of it, or the tail past `sinceSeq`. */
   replay: (ptyId: string, sinceSeq?: number) => Promise<CoreLinkPtyReplay>;
+  /**
+   * Start receiving one pty's output (issue 142). A Core sends a pty's stream
+   * only to the connections that asked for it, so a pane that does not claim
+   * its pty renders nothing at all — this is what `onData`/`onExit` are gated
+   * on, not a filter over everything the machine is producing.
+   *
+   * `catchUp` says a `replay` for this pty follows, and asks the Core to hold
+   * the live stream until it has been served so the two never land out of
+   * order. The claim path always sets it; see `pty-stream-router`.
+   *
+   * The link remembers what it is subscribed to and re-asks on every reconnect,
+   * so a pane claims once and keeps its stream across a dropped link.
+   */
+  subscribe: (ptyId: string, opts?: { catchUp?: boolean }) => Promise<void>;
+  /** Stop receiving one pty's output. Idempotent, like {@link subscribe}. */
+  unsubscribe: (ptyId: string) => Promise<void>;
   findByTask: (taskId: string) => Promise<{ ptyId: string | null }>;
   onData: (cb: (msg: { ptyId: string; data: string; seq: number }) => void) => () => void;
   onExit: (
@@ -107,6 +123,11 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
       });
       return { data: result.data, nextSeq: result.nextSeq, from: result.from };
     },
+    // Through the link's own claim bookkeeping rather than a bare request: the
+    // service gives a tab's claims back when its socket dies, so the set has to
+    // live somewhere that sees the link come back and re-ask.
+    subscribe: (ptyId, opts) => link.ptySubscribe(coreId, ptyId, opts),
+    unsubscribe: (ptyId) => link.ptyUnsubscribe(coreId, ptyId),
     findByTask: async (taskId) => {
       const result = await link.request<Answer<"findByTaskResult">>(coreId, {
         type: "findByTask",

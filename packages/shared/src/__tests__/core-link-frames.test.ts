@@ -5,6 +5,7 @@ import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
   coreLinkProtocolCompatible,
   parseCoreLinkRequestFrame,
+  readMultiConnectionCapability,
   serializeCoreLinkFrame,
   type CoreLinkEvent,
   type CoreLinkRequestFrame,
@@ -106,6 +107,21 @@ describe("core-link-frames", () => {
         type: "spawn",
         reqId: "r2",
         opts: { shellSession: true, taskId: "vm2", command: "htop" },
+      };
+      const parsed = parseCoreLinkRequestFrame(JSON.stringify(frame));
+      expect(parsed).toEqual(frame);
+    });
+
+    it("parses a reclaim frame carrying a client id (issue 146, ADR 0024 D9)", () => {
+      // The type registry is the whole of the validation here, so a frame left
+      // out of it does not fail loudly: the Core answers "invalid frame" and a
+      // reconnecting client silently waits out the 45s heartbeat instead of
+      // reclaiming. The id is carried through untouched — no shape, no length,
+      // nothing verified, which is D9's whole point.
+      const frame: CoreLinkRequestFrame = {
+        type: "reclaim",
+        reqId: "r1",
+        clientId: "panel-9f2c1b7a4e0d",
       };
       const parsed = parseCoreLinkRequestFrame(JSON.stringify(frame));
       expect(parsed).toEqual(frame);
@@ -405,6 +421,70 @@ describe("core-link-frames", () => {
   describe("CORE_LINK_PROTOCOL_VERSION", () => {
     it("is a semver string", () => {
       expect(CORE_LINK_PROTOCOL_VERSION).toMatch(/^\d+\.\d+\.\d+$/);
+    });
+
+    // The reason lives in the test name on purpose: this assertion exists to
+    // fail a future edit that bumps the version *for the multiConnection
+    // surface*, and whoever reads that failure needs the reason, not the
+    // number.
+    it("stays 0.15.0 because multiConnection is announced as a ready capability, so no Core in any fleet is marked needs-update for it (ADR 0024 D11, issue 143)", () => {
+      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.15.0");
+    });
+
+    it("leaves a Core that announces no multiConnection capability fully compatible — absence is a supported state, not drift", () => {
+      const capabilityLessReady: CoreLinkServerFrame = {
+        type: "ready",
+        version: CORE_LINK_PROTOCOL_VERSION,
+      };
+      expect(coreLinkProtocolCompatible(CORE_LINK_PROTOCOL_VERSION)).toBe(true);
+      expect(readMultiConnectionCapability((capabilityLessReady as { multiConnection?: unknown }).multiConnection)).toBe(
+        null,
+      );
+    });
+  });
+
+  describe("readMultiConnectionCapability (issue 143, ADR 0024 D11)", () => {
+    it("reads version 1", () => {
+      expect(readMultiConnectionCapability({ version: 1 })).toEqual({ version: 1 });
+    });
+
+    it("reads an absent capability as null — the single-connection Core that shipped before it", () => {
+      expect(readMultiConnectionCapability(undefined)).toBe(null);
+      expect(readMultiConnectionCapability(null)).toBe(null);
+    });
+
+    it("reads a version this build does not know as null, falling back to single-connection rather than guessing", () => {
+      expect(readMultiConnectionCapability({ version: 2 })).toBe(null);
+      expect(readMultiConnectionCapability({ version: 0 })).toBe(null);
+    });
+
+    it("reads a malformed capability as null", () => {
+      expect(readMultiConnectionCapability({})).toBe(null);
+      expect(readMultiConnectionCapability({ version: "1" })).toBe(null);
+      expect(readMultiConnectionCapability("multiConnection")).toBe(null);
+      expect(readMultiConnectionCapability(1)).toBe(null);
+    });
+  });
+
+  describe("the ready frame's multiConnection capability (issue 143)", () => {
+    it("serializes with the capability when the Core announces it", () => {
+      const frame: CoreLinkServerFrame = {
+        type: "ready",
+        version: CORE_LINK_PROTOCOL_VERSION,
+        multiConnection: { version: 1 },
+      };
+      expect(JSON.parse(serializeCoreLinkFrame(frame))).toEqual({
+        type: "ready",
+        version: CORE_LINK_PROTOCOL_VERSION,
+        multiConnection: { version: 1 },
+      });
+    });
+
+    it("serializes without the field at all when the Core does not announce it", () => {
+      const frame: CoreLinkServerFrame = { type: "ready", version: CORE_LINK_PROTOCOL_VERSION };
+      const wire = JSON.parse(serializeCoreLinkFrame(frame));
+      expect(wire).toEqual({ type: "ready", version: CORE_LINK_PROTOCOL_VERSION });
+      expect("multiConnection" in wire).toBe(false);
     });
   });
 

@@ -35,8 +35,20 @@ The agentic coding CLI a session drives — `claude-code`, `codex`, `cursor-cli`
 _Avoid_: agent, task agent, AI runtime, tool, model
 
 **Core link**:
-The persistent bidirectional WebSocket connection between a Panel and a Core. Carries PTY streams, task mutations, hook events, and notifications as framed JSON messages. Long-lived; survives Panel sleep; replays missed events on reconnect via a monotonic event cursor.
+The persistent bidirectional WebSocket connection between a Core client and a Core. Carries PTY streams, task mutations, hook events, and notifications as framed JSON messages. Long-lived; survives Panel sleep; replays missed events on reconnect via a monotonic event cursor.
 _Avoid_: tunnel, channel, pipe, API
+
+**Core client**:
+Any program terminating a core link — the Panel, the `actana` CLI, an SDK automation. A Core serves many at once, each with its own event cursor, subscriptions and heartbeat, and none of them privileged: the Panel is a Core client like the others. The unit of write authority is the connection, not the human or the program behind it, so a client that reconnects is a new client until it says otherwise. See ADR 0024.
+_Avoid_: consumer, subscriber, peer, client session
+
+**Core client id**:
+The string a Core client presents on connecting, so a Core can tell that this connection replaces one it is already serving — the same client back after its link died. Used for reaping and for nothing else: the Core closes the predecessor and moves its **Session locks** across in one step, rather than leaving a ghost holding them until the heartbeat reaps it. Never signed, never verified, never authentication, and never a substitute for the bearer; it grants nothing a connection cannot already take with a force takeover. Minted per Core client and never derived from the registration blob, which is shared by every client on the machine. See ADR 0024 D9.
+_Avoid_: client identity, credential, session id, token, fingerprint
+
+**Core alias**:
+The name one Panel shows for a Core. Panel-local presentation, stored in that Panel's Core registry beside the endpoint and auth material — not a Core fact, and two Panels registering one Core are meant to disagree about it. The Core neither knows nor publishes it.
+_Avoid_: core name, label, hostname, display name
 
 ### Ownership inside a Core
 
@@ -53,6 +65,18 @@ _UI note_: user-facing strings label a Task as "Session" (e.g. "Start a new sess
 The live or replayable conversation backing a Task — the PTY stream plus the harness's own session id. A Core runs many sessions; each session drives exactly one Harness. Replayable after Panel reconnect via the Core's event log.
 _Avoid_: conversation, thread
 
+**Session lock** (Core-scoped):
+The exclusive right of one Core client to mutate one Session — its writes, its kill, and every task mutation addressed at it. Held by a core-link connection, never by a person or a program; scoped to a single Session, so different Sessions on one Core may be held by different clients. A Session starts unlocked and its creator gets no privilege; claiming is an explicit gesture; the lock ends on release, on connection drop, or on force takeover, and never on idle. It lives in memory and dies with the Core, exactly like the PTYs it guards. **Published, not discovered by failing:** every Session snapshot carries the lock as the client it was sent to must be told it — whether *you* may write, never who holds it — and every change appends a `session:lockChanged` event that replays by cursor. See ADR 0024.
+_Avoid_: session owner, mutex, reservation, ownership
+
+**Reader** (Core-scoped):
+A Core client attached to a Session it does not hold the **Session lock** on. It sees every byte and can write none of them. Many Readers, one writer, per Session — a Reader is the ordinary state of an attached client, not a degraded one, and a Panel tab rendering a Session it does not hold is read-only *before* the first keystroke rather than on the error that answers it.
+_Avoid_: observer, spectator, participant, viewer, watcher
+
+**Session drive** (Panel-scoped):
+Which of one Panel's browser tabs holds the keyboard for a Session. **Not the Session lock, and never to be reported as one:** the Panel is a single Core client, it holds a Session's lock once for all of its tabs, and two tabs are one human with two tabs — so which of them drives is the Panel's own business, settled between Panel sessions inside the Panel and never crossing the wire (ADR 0024 D3). It has no core-link frame, appears in no event log, and no Core hears of it. First-come: a pane opened on a Session nobody in that Panel drives takes it, a pane opened on one already driven follows it and may ask for the keyboard, and a tab that goes away hands it to the next tab still watching. A following tab is read-only for a different reason than a **Reader** is, and is told a different sentence — a Session **held** by another client is not a Session **driven** in another tab, and the loser of a handover lost nothing while the loser of a force takeover lost their unsent keystrokes.
+_Avoid_: tab lock, focus, ownership, active tab, session lock (that is the Core-scoped one above)
+
 **VM Shell Session** (Core-scoped):
 A free-form interactive shell on the Core's machine — distinct from harness workspaces. Spawned over the same core-link with `shellSession: true`, gated by core-link auth (not project-root validation), rendered in the Panel like a user terminal. The "SSH-equivalent" escape hatch. First-class concept, not a special case of harness PTY.
 _Avoid_: ssh, terminal, console (too overloaded)
@@ -66,6 +90,10 @@ _Avoid_: message, notification (a notification is one *use* of an Event)
 **Event cursor** (`lastEventId`):
 The single number the Panel stores per Core — the highest Event id it has seen. Sent on reconnect to request the replay tail. The only per-Core state on the Panel beyond the Core registry.
 _Avoid_: offset, sequence number
+
+**PTY subscription** (per Core link):
+One Core client's standing request for one PTY's byte stream. A Core sends a PTY's `data` and `exit` to the connections that asked for it and to no others, so a client attached to one Session never receives another's output. Held on the connection, so it dies with the socket and is re-asked for on reconnect. Catch-up is the existing `replay { ptyId, sinceSeq }`, ordered behind the subscription rather than in front of it (ADR 0024 D2).
+_Avoid_: channel, stream registration, attach (an attach is the Panel gesture; this is what it asks for)
 
 ### Panel views
 
@@ -125,10 +153,11 @@ _Avoid_: service, daemon config, when you mean the concept — those are impleme
 
 - **Nothing task-shaped lives on the Panel.** Tasks, sessions, terminal logs, hook events, project folders — all on the Core. The Panel stores Cores + one `lastEventId` per Core.
 - **A Project's path is a VM path.** Only the Core can validate it. The Panel never stores or assumes folder paths on a Core.
-- **One Core link per Core, multiplexed.** All PTY streams, task ops, and events for one Core share a single WebSocket. No per-task channels.
+- **One Core link per Core client, multiplexed.** All PTY streams, task ops, and events between one Core client and one Core share a single WebSocket. No per-task channels. A Core serves many such links at once, and a new one never evicts an existing one (ADR 0024 D1).
+- **Many Readers, one writer, per Session.** Any number of Core clients may attach to a Session and watch it; at most one holds its **Session lock** and may mutate it. A PTY has no notion of who typed, so concurrent writers are not a feature to be added later — they are the thing the lock exists to prevent (ADR 0024 D3–D7).
 - **VM Shell Sessions are privileged.** Same auth as the core-link; require an explicit open gesture in the Panel; never auto-spawned.
 - **Singular UI across Cores.** Every Session (Task), Project, notification, status change, and modal renders through the same Panel components regardless of which Core owns the underlying data. Every Core is remote — a Core on the Panel's own host gets no special path. Transport underneath may differ; the surface may not.
 - **Only the Panel dials Cores.** Browsers cannot hold client certificates; every core-link terminates inside the Panel. The Panel UI reaches Cores solely through its panel link.
-- **The Panel and its Cores are version-locked.** The core-link handshake exchanges a protocol version; a mismatched Core renders as "needs update" with the command to run — never a degraded or feature-detected mode.
+- **The Panel and its Cores are version-locked, except for additive capabilities announced on `ready`.** The core-link handshake exchanges a protocol version; a mismatched Core renders as "needs update" with the command to run — never a degraded mode. The one narrow exception: a purely additive surface may announce itself on the `ready` frame, and only where its absence yields today's behaviour *exactly*, not a lesser one. A capability that changes what an existing frame means is not additive and still moves the version (ADR 0024 D11).
 - **Task metadata lives Core-side.** Titles, session icons, pin flags — all owned by the Core. Panel mutations flow over the core-link; two Panels connected to the same Core see identical state.
 - **CLI availability is Core-published state, not Panel probing.** The Panel never inspects a remote machine's PATH directly; it reads the Core's own availability snapshot from the core-link state stream.
