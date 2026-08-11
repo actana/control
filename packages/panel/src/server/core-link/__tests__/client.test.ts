@@ -13,8 +13,26 @@ import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
+  type CoreLinkSessionLock,
 } from "@actana/shared/core-link-frames";
 import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
+
+/**
+ * Every Session snapshot leaves a multi-connection Core stamped with the lock
+ * as the receiving connection must be told it (issue 145, ADR 0024 D8), and the
+ * connections in this suite claim nothing — so every row comes back writable and
+ * unlocked. The exact-equality assertions below carry it rather than loosening
+ * to `toMatchObject`: a snapshot that quietly stopped answering "can I write to
+ * this" is precisely the regression worth failing on.
+ */
+const UNLOCKED: CoreLinkSessionLock = { writable: true, state: "unlocked" };
+
+/** The same rows the port handed over, as the wire carries them. */
+function published<T extends { taskId: string }>(
+  rows: T[],
+): Array<T & { lock: CoreLinkSessionLock }> {
+  return rows.map((row) => ({ ...row, lock: UNLOCKED }));
+}
 
 // ─── Fake WebSocket ───────────────────────────────────────────────────────────
 //
@@ -407,7 +425,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "tasksListResult",
       reqId: "r2",
-      tasks: queryPort.tasks,
+      tasks: published(queryPort.tasks),
       archivedCount: 0,
     });
   });
@@ -422,7 +440,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "tasksListResult",
       reqId: "r3",
-      tasks: [queryPort.tasks[0]],
+      tasks: published([queryPort.tasks[0]]),
       archivedCount: 0,
     });
   });
@@ -440,7 +458,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "tasksListResult",
       reqId: "r4",
-      tasks: [queryPort.tasks[0]],
+      tasks: published([queryPort.tasks[0]]),
       archivedCount: 2,
     });
   });
@@ -455,7 +473,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "archivedTasksListResult",
       reqId: "r5",
-      tasks: [queryPort.tasks[1]],
+      tasks: published([queryPort.tasks[1]]),
     });
     // The archived read path never reaches the active one.
     expect(queryPort.listTasksCalls).toEqual([]);
@@ -1731,7 +1749,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     expect(pair.server.lastSent()).toEqual({
       type: "sessionsListResult",
       reqId: "r1",
-      sessions: mutationPort.sessions,
+      sessions: published(mutationPort.sessions),
     });
   });
 

@@ -487,6 +487,129 @@ export type CoreLinkErrorCode = typeof SESSION_LOCKED_ERROR_CODE;
  */
 export type CoreLinkSessionTakenFrom = "nobody" | "another-connection" | "this-connection";
 
+// ─── Published lock state (issue 145, ADR 0024 D8) ──────────────────────────
+//
+// Lock state is **published, not discovered by failing**. A Reader has to render
+// its terminal non-editable *before* anyone types, `actana session ls` has to
+// show it, and the loser of a force takeover has to learn it when it happens
+// rather than on its next keystroke — none of which the refusal above can do,
+// because a refusal only ever arrives after the mutation it refuses.
+//
+// Two surfaces carry it and they answer different questions. The **snapshot**
+// ({@link CoreLinkSessionLock}, below, on {@link CoreLinkTaskSnapshot} and
+// {@link CoreLinkSessionSnapshot}) answers "can I write to this, right now"; the
+// **event** ({@link SESSION_LOCK_CHANGED_EVENT_KIND}) answers "something about
+// this Session's lock just changed, go look". Neither names a client.
+
+/**
+ * How a Session's lock looks **to the one connection this snapshot was sent
+ * to** (ADR 0024 D8).
+ *
+ * This field is *addressed*, not global: two connections listing the same
+ * Session are told different things about it, and that is the whole point. A
+ * snapshot that reported "locked: true" and left the recipient to work out
+ * whether the holder was itself would make every client carry the comparison,
+ * and every client would need an identity to compare against — which is exactly
+ * the identity D10 says the lock does not have and D3 keeps below the socket.
+ *
+ * So it says **whether you hold it**, never **who holds it**. `held-by-another`
+ * is the whole of what a watcher learns about a holder that is not itself: no
+ * client id, no connection id, no label, nothing that a second client could
+ * correlate a person or a program with.
+ *
+ * `writable` is the answer and `state` is why. The two are not redundant: which
+ * states are writable is a Core-side rule — an *unlocked* Session is writable by
+ * anybody, which is the D11 compatibility promise (see
+ * {@link SESSION_LOCKED_ERROR_CODE}) rather than an obvious property of the
+ * word "unlocked" — and publishing the answer keeps that rule in the one place
+ * that enforces it. A client rendering an editable terminal reads `writable`; a
+ * client choosing between a "Claim" and a "Take over" affordance reads `state`.
+ */
+export type CoreLinkSessionLock = {
+  /**
+   * May the connection that was sent this snapshot mutate this Session right
+   * now? True when the Session is unlocked as well as when this connection
+   * holds it — the gate refuses only a Session **another** connection holds.
+   */
+  writable: boolean;
+  /** Which of the three states this Session is in, from that connection's side. */
+  state: CoreLinkSessionLockState;
+};
+
+/**
+ * The three states a Session's lock can be in for one connection.
+ *
+ * There is no fourth, and deliberately no name for the holder. `unlocked` is a
+ * real state (D5) and not an absence: a Session starts there, returns there on
+ * release, on the holder's connection dropping, and on a Core restart (D12).
+ */
+export type CoreLinkSessionLockState = "unlocked" | "held-by-you" | "held-by-another";
+
+/**
+ * The kind appended to the event log on every Session-lock change (ADR 0024 D8).
+ *
+ * A **dedicated kind**, following the precedent ADR 0022 set for
+ * `project:appearanceChanged` — and for the same reason both ADR 0017 and ADR
+ * 0022 rejected the alternative. Widening an existing mutation event to carry
+ * lock state would stop the frame documenting what changed: every client would
+ * have to refetch on every `task:updated` to find out whether this one was
+ * about the lock, and a reconnecting client replaying a tail could not tell a
+ * takeover it needs to react to from a title edit it does not.
+ *
+ * Payload is {@link CoreLinkSessionLockChangedPayload}. It rides the ordinary
+ * event log, so it replays by cursor exactly like every other event: a client
+ * that was away comes back, sends `subscribe { lastEventId }`, and reads the
+ * lock changes it missed in order, distinctly, alongside everything else.
+ */
+export const SESSION_LOCK_CHANGED_EVENT_KIND = "session:lockChanged";
+
+/**
+ * What happened to a Session's lock, in the vocabulary of the lock rather than
+ * of the frame that caused it.
+ *
+ * A `forceTakeover` against a Session **nobody** held is a `claimed`, not a
+ * `taken-over`: the wire says what happened to the lock, so no client reports an
+ * eviction that did not occur. The same distinction `CoreLinkSessionTakenFrom`
+ * draws for the requester, drawn once more for everybody watching.
+ *
+ * Open by construction — a reader that meets an unfamiliar transition falls back
+ * to `locked` on the payload, which is why that field is there.
+ */
+export type CoreLinkSessionLockTransition = "claimed" | "released" | "taken-over";
+
+/**
+ * Payload of a {@link SESSION_LOCK_CHANGED_EVENT_KIND} event.
+ *
+ * **It names no client, and it must not.** This row goes into a shared log that
+ * every connection replays: anything identifying in it would be broadcast to
+ * every watcher of the Core, which is the identity leak D10 (the lock is
+ * coordination, not security) and D3 (the holder is a connection, not a person)
+ * exist to prevent. A takeover therefore names neither winner nor loser, and
+ * needs to name neither: the winner learns it won on its own
+ * `forceTakeoverResult`, and every other connection reads `taken-over` as "the
+ * holder is now somebody who is not me" — which is the entire fact a loser needs
+ * and the only one an identity could have added.
+ *
+ * "Can *I* write to it now" is deliberately not answered here. It cannot be: one
+ * logged row is read by every connection, and the answer differs per connection.
+ * That question is the snapshot's ({@link CoreLinkSessionLock}), and this event
+ * is what tells a client the answer has moved.
+ */
+export type CoreLinkSessionLockChangedPayload = {
+  /** The Session whose lock changed. Also on the event row's `taskId` column. */
+  taskId: string;
+  /** What happened to the lock. */
+  transition: CoreLinkSessionLockTransition;
+  /**
+   * Is the Session held by some connection now? Derivable from every transition
+   * this build defines, and carried anyway: a client can act on the state
+   * without knowing the whole transition vocabulary, which is what keeps a
+   * transition added later from silently reading as "no change" to a client that
+   * predates it.
+   */
+  locked: boolean;
+};
+
 // ─── Client → Server (Panel → Core) ──────────────────────────────────────
 
 export type CoreLinkRequestFrame =
@@ -870,6 +993,24 @@ export type CoreLinkTaskSnapshot = {
    */
   icon: string | null;
   updatedAt: number;
+  /**
+   * This Session's lock, as it looks to the connection this snapshot was sent
+   * to (issue 145, ADR 0024 D8). See {@link CoreLinkSessionLock} — it says
+   * whether *you* may write, never who else holds it.
+   *
+   * Optional, and absent means "this Core does not publish lock state", which
+   * is the single-connection Core that shipped before the capability. Absence
+   * therefore yields exactly today's behaviour — no read-only rendering,
+   * because there is no lock table to be a Reader of — which is what lets this
+   * ride the `multiConnection` capability instead of moving
+   * {@link CORE_LINK_PROTOCOL_VERSION}, as #142, #143 and #144 did before it.
+   * A Core that announces `multiConnection` always sets it.
+   *
+   * Stamped by the server as the snapshot goes out, not read from a row: the
+   * lock table is in memory (D12) and the answer depends on who is asking, so
+   * no query port can produce it and no two recipients need get the same value.
+   */
+  lock?: CoreLinkSessionLock;
 };
 
 /** A session snapshot — a task's live or replayable conversation. */
@@ -878,6 +1019,17 @@ export type CoreLinkSessionSnapshot = {
   ptyId: string | null;
   status: string;
   updatedAt: number;
+  /**
+   * This Session's lock, as it looks to the connection this snapshot was sent
+   * to (issue 145, ADR 0024 D8) — the same field, on the same terms, as the one
+   * on {@link CoreLinkTaskSnapshot}, because a client reading either of them is
+   * asking the same question about the same Session.
+   *
+   * This is the one `actana session ls` reads: it lists Sessions, and "can I
+   * write to this" is what it has to show about each. Optional for the reason
+   * given above — absent is the Core that does not publish lock state.
+   */
+  lock?: CoreLinkSessionLock;
 };
 
 /** A hook entry returned by `hooksOp`. */
@@ -1012,6 +1164,21 @@ export type CoreLinkServerFrame =
  * meets an unlocked Session and is served exactly as it is today. `code` is
  * optional and absent from every error frame that shipped before it, so a client
  * that has never heard of it reads the same `message` it always did.
+ *
+ * Issue 145 publishes that lock state — the optional `lock` on
+ * {@link CoreLinkTaskSnapshot} and {@link CoreLinkSessionSnapshot}, and the
+ * {@link SESSION_LOCK_CHANGED_EVENT_KIND} event — and does NOT move this version
+ * either (ADR 0024 D11), for the fourth time and the same reason. Note that
+ * issue 84 *did* bump for snapshot fields, and the difference is the rule
+ * itself: a Panel that predated `titleManuallySet` synthesized `false` and
+ * rendered a Session its Core's generator could rename out from under the
+ * operator — the absence yielded something *lesser* than today. A Panel that
+ * predates `lock` ignores an unknown field and renders exactly what it renders
+ * today, because read-only rendering is new surface (#147) rather than a
+ * protection quietly going missing; a new Panel against a Core that omits the
+ * field reads "no lock table here", which is that Core, truthfully. The event
+ * kind is additive in the way every kind before it was: a client routes on kinds
+ * it knows and ignores the rest.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
