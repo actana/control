@@ -42,6 +42,10 @@ _Avoid_: tunnel, channel, pipe, API
 Any program terminating a core link — the Panel, the `actana` CLI, an SDK automation. A Core serves many at once, each with its own event cursor, subscriptions and heartbeat, and none of them privileged: the Panel is a Core client like the others. The unit of write authority is the connection, not the human or the program behind it, so a client that reconnects is a new client until it says otherwise. See ADR 0024.
 _Avoid_: consumer, subscriber, peer, client session
 
+**Core client id**:
+The string a Core client presents on connecting, so a Core can tell that this connection replaces one it is already serving — the same client back after its link died. Used for reaping and for nothing else: the Core closes the predecessor and moves its **Session locks** across in one step, rather than leaving a ghost holding them until the heartbeat reaps it. Never signed, never verified, never authentication, and never a substitute for the bearer; it grants nothing a connection cannot already take with a force takeover. Minted per Core client and never derived from the registration blob, which is shared by every client on the machine. See ADR 0024 D9.
+_Avoid_: client identity, credential, session id, token, fingerprint
+
 **Core alias**:
 The name one Panel shows for a Core. Panel-local presentation, stored in that Panel's Core registry beside the endpoint and auth material — not a Core fact, and two Panels registering one Core are meant to disagree about it. The Core neither knows nor publishes it.
 _Avoid_: core name, label, hostname, display name
