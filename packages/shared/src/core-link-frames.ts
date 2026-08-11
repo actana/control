@@ -1232,6 +1232,20 @@ export type CoreLinkServerFrame =
  * field reads "no lock table here", which is that Core, truthfully. The event
  * kind is additive in the way every kind before it was: a client routes on kinds
  * it knows and ignores the rest.
+ *
+ * Issue 146 adds the `reclaim` frame and its `reclaimResult` — and does NOT
+ * move this version either (ADR 0024 D11), for the fifth time and the same
+ * reason. The frame is gated by the `multiConnection` capability, as #142 and
+ * #144 are, so it is never put on the wire to a Core with no lock table to
+ * transfer out of — and a Core that predates the capability evicts every client
+ * but one on connect, which is the reclaim the frame would have asked it for.
+ * The client that presents no id — every client that shipped before this — is
+ * served exactly as it is today: its lost socket is reaped by the heartbeat 45s
+ * later, still the backstop for a client that never comes back. What the frame
+ * buys is those 45 seconds for the client that does come back, so its absence
+ * is slower rather than lesser, which is the rule. `clientId` is not identity
+ * and carries no authority a connection did not already have (D10), so there is
+ * nothing here for an older client to be missing.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
