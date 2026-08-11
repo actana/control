@@ -259,9 +259,11 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     expect(core.emitTargets.filter((fn) => fn !== null)).toHaveLength(1);
   });
 
-  it("fans PTY output out to every connection (interim, until D2 subscriptions)", () => {
+  it("fans PTY output out to every connection subscribed to that PTY", () => {
     const first = connect();
     const second = connect();
+    first.receive({ type: "ptySubscribe", reqId: "a1", ptyId: "pty-1" });
+    second.receive({ type: "ptySubscribe", reqId: "b1", ptyId: "pty-1" });
 
     core.emit({ type: "data", ptyId: "pty-1", data: "hello", seq: 7 });
 
@@ -279,6 +281,7 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     const stranger = connect();
     authed.receive({ type: "auth", reqId: "a1", bearer: "good" });
     expect(authed.ofType("authOk")).toHaveLength(1);
+    authed.receive({ type: "ptySubscribe", reqId: "a2", ptyId: "pty-1" });
 
     core.emit({ type: "data", ptyId: "pty-1", data: "secret", seq: 1 });
     core.emit({ type: "exit", ptyId: "pty-1", exitCode: 0 });
@@ -286,8 +289,11 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     expect(authed.ofType("data")).toHaveLength(1);
     expect(authed.ofType("exit")).toHaveLength(1);
     // The stranger presents no bearer and sends no frame, so the message gate
-    // never fires; it answers pings, so the heartbeat never reaps it. The
-    // fan-out is the only thing standing between it and this Core's PTY output.
+    // never fires; it answers pings, so the heartbeat never reaps it. Since
+    // issue 142 it has no subscription either, and both gates are checked — the
+    // auth one is kept in front of the subscription one deliberately, so that
+    // whatever a later ticket does to how a subscription is acquired, PTY bytes
+    // still cannot reach a connection that has not proved who it is.
     expect(stranger.ofType("data")).toHaveLength(0);
     expect(stranger.ofType("exit")).toHaveLength(0);
     // Skipping a connection is not allowed to cost the log its row: the exit is
@@ -298,7 +304,10 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
   it("records one pty:exit per exit, not one per connection", () => {
     const first = connect();
     const second = connect();
-    connect();
+    const third = connect();
+    for (const [i, ws] of [first, second, third].entries()) {
+      ws.receive({ type: "ptySubscribe", reqId: `s${i}`, ptyId: "pty-1" });
+    }
 
     core.emit({ type: "exit", ptyId: "pty-1", exitCode: 0 });
 
@@ -340,6 +349,7 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     log.port.appendEvent("pty:spawn", "{}", { ptyId: "pty-1" });
     await vi.waitFor(() => expect(only.ofType("event")).toHaveLength(1));
 
+    only.receive({ type: "ptySubscribe", reqId: "r2", ptyId: "pty-1" });
     core.emit({ type: "data", ptyId: "pty-1", data: "out", seq: 1 });
     expect(only.ofType("data")).toHaveLength(1);
 

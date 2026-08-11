@@ -9,11 +9,15 @@
 //
 // Many connections are accepted at once (issue 141, ADR 0024 D1): the Panel,
 // the CLI, an SDK automation. Each gets its own {@link ActiveConnection} — its
-// own auth state, event cursor, poll loop and heartbeat — and a new connection
-// never closes an existing one. `PtyCore` state (PTYs, tasks, the event log) is
-// untouched by a connection arriving or leaving. When the last connection goes,
-// `core.setEmitTarget(null)` stops output delivery — the PTY buffer retains
-// everything for replay on reconnect.
+// own auth state, event cursor, poll loop, heartbeat and PTY subscription set —
+// and a new connection never closes an existing one. `PtyCore` state (PTYs,
+// tasks, the event log) is untouched by a connection arriving or leaving. When
+// the last connection goes, `core.setEmitTarget(null)` stops output delivery —
+// the PTY buffer retains everything for replay on reconnect.
+//
+// PTY output fans out *by subscription* (issue 142, ADR 0024 D2). The Core
+// still installs one emit target, but a connection receives a PTY's `data` and
+// `exit` only after asking for that `ptyId` — see {@link PtySubscription}.
 
 import log from "./log";
 import type { WebSocketServer, WebSocket } from "ws";
@@ -370,6 +374,20 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 const HEARTBEAT_TIMEOUT_MS = 45_000;
 
 /**
+ * How much of a PTY's live output one `catchUp` subscription may hold while it
+ * waits for its `replay` to be served.
+ *
+ * Overflow drops the OLDEST held chunks, which is the safe direction and not an
+ * arbitrary one: the replay that releases the hold is read from the PTY ring
+ * *after* the drop, so anything dropped here is still inside that window (the
+ * ring is `RING_LIMIT_BYTES`, an order of magnitude larger). The drain then
+ * filters by `nextSeq`, so a dropped chunk is delivered exactly once, by the
+ * replay, and never twice. If even the ring has rolled, `replayResult.from`
+ * already tells the client its tail has a hole in front of it.
+ */
+const PTY_HOLD_LIMIT_BYTES = 100_000;
+
+/**
  * Hosts the loopback core-link WebSocket server. One instance per Core
  * process. The server outlives individual Panel connections — PTY state is
  * retained in the `PtyCore` across disconnects/reconnects.
@@ -510,11 +528,16 @@ export class PtyCoreLinkServer {
   }
 
   /**
-   * Retire one connection: its poll timer and its heartbeat, and nothing
-   * else. Every other connection keeps its own — the defect this replaces
-   * cancelled a shared poll, so one client closing stopped live event push for
-   * whoever else was here. The emit target is released only when the last
-   * connection goes, which is what makes a Core with no clients quiet again.
+   * Retire one connection: its poll timer, its heartbeat, and the registry
+   * entry that holds its PTY subscriptions — and nothing else. Every other
+   * connection keeps its own; the defect this replaces cancelled a shared poll,
+   * so one client closing stopped live event push for whoever else was here.
+   *
+   * Subscriptions need no sweep of their own. They live on the
+   * {@link ActiveConnection}, so dropping it drops them, and a client that
+   * vanishes without unsubscribing leaves nothing behind (issue 142). The emit
+   * target is released only when the last connection goes, which is what makes
+   * a Core with no clients quiet again.
    */
   private dropConnection(ws: WebSocketLike, conn: ActiveConnection): void {
     conn.stopHeartbeat();
@@ -528,12 +551,12 @@ export class PtyCoreLinkServer {
   /**
    * Install this server's single PTY-event sink on the Core, once.
    *
-   * **Interim behaviour (issue 141):** every registered connection receives
-   * every PTY's `data` and `exit`. Per-connection subscription is D2 and lands
-   * in its own ticket; until then a fan-out is the only correct stopgap, since
-   * `PtyCore.setEmitTarget` holds exactly one callback and setting it per
-   * connection would leave the *first* client silent while it still looked
-   * healthy — no close, no error, just no output.
+   * One callback for the whole server, not one per connection: the target is a
+   * single global sink on `PtyCore`, so a per-connection one would have the
+   * newest connection silently steal every PTY's output from the rest. Who
+   * actually receives a given PTY's bytes is decided downstream of it, in
+   * {@link fanOutPtyEvent}, from each connection's subscription set (issue 142,
+   * ADR 0024 D2).
    */
   private ensureEmitTarget(): void {
     if (this.emitTargetInstalled) return;
@@ -548,21 +571,28 @@ export class PtyCoreLinkServer {
   }
 
   /**
-   * Deliver one PTY event to every *authenticated* connection, and record an
-   * exit exactly once. The event log is a fact about the machine, not about who
-   * was watching: appending per connection would write two `pty:exit` rows for
-   * one dead process and replay the exit twice to every reconnecting client —
-   * so the append stays outside the loop, and a connection being skipped never
-   * costs the log a row.
+   * Deliver one PTY event to every *authenticated subscriber* of that PTY, and
+   * record an exit exactly once.
+   *
+   * Subscription is the whole point of D2 (issue 142): a connection that has
+   * not asked for this `ptyId` is skipped, so a CLI attached to one Session no
+   * longer receives every other Session's output on the machine. A connection
+   * mid-catch-up holds the event instead of receiving it — see
+   * {@link PtySubscription}.
+   *
+   * The event log is a fact about the machine, not about who was watching:
+   * appending per connection would write two `pty:exit` rows for one dead
+   * process and replay the exit twice to every reconnecting client — so the
+   * append stays outside the loop, fires once, and a connection being skipped
+   * (or there being no subscribers at all) never costs the log a row.
    *
    * The auth skip mirrors `pushLiveEvents`: with an `authVerifier` configured,
    * a connection that has not proved identity gets nothing pushed at it. PTY
    * output is strictly more sensitive than the event timeline, and a socket
    * that presents no bearer and sends no frame never trips the message gate —
    * answering pings keeps `lastInboundAt` fresh, so the heartbeat never reaps
-   * it either. Until this ticket the fan-out was the one push path that did not
-   * ask. Loopback Cores configure no verifier, where `authenticated` is
-   * irrelevant and every connection is served exactly as before.
+   * it either. Loopback Cores configure no verifier, where `authenticated` is
+   * irrelevant and every subscriber is served.
    */
   private fanOutPtyEvent(event: PtyCoreEvent): void {
     const frame: CoreLinkServerFrame =
@@ -571,10 +601,54 @@ export class PtyCoreLinkServer {
         : { type: "exit", ptyId: event.ptyId, exitCode: event.exitCode, signal: event.signal };
     for (const conn of this.connections.values()) {
       if (this.authVerifier && !conn.authenticated) continue;
+      const sub = conn.ptySubscriptions.get(event.ptyId);
+      if (!sub) continue;
+      if (sub.holding) {
+        sub.hold(event);
+        continue;
+      }
       this.send(conn.ws, frame);
+      // The PTY is gone; so is any reason to keep tracking it on a connection
+      // that is not still owed a catch-up. Left in place, one entry per exited
+      // PTY per connection would accumulate for the life of a long-lived link.
+      if (event.type === "exit") conn.ptySubscriptions.delete(event.ptyId);
     }
     if (event.type === "exit") {
       this.recordPtyExit(event);
+    }
+  }
+
+  /**
+   * Release a `catchUp` hold now that this connection's `replay` has been
+   * served, and put the connection's stream live.
+   *
+   * `nextSeq` is where the window ended, so a held chunk at or below it is
+   * already painted and is dropped rather than sent twice; everything past it
+   * is output that arrived *during* the gap this hold exists to close, and goes
+   * out in order behind the window.
+   *
+   * A held `exit` goes last and always goes: a PTY that died between the
+   * subscribe and the replay has no second exit to emit, and a subscriber that
+   * never learns about it waits forever on a dead process.
+   */
+  private drainPtyHold(conn: ActiveConnection, ptyId: string, nextSeq: number): void {
+    const sub = conn.ptySubscriptions.get(ptyId);
+    if (!sub || !sub.holding) return;
+    const { data, exit } = sub.release();
+    for (const chunk of data) {
+      if (chunk.seq < nextSeq) continue;
+      this.send(conn.ws, { type: "data", ptyId, data: chunk.data, seq: chunk.seq });
+    }
+    if (exit) {
+      this.send(conn.ws, {
+        type: "exit",
+        ptyId,
+        exitCode: exit.exitCode,
+        signal: exit.signal,
+      });
+      // Same reason as the live path in `fanOutPtyEvent`: the PTY is gone, and
+      // an entry for it would sit on this connection until the socket closed.
+      conn.ptySubscriptions.delete(ptyId);
     }
   }
 
@@ -698,6 +772,15 @@ export class PtyCoreLinkServer {
           // reconnecting Panel can distinguish a VM-shell spawn from an
           // agent/session spawn when replaying the event tail.
           const shellSession = frame.opts.shellSession === true;
+          // The connection that spawned a PTY is subscribed to it, here, before
+          // its `spawned` answer goes out (issue 142). It could not have asked
+          // earlier — the id did not exist — and the harness starts printing
+          // immediately, so anything else loses the banner in the round trip
+          // between this answer and a `ptySubscribe` coming back. Live rather
+          // than holding: nothing precedes these bytes, so there is no
+          // scrollback to reconcile them against. Any other connection that
+          // wants this PTY still has to ask.
+          conn.subscribePty(ptyId, false);
           this.recordPtySpawn(ptyId, frame.opts.taskId, shellSession);
           // `hooksReportTurnStart` is what lets the Panel arm its
           // terminal-input fallback on reality rather than on the harness
@@ -755,6 +838,33 @@ export class PtyCoreLinkServer {
           data: result.data,
           nextSeq: result.nextSeq,
           from: result.from,
+        });
+        // This is the frame that releases a `catchUp` hold, and it releases it
+        // only after the window above has gone out. That ordering is the whole
+        // contract (issue 142): subscribe, hold, replay from the client's own
+        // `sinceSeq`, then drain — never the reverse, which would paint live
+        // bytes in front of the scrollback they belong after.
+        this.drainPtyHold(conn, frame.ptyId, result.nextSeq);
+        return;
+      }
+      case "ptySubscribe": {
+        const sub = conn.subscribePty(frame.ptyId, frame.catchUp === true);
+        this.send(ws, {
+          type: "ptySubscribeAck",
+          reqId: frame.reqId,
+          ptyId: frame.ptyId,
+          subscribed: true,
+          holding: sub.holding,
+        });
+        return;
+      }
+      case "ptyUnsubscribe": {
+        conn.unsubscribePty(frame.ptyId);
+        this.send(ws, {
+          type: "ptyUnsubscribeAck",
+          reqId: frame.reqId,
+          ptyId: frame.ptyId,
+          subscribed: false,
         });
         return;
       }
@@ -1048,6 +1158,18 @@ export class PtyCoreLinkServer {
     });
   }
 
+  /**
+   * @internal How many PTY subscriptions this Core is holding, across every
+   * connection. Exists so a test can assert the leak the registry is supposed
+   * to make impossible: a client that disappears without unsubscribing leaves
+   * this at zero, and so does a PTY that exits.
+   */
+  ptySubscriptionCount(): number {
+    let total = 0;
+    for (const conn of this.connections.values()) total += conn.ptySubscriptions.size;
+    return total;
+  }
+
   private send(ws: WebSocketLike, frame: CoreLinkServerFrame): void {
     try {
       ws.send(serializeCoreLinkFrame(frame));
@@ -1088,18 +1210,69 @@ export class PtyCoreLinkServer {
 }
 
 /**
+ * One PTY this connection has asked for, and — while it is catching up — the
+ * output it is owed but must not receive yet (issue 142, ADR 0024 D2).
+ *
+ * A `catchUp` subscription starts `holding`. Live `data`/`exit` for the PTY
+ * accumulate here instead of going out, until the connection's `replay` for
+ * that PTY is served; `release()` hands them over and puts the stream live for
+ * good. Without the hold, the bytes emitted between the subscription taking
+ * effect and the replay being served would arrive *before* the scrollback they
+ * come after, and the client would paint them in the wrong order.
+ *
+ * Holding is bounded by {@link PTY_HOLD_LIMIT_BYTES}; see that constant for why
+ * dropping the oldest is lossless here.
+ */
+class PtySubscription {
+  private data: Array<{ data: string; seq: number }> = [];
+  private bytes = 0;
+  private exit: { exitCode: number; signal?: number } | null = null;
+
+  constructor(public holding: boolean) {}
+
+  /** Take one event out of the live stream and keep it for the drain. */
+  hold(event: PtyCoreEvent): void {
+    if (event.type === "exit") {
+      this.exit = { exitCode: event.exitCode, signal: event.signal };
+      return;
+    }
+    this.data.push({ data: event.data, seq: event.seq });
+    this.bytes += event.data.length;
+    while (this.bytes > PTY_HOLD_LIMIT_BYTES && this.data.length > 0) {
+      this.bytes -= this.data.shift()!.data.length;
+    }
+  }
+
+  /** Everything held, in arrival order; the subscription goes live. */
+  release(): { data: Array<{ data: string; seq: number }>; exit: { exitCode: number; signal?: number } | null } {
+    const held = { data: this.data, exit: this.exit };
+    this.holding = false;
+    this.data = [];
+    this.bytes = 0;
+    this.exit = null;
+    return held;
+  }
+}
+
+/**
  * One core-link connection's own state: whether it has authenticated, whether
- * it has subscribed, the highest eventId it has been sent, its live-event poll
- * and its heartbeat. Every field here is private to one client — this shape
- * always was per-connection; before issue 141 it was simply only ever
- * instantiated once, and the server held the socket beside it.
+ * it has subscribed to the event log, the highest eventId it has been sent,
+ * which PTYs it wants the byte stream of, its live-event poll and its
+ * heartbeat. Every field here is private to one client — this shape always was
+ * per-connection; before issue 141 it was simply only ever instantiated once,
+ * and the server held the socket beside it.
  *
  * Nothing about a Session, a PTY or the event log lives here. Those are Core
  * facts, shared by construction, and a connection arriving or leaving must not
- * move any of them.
+ * move any of them. That is also what makes subscriptions leak-proof: they are
+ * fields on this object, so a client that disappears without unsubscribing
+ * takes its whole subscription set with it when the connection is dropped —
+ * there is no server-level registry keyed by `ptyId` to go stale.
  */
 class ActiveConnection {
   subscribed = false;
+  /** PTYs this connection receives `data`/`exit` for, keyed by `ptyId`. */
+  readonly ptySubscriptions = new Map<string, PtySubscription>();
   /** True once an `auth` frame has been verified (issue 04). Always true for
    *  loopback (no `authVerifier` configured). */
   authenticated = false;
@@ -1111,6 +1284,25 @@ class ActiveConnection {
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(readonly ws: WebSocketLike) {}
+
+  /**
+   * Ask for a PTY's stream. Idempotent: an existing subscription is returned
+   * untouched, so a second `ptySubscribe` neither doubles delivery nor — more
+   * dangerously — re-arms a hold on a stream that is already live and would
+   * then never be released (nothing more is coming to release it).
+   */
+  subscribePty(ptyId: string, catchUp: boolean): PtySubscription {
+    const existing = this.ptySubscriptions.get(ptyId);
+    if (existing) return existing;
+    const sub = new PtySubscription(catchUp);
+    this.ptySubscriptions.set(ptyId, sub);
+    return sub;
+  }
+
+  /** Stop receiving a PTY's stream. Idempotent — unsubscribing twice is fine. */
+  unsubscribePty(ptyId: string): void {
+    this.ptySubscriptions.delete(ptyId);
+  }
 
   startPoll(fn: () => void, intervalMs: number): void {
     this.stopPoll();

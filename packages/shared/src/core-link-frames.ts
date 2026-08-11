@@ -451,6 +451,32 @@ export type CoreLinkRequestFrame =
   // `eventsReplayed` and resumes live event push. `lastEventId: 0` requests
   // the full log (used on first connect).
   | { type: "subscribe"; reqId: string; lastEventId: number }
+  // ─── PTY output subscription (issue 142, ADR 0024 D2) ───
+  // Which PTYs this connection wants the byte stream of. A Core serves many
+  // clients now, and `data`/`exit` reach only the connections that asked for
+  // that `ptyId` — a CLI attached to one Session must not receive every other
+  // Session's output on the machine, continuously.
+  //
+  // Idempotent in both directions: subscribing twice delivers each chunk once,
+  // unsubscribing twice is not an error. Subscriptions are connection state and
+  // die with the socket; a reconnecting client re-subscribes.
+  //
+  // `catchUp` names the ordering contract, and exists because subscribe-then-
+  // replay has a gap: between the subscription taking effect and the catch-up
+  // being served, the PTY can emit. With `catchUp: true` the Core holds this
+  // pty's `data`/`exit` for this connection, serves the client's next
+  // {@link CoreLinkRequestFrame} `replay` for it, then drains what it held past
+  // that window's `nextSeq` and goes live — so a client never paints live bytes
+  // in front of its own scrollback. A client that sets it MUST send that
+  // `replay`; nothing else releases the hold. Omitted (the default) the stream
+  // goes live immediately, which is what a client with no scrollback to
+  // reconcile wants.
+  //
+  // Catch-up deliberately reuses `replay { ptyId, sinceSeq }` rather than
+  // inventing a second cursor: `data` frames already carry `seq`, and this is
+  // the same subscribe-then-replay-from-a-cursor shape the event log uses.
+  | { type: "ptySubscribe"; reqId: string; ptyId: string; catchUp?: boolean }
+  | { type: "ptyUnsubscribe"; reqId: string; ptyId: string }
   // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
   | { type: "tasksList"; reqId: string; projectId?: string }
   // The Archived view's own read path (issue 62, ADR 0019). Deliberately a
@@ -578,6 +604,21 @@ export type CoreLinkResponseFrame =
   // `eventsReplayed` marker follow. (Subscribe is fire-and-forget from the
   // Panel's perspective — the ack is optional but aids debugging.)
   | { type: "subscribeAck"; reqId: string; fromEventId: number }
+  // ─── PTY output subscription responses (issue 142) ───
+  // `subscribed` is the connection's state AFTER the frame, not what changed —
+  // that is what makes both frames idempotent to act on: a client that has lost
+  // track re-sends and reads the answer, rather than having to remember whether
+  // it was the first to ask. `holding` is true while the Core is holding this
+  // pty's output for a `catchUp` subscription that has not had its `replay`
+  // served yet.
+  | {
+      type: "ptySubscribeAck";
+      reqId: string;
+      ptyId: string;
+      subscribed: true;
+      holding: boolean;
+    }
+  | { type: "ptyUnsubscribeAck"; reqId: string; ptyId: string; subscribed: false }
   // ─── Task / session / hook op responses (issue 02) ───
   // `tasks` carries active rows only. `archivedCount` is how many archived rows
   // the same scope holds — unconditional, and never accompanied by the rows
@@ -813,6 +854,16 @@ export type CoreLinkServerFrame =
  * 0.14.0 is "needs update" rather than one that takes the frame and drops the
  * op. The columns (`icon`, `icon_color`) have been in the shared schema
  * bootstrap since the fork, so no migration rides along on the Core's side.
+ *
+ * Issue 142 adds the `ptySubscribe` / `ptyUnsubscribe` frames and their acks —
+ * and deliberately **does not move this version** (ADR 0024 D11). Every bump
+ * above marks every Core in every fleet needs-update, and multi-connection is a
+ * capability a one-Panel fleet never exercises. It is announced on `ready`
+ * instead, by #143, which also gates the Panel's sends on it. Until that lands,
+ * this file's version is the only thing a client has to go on, so a build
+ * carrying these frames must be deployed to Panel and Core together — the
+ * version-lock CONTEXT.md already states. Nothing here reads a capability;
+ * adding one is #143's whole job and must not be duplicated here.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
@@ -855,6 +906,8 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "findByTask",
   "replay",
   "subscribe",
+  "ptySubscribe",
+  "ptyUnsubscribe",
   "tasksList",
   "archivedTasksList",
   "tasksMutate",
