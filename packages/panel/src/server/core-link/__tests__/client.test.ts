@@ -166,9 +166,12 @@ describe("PtyCoreLinkServer", () => {
 
   it("sends a ready frame on connection with the protocol version", () => {
     // The server sent "ready" via pair.server.send() → pair.server.sent.
+    // It also announces `multiConnection` (issue 143, ADR 0024 D11): this build
+    // serves many connections, and says so without moving the version above.
     expect(pair.server.lastSent()).toEqual({
       type: "ready",
       version: CORE_LINK_PROTOCOL_VERSION,
+      multiConnection: { version: 1 },
     });
   });
 

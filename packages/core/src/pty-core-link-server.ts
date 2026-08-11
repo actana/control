@@ -293,6 +293,14 @@ export type PtyCoreLinkServerOptions = {
    * else to observe, since a real stale Core is a different build entirely.
    */
   protocolVersion?: string;
+  /**
+   * Announce the `multiConnection` capability on `ready`. Defaults to true —
+   * this build serves many connections (ADR 0024 D1), so it says so. Exists
+   * only so a test can stand up the capability-less Core a real fleet still
+   * has plenty of, the same way {@link protocolVersion} stands up a drifted
+   * one; a real old Core is a different build entirely.
+   */
+  announceMultiConnection?: boolean;
 };
 
 /**
@@ -410,6 +418,7 @@ export class PtyCoreLinkServer {
   private readonly directoryPort: CoreDirectoryPort | null;
   private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
+  private readonly announceMultiConnection: boolean;
   /**
    * The one seam every task-row change goes through — the Panel's
    * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
@@ -450,6 +459,7 @@ export class PtyCoreLinkServer {
     this.directoryPort = opts.directoryPort ?? null;
     this.promptPort = opts.promptPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
+    this.announceMultiConnection = opts.announceMultiConnection ?? true;
     this.taskWriter =
       opts.taskWriter ??
       new CoreTaskWriter({
@@ -472,8 +482,16 @@ export class PtyCoreLinkServer {
     this.connections.set(ws, conn);
     this.ensureEmitTarget();
 
-    // Send the ready frame immediately.
-    this.send(ws, { type: "ready", version: this.protocolVersion });
+    // Send the ready frame immediately. It announces `multiConnection`
+    // because the registration above is exactly what the capability claims
+    // (ADR 0024 D11): this server keeps every connection it accepts. The
+    // protocol version does not move for it — a Core that omits the field is
+    // the single-connection build, which is a Core like any other.
+    this.send(ws, {
+      type: "ready",
+      version: this.protocolVersion,
+      ...(this.announceMultiConnection ? { multiConnection: { version: 1 as const } } : {}),
+    });
 
     // Start the live-event push poll for this connection. It stays silent
     // until the client sends `subscribe`, then pushes new events past this
