@@ -302,19 +302,23 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
   });
 
   describe("the gate's frame registry", () => {
-    it("holds exactly the PTY subscription frames and the Session lock's three", () => {
+    it("holds exactly the PTY subscription frames, the Session lock's three, and reclaim", () => {
       // Exact membership, not a superset check: this set is the whole statement
       // of what this build refuses to send to a single-connection Core, so a
       // type appearing here without the ticket that owns it, or one quietly
       // dropping out, is the thing to notice. `claim` / `release` /
       // `forceTakeover` (D3–D7) joined when the Session lock landed (issue 144)
       // — a Core that evicts every client but one has nothing for a lock to
-      // arbitrate between, and no table to put a claim in.
+      // arbitrate between, and no table to put a claim in. `reclaim` (issue
+      // 146, D9) joined last: against such a Core the frame asks for the
+      // eviction that Core has already performed, out of a lock table it does
+      // not have.
       expect([...MULTI_CONNECTION_ONLY_FRAME_TYPES].sort()).toEqual([
         "claim",
         "forceTakeover",
         "ptySubscribe",
         "ptyUnsubscribe",
+        "reclaim",
         "release",
       ]);
     });

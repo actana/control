@@ -43,7 +43,11 @@ import {
  * PTY on. The Session lock's `claim` / `release` / `forceTakeover` (issue 144,
  * D3–D7) joined them for the same reason in its own key: a single-connection
  * Core has no lock table to address, because it evicts every client but one and
- * therefore has nothing for a lock to arbitrate between.
+ * therefore has nothing for a lock to arbitrate between. `reclaim` (issue 146,
+ * D9) is the newest, and the reason is the sharpest of the three: a
+ * single-connection Core evicts its predecessor on connect *already*, so the
+ * frame asks for what that Core has just done, out of a lock table it does not
+ * have.
  *
  * Being in this set is not the whole story for a frame with a caller that has
  * something better to do than fail. A caller that can degrade consults
@@ -66,6 +70,7 @@ export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame
     "claim",
     "release",
     "forceTakeover",
+    "reclaim",
   ]);
 
 /**
@@ -134,6 +139,27 @@ export type PtyCoreLinkClientOptions = {
    */
   bearer?: string;
   /**
+   * This link's stable Core client id, presented on every (re)connect so a Core
+   * reaps the socket this one replaces (issue 146, ADR 0024 D9).
+   *
+   * Default: a fresh id minted per client instance. That is the honest default
+   * for this process rather than a shortcut, because the id's job is to span a
+   * *reconnect*, and a reconnect is what this object is. The ghost this reclaims
+   * is a socket whose peer never sent a FIN — a partitioned container, a
+   * suspended host — which leaves the Panel service running and this instance
+   * reconnecting with the id it has held all along. A Panel that has genuinely
+   * restarted is a new Core client, and the sockets of the process it replaced
+   * were closed by its kernel as it died, so there is nothing left for it to
+   * reclaim.
+   *
+   * Pass one explicitly to make it outlive that — a caller with somewhere
+   * durable to keep it. It must be per Core client and it must not be anything
+   * off the registration blob (D9): the blob is machine-scoped, so a `coreId`
+   * or a bearer digest would make the Panel, the CLI and every automation on
+   * that machine one client, each reconnect reaping the others.
+   */
+  clientId?: string;
+  /**
    * Overrides {@link MULTI_CONNECTION_ONLY_FRAME_TYPES}. Exists only so a test
    * can drive the rejection in {@link PtyCoreLinkClient.request} with a
    * stand-in frame type: the real entries both degrade at their call sites
@@ -195,6 +221,29 @@ const HEARTBEAT_INTERVAL_MS = 15_000;
 /** Declare the peer dead after this long with no frame of any kind (3 pings). */
 const HEARTBEAT_TIMEOUT_MS = 45_000;
 const DEFAULT_CURSOR_STORAGE_KEY = "mc.coreLink.lastEventId";
+
+/**
+ * Mint this link's Core client id (issue 146, ADR 0024 D9).
+ *
+ * Random and unguessable-by-accident rather than derived from anything: two
+ * links must not collide, and every input that would make them stable across
+ * processes — the endpoint, the coreId, the bearer — is shared by every client
+ * dialing that machine, which is the one shape D9 forbids. Unguessability buys
+ * nothing security-wise and is not claimed to; nothing verifies this string,
+ * and a Core hands out no more to a client presenting it than to one that asks
+ * for a `forceTakeover` outright.
+ *
+ * The `panel-` prefix is for the Core's log, where a reclaim line is otherwise
+ * an opaque token with no clue which of a machine's clients reconnected.
+ */
+function mintCoreClientId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return `panel-${random}`;
+  // Node 24 and every browser this runs in have `crypto.randomUUID`. The
+  // fallback keeps a client id from being the thing that throws in an exotic
+  // runtime — an id that only has to be different from its neighbours.
+  return `panel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
 
 /**
  * A no-op cursor store used when `localStorage` is unavailable (the service's
@@ -269,6 +318,16 @@ export class PtyCoreLinkClient {
    */
   private multiConnection: CoreLinkMultiConnectionCapability | null = null;
   private readonly multiConnectionOnlyFrameTypes: ReadonlySet<string>;
+  /**
+   * This link's Core client id — the same string on every connection it opens,
+   * which is the whole of what makes a reconnect reclaimable (issue 146, D9).
+   *
+   * Public and readonly: a caller may want to log it, and nothing may change it
+   * mid-life. An id that moved between connections would reclaim nothing and
+   * leave the predecessor holding its Sessions for the full heartbeat timeout —
+   * the exact failure the frame exists to remove.
+   */
+  readonly clientId: string;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private closed = false;
@@ -308,6 +367,7 @@ export class PtyCoreLinkClient {
     this.bearer = opts.bearer ?? null;
     this.multiConnectionOnlyFrameTypes =
       opts.multiConnectionOnlyFrameTypes ?? MULTI_CONNECTION_ONLY_FRAME_TYPES;
+    this.clientId = opts.clientId ?? mintCoreClientId();
     // The cursor is per-Core (CONTEXT.md "Event cursor": "the single number
     // the Panel stores per Core"). Derive the storage key from the core-link
     // URL so each registered Core gets its own cursor — a second Core on a
@@ -578,7 +638,12 @@ export class PtyCoreLinkClient {
       // pre-auth `ptySubscribe`. Without one there is no `authOk` coming, and
       // this frame is the first moment the capability is known, so the resend
       // belongs here. Either way it runs after the capability, never before.
-      if (!this.bearer) this.resendPtySubscriptions();
+      // The reclaim (issue 146, D9) rides the same rule for both reasons at
+      // once: it is gated on this capability *and* refused before auth.
+      if (!this.bearer) {
+        this.sendReclaim();
+        this.resendPtySubscriptions();
+      }
       const payload = {
         version: this.protocolVersion,
         compatible: coreLinkProtocolCompatible(this.protocolVersion),
@@ -596,6 +661,13 @@ export class PtyCoreLinkClient {
       const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
       const exp = typeof msg.exp === "number" ? msg.exp : 0;
       this.authenticated = true;
+      // First, before the replay tail and before the PTY resend: this is the
+      // only frame on the reconnect path with a clock on it (issue 146, D9).
+      // Until it lands, the socket this connection replaces is still holding
+      // this link's Sessions, and the Core cannot tell that socket from a live
+      // one. `subscribe` and the PTY resend are catching up on what happened
+      // while we were away and lose nothing by going second.
+      this.sendReclaim();
       // Now that the Core has accepted the bearer, send the event-cursor
       // `subscribe` so the replay tail + live events flow. Auth came first, so
       // the server's auth gate lets the subscribe through.
@@ -991,6 +1063,30 @@ export class PtyCoreLinkClient {
         /* the socket died again; the next open re-sends the whole set */
       });
     }
+  }
+
+  /**
+   * Present this link's Core client id, so the Core closes the socket this
+   * connection replaces and moves its Session locks here (issue 146, D9).
+   *
+   * Fire-and-forget by design. The answer says what was reaped, and there is
+   * nothing above this client that can act on it: the locks are already here by
+   * the time the frame is answered, and a reclaim that fails to land costs the
+   * 45-second heartbeat timeout it was shortening — a slower path to the same
+   * state, never a wrong one. Nothing waits on it, so nothing here can leave a
+   * reconnect half-finished.
+   *
+   * **Against a Core that does not announce `multiConnection`, this sends
+   * nothing** — the same consult-the-gate-and-degrade shape {@link ptySubscribe}
+   * and {@link claim} take, and here the degraded behaviour is not merely
+   * acceptable but identical: such a Core evicts the previous connection when
+   * this one opens, which is precisely what the frame asks for.
+   */
+  private sendReclaim(): void {
+    if (!this.canSendMultiConnectionFrames()) return;
+    void this.rpc({ type: "reclaim", reqId: "", clientId: this.clientId }).catch(() => {
+      /* the socket died again; the next open presents the same id */
+    });
   }
 
   /**

@@ -209,6 +209,43 @@ export class SessionLockTable {
     return released;
   }
 
+  /**
+   * Move **every** lock `from` holds to `to`, and report which Sessions moved
+   * (D9 — a reconnecting Core client inheriting its predecessor's locks).
+   *
+   * **The one thing this method is for is that it is one step.** The obvious
+   * spelling of an inheritance — `releaseAll(from)` then `claim` each id for
+   * `to` — is a different behaviour wearing the same result: between those two
+   * calls every one of those Sessions is unlocked, and unlocked means claimable
+   * by anybody (D5, and {@link mayMutate} says a third connection may write one
+   * outright). The Core is single-threaded, so "between two calls" sounds like
+   * no time at all — it is not. A `close()` on the predecessor's socket, a log
+   * line that awaits, any future callback in that gap, and a third client's
+   * `claim` lands in the window. Rewriting the entry in place has no such
+   * window to lose, at any interleaving, which is why this exists rather than
+   * being left to the caller to compose.
+   *
+   * Also why `from` is closed *after* this returns and never before: a drop
+   * runs {@link releaseAll}, and a predecessor dropped first would unlock every
+   * Session on its way out. Called in this order, that same `releaseAll` finds
+   * nothing left to release — the entries already name the successor — which is
+   * the property that makes the ordinary drop path safe to leave alone.
+   *
+   * Nothing here is authority. This table compares holders by reference and
+   * knows nothing about client ids, bearers or sockets; deciding that two
+   * connections are the same Core client happens above it, unverified, and the
+   * transfer moves no more than what `from` already held.
+   */
+  transferAll(from: SessionLockHolder, to: SessionLockHolder): string[] {
+    if (from === to) return [];
+    const moved: string[] = [];
+    for (const [taskId, current] of this.holders) {
+      if (current === from) moved.push(taskId);
+    }
+    for (const taskId of moved) this.holders.set(taskId, to);
+    return moved;
+  }
+
   /** How many Sessions are locked right now. For assertions and logging. */
   heldCount(): number {
     return this.holders.size;

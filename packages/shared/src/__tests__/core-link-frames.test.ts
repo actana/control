@@ -112,6 +112,21 @@ describe("core-link-frames", () => {
       expect(parsed).toEqual(frame);
     });
 
+    it("parses a reclaim frame carrying a client id (issue 146, ADR 0024 D9)", () => {
+      // The type registry is the whole of the validation here, so a frame left
+      // out of it does not fail loudly: the Core answers "invalid frame" and a
+      // reconnecting client silently waits out the 45s heartbeat instead of
+      // reclaiming. The id is carried through untouched — no shape, no length,
+      // nothing verified, which is D9's whole point.
+      const frame: CoreLinkRequestFrame = {
+        type: "reclaim",
+        reqId: "r1",
+        clientId: "panel-9f2c1b7a4e0d",
+      };
+      const parsed = parseCoreLinkRequestFrame(JSON.stringify(frame));
+      expect(parsed).toEqual(frame);
+    });
+
     it("returns null for malformed JSON", () => {
       expect(parseCoreLinkRequestFrame("not json")).toBeNull();
     });
