@@ -680,6 +680,41 @@ export type CoreLinkRequestFrame =
   // holder's in-flight keystrokes are gone and its next mutation is refused.
   // This is the answer to a hung client — the reason D7 needs no idle timeout.
   | { type: "forceTakeover"; reqId: string; taskId: string }
+  // ─── Stable client id, for reaping only (issue 146, ADR 0024 D9) ───
+  // "I am the same Core client as the connection that last presented this id.
+  // Close it and give me its Session locks." That is the whole of it.
+  //
+  // It exists because D1 took evict-on-connect away. A Core client whose link
+  // dies without a TCP close — a laptop lid, a partitioned container — leaves a
+  // socket the Core cannot tell from a live one until the heartbeat reaps it
+  // 45s later, still holding that client's Sessions. The heartbeat is still the
+  // backstop for a client that never comes back; this frame is the answer for
+  // the one that does, and it answers in a single round trip rather than in 45
+  // seconds.
+  //
+  // **The id is not identity and not authentication** (D10, and D9 says it
+  // twice). Nothing signs it, nothing verifies it, and presenting one buys
+  // exactly nothing that a connection did not already have: it is refused
+  // before `auth` like every other frame, it never makes an unauthenticated
+  // connection authenticated, and the authority it can move — a Session lock —
+  // is authority any authenticated connection can already take unconditionally
+  // with `forceTakeover`. A client presenting another client's id is the case
+  // reviewers reach for; the answer is that whoever opened this link already
+  // holds the bearer, and a bearer holder can open a VM Shell Session and kill
+  // the process directly. Hardening this string is theatre, and signing it
+  // would be building D10's rejected per-client credential by the back door.
+  //
+  // **Where the id comes from is per Core client, and never the registration
+  // blob.** The blob is machine-scoped — every client on that machine dials
+  // with the same one — so an id derived from it would make the Panel, the CLI
+  // and every automation on the box a single connection, each reconnect
+  // reaping the others. The Panel keeps one per link it terminates; the CLI
+  // mints one per invocation, which is right for a process that is one client
+  // for as long as it runs and nobody afterwards.
+  //
+  // Multi-connection-only: a Core that evicts every client but one already does
+  // this on connect, and has no lock table to transfer out of.
+  | { type: "reclaim"; reqId: string; clientId: string }
   // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
   | { type: "tasksList"; reqId: string; projectId?: string }
   // The Archived view's own read path (issue 62, ADR 0019). Deliberately a
@@ -864,6 +899,24 @@ export type CoreLinkResponseFrame =
       reqId: string;
       taskId: string;
       takenFrom: CoreLinkSessionTakenFrom;
+    }
+  // ─── Stable client id (issue 146, ADR 0024 D9) ───
+  // What the reclaim actually did, which is not something a client can work out
+  // for itself: it does not know whether the socket it lost was still open on
+  // the Core, nor which Sessions that socket was still holding when it went
+  // quiet — a lock can also have been force-taken while the client was away.
+  //
+  // `replaced` is whether a predecessor connection was found and closed;
+  // `taskIds` are the Sessions that came across with it, which is often empty
+  // and never implies the id was unknown. Both are reporting, not authority:
+  // this frame's answer is the same for a client presenting its own id as for
+  // one presenting a string it made up, because nothing verifies it.
+  | {
+      type: "reclaimResult";
+      reqId: string;
+      clientId: string;
+      replaced: boolean;
+      taskIds: string[];
     }
   // ─── Task / session / hook op responses (issue 02) ───
   // `tasks` carries active rows only. `archivedCount` is how many archived rows
@@ -1244,6 +1297,7 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "claim",
   "release",
   "forceTakeover",
+  "reclaim",
   "tasksList",
   "archivedTasksList",
   "tasksMutate",
