@@ -2,11 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   PtyCoreLinkServer,
   type AuthVerifier,
+  type EventLogPort,
   type WebSocketLike,
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import { SESSION_LOCKED_ERROR_CODE } from "@actana/shared/core-link-frames";
+import {
+  SESSION_LOCKED_ERROR_CODE,
+  SESSION_LOCK_CHANGED_EVENT_KIND,
+  type CoreLinkEvent,
+  type CoreLinkSessionLockChangedPayload,
+} from "@actana/shared/core-link-frames";
 
 // A connection presents a stable client id, and it is used for reaping and
 // nothing else (issue 146, ADR 0024 D9).
@@ -116,10 +122,44 @@ function mockCore() {
   return { core: core as unknown as PtyCore, emit: (event: PtyCoreEvent) => target?.(event) };
 }
 
+/**
+ * The Core's event log, in memory — here so this suite can assert on what a
+ * reclaim publishes, which since #145 (D8) is a question with an answer.
+ */
+function fakeEventLog() {
+  const events: CoreLinkEvent[] = [];
+  const port: EventLogPort = {
+    appendEvent: (kind, payload, opts) => {
+      const eventId = events.length + 1;
+      events.push({
+        eventId,
+        ts: eventId,
+        kind,
+        payload,
+        ptyId: opts?.ptyId ?? null,
+        taskId: opts?.taskId ?? null,
+      });
+      return eventId;
+    },
+    readEventTail: (afterEventId, limit = 1_000) =>
+      events.filter((event) => event.eventId > afterEventId).slice(0, limit),
+    getLastEventId: () => events.length,
+  };
+  return { port, events };
+}
+
 describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () => {
   let wss: FakeWebSocketServer;
   let core: ReturnType<typeof mockCore>;
   let server: PtyCoreLinkServer;
+  let log: ReturnType<typeof fakeEventLog>;
+
+  /** Just the lock changes the Core has published, decoded, in order. */
+  function lockChanges(): CoreLinkSessionLockChangedPayload[] {
+    return log.events
+      .filter((event) => event.kind === SESSION_LOCK_CHANGED_EVENT_KIND)
+      .map((event) => JSON.parse(event.payload) as CoreLinkSessionLockChangedPayload);
+  }
 
   /** One connection is one Core client (D3). */
   function connect(): FakeWebSocket {
@@ -149,6 +189,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       port: 0,
       createServer: () => wss as unknown as WebSocketServerLike,
       liveEventPollMs: 10_000,
+      eventLog: log.port,
       ...opts,
     });
   }
@@ -156,6 +197,7 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
   beforeEach(() => {
     wss = new FakeWebSocketServer();
     core = mockCore();
+    log = fakeEventLog();
     startServer();
   });
 
@@ -303,6 +345,44 @@ describe("the stable client id, for reaping only (issue 146, ADR 0024 D9)", () =
       const third = connect();
       third.receive({ type: "claim", reqId: "t1", taskId: "task-a" });
       expect(third.answerTo("t1")).toMatchObject({ granted: false });
+    });
+
+    it("appends no `session:lockChanged` — a transfer is not a release, and nobody's answer moved", async () => {
+      // The interaction with #145 (D8), which neither ticket owns alone. A drop
+      // publishes one `released` per lock `releaseAll` hands back, and a reclaim
+      // ends by dropping the predecessor — so the ordering this suite pins is
+      // also what keeps that loop silent: the locks are already the successor's
+      // by the time the drop runs, `releaseAll` returns nothing, and nothing is
+      // published. Run the other way round this would not merely open the claim
+      // window but announce `locked: false` for those Sessions to every watcher,
+      // which is worse than the window because clients would act on it.
+      //
+      // Silence is also the right answer on its own terms, not only a
+      // consequence. The published lock is addressed (D8): a third party read
+      // `held-by-another` before the transfer and reads it after, so nothing
+      // changed for the connection an event would reach. The successor's own
+      // view did change, and it is told by `reclaimResult.taskIds` in this same
+      // round trip — more precisely than an event could, since none of
+      // `claimed` / `released` / `taken-over` is true of a transfer.
+      const first = connect();
+      reclaim(first, "panel-1");
+      await spawn(first, "task-a");
+      first.receive({ type: "claim", reqId: "c1", taskId: "task-a" });
+      // The log is live, and this is what a lock change looks like in it —
+      // without this the assertion below would hold on a Core that publishes
+      // nothing at all.
+      expect(lockChanges()).toEqual([{ taskId: "task-a", transition: "claimed", locked: true }]);
+
+      const second = connect();
+      reclaim(second, "panel-1");
+      // Including the close a real transport delivers afterwards: that is the
+      // second trip through `dropConnection`, and it must stay silent too.
+      first.emit("close");
+
+      expect(lockChanges()).toEqual([{ taskId: "task-a", transition: "claimed", locked: true }]);
+      // And the silence is not a lock quietly lost — it is still held, by the
+      // successor, which is the state that made publishing unnecessary.
+      expect(server.sessionLockCount()).toBe(1);
     });
   });
 
