@@ -190,3 +190,31 @@ export function attachTerminalKeyHandler(opts: {
     return false;
   });
 }
+
+/**
+ * Put one xterm into (or out of) its read-only state — the same terminal, with
+ * its input taken away (issue 147, `CONTEXT.md` Singular UI).
+ *
+ * `disableStdin` is the load-bearing half: xterm stops accepting keystrokes
+ * before they become `onData`, so nothing is typed, nothing is echoed, and the
+ * operator finds out by looking rather than by pressing a key and watching it
+ * do nothing. The cursor goes with it, because a blinking cursor is the
+ * strongest "type here" a terminal has and leaving one on a surface that
+ * accepts nothing is the affordance the issue calls worse than none.
+ *
+ * Selection, scrollback, links and resize are all untouched: a Reader is
+ * reading, and every one of those is a reader's gesture (ADR 0024 D4 makes the
+ * same argument for why `resize` is not gated on the wire).
+ */
+export function setTerminalReadOnly(
+  term: {
+    options: { disableStdin?: boolean; cursorBlink?: boolean; cursorInactiveStyle?: string };
+    blur?: () => void;
+  },
+  readOnly: boolean,
+): void {
+  term.options.disableStdin = readOnly;
+  term.options.cursorBlink = !readOnly;
+  term.options.cursorInactiveStyle = readOnly ? "none" : "outline";
+  if (readOnly) term.blur?.();
+}

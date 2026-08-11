@@ -182,16 +182,23 @@ export function decodeServerFrame(raw: unknown): PanelLinkServerFrame | null {
   if (msg.t === "lock") {
     const coreId = typeof msg.coreId === "string" ? msg.coreId : "";
     const taskId = typeof msg.taskId === "string" ? msg.taskId : "";
-    const lock = msg.lock as PanelSessionLock | undefined;
-    if (!coreId || !taskId || !lock || typeof lock.state !== "string") return null;
+    const lock = msg.lock as Partial<PanelSessionLock> | undefined;
+    const state = lock?.state;
+    if (!coreId || !taskId || !lock) return null;
+    if (state !== "unlocked" && state !== "held-by-you" && state !== "held-by-another") return null;
     return {
       t: "lock",
       coreId,
       taskId,
       lock: {
         supported: lock.supported === true,
-        writable: lock.writable === true,
-        state: lock.state,
+        // Read from the state when the flag is missing, never defaulted to
+        // false. Which states are writable is a Core-side rule and the flag is
+        // how it travels — but a frame that lost it must not turn a Session
+        // nobody holds into a read-only one, which is the single worst thing
+        // this field can be wrong about (see `session-write-access`).
+        writable: typeof lock.writable === "boolean" ? lock.writable : state !== "held-by-another",
+        state,
       },
     };
   }
