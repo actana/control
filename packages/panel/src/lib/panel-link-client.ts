@@ -46,11 +46,29 @@ export type PanelLinkOptions = {
   reconnectInitialMs?: number;
   reconnectMaxMs?: number;
   requestTimeoutMs?: number;
+  /** How long silence on an `OPEN` socket is tolerated at a wake signal. */
+  staleAfterMs?: number;
 };
 
 const DEFAULT_RECONNECT_INITIAL_MS = 500;
 const DEFAULT_RECONNECT_MAX_MS = 10_000;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * How long an `OPEN` socket may go without delivering a frame before a wake
+ * signal treats it as a corpse.
+ *
+ * Generous on purpose, and deliberately not the server's 45s timeout. The
+ * server's pings never reach page JavaScript — the browser answers them down in
+ * the network layer and the `WebSocket` API surfaces no pong event — so this
+ * clock advances only on *application* frames, and an idle Core legitimately
+ * sends none for hours. A window near the server's would therefore redial a
+ * perfectly healthy link on every focus of a quiet tab. The asymmetry is
+ * deliberate: one false-positive redial is cheap and safe, because the
+ * reconnect path is idempotent and replays from the cursor — a redial on every
+ * focus is not.
+ */
+const DEFAULT_STALE_AFTER_MS = 15 * 60_000;
 
 /**
  * A request frame minus the `reqId` the client assigns. Distributed over the
@@ -83,12 +101,16 @@ export class PanelLinkClient {
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
   private readonly requestTimeoutMs: number;
+  private readonly staleAfterMs: number;
 
   private socket: PanelLinkSocketLike | null = null;
   private open = false;
   private closed = false;
   private reconnectAttempt = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When this tab last had evidence of life: an application frame, or an open. */
+  private lastInboundAt = Date.now();
+  private readonly detachWakeListeners: () => void;
 
   private reqSeq = 0;
   private readonly pending = new Map<string, Pending>();
@@ -111,6 +133,8 @@ export class PanelLinkClient {
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
+    this.staleAfterMs = opts.staleAfterMs ?? DEFAULT_STALE_AFTER_MS;
+    this.detachWakeListeners = this.listenForWake();
     this.connect();
   }
 
@@ -201,18 +225,97 @@ export class PanelLinkClient {
 
   close(): void {
     this.closed = true;
+    this.detachWakeListeners();
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    for (const pending of this.pending.values()) {
-      clearTimeout(pending.timer);
-      pending.reject(new Error("panel link closed"));
-    }
-    this.pending.clear();
+    this.failPending("panel link closed");
     this.socket?.close();
     this.socket = null;
     this.open = false;
+  }
+
+  // ─── liveness ─────────────────────────────────────────────────────────────
+
+  /**
+   * The wake signals, and the reason this recovery is hung on them rather than
+   * on a clock.
+   *
+   * A socket can die without a TCP FIN — the overnight fate of a flow carrying
+   * zero bytes across a NAT, a firewall or a reverse proxy. Nothing about that
+   * is observable from the page: `readyState` stays `OPEN`, no `close` event
+   * fires, a `send` into it buffers rather than throwing, and the request
+   * timeout fails one caller without touching the link. The one moment the tab
+   * can act on is the moment it becomes usable again — and a timer is precisely
+   * what cannot be trusted to notice it, because a hidden tab's timers are
+   * throttled to roughly once a minute and a frozen page's do not run at all.
+   */
+  private listenForWake(): () => void {
+    if (typeof window === "undefined" || typeof document === "undefined") return () => {};
+    const onWake = () => this.wake();
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") this.wake();
+    };
+    document.addEventListener("visibilitychange", onVisibility);
+    window.addEventListener("focus", onWake);
+    window.addEventListener("online", onWake);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      window.removeEventListener("focus", onWake);
+      window.removeEventListener("online", onWake);
+    };
+  }
+
+  /**
+   * A wake signal fired. Redial unless there is positive evidence the link is
+   * alive — a frame that arrived recently enough. `isConnected()` is no such
+   * evidence: it reads `true` on a corpse for as long as the corpse lasts.
+   */
+  private wake(): void {
+    if (this.closed) return;
+    if (this.open && Date.now() - this.lastInboundAt <= this.staleAfterMs) return;
+    this.redialNow();
+  }
+
+  /**
+   * Drop whatever socket we have and dial again immediately, off the backoff.
+   * A tab hidden for hours has usually walked the backoff up to its cap, and
+   * the first frame of visibility is exactly the wrong moment to make its
+   * operator wait out the capped delay.
+   */
+  private redialNow(): void {
+    if (this.reconnectTimer) {
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+    }
+    this.reconnectAttempt = 0;
+    const dying = this.socket;
+    const wasOpen = this.open;
+    // Forgotten before the close, so the socket's own close handler — which
+    // checks identity — bails rather than racing this path into a second
+    // reconnect.
+    this.socket = null;
+    this.open = false;
+    if (dying) {
+      try {
+        dying.close();
+      } catch {
+        // A half-open socket may refuse; we are done with it either way.
+      }
+    }
+    this.failPending("panel link connection lost");
+    if (wasOpen) for (const cb of this.connectionListeners) cb(false);
+    this.connect();
+  }
+
+  /** Fail every in-flight request: nothing on the old socket can be answered. */
+  private failPending(message: string): void {
+    for (const [reqId, pending] of this.pending) {
+      clearTimeout(pending.timer);
+      this.pending.delete(reqId);
+      pending.reject(new Error(message));
+    }
   }
 
   // ─── transport ────────────────────────────────────────────────────────────
@@ -232,6 +335,7 @@ export class PanelLinkClient {
       if (this.socket !== socket) return;
       this.open = true;
       this.reconnectAttempt = 0;
+      this.lastInboundAt = Date.now();
       // Re-subscribe every watched Core from where this tab got to. This is
       // the whole of the replay contract on the browser side.
       for (const coreId of this.watching.keys()) this.sendSubscribe(coreId);
@@ -239,7 +343,13 @@ export class PanelLinkClient {
       for (const cb of this.connectionListeners) cb(true);
     });
 
-    socket.addEventListener("message", (event) => this.onMessage(event.data));
+    socket.addEventListener("message", (event) => {
+      // A socket this client has already given up on may still deliver what it
+      // had buffered. Its frames are not this link's frames, and above all they
+      // are not evidence that the *current* link is alive.
+      if (this.socket !== socket) return;
+      this.onMessage(event.data);
+    });
 
     socket.addEventListener("close", () => {
       if (this.socket !== socket) return;
@@ -248,11 +358,7 @@ export class PanelLinkClient {
       // Requests written to a socket that died can never be answered; failing
       // them now lets the caller retry on the new link instead of waiting out
       // the timeout.
-      for (const [reqId, pending] of this.pending) {
-        clearTimeout(pending.timer);
-        pending.reject(new Error("panel link connection lost"));
-        this.pending.delete(reqId);
-      }
+      this.failPending("panel link connection lost");
       if (wasOpen) for (const cb of this.connectionListeners) cb(false);
       this.scheduleReconnect();
     });
@@ -313,6 +419,10 @@ export class PanelLinkClient {
   }
 
   private onMessage(raw: unknown): void {
+    // Anything arriving is evidence of life, decodable or not — and an
+    // application frame is the only evidence this end ever gets, since the
+    // server's pings are answered below the API and surface no event here.
+    this.lastInboundAt = Date.now();
     const frame = decodeServerFrame(raw);
     if (!frame) return;
     if (frame.t === "dial") {
