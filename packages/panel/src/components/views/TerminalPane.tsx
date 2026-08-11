@@ -12,6 +12,7 @@ import type { FitAddon as XFitAddon } from "@xterm/addon-fit";
 import { useQueryClient } from "@tanstack/react-query";
 import { Btn } from "~/components/ui/Btn";
 import { CardFrame } from "~/components/ui/CardFrame";
+import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
 import { DropdownMenuItem, DropdownMenuSeparator } from "~/components/ui/DropdownMenuItem";
 import { Modal } from "~/components/ui/Modal";
 import { SessionIconPicker } from "~/components/ui/SessionIconPicker";
@@ -27,7 +28,7 @@ import { mutateTaskForCore } from "~/lib/mutate-task-for-core";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { takePendingInitialInput } from "~/lib/pending-initial-input";
 import { consumeIntentionalSessionClose } from "~/lib/intentional-session-close";
-import { getCorePtyBridge } from "~/lib/panel-bridge";
+import { getCorePtyBridge, getPanelBridge } from "~/lib/panel-bridge";
 import {
   attachTerminalKeyHandler,
   terminalExitTaskStatus,
@@ -119,6 +120,21 @@ import {
   type SessionHeaderButtonVisibility,
 } from "~/shared/session-header-buttons";
 import { useTerminalActions } from "~/lib/terminal-store";
+import {
+  onSessionDriveHandover,
+  releaseSessionDrive,
+  takeSessionDrive,
+  useSessionWriteState,
+  watchSessionDrive,
+} from "~/lib/session-write-store";
+import {
+  driveMovedToast,
+  forceTakeoverConfirmation,
+  lockClaimedElsewhereToast,
+  readOnlyDetail,
+  readOnlyLabel,
+  takenOverToast,
+} from "~/shared/session-write-access";
 import type { Project, Task } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
@@ -144,6 +160,34 @@ export type TerminalDescriptor = {
 };
 
 type SessionTerminalSurface = PaneTerminalSurface;
+
+/**
+ * Put one xterm into (or out of) its read-only state — the same terminal, with
+ * its input taken away (issue 147, `CONTEXT.md` Singular UI).
+ *
+ * `disableStdin` is the load-bearing half: xterm stops accepting keystrokes
+ * before they become `onData`, so nothing is typed, nothing is echoed, and the
+ * operator finds out by looking rather than by pressing a key and watching it
+ * do nothing. The cursor goes with it, because a blinking cursor is the
+ * strongest "type here" a terminal has and leaving one on a surface that
+ * accepts nothing is the affordance the issue calls worse than none.
+ *
+ * Selection, scrollback, links and resize are all untouched: a Reader is
+ * reading, and every one of those is a reader's gesture (ADR 0024 D4 makes the
+ * same argument for why `resize` is not gated on the wire).
+ */
+function applyReadOnly(
+  term: {
+    options: { disableStdin?: boolean; cursorBlink?: boolean; cursorInactiveStyle?: string };
+    blur?: () => void;
+  },
+  readOnly: boolean,
+): void {
+  term.options.disableStdin = readOnly;
+  term.options.cursorBlink = !readOnly;
+  term.options.cursorInactiveStyle = readOnly ? "none" : "outline";
+  if (readOnly) term.blur?.();
+}
 
 // Header width (px) below which the secondary controls (rename, zoom, clone)
 // collapse into the "…" menu; below the tiny threshold the title/status block
@@ -427,6 +471,15 @@ export function TerminalPane({
   // latest task status without rebuilding the terminal. Used to re-arm the
   // Cursor/Codex Enter→running fallback after a turn finishes.
   const liveTaskStatusRef = useRef(task.status);
+  // May this pane write to its Session, and if not, which of the two reasons
+  // (issue 147). Same ref shape and same reason as the status above: every
+  // write path in the surface closure reads it, and the surface is built once.
+  const writeState = useSessionWriteState(descriptor.coreId, descriptor.taskId);
+  const mayWriteRef = useRef(true);
+  mayWriteRef.current = writeState.access.writable;
+  const readOnlyReason = writeState.access.writable ? null : writeState.access.reason;
+  const [takeoverOpen, setTakeoverOpen] = useState(false);
+  const [lockBusy, setLockBusy] = useState(false);
   // Latest onHide (the header's close button) read from a ref so the once-per-
   // surface PTY-exit handler can invoke it without rebuilding on every render.
   // Lets a clean shell exit (typing `exit`) close the pane just like the X.
@@ -492,6 +545,10 @@ export function TerminalPane({
   const { data: selectedLiveTask } = useTask(project.id, task.id);
   const liveTask = selectedLiveTask ?? task;
   liveTaskStatusRef.current = liveTask.status;
+  // The Session's name as the operator last saw it, for copy written from
+  // effects that must not re-subscribe every time somebody renames a Session.
+  const liveTitleRef = useRef(liveTask.title);
+  liveTitleRef.current = liveTask.title;
   const meta = HARNESS_META[liveTask.agent];
   const statusMeta = STATUS_META[liveTask.status];
   const sessionRunning = liveTask.status === "running";
@@ -519,7 +576,127 @@ export function TerminalPane({
     !!pendingQuestion &&
     !questionDismissed &&
     liveTask.status === "needs-input" &&
-    !startError;
+    !startError &&
+    // Answering a question is a write — it walks the TUI menu with injected
+    // keys. A Reader is offered no input affordance at all, and an overlay full
+    // of buttons that cannot land is the worst kind (issue 147).
+    writeState.access.writable;
+
+  // ─── Session write access (issue 147, ADR 0024 D3/D8) ──────────────────────
+
+  // This pane is on screen, so this tab is a candidate to drive its Session
+  // among the Panel's own tabs — and gives that up when the pane goes. Not a
+  // claim on the **Session lock**: this never leaves the Panel, and the lock is
+  // an explicit gesture on the core-link (D6). First-come, so the second tab to
+  // open the same Session follows the first rather than fighting it.
+  useEffect(() => {
+    const coreId = descriptor.coreId;
+    if (!coreId) return;
+    watchSessionDrive(coreId, descriptor.taskId);
+    return () => releaseSessionDrive(coreId, descriptor.taskId);
+  }, [descriptor.coreId, descriptor.taskId]);
+
+  // Read-only is a *state of this terminal*, applied to the surface this pane
+  // already has (CONTEXT.md — Singular UI). `bindMount` applies it on attach;
+  // this is for the answer moving under an open pane, which is the case D8
+  // exists for.
+  useEffect(() => {
+    termSurfaceRef.current?.setReadOnly?.(!writeState.access.writable);
+  }, [writeState.access.writable]);
+
+  // The loser of an intra-Panel handover. Its own event, its own copy, and
+  // nothing in common with the takeover below beyond both ending in a pane the
+  // operator can no longer type into: nothing was taken here and nothing was
+  // lost — the operator moved their own keyboard between their own tabs.
+  useEffect(() => {
+    const coreId = descriptor.coreId;
+    if (!coreId) return;
+    return onSessionDriveHandover((msg) => {
+      if (msg.coreId !== coreId || msg.taskId !== descriptor.taskId) return;
+      const copy = driveMovedToast(liveTitleRef.current);
+      toast.message(copy.title, { description: copy.detail });
+    });
+  }, [descriptor.coreId, descriptor.taskId]);
+
+  // The loser of a cross-client change. The other event, and deliberately not
+  // the same sentence: a Core client that is not this Panel now holds the
+  // Session, this Panel did not agree to it, and a force takeover is
+  // unrecoverable by design — whatever was typed and not sent is gone (D7).
+  // Which of the two lines it gets turns on whether this Panel was holding the
+  // lock, because reporting an eviction that did not happen is the thing the
+  // wire's own `takenFrom` exists to prevent.
+  const previousLockState = useRef(writeState.lock.state);
+  useEffect(() => {
+    const before = previousLockState.current;
+    const now = writeState.lock.state;
+    previousLockState.current = now;
+    if (now !== "held-by-another" || before === "held-by-another") return;
+    const copy =
+      before === "held-by-you"
+        ? takenOverToast(liveTitleRef.current)
+        : lockClaimedElsewhereToast(liveTitleRef.current);
+    toast.message(copy.title, { description: copy.detail });
+  }, [writeState.lock.state]);
+
+  /** Take the Session lock for this Panel, if nobody else has it (D6). */
+  const claimSessionLock = async () => {
+    const coreId = descriptor.coreId;
+    if (!coreId) return;
+    setLockBusy(true);
+    try {
+      const bridge = getPanelBridge();
+      const result = await bridge?.claimSession(coreId, descriptor.taskId);
+      // A denied claim is an answer, not a failure — somebody else has it, and
+      // the way past is the takeover, which the header is already offering by
+      // the time this resolves (the register learned it from the same answer).
+      if (result && result.supported && !result.granted) {
+        toast.message(`“${liveTitleRef.current}” is held by another client`, {
+          description: "Take it over if you need to drive it from here.",
+        });
+      }
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setLockBusy(false);
+    }
+  };
+
+  /** Give it back. Explicit, like taking it — nothing here releases on idle (D7). */
+  const releaseSessionLockNow = async () => {
+    const coreId = descriptor.coreId;
+    if (!coreId) return;
+    setLockBusy(true);
+    try {
+      await getPanelBridge()?.releaseSessionLock(coreId, descriptor.taskId);
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setLockBusy(false);
+    }
+  };
+
+  /** Take it whoever holds it — only ever from the confirmation that names it. */
+  const forceTakeoverSessionLock = async () => {
+    const coreId = descriptor.coreId;
+    if (!coreId) return;
+    setLockBusy(true);
+    try {
+      const result = await getPanelBridge()?.forceTakeoverSession(coreId, descriptor.taskId);
+      setTakeoverOpen(false);
+      // Only report an eviction that happened. A takeover of a Session that had
+      // been let go in the meantime is an ordinary claim, and saying otherwise
+      // would tell the operator they cost somebody their work when they did not.
+      if (result?.takenFrom === "another-connection") {
+        toast.message(`Took over “${liveTitleRef.current}”`, {
+          description: "The client that was holding this Session can no longer write to it.",
+        });
+      }
+    } catch (err) {
+      toast.error(errMsg(err));
+    } finally {
+      setLockBusy(false);
+    }
+  };
 
   const submitQuestionAnswers = async (answers: QuestionAnswer[]): Promise<boolean> => {
     const q = pendingQuestion;
@@ -684,6 +861,10 @@ export function TerminalPane({
       cache.markMounted(surface.id);
       termSurfaceRef.current = surface.controls;
       surface.controls.setFontSize(terminalFontSize);
+      // A surface is cached per Session and reattached rather than rebuilt, so
+      // a pane coming back on screen has to be told where it stands now — the
+      // lock may well have moved while it was parked (issue 147).
+      surface.controls.setReadOnly?.(!mayWriteRef.current);
       // Refit only after the resize settles — a live refit clears the WebGL
       // canvas on every cell-boundary crossing, strobing the whole grid.
       const settledFit = createSettledFit(() => surface.fit());
@@ -768,8 +949,9 @@ export function TerminalPane({
           setFontSize: () => undefined,
           writeToPty: (data) => {
             // surface.ptyId mirrors the active pty across respawns.
-            if (surface.ptyId && ptyApi) void ptyApi.write(surface.ptyId, data);
+            if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
           },
+          setReadOnly: (readOnly) => applyReadOnly(term, readOnly),
         },
         fit: () => fitTerminalSurface(term, fit),
         teardown: () => undefined,
@@ -817,9 +999,20 @@ export function TerminalPane({
       });
       const detachLinks = attachTerminalLinks(term);
 
+      // Every byte this pane sends passes through here or through the `onData`
+      // handler below, and both consult the same ref (issue 147). The ref, not
+      // a captured value: the surface is built once and outlives every render
+      // that could change the answer, and a gate that read a stale closure
+      // would be a Reader that could still type for as long as its pane
+      // happened to have been built before the lock moved.
+      //
+      // Belt and braces with `disableStdin` — that stops xterm accepting keys
+      // at all, which is what makes read-only *visible*; this stops the paths
+      // that do not go through xterm's keyboard: the file drop, the key map's
+      // escape sequences, and the question overlay's injected answers.
       const writeToPty = async (data: string) => {
         const ptyId = activePtyId;
-        if (!ptyId || !ptyApi) return false;
+        if (!ptyId || !ptyApi || !mayWriteRef.current) return false;
         return ptyApi.write(ptyId, data);
       };
 
@@ -1026,12 +1219,22 @@ export function TerminalPane({
         },
         writeToPty: (data) => {
           // surface.ptyId mirrors the active pty across respawns.
-          if (surface.ptyId && ptyApi) void ptyApi.write(surface.ptyId, data);
+          if (surface.ptyId && ptyApi && mayWriteRef.current) void ptyApi.write(surface.ptyId, data);
         },
+        setReadOnly: (readOnly) => applyReadOnly(term, readOnly),
       };
 
       const wireTerminalInput = (ptyId: string) => {
         term.onData((data) => {
+          // A Reader sends nothing and reports nothing (issue 147). The return
+          // is before the status and prompt-capture side effects deliberately:
+          // they are writes of their own — a `running` patch and a title the
+          // Core's generator would act on — and a pane that may not type into a
+          // Session may not rename it either. In practice `disableStdin` means
+          // typed keys never reach here at all; this covers the paths that do
+          // not come from the keyboard, and the instant between the lock moving
+          // and React re-rendering the option onto the terminal.
+          if (!mayWriteRef.current) return;
           // Typing while a question is pending moves the TUI highlight under
           // the overlay's feet — flag it so the overlay stops injecting.
           // onData also carries terminal-generated replies (focus reports,
@@ -1333,6 +1536,78 @@ export function TerminalPane({
           </Btn>
         </div>
       )}
+      {/* Session write access (issue 147). Above the header, outside every
+          header tier, and never behind the "…" menu: read-only has to be
+          visible *before* a keystroke, and a grid cell narrow enough to fold
+          its title away is exactly the cell where a hidden one would be
+          discovered by typing. Rendered only for a Core that announces
+          `multiConnection` — against one that does not there is no lock and no
+          arbitration, so there is nothing here to say. */}
+      {writeState.lock.supported &&
+        (readOnlyReason || writeState.lock.state === "held-by-you") && (
+          <div
+            data-session-write-access={readOnlyReason ?? "held-by-you"}
+            role={readOnlyReason ? "status" : undefined}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              gap: 8,
+              padding: "6px 12px",
+              borderBottom: "1px solid var(--border)",
+              background: readOnlyReason
+                ? "color-mix(in oklch, var(--text-dim) 10%, transparent)"
+                : "transparent",
+              color: "var(--text-dim)",
+              fontFamily: "var(--mono)",
+              fontSize: 11,
+              flexShrink: 0,
+            }}
+          >
+            <span
+              style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+              title={readOnlyReason ? readOnlyDetail(readOnlyReason) : undefined}
+            >
+              {readOnlyReason ? readOnlyLabel(readOnlyReason) : "You hold this Session"}
+            </span>
+            {/* One affordance per state, and they are not the same gesture. The
+                cross-client one is a force takeover behind a confirmation that
+                names the Session; the Panel-local one moves this Panel's own
+                keyboard and is instant, because it costs nobody anything. */}
+            {readOnlyReason === "held-by-another-client" && (
+              <Btn
+                variant="ghost"
+                size="sm"
+                disabled={lockBusy}
+                onClick={() => setTakeoverOpen(true)}
+              >
+                Take over…
+              </Btn>
+            )}
+            {readOnlyReason === "driven-in-another-tab" && (
+              <Btn
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  takeSessionDrive(descriptor.coreId, descriptor.taskId);
+                  termSurfaceRef.current?.focus();
+                }}
+              >
+                Drive here
+              </Btn>
+            )}
+            {!readOnlyReason && (
+              <Btn
+                variant="ghost"
+                size="sm"
+                disabled={lockBusy}
+                onClick={() => void releaseSessionLockNow()}
+              >
+                Release
+              </Btn>
+            )}
+          </div>
+        )}
       {!hideHeader && (
       <div
         ref={headerRef}
@@ -1446,6 +1721,26 @@ export function TerminalPane({
             ) : null
           ) : (
             <>
+              {/* Claiming is an explicit gesture and an optional one (ADR 0024
+                  D6): an unlocked Session is writable by anybody, so this pane
+                  works untouched without it and the button only ever *adds* a
+                  guarantee. That is why it lives with the discretionary header
+                  controls rather than in the strip above — the strip is for
+                  states the operator has to be told about, and "nobody has
+                  claimed this" is the ordinary one. */}
+              {writeState.lock.supported && writeState.lock.state === "unlocked" && (
+                <Tooltip content="Claim this Session — other Core clients become read-only">
+                  <Btn
+                    variant="ghost"
+                    size="sm"
+                    icon="shield"
+                    disabled={lockBusy}
+                    onClick={() => void claimSessionLock()}
+                    aria-label={`Claim session ${liveTask.title}`}
+                    style={{ width: 34, padding: 0 }}
+                  />
+                </Tooltip>
+              )}
               {sessionButtons.rename && (
                 <Tooltip content="Rename session">
                   <Btn
@@ -1569,6 +1864,25 @@ export function TerminalPane({
         )}
       </div>
       </div>
+      {/* The force takeover's confirmation (issue 147). It names the Session,
+          because a grid of panes makes "are you sure?" genuinely ambiguous
+          otherwise — and it says what the operator is doing to somebody else,
+          since a takeover is unrecoverable by design (ADR 0024 D7). It does not
+          name the holder: the wire never says who that is (D8/D10), and a name
+          invented here would be the identity the published lock exists to avoid
+          broadcasting. */}
+      <ConfirmDialog
+        open={takeoverOpen}
+        onClose={() => setTakeoverOpen(false)}
+        onConfirm={() => void forceTakeoverSessionLock()}
+        title={forceTakeoverConfirmation(liveTask.title).title}
+        confirmLabel={forceTakeoverConfirmation(liveTask.title).confirmLabel}
+        variant="danger"
+        icon="shield"
+        loading={lockBusy}
+      >
+        {forceTakeoverConfirmation(liveTask.title).body}
+      </ConfirmDialog>
       <Modal
         open={renameOpen}
         onClose={closeRenameDialog}
