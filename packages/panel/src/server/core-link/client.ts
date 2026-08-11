@@ -14,6 +14,7 @@ import {
   CORE_LINK_PROTOCOL_VERSION,
   coreLinkProtocolCompatible,
   readMultiConnectionCapability,
+  type CoreLinkErrorCode,
   type CoreLinkMultiConnectionCapability,
   type CoreLinkSessionTakenFrom,
   type CoreLinkHarnessAvailabilityMap,
@@ -66,6 +67,34 @@ export const MULTI_CONNECTION_ONLY_FRAME_TYPES: ReadonlySet<CoreLinkRequestFrame
     "release",
     "forceTakeover",
   ]);
+
+/**
+ * The rejection a caller gets when the Core answers a request with an `error`
+ * frame — carrying that frame's machine-readable {@link CoreLinkErrorCode}
+ * alongside its prose (issue 144).
+ *
+ * `code` exists precisely so a caller does not have to match on `message`, and
+ * a client that threw a bare `Error` would put the parsing back that the field
+ * was added to remove. It is optional on the wire and optional here: absent on
+ * every error that shipped before the field, so a reader takes the code when it
+ * is there and falls back to the message when it is not — never the reverse.
+ *
+ * `session-locked` is its first value and the reason this class exists now: a
+ * mutation refused because another Core client holds that Session throws,
+ * whereas a mutation aimed at a Session this Core no longer has resolves
+ * (`ok: false` / `task: null`). One of the two is worth retrying after a claim
+ * and the other never is, and telling them apart is the caller's whole job.
+ */
+export class CoreLinkRequestError extends Error {
+  /** The `code` off the `error` frame, when it carried one. */
+  readonly code?: CoreLinkErrorCode;
+
+  constructor(message: string, code?: CoreLinkErrorCode) {
+    super(message);
+    this.name = "CoreLinkRequestError";
+    this.code = code;
+  }
+}
 
 export type PtyCoreLinkClientHandlers = {
   onData: (msg: { ptyId: string; data: string; seq: number }) => void;
@@ -1235,8 +1264,12 @@ function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return msg.released;
     case "forceTakeoverResult":
       return msg.takenFrom;
+    // The code rides the rejection rather than being dropped at the boundary
+    // (issue 144): a caller can already tell "locked" (throws) from "gone"
+    // (resolves), and this is what lets it tell "locked" from any other error
+    // without reading the prose the field exists to spare it.
     case "error":
-      throw new Error(msg.message);
+      throw new CoreLinkRequestError(msg.message, msg.code);
     default:
       // `ready`, `subscribeAck`, the auth frames — not request/response answers
       // any typed method awaits. Resolving undefined matches the old behaviour

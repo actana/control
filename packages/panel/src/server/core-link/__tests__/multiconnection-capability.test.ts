@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  CoreLinkRequestError,
   MULTI_CONNECTION_ONLY_FRAME_TYPES,
   PtyCoreLinkClient,
   type CoreLinkCursorStorage,
@@ -7,6 +8,7 @@ import {
 } from "../client";
 import {
   CORE_LINK_PROTOCOL_VERSION,
+  SESSION_LOCKED_ERROR_CODE,
   type CoreLinkRequestFrame,
 } from "@actana/shared/core-link-frames";
 
@@ -558,6 +560,42 @@ describe("the Panel's multiConnection capability (issue 143, ADR 0024 D11)", () 
 
       expect(unsupported).toEqual({ supported: false, granted: false });
       await expect(denied).resolves.toEqual({ supported: true, granted: false });
+    });
+
+    it("carries the refusal's code out on the thrown error, not only its prose", async () => {
+      // The whole point of `code` is that a caller does not have to match on
+      // the message, and a client that threw a bare Error would put that
+      // parsing straight back. A refused *mutation* is the one thing on this
+      // surface that throws — a denied claim resolves, and a vanished Session
+      // resolves `false` — so this is where the code has to survive.
+      readyWithCapability();
+      const write = client.write("pty-1", "x");
+      const frame = socket.framesOfType("write").at(-1)!;
+      socket.receive({
+        type: "error",
+        reqId: frame.reqId,
+        message: "Another Core client holds this Session's lock",
+        code: SESSION_LOCKED_ERROR_CODE,
+      });
+
+      await expect(write).rejects.toThrow(CoreLinkRequestError);
+      await expect(write).rejects.toMatchObject({
+        code: SESSION_LOCKED_ERROR_CODE,
+        message: "Another Core client holds this Session's lock",
+      });
+    });
+
+    it("leaves the code undefined on an error that carries none", async () => {
+      // The field is additive and optional (D11's shape, one layer down): every
+      // error that shipped before it arrives without one, so a reader falls
+      // back to the message rather than treating its absence as a code.
+      readyWithCapability();
+      const kill = client.kill("pty-1");
+      const frame = socket.framesOfType("kill").at(-1)!;
+      socket.receive({ type: "error", reqId: frame.reqId, message: "boom" });
+
+      await expect(kill).rejects.toThrow(CoreLinkRequestError);
+      await expect(kill).rejects.toMatchObject({ message: "boom", code: undefined });
     });
 
     it("closes the gate again when the link drops, so nothing queues past a reconnect", async () => {
