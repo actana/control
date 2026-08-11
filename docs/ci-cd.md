@@ -350,6 +350,13 @@ name, four behaviours*):
 They are four modes of one job rather than four jobs precisely because the
 ruleset pins these names — the same reason `landing.yml` is its own file.
 
+**Undrafting re-resolves.** `ready_for_review` is one of the trigger's named
+activity types (#137), so the moment a draft is marked ready a new run starts
+and the mode resolves against `draft: false` — a real build replaces the
+draft-time `pass` greens. Without it, the greens a draft got in seconds would
+stand over a head that was never built, under the same check names a real
+build reports under (D33), and nothing about the pull request would say so.
+
 **Fork pull requests build without pushing, and that is by design.** GitHub
 does not expose repository secrets to a `pull_request` run from a fork.
 `pull_request_target` — which would run the base branch's workflow with secrets

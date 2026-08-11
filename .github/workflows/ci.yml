@@ -2,6 +2,18 @@ name: CI
 
 on:
   pull_request:
+    # The three defaults plus `ready_for_review` (#137), and named explicitly
+    # because naming `types` at all *replaces* the defaults rather than
+    # extending them — so the three have to be listed alongside the one this
+    # adds. A draft resolves both image checks to `pass` (ADR 0023 D33), and
+    # undrafting fires `ready_for_review`, which the defaults do not listen
+    # for: no run started, the mode was never re-resolved, and the draft-time
+    # greens stood — a mergeable pull request carrying two required image
+    # checks that had never built its head, under the same check names a real
+    # build reports under (D33), which is what made it invisible. The re-run
+    # re-resolves the mode, and the resolver's draft branch reads `draft:
+    # false` off the payload and builds.
+    types: [opened, synchronize, reopened, ready_for_review]
   push:
     branches:
       # The train, and nothing else (ADR 0023 D41). Nothing else in the

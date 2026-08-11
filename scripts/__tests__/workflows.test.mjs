@@ -99,6 +99,22 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
     expect(ci).toMatch(/\^landing\//);
   });
 
+  // #137. A draft resolves the image checks to `pass` (ADR 0023 D33), and
+  // undrafting fires `ready_for_review` — which the default activity types do
+  // not listen for, so the draft-time greens would stand over a head that was
+  // never built, under the same check names a real build reports under. All
+  // four types are asserted literally: naming `types` at all *replaces* the
+  // defaults rather than extending them, so losing one of the three would
+  // stop CI re-running at all, which is the same bug reached by a new route.
+  it("re-runs when a pull request leaves draft (#137)", () => {
+    // Comments stripped: the trigger block explains itself between the key
+    // and the types list, and the runner reads what `code` reads.
+    const ci = code(read("ci.yml"));
+    expect(ci).toMatch(
+      /^ {2}pull_request:\n {4}types: \[opened, synchronize, reopened, ready_for_review\]$/m,
+    );
+  });
+
   it("keeps container-image.yml reusable rather than a fourth entry point", () => {
     const source = read("container-image.yml");
     expect(source).toMatch(/^on:\n {2}workflow_call:/m);
