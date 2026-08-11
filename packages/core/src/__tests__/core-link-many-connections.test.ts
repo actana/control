@@ -102,16 +102,24 @@ function fakeEventLog() {
 /** A `PtyCore` that records what the server does to it, and can emit. */
 function mockCore() {
   const emitTargets: (((event: PtyCoreEvent) => void) | null)[] = [];
+  const spawned: unknown[] = [];
+  const killed: string[] = [];
   let target: ((event: PtyCoreEvent) => void) | null = null;
   const core = {
     setEmitTarget: (fn: ((event: PtyCoreEvent) => void) | null) => {
       emitTargets.push(fn);
       target = fn;
     },
-    spawn: async () => ({ ptyId: "pty-1", hooksReportTurnStart: true }),
+    spawn: async (opts: unknown) => {
+      spawned.push(opts);
+      return { ptyId: "pty-1", hooksReportTurnStart: true };
+    },
     write: () => true,
     resize: () => true,
-    kill: () => true,
+    kill: (ptyId: string) => {
+      killed.push(ptyId);
+      return true;
+    },
     killLaunchProcesses: async () => ({ ptyCount: 0, ports: [] }),
     findByTask: () => ({ ptyId: null }),
     replay: () => ({ data: "", nextSeq: 0, from: 0 }),
@@ -120,6 +128,8 @@ function mockCore() {
   return {
     core,
     emitTargets,
+    spawned,
+    killed,
     emit: (event: PtyCoreEvent) => target?.(event),
     hasTarget: () => target !== null,
   };
@@ -262,6 +272,29 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
     }
   });
 
+  it("does not fan PTY output out to a connection that has not authenticated", () => {
+    server.close();
+    startServer({ authVerifier: () => ({ ok: true, coreId: "core-1", exp: 9_999 }) });
+    const authed = connect();
+    const stranger = connect();
+    authed.receive({ type: "auth", reqId: "a1", bearer: "good" });
+    expect(authed.ofType("authOk")).toHaveLength(1);
+
+    core.emit({ type: "data", ptyId: "pty-1", data: "secret", seq: 1 });
+    core.emit({ type: "exit", ptyId: "pty-1", exitCode: 0 });
+
+    expect(authed.ofType("data")).toHaveLength(1);
+    expect(authed.ofType("exit")).toHaveLength(1);
+    // The stranger presents no bearer and sends no frame, so the message gate
+    // never fires; it answers pings, so the heartbeat never reaps it. The
+    // fan-out is the only thing standing between it and this Core's PTY output.
+    expect(stranger.ofType("data")).toHaveLength(0);
+    expect(stranger.ofType("exit")).toHaveLength(0);
+    // Skipping a connection is not allowed to cost the log its row: the exit is
+    // recorded once, off the single sink, outside the fan-out loop.
+    expect(log.events.filter((event) => event.kind === "pty:exit")).toHaveLength(1);
+  });
+
   it("records one pty:exit per exit, not one per connection", () => {
     const first = connect();
     const second = connect();
@@ -312,5 +345,35 @@ describe("a Core accepts many concurrent core-link connections (issue 141)", () 
 
     only.close();
     expect(core.hasTarget()).toBe(false);
+  });
+
+  it("does not dispatch a frame that arrives after close()", async () => {
+    server.close();
+    startServer({ authVerifier: () => ({ ok: true, coreId: "core-1", exp: 9_999 }) });
+    const ws = connect();
+    ws.receive({ type: "auth", reqId: "a1", bearer: "good" });
+    expect(ws.ofType("authOk")).toHaveLength(1);
+
+    server.close();
+    const sentBefore = ws.sent.length;
+
+    // The `message` handler closes over the connection, not the registry, so
+    // clearing the registry alone would leave `authenticated` true and these
+    // two frames fully served by a Core that has already shut down.
+    ws.receive({
+      type: "spawn",
+      reqId: "s1",
+      opts: { taskId: "t1", cwd: "/tmp", command: "sh", agent: "claude-code" },
+    });
+    ws.receive({ type: "kill", reqId: "k1", ptyId: "pty-1" });
+    await Promise.resolve();
+
+    expect(core.spawned).toHaveLength(0);
+    expect(core.killed).toHaveLength(0);
+    expect(ws.sent).toHaveLength(sentBefore);
+    expect(log.events).toHaveLength(0);
+    // …and the client is told the Core is gone rather than left holding a
+    // socket that answers nothing.
+    expect(ws.closed).toBe(true);
   });
 });

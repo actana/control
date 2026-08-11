@@ -548,17 +548,31 @@ export class PtyCoreLinkServer {
   }
 
   /**
-   * Deliver one PTY event to every connection, and record an exit exactly
-   * once. The event log is a fact about the machine, not about who was
-   * watching: appending per connection would write two `pty:exit` rows for one
-   * dead process and replay the exit twice to every reconnecting client.
+   * Deliver one PTY event to every *authenticated* connection, and record an
+   * exit exactly once. The event log is a fact about the machine, not about who
+   * was watching: appending per connection would write two `pty:exit` rows for
+   * one dead process and replay the exit twice to every reconnecting client —
+   * so the append stays outside the loop, and a connection being skipped never
+   * costs the log a row.
+   *
+   * The auth skip mirrors `pushLiveEvents`: with an `authVerifier` configured,
+   * a connection that has not proved identity gets nothing pushed at it. PTY
+   * output is strictly more sensitive than the event timeline, and a socket
+   * that presents no bearer and sends no frame never trips the message gate —
+   * answering pings keeps `lastInboundAt` fresh, so the heartbeat never reaps
+   * it either. Until this ticket the fan-out was the one push path that did not
+   * ask. Loopback Cores configure no verifier, where `authenticated` is
+   * irrelevant and every connection is served exactly as before.
    */
   private fanOutPtyEvent(event: PtyCoreEvent): void {
     const frame: CoreLinkServerFrame =
       event.type === "data"
         ? { type: "data", ptyId: event.ptyId, data: event.data, seq: event.seq }
         : { type: "exit", ptyId: event.ptyId, exitCode: event.exitCode, signal: event.signal };
-    for (const conn of this.connections.values()) this.send(conn.ws, frame);
+    for (const conn of this.connections.values()) {
+      if (this.authVerifier && !conn.authenticated) continue;
+      this.send(conn.ws, frame);
+    }
     if (event.type === "exit") {
       this.recordPtyExit(event);
     }
@@ -1042,10 +1056,30 @@ export class PtyCoreLinkServer {
     }
   }
 
+  /**
+   * Shut the server down, disarming every socket it is still serving.
+   *
+   * Dropping the registry is not enough: the `message` handler closes over its
+   * own {@link ActiveConnection}, not over `this.connections`, so a frame
+   * arriving after shutdown would still be dispatched in full — `spawn` and
+   * `kill` included — on a connection whose `authenticated` is still true.
+   * Before issue 141 `close()` nulled the single `connection` field and the
+   * auth gate went false with it; with a registry, the socket itself has to be
+   * taken out of the conversation. Removing the listeners is what actually does
+   * that — a close handshake still delivers whatever is already in flight — and
+   * the `close()` that follows is the polite half, telling the client this Core
+   * is going away rather than leaving it to notice a dead socket.
+   */
   close(): void {
-    for (const conn of this.connections.values()) {
+    for (const conn of [...this.connections.values()]) {
       conn.stopHeartbeat();
       conn.stopPoll();
+      try {
+        conn.ws.removeAllListeners();
+        conn.ws.close();
+      } catch {
+        /* already gone — nothing left to disarm */
+      }
     }
     this.connections.clear();
     this.releaseEmitTarget();
