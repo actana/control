@@ -62,7 +62,7 @@ The live or replayable conversation backing a Task — the PTY stream plus the h
 _Avoid_: conversation, thread
 
 **Session lock** (Core-scoped):
-The exclusive right of one Core client to mutate one Session — its writes, its kill, and every task mutation addressed at it. Held by a core-link connection, never by a person or a program; scoped to a single Session, so different Sessions on one Core may be held by different clients. A Session starts unlocked and its creator gets no privilege; claiming is an explicit gesture; the lock ends on release, on connection drop, or on force takeover, and never on idle. It lives in memory and dies with the Core, exactly like the PTYs it guards. See ADR 0024.
+The exclusive right of one Core client to mutate one Session — its writes, its kill, and every task mutation addressed at it. Held by a core-link connection, never by a person or a program; scoped to a single Session, so different Sessions on one Core may be held by different clients. A Session starts unlocked and its creator gets no privilege; claiming is an explicit gesture; the lock ends on release, on connection drop, or on force takeover, and never on idle. It lives in memory and dies with the Core, exactly like the PTYs it guards. **Published, not discovered by failing:** every Session snapshot carries the lock as the client it was sent to must be told it — whether *you* may write, never who holds it — and every change appends a `session:lockChanged` event that replays by cursor. See ADR 0024.
 _Avoid_: session owner, mutex, reservation, ownership
 
 **Reader** (Core-scoped):
