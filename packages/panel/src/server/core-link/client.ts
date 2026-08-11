@@ -95,8 +95,10 @@ export type PtyCoreLinkClientOptions = {
   bearer?: string;
   /**
    * Overrides {@link MULTI_CONNECTION_ONLY_FRAME_TYPES}. Exists only so a test
-   * can exercise the gate while that set is still empty — the frames it will
-   * hold are #142's and the lock ticket's to name. Production never passes it.
+   * can drive the rejection in {@link PtyCoreLinkClient.request} with a
+   * stand-in frame type: the real entries both degrade at their call sites
+   * rather than reach that backstop, so nothing in this build exercises it.
+   * Production never passes it.
    */
   multiConnectionOnlyFrameTypes?: ReadonlySet<string>;
 };
