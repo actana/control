@@ -76,10 +76,15 @@ export class SessionLockRegister {
    * it off us, and the tab that just took the Session would be told it lost it.
    *
    * A queue per Session rather than a flag, because two gestures can be in
-   * flight; the head is consumed by the first matching transition. An
-   * unmatched entry is dropped by the next change from anybody, which is the
-   * conservative direction: a stale suppression outliving its event would
-   * swallow a real takeover.
+   * flight; the head is consumed by the first matching transition, and an
+   * unmatched head is left queued for the echo that is still coming (see
+   * {@link consumeSelfEcho}).
+   *
+   * That only stays safe because **nothing is queued unless the Core will
+   * append an event for it**: an entry with no event coming would sit here
+   * forever and swallow a real `claimed` or `taken-over` from another client,
+   * which is the loser's notice D8 exists to deliver. So every `expectSelfEcho`
+   * below mirrors the Core's own publish condition rather than the gesture.
    */
   private readonly selfEchoes = new Map<string, string[]>();
 
@@ -148,7 +153,14 @@ export class SessionLockRegister {
    * that asked does not wait for a snapshot to find out.
    */
   applyClaimResult(taskId: string, granted: boolean): void {
-    if (granted) this.expectSelfEcho(taskId, "claimed");
+    // Only a claim that *changed* something echoes. A re-claim by the
+    // connection that already holds the Session is idempotent and the Core
+    // publishes nothing for it (`pty-core-link-server.ts` — `granted &&
+    // !alreadyHeld`, "Nothing changed publishes nothing"), so queueing here
+    // would leave an entry no event ever matches, waiting to eat the next real
+    // `claimed` from somebody else. Two tabs both reading `unlocked` and both
+    // clicking Claim is enough to reach this, and this is a two-tab feature.
+    if (granted && !this.known.get(taskId)?.held) this.expectSelfEcho(taskId, "claimed");
     this.set(taskId, { held: granted, locked: true });
   }
 

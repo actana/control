@@ -179,6 +179,34 @@ export function lockClaimedElsewhereToast(sessionTitle: string): {
 }
 
 /**
+ * Which cross-client notice a lock answer earns, if any.
+ *
+ * `before` is the last **settled** answer this pane had for the Session — a
+ * state the Core actually published — and `null` means it has never had one.
+ * That distinction is the whole function. A pane opened on a Session another
+ * client has been holding all along has *learned* a lock, not *lost* one, and
+ * the state it was seeded with is a default, not evidence the Session was ever
+ * free. Announcing a takeover off it would report an event that did not happen
+ * — on every such open, and again on every core-link flap, since a new link
+ * empties the register and re-seeds it from the first snapshot.
+ *
+ * Which of the two lines a real change gets turns on whether this Panel was
+ * holding the lock, because reporting an eviction that did not happen is the
+ * thing the wire's own `takenFrom` exists to prevent.
+ */
+export function crossClientLockNotice(opts: {
+  before: CoreLinkSessionLockState | null;
+  now: CoreLinkSessionLockState;
+  sessionTitle: string;
+}): { title: string; detail: string } | null {
+  if (opts.now !== "held-by-another") return null;
+  if (opts.before === null || opts.before === "held-by-another") return null;
+  return opts.before === "held-by-you"
+    ? takenOverToast(opts.sessionTitle)
+    : lockClaimedElsewhereToast(opts.sessionTitle);
+}
+
+/**
  * The confirmation a force takeover is put behind, naming what is being taken.
  *
  * It names the Session, because "are you sure?" over an unnamed thing is a

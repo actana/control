@@ -129,13 +129,13 @@ import {
   watchSessionDrive,
 } from "~/lib/session-write-store";
 import {
+  crossClientLockNotice,
   driveMovedToast,
   forceTakeoverConfirmation,
-  lockClaimedElsewhereToast,
   readOnlyDetail,
   readOnlyLabel,
-  takenOverToast,
 } from "~/shared/session-write-access";
+import type { CoreLinkSessionLockState } from "@actana/shared/core-link-frames";
 import type { Project, Task } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
@@ -598,18 +598,24 @@ export function TerminalPane({
   // Which of the two lines it gets turns on whether this Panel was holding the
   // lock, because reporting an eviction that did not happen is the thing the
   // wire's own `takenFrom` exists to prevent.
-  const previousLockState = useRef(writeState.lock.state);
+  // Only a *settled* answer moves this — one from a Core that publishes locks
+  // at all. The seeded default reads `unlocked` on a Session nothing has been
+  // heard about, and comparing against it would turn "this pane just learned
+  // the Session is held" into "somebody took it".
+  const settledLockState = useRef<CoreLinkSessionLockState | null>(
+    writeState.lock.supported ? writeState.lock.state : null,
+  );
   useEffect(() => {
-    const before = previousLockState.current;
-    const now = writeState.lock.state;
-    previousLockState.current = now;
-    if (now !== "held-by-another" || before === "held-by-another") return;
-    const copy =
-      before === "held-by-you"
-        ? takenOverToast(liveTitleRef.current)
-        : lockClaimedElsewhereToast(liveTitleRef.current);
-    toast.message(copy.title, { description: copy.detail });
-  }, [writeState.lock.state]);
+    if (!writeState.lock.supported) return;
+    const before = settledLockState.current;
+    settledLockState.current = writeState.lock.state;
+    const copy = crossClientLockNotice({
+      before,
+      now: writeState.lock.state,
+      sessionTitle: liveTitleRef.current,
+    });
+    if (copy) toast.message(copy.title, { description: copy.detail });
+  }, [writeState.lock.supported, writeState.lock.state]);
 
   /** Take the Session lock for this Panel, if nobody else has it (D6). */
   const claimSessionLock = async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   UNSUPPORTED_SESSION_LOCK,
+  crossClientLockNotice,
   driveMovedToast,
   forceTakeoverConfirmation,
   lockClaimedElsewhereToast,
@@ -119,6 +120,40 @@ describe("what the operator reads", () => {
   it("names both losers' Sessions, so a grid of panes is not ambiguous", () => {
     expect(driveMovedToast("Ship the thing").title).toContain("Ship the thing");
     expect(takenOverToast("Ship the thing").title).toContain("Ship the thing");
+  });
+});
+
+describe("when the cross-client notice fires at all", () => {
+  const notice = (before: PanelSessionLock["state"] | null, now: PanelSessionLock["state"]) =>
+    crossClientLockNotice({ before, now, sessionTitle: "Ship the thing" });
+
+  it("says nothing to a pane that has only just learned the Session is held", () => {
+    // The pane lost nothing here — it opened on a Session another client has
+    // been holding all along, and `before: null` is "no settled answer yet",
+    // not "it was free a moment ago". This is also every core-link flap: a new
+    // link empties the register and re-seeds it from the first snapshot, and
+    // announcing off that would replay the notice for every held Session on
+    // screen.
+    expect(notice(null, "held-by-another")).toBeNull();
+  });
+
+  it("still tells the holder it was taken over", () => {
+    expect(notice("held-by-you", "held-by-another")).toEqual(takenOverToast("Ship the thing"));
+  });
+
+  it("still tells a watcher of a free Session that somebody claimed it", () => {
+    expect(notice("unlocked", "held-by-another")).toEqual(
+      lockClaimedElsewhereToast("Ship the thing"),
+    );
+  });
+
+  it("does not repeat itself while the Session stays held elsewhere", () => {
+    expect(notice("held-by-another", "held-by-another")).toBeNull();
+  });
+
+  it("says nothing about getting the Session, or about it going free", () => {
+    expect(notice("held-by-another", "held-by-you")).toBeNull();
+    expect(notice("held-by-another", "unlocked")).toBeNull();
   });
 });
 

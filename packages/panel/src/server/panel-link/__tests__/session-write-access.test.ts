@@ -299,6 +299,63 @@ describe("claiming a Session from the Panel", () => {
     expect(other.lastLock(TASK)?.state).toBe("held-by-you");
   });
 
+  it("queues no echo for a re-claim the Core publishes nothing for", async () => {
+    // Two tabs both reading `unlocked` and both clicking Claim: the second
+    // claim is granted and idempotent, and the Core appends no event for it
+    // ("nothing changed publishes nothing"). An echo queued here would have no
+    // event to match, would outlive its gesture, and would swallow the next
+    // real lock change from another client — the loser's notice D8 exists for.
+    const link = source.bring(CORE);
+    const { tab, session } = openTab();
+    await listTasks(session, link, taskRow("unlocked"));
+    link.answers = (frame) => ({
+      type: "claimResult",
+      reqId: (frame as { reqId: string }).reqId,
+      taskId: TASK,
+      granted: true,
+    });
+
+    await session.receive({
+      t: "core",
+      coreId: CORE,
+      frame: { type: "claim", reqId: "c1", taskId: TASK },
+    });
+    link.pushLockChanged(TASK, "claimed", true, 1); // the first claim's echo
+    await session.receive({
+      t: "core",
+      coreId: CORE,
+      frame: { type: "claim", reqId: "c2", taskId: TASK },
+    });
+    expect(tab.lastLock(TASK)?.state).toBe("held-by-you");
+
+    // The Panel gives it back, and its `released` echo must be the one that is
+    // consumed — not left mismatched behind a stale `claimed`.
+    link.answers = (frame) => ({
+      type: "releaseResult",
+      reqId: (frame as { reqId: string }).reqId,
+      taskId: TASK,
+      released: true,
+    });
+    await session.receive({
+      t: "core",
+      coreId: CORE,
+      frame: { type: "release", reqId: "r1", taskId: TASK },
+    });
+    link.pushLockChanged(TASK, "released", false, 2);
+    expect(tab.lastLock(TASK)?.state).toBe("unlocked");
+
+    // Another Core client takes the free Session. This is somebody else's
+    // change and the tab has to see it, or it keeps an editable terminal on a
+    // Session this Panel does not hold until something refetches.
+    link.pushLockChanged(TASK, "claimed", true, 3);
+
+    expect(tab.lastLock(TASK)).toEqual({
+      supported: true,
+      writable: false,
+      state: "held-by-another",
+    });
+  });
+
   it("does not report a claim another client denied as a hold", async () => {
     const link = source.bring(CORE);
     const { tab, session } = openTab();
