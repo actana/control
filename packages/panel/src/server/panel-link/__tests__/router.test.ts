@@ -29,11 +29,22 @@ class FakeCoreLink implements CoreLinkClientLike {
   onAuthError() {
     return () => {};
   }
-  onDisconnected() {
+  private disconnected?: (msg: { error?: string }) => void;
+  onDisconnected(cb: (msg: { error?: string }) => void) {
+    this.disconnected = cb;
     return () => {};
   }
-  onProtocolVersion() {
+  private ready?: (msg: { version: string | null; compatible: boolean }) => void;
+  onProtocolVersion(cb: (msg: { version: string | null; compatible: boolean }) => void) {
+    this.ready = cb;
     return () => {};
+  }
+  /** The Core's `ready` frame landed — where the capability answer arrives. */
+  pushReady() {
+    this.ready?.({ version: "1.0.0", compatible: true });
+  }
+  pushDisconnected() {
+    this.disconnected?.({});
   }
   onData(cb: (msg: { ptyId: string; data: string; seq: number }) => void) {
     this.data = cb;
@@ -61,6 +72,24 @@ class FakeCoreLink implements CoreLinkClientLike {
   ptyUnsubscribe(ptyId: string) {
     this.ptyCalls.push({ op: "unsubscribe", ptyId });
     return Promise.resolve();
+  }
+  /**
+   * Whether this fake Core announces `multiConnection` (issue 147). Defaults to
+   * true — the interesting router behaviour is the multi-connection one, and
+   * the test that pins "a Core without it behaves exactly as today" says so
+   * explicitly by turning it off.
+   */
+  multiConnection = true;
+  canSendMultiConnectionFrames() {
+    return this.multiConnection;
+  }
+  private reclaimed?: (msg: { replaced: boolean; taskIds: string[] }) => void;
+  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void) {
+    this.reclaimed = cb;
+    return () => {};
+  }
+  pushReclaimed(taskIds: string[]) {
+    this.reclaimed?.({ replaced: true, taskIds });
   }
   close() {}
 

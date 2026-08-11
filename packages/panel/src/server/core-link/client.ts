@@ -301,6 +301,9 @@ export class PtyCoreLinkClient {
   private readonly authOkListeners = new Set<(msg: { coreId: string; exp: number }) => void>();
   private readonly authErrorListeners = new Set<(msg: { reason: "expired" | "bad-signature" | "malformed" }) => void>();
   private readonly disconnectedListeners = new Set<(msg: { error?: string }) => void>();
+  private readonly reclaimedListeners = new Set<
+    (msg: { replaced: boolean; taskIds: string[] }) => void
+  >();
   private readonly protocolVersionListeners = new Set<
     (msg: { version: string | null; compatible: boolean }) => void
   >();
@@ -1069,12 +1072,20 @@ export class PtyCoreLinkClient {
    * Present this link's Core client id, so the Core closes the socket this
    * connection replaces and moves its Session locks here (issue 146, D9).
    *
-   * Fire-and-forget by design. The answer says what was reaped, and there is
-   * nothing above this client that can act on it: the locks are already here by
-   * the time the frame is answered, and a reclaim that fails to land costs the
-   * 45-second heartbeat timeout it was shortening — a slower path to the same
-   * state, never a wrong one. Nothing waits on it, so nothing here can leave a
-   * reconnect half-finished.
+   * Fire-and-forget by design. Nothing *waits* on the answer: the locks are
+   * already here by the time the frame is answered, and a reclaim that fails to
+   * land costs the 45-second heartbeat timeout it was shortening — a slower path
+   * to the same state, never a wrong one. Nothing here can leave a reconnect
+   * half-finished.
+   *
+   * The answer is not discarded, though (issue 147). `taskIds` names the
+   * Sessions whose locks came across, and that is a fact no layer above can
+   * derive: this connection did not claim them, the Core did not log an event
+   * for the transfer — the locks moved in place, which is exactly the atomicity
+   * D9 needs — and until something asks for a fresh snapshot nothing else on the
+   * link says the Panel is holding them again. So it is announced on
+   * {@link onReclaimed}, where the lock register picks it up. A listener that
+   * throws must not take the reconnect down with it, hence the guard.
    *
    * **Against a Core that does not announce `multiConnection`, this sends
    * nothing** — the same consult-the-gate-and-degrade shape {@link ptySubscribe}
@@ -1084,9 +1095,39 @@ export class PtyCoreLinkClient {
    */
   private sendReclaim(): void {
     if (!this.canSendMultiConnectionFrames()) return;
-    void this.rpc({ type: "reclaim", reqId: "", clientId: this.clientId }).catch(() => {
-      /* the socket died again; the next open presents the same id */
-    });
+    void this.rpc({ type: "reclaim", reqId: "", clientId: this.clientId })
+      .then((result) => {
+        const answer = result as { replaced?: boolean; taskIds?: string[] } | undefined;
+        if (!answer) return;
+        const msg = {
+          replaced: answer.replaced === true,
+          taskIds: Array.isArray(answer.taskIds) ? answer.taskIds : [],
+        };
+        for (const cb of this.reclaimedListeners) {
+          try {
+            cb(msg);
+          } catch {
+            /* a listener's failure is not this connection's failure */
+          }
+        }
+      })
+      .catch(() => {
+        /* the socket died again; the next open presents the same id */
+      });
+  }
+
+  /**
+   * What this link's `reclaim` reaped, once per (re)connect that sent one
+   * (issue 146, ADR 0024 D9 — issue 147 is its consumer).
+   *
+   * Fires only on a Core that announces `multiConnection`, because only such a
+   * Core is sent the frame at all. `taskIds` is often empty and an empty list
+   * never means the id was unknown — it means this client held nothing when its
+   * previous socket went quiet, which is the ordinary case.
+   */
+  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void): () => void {
+    this.reclaimedListeners.add(cb);
+    return () => this.reclaimedListeners.delete(cb);
   }
 
   /**
@@ -1360,6 +1401,13 @@ function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return msg.released;
     case "forceTakeoverResult":
       return msg.takenFrom;
+    // Both fields, because both are reporting a caller cannot derive (issue
+    // 146). `taskIds` in particular is the set of Sessions whose locks came
+    // across with this connection, and the Panel's lock register is its
+    // consumer: after a reconnect those Sessions are held-by-you again, and
+    // nothing else on the link would say so until the next snapshot.
+    case "reclaimResult":
+      return { replaced: msg.replaced, taskIds: msg.taskIds };
     // The code rides the rejection rather than being dropped at the boundary
     // (issue 144): a caller can already tell "locked" (throws) from "gone"
     // (resolves), and this is what lets it tell "locked" from any other error

@@ -11,6 +11,7 @@ import type {
   CoreLinkResponseFrame,
 } from "@actana/shared/core-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
+import type { PanelSessionLock } from "~/shared/session-write-access";
 
 /**
  * The browser end of the panel link: one WebSocket per tab, no matter how many
@@ -112,6 +113,27 @@ export class PanelLinkClient {
   >();
   private readonly dialListeners = new Set<(status: CoreDialStatus) => void>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
+  private readonly lockListeners = new Set<
+    (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void
+  >();
+  private readonly driveListeners = new Set<
+    (msg: {
+      coreId: string;
+      taskId: string;
+      driving: boolean;
+      reason: "watch" | "handover";
+    }) => void
+  >();
+  /**
+   * The Sessions this tab has a pane open on, as `coreId` → `taskId`s.
+   *
+   * Held for the same reason the PTY claims above are: the service gives a
+   * tab's drives back when its socket dies, so a reconnect that re-sent only
+   * the subscriptions would come back with every pane on this tab following a
+   * Session nobody drives. The set is the tab's, and it is re-announced on
+   * every open.
+   */
+  private readonly drivenSessions = new Map<string, Set<string>>();
 
   constructor(opts: PanelLinkOptions = {}) {
     this.createSocket = opts.createSocket ?? defaultCreateSocket;
@@ -240,6 +262,66 @@ export class PanelLinkClient {
     return () => this.exitListeners.delete(cb);
   }
 
+  /**
+   * Announce that this tab has a pane open on a Session, or give it back
+   * (issue 147, ADR 0024 D3).
+   *
+   * This is the **Session drive** — arbitration between this Panel's own tabs,
+   * settled inside the Panel and never sent to any Core. It is not the Session
+   * lock: that is claimed with core-link frames through {@link request}, and it
+   * is held by the Panel once for all of its tabs.
+   *
+   * `take: true` is the operator asking for the keyboard here, which moves it
+   * off whichever tab of this Panel had it. Without it a pane takes the drive
+   * only if no other tab is driving that Session.
+   */
+  driveSession(coreId: string, taskId: string, opts: { take?: boolean } = {}): void {
+    let driven = this.drivenSessions.get(coreId);
+    if (!driven) {
+      driven = new Set();
+      this.drivenSessions.set(coreId, driven);
+    }
+    driven.add(taskId);
+    this.write({ t: "drive", coreId, taskId, want: opts.take === true ? "take" : "watch" });
+  }
+
+  /** This tab's pane on a Session is gone; it drives nothing there. Idempotent. */
+  releaseSessionDrive(coreId: string, taskId: string): void {
+    const driven = this.drivenSessions.get(coreId);
+    if (!driven?.delete(taskId)) return;
+    if (driven.size === 0) this.drivenSessions.delete(coreId);
+    this.write({ t: "drive", coreId, taskId, want: "drop" });
+  }
+
+  /**
+   * The Session lock, as the service's connection to that Core sees it — one
+   * answer for the whole Panel, pushed on every change (ADR 0024 D8).
+   */
+  onSessionLock(
+    cb: (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void,
+  ): () => void {
+    this.lockListeners.add(cb);
+    return () => this.lockListeners.delete(cb);
+  }
+
+  /**
+   * Whether *this tab* drives a Session among this Panel's tabs. `handover`
+   * says it changed under an open pane, which is the only case worth telling
+   * the operator about — and it is a different event from losing the lock to
+   * another Core client, with different copy.
+   */
+  onSessionDrive(
+    cb: (msg: {
+      coreId: string;
+      taskId: string;
+      driving: boolean;
+      reason: "watch" | "handover";
+    }) => void,
+  ): () => void {
+    this.driveListeners.add(cb);
+    return () => this.driveListeners.delete(cb);
+  }
+
   /** Dial-status changes, pushed by the service — no polling for reachability. */
   onDialStatus(cb: (status: CoreDialStatus) => void): () => void {
     this.dialListeners.add(cb);
@@ -290,6 +372,7 @@ export class PanelLinkClient {
       // on the browser side.
       for (const coreId of this.watching.keys()) this.sendSubscribe(coreId);
       this.resendPtySubscriptions();
+      this.resendSessionDrives();
       for (const frame of this.queued.splice(0)) this.rawSend(frame);
       for (const cb of this.connectionListeners) cb(true);
     });
@@ -380,6 +463,25 @@ export class PanelLinkClient {
     }
   }
 
+  /**
+   * Re-announce every Session this tab has a pane open on, on a link that has
+   * just come up (issue 147).
+   *
+   * `take` is deliberately not set, and the difference matters: a reconnect is
+   * not the operator asking for the keyboard. Re-asserting a drive would have
+   * two tabs of one Panel trade it back and forth on every flap, each reconnect
+   * silently pulling it off the other. Announcing interest and accepting the
+   * first-come answer is what makes a reconnect converge — the tab that was
+   * driving is still watching, so it keeps it.
+   */
+  private resendSessionDrives(): void {
+    for (const [coreId, taskIds] of this.drivenSessions) {
+      for (const taskId of taskIds) {
+        this.rawSend(encodePanelLinkFrame({ t: "drive", coreId, taskId, want: "watch" }));
+      }
+    }
+  }
+
   private write(frame: Parameters<typeof encodePanelLinkFrame>[0]): void {
     this.rawSend(encodePanelLinkFrame(frame));
   }
@@ -404,6 +506,26 @@ export class PanelLinkClient {
     if (!frame) return;
     if (frame.t === "dial") {
       for (const cb of this.dialListeners) cb(frame.status);
+      return;
+    }
+    // Session write access, in its two separate halves (issue 147). Neither is
+    // a request/response: both are pushed, because both have to be true on
+    // screen *before* a keystroke rather than discovered by one.
+    if (frame.t === "lock") {
+      for (const cb of this.lockListeners) {
+        cb({ coreId: frame.coreId, taskId: frame.taskId, lock: frame.lock });
+      }
+      return;
+    }
+    if (frame.t === "drive") {
+      for (const cb of this.driveListeners) {
+        cb({
+          coreId: frame.coreId,
+          taskId: frame.taskId,
+          driving: frame.driving,
+          reason: frame.reason,
+        });
+      }
       return;
     }
     const { coreId, frame: inner } = frame;

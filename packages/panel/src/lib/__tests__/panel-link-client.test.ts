@@ -56,7 +56,16 @@ class FakeSocket implements PanelLinkSocketLike {
 
   /** Core frames this socket sent, for one Core. */
   outgoing(coreId: string) {
-    return this.sent.flatMap((f) => (f.coreId === coreId ? [f.frame] : []));
+    return this.sent.flatMap((f) =>
+      f.t === "core" && f.coreId === coreId ? [f.frame] : [],
+    );
+  }
+
+  /** Session-drive frames this socket sent, for one Core (issue 147). */
+  drives(coreId: string) {
+    return this.sent.flatMap((f) =>
+      f.t === "drive" && f.coreId === coreId ? [{ taskId: f.taskId, want: f.want }] : [],
+    );
   }
 }
 
