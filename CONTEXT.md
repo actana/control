@@ -27,8 +27,16 @@ The single multiplexed WebSocket between a Panel session and the Panel. Carries 
 _Avoid_: socket, channel, API connection
 
 **Core**:
-A machine running the Actana Control daemon. Hosts projects, tasks and sessions; owns its own SQLite; the single source of truth for all work on that machine. A Panel drives zero-or-more Cores over the core-link.
+A machine running the Actana Control daemon. Hosts projects, tasks and sessions; owns its own SQLite; the single source of truth for all work on that machine. A Panel drives zero-or-more Cores over the core-link, and a Core serves zero-or-more Core clients at once (ADR 0024).
 _Avoid_: harness, server, backend, node, agent host
+
+**Core client**:
+Any program terminating a core link — the Panel, the CLI, an SDK consumer. The Panel is not privileged among them: it holds no authority on a Core that a CLI does not. A Core client is the unit of write authority (ADR 0024 D3); what happens *inside* one — which browser tab of a Panel drives the write it holds — is that client's own business and never crosses the wire.
+_Avoid_: consumer, agent, driver, SDK user
+
+**Core alias**:
+The name one Panel shows for a Core. Panel-local presentation, seeded from the registration blob's label and editable afterwards. Deliberately **not** a Core fact: two Panels registered to the same Core may call it different things, and the CLI's own per-Core config name is a third, unrelated name. The sibling of **Project presentation** — Panel-side filing over someone else's machine.
+_Avoid_: core name, hostname, display name (they read as facts about the machine)
 
 **Harness**:
 The agentic coding CLI a session drives — `claude-code`, `codex`, `cursor-cli`, `opencode`. Installed on a Core, spawned into a PTY by it, and never touched by the Panel except as an id and an availability status. A Harness is a vendor's program that Actana runs, not a part of Actana. The family is **open**; any table or dispatch keyed by harness type must be extensible, and differences between harnesses live inside the Core process, never in the Panel.
@@ -52,6 +60,14 @@ _UI note_: user-facing strings label a Task as "Session" (e.g. "Start a new sess
 **Session** (Core-scoped):
 The live or replayable conversation backing a Task — the PTY stream plus the harness's own session id. A Core runs many sessions; each session drives exactly one Harness. Replayable after Panel reconnect via the Core's event log.
 _Avoid_: conversation, thread
+
+**Session lock** (Core-scoped):
+The exclusive right of one Core client to mutate one Session — writing to its PTY, killing it, or changing its row. Claimed explicitly, held until released, dropped, or force-taken; never expires on idle, because a long agent run is idle by definition. A Session with no lock is **unlocked** and free for any Core client to claim; the client that created it holds no privilege. A coordination mechanism, not a security boundary — anyone holding the registration blob can open a VM Shell Session and kill the process outright (ADR 0024 D10).
+_Avoid_: ownership, session owner, mutex, reservation
+
+**Reader** (Core-scoped):
+A Core client attached to a Session it does not hold the lock on. Sees the full live stream and the whole replay tail; every mutation is refused. The ordinary state — a Session has at most one writer and any number of Readers, and a Core client is typically a Reader on most Sessions and a writer on the one it is driving.
+_Avoid_: observer, spectator, viewer, follower
 
 **VM Shell Session** (Core-scoped):
 A free-form interactive shell on the Core's machine — distinct from harness workspaces. Spawned over the same core-link with `shellSession: true`, gated by core-link auth (not project-root validation), rendered in the Panel like a user terminal. The "SSH-equivalent" escape hatch. First-class concept, not a special case of harness PTY.
@@ -125,10 +141,11 @@ _Avoid_: service, daemon config, when you mean the concept — those are impleme
 
 - **Nothing task-shaped lives on the Panel.** Tasks, sessions, terminal logs, hook events, project folders — all on the Core. The Panel stores Cores + one `lastEventId` per Core.
 - **A Project's path is a VM path.** Only the Core can validate it. The Panel never stores or assumes folder paths on a Core.
-- **One Core link per Core, multiplexed.** All PTY streams, task ops, and events for one Core share a single WebSocket. No per-task channels.
+- **One Core link per Core client, multiplexed.** All PTY streams, task ops, and events between one Core client and one Core share a single WebSocket. No per-task channels. A Core serves many such links at once and no longer evicts the previous one (ADR 0024 D1); each carries its own event cursor and its own PTY subscriptions.
+- **Many Readers, one writer, per Session.** Every Core client attached to a Session sees its full stream; exactly one may mutate it, by holding that Session's lock. Different Sessions on one Core may be held by different clients. Enforced on the Core, which is the only party that sees every client (ADR 0024 D4).
 - **VM Shell Sessions are privileged.** Same auth as the core-link; require an explicit open gesture in the Panel; never auto-spawned.
 - **Singular UI across Cores.** Every Session (Task), Project, notification, status change, and modal renders through the same Panel components regardless of which Core owns the underlying data. Every Core is remote — a Core on the Panel's own host gets no special path. Transport underneath may differ; the surface may not.
 - **Only the Panel dials Cores.** Browsers cannot hold client certificates; every core-link terminates inside the Panel. The Panel UI reaches Cores solely through its panel link.
-- **The Panel and its Cores are version-locked.** The core-link handshake exchanges a protocol version; a mismatched Core renders as "needs update" with the command to run — never a degraded or feature-detected mode.
+- **The Panel and its Cores are version-locked, for behaviour.** The core-link handshake exchanges a protocol version; a mismatched Core renders as "needs update" with the command to run — never a degraded mode. **Narrow, deliberate exception:** a purely *additive* surface may announce itself on `ready` and be absent, without moving the protocol version — but only where its absence yields today's behaviour exactly, not a lesser one. Two such capabilities exist: `multiConnection` (ADR 0024 D11) and the files surface (#129 F9). A capability that changes what an existing frame means is not additive, and moves the version.
 - **Task metadata lives Core-side.** Titles, session icons, pin flags — all owned by the Core. Panel mutations flow over the core-link; two Panels connected to the same Core see identical state.
 - **CLI availability is Core-published state, not Panel probing.** The Panel never inspects a remote machine's PATH directly; it reads the Core's own availability snapshot from the core-link state stream.
