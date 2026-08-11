@@ -61,6 +61,20 @@ export interface CoreLinkClientLike {
    */
   ptySubscribe(ptyId: string, opts?: { catchUp?: boolean }): Promise<void>;
   ptyUnsubscribe(ptyId: string): Promise<void>;
+  /**
+   * Does this Core announce `multiConnection` (ADR 0024 D11)? The router reads
+   * it to decide whether a Session has a lock to publish and a keyboard to
+   * arbitrate at all — against a Core without it, neither exists and the Panel
+   * behaves exactly as it did before either did (issue 147).
+   */
+  canSendMultiConnectionFrames(): boolean;
+  /**
+   * The Sessions whose locks came across on this link's `reclaim`, once per
+   * connect that sent one (issue 146, ADR 0024 D9). Nothing else reports them:
+   * the Core rewrites the lock table in place and appends no event, so this is
+   * how a reconnected Panel learns it is still holding what it was holding.
+   */
+  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void): () => void;
   close(): void;
 }
 

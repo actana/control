@@ -13,6 +13,7 @@ import type {
 } from "@actana/shared/core-link-frames";
 import type { CoreLinkAnswer as Answer } from "~/shared/panel-link";
 import type { CoreDialStatus } from "~/shared/cores";
+import type { PanelSessionLock } from "~/shared/session-write-access";
 
 /**
  * The Panel UI's bridge — the one surface through which components reach a
@@ -99,6 +100,59 @@ export type PanelBridge = {
   onEvent(cb: (msg: { coreId: string; event: CoreLinkEvent }) => void): () => void;
   /** Dial-status changes, pushed by the service as it finds them. */
   onDialStatus(cb: (status: CoreDialStatus) => void): () => void;
+  // ─── Session write access (issue 147, ADR 0024 D3/D8) ───
+  // Two things, kept apart on purpose. `claimSession` / `releaseSessionLock` /
+  // `forceTakeoverSession` are the **Session lock**: core-link frames, answered
+  // by the Core, held by the Panel *once* for all of its tabs. `driveSession` /
+  // `releaseSessionDrive` are the **Session drive**: which of this Panel's tabs
+  // holds the keyboard, settled inside the Panel and sent to no Core.
+
+  /**
+   * Claim this Session's write lock for the Panel. `granted: false` means
+   * another Core client holds it — an answer, not a failure, and the only way
+   * past it is {@link forceTakeoverSession}.
+   *
+   * `supported: false` says this Core has no lock table at all. **It must never
+   * render read-only**: it is the opposite of `granted: false`, and conflating
+   * them makes a single-connection Core look permanently locked to the operator
+   * who is its only client.
+   */
+  claimSession(coreId: string, taskId: string): Promise<{ supported: boolean; granted: boolean }>;
+  /** Give this Session's write lock back. Idempotent — the Panel may not hold it. */
+  releaseSessionLock(coreId: string, taskId: string): Promise<{ released: boolean }>;
+  /**
+   * Take this Session's write lock whoever holds it. Unconditional and
+   * unrecoverable by design (ADR 0024 D7): the previous holder's in-flight
+   * keystrokes are gone. `takenFrom` says whether anybody was actually evicted,
+   * so a caller never reports an eviction that did not happen.
+   */
+  forceTakeoverSession(
+    coreId: string,
+    taskId: string,
+  ): Promise<{ takenFrom: "nobody" | "another-connection" | "this-connection" }>;
+  /**
+   * This tab has a pane open on a Session, and drives it if no other tab of this
+   * Panel does. `take` is the operator asking for the keyboard here, which moves
+   * it off whichever tab of this Panel had it — a Panel-local handover that
+   * costs nobody their Session and crosses no wire.
+   */
+  driveSession(coreId: string, taskId: string, opts?: { take?: boolean }): void;
+  /** This tab's pane on a Session has gone. */
+  releaseSessionDrive(coreId: string, taskId: string): void;
+  /** The Session lock as the service's link to that Core sees it, pushed on change. */
+  onSessionLock(
+    cb: (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void,
+  ): () => void;
+  /** Whether this tab drives a Session, pushed on change. */
+  onSessionDrive(
+    cb: (msg: {
+      coreId: string;
+      taskId: string;
+      driving: boolean;
+      reason: "watch" | "handover";
+    }) => void,
+  ): () => void;
+
   /** Link up / link down, so a view can refetch across a gap. */
   onConnectionChange(cb: (connected: boolean) => void): () => void;
 
@@ -164,6 +218,43 @@ function makeBridge(link: PanelLinkClient): PanelBridge {
     onEvent: (cb) => link.onEvent(cb),
     onDialStatus: (cb) => link.onDialStatus(cb),
     onConnectionChange: (cb) => link.onConnectionChange(cb),
+    // The Session lock's three gestures are ordinary core-link frames, so they
+    // ride `request` like every other mutation — the Panel is a router, and
+    // there is no second vocabulary for them. `supported` is read off the
+    // service's own answer: a Core with no lock table answers the claim frame
+    // with an error, and the router's register never reports anything but
+    // `supported: false` for it, so a claim there resolves to what it is —
+    // nothing to claim, and nothing stopping the write either.
+    claimSession: async (coreId, taskId) => {
+      try {
+        const result = await link.request<Answer<"claimResult">>(coreId, { type: "claim", taskId });
+        return { supported: true, granted: result.granted };
+      } catch {
+        return { supported: false, granted: false };
+      }
+    },
+    releaseSessionLock: async (coreId, taskId) => {
+      try {
+        const result = await link.request<Answer<"releaseResult">>(coreId, {
+          type: "release",
+          taskId,
+        });
+        return { released: result.released };
+      } catch {
+        return { released: false };
+      }
+    },
+    forceTakeoverSession: async (coreId, taskId) => {
+      const result = await link.request<Answer<"forceTakeoverResult">>(coreId, {
+        type: "forceTakeover",
+        taskId,
+      });
+      return { takenFrom: result.takenFrom };
+    },
+    driveSession: (coreId, taskId, opts) => link.driveSession(coreId, taskId, opts),
+    releaseSessionDrive: (coreId, taskId) => link.releaseSessionDrive(coreId, taskId),
+    onSessionLock: (cb) => link.onSessionLock(cb),
+    onSessionDrive: (cb) => link.onSessionDrive(cb),
     pty: (coreId) => corePtyBridgeFor(link, coreId),
   };
 }
