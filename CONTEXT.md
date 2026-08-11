@@ -73,6 +73,10 @@ _Avoid_: session owner, mutex, reservation, ownership
 A Core client attached to a Session it does not hold the **Session lock** on. It sees every byte and can write none of them. Many Readers, one writer, per Session — a Reader is the ordinary state of an attached client, not a degraded one, and a Panel tab rendering a Session it does not hold is read-only *before* the first keystroke rather than on the error that answers it.
 _Avoid_: observer, spectator, participant, viewer, watcher
 
+**Session drive** (Panel-scoped):
+Which of one Panel's browser tabs holds the keyboard for a Session. **Not the Session lock, and never to be reported as one:** the Panel is a single Core client, it holds a Session's lock once for all of its tabs, and two tabs are one human with two tabs — so which of them drives is the Panel's own business, settled between Panel sessions inside the Panel and never crossing the wire (ADR 0024 D3). It has no core-link frame, appears in no event log, and no Core hears of it. First-come: a pane opened on a Session nobody in that Panel drives takes it, a pane opened on one already driven follows it and may ask for the keyboard, and a tab that goes away hands it to the next tab still watching. A following tab is read-only for a different reason than a **Reader** is, and is told a different sentence — a Session **held** by another client is not a Session **driven** in another tab, and the loser of a handover lost nothing while the loser of a force takeover lost their unsent keystrokes.
+_Avoid_: tab lock, focus, ownership, active tab, session lock (that is the Core-scoped one above)
+
 **VM Shell Session** (Core-scoped):
 A free-form interactive shell on the Core's machine — distinct from harness workspaces. Spawned over the same core-link with `shellSession: true`, gated by core-link auth (not project-root validation), rendered in the Panel like a user terminal. The "SSH-equivalent" escape hatch. First-class concept, not a special case of harness PTY.
 _Avoid_: ssh, terminal, console (too overloaded)
