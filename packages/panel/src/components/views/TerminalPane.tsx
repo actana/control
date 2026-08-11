@@ -595,13 +595,12 @@ export function TerminalPane({
   // the same sentence: a Core client that is not this Panel now holds the
   // Session, this Panel did not agree to it, and a force takeover is
   // unrecoverable by design — whatever was typed and not sent is gone (D7).
-  // Which of the two lines it gets turns on whether this Panel was holding the
-  // lock, because reporting an eviction that did not happen is the thing the
-  // wire's own `takenFrom` exists to prevent.
-  // Only a *settled* answer moves this — one from a Core that publishes locks
-  // at all. The seeded default reads `unlocked` on a Session nothing has been
-  // heard about, and comparing against it would turn "this pane just learned
-  // the Session is held" into "somebody took it".
+  // Which line it earns, and whether it earns one at all, is
+  // {@link crossClientLockNotice}'s; what this holds is the *settled* state to
+  // compare against — one from a Core that publishes locks at all, never the
+  // seeded default, which reads `unlocked` on a Session nothing has been heard
+  // about and would turn "this pane just learned the Session is held" into
+  // "somebody took it".
   const settledLockState = useRef<CoreLinkSessionLockState | null>(
     writeState.lock.supported ? writeState.lock.state : null,
   );
