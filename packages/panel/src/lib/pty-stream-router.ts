@@ -37,6 +37,13 @@ export type PtyStreamTransport = {
     ptyId: string,
     sinceSeq?: number,
   ) => Promise<{ data: string; nextSeq: number; from?: number }>;
+  /**
+   * Ask the Core for one pty's stream, and stop asking (issue 142). Present on
+   * transports that reach a Core whose output fans out by subscription; absent
+   * on ones that hand over everything, where a claim is bookkeeping only.
+   */
+  subscribe?: (ptyId: string, opts?: { catchUp?: boolean }) => Promise<void>;
+  unsubscribe?: (ptyId: string) => Promise<void>;
 };
 
 export type PtyStreamHandlers = {
@@ -194,9 +201,22 @@ export function createPtyStreamRouter(transport: PtyStreamTransport): PtyStreamR
   return {
     claim(ptyId, handlers) {
       claims.set(ptyId, handlers);
+      // Claiming a pty is the moment a pane starts rendering it, which is
+      // exactly when the Core needs to be told to send it (issue 142) — before
+      // this, its output went nowhere. `catchUp` because every claim is
+      // followed by a replay: the reattach path replays explicitly, and a
+      // freshly spawned pty is already subscribed by the spawn itself, where
+      // the flag is ignored as the second ask for a live stream.
+      void transport.subscribe?.(ptyId, { catchUp: true })?.catch(() => {
+        // The link is down. Its reconnect re-subscribes what it holds, and the
+        // reattach below repaints — a rejected claim is not a dead pane.
+      });
       return () => {
         if (claims.get(ptyId) !== handlers) return;
         claims.delete(ptyId);
+        void transport.unsubscribe?.(ptyId)?.catch(() => {
+          /* the link is down; its subscriptions went with it */
+        });
         // The cursor goes with the claim. A surface that takes this pty over
         // later starts from an empty screen and paints it through its own
         // replay (which re-seeds the cursor via `noteReplayed`); keeping a

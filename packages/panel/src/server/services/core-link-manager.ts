@@ -50,6 +50,17 @@ export interface CoreLinkClientLike {
   onData(cb: (msg: { ptyId: string; data: string; seq: number }) => void): () => void;
   onExit(cb: (msg: { ptyId: string; exitCode: number; signal?: number }) => void): () => void;
   onEvent(cb: (msg: { event: CoreLinkEvent }) => void): () => void;
+  /**
+   * Ask this Core for one PTY's byte stream, or stop asking (issue 142, ADR
+   * 0024 D2). `onData`/`onExit` fire only for subscribed PTYs.
+   *
+   * Named methods rather than `request` frames because the link — not the
+   * router above it, and certainly not a browser — is the only thing that knows
+   * when its socket dropped, and PTY subscriptions are Core-side connection
+   * state that has to be re-established when it comes back.
+   */
+  ptySubscribe(ptyId: string, opts?: { catchUp?: boolean }): Promise<void>;
+  ptyUnsubscribe(ptyId: string): Promise<void>;
   close(): void;
 }
 

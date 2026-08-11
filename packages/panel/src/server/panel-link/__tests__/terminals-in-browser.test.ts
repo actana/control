@@ -564,6 +564,70 @@ describe("terminals in the browser", () => {
     expect(core.core.ptys.get(ptyId)!.input).toEqual(["q"]);
   });
 
+  // ─── Panes subscribe for the PTYs they render (issue 142) ───
+  //
+  // The Core sends a PTY's stream only to the connections that asked. The
+  // *service* holds the one connection each Core gets, so what a tab claims and
+  // releases has to be refcounted across every tab — otherwise one closing
+  // silently blanks the panes of the others.
+
+  it("keeps a pty flowing for the tab still rendering it when another tab closes", async () => {
+    const { coreId, core } = await pair();
+    const leaving = await openTab(coreId);
+    const staying = await openTab(coreId);
+
+    const ptyId = (await leaving.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN }))
+      .ptyId as string;
+    // Both panes claim the pty, as a mounted TerminalPane does.
+    await leaving.ask(coreId, { type: "ptySubscribe", ptyId });
+    await staying.ask(coreId, { type: "ptySubscribe", ptyId });
+
+    leaving.close();
+    // Give the service its close event before asserting on what survives it.
+    await vi.waitFor(() => expect(true).toBe(true));
+    core.core.emit(ptyId, "still watching");
+
+    await vi.waitFor(() => expect(staying.output(coreId, ptyId)).toBe("still watching"), 5_000);
+  });
+
+  it("stops pulling a pty across the link once the last pane lets it go", async () => {
+    const { coreId, core } = await pair();
+    const tab = await openTab(coreId);
+    const ptyId = (await tab.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN })).ptyId as string;
+    await tab.ask(coreId, { type: "ptySubscribe", ptyId });
+
+    core.core.emit(ptyId, "watched");
+    await vi.waitFor(() => expect(tab.output(coreId, ptyId)).toBe("watched"), 5_000);
+
+    const released = await tab.ask(coreId, { type: "ptyUnsubscribe", ptyId });
+    expect(released).toMatchObject({ type: "ptyUnsubscribeAck", ptyId, subscribed: false });
+
+    core.core.emit(ptyId, " and then unwatched");
+    // The agent keeps running; its output simply stops crossing a link nobody
+    // is reading it over — which is the whole point of D2.
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    expect(tab.output(coreId, ptyId)).toBe("watched");
+  });
+
+  it("catches a reattaching pane up before the live stream reaches it", async () => {
+    const { coreId, core } = await pair();
+    const opener = await openTab(coreId);
+    const ptyId = (await opener.ask(coreId, { type: "spawn", opts: HARNESS_SPAWN }))
+      .ptyId as string;
+    core.core.emit(ptyId, "scrollback\n");
+
+    // A pane opening on a pty it did not spawn: subscribe, then replay from its
+    // own cursor. The replay carries the history; anything the pty emits after
+    // it arrives live, behind it.
+    const arriving = await openTab(coreId);
+    await arriving.ask(coreId, { type: "ptySubscribe", ptyId, catchUp: true });
+    const replay = await arriving.ask(coreId, { type: "replay", ptyId });
+    expect(replay).toMatchObject({ data: "scrollback\n", from: 0 });
+
+    core.core.emit(ptyId, "live\n");
+    await vi.waitFor(() => expect(arriving.output(coreId, ptyId)).toBe("live\n"), 5_000);
+  });
+
   it("reattaches after a dropped link with exactly what the tab missed", { timeout: 20_000 }, async () => {
     const { coreId, core } = await pair();
     const before = await openTab(coreId);

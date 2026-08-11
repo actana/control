@@ -143,4 +143,22 @@ describe("corePtyBridgeFor", () => {
     fake.setConnected(true);
     expect(reattach).toHaveBeenCalledTimes(1);
   });
+
+  it("asks its Core for a pty's stream, and gives it back", async () => {
+    const f = fakeLink();
+    const bridge = corePtyBridgeFor(f.link, "core_sub");
+
+    f.answers({ type: "ptySubscribeAck", ptyId: "p1", subscribed: true, holding: true });
+    await bridge.subscribe("p1", { catchUp: true });
+    f.answers({ type: "ptyUnsubscribeAck", ptyId: "p1", subscribed: false });
+    await bridge.unsubscribe("p1");
+
+    // A Core streams a pty only to the connections that asked (issue 142); this
+    // pair is the whole of what a pane does about that.
+    expect(f.sent.map((s) => s.frame)).toEqual([
+      { type: "ptySubscribe", ptyId: "p1", catchUp: true },
+      { type: "ptyUnsubscribe", ptyId: "p1" },
+    ]);
+    expect(f.sent.every((s) => s.coreId === "core_sub")).toBe(true);
+  });
 });

@@ -51,6 +51,17 @@ class FakeCoreLink implements CoreLinkClientLike {
     this.sent.push(frame);
     return Promise.resolve(this.answers(frame));
   }
+  /** Every pty subscribe/unsubscribe the router asked this link for, in order. */
+  readonly ptyCalls: Array<{ op: "subscribe" | "unsubscribe"; ptyId: string; catchUp?: boolean }> =
+    [];
+  ptySubscribe(ptyId: string, opts?: { catchUp?: boolean }) {
+    this.ptyCalls.push({ op: "subscribe", ptyId, catchUp: opts?.catchUp === true });
+    return Promise.resolve();
+  }
+  ptyUnsubscribe(ptyId: string) {
+    this.ptyCalls.push({ op: "unsubscribe", ptyId });
+    return Promise.resolve();
+  }
   close() {}
 
   pushData(msg: { ptyId: string; data: string; seq: number }) {
@@ -535,5 +546,128 @@ describe("panel-link router · a Core that needs updating", () => {
 
     expect(link.sent).toEqual([]);
     expect(tab.coreFrames("core_a").at(-1)).toMatchObject({ type: "error", reqId: "q4" });
+  });
+});
+
+/**
+ * PTY subscriptions (issue 142, ADR 0024 D2).
+ *
+ * The Core sends a PTY's stream only to the connections that asked for it, and
+ * the connection is the *service's* — shared by every tab. So these two frames
+ * are the router's, not the link's to receive verbatim: it refcounts a `ptyId`
+ * across tabs, and a tab going away gives back only what that tab was holding.
+ */
+describe("panel-link router · pty subscriptions", () => {
+  function claim(
+    session: ReturnType<PanelLinkRouter["attach"]>,
+    coreId: string,
+    ptyId: string,
+    catchUp = false,
+  ) {
+    return session.receive({
+      t: "core",
+      coreId,
+      frame: { type: "ptySubscribe", reqId: `c-${ptyId}`, ptyId, catchUp },
+    });
+  }
+  function release(
+    session: ReturnType<PanelLinkRouter["attach"]>,
+    coreId: string,
+    ptyId: string,
+  ) {
+    return session.receive({
+      t: "core",
+      coreId,
+      frame: { type: "ptyUnsubscribe", reqId: `r-${ptyId}`, ptyId },
+    });
+  }
+
+  it("asks the link for a pty on the first claim and answers the tab itself", async () => {
+    const link = source.bring("core_a");
+    const { tab, session } = openTab();
+
+    await claim(session, "core_a", "pty_1", true);
+
+    expect(link.ptyCalls).toEqual([{ op: "subscribe", ptyId: "pty_1", catchUp: true }]);
+    // Not forwarded: the browser's frame never reaches the Core as written.
+    expect(link.sent).toEqual([]);
+    expect(tab.coreFrames("core_a").at(-1)).toMatchObject({
+      type: "ptySubscribeAck",
+      reqId: "c-pty_1",
+      ptyId: "pty_1",
+      subscribed: true,
+    });
+  });
+
+  it("subscribes once however many tabs render the same pty", async () => {
+    const link = source.bring("core_a");
+    const { session: first } = openTab();
+    const { session: second } = openTab();
+
+    await claim(first, "core_a", "pty_1");
+    await claim(second, "core_a", "pty_1");
+
+    expect(link.ptyCalls).toEqual([{ op: "subscribe", ptyId: "pty_1", catchUp: false }]);
+  });
+
+  it("keeps the subscription while any tab is still rendering the pty", async () => {
+    const link = source.bring("core_a");
+    const { session: leaving } = openTab();
+    const { session: staying } = openTab();
+    await claim(leaving, "core_a", "pty_1");
+    await claim(staying, "core_a", "pty_1");
+
+    await release(leaving, "core_a", "pty_1");
+
+    // The trap this guards: forwarded verbatim, one tab closing a pane would
+    // blank the same pane in every other tab.
+    expect(link.ptyCalls.filter((c) => c.op === "unsubscribe")).toEqual([]);
+
+    await release(staying, "core_a", "pty_1");
+    expect(link.ptyCalls.at(-1)).toEqual({ op: "unsubscribe", ptyId: "pty_1" });
+  });
+
+  it("gives back a tab's claims when its socket goes away", async () => {
+    const link = source.bring("core_a");
+    const { session } = openTab();
+    await claim(session, "core_a", "pty_1");
+    await claim(session, "core_a", "pty_2");
+
+    session.detach();
+
+    expect(link.ptyCalls.filter((c) => c.op === "unsubscribe").map((c) => c.ptyId)).toEqual([
+      "pty_1",
+      "pty_2",
+    ]);
+  });
+
+  it("counts a tab's repeated claim on one pty once", async () => {
+    const link = source.bring("core_a");
+    const { session } = openTab();
+    // A pane rebuilding on the same pty re-sends `ptySubscribe`. Counted twice,
+    // the subscription would survive the tab that owned it.
+    await claim(session, "core_a", "pty_1");
+    await claim(session, "core_a", "pty_1");
+
+    session.detach();
+
+    expect(link.ptyCalls).toEqual([
+      { op: "subscribe", ptyId: "pty_1", catchUp: false },
+      { op: "unsubscribe", ptyId: "pty_1" },
+    ]);
+  });
+
+  it("re-asks a fresh link for every pty the open tabs are still rendering", async () => {
+    source.bring("core_a");
+    const { session } = openTab();
+    await claim(session, "core_a", "pty_1");
+
+    // A new client for this Core is a new Core-side connection, and
+    // subscriptions die with the connection they were made on.
+    const reconnected = source.bring("core_a");
+
+    expect(reconnected.ptyCalls).toEqual([
+      { op: "subscribe", ptyId: "pty_1", catchUp: false },
+    ]);
   });
 });

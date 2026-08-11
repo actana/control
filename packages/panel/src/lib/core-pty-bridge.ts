@@ -31,6 +31,19 @@ export type CorePtyBridge = {
   kill: (ptyId: string) => Promise<boolean>;
   /** The output this pty has buffered — all of it, or the tail past `sinceSeq`. */
   replay: (ptyId: string, sinceSeq?: number) => Promise<CoreLinkPtyReplay>;
+  /**
+   * Start receiving one pty's output (issue 142). A Core sends a pty's stream
+   * only to the connections that asked for it, so a pane that does not claim
+   * its pty renders nothing at all — this is what `onData`/`onExit` are gated
+   * on, not a filter over everything the machine is producing.
+   *
+   * `catchUp` says a `replay` for this pty follows, and asks the Core to hold
+   * the live stream until it has been served so the two never land out of
+   * order. The claim path always sets it; see `pty-stream-router`.
+   */
+  subscribe: (ptyId: string, opts?: { catchUp?: boolean }) => Promise<void>;
+  /** Stop receiving one pty's output. Idempotent, like {@link subscribe}. */
+  unsubscribe: (ptyId: string) => Promise<void>;
   findByTask: (taskId: string) => Promise<{ ptyId: string | null }>;
   onData: (cb: (msg: { ptyId: string; data: string; seq: number }) => void) => () => void;
   onExit: (
@@ -106,6 +119,19 @@ function createCorePtyBridge(link: PanelLinkClient, coreId: string): CorePtyBrid
         sinceSeq,
       });
       return { data: result.data, nextSeq: result.nextSeq, from: result.from };
+    },
+    subscribe: async (ptyId, opts) => {
+      await link.request<Answer<"ptySubscribeAck">>(coreId, {
+        type: "ptySubscribe",
+        ptyId,
+        catchUp: opts?.catchUp === true,
+      });
+    },
+    unsubscribe: async (ptyId) => {
+      await link.request<Answer<"ptyUnsubscribeAck">>(coreId, {
+        type: "ptyUnsubscribe",
+        ptyId,
+      });
     },
     findByTask: async (taskId) => {
       const result = await link.request<Answer<"findByTaskResult">>(coreId, {
