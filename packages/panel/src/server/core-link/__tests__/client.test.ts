@@ -13,8 +13,26 @@ import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
+  type CoreLinkSessionLock,
 } from "@actana/shared/core-link-frames";
 import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
+
+/**
+ * Every Session snapshot leaves a multi-connection Core stamped with the lock
+ * as the receiving connection must be told it (issue 145, ADR 0024 D8), and the
+ * connections in this suite claim nothing — so every row comes back writable and
+ * unlocked. The exact-equality assertions below carry it rather than loosening
+ * to `toMatchObject`: a snapshot that quietly stopped answering "can I write to
+ * this" is precisely the regression worth failing on.
+ */
+const UNLOCKED: CoreLinkSessionLock = { writable: true, state: "unlocked" };
+
+/** The same rows the port handed over, as the wire carries them. */
+function published<T extends { taskId: string }>(
+  rows: T[],
+): Array<T & { lock: CoreLinkSessionLock }> {
+  return rows.map((row) => ({ ...row, lock: UNLOCKED }));
+}
 
 // ─── Fake WebSocket ───────────────────────────────────────────────────────────
 //
@@ -112,6 +130,10 @@ function makeMockCore(): PtyCore & {
     })),
     killPtysUnderPath: vi.fn(async () => ({ ptyCount: 1 })),
     findByTask: vi.fn(() => ({ ptyId: "pty-test-1" })),
+    // Which Session a `write`/`kill` would touch (issue 144) — the lookup the
+    // Core's Session-lock gate resolves a ptyId through. Null here: this suite
+    // claims nothing, so every Session it touches is unlocked and served.
+    taskIdForPty: vi.fn(() => null),
     replay: vi.fn(() => ({ data: "buffered", nextSeq: 42 })),
     killAll: vi.fn(),
     _emit: null,
@@ -166,13 +188,20 @@ describe("PtyCoreLinkServer", () => {
 
   it("sends a ready frame on connection with the protocol version", () => {
     // The server sent "ready" via pair.server.send() → pair.server.sent.
+    // It also announces `multiConnection` (issue 143, ADR 0024 D11): this build
+    // serves many connections, and says so without moving the version above.
     expect(pair.server.lastSent()).toEqual({
       type: "ready",
       version: CORE_LINK_PROTOCOL_VERSION,
+      multiConnection: { version: 1 },
     });
   });
 
   it("wires core events as data/exit frames", () => {
+    // Since issue 142 a Core streams a PTY only to the connections that asked
+    // for it, so the subscription is what makes this connection a recipient at
+    // all — without it the frames below go nowhere.
+    pair.server.receive({ type: "ptySubscribe", reqId: "sub1", ptyId: "p1" });
     core.emitEvent({ type: "data", ptyId: "p1", data: "hello", seq: 1 });
     expect(pair.server.lastSent()).toEqual({
       type: "data",
@@ -396,7 +425,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "tasksListResult",
       reqId: "r2",
-      tasks: queryPort.tasks,
+      tasks: published(queryPort.tasks),
       archivedCount: 0,
     });
   });
@@ -411,7 +440,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "tasksListResult",
       reqId: "r3",
-      tasks: [queryPort.tasks[0]],
+      tasks: published([queryPort.tasks[0]]),
       archivedCount: 0,
     });
   });
@@ -429,7 +458,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "tasksListResult",
       reqId: "r4",
-      tasks: [queryPort.tasks[0]],
+      tasks: published([queryPort.tasks[0]]),
       archivedCount: 2,
     });
   });
@@ -444,7 +473,7 @@ describe("PtyCoreLinkServer projectsList / tasksList (issue 07)", () => {
     expect(pair.server.lastSent()).toEqual({
       type: "archivedTasksListResult",
       reqId: "r5",
-      tasks: [queryPort.tasks[1]],
+      tasks: published([queryPort.tasks[1]]),
     });
     // The archived read path never reaches the active one.
     expect(queryPort.listTasksCalls).toEqual([]);
@@ -1720,7 +1749,7 @@ describe("PtyCoreLinkServer projectsMutate / tasksMutate / sessionsList (issue 0
     expect(pair.server.lastSent()).toEqual({
       type: "sessionsListResult",
       reqId: "r1",
-      sessions: mutationPort.sessions,
+      sessions: published(mutationPort.sessions),
     });
   });
 
@@ -1983,6 +2012,127 @@ describe("core-link heartbeat", () => {
     vi.advanceTimersByTime(60_000);
     expect(socket.terminated).toBe(true);
 
+    client.close();
+  });
+});
+
+/**
+ * PTY subscriptions on the Panel's side of the link (issue 142, ADR 0024 D2).
+ *
+ * The link is the only thing that knows when its socket dropped, and a Core
+ * hangs subscriptions off the connection — so re-establishing them is the
+ * client's job, not something the router or a browser can be asked to notice.
+ *
+ * Every Core here announces `multiConnection` on `ready`, because these frames
+ * are gated on it (issue 143, ADR 0024 D11) — a Core that fans a PTY out by
+ * subscription is a multi-connection Core by definition. What a Core WITHOUT
+ * the capability gets instead is the deliberate single-connection fallback,
+ * covered in `multiconnection-capability.test.ts`.
+ */
+describe("PtyCoreLinkClient pty subscriptions", () => {
+  let pair: FakeWebSocketPair;
+
+  beforeEach(() => {
+    pair = new FakeWebSocketPair();
+  });
+
+  /** The Core's frame one on every connection, capability included. */
+  function announceReady(): void {
+    pair.client.receive({
+      type: "ready",
+      version: CORE_LINK_PROTOCOL_VERSION,
+      multiConnection: { version: 1 },
+    });
+  }
+
+  function makeClient(): PtyCoreLinkClient {
+    const client = new PtyCoreLinkClient({
+      url: "ws://127.0.0.1:0",
+      createSocket: () => pair.client as unknown as ClientWebSocketLike,
+      reconnectInitialMs: 10_000,
+      reconnectMaxMs: 10_000,
+      storage: makeMemoryStorage(),
+      cursorStorageKey: "mc.coreLink.lastEventId",
+    });
+    pair.openClient();
+    announceReady();
+    return client;
+  }
+
+  /**
+   * Fire a subscription call the way every caller does: the answer is a frame
+   * nobody here is going to send, and a link that drops rejects whatever it had
+   * in flight. What is asserted is what went out on the wire.
+   */
+  function fire(promise: Promise<void>): void {
+    void promise.catch(() => {});
+  }
+
+  function ptyFrames(): Array<Record<string, unknown>> {
+    return pair.client.sent
+      .map((s) => JSON.parse(s) as Record<string, unknown>)
+      .filter((f) => f.type === "ptySubscribe" || f.type === "ptyUnsubscribe");
+  }
+
+  it("asks the Core for a pty, carrying the catch-up contract", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1", { catchUp: true }));
+
+    expect(ptyFrames()).toMatchObject([
+      { type: "ptySubscribe", ptyId: "pty_1", catchUp: true },
+    ]);
+    client.close();
+  });
+
+  it("asks once for a pty it already holds", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1"));
+    fire(client.ptySubscribe("pty_1"));
+
+    expect(ptyFrames()).toHaveLength(1);
+    client.close();
+  });
+
+  it("re-asks for every held pty when the link comes back", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1"));
+    fire(client.ptySubscribe("pty_2"));
+    fire(client.ptyUnsubscribe("pty_1"));
+    pair.client.sent.length = 0;
+
+    pair.closeClient();
+    pair.openClient();
+    announceReady();
+
+    // Only what is still held, and live rather than holding: nothing here is
+    // going to send the `replay` a hold waits for, and a hold nobody releases
+    // is a pane that never repaints.
+    expect(ptyFrames()).toMatchObject([
+      { type: "ptySubscribe", ptyId: "pty_2", catchUp: false },
+    ]);
+    client.close();
+  });
+
+  it("does not re-ask for a pty it has released", () => {
+    const client = makeClient();
+    fire(client.ptySubscribe("pty_1"));
+    fire(client.ptyUnsubscribe("pty_1"));
+    expect(ptyFrames().at(-1)).toMatchObject({ type: "ptyUnsubscribe", ptyId: "pty_1" });
+    pair.client.sent.length = 0;
+
+    pair.closeClient();
+    pair.openClient();
+    announceReady();
+
+    expect(ptyFrames()).toEqual([]);
+    client.close();
+  });
+
+  it("sends nothing for a release of a pty it never held", () => {
+    const client = makeClient();
+    fire(client.ptyUnsubscribe("pty_never"));
+
+    expect(ptyFrames()).toEqual([]);
     client.close();
   });
 });

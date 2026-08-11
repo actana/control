@@ -11,6 +11,7 @@ import type {
   CoreLinkResponseFrame,
 } from "@actana/shared/core-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
+import type { PanelSessionLock } from "~/shared/session-write-access";
 
 /**
  * The browser end of the panel link: one WebSocket per tab, no matter how many
@@ -116,6 +117,14 @@ export class PanelLinkClient {
   private readonly pending = new Map<string, Pending>();
   private readonly queued: string[] = [];
   private readonly watching = new Map<string, Watch>();
+  /**
+   * The PTYs this tab is rendering, as `coreId` → `ptyId`s. It lives here for
+   * the same reason the watch set does: this is the layer that sees the link
+   * come back. The service gives every claim back when a tab's socket dies, so
+   * a reconnect that re-sent only `subscribe` would leave the Core with no
+   * reason to send those PTYs and every pane on this tab quietly dead.
+   */
+  private readonly claimedPtys = new Map<string, Set<string>>();
 
   private readonly eventListeners = new Set<(msg: { coreId: string; event: CoreLinkEvent }) => void>();
   private readonly dataListeners = new Set<
@@ -126,6 +135,27 @@ export class PanelLinkClient {
   >();
   private readonly dialListeners = new Set<(status: CoreDialStatus) => void>();
   private readonly connectionListeners = new Set<(connected: boolean) => void>();
+  private readonly lockListeners = new Set<
+    (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void
+  >();
+  private readonly driveListeners = new Set<
+    (msg: {
+      coreId: string;
+      taskId: string;
+      driving: boolean;
+      reason: "watch" | "handover";
+    }) => void
+  >();
+  /**
+   * The Sessions this tab has a pane open on, as `coreId` → `taskId`s.
+   *
+   * Held for the same reason the PTY claims above are: the service gives a
+   * tab's drives back when its socket dies, so a reconnect that re-sent only
+   * the subscriptions would come back with every pane on this tab following a
+   * Session nobody drives. The set is the tab's, and it is re-announced on
+   * every open.
+   */
+  private readonly drivenSessions = new Map<string, Set<string>>();
 
   constructor(opts: PanelLinkOptions = {}) {
     this.createSocket = opts.createSocket ?? defaultCreateSocket;
@@ -192,6 +222,51 @@ export class PanelLinkClient {
     };
   }
 
+  /**
+   * Render one Core's PTY in this tab, and stop (issue 142). A Core sends a
+   * PTY's stream only to the connections that asked for it, so this is what
+   * `onPtyData` / `onPtyExit` are gated on — not a filter over everything the
+   * far machine happens to be producing.
+   *
+   * `catchUp` says a `replay` for this PTY follows, so the Core holds the live
+   * stream until it has been served and the pane never paints live bytes in
+   * front of its own scrollback. The claim path always sets it; see
+   * `pty-stream-router`.
+   *
+   * The set is remembered and re-sent on every open, exactly as the watch set
+   * is — see {@link resendPtySubscriptions}. Idempotent: a second claim on a
+   * PTY this tab already renders is a no-op here and an ack from the service,
+   * which is what keeps a pane rebuilding on the same PTY from counting twice.
+   */
+  async ptySubscribe(
+    coreId: string,
+    ptyId: string,
+    opts: { catchUp?: boolean } = {},
+  ): Promise<void> {
+    let claimed = this.claimedPtys.get(coreId);
+    if (!claimed) {
+      claimed = new Set();
+      this.claimedPtys.set(coreId, claimed);
+    }
+    if (claimed.has(ptyId)) return;
+    // Recorded before the ask, and kept even if the ask fails: a claim made
+    // while the link is down is exactly what the next open has to re-send.
+    claimed.add(ptyId);
+    await this.request(coreId, {
+      type: "ptySubscribe",
+      ptyId,
+      catchUp: opts.catchUp === true,
+    });
+  }
+
+  /** Stop rendering it. Idempotent; see {@link ptySubscribe}. */
+  async ptyUnsubscribe(coreId: string, ptyId: string): Promise<void> {
+    const claimed = this.claimedPtys.get(coreId);
+    if (!claimed?.delete(ptyId)) return;
+    if (claimed.size === 0) this.claimedPtys.delete(coreId);
+    await this.request(coreId, { type: "ptyUnsubscribe", ptyId });
+  }
+
   onEvent(cb: (msg: { coreId: string; event: CoreLinkEvent }) => void): () => void {
     this.eventListeners.add(cb);
     return () => this.eventListeners.delete(cb);
@@ -209,6 +284,66 @@ export class PanelLinkClient {
   ): () => void {
     this.exitListeners.add(cb);
     return () => this.exitListeners.delete(cb);
+  }
+
+  /**
+   * Announce that this tab has a pane open on a Session, or give it back
+   * (issue 147, ADR 0024 D3).
+   *
+   * This is the **Session drive** — arbitration between this Panel's own tabs,
+   * settled inside the Panel and never sent to any Core. It is not the Session
+   * lock: that is claimed with core-link frames through {@link request}, and it
+   * is held by the Panel once for all of its tabs.
+   *
+   * `take: true` is the operator asking for the keyboard here, which moves it
+   * off whichever tab of this Panel had it. Without it a pane takes the drive
+   * only if no other tab is driving that Session.
+   */
+  driveSession(coreId: string, taskId: string, opts: { take?: boolean } = {}): void {
+    let driven = this.drivenSessions.get(coreId);
+    if (!driven) {
+      driven = new Set();
+      this.drivenSessions.set(coreId, driven);
+    }
+    driven.add(taskId);
+    this.write({ t: "drive", coreId, taskId, want: opts.take === true ? "take" : "watch" });
+  }
+
+  /** This tab's pane on a Session is gone; it drives nothing there. Idempotent. */
+  releaseSessionDrive(coreId: string, taskId: string): void {
+    const driven = this.drivenSessions.get(coreId);
+    if (!driven?.delete(taskId)) return;
+    if (driven.size === 0) this.drivenSessions.delete(coreId);
+    this.write({ t: "drive", coreId, taskId, want: "drop" });
+  }
+
+  /**
+   * The Session lock, as the service's connection to that Core sees it — one
+   * answer for the whole Panel, pushed on every change (ADR 0024 D8).
+   */
+  onSessionLock(
+    cb: (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void,
+  ): () => void {
+    this.lockListeners.add(cb);
+    return () => this.lockListeners.delete(cb);
+  }
+
+  /**
+   * Whether *this tab* drives a Session among this Panel's tabs. `handover`
+   * says it changed under an open pane, which is the only case worth telling
+   * the operator about — and it is a different event from losing the lock to
+   * another Core client, with different copy.
+   */
+  onSessionDrive(
+    cb: (msg: {
+      coreId: string;
+      taskId: string;
+      driving: boolean;
+      reason: "watch" | "handover";
+    }) => void,
+  ): () => void {
+    this.driveListeners.add(cb);
+    return () => this.driveListeners.delete(cb);
   }
 
   /** Dial-status changes, pushed by the service — no polling for reachability. */
@@ -336,9 +471,18 @@ export class PanelLinkClient {
       this.open = true;
       this.reconnectAttempt = 0;
       this.lastInboundAt = Date.now();
-      // Re-subscribe every watched Core from where this tab got to. This is
-      // the whole of the replay contract on the browser side.
+      // Re-subscribe every watched Core from where this tab got to, re-ask for
+      // every PTY it is rendering, and re-announce every Session it has a pane
+      // on. This is the whole of the replay contract on the browser side.
+      //
+      // It is also the whole of it for a *wake* redial: `wake()` drops the dead
+      // socket and calls `connect()`, so a tab that comes back from hours
+      // hidden lands here and re-announces exactly as a close-driven reconnect
+      // does. Neither re-announce may move above this handler for that reason —
+      // the wake path has no other place that runs on a fresh link.
       for (const coreId of this.watching.keys()) this.sendSubscribe(coreId);
+      this.resendPtySubscriptions();
+      this.resendSessionDrives();
       for (const frame of this.queued.splice(0)) this.rawSend(frame);
       for (const cb of this.connectionListeners) cb(true);
     });
@@ -399,6 +543,57 @@ export class PanelLinkClient {
     );
   }
 
+  /**
+   * Re-ask for every PTY this tab is rendering, on a link that has just come
+   * up. The service handed this tab's claims back when the old socket died and
+   * the panes never noticed — nothing above this layer re-claims, so without
+   * this the Core stops sending and every pane on the tab goes dead.
+   *
+   * `catchUp` is deliberately not set, for the same reason the core-link client
+   * leaves it off when it re-subscribes: a hold is released by a `replay`, and
+   * this is not the layer that sends one. The panes replay off their own
+   * reconnect one layer up and buffer whatever lands live while that replay is
+   * in flight (`pty-stream-router`), so going live immediately loses nothing —
+   * whereas a hold nobody releases is a pane that never paints again.
+   */
+  private resendPtySubscriptions(): void {
+    for (const [coreId, ptyIds] of this.claimedPtys) {
+      for (const ptyId of ptyIds) {
+        this.rawSend(
+          encodePanelLinkFrame({
+            t: "core",
+            coreId,
+            frame: {
+              type: "ptySubscribe",
+              reqId: `psub${++this.reqSeq}`,
+              ptyId,
+              catchUp: false,
+            },
+          }),
+        );
+      }
+    }
+  }
+
+  /**
+   * Re-announce every Session this tab has a pane open on, on a link that has
+   * just come up (issue 147).
+   *
+   * `take` is deliberately not set, and the difference matters: a reconnect is
+   * not the operator asking for the keyboard. Re-asserting a drive would have
+   * two tabs of one Panel trade it back and forth on every flap, each reconnect
+   * silently pulling it off the other. Announcing interest and accepting the
+   * first-come answer is what makes a reconnect converge — the tab that was
+   * driving is still watching, so it keeps it.
+   */
+  private resendSessionDrives(): void {
+    for (const [coreId, taskIds] of this.drivenSessions) {
+      for (const taskId of taskIds) {
+        this.rawSend(encodePanelLinkFrame({ t: "drive", coreId, taskId, want: "watch" }));
+      }
+    }
+  }
+
   private write(frame: Parameters<typeof encodePanelLinkFrame>[0]): void {
     this.rawSend(encodePanelLinkFrame(frame));
   }
@@ -427,6 +622,26 @@ export class PanelLinkClient {
     if (!frame) return;
     if (frame.t === "dial") {
       for (const cb of this.dialListeners) cb(frame.status);
+      return;
+    }
+    // Session write access, in its two separate halves (issue 147). Neither is
+    // a request/response: both are pushed, because both have to be true on
+    // screen *before* a keystroke rather than discovered by one.
+    if (frame.t === "lock") {
+      for (const cb of this.lockListeners) {
+        cb({ coreId: frame.coreId, taskId: frame.taskId, lock: frame.lock });
+      }
+      return;
+    }
+    if (frame.t === "drive") {
+      for (const cb of this.driveListeners) {
+        cb({
+          coreId: frame.coreId,
+          taskId: frame.taskId,
+          driving: frame.driving,
+          reason: frame.reason,
+        });
+      }
       return;
     }
     const { coreId, frame: inner } = frame;

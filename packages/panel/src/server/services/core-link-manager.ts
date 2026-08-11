@@ -50,6 +50,31 @@ export interface CoreLinkClientLike {
   onData(cb: (msg: { ptyId: string; data: string; seq: number }) => void): () => void;
   onExit(cb: (msg: { ptyId: string; exitCode: number; signal?: number }) => void): () => void;
   onEvent(cb: (msg: { event: CoreLinkEvent }) => void): () => void;
+  /**
+   * Ask this Core for one PTY's byte stream, or stop asking (issue 142, ADR
+   * 0024 D2). `onData`/`onExit` fire only for subscribed PTYs.
+   *
+   * Named methods rather than `request` frames because the link — not the
+   * router above it, and certainly not a browser — is the only thing that knows
+   * when its socket dropped, and PTY subscriptions are Core-side connection
+   * state that has to be re-established when it comes back.
+   */
+  ptySubscribe(ptyId: string, opts?: { catchUp?: boolean }): Promise<void>;
+  ptyUnsubscribe(ptyId: string): Promise<void>;
+  /**
+   * Does this Core announce `multiConnection` (ADR 0024 D11)? The router reads
+   * it to decide whether a Session has a lock to publish and a keyboard to
+   * arbitrate at all — against a Core without it, neither exists and the Panel
+   * behaves exactly as it did before either did (issue 147).
+   */
+  canSendMultiConnectionFrames(): boolean;
+  /**
+   * The Sessions whose locks came across on this link's `reclaim`, once per
+   * connect that sent one (issue 146, ADR 0024 D9). Nothing else reports them:
+   * the Core rewrites the lock table in place and appends no event, so this is
+   * how a reconnected Panel learns it is still holding what it was holding.
+   */
+  onReclaimed(cb: (msg: { replaced: boolean; taskIds: string[] }) => void): () => void;
   close(): void;
 }
 

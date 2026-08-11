@@ -426,6 +426,190 @@ export type CoreLinkDirListing = {
   truncated: boolean;
 };
 
+// ─── Session lock (issue 144, ADR 0024 D3–D7, D10) ──────────────────────────
+//
+// One Session, at most one writer, and the writer is the **core-link
+// connection** (D3). The three frames below are the whole of how a connection
+// says so: `claim` takes an unlocked Session, `release` gives it back, and
+// `forceTakeover` takes one whoever holds it. All three are ordinary
+// reqId-correlated requests, and all three name a Session by its `taskId` —
+// the one identifier `tasksMutate` carries directly and `write`/`kill` resolve
+// to from their `ptyId`.
+//
+// A Session starts unlocked and its creator gets no privilege (D5), so the
+// window between a Session starting and its first claim is a real race in which
+// any connection can take it. That is accepted, not a defect: closing it would
+// mean reintroducing creator privilege, which was decided against. An
+// automation claims immediately after starting.
+//
+// Claiming is explicit (D6): no mutation ever acquires the lock. A mutation
+// aimed at a Session **another connection holds** is refused with
+// {@link SESSION_LOCKED_ERROR_CODE}; a mutation aimed at an **unlocked** Session
+// is served, which is what keeps a client that never claims — every client that
+// predates this — working exactly as it does today (D11).
+//
+// There is no idle timeout and there must not be one (D7). A long agent run is
+// idle by definition; the hung-client case is what `forceTakeover` is for.
+//
+// None of this is a security boundary (D10). The Core's only authentication is
+// the bearer in the registration blob, and anyone holding it can open a VM Shell
+// Session and kill the process directly. This is an accident guard.
+
+/**
+ * The `code` on an `error` frame refusing a mutation because another connection
+ * holds that Session's lock (ADR 0024 D4/D6).
+ *
+ * A code rather than a message match, because the client has to tell this apart
+ * from the other way a mutation fails to land: "that Session is gone". Those two
+ * answers arrive on different frames entirely — a refusal is this `error`, while
+ * a Session that no longer exists is the ordinary `writeResult { ok: false }` /
+ * `killResult { ok: false }` / `tasksMutateResult { task: null }` the Core has
+ * always sent — so a client can distinguish them without parsing prose, and one
+ * of them is worth retrying after a claim while the other never is.
+ */
+export const SESSION_LOCKED_ERROR_CODE = "session-locked";
+
+/**
+ * Machine-readable `error` codes. Open by construction (a plain string union
+ * with one member today) so a later refusal can name itself without every
+ * client having to learn the whole set: an unrecognised code reads as a plain
+ * error, which is what a client that ignores the field already does.
+ */
+export type CoreLinkErrorCode = typeof SESSION_LOCKED_ERROR_CODE;
+
+/**
+ * Who lost a Session to a `forceTakeover`.
+ *
+ * A takeover always succeeds — that is D7, and a result field saying "yes it
+ * worked" would carry no information. What varies is whether anybody was
+ * actually evicted, and a client should not report having taken a Session off
+ * another client when the Session was sitting unlocked.
+ */
+export type CoreLinkSessionTakenFrom = "nobody" | "another-connection" | "this-connection";
+
+// ─── Published lock state (issue 145, ADR 0024 D8) ──────────────────────────
+//
+// Lock state is **published, not discovered by failing**. A Reader has to render
+// its terminal non-editable *before* anyone types, `actana session ls` has to
+// show it, and the loser of a force takeover has to learn it when it happens
+// rather than on its next keystroke — none of which the refusal above can do,
+// because a refusal only ever arrives after the mutation it refuses.
+//
+// Two surfaces carry it and they answer different questions. The **snapshot**
+// ({@link CoreLinkSessionLock}, below, on {@link CoreLinkTaskSnapshot} and
+// {@link CoreLinkSessionSnapshot}) answers "can I write to this, right now"; the
+// **event** ({@link SESSION_LOCK_CHANGED_EVENT_KIND}) answers "something about
+// this Session's lock just changed, go look". Neither names a client.
+
+/**
+ * How a Session's lock looks **to the one connection this snapshot was sent
+ * to** (ADR 0024 D8).
+ *
+ * This field is *addressed*, not global: two connections listing the same
+ * Session are told different things about it, and that is the whole point. A
+ * snapshot that reported "locked: true" and left the recipient to work out
+ * whether the holder was itself would make every client carry the comparison,
+ * and every client would need an identity to compare against — which is exactly
+ * the identity D10 says the lock does not have and D3 keeps below the socket.
+ *
+ * So it says **whether you hold it**, never **who holds it**. `held-by-another`
+ * is the whole of what a watcher learns about a holder that is not itself: no
+ * client id, no connection id, no label, nothing that a second client could
+ * correlate a person or a program with.
+ *
+ * `writable` is the answer and `state` is why. The two are not redundant: which
+ * states are writable is a Core-side rule — an *unlocked* Session is writable by
+ * anybody, which is the D11 compatibility promise (see
+ * {@link SESSION_LOCKED_ERROR_CODE}) rather than an obvious property of the
+ * word "unlocked" — and publishing the answer keeps that rule in the one place
+ * that enforces it. A client rendering an editable terminal reads `writable`; a
+ * client choosing between a "Claim" and a "Take over" affordance reads `state`.
+ */
+export type CoreLinkSessionLock = {
+  /**
+   * May the connection that was sent this snapshot mutate this Session right
+   * now? True when the Session is unlocked as well as when this connection
+   * holds it — the gate refuses only a Session **another** connection holds.
+   */
+  writable: boolean;
+  /** Which of the three states this Session is in, from that connection's side. */
+  state: CoreLinkSessionLockState;
+};
+
+/**
+ * The three states a Session's lock can be in for one connection.
+ *
+ * There is no fourth, and deliberately no name for the holder. `unlocked` is a
+ * real state (D5) and not an absence: a Session starts there, returns there on
+ * release, on the holder's connection dropping, and on a Core restart (D12).
+ */
+export type CoreLinkSessionLockState = "unlocked" | "held-by-you" | "held-by-another";
+
+/**
+ * The kind appended to the event log on every Session-lock change (ADR 0024 D8).
+ *
+ * A **dedicated kind**, following the precedent ADR 0022 set for
+ * `project:appearanceChanged` — and for the same reason both ADR 0017 and ADR
+ * 0022 rejected the alternative. Widening an existing mutation event to carry
+ * lock state would stop the frame documenting what changed: every client would
+ * have to refetch on every `task:updated` to find out whether this one was
+ * about the lock, and a reconnecting client replaying a tail could not tell a
+ * takeover it needs to react to from a title edit it does not.
+ *
+ * Payload is {@link CoreLinkSessionLockChangedPayload}. It rides the ordinary
+ * event log, so it replays by cursor exactly like every other event: a client
+ * that was away comes back, sends `subscribe { lastEventId }`, and reads the
+ * lock changes it missed in order, distinctly, alongside everything else.
+ */
+export const SESSION_LOCK_CHANGED_EVENT_KIND = "session:lockChanged";
+
+/**
+ * What happened to a Session's lock, in the vocabulary of the lock rather than
+ * of the frame that caused it.
+ *
+ * A `forceTakeover` against a Session **nobody** held is a `claimed`, not a
+ * `taken-over`: the wire says what happened to the lock, so no client reports an
+ * eviction that did not occur. The same distinction `CoreLinkSessionTakenFrom`
+ * draws for the requester, drawn once more for everybody watching.
+ *
+ * Open by construction — a reader that meets an unfamiliar transition falls back
+ * to `locked` on the payload, which is why that field is there.
+ */
+export type CoreLinkSessionLockTransition = "claimed" | "released" | "taken-over";
+
+/**
+ * Payload of a {@link SESSION_LOCK_CHANGED_EVENT_KIND} event.
+ *
+ * **It names no client, and it must not.** This row goes into a shared log that
+ * every connection replays: anything identifying in it would be broadcast to
+ * every watcher of the Core, which is the identity leak D10 (the lock is
+ * coordination, not security) and D3 (the holder is a connection, not a person)
+ * exist to prevent. A takeover therefore names neither winner nor loser, and
+ * needs to name neither: the winner learns it won on its own
+ * `forceTakeoverResult`, and every other connection reads `taken-over` as "the
+ * holder is now somebody who is not me" — which is the entire fact a loser needs
+ * and the only one an identity could have added.
+ *
+ * "Can *I* write to it now" is deliberately not answered here. It cannot be: one
+ * logged row is read by every connection, and the answer differs per connection.
+ * That question is the snapshot's ({@link CoreLinkSessionLock}), and this event
+ * is what tells a client the answer has moved.
+ */
+export type CoreLinkSessionLockChangedPayload = {
+  /** The Session whose lock changed. Also on the event row's `taskId` column. */
+  taskId: string;
+  /** What happened to the lock. */
+  transition: CoreLinkSessionLockTransition;
+  /**
+   * Is the Session held by some connection now? Derivable from every transition
+   * this build defines, and carried anyway: a client can act on the state
+   * without knowing the whole transition vocabulary, which is what keeps a
+   * transition added later from silently reading as "no change" to a client that
+   * predates it.
+   */
+  locked: boolean;
+};
+
 // ─── Client → Server (Panel → Core) ──────────────────────────────────────
 
 export type CoreLinkRequestFrame =
@@ -451,6 +635,86 @@ export type CoreLinkRequestFrame =
   // `eventsReplayed` and resumes live event push. `lastEventId: 0` requests
   // the full log (used on first connect).
   | { type: "subscribe"; reqId: string; lastEventId: number }
+  // ─── PTY output subscription (issue 142, ADR 0024 D2) ───
+  // Which PTYs this connection wants the byte stream of. A Core serves many
+  // clients now, and `data`/`exit` reach only the connections that asked for
+  // that `ptyId` — a CLI attached to one Session must not receive every other
+  // Session's output on the machine, continuously.
+  //
+  // Idempotent in both directions: subscribing twice delivers each chunk once,
+  // unsubscribing twice is not an error. Subscriptions are connection state and
+  // die with the socket; a reconnecting client re-subscribes.
+  //
+  // `catchUp` names the ordering contract, and exists because subscribe-then-
+  // replay has a gap: between the subscription taking effect and the catch-up
+  // being served, the PTY can emit. With `catchUp: true` the Core holds this
+  // pty's `data`/`exit` for this connection, serves the client's next
+  // {@link CoreLinkRequestFrame} `replay` for it, then drains what it held past
+  // that window's `nextSeq` and goes live — so a client never paints live bytes
+  // in front of its own scrollback. A client that sets it MUST send that
+  // `replay`; nothing else releases the hold. Omitted (the default) the stream
+  // goes live immediately, which is what a client with no scrollback to
+  // reconcile wants.
+  //
+  // Catch-up deliberately reuses `replay { ptyId, sinceSeq }` rather than
+  // inventing a second cursor: `data` frames already carry `seq`, and this is
+  // the same subscribe-then-replay-from-a-cursor shape the event log uses.
+  | { type: "ptySubscribe"; reqId: string; ptyId: string; catchUp?: boolean }
+  | { type: "ptyUnsubscribe"; reqId: string; ptyId: string }
+  // ─── Session lock (issue 144, ADR 0024 D3–D7) ───
+  // See the commentary above {@link SESSION_LOCKED_ERROR_CODE}. All three name
+  // a Session by `taskId`, and all three are refused by a client that has not
+  // seen `multiConnection` on `ready` — a single-connection Core has no lock
+  // table to address.
+  //
+  // `claim` is idempotent for the connection that already holds the Session and
+  // denied (changing nothing) when another connection does. Getting past
+  // another holder is `forceTakeover` and nothing else, so a retry loop can
+  // never take a Session out from under a working client by accident.
+  | { type: "claim"; reqId: string; taskId: string }
+  // Releasing a Session this connection does not hold changes nothing and is
+  // not an error — a stale client saying so is talking about a lock it lost,
+  // not instructing the Core to unlock somebody else's Session.
+  | { type: "release"; reqId: string; taskId: string }
+  // Unconditional, immediate, and unrecoverable by design: the previous
+  // holder's in-flight keystrokes are gone and its next mutation is refused.
+  // This is the answer to a hung client — the reason D7 needs no idle timeout.
+  | { type: "forceTakeover"; reqId: string; taskId: string }
+  // ─── Stable client id, for reaping only (issue 146, ADR 0024 D9) ───
+  // "I am the same Core client as the connection that last presented this id.
+  // Close it and give me its Session locks." That is the whole of it.
+  //
+  // It exists because D1 took evict-on-connect away. A Core client whose link
+  // dies without a TCP close — a laptop lid, a partitioned container — leaves a
+  // socket the Core cannot tell from a live one until the heartbeat reaps it
+  // 45s later, still holding that client's Sessions. The heartbeat is still the
+  // backstop for a client that never comes back; this frame is the answer for
+  // the one that does, and it answers in a single round trip rather than in 45
+  // seconds.
+  //
+  // **The id is not identity and not authentication** (D10, and D9 says it
+  // twice). Nothing signs it, nothing verifies it, and presenting one buys
+  // exactly nothing that a connection did not already have: it is refused
+  // before `auth` like every other frame, it never makes an unauthenticated
+  // connection authenticated, and the authority it can move — a Session lock —
+  // is authority any authenticated connection can already take unconditionally
+  // with `forceTakeover`. A client presenting another client's id is the case
+  // reviewers reach for; the answer is that whoever opened this link already
+  // holds the bearer, and a bearer holder can open a VM Shell Session and kill
+  // the process directly. Hardening this string is theatre, and signing it
+  // would be building D10's rejected per-client credential by the back door.
+  //
+  // **Where the id comes from is per Core client, and never the registration
+  // blob.** The blob is machine-scoped — every client on that machine dials
+  // with the same one — so an id derived from it would make the Panel, the CLI
+  // and every automation on the box a single connection, each reconnect
+  // reaping the others. The Panel keeps one per link it terminates; the CLI
+  // mints one per invocation, which is right for a process that is one client
+  // for as long as it runs and nobody afterwards.
+  //
+  // Multi-connection-only: a Core that evicts every client but one already does
+  // this on connect, and has no lock table to transfer out of.
+  | { type: "reclaim"; reqId: string; clientId: string }
   // ─── Task ops (issue 02 — schema carries task ops keyed by taskId) ───
   | { type: "tasksList"; reqId: string; projectId?: string }
   // The Archived view's own read path (issue 62, ADR 0019). Deliberately a
@@ -534,9 +798,34 @@ export type CoreLinkEventFrame = { type: "event"; event: CoreLinkEvent };
  */
 export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId: number };
 
+/**
+ * The `multiConnection` capability, announced on `ready` (ADR 0024 D11).
+ *
+ * `version` is the capability's own number, independent of
+ * {@link CORE_LINK_PROTOCOL_VERSION} — it moves when the multi-connection
+ * surface itself changes shape, and nothing about it marks a Core stale.
+ */
+export type CoreLinkMultiConnectionCapability = { version: 1 };
+
 /** Response frame — correlates to a request via `reqId`. */
 export type CoreLinkResponseFrame =
-  | { type: "ready"; version: string }
+  | {
+      type: "ready";
+      version: string;
+      /**
+       * Present on a Core that serves many core-link connections at once
+       * (ADR 0024 D1). Absent means the single-connection Core: it evicts the
+       * previous socket on connect, holds no Session locks and has no
+       * per-connection subscriptions.
+       *
+       * Absence is a supported state, not a fault. Every frame that only makes
+       * sense against a multi-connection Core is withheld by the client when
+       * this is absent (see `MULTI_CONNECTION_ONLY_FRAME_TYPES` in the Panel's
+       * core-link client); everything else behaves exactly as it does today, so
+       * such a Core is connected and fully usable, never "needs update".
+       */
+      multiConnection?: CoreLinkMultiConnectionCapability;
+    }
   | {
       type: "spawned";
       reqId: string;
@@ -578,6 +867,57 @@ export type CoreLinkResponseFrame =
   // `eventsReplayed` marker follow. (Subscribe is fire-and-forget from the
   // Panel's perspective — the ack is optional but aids debugging.)
   | { type: "subscribeAck"; reqId: string; fromEventId: number }
+  // ─── PTY output subscription responses (issue 142) ───
+  // `subscribed` is the connection's state AFTER the frame, not what changed —
+  // that is what makes both frames idempotent to act on: a client that has lost
+  // track re-sends and reads the answer, rather than having to remember whether
+  // it was the first to ask. `holding` is true while the Core is holding this
+  // pty's output for a `catchUp` subscription that has not had its `replay`
+  // served yet.
+  | {
+      type: "ptySubscribeAck";
+      reqId: string;
+      ptyId: string;
+      subscribed: true;
+      holding: boolean;
+    }
+  | { type: "ptyUnsubscribeAck"; reqId: string; ptyId: string; subscribed: false }
+  // ─── Session lock responses (issue 144, ADR 0024 D3–D7) ───
+  // A denied claim is a `claimResult { granted: false }`, not an `error`: the
+  // Session being held by another connection is an answer to the question, and
+  // the caller's next move (watch it, or force a takeover) is the same whether
+  // or not it was expecting one. The `error` frame is reserved for a *mutation*
+  // that was refused, which is the case a caller has to be able to tell apart
+  // from a Session that is gone.
+  | { type: "claimResult"; reqId: string; taskId: string; granted: boolean }
+  // `released: false` means this connection did not hold it — idempotent, not
+  // an error. A client releasing on teardown does not have to know whether it
+  // already lost the lock to a takeover.
+  | { type: "releaseResult"; reqId: string; taskId: string; released: boolean }
+  | {
+      type: "forceTakeoverResult";
+      reqId: string;
+      taskId: string;
+      takenFrom: CoreLinkSessionTakenFrom;
+    }
+  // ─── Stable client id (issue 146, ADR 0024 D9) ───
+  // What the reclaim actually did, which is not something a client can work out
+  // for itself: it does not know whether the socket it lost was still open on
+  // the Core, nor which Sessions that socket was still holding when it went
+  // quiet — a lock can also have been force-taken while the client was away.
+  //
+  // `replaced` is whether a predecessor connection was found and closed;
+  // `taskIds` are the Sessions that came across with it, which is often empty
+  // and never implies the id was unknown. Both are reporting, not authority:
+  // this frame's answer is the same for a client presenting its own id as for
+  // one presenting a string it made up, because nothing verifies it.
+  | {
+      type: "reclaimResult";
+      reqId: string;
+      clientId: string;
+      replaced: boolean;
+      taskIds: string[];
+    }
   // ─── Task / session / hook op responses (issue 02) ───
   // `tasks` carries active rows only. `archivedCount` is how many archived rows
   // the same scope holds — unconditional, and never accompanied by the rows
@@ -621,7 +961,14 @@ export type CoreLinkResponseFrame =
   // ─── Directory browsing (web-panel issue 06) ───
   | { type: "dirListResult"; reqId: string; listing: CoreLinkDirListing }
   | { type: "dirCreateResult"; reqId: string; path: string }
-  | { type: "error"; reqId?: string; message: string };
+  /**
+   * `code` is optional and additive (issue 144): it exists so a client can act
+   * on *why* a request failed without matching on prose. Absent on every error
+   * that shipped before it, which is why nothing may require it — a client
+   * reads the code when it is there and falls back to the message when it is
+   * not. See {@link SESSION_LOCKED_ERROR_CODE}, its first and so far only value.
+   */
+  | { type: "error"; reqId?: string; message: string; code?: CoreLinkErrorCode };
 
 /**
  * A flattened project snapshot carried over the core-link (issue 07). The
@@ -699,6 +1046,24 @@ export type CoreLinkTaskSnapshot = {
    */
   icon: string | null;
   updatedAt: number;
+  /**
+   * This Session's lock, as it looks to the connection this snapshot was sent
+   * to (issue 145, ADR 0024 D8). See {@link CoreLinkSessionLock} — it says
+   * whether *you* may write, never who else holds it.
+   *
+   * Optional, and absent means "this Core does not publish lock state", which
+   * is the single-connection Core that shipped before the capability. Absence
+   * therefore yields exactly today's behaviour — no read-only rendering,
+   * because there is no lock table to be a Reader of — which is what lets this
+   * ride the `multiConnection` capability instead of moving
+   * {@link CORE_LINK_PROTOCOL_VERSION}, as #142, #143 and #144 did before it.
+   * A Core that announces `multiConnection` always sets it.
+   *
+   * Stamped by the server as the snapshot goes out, not read from a row: the
+   * lock table is in memory (D12) and the answer depends on who is asking, so
+   * no query port can produce it and no two recipients need get the same value.
+   */
+  lock?: CoreLinkSessionLock;
 };
 
 /** A session snapshot — a task's live or replayable conversation. */
@@ -707,6 +1072,17 @@ export type CoreLinkSessionSnapshot = {
   ptyId: string | null;
   status: string;
   updatedAt: number;
+  /**
+   * This Session's lock, as it looks to the connection this snapshot was sent
+   * to (issue 145, ADR 0024 D8) — the same field, on the same terms, as the one
+   * on {@link CoreLinkTaskSnapshot}, because a client reading either of them is
+   * asking the same question about the same Session.
+   *
+   * This is the one `actana session ls` reads: it lists Sessions, and "can I
+   * write to this" is what it has to show about each. Optional for the reason
+   * given above — absent is the Core that does not publish lock state.
+   */
+  lock?: CoreLinkSessionLock;
 };
 
 /** A hook entry returned by `hooksOp`. */
@@ -813,6 +1189,63 @@ export type CoreLinkServerFrame =
  * 0.14.0 is "needs update" rather than one that takes the frame and drops the
  * op. The columns (`icon`, `icon_color`) have been in the shared schema
  * bootstrap since the fork, so no migration rides along on the Core's side.
+ *
+ * Issue 142 adds the `ptySubscribe` / `ptyUnsubscribe` frames and their acks —
+ * and deliberately **does not move this version** (ADR 0024 D11). Every bump
+ * above marks every Core in every fleet needs-update, and multi-connection is a
+ * capability a one-Panel fleet never exercises. It is announced on `ready`
+ * instead, by #143 below, which also gates the Panel's sends on it, so these
+ * frames are never put on the wire to a Core that cannot answer them.
+ *
+ * Issue 143 adds the optional `multiConnection` capability to the `ready`
+ * frame and deliberately does NOT move this version (ADR 0024 D11). It is the
+ * first entry in this log that does not: the field is additive and its absence
+ * is the single-connection Core that shipped before it, which is exactly
+ * today's behaviour rather than a lesser one. Moving the minor would mark every
+ * Core in every fleet "needs update" to buy a capability a one-Panel fleet
+ * never exercises. A capability that changed what an existing frame means
+ * would not qualify, and the minor would move as it does above.
+ *
+ * Issue 144 adds the Session lock's `claim` / `release` / `forceTakeover`
+ * frames, their results, and the optional `code` on `error` — and does NOT move
+ * this version either (ADR 0024 D11), for the same reason #142 and #143 did not.
+ * The three frames are gated by the `multiConnection` capability, so they are
+ * never put on the wire to a Core that has no lock table to address. The gating
+ * of `write` / `kill` / `tasksMutate` is additive in the sense the rule
+ * requires: it can only refuse a Session that some connection has explicitly
+ * claimed, and a client that never claims — every client that predates this —
+ * meets an unlocked Session and is served exactly as it is today. `code` is
+ * optional and absent from every error frame that shipped before it, so a client
+ * that has never heard of it reads the same `message` it always did.
+ *
+ * Issue 145 publishes that lock state — the optional `lock` on
+ * {@link CoreLinkTaskSnapshot} and {@link CoreLinkSessionSnapshot}, and the
+ * {@link SESSION_LOCK_CHANGED_EVENT_KIND} event — and does NOT move this version
+ * either (ADR 0024 D11), for the fourth time and the same reason. Note that
+ * issue 84 *did* bump for snapshot fields, and the difference is the rule
+ * itself: a Panel that predated `titleManuallySet` synthesized `false` and
+ * rendered a Session its Core's generator could rename out from under the
+ * operator — the absence yielded something *lesser* than today. A Panel that
+ * predates `lock` ignores an unknown field and renders exactly what it renders
+ * today, because read-only rendering is new surface (#147) rather than a
+ * protection quietly going missing; a new Panel against a Core that omits the
+ * field reads "no lock table here", which is that Core, truthfully. The event
+ * kind is additive in the way every kind before it was: a client routes on kinds
+ * it knows and ignores the rest.
+ *
+ * Issue 146 adds the `reclaim` frame and its `reclaimResult` — and does NOT
+ * move this version either (ADR 0024 D11), for the fifth time and the same
+ * reason. The frame is gated by the `multiConnection` capability, as #142 and
+ * #144 are, so it is never put on the wire to a Core with no lock table to
+ * transfer out of — and a Core that predates the capability evicts every client
+ * but one on connect, which is the reclaim the frame would have asked it for.
+ * The client that presents no id — every client that shipped before this — is
+ * served exactly as it is today: its lost socket is reaped by the heartbeat 45s
+ * later, still the backstop for a client that never comes back. What the frame
+ * buys is those 45 seconds for the client that does come back, so its absence
+ * is slower rather than lesser, which is the rule. `clientId` is not identity
+ * and carries no authority a connection did not already have (D10), so there is
+ * nothing here for an older client to be missing.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
@@ -839,6 +1272,24 @@ export function coreLinkProtocolCompatible(reported: string | null | undefined):
   return theirs.major === ours.major && theirs.minor === ours.minor;
 }
 
+/**
+ * Read the `multiConnection` capability off a raw `ready` frame, or null.
+ *
+ * Null for every shape that is not exactly `{ version: 1 }` — absent, a
+ * non-object, or a version this build does not know. An unrecognised future
+ * version reads as absent on purpose: the safe fallback is the single-connection
+ * behaviour that predates the capability, never a guess at what a higher version
+ * means. Unlike {@link coreLinkProtocolCompatible}, nothing here can mark a Core
+ * incompatible — a null answer withholds frames, it does not fail a Core.
+ */
+export function readMultiConnectionCapability(
+  raw: unknown,
+): CoreLinkMultiConnectionCapability | null {
+  if (!raw || typeof raw !== "object") return null;
+  const version = (raw as { version?: unknown }).version;
+  return version === 1 ? { version: 1 } : null;
+}
+
 function parseMajorMinor(version: string | null | undefined): { major: number; minor: number } | null {
   if (typeof version !== "string") return null;
   const m = /^(\d+)\.(\d+)\.(\d+)$/.exec(version.trim());
@@ -855,6 +1306,12 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "findByTask",
   "replay",
   "subscribe",
+  "ptySubscribe",
+  "ptyUnsubscribe",
+  "claim",
+  "release",
+  "forceTakeover",
+  "reclaim",
   "tasksList",
   "archivedTasksList",
   "tasksMutate",
