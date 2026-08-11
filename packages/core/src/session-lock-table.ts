@@ -38,6 +38,15 @@
 // **It never claims implicitly** (D6). No mutation path writes to this table;
 // only the three lock frames do. A mutation that arrives without the lock is
 // refused, never turned into an acquisition.
+//
+// **It never says who holds a Session, to anybody but that holder** (D8, D10).
+// {@link SessionLockTable.stateFor} is the published answer, and it is asked on
+// behalf of one connection: it reports `held-by-another` where {@link holderOf}
+// would hand back the holder itself. `holderOf` stays for the Core's own
+// bookkeeping — reference comparison inside this process — and nothing puts its
+// answer on the wire.
+
+import type { CoreLinkSessionLock } from "@actana/shared/core-link-frames";
 
 /**
  * A lock holder, as this table sees one: an identity to compare by reference.
@@ -96,6 +105,32 @@ export class SessionLockTable {
     if (!taskId) return true;
     const current = this.holders.get(taskId);
     return current === undefined || current === holder;
+  }
+
+  /**
+   * This Session's lock as `asker` must be **told** it (D8) — the published
+   * answer, and the only shape of this table's state that ever crosses the wire.
+   *
+   * Lock state is published rather than discovered by failing: a Reader renders
+   * its terminal non-editable before anyone types, which is not something a
+   * refusal can do, because a refusal arrives only after the mutation it
+   * refuses.
+   *
+   * It answers "can **you** write to this", not "is this locked". The
+   * `writable` half is {@link mayMutate} for this asker — the same rule, from
+   * the same table, so a client can never be told it may write and then refused,
+   * or told it may not and then served. The `state` half is what a client needs
+   * to choose between a claim and a takeover, and it collapses every holder who
+   * is not the asker into `held-by-another`: naming one would put a connection's
+   * identity in front of every watcher, and the lock is coordination rather than
+   * identity (D3, D10). The asker is the only connection this answer is true
+   * for, which is why it is a parameter and not a snapshot of the table.
+   */
+  stateFor(taskId: string, asker: SessionLockHolder): CoreLinkSessionLock {
+    const current = this.holders.get(taskId);
+    if (current === undefined) return { writable: true, state: "unlocked" };
+    if (current === asker) return { writable: true, state: "held-by-you" };
+    return { writable: false, state: "held-by-another" };
   }
 
   /**

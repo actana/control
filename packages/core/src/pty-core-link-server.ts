@@ -27,6 +27,15 @@
 // gate is here, on the client-facing frames, and nowhere else: `PtyCore.kill`
 // has callers inside the Core (the PTY exit paths, the task writer) that are
 // nobody's client, and a gate down there would have the Core refuse itself.
+//
+// That lock state is **published, not discovered by failing** (issue 145, ADR
+// 0024 D8). Every Session snapshot this server sends is stamped with the lock as
+// the *receiving* connection must be told it — "can you write to this", never
+// "who holds it" — and every change to the table appends a dedicated
+// `session:lockChanged` event, which replays by cursor like every other event.
+// A refusal cannot do either job: it arrives only after the mutation it refuses,
+// so a Reader would render an editable terminal until the operator typed into
+// it, and the loser of a force takeover would learn of it on its next keystroke.
 
 import log from "./log";
 import type { WebSocketServer, WebSocket } from "ws";
@@ -34,8 +43,12 @@ import {
   CORE_LINK_PROTOCOL_VERSION,
   HARNESS_INSTALL_FAILED_EVENT_KIND,
   SESSION_LOCKED_ERROR_CODE,
+  SESSION_LOCK_CHANGED_EVENT_KIND,
   parseCoreLinkRequestFrame,
   serializeCoreLinkFrame,
+  type CoreLinkSessionLock,
+  type CoreLinkSessionLockChangedPayload,
+  type CoreLinkSessionLockTransition,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
   type CoreLinkDirListing,
@@ -602,6 +615,12 @@ export class PtyCoreLinkServer {
     if (released.length > 0) {
       log.info("core-link.session-lock.released-on-drop", { taskIds: released });
     }
+    // A drop is one of the three ways a lock ends (D7), so it publishes like
+    // the other two (D8): one `session:lockChanged` per Session, after the
+    // sweep, so the log says `locked: false` because the table does. A client
+    // waiting for a Session a vanished holder was sitting on has no other way to
+    // learn it is claimable — nobody sent a frame for it to be answered by.
+    for (const taskId of released) this.recordSessionLockChange(taskId, "released");
     // Guard on identity, not presence: a socket that was already replaced in
     // the map must not evict its successor.
     if (this.connections.get(ws) === conn) this.connections.delete(ws);
@@ -869,6 +888,70 @@ export class PtyCoreLinkServer {
     return this.refuseLockedSession(conn, reqId, this.core.taskIdForPty(ptyId));
   }
 
+  /**
+   * Stamp every Session snapshot on its way out with the lock as **this**
+   * connection must be told it (issue 145, ADR 0024 D8).
+   *
+   * Here rather than in a query port, for two reasons that are really one. The
+   * lock table is in memory and dies with the Core (D12), so no store has the
+   * fact to read; and the answer is different for every recipient — the same
+   * Session is `held-by-you` to its holder and `held-by-another` to everyone
+   * else — so there is no single value a shared read path could have returned.
+   * A snapshot is addressed at a connection, which is exactly where this belongs.
+   *
+   * The rows are copied rather than patched. They come from a query port whose
+   * real implementation reads SQLite fresh each call, but writing a
+   * per-connection field into an object a port might cache or hand to a second
+   * connection is the one way this could leak a holder to a watcher, and a spread
+   * costs nothing on a list a human is going to look at.
+   *
+   * A Core that does not announce `multiConnection` stamps nothing. It has told
+   * the client it has no lock table (D11), and publishing state for a table it
+   * says it does not have would be the same Core answering two ways.
+   */
+  private withPublishedLock<T extends { taskId: string; lock?: CoreLinkSessionLock }>(
+    conn: ActiveConnection,
+    rows: T[],
+  ): T[] {
+    if (!this.announceMultiConnection) return rows;
+    return rows.map((row) => ({ ...row, lock: this.sessionLocks.stateFor(row.taskId, conn) }));
+  }
+
+  /**
+   * Record a Session-lock change in the event log, so every other connection
+   * learns of it without asking (issue 145, ADR 0024 D8).
+   *
+   * A **dedicated kind**, on the precedent ADR 0022 set for
+   * `project:appearanceChanged`: widening `task:updated` to carry lock state
+   * would stop that frame documenting what changed, and a reconnecting client
+   * replaying a tail could not tell a takeover it must react to from a title
+   * edit it can ignore — which is the generic-field-patch failure ADR 0017 and
+   * ADR 0022 both rejected.
+   *
+   * The payload names no client (D3, D10). One row is read by every connection,
+   * so anything identifying in it would be broadcast to every watcher of this
+   * Core; "can I write to it now" is the snapshot's question, asked per
+   * connection, and this event is what tells a client the answer has moved.
+   *
+   * `locked` is read back off the table rather than inferred from the
+   * transition, so the log cannot drift from the state it describes.
+   */
+  private recordSessionLockChange(
+    taskId: string,
+    transition: CoreLinkSessionLockTransition,
+  ): void {
+    if (!this.announceMultiConnection || !this.eventLog) return;
+    const payload: CoreLinkSessionLockChangedPayload = {
+      taskId,
+      transition,
+      locked: this.sessionLocks.holderOf(taskId) !== null,
+    };
+    this.eventLog.appendEvent(SESSION_LOCK_CHANGED_EVENT_KIND, JSON.stringify(payload), {
+      taskId,
+      ptyId: null,
+    });
+  }
+
   private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
     const ws = conn.ws;
     switch (frame.type) {
@@ -954,7 +1037,16 @@ export class PtyCoreLinkServer {
       }
       // ─── Session lock (issue 144, ADR 0024 D3–D7, D10) ───
       case "claim": {
+        // Read the prior state before taking it: a re-claim by the connection
+        // that already holds the Session is idempotent and changes nothing, and
+        // an event for it would be a lock change nobody made — the same reason
+        // `recordProjectMutation` appends only for a mutation that landed.
+        const alreadyHeld = this.sessionLocks.isHeldBy(frame.taskId, conn);
         const { granted } = this.sessionLocks.claim(frame.taskId, conn);
+        // A denied claim leaves the holder untouched, so there is nothing to
+        // publish; the caller reads `granted: false` and the watchers were never
+        // wrong about anything.
+        if (granted && !alreadyHeld) this.recordSessionLockChange(frame.taskId, "claimed");
         this.send(ws, {
           type: "claimResult",
           reqId: frame.reqId,
@@ -965,6 +1057,11 @@ export class PtyCoreLinkServer {
       }
       case "release": {
         const released = this.sessionLocks.release(frame.taskId, conn);
+        // Only a release that actually released something. A stale client
+        // releasing a lock it already lost is talking about the past, and
+        // publishing it would announce a transition that did not happen — to
+        // watchers, indistinguishable from the holder having just let go.
+        if (released) this.recordSessionLockChange(frame.taskId, "released");
         this.send(ws, {
           type: "releaseResult",
           reqId: frame.reqId,
@@ -980,6 +1077,22 @@ export class PtyCoreLinkServer {
           // the one lock transition an operator did not agree to, and the
           // loser's in-flight keystrokes are gone (ADR 0024, known risks).
           log.info("core-link.session-lock.force-takeover", { taskId: frame.taskId });
+        }
+        // Published in the vocabulary of the lock, not of the frame: a takeover
+        // of a Session nobody held is a `claimed`, because nobody was evicted
+        // and no watcher should be told otherwise. Taking a Session this
+        // connection already holds changes nothing and publishes nothing.
+        //
+        // This is the transition D8 exists for. The loser is not answered — it
+        // sent no frame — so without this event it would keep painting an
+        // editable terminal until its next keystroke came back `session-locked`.
+        // It learns here instead, on the ordinary event stream, having polled
+        // nothing.
+        if (takenFrom !== "this-connection") {
+          this.recordSessionLockChange(
+            frame.taskId,
+            takenFrom === "nobody" ? "claimed" : "taken-over",
+          );
         }
         this.send(ws, {
           type: "forceTakeoverResult",
@@ -1070,7 +1183,15 @@ export class PtyCoreLinkServer {
       // queryPort is configured (a PTY-only Core, or tests), both answer
       // with empty results so the Panel can round-trip them without errors.
       case "tasksList": {
-        const tasks = this.queryPort ? this.queryPort.listTasks(frame.projectId) : [];
+        // Stamped with this connection's own lock state (issue 145, D8). This
+        // is the frame a Panel hydrates its Fleet view from, so it is where a
+        // Reader's terminal is decided to be read-only — before a keystroke,
+        // which is the whole of what "published, not discovered by failing"
+        // buys over the refusal that would otherwise be the first news of it.
+        const tasks = this.withPublishedLock(
+          conn,
+          this.queryPort ? this.queryPort.listTasks(frame.projectId) : [],
+        );
         // The count of archived rows, never the rows — see ADR 0019. It rides
         // this answer because the Panel needs it continuously (to gate and
         // label the Archived tab), while the rows are wanted only when that
@@ -1082,7 +1203,14 @@ export class PtyCoreLinkServer {
         return;
       }
       case "archivedTasksList": {
-        const tasks = this.queryPort ? this.queryPort.listArchivedTasks(frame.projectId) : [];
+        // Archived rows carry it too. A Session is claimable whatever its
+        // archived flag says — the lock is keyed by `taskId` and knows nothing
+        // about the column — so a snapshot that omitted it here would be the one
+        // list where "can I write to this" went unanswered.
+        const tasks = this.withPublishedLock(
+          conn,
+          this.queryPort ? this.queryPort.listArchivedTasks(frame.projectId) : [],
+        );
         this.send(ws, { type: "archivedTasksListResult", reqId: frame.reqId, tasks });
         return;
       }
@@ -1111,7 +1239,13 @@ export class PtyCoreLinkServer {
           // title generator) share one seam, so the row and the events that
           // describe it never come apart (issue 84).
           const task = this.taskWriter.mutate(frame.mutation);
-          this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task });
+          // The answer to a mutation is a Session snapshot like any other, so
+          // it carries the lock like any other — including the `create` that
+          // just made this Session, which comes back `unlocked` and says so.
+          // That is D5 on the wire: the creator got no privilege, and the client
+          // reads that rather than assuming either way.
+          const [stamped] = task ? this.withPublishedLock(conn, [task]) : [null];
+          this.send(ws, { type: "tasksMutateResult", reqId: frame.reqId, task: stamped });
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           this.send(ws, { type: "error", reqId: frame.reqId, message });
@@ -1152,9 +1286,14 @@ export class PtyCoreLinkServer {
         return;
       }
       case "sessionsList": {
-        const sessions = this.mutationPort
-          ? this.mutationPort.listSessions(frame.projectId)
-          : [];
+        // The frame `actana session ls` reads (D8): a list of Sessions, each
+        // saying whether this client may write to it. Same stamp, same rule as
+        // `tasksList` — a CLI and a Panel asking about one Session are asking
+        // the same question and must not get different vocabularies for it.
+        const sessions = this.withPublishedLock(
+          conn,
+          this.mutationPort ? this.mutationPort.listSessions(frame.projectId) : [],
+        );
         this.send(ws, { type: "sessionsListResult", reqId: frame.reqId, sessions });
         return;
       }
