@@ -531,10 +531,15 @@ describe("the five-manifest version assertion (ADR 0023 D3, amended by #152)", (
 
   it("lives in the job the rulesets pin, so it actually gates", () => {
     const job = jobBlock(read("ci.yml"), "train-rules");
-    // The context in the rulesets is the job's `name:`, not its key. This is
-    // the assertion that fails if the version check is ever moved out of the
-    // job the required-checks list names.
-    expect(job).toMatch(/^ {4}name: Train rules$/m);
+    // The context in the rulesets is the job's `name:`, not its key. Take that
+    // name out of `ci.yml` and assert the rulesets require *it*, rather than
+    // asserting the literal on both sides: what has to hold is that the job
+    // carrying the version check is the context the rulesets gate on, and a
+    // coordinated rename of the job and all three rulesets keeps that true.
+    // Asserting the string in both places would fail a rename that is correct.
+    const name = /^ {4}name: (.+)$/m.exec(job);
+    expect(name, "the train-rules job has no name:").not.toBeNull();
+    const context = name[1].trim();
     // Every ruleset that gates on checks at all gates on this one. The rulesets
     // with no contexts are the tag rulesets and the retired-line template,
     // which restrict pushes rather than require checks — asserting over them
@@ -543,7 +548,7 @@ describe("the five-manifest version assertion (ADR 0023 D3, amended by #152)", (
     const gating = [...requiredContexts()].filter(([, contexts]) => contexts.length > 0);
     expect(gating.length, "no ruleset requires any check").toBeGreaterThan(0);
     for (const [file, contexts] of gating) {
-      expect(contexts, `${file} does not require Train rules`).toContain("Train rules");
+      expect(contexts, `${file} does not require the ${context} job`).toContain(context);
     }
   });
 
