@@ -794,6 +794,14 @@ jobs:
       # Neither can wear the other's message. An empty string used to be both,
       # and `2>/dev/null || true` was what collapsed them.
       #
+      # Separating the status is only half of it: the *output* has to be the
+      # field and nothing else. `npm view <spec> <field>` prints nothing and
+      # exits 0 when the field is absent, so with stderr folded in by `2>&1` a
+      # single `npm warn` line is a non-empty answer — and this check's answer
+      # to "is it attested" is "is the answer non-empty". stderr therefore goes
+      # to its own file, and the value is required to look like the URI a
+      # predicateType is.
+      #
       # `NODE_AUTH_TOKEN` is set here for the same reason it is set on the
       # publish: `setup-node` wrote an `.npmrc` whose `_authToken` references
       # it, and with the variable unset npm sends the unexpanded literal as a
@@ -806,6 +814,17 @@ jobs:
           set -euo pipefail
           unattested=()
           unverified=()
+          # npm's stderr goes to its own file, never into the value being
+          # tested. Folding it in with `2>&1` kept the error text for the
+          # failure message below and cost the check its whole point: `npm view
+          # <spec> <field>` prints *nothing* on stdout and exits 0 when the
+          # field is absent, so any warning npm writes — `npm warn Unknown user
+          # config` off the `.npmrc` setup-node wrote is the likely one — comes
+          # back as a non-empty answer, and an emptiness test reads it as an
+          # attestation. The one check that can catch a publish that lost
+          # `--provenance` would have reported success on exactly the input it
+          # exists to refuse.
+          stderr="$(mktemp)"
           # `mapfile` rather than `while read < file`: the loop body runs `npm`,
           # and a command that touches stdin inside a `while read` loop eats the
           # list it is iterating.
@@ -819,9 +838,16 @@ jobs:
               # `npm view` lands in the else branch rather than killing the
               # step — which is what keeps "it errored" separable from "it
               # answered, and the answer was empty".
-              if output="$(npm view "$spec" dist.attestations.provenance.predicateType 2>&1)"; then
+              if output="$(npm view "$spec" dist.attestations.provenance.predicateType 2>"$stderr")"; then
                 answered=1
                 predicate="$(printf '%s' "$output" | tr -d '[:space:]')"
+                # Belt to the braces above: a predicateType is a URI
+                # (`https://slsa.dev/provenance/v1`), so anything that is not
+                # one is not an attestation, whatever wrote it to stdout.
+                if [[ -n "$predicate" && "$predicate" != https://* ]]; then
+                  echo "  $spec: registry answered \"$predicate\", which is not a predicateType URI — not an attestation."
+                  predicate=""
+                fi
                 # The registry answered. An absent attestation is retried only
                 # because the attestation service lags the packument by
                 # seconds, never because the read itself failed.
@@ -829,7 +855,7 @@ jobs:
                 echo "  $spec: registry answered, no attestation yet (attempt $attempt), waiting…"
               else
                 answered=0
-                error="$(printf '%s' "$output" | tail -n 3 | tr '\n' ' ')"
+                error="$(tail -n 3 "$stderr" | tr '\n' ' ')"
                 echo "  $spec: \`npm view\` failed (attempt $attempt) — ${error:-no output}; retrying…"
               fi
               sleep 10

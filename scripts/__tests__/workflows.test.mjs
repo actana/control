@@ -427,6 +427,25 @@ describe("npm publishing (#129 D13, ADR 0018 as amended)", () => {
     expect(step).not.toContain("continue-on-error");
   });
 
+  // The other half of separating the status from the output: what lands in the
+  // output has to be the field. `npm view <spec> <field>` exits 0 and prints
+  // nothing when the field is absent, so `2>&1` turns any `npm warn` line into
+  // a non-empty answer — and non-empty is this step's whole definition of
+  // attested. A warning would be reported as provenance, by the one check that
+  // exists to catch a publish that has none.
+  it("does not let a warning on stderr read as an attestation", () => {
+    const job = jobBlock(source, "npm");
+    const step = code(job.slice(job.indexOf("Every published package is attested")));
+    // stderr has its own file, and is still kept for the failure message.
+    expect(step).toContain('2>"$stderr"');
+    expect(step).toMatch(/error="\$\(tail -n 3 "\$stderr"/);
+    expect(step, "npm's stderr is folded back into the value being tested").not.toMatch(
+      /npm view "\$spec" dist\.attestations[^\n]*2>&1/,
+    );
+    // And the value has to look like what a predicateType is.
+    expect(step).toContain('"$predicate" != https://*');
+  });
+
   // Least privilege, and a second reading of the same line: `id-token: write`
   // is a token-minting permission, and it belongs to the one job that mints a
   // token. Its appearance anywhere else in this file would most likely be
