@@ -18,6 +18,10 @@ Actana Control is two programs that talk over one WebSocket:
   agree on, and the only definition of it in the repository. It lives with the
   client that speaks it, and the Core imports its frames from here too
   ([ADR 0025](docs/adr/0025-the-protocol-ships-with-the-client.md)).
+- `packages/cli` — the `actana` command's client half: the blob registry that
+  names the Cores a machine can reach, and the nouns built on the SDK. One
+  command name split by noun — running a Core is the Core package's half
+  ([#129](https://github.com/actana/control/issues/129) D8).
 - `packages/shared` — the other types both sides agree on: the mutation and
   query contracts, the registration-blob codec, the event log, the harness
   registry. Private, and it stays private.
@@ -39,6 +43,12 @@ project's glossary, and reviewers use its terms.
 ```
 control/
 ├── packages/
+│   ├── cli/                The `actana` command's client half
+│   │   ├── bin/actana.mjs  what npm links as `actana`
+│   │   └── src/
+│   │       ├── actana-cli.ts       noun dispatch
+│   │       ├── blob-registry.ts    ~/.config/actana/cores/<name>.txt, mode 0600
+│   │       └── core-command.ts     the `core` noun
 │   ├── core/               Standalone Node daemon — the Core
 │   │   └── src/
 │   │       ├── core-entry.ts           daemon entry
@@ -58,7 +68,8 @@ control/
 │   │       │   ├── core-link/       the service's link to each Core
 │   │       │   └── controllers/     the `/api/*` surface
 │   │       └── db/         Drizzle schema + client
-│   └── shared/             core-link / panel-link frames, protocol types
+│   ├── sdk/                The Core client and the core-link frames it speaks
+│   └── shared/             mutation/query contracts, registration-blob codec
 ├── docs/adr/               Architecture decisions
 ├── designs/                Original HTML+JSX prototype (source of truth)
 ├── deploy/                 The two images and the one reference compose

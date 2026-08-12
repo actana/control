@@ -63,6 +63,7 @@
     "npm:rehearse": "node scripts/rehearse-npm-publish.mjs --npm-dry-run"
   },
   "dependencies": {
+    "@actana/cli": "workspace:*",
     "@actana/core": "workspace:*",
     "@actana/panel": "workspace:*",
     "@actana/sdk": "workspace:*",

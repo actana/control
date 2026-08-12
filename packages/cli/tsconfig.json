@@ -1,0 +1,38 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // Relative imports carry their `.ts` extension, matching `packages/sdk` —
+    // the specifiers this package writes are the ones the SDK's own source
+    // writes, so a file can move between the two without a rewrite.
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "useDefineForClassFields": true,
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      "@actana/sdk/*": ["../sdk/src/*"],
+      // Test-only, and the mate of the same two entries in `vitest.config.ts` —
+      // the type checker and the test runner resolve independently, so a path
+      // that exists for one and not the other is a suite that runs and does not
+      // typecheck. Neither package is a dependency of this one and neither may
+      // be imported by a shipped module: `@actana/core` is a private package
+      // and a daemon, `@actana/shared` is private (ADR 0025 D4).
+      // `src/__tests__/no-local-escape.test.ts` is what enforces that, and it
+      // sweeps imports rather than trusting this file to withhold the mapping.
+      "@actana/core/*": ["../core/src/*"],
+      "@actana/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist"]
+}
