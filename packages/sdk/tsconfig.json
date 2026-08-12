@@ -14,7 +14,14 @@
     "useDefineForClassFields": true,
     "ignoreDeprecations": "6.0",
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    "paths": {
+      // Test-only paths, mirroring `vitest.config.ts` — see the comment there.
+      // Nothing under `src/` outside `src/__tests__/` may import either package:
+      // the SDK's runtime dependencies are `ws` and the protocol it defines.
+      "@actana/core/*": ["../core/src/*"],
+      "@actana/shared/*": ["../shared/src/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules"]
