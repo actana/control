@@ -109,7 +109,14 @@ export default {
     // project's own history fails is a limit people learn to bypass. This one
     // catches a runaway subject without arguing with the house style.
     'header-max-length': [2, 'always', 120],
-    'body-max-line-length': [2, 'always', 100],
+    // 132, not 100, and the same for the footer: this repo squashes with
+    // COMMIT_MESSAGES, so a train squash carries every ticket PR title
+    // concatenated into its body. Those titles are capped at 112 plus a
+    // ` (#NNN)` suffix, and the parser may land the tail of that block in the
+    // footer, so both limits must clear the 120 `header-max-length` above —
+    // otherwise a title that was legal as a header is illegal once quoted.
+    'body-max-line-length': [2, 'always', 132],
+    'footer-max-line-length': [2, 'always', 132],
     'body-leading-blank': [2, 'always'],
     // Off in favour of `trailer-leading-blank` above it — same intent, without
     // mistaking a wrapped body sentence for a footer.
