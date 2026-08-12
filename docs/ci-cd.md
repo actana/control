@@ -712,10 +712,16 @@ container tag's re-pointability transfers, and three things follow:
 - The publish is **rehearsed on every pull request**, long before a tag exists.
   `pnpm npm:rehearse` (`scripts/rehearse-npm-publish.mjs`) packs each
   publishable package with `pnpm pack` and asserts the tarball: the `>=22`
-  engines floor, no install-time lifecycle script, compiled JS with `.d.ts`
-  beside it, and a file list that is a whitelist — so `scripts/require-node-24.mjs`
-  cannot reach a tarball by any route, including a rename. `pnpm test` runs it;
-  the release runs the same script on the tarballs it then publishes.
+  engines floor, no install-time lifecycle script, a `repository` for the
+  attestation to name, one version line with the CLI pinned to this train's
+  SDK, and a file list that is a whitelist — so `scripts/require-node-24.mjs`
+  cannot reach a tarball by any route, including a rename. The last rules
+  depend on which kind of package it is: the SDK is **imported**, so every
+  compiled module has a `.d.ts` beside it; the CLI is **run**, so the `bin`
+  path npm links is in the tarball, starts with a node shebang, and has its
+  bundle beside it. `pnpm test` runs it; the release runs the same script on
+  the tarballs it then publishes, in dependency order — the SDK before the CLI
+  that depends on it.
 - Every publish is **attested**. The job carries `id-token: write` and passes
   `--provenance`; afterwards it reads the attestation back off the registry and
   fails if it is not there, because a publish that lost the flag succeeds and
