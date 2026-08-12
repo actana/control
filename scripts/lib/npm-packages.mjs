@@ -82,6 +82,15 @@ export const NODE_GUARD = "require-node-24.mjs";
  * of `scripts/` as long as one file had been renamed. What has to hold is that
  * a published package is its own compiled output and its paperwork — nothing
  * from the repository around it.
+ *
+ * **`dist/` is deliberately flat.** The third pattern permits one level and no
+ * more, so the day `src/` grows a subdirectory the rehearsal fails with
+ * "outside `dist/` and its paperwork" — which reads as a leak and is not one.
+ * That is a fail-closed choice rather than an oversight: the published subpath
+ * map is `./*` → `./dist/*.js`, so a nested module would be unreachable to a
+ * consumer anyway, and a tarball is the wrong place to discover it. If a
+ * nested layout is ever wanted, this pattern and `publishConfig.exports` move
+ * together — the failure is telling you they have to.
  */
 const ALLOWED_ENTRIES = [
   /^package\/package\.json$/,
@@ -269,6 +278,21 @@ export function assertPackedFiles(name, entries) {
     throw new Error(
       `${name} ships ${missingTypes.join(", ")} with no \`.d.ts\` beside it. D12 is compiled JS **plus** types; a module ` +
         "that resolves at runtime and not at compile time is the half-published state nobody notices until a consumer builds.",
+    );
+  }
+
+  // Asserted rather than inferred from a file count. `packages/sdk/` has no
+  // `LICENSE` of its own; the one in the tarball is the workspace root's,
+  // copied in by pnpm at pack time. That is pnpm behaviour and not a
+  // guarantee — `ALLOWED_ENTRIES` permits a LICENSE and nothing required one —
+  // so an MIT package could ship to npm with no licence text in it, which is a
+  // real if quiet defect and exactly the kind that a count in a PR description
+  // is not evidence about either way.
+  if (!files.some((entry) => /^package\/LICENSE(\.md)?$/.test(entry))) {
+    throw new Error(
+      `${name} packs no LICENSE. The manifest declares a licence and the tarball is what a consumer actually receives; ` +
+        "pnpm copies the workspace root's LICENSE in at pack time, so an absent one means that behaviour changed or the " +
+        "root file moved — either way the published package would carry a licence claim with no text behind it.",
     );
   }
 }

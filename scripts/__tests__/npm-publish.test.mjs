@@ -25,7 +25,7 @@ import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   MONOREPO_ENGINES,
@@ -194,6 +194,19 @@ describe("the published tarball (#129 D12, #159)", () => {
       /no compiled JavaScript/,
     );
   });
+
+  // `packages/sdk/` has no LICENSE of its own — the one that ships is the
+  // workspace root's, copied in by pnpm at pack time. That is a pnpm behaviour
+  // rather than a guarantee, and the whitelist permits a LICENSE without ever
+  // requiring one, so an MIT package could reach npm with no licence text in
+  // it. Asserted here rather than inferred from how many files a pack emitted.
+  it("refuses a tarball with no licence text in it", () => {
+    const unlicensed = files().filter((entry) => entry !== "package/LICENSE");
+    expect(() => assertPackedFiles("@actana/sdk", unlicensed)).toThrow(/packs no LICENSE/);
+    expect(() =>
+      assertPackedFiles("@actana/sdk", [...unlicensed, "package/LICENSE.md"]),
+    ).not.toThrow();
+  });
 });
 
 // The half of D12 that is about this repository rather than about the
@@ -217,52 +230,122 @@ describe("the monorepo keeps the guard the tarball drops (#129 D12)", () => {
 // manifest; this is the artifact. It is the scoped dry run #159 asks for, and
 // it runs here — on a pull request, before any tag exists — rather than in the
 // release, where the first thing that could go wrong is also the last.
+// The pack runs once, in `beforeAll`, and every test below reads what it
+// produced. It used to run inside the first `it`, which made the import test
+// below depend on a sibling's side effect — it asserted `dist/` existed with
+// the message "run the packing test first", and held only because Vitest
+// happens to run `it`s in file order. A test whose precondition is another
+// test's ordering is one refactor from a confusing red.
 describe("packing @actana/sdk for real", () => {
-  it("produces a tarball that passes every rule", () => {
-    const outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-publish-test-"));
-    try {
-      const stdout = execFileSync(
-        process.execPath,
-        [path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"), "--out-dir", outDir],
-        { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
-      );
-      const tarballs = /^tarballs=(.*)$/m.exec(stdout)[1].split(" ").filter(Boolean);
-      expect(tarballs.length).toBeGreaterThan(0);
+  /** @type {string} */ let outDir;
+  /** @type {{tarball: string, entries: string[], manifest: object}[]} */ let packed;
 
-      // Read the artifact again here rather than trusting the script's own
-      // exit code: what #159 wants asserted is a property of the bytes.
-      for (const tarball of tarballs) {
-        const entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
+  beforeAll(() => {
+    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-publish-test-"));
+    const stdout = execFileSync(
+      process.execPath,
+      [path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"), "--out-dir", outDir],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    packed = /^tarballs=(.*)$/m
+      .exec(stdout)[1]
+      .split(" ")
+      .filter(Boolean)
+      .map((tarball) => ({
+        tarball,
+        // Read the artifact again here rather than trusting the script's own
+        // exit code: what #159 wants asserted is a property of the bytes.
+        entries: execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
           .split("\n")
-          .filter(Boolean);
-        expect(entries.some((entry) => entry.endsWith(NODE_GUARD))).toBe(false);
-        expect(entries).toContain("package/dist/core-client.js");
-        expect(entries).toContain("package/dist/core-client.d.ts");
-
-        const manifest = JSON.parse(
+          .filter(Boolean),
+        manifest: JSON.parse(
           execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" }),
-        );
-        expect(manifest.engines.node).toBe(PUBLISHED_ENGINES);
-        expect(manifest.scripts?.preinstall).toBeUndefined();
-        expect(manifest.private).toBeUndefined();
-        // `publishConfig.exports` was applied by the pack — the tarball's map
-        // points at what is in it.
-        expect(JSON.stringify(manifest.exports)).not.toContain("./src/");
-      }
-    } finally {
-      fs.rmSync(outDir, { recursive: true, force: true });
-    }
+        ),
+      }));
   }, 300_000);
 
-  // The compiled entry point loads under a plain `node`, from outside the
-  // workspace. A `dist/` that type-checks and cannot be imported — a stray
-  // extensionless relative specifier is all it takes, and `moduleResolution:
-  // Bundler` will not complain about one — is a package that installs and then
-  // throws on first `import`.
-  it("compiles to something Node can actually import", async () => {
-    const entry = path.join(repoRoot, "packages/sdk/dist/core-client.js");
-    expect(fs.existsSync(entry), "run the packing test first — it builds dist/").toBe(true);
-    const module = await import(entry);
-    expect(typeof module.CoreClient).toBe("function");
+  afterAll(() => {
+    if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("produces a tarball that passes every rule", () => {
+    expect(packed.length).toBeGreaterThan(0);
+    for (const { entries, manifest } of packed) {
+      expect(entries.some((entry) => entry.endsWith(NODE_GUARD))).toBe(false);
+      expect(entries).toContain("package/dist/core-client.js");
+      expect(entries).toContain("package/dist/core-client.d.ts");
+      // pnpm copies the workspace root's LICENSE in; the real pack is where
+      // that behaviour is confirmed rather than assumed.
+      expect(entries).toContain("package/LICENSE");
+
+      expect(manifest.engines.node).toBe(PUBLISHED_ENGINES);
+      expect(manifest.scripts?.preinstall).toBeUndefined();
+      expect(manifest.private).toBeUndefined();
+      // `publishConfig.exports` was applied by the pack — the tarball's map
+      // points at what is in it.
+      expect(JSON.stringify(manifest.exports)).not.toContain("./src/");
+    }
+  });
+
+  // Every published module loads under a plain `node`. A `dist/` that
+  // type-checks and cannot be imported — a stray extensionless relative
+  // specifier is all it takes, and `moduleResolution: Bundler` will not
+  // complain about one — is a package that installs and then throws on first
+  // `import`.
+  //
+  // Every module, not the entry point: importing `core-client` alone reaches 5
+  // of the 9 published modules through its own import graph, and the four it
+  // misses include `core-session` and `durable-core-client`, which are the two
+  // the README tells a consumer to import first. The module most likely to be
+  // somebody's first `import` was the one not covered.
+  //
+  // The list comes from the tarball rather than from a hard-coded array, so a
+  // module added to `src/` is covered the day it is published rather than the
+  // day somebody remembers this file.
+  it("compiles to something Node can actually import — every published module", async () => {
+    expect(packed.length).toBeGreaterThan(0);
+    for (const { entries } of packed) {
+      const modules = entries
+        .filter((entry) => /^package\/dist\/[^/]+\.js$/.test(entry))
+        .map((entry) => path.basename(entry));
+      // Nine today. A bare `toBeGreaterThan(0)` here would pass a `dist/`
+      // containing one file, which is the shape this test exists to refuse.
+      const sources = fs
+        .readdirSync(path.join(repoRoot, "packages/sdk/src"))
+        .filter((file) => file.endsWith(".ts"));
+      expect(
+        modules.length,
+        `${modules.length} module(s) in dist/ for ${sources.length} in src/ — the tarball ships a subset of the SDK`,
+      ).toBe(sources.length);
+
+      for (const basename of modules) {
+        // `beforeAll` packed with `pnpm pack`, whose `prepack` is the build, so
+        // these are the compiled bytes that went into the tarball. They are
+        // imported from `dist/` rather than from the extracted tarball because
+        // the SDK depends on `ws`, and a temp directory outside the workspace
+        // has no `node_modules` to resolve it from — which would test the
+        // extraction rather than the specifiers.
+        const entry = path.join(repoRoot, "packages/sdk/dist", basename);
+        const module = await import(entry);
+        expect(Object.keys(module).length, `${basename} exports nothing at runtime`).toBeGreaterThan(
+          0,
+        );
+      }
+
+      // The three the README leads with, by name: a module can import cleanly
+      // and still have lost the export a consumer copied out of the docs.
+      const { CoreClient } = await import(
+        path.join(repoRoot, "packages/sdk/dist/core-client.js")
+      );
+      const { CoreSession } = await import(
+        path.join(repoRoot, "packages/sdk/dist/core-session.js")
+      );
+      const { DurableCoreClient } = await import(
+        path.join(repoRoot, "packages/sdk/dist/durable-core-client.js")
+      );
+      expect(typeof CoreClient).toBe("function");
+      expect(typeof CoreSession).toBe("function");
+      expect(typeof DurableCoreClient).toBe("function");
+    }
   });
 });
