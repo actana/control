@@ -1,7 +1,8 @@
 // One core link, from the client's side of it: one socket, one Core.
 //
-// Extracted from the Panel's `PtyCoreLinkClient`
-// (`packages/panel/src/server/core-link/client.ts`, issue 153, #129 D1/D2/D6).
+// Extracted from the Panel's `PtyCoreLinkClient` (issue 153, #129 D1/D2/D6) —
+// which was `packages/panel/src/server/core-link/client.ts`, deleted in #156 when
+// the Panel moved onto this package, so this is where that code lives now.
 // That class did four separable jobs at once — frame the wire, correlate
 // requests, keep a link alive across drops, and expose a typed API. This module
 // is the first of those two: **the machinery of one connection**, with no

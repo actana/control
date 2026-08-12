@@ -18,7 +18,8 @@
 // the Panel's business.
 //
 // Extracted from `PtyCoreLinkClient` (issue 153), whose reconnect loop, cursor
-// handling and PTY re-subscription are the four sections below.
+// handling and PTY re-subscription are the four sections below. That class was
+// deleted in #156: this is the Panel's client now, not a copy of it.
 
 import type { CoreLinkEvent } from "./core-link-frames.ts";
 import { CoreClient, type CoreClientOptions } from "./core-client.ts";

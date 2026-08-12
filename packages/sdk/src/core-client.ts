@@ -13,9 +13,10 @@
 // plus a supervisor. Both sit on one {@link CoreLinkTransport}, so the wire is
 // written once.
 //
-// Extracted from the Panel's `PtyCoreLinkClient` (issue 153). The typed method
-// set below is deliberately that class's, frame for frame, so the Panel's
-// migration (#156) is a swap rather than a rewrite of its call sites; the parts
+// Extracted from the Panel's `PtyCoreLinkClient` (issue 153), which no longer
+// exists: #156 deleted it and pointed the Panel here. The typed method set below
+// is deliberately that class's, frame for frame, which is what made that
+// migration a swap rather than a rewrite of its call sites; the parts
 // that class did *not* have — an explicit `connect()` you can await, a
 // connection that does not resurrect itself — are what a one-shot client needs
 // and a Panel never asked for.
