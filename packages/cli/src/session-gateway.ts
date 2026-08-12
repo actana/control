@@ -181,8 +181,13 @@ export type SessionGateway = {
   start(request: SessionStartRequest): Promise<StartedSession>;
   resume(request: SessionResumeRequest): Promise<StartedSession>;
   logs(taskId: string): Promise<SessionLogs>;
-  /** Write text to a running Session, verbatim. Resolves false if the Core declined. */
-  send(taskId: string, text: string): Promise<boolean>;
+  /**
+   * Write text to a running Session, verbatim. Resolves false if the Core
+   * declined. `enter` adds a carriage return as a **separate write to the same
+   * PTY**, resolved once for both, so there is no window between them in which
+   * the text lands and the return is sent somewhere else — or nowhere.
+   */
+  send(taskId: string, text: string, opts?: { enter?: boolean }): Promise<boolean>;
   /** Kill the harness running for this Task, whoever started it. */
   kill(taskId: string): Promise<{ ptyId: string; killed: boolean }>;
   close(): void;
@@ -323,11 +328,18 @@ class CoreLinkSessionGateway implements SessionGateway {
     return { taskId, ptyId, screen: terminal.text(), raw: replay.data };
   }
 
-  async send(taskId: string, text: string): Promise<boolean> {
+  async send(taskId: string, text: string, opts: { enter?: boolean } = {}): Promise<boolean> {
+    // One resolution for the whole verb. Resolving again for the return would
+    // open a window — the harness exits between the two round trips, the text
+    // has landed, and the command reports a failure after a partial delivery.
     const ptyId = await this.livePty(taskId);
+
     // Verbatim, and that is the whole verb. See rule 1: nothing is appended,
-    // nothing is timed, nothing is retried.
-    return this.client.write(ptyId, text);
+    // nothing is timed, nothing is retried. The return, when it was asked for,
+    // is its own write of its own byte — never glued to the text.
+    if (text.length > 0 && !(await this.client.write(ptyId, text))) return false;
+    if (!opts.enter) return true;
+    return this.client.write(ptyId, "\r");
   }
 
   async kill(taskId: string): Promise<{ ptyId: string; killed: boolean }> {
