@@ -5,7 +5,7 @@
 //   actana core use <name>          point `current` at one of them
 //   actana core rm <name>           forget one
 //   actana core status [--json]     reach the selected Core and report it back
-//   actana core shell               scaffolded here, built in #162
+//   actana core shell               an interactive shell on the Core (#162)
 //
 // **`add` reads a file or stdin, and there is no third way.** It does not shell
 // into a container to fetch the credential for it (#129 D9, and the ticket's
@@ -33,8 +33,9 @@ import {
 } from "./blob-registry.ts";
 import { decodeRegistrationBlobText } from "./registration-blob-file.ts";
 import { resolveCore } from "./core-resolution.ts";
+import { runCoreShell } from "./core-shell.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
-import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
+import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
 import * as fs from "node:fs";
@@ -50,7 +51,7 @@ Usage
   actana core use <name>          point \`current\` at a Core
   actana core rm <name>           forget a Core
   actana core status              reach the selected Core and report what it says
-  actana core shell               open a shell on the Core (not built yet — #162)
+  actana core shell               open an interactive shell on the Core
 
 Flags
   --core <name>   which Core \`status\` (and every later noun) talks to
@@ -80,9 +81,9 @@ export async function runCoreCommand(
     return verb === undefined && !args.help ? EXIT_USAGE : EXIT_OK;
   }
 
-  // Only the two verbs with flags of their own take `args`. `add`, `use` and
-  // `rm` have none — passing it to them anyway made every verb look like it
-  // read the flag set, which is the one thing a reader checks a dispatch for.
+  // Only the verbs with flags of their own take `args`. `add`, `use` and `rm`
+  // have none — passing it to them anyway made every verb look like it read the
+  // flag set, which is the one thing a reader checks a dispatch for.
   switch (verb) {
     case "add":
       return coreAdd(deps, paths, rest);
@@ -97,7 +98,7 @@ export async function runCoreCommand(
     case "status":
       return coreStatus(deps, args, paths);
     case "shell":
-      return coreShell(deps);
+      return runCoreShell(deps, args, paths);
     default:
       deps.err(`actana core: unknown verb "${verb}".`);
       deps.err("Verbs: add, ls, use, rm, status, shell. `actana core --help` lists them.");
@@ -374,21 +375,6 @@ async function coreStatus(
     return EXIT_FAILURE;
   }
   return EXIT_OK;
-}
-
-/**
- * `actana core shell` — scaffolded, not built.
- *
- * It is in the tree, in the help, and in the dispatch because #157 is what
- * defines the `core` noun's shape and a verb added later by a different ticket
- * would be a second place that shape is decided. What it is not is a stub that
- * pretends: it names the ticket that builds it and exits non-zero, so a script
- * that reaches for it fails now rather than appearing to succeed.
- */
-function coreShell(deps: ActanaCliDeps): number {
-  deps.err("actana core shell: not built yet — it is #162, in this phase.");
-  deps.err("A Core shell is a free-form login shell on the Core: no project, no harness.");
-  return EXIT_UNIMPLEMENTED;
 }
 
 /**

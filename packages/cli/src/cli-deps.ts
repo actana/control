@@ -8,6 +8,8 @@
 // `process`.
 
 import type { CoreProbeFn } from "./core-probe.ts";
+import type { CliTerminal } from "./cli-terminal.ts";
+import type { OpenCoreShellFn } from "./core-shell-channel.ts";
 
 export type ActanaCliDeps = {
   /** `process.argv.slice(2)`. */
@@ -39,4 +41,16 @@ export type ActanaCliDeps = {
   probe: CoreProbeFn;
   /** Epoch ms. Only the bearer-expiry line reads it. */
   now: () => number;
+  /**
+   * The operator's terminal — raw mode, keystrokes, size, signals.
+   *
+   * Injected for the same reason as everything above it, and with more riding
+   * on it: `core shell` must restore raw mode on every exit path, and a fake
+   * terminal is the only way a test can assert that about a dropped connection
+   * or a signal. Commands that only print lines never touch it. See
+   * `cli-terminal.ts` (#129 D11).
+   */
+  terminal: CliTerminal;
+  /** How `core shell` opens a shell on a Core. See `core-shell-channel.ts`. */
+  openShell: OpenCoreShellFn;
 };

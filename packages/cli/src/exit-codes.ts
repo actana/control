@@ -19,15 +19,15 @@ export const EXIT_USAGE = 2;
  *
  * Distinct from {@link EXIT_USAGE} on purpose: "you typed something that is not
  * a command" and "you typed a command this build cannot do yet" are different
- * facts, and a script that reaches for `core shell` before #162 lands should be
- * able to tell them apart without parsing English off stderr.
+ * facts, and a script that reaches for a name this phase has not finished
+ * should be able to tell them apart without parsing English off stderr.
  *
- * **Every reserved name in the tree returns this, not just the reserved verb.**
- * `core shell` (#162) and the `session` / `project` / `harness` / `events`
- * nouns (#160, #161, #163) are the same fact about the same build, and the
- * nouns were the ones the argument above was really written for: they are what
- * a script written against a later train will hit first. Splitting them — 3 for
- * the verb, 2 for the nouns — would have meant this comment arguing for a
- * distinction the command tree did not make.
+ * **Every reserved name in the tree returns this, whether noun or verb.** The
+ * `session` / `project` / `harness` / `events` nouns (#160, #161, #163) are one
+ * fact about one build, and they are what a script written against a later
+ * train hits first. `core shell` was the reserved *verb* until #162 built it,
+ * and it returned this same code for the same reason: splitting them — 3 for a
+ * verb, 2 for a noun — would have meant this comment arguing for a distinction
+ * the command tree did not make.
  */
 export const EXIT_UNIMPLEMENTED = 3;

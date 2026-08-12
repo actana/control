@@ -6,7 +6,8 @@
 // and the fact that they are three rather than two. The distinction is the
 // whole of `exit-codes.ts`'s argument, and until now nothing asserted it at the
 // root — the reserved nouns exited `2` and `core shell` exited `3` for the same
-// underlying fact, which the review of #201 caught.
+// underlying fact, which the review of #201 caught. #162 built `core shell`, so
+// what is reserved here is nouns.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
@@ -42,10 +43,15 @@ describe("a reserved noun is `not built yet`, not `you typed it wrong`", () => {
     expect(run.err.join("\n")).toContain(ticket);
   });
 
-  it("agrees with `core shell`, which is the same fact about the same build", async () => {
+  it("is the answer for a name that is reserved, and not for one that is built", async () => {
+    // `core shell` was the reserved *verb* and shared this code until #162
+    // built it. Now it is a command like any other, and a build that answered
+    // `3` for it would be telling a script to come back on a later train for
+    // something already shipped.
     const noun = await cli().run(["session"]);
-    const verb = await cli().run(["core", "shell"]);
-    expect(noun.code).toBe(verb.code);
+    expect(noun.code).toBe(EXIT_UNIMPLEMENTED);
+    const built = await cli().run(["core", "shell"]);
+    expect(built.code).not.toBe(EXIT_UNIMPLEMENTED);
   });
 
   it("still separates a reserved noun from a typo", async () => {

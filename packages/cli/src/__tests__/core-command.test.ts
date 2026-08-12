@@ -287,10 +287,14 @@ describe("actana core status", () => {
 });
 
 describe("actana core shell", () => {
-  it("is in the tree, names the ticket that builds it, and does not pretend", async () => {
+  it("is built, and no longer answers `not built yet`", async () => {
+    // #162 turned the reserved verb into a command. What it does with a
+    // terminal is `core-shell.test.ts`; all this asserts is that the dispatch
+    // reaches it — a run with no Core selected fails like every other verb that
+    // needs one, rather than reporting a ticket number.
     const run = await cli().run(["core", "shell"]);
-    expect(run.code).toBe(EXIT_UNIMPLEMENTED);
-    expect(run.err.join("\n")).toContain("#162");
+    expect(run.code).not.toBe(EXIT_UNIMPLEMENTED);
+    expect(run.err.join("\n")).not.toContain("not built yet");
   });
 
   it("is listed in the noun's help", async () => {
