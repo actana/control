@@ -445,6 +445,47 @@ describe("CoreClient", () => {
     expect(ordered).toEqual(["reclaim", "replay"]);
   });
 
+  it("holds a request issued between writability and ready — the other door", async () => {
+    // The sibling of the test above, at the moment the queue never sees. A
+    // request asked for *before* there is a link is queued and flushed in order;
+    // this one is asked for in the window where the socket is already writable
+    // and `ready` has not landed, so it reaches `dispatch` with a writable
+    // transport and would go straight out — ahead of the `reclaim` this
+    // connection owes the Core, and out of a connection that is not established.
+    // Same ordering property as note 2 of the #153 review, a different door
+    // (#156).
+    rig = startCoreRig();
+    const core = rig;
+    const pair = new FakeSocketPair();
+    const createSocket = () => {
+      queueMicrotask(() => pair.open());
+      // Long enough that the window below is the test's, not a race with it.
+      setTimeout(() => core.wss.accept(pair.server), 50);
+      return pair.client.asClientSocket();
+    };
+    client = new CoreClient({ url: "wss://core.test:9444", bearer: null, createSocket });
+    const c = client;
+
+    const connecting = c.connect();
+    // One tick: the socket opened, and with no bearer that is writability. The
+    // Core has not been handed the connection yet, so no `ready` exists.
+    await Promise.resolve();
+    expect(c.isConnected()).toBe(true);
+
+    const pending = c.replay("pty-1");
+    // Held, not sent: nothing of this caller's is on the wire yet.
+    expect(pair.client.framesOfType("replay")).toHaveLength(0);
+
+    await connecting;
+    await pending;
+
+    const ordered = pair.client
+      .frames()
+      .map((f) => f.type)
+      .filter((t) => t === "reclaim" || t === "replay");
+    expect(ordered).toEqual(["reclaim", "replay"]);
+  });
+
   it("authenticates nothing and is writable at once against a loopback Core", async () => {
     // No `authVerifier` on the Core, no bearer on the client: the trusted
     // loopback shape, where `auth` is a no-op and there is no `authOk` coming.

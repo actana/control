@@ -11,6 +11,8 @@ import { TerminalScreen, charWidth } from "../terminal-screen.ts";
 
 const ESC = "\u001B";
 const CSI = `${ESC}[`;
+/** What the Core substitutes for a reverse-video run before it strips escapes. */
+const HIGHLIGHT_SENTINEL = "\u0001";
 
 describe("TerminalScreen", () => {
   describe("the thing stripping escape codes gets wrong", () => {
@@ -268,6 +270,27 @@ describe("TerminalScreen", () => {
       screen.write(`${CSI}1;31mred${CSI}0m plain`);
 
       expect(screen.viewportLines()[0]).toBe("red plain");
+    });
+
+    it("drops reverse video too, so a highlighted menu row reads like the rest", () => {
+      // Pinning the deferral in the header, not endorsing it (#156). `ESC[7m`
+      // is how a harness marks the row an Enter would take — the Core reads
+      // exactly that when it answers the folder-trust dialog — and this screen
+      // hands a caller the options with no sign of which one is selected. A
+      // caller answering through `send()` answers by number until the session
+      // layer decides what shape the selection should arrive in.
+      const screen = new TerminalScreen({ cols: 40, rows: 3 });
+      screen.write(`  1. No, exit\r\n${CSI}7m❯ 2. Yes, proceed${CSI}0m`);
+
+      expect(screen.viewportLines().slice(0, 2)).toEqual([
+        "  1. No, exit",
+        "❯ 2. Yes, proceed",
+      ]);
+      // The highlight left nothing behind — not the escape, and not a sentinel
+      // standing in for it. The two rows differ by their text and by nothing
+      // else, which is the whole of what the deferral costs a caller.
+      expect(screen.text()).not.toContain(ESC);
+      expect(screen.text()).not.toContain(HIGHLIGHT_SENTINEL);
     });
 
     it("prints no character for a bell, a backspace or a stray control byte", () => {

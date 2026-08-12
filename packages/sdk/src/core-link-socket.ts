@@ -1,7 +1,8 @@
 // The socket under a core link, and the Node dial that opens one.
 //
 // Extracted from the Panel's `core-link/node-socket.ts` and the `WebSocketLike`
-// interface that lived in its client (issue 153, #129 D1). The client is
+// interface that lived in its client (issue 153, #129 D1). Both were deleted in
+// #156, when the Panel started dialing with this package instead. The client is
 // transport-agnostic on purpose: {@link CoreLinkSocket} is the whole of what
 // {@link CoreLinkTransport} needs, so one transport drives the real `wss://`
 // dial below, a loopback `ws://`, and an in-memory pair in a test.

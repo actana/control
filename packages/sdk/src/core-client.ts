@@ -13,9 +13,10 @@
 // plus a supervisor. Both sit on one {@link CoreLinkTransport}, so the wire is
 // written once.
 //
-// Extracted from the Panel's `PtyCoreLinkClient` (issue 153). The typed method
-// set below is deliberately that class's, frame for frame, so the Panel's
-// migration (#156) is a swap rather than a rewrite of its call sites; the parts
+// Extracted from the Panel's `PtyCoreLinkClient` (issue 153), which no longer
+// exists: #156 deleted it and pointed the Panel here. The typed method set below
+// is deliberately that class's, frame for frame, which is what made that
+// migration a swap rather than a rewrite of its call sites; the parts
 // that class did *not* have — an explicit `connect()` you can await, a
 // connection that does not resurrect itself — are what a one-shot client needs
 // and a Panel never asked for.
@@ -454,8 +455,19 @@ export class CoreClient {
           this.established = false;
           this.transport = null;
           this.failInFlight();
-          for (const cb of this.disconnectedListeners) cb({ error: reason });
+          // Before the listeners, not after. A disconnect listener may call
+          // `connect()` synchronously — the Panel registers such handlers
+          // (#156) — and with no transport and no backoff armed yet, that call
+          // would dial a socket of its own, which the backoff's own
+          // `openTransport()` then overwrote a moment later: one live link, one
+          // orphan nobody holds a reference to, and no `close()` coming for it.
+          // Arming first makes `reconnectScheduled()` true for that call, so it
+          // waits for the connection already on its way rather than opening a
+          // second one. Nothing observable moves: what this runs before the
+          // listeners either arms a timer or rejects a promise, and a promise
+          // rejection is a microtask that lands after the whole loop either way.
           this.onConnectionClosed(reason);
+          for (const cb of this.disconnectedListeners) cb({ error: reason });
         },
       },
     });
@@ -640,10 +652,21 @@ export class CoreClient {
     });
   }
 
-  /** Send now if there is a link, otherwise hold it for the next one. */
+  /**
+   * Send now if there is an established link, otherwise hold it for the next
+   * one.
+   *
+   * **Established, not merely writable.** On the no-bearer path writability
+   * rides the socket opening and can land before `ready`, so a request *issued*
+   * in that window would go out ahead of the `reclaim` and `subscribe` this
+   * connection owes the Core — the ordering `onConnectionEstablished` documents
+   * as load-bearing, and the same property `onWritable`'s guard keeps for a
+   * request that was already queued. Both doors, one rule: nothing reaches the
+   * wire before the connection has been established (issue 153 review, #156).
+   */
   private dispatch(entry: PendingRequest): void {
     const transport = this.transport;
-    if (!transport?.writable) {
+    if (!this.established || !transport?.writable) {
       this.queue.push(entry);
       return;
     }

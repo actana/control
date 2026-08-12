@@ -17,7 +17,16 @@
     "skipLibCheck": true,
     "useDefineForClassFields": true,
     "verbatimModuleSyntax": false,
-    "allowImportingTsExtensions": false,
+    // Allowed for what this compiler now reads, not for what the Panel writes:
+    // `@actana/sdk` resolves to that package's TypeScript sources through the
+    // paths below, and its modules import each other with the `.ts` extension on
+    // purpose — that is what lets a plain `node` process import the SDK with no
+    // bundler and no loader (see `packages/sdk/tsconfig.json`). The Panel became
+    // the first consumer of an SDK entry point with relative imports of its own
+    // when it moved onto the durable Core client (#156); until then only the
+    // extensionless leaf `core-link-frames` was reachable. Safe here for the
+    // same reason it is safe there: `noEmit`, and Vite resolves the specifiers.
+    "allowImportingTsExtensions": true,
     "noEmit": true,
     "ignoreDeprecations": "6.0",
     "baseUrl": ".",
