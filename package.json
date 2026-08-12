@@ -61,6 +61,7 @@
     "fixture:release": "node scripts/fixture-release-server.mjs"
   },
   "dependencies": {
+    "@actana/cli": "workspace:*",
     "@actana/core": "workspace:*",
     "@actana/panel": "workspace:*",
     "@actana/sdk": "workspace:*",

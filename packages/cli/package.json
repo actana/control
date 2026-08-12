@@ -1,0 +1,27 @@
+{
+  "name": "@actana/cli",
+  "version": "0.2.2",
+  "description": "Actana Control CLI — the `actana` command's client half: the blob registry that names Cores, and the client nouns built on @actana/sdk.",
+  "license": "MIT",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "actana": "bin/actana.mjs"
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@actana/sdk": "workspace:*",
+    "ws": "8.21.0"
+  },
+  "devDependencies": {
+    "@types/node": "25.8.0",
+    "@types/ws": "8.18.1",
+    "esbuild": "0.28.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.6"
+  }
+}

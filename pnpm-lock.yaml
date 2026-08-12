@@ -30,6 +30,9 @@ importers:
 
   .:
     dependencies:
+      '@actana/cli':
+        specifier: workspace:*
+        version: link:packages/cli
       '@actana/core':
         specifier: workspace:*
         version: link:packages/core
@@ -82,6 +85,31 @@ importers:
       typescript-eslint:
         specifier: 8.63.0
         version: 8.63.0(eslint@10.6.0(jiti@2.7.0))(typescript@6.0.3)
+      vitest:
+        specifier: 4.1.6
+        version: 4.1.6(@types/node@25.8.0)(jsdom@30.0.1)(vite@8.1.0(@types/node@25.8.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.0))
+
+  packages/cli:
+    dependencies:
+      '@actana/sdk':
+        specifier: workspace:*
+        version: link:../sdk
+      ws:
+        specifier: '>=8.21.0'
+        version: 8.21.0
+    devDependencies:
+      '@types/node':
+        specifier: 25.8.0
+        version: 25.8.0
+      '@types/ws':
+        specifier: 8.18.1
+        version: 8.18.1
+      esbuild:
+        specifier: 0.28.1
+        version: 0.28.1
+      typescript:
+        specifier: 6.0.3
+        version: 6.0.3
       vitest:
         specifier: 4.1.6
         version: 4.1.6(@types/node@25.8.0)(jsdom@30.0.1)(vite@8.1.0(@types/node@25.8.0)(esbuild@0.28.1)(jiti@2.7.0)(tsx@4.22.0))
