@@ -154,16 +154,64 @@ export function isHighestRelease(version, published) {
 }
 
 /**
+ * The npm dist-tag a release publishes under — the third surface `latest`
+ * reaches, and the one with a default nobody wrote.
+ *
+ * `npm publish` with no `--tag` takes `latest`, exactly as `gh release create`
+ * with no `--latest` defaults `make_latest` to true and exactly as the old
+ * `resolve` emitted a bare `latest` in its docker tag list. Two of those three
+ * are already answered here; this is the third, answered in the same place and
+ * off the same boolean, so the surfaces cannot drift.
+ *
+ * npm differs from the other two in one respect that decides the shape of this
+ * function: a dist-tag is mandatory. Docker publishes the tags it is given and
+ * a GitHub Release can simply not be latest, but every npm publish lands under
+ * some tag, so "withhold `latest`" has to name a replacement rather than pass
+ * nothing. Each of the four is a name with exactly one meaning:
+ *
+ *   * `latest`             — and only when D28 says latest moves. `npm i
+ *                            @actana/sdk` resolves here.
+ *   * `next`               — a prerelease on the main line (D30). The
+ *                            conventional npm channel for "not the stable one";
+ *                            no default install reaches it.
+ *   * `release-<M>.<m>-next` — a prerelease of an old line. `next` alone would
+ *                            put a backport's rc on the same tag as main's,
+ *                            which are not the same channel.
+ *   * `release-<M>.<m>`    — an old line's stable patch. `npm i
+ *                            @actana/sdk@release-0.1` is how a consumer pinned
+ *                            to that line gets it, and it is the tag a backport
+ *                            moves *instead of* moving `latest`.
+ *
+ * None of the three non-`latest` names parses as a semver range, which npm
+ * rejects as a dist-tag.
+ */
+export function npmDistTag({ mode, version, latest, prerelease }) {
+  if (latest) return "latest";
+  const parsed = parseReleaseVersion(version);
+  if (!parsed) throw new Error(`not a version: ${version}`);
+  const line = `release-${parsed.major}.${parsed.minor}`;
+  if (prerelease) return mode === "backport" ? `${line}-next` : "next";
+  return line;
+}
+
+/**
  * The one assertion D28 asks for, in the form it asks for: a backport is
- * incapable of emitting `latest` on either surface.
+ * incapable of emitting `latest` on any of the three surfaces.
  *
  * Called on the way out of `resolveReleaseTags`, where it cannot fire, and
  * exported so the workflow's own guard step and the tests call the same
  * function rather than a second opinion about the same rule.
  */
-export function assertNeverLatest({ mode, tags = [], latest = false }) {
+export function assertNeverLatest({ mode, tags = [], latest = false, npmTag = "" }) {
   if (mode !== "backport") return;
   const list = Array.isArray(tags) ? tags : String(tags).split(/\s+/).filter(Boolean);
+  if (npmTag === "latest") {
+    throw new Error(
+      `backport mode resolved the npm dist-tag 'latest' for [${list.join(" ")}] — ` +
+        "`npm i @actana/sdk` would then hand every consumer an old line's patch as a downgrade, " +
+        "silently and on their next install (ADR 0023 D28).",
+    );
+  }
   if (!latest && !list.includes("latest")) return;
   throw new Error(
     `backport mode resolved latest=${latest} with tags [${list.join(" ")}] — ` +
@@ -180,7 +228,7 @@ export function assertNeverLatest({ mode, tags = [], latest = false }) {
  * @param {string} input.version             bare version, no leading `v`.
  * @param {string[]|string} [input.published] the tag ladder, `v*` tags or bare.
  * @returns {{mode: string, version: string, tags: string[], latest: boolean,
- *            prerelease: boolean, reason: string}}
+ *            prerelease: boolean, npmTag: string, reason: string}}
  */
 export function resolveReleaseTags({ mode, version, published = [] }) {
   if (!RELEASE_MODES.includes(mode)) {
@@ -217,6 +265,7 @@ export function resolveReleaseTags({ mode, version, published = [] }) {
   }
 
   const tags = latest ? [version, "latest"] : [version];
-  assertNeverLatest({ mode, tags, latest });
-  return { mode, version, tags, latest, prerelease, reason };
+  const npmTag = npmDistTag({ mode, version, latest, prerelease });
+  assertNeverLatest({ mode, tags, latest, npmTag });
+  return { mode, version, tags, latest, prerelease, npmTag, reason };
 }

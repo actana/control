@@ -12,6 +12,8 @@ import { runActanaCli } from "./actana-cli.ts";
 import { probeCore } from "./core-probe.ts";
 import { openCoreShell } from "./core-shell-channel.ts";
 import { terminalFromProcess } from "./cli-terminal.ts";
+import { connectCore } from "./core-connection.ts";
+import { openSessionGateway } from "./session-gateway.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 import { homedir } from "node:os";
 
@@ -40,6 +42,8 @@ const code = await runActanaCli({
   readStdin,
   stdinIsTty: Boolean(process.stdin.isTTY),
   probe: probeCore,
+  connect: connectCore,
+  openSessions: openSessionGateway,
   now: () => Date.now(),
   // The real terminal, and the only place one is built. `core shell` is what
   // uses it; every other verb is handed it and never asks. It takes `process`

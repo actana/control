@@ -10,6 +10,8 @@
 import type { CoreProbeFn } from "./core-probe.ts";
 import type { CliTerminal } from "./cli-terminal.ts";
 import type { OpenCoreShellFn } from "./core-shell-channel.ts";
+import type { CoreConnectFn } from "./core-connection.ts";
+import type { OpenSessionGateway } from "./session-gateway.ts";
 
 export type ActanaCliDeps = {
   /** `process.argv.slice(2)`. */
@@ -39,6 +41,18 @@ export type ActanaCliDeps = {
   stdinIsTty: boolean;
   /** How `core status` reaches a Core. See `core-probe.ts`. */
   probe: CoreProbeFn;
+  /**
+   * How every other noun reaches a Core: dial, and hand back a connected
+   * client. See `core-connection.ts`.
+   *
+   * Separate from {@link probe} rather than replacing it. `core status` asks one
+   * question of the handshake and sends no request frames at all, and a verb
+   * that reports whether a Core is reachable should not be built on a helper
+   * that refuses to hand it a client when the Core is on another train.
+   */
+  connect: CoreConnectFn;
+  /** How the `session` noun reaches a Core. See `session-gateway.ts`. */
+  openSessions: OpenSessionGateway;
   /** Epoch ms. Only the bearer-expiry line reads it. */
   now: () => number;
   /**

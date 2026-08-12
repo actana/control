@@ -23,11 +23,15 @@ export const EXIT_USAGE = 2;
  * should be able to tell them apart without parsing English off stderr.
  *
  * **Every reserved name in the tree returns this, whether noun or verb.** The
- * `session` / `project` / `harness` / `events` nouns (#160, #161, #163) are one
- * fact about one build, and they are what a script written against a later
- * train hits first. `core shell` was the reserved *verb* until #162 built it,
- * and it returned this same code for the same reason: splitting them — 3 for a
- * verb, 2 for a noun — would have meant this comment arguing for a distinction
- * the command tree did not make.
+ * `session` / `project` / `harness` / `events` nouns (#160, #161, #163) and the
+ * `core shell` verb (#162) each returned it until its build landed, and
+ * `project cp` / `project files` (#168) still do: they are one fact about one
+ * build, and the nouns are what a script written against a later train hits
+ * first. Splitting them — 3 for a verb, 2 for a noun — would have meant this
+ * comment arguing for a distinction the command tree did not make.
+ *
+ * What it is *not* for is a verb the protocol cannot carry. `project set-path`
+ * exits {@link EXIT_USAGE}, because a Core-owned Project's path is immutable
+ * (ADR 0022) and no later build makes that command appear.
  */
 export const EXIT_UNIMPLEMENTED = 3;
