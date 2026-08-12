@@ -3,12 +3,35 @@
   "version": "0.2.2",
   "description": "Actana Control SDK — the Core client and the core-link wire protocol it speaks: frame schema, protocol version, codec, transport.",
   "license": "MIT",
-  "private": true,
   "type": "module",
+  "keywords": ["actana", "core-link", "sdk", "agent", "terminal"],
+  "homepage": "https://github.com/actana/control/tree/main/packages/sdk#readme",
+  "bugs": "https://github.com/actana/control/issues",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/actana/control.git",
+    "directory": "packages/sdk"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "files": ["dist"],
   "exports": {
     "./*": "./src/*.ts"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true,
+    "exports": {
+      "./*": {
+        "types": "./dist/*.d.ts",
+        "default": "./dist/*.js"
+      }
+    }
+  },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepack": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
