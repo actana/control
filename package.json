@@ -33,6 +33,7 @@
     "precore:harnesses:e2e": "node scripts/require-node-24.mjs",
     "precore:rehearse": "node scripts/require-node-24.mjs",
     "prefixture:release": "node scripts/require-node-24.mjs",
+    "prenpm:rehearse": "node scripts/require-node-24.mjs",
     "prebases:check": "node scripts/require-node-24.mjs",
     "predev:tags:sweep": "node scripts/require-node-24.mjs",
     "dev": "pnpm --filter @actana/panel dev",
@@ -58,7 +59,8 @@
     "core:setup:e2e": "node scripts/e2e-actana-setup-linux.mjs",
     "core:harnesses:e2e": "node scripts/e2e-actana-harnesses-linux.mjs",
     "core:rehearse": "node scripts/rehearse-install.mjs",
-    "fixture:release": "node scripts/fixture-release-server.mjs"
+    "fixture:release": "node scripts/fixture-release-server.mjs",
+    "npm:rehearse": "node scripts/rehearse-npm-publish.mjs --npm-dry-run"
   },
   "dependencies": {
     "@actana/cli": "workspace:*",

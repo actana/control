@@ -316,6 +316,211 @@ describe("release.yml's trigger and its two modes (ADR 0023 D17, D26, D28, D40)"
   });
 });
 
+// npm, the second release registry (#129 D12, D13; #159; ADR 0018 as amended).
+//
+// Everything in this block is invisible in a green run, and one of them is
+// invisible *forever*: a publish that stopped passing `--provenance`, or that
+// moved to a job without `id-token: write`, **succeeds**. It prints the same
+// lines, exits 0, and puts a package on the registry that is silently
+// unattested — and the version cannot be republished to fix it.
+//
+// The rest of the release recovers from a bad step by re-running it. This one
+// does not: an npm version number is burned by its first publish, and
+// unpublishing inside the 72-hour window frees the bytes and not the name. So
+// the ordering, the permission and the flag are pinned here rather than
+// reviewed by eye.
+describe("npm publishing (#129 D13, ADR 0018 as amended)", () => {
+  const source = read("release.yml");
+
+  // D13's "fails loudly", and *where* it fails is the requirement. `npm` is the
+  // last job in the graph, so a token checked at the publish would be a token
+  // checked after both images and their `:latest` were already re-pointed —
+  // a half-published release, in the direction that does not undo.
+  it("decides a missing NPM_TOKEN in resolve, before anything is built", () => {
+    const job = code(jobBlock(source, "resolve"));
+    expect(job).toContain("secrets.NPM_TOKEN");
+    expect(job).toContain("::error title=Missing npm token::");
+    // The same shape as the Docker Hub check it was modelled on: both are in
+    // this job, both are a bare emptiness test, both exit 1.
+    expect(job).toContain("::error title=Missing Docker Hub credential::");
+    expect(job).toMatch(/if \[\[ -n "\$NPM_TOKEN" \]\]; then\n\s+exit 0\n\s+fi/);
+    // And it is genuinely upstream: every publishing job needs `resolve`.
+    for (const publisher of ["panel", "core", "npm", "github-release"]) {
+      expect(jobBlock(source, publisher), `${publisher} does not wait on resolve`).toMatch(
+        /needs: \[?[^\]\n]*resolve/,
+      );
+    }
+  });
+
+  // The trap #159 names. `npm publish --provenance` from a job without this
+  // permission fails; a publish that quietly dropped the flag does not. Both
+  // halves are asserted, plus the read-back that catches the case neither
+  // covers.
+  it("publishes with id-token: write, and with the flag", () => {
+    const job = jobBlock(source, "npm");
+    expect(job).toMatch(/^ {4}permissions:\n(?: {6}.+\n)* {6}id-token: write$/m);
+    expect(code(job)).toContain(
+      'npm publish "$tarball" --provenance --access public --tag "$NPM_TAG"',
+    );
+  });
+
+  // D28's third surface. `npm publish` with no `--tag` takes `latest`, which is
+  // the same default this file already refuses for the docker tag list and for
+  // `gh release create --latest`. The assertion is in two halves because the
+  // interesting failure is not "the flag is gone" but "the flag is there and
+  // hard-coded": a literal `--tag latest` would satisfy a check that only
+  // looked for `--tag`.
+  it("never lets npm default the dist-tag, and takes it from resolve", () => {
+    const job = jobBlock(source, "npm");
+    const publish = code(job);
+    // Every `npm publish` *command* in the job carries an explicit `--tag` —
+    // the job's own `name:` says "npm publish" too, and it is not one.
+    const commands = publish.split("\n").filter((line) => /^\s*npm publish /.test(line));
+    expect(commands.length, "no npm publish command in the npm job").toBeGreaterThan(0);
+    for (const line of commands) {
+      expect(line, `npm publish with no --tag: ${line.trim()}`).toMatch(/--tag /);
+      expect(line, `npm publish with a hard-coded dist-tag: ${line.trim()}`).not.toMatch(
+        /--tag +"?(latest|next)"?/,
+      );
+    }
+    // And the value is the one `resolve` decided, not a second opinion.
+    expect(job).toContain("NPM_TAG: ${{ needs.resolve.outputs.npm_tag }}");
+    expect(jobBlock(source, "resolve")).toContain("npm_tag: ${{ steps.tags.outputs.npm_tag }}");
+  });
+
+  // The guard step covers all three surfaces in one place, so a backport cannot
+  // move `latest` on any of them. The docker and GitHub arms predate #159; the
+  // npm arm is the one that was missing.
+  it("guards the npm dist-tag in resolve, beside the other two surfaces", () => {
+    const job = code(jobBlock(source, "resolve"));
+    expect(job).toContain("::error title=A backport must never take the npm latest dist-tag::");
+    expect(job).toContain("::error title=A backport must never move latest::");
+    expect(job).toContain("::error title=A backport must never be the GitHub latest release::");
+    // An empty dist-tag is not "no tag" — `npm publish --tag ""` fails, and it
+    // would fail after both images had shipped.
+    expect(job).toContain("::error title=No npm dist-tag resolved::");
+  });
+
+  // The read-back after the publish is the one check that can catch a publish
+  // that already succeeded unattested — and it runs at the only point in this
+  // workflow where a false alarm costs a version number. "The registry said no
+  // attestation" and "the registry never answered" must therefore be different
+  // failures with different advice.
+  it("tells an unattested publish apart from a registry it could not reach", () => {
+    const job = jobBlock(source, "npm");
+    const step = job.slice(job.indexOf("Every published package is attested"));
+    // The read is authenticated, for the same reason the publish is: the
+    // `.npmrc` setup-node wrote references NODE_AUTH_TOKEN, and an unset one is
+    // sent as a literal bearer token.
+    expect(step).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}");
+    // The exit status is captured apart from the output. `2>/dev/null || true`
+    // is precisely what collapsed the two cases into one empty string.
+    expect(step).not.toContain("2>/dev/null || true");
+    expect(step).toMatch(/if output="\$\(npm view "\$spec" dist\.attestations/);
+    // Two errors, two messages, and the advice differs on the point that
+    // matters: one says cut the next version, the other says do not.
+    expect(step).toContain("::error title=Published without provenance::");
+    expect(step).toContain("::error title=Could not verify provenance::");
+    expect(step).toMatch(/Could not verify provenance::[^\n]*Do NOT cut a new version/);
+    // And it still fails the release either way.
+    expect(step).toContain('exit "$fail"');
+    expect(step).not.toContain("continue-on-error");
+  });
+
+  // The other half of separating the status from the output: what lands in the
+  // output has to be the field. `npm view <spec> <field>` exits 0 and prints
+  // nothing when the field is absent, so `2>&1` turns any `npm warn` line into
+  // a non-empty answer — and non-empty is this step's whole definition of
+  // attested. A warning would be reported as provenance, by the one check that
+  // exists to catch a publish that has none.
+  it("does not let a warning on stderr read as an attestation", () => {
+    const job = jobBlock(source, "npm");
+    const step = code(job.slice(job.indexOf("Every published package is attested")));
+    // stderr has its own file, and is still kept for the failure message.
+    expect(step).toContain('2>"$stderr"');
+    expect(step).toMatch(/error="\$\(tail -n 3 "\$stderr"/);
+    expect(step, "npm's stderr is folded back into the value being tested").not.toMatch(
+      /npm view "\$spec" dist\.attestations[^\n]*2>&1/,
+    );
+    // And the value has to look like what a predicateType is.
+    expect(step).toContain('"$predicate" != https://*');
+  });
+
+  // Least privilege, and a second reading of the same line: `id-token: write`
+  // is a token-minting permission, and it belongs to the one job that mints a
+  // token. Its appearance anywhere else in this file would most likely be
+  // somebody moving the publish.
+  it("grants id-token to that job and to nothing else", () => {
+    for (const other of ["resolve", "tarball", "tarball-macos", "installer-e2e", "github-release"]) {
+      expect(code(jobBlock(source, other)), `${other} can mint an OIDC token`).not.toContain(
+        "id-token: write",
+      );
+    }
+  });
+
+  // Downstream of the human, and downstream of every gate. The approval itself
+  // is no longer in this file (ADR 0023 D15 moved it to the head of
+  // promote.yml, upstream of the whole workflow), so what is assertable here is
+  // the ordering that survived the move — and it is the ordering that matters
+  // for a publish that cannot be undone: nothing is burned until the images are
+  // out, the tarballs exist, and the installer e2e is green.
+  it("waits on every other publish, because it is the one that cannot be redone", () => {
+    const job = jobBlock(source, "npm");
+    for (const upstream of ["tarball", "tarball-macos", "installer-e2e", "panel", "core"]) {
+      expect(job, `npm publishes ahead of ${upstream}`).toMatch(
+        new RegExp(`needs: \\[[^\\]]*\\b${upstream}\\b[^\\]]*\\]`),
+      );
+    }
+    // And the announcement waits on it, so a GitHub Release never points at an
+    // `npm i` that 404s.
+    expect(jobBlock(source, "github-release")).toMatch(/needs: \[[^\]]*\bnpm\b[^\]]*\]/);
+  });
+
+  // The credential reaches exactly one job. `github-release` is in this list
+  // for a specific reason: it is the job with `contents: write`, and the two
+  // powerful credentials in this workflow should not meet.
+  it("keeps the npm token out of every job but the publish", () => {
+    for (const other of ["tarball", "tarball-macos", "installer-e2e", "github-release"]) {
+      expect(code(jobBlock(source, other)), `${other} can reach NPM_TOKEN`).not.toContain(
+        "secrets.NPM_TOKEN",
+      );
+    }
+    // `resolve` sees it, and only as an emptiness test — it never publishes.
+    const resolve = code(jobBlock(source, "resolve"));
+    expect(resolve).not.toContain("npm publish");
+  });
+
+  // `pnpm pack`, not `npm pack`, and the difference is not a preference:
+  // `publishConfig.exports` is applied by pnpm and ignored by npm, and it is
+  // what turns the SDK's source-pointing `exports` map into the compiled one a
+  // consumer resolves. An `npm pack` here would publish a package whose every
+  // subpath resolves to a file that is not in the tarball.
+  it("packs through the rehearsal script, which is what pull requests run", () => {
+    const job = code(jobBlock(source, "npm"));
+    expect(job).toContain("node scripts/rehearse-npm-publish.mjs");
+    expect(job).toContain('--version "$RELEASE_VERSION"');
+    expect(job).not.toMatch(/\bnpm pack\b/);
+  });
+
+  // The last brace, and the only one that can catch an unattested publish after
+  // the fact: read the attestation back off the registry and fail if it is not
+  // there.
+  it("reads the attestation back rather than trusting the flag", () => {
+    const job = code(jobBlock(source, "npm"));
+    expect(job).toContain("dist.attestations.provenance.predicateType");
+    expect(job).toContain("::error title=Published without provenance::");
+  });
+
+  // A re-run is a supported path (`workflow_dispatch` on the same tag), and on
+  // it the registry already holds this version. `npm publish` answers 403 to
+  // that, which would fail a release whose only fault is having worked.
+  it("treats an already-published version as published", () => {
+    const job = code(jobBlock(source, "npm"));
+    expect(job).toContain("::notice title=Already on npm::");
+    expect(job).toMatch(/npm view "\$spec" version/);
+  });
+});
+
 describe("container-image.yml's promote mode (ADR 0023 D16, D17)", () => {
   const source = read("container-image.yml");
   const body = code(source);

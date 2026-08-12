@@ -1,16 +1,19 @@
 name: Release
 
 # Everything a release publishes: the three Core tarballs and their
-# SHA256SUMS, the Panel and Core images, and the GitHub Release. One file
-# rather than four, because they are one event (ADR 0016 D34).
+# SHA256SUMS, the Panel and Core images, the npm packages, and the GitHub
+# Release. One file rather than five, because they are one event (ADR 0016
+# D34).
 #
 #   resolve ─┬─ tarball ──────── installer-e2e ─┐
 #            │                                  │
-#            └─ tarball-macos ─┬─ panel ────────┤
-#                              └─ core ─────────┴── github-release
+#            └─ tarball-macos ─┬─ panel ────────┼── npm ── github-release
+#                              └─ core ─────────┘
 #
 # `panel` and `core` go through the reusable container-image.yml with
-# push: true, and both they and the tarball legs feed `github-release`.
+# push: true; `npm` waits on all of them and on both tarball legs, because it
+# is the only publish here that cannot be repeated (#129 D13 — see its own
+# header); and `github-release` is last, because it is the announcement.
 #
 # The Docker Hub pages are **not** here. `descriptions` moved to
 # housekeeping.yml and now covers all four repositories on a weekly tick (ADR
@@ -81,11 +84,20 @@ name: Release
 #
 # ── The registry posture ─────────────────────────────────────────────────────
 #
-# Docker Hub is the only registry (ADR 0018 — GHCR was retired). A *missing*
-# credential is decided here in `resolve` before anything is built: fatal, on
-# any repo, because there is no longer a registry that authenticates for free.
-# A present-but-*broken* credential fails at the `docker login` in
-# container-image.yml, before any tag is pushed.
+# Docker Hub is the only registry the **images** go to (ADR 0018 — GHCR was
+# retired), and since #159 that ADR is amended: npm is a second registry, for
+# the two published packages. A *missing* credential for either is decided here
+# in `resolve` before anything is built — fatal, on any repo, because there is
+# no registry left that authenticates for free. A present-but-*broken*
+# credential fails later and in its own place: at the `docker login` in
+# container-image.yml before any tag is pushed, and at `npm publish` in the
+# `npm` job below, after everything else has already succeeded.
+#
+# The asymmetry between the two registries is worth stating once, because the
+# rest of this file is built on the half that is no longer universally true: a
+# container tag is a pointer and can be re-pointed, which is what promote mode
+# *is*. An npm version is not a pointer. It is consumed on first publish and
+# never returns.
 
 # ── The trigger (ADR 0023 D40) ───────────────────────────────────────────────
 #
@@ -155,6 +167,7 @@ jobs:
       tags: ${{ steps.tags.outputs.tags }}
       latest: ${{ steps.tags.outputs.latest }}
       prerelease: ${{ steps.tags.outputs.prerelease }}
+      npm_tag: ${{ steps.tags.outputs.npm_tag }}
     steps:
       # Every branch and every tag. Both questions this job answers are
       # questions about the whole ref graph rather than about one commit:
@@ -230,13 +243,21 @@ jobs:
             echo "source_tag=$source_tag"
           } >> "$GITHUB_OUTPUT"
 
-      # The `latest` guard (D28) — the one that reaches end users. Both
-      # surfaces come from here: `tags` below feeds the docker tag list, and
-      # `latest` feeds `gh release create --latest=` in `github-release`. They
-      # are two renderings of one decision taken in
-      # scripts/lib/release-latest.mjs, which is where the rule is written down
-      # and unit-tested, because the failure is silent, reaches every existing
-      # user, and lies dormant until the first backport.
+      # The `latest` guard (D28) — the one that reaches end users. All three
+      # surfaces come from here: `tags` below feeds the docker tag list,
+      # `latest` feeds `gh release create --latest=` in `github-release`, and
+      # `npm_tag` feeds `npm publish --tag` in `npm`. They are three renderings
+      # of one decision taken in scripts/lib/release-latest.mjs, which is where
+      # the rule is written down and unit-tested, because the failure is
+      # silent, reaches every existing user, and lies dormant until the first
+      # backport.
+      #
+      # npm is the surface that had to be added rather than fixed, and it is
+      # the same defaulting bug in a third dialect: `npm publish` with no
+      # `--tag` takes `latest`, as `gh release create` with no `--latest`
+      # defaults `make_latest` to true. A dist-tag is mandatory, so unlike the
+      # other two "withhold latest" here has to name a replacement — which is
+      # why the module returns a tag rather than a boolean.
       #
       # The script's stdout is `key=value` and nothing else, so it pipes
       # straight into $GITHUB_OUTPUT; `tee` keeps it in the log, and its
@@ -255,16 +276,24 @@ jobs:
       # `latest` — and it is re-asserted here because *these* are the values
       # that flow into the two publishing jobs, and because a guard that only
       # exists inside the thing it guards is one edit away from being gone.
-      - name: A backport moves latest on neither surface
+      - name: A backport moves latest on none of the three surfaces
         env:
           MODE: ${{ steps.ref.outputs.mode }}
           TAGS: ${{ steps.tags.outputs.tags }}
           LATEST: ${{ steps.tags.outputs.latest }}
+          NPM_TAG: ${{ steps.tags.outputs.npm_tag }}
           RELEASE_REF: ${{ steps.ref.outputs.ref }}
         run: |
           set -euo pipefail
+          # An empty dist-tag would reach `npm publish --tag ""`, which npm
+          # rejects — but only after the images are out, so it is decided here
+          # with everything else.
+          if [[ -z "$NPM_TAG" ]]; then
+            echo "::error title=No npm dist-tag resolved::scripts/release-tags.mjs emitted no npm_tag for $RELEASE_REF. Every publish to npm lands under some dist-tag, so an empty one is not 'no tag' — it is a release that the registry refuses, after both images have already shipped."
+            exit 1
+          fi
           if [[ "$MODE" != "backport" ]]; then
-            echo "$MODE $RELEASE_REF: the highest-version test decided latest=$LATEST, publishing '$TAGS'."
+            echo "$MODE $RELEASE_REF: the highest-version test decided latest=$LATEST, publishing '$TAGS' and npm dist-tag '$NPM_TAG'."
             exit 0
           fi
           for tag in $TAGS; do
@@ -277,7 +306,11 @@ jobs:
             echo "::error title=A backport must never be the GitHub latest release::Backport $RELEASE_REF resolved latest=$LATEST. /releases/latest is what install.sh installs by default and what the in-product update checker compares against, so this would tell every user on a newer line to downgrade (ADR 0023 D28)."
             exit 1
           fi
-          echo "✅ backport $RELEASE_REF publishes '$TAGS' and passes --latest=false. Neither surface moves."
+          if [[ "$NPM_TAG" == "latest" ]]; then
+            echo "::error title=A backport must never take the npm latest dist-tag::Backport $RELEASE_REF resolved the npm dist-tag '$NPM_TAG'. \`npm i @actana/sdk\` resolves the \`latest\` dist-tag, so this hands every consumer an old line's patch as a downgrade on their next install — the same failure as the other two surfaces, on the one that reaches people without them asking for anything (ADR 0023 D28)."
+            exit 1
+          fi
+          echo "✅ backport $RELEASE_REF publishes '$TAGS', passes --latest=false, and takes the npm dist-tag '$NPM_TAG'. None of the three surfaces moves."
 
       # D31, amended by ADR 0018: Docker Hub is the only registry, so missing
       # credentials mean the images have nowhere to go — on any repo, fork or
@@ -299,6 +332,29 @@ jobs:
             exit 0
           fi
           echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set — Docker Hub is the only registry the images are published to, so a release without them is not a release. One personal access token (Read & Write, from an account with Admin on the org) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
+          exit 1
+
+      # The same shape as the check above, for the second registry (#129 D13,
+      # ADR 0018 as amended). It is deliberately a copy rather than a merged
+      # "credentials" step: the two failures are different sentences, and an
+      # operator who has just added npm to a working release needs to be told
+      # which one is missing, not that "a credential" is.
+      #
+      # Being *here* is the whole point. `npm` is the last job in the graph —
+      # after both images are published — so a missing token discovered at the
+      # publish itself would be discovered with `x.y.z` and `latest` already
+      # re-pointed on Docker Hub and nothing on npm: a release that is half out,
+      # in the one direction that cannot be undone by re-running it. Fifteen
+      # seconds into `resolve`, nothing has been built and nothing published.
+      - name: Require an npm token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$NPM_TOKEN" ]]; then
+            exit 0
+          fi
+          echo "::error title=Missing npm token::NPM_TOKEN must be set — npm is a release registry alongside Docker Hub (ADR 0018 as amended by #159), and @actana/sdk and @actana/cli publish on this tag at this version. An automation token with Read and write on the @actana scope, from an account with Owner on it: \`gh secret set NPM_TOKEN --repo actana/control\`. See docs/REPO_SETUP.md section 2."
           exit 1
 
   # The two Linux legs. The mac leg is `tarball-macos` below rather than a third
@@ -578,6 +634,252 @@ jobs:
       tags: ${{ needs.resolve.outputs.tags }}
       push: true
 
+  # npm, the second release registry (#129 D12, D13; ADR 0018 as amended by
+  # #159). `@actana/sdk` and `@actana/cli` go out on the same tag that builds
+  # the images, at the same version as everything else.
+  #
+  # ── Why it is last ───────────────────────────────────────────────────────────
+  #
+  # Every other publish in this workflow is re-doable. A Docker tag can be
+  # re-pointed; the whole promote mode is built on that. `gh release upload
+  # --clobber` overwrites an asset. **An npm version number is burned by its
+  # first publish** — unpublishing inside the 72-hour window frees the bytes and
+  # not the name, so `@actana/sdk@0.2.2` can never mean anything else, on any
+  # future train, and the recovery is to burn the next number too.
+  #
+  # So this waits on everything: both tarball legs, the installer e2e, and both
+  # image publishes. A CVE gate that fires, an arm64 tarball the one-liner
+  # cannot install, a digest whose revision label names another commit — each of
+  # those is a release that stops, and none of them should cost a version
+  # number. Ordering it last is not caution about npm; it is the one job whose
+  # failure mode the rest of the pipeline cannot absorb.
+  #
+  # It also sits downstream of the human, as every publishing job in this
+  # workflow does. The pause is no longer the `macos-release` environment on
+  # `tarball-macos` — ADR 0023 D15 moved it to the head of `promote.yml`, which
+  # is upstream of this entire file, so "downstream of the approval" is now a
+  # property of being in this workflow at all. `needs: tarball-macos` is kept
+  # for the guarantee that survived the move: a release is atomic or it is not a
+  # release.
+  #
+  # ── Provenance ───────────────────────────────────────────────────────────────
+  #
+  # `id-token: write` is what makes the attestation possible, and its absence is
+  # the trap: `npm publish --provenance` in a job without it fails loudly, but a
+  # publish that simply stopped passing `--provenance` would succeed, silently
+  # unattested, and look identical in the log. Three things stand in the way of
+  # that, deliberately overlapping — the flag here, `publishConfig.provenance`
+  # inside the package (asserted by scripts/lib/npm-packages.mjs), and the
+  # post-publish check below that reads the attestation back off the registry
+  # and fails the release if it is not there.
+  npm:
+    name: npm publish
+    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Provenance. Without it the publish is unattested; see the header.
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+          # Writes an `.npmrc` under RUNNER_TEMP that reads `NODE_AUTH_TOKEN`,
+          # and points `NPM_CONFIG_USERCONFIG` at it. The repository's own
+          # `.npmrc` is untouched.
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Pack, and assert the tarballs — the same rehearsal every pull request
+      # runs through `pnpm test`, here re-run on the tag and against the version
+      # being released, so what is asserted and what is published are the same
+      # bytes rather than the same intent.
+      #
+      # `pnpm pack`, not `npm pack`: the SDK's working `exports` map points at
+      # TypeScript source because inside the workspace it is consumed as source,
+      # and `publishConfig.exports` — which pnpm applies at pack time and npm
+      # does not — is what turns it into the compiled map a consumer resolves.
+      - id: pack
+        name: Rehearse the publish, on the tag
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/rehearse-npm-publish.mjs \
+            --out-dir artifacts/npm \
+            --version "$RELEASE_VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      # One tarball at a time, with the already-published case handled rather
+      # than raced: `workflow_dispatch` re-runs a whole release (D26, D30), and
+      # on that path the registry already has this version. `npm publish` would
+      # answer 403 and fail a release whose only fault is having succeeded
+      # before — so an existing version is a notice, and the attestation check
+      # below still runs against it.
+      #
+      # `--tag` is explicit and comes from `resolve` (D28). `npm publish` with
+      # no `--tag` takes `latest`, which is the same default this file already
+      # refuses for the docker tag list and for `gh release create --latest`;
+      # a backport or an rc taking it would hand every consumer a downgrade on
+      # their next `npm i`. The value is decided once in
+      # scripts/lib/release-latest.mjs and re-asserted in `resolve`.
+      - name: Publish to npm with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TARBALLS: ${{ steps.pack.outputs.tarballs }}
+          PACKAGES: ${{ steps.pack.outputs.packages }}
+          NPM_TAG: ${{ needs.resolve.outputs.npm_tag }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The rehearsal emits both lists in publish order, so the names come
+          # from where they were already computed rather than being read out of
+          # each tarball a second time. Two sources for one fact drift; a
+          # length mismatch means they already have.
+          read -ra tarballs <<< "$TARBALLS"
+          read -ra names <<< "$PACKAGES"
+          if [[ "${#tarballs[@]}" -ne "${#names[@]}" ]]; then
+            echo "::error title=Rehearsal outputs disagree::${#tarballs[@]} tarball(s) and ${#names[@]} package name(s). scripts/rehearse-npm-publish.mjs emits both in publish order and they are paired by position here."
+            exit 1
+          fi
+          published=()
+          for i in "${!tarballs[@]}"; do
+            tarball="${tarballs[$i]}"
+            spec="${names[$i]}@$RELEASE_VERSION"
+            if npm view "$spec" version >/dev/null 2>&1; then
+              echo "::notice title=Already on npm::$spec is already published — this is a re-run, and an npm version is published exactly once. Leaving it alone; its attestation is verified below."
+            else
+              echo "Publishing $spec from $(basename "$tarball") under dist-tag '$NPM_TAG'"
+              npm publish "$tarball" --provenance --access public --tag "$NPM_TAG"
+            fi
+            published+=("$spec")
+          done
+          printf '%s\n' "${published[@]}" > artifacts/npm/published.txt
+          echo "Published or confirmed: ${published[*]} (dist-tag $NPM_TAG)"
+
+      # The assertion that the flag above actually did something. A publish that
+      # lost `--provenance` succeeds and reads as a normal publish in every log
+      # line; the only place the difference is visible is the registry, so that
+      # is where it is checked. Read back rather than trusted — with a couple of
+      # retries, because the attestation is written by a different service than
+      # the packument and can lag it by seconds.
+      #
+      # ── Two failure modes, and they must not be one ──────────────────────
+      #
+      # This step runs after the version number is burned, which makes it the
+      # one place in this workflow where a false alarm is expensive: "restore
+      # the attestation path and cut the next version" is right for an
+      # unattested publish and a wasted version number for a registry that was
+      # briefly unreachable. So `npm view`'s exit status is captured apart from
+      # its output, and the two are reported as different failures:
+      #
+      #   * the query answered and the field is empty → **unattested**. The
+      #     publish really did lose its provenance. Not retryable.
+      #   * the query never answered at all → **unverified**. The publish may
+      #     be perfectly attested; nothing here can tell. Re-runnable, and the
+      #     re-run is cheap because an already-published version is a notice.
+      #
+      # Neither can wear the other's message. An empty string used to be both,
+      # and `2>/dev/null || true` was what collapsed them.
+      #
+      # Separating the status is only half of it: the *output* has to be the
+      # field and nothing else. `npm view <spec> <field>` prints nothing and
+      # exits 0 when the field is absent, so with stderr folded in by `2>&1` a
+      # single `npm warn` line is a non-empty answer — and this check's answer
+      # to "is it attested" is "is the answer non-empty". stderr therefore goes
+      # to its own file, and the value is required to look like the URI a
+      # predicateType is.
+      #
+      # `NODE_AUTH_TOKEN` is set here for the same reason it is set on the
+      # publish: `setup-node` wrote an `.npmrc` whose `_authToken` references
+      # it, and with the variable unset npm sends the unexpanded literal as a
+      # bearer token — a 401 on a read that needs no auth, which is the most
+      # likely way this step reaches the "could not ask" branch at all.
+      - name: Every published package is attested
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          unattested=()
+          unverified=()
+          # npm's stderr goes to its own file, never into the value being
+          # tested. Folding it in with `2>&1` kept the error text for the
+          # failure message below and cost the check its whole point: `npm view
+          # <spec> <field>` prints *nothing* on stdout and exits 0 when the
+          # field is absent, so any warning npm writes — `npm warn Unknown user
+          # config` off the `.npmrc` setup-node wrote is the likely one — comes
+          # back as a non-empty answer, and an emptiness test reads it as an
+          # attestation. The one check that can catch a publish that lost
+          # `--provenance` would have reported success on exactly the input it
+          # exists to refuse.
+          stderr="$(mktemp)"
+          # `mapfile` rather than `while read < file`: the loop body runs `npm`,
+          # and a command that touches stdin inside a `while read` loop eats the
+          # list it is iterating.
+          mapfile -t specs < artifacts/npm/published.txt
+          for spec in "${specs[@]}"; do
+            predicate=""
+            answered=0
+            error=""
+            for attempt in 1 2 3 4 5; do
+              # `set -e` does not fire inside an `if` condition, so a non-zero
+              # `npm view` lands in the else branch rather than killing the
+              # step — which is what keeps "it errored" separable from "it
+              # answered, and the answer was empty".
+              if output="$(npm view "$spec" dist.attestations.provenance.predicateType 2>"$stderr")"; then
+                answered=1
+                predicate="$(printf '%s' "$output" | tr -d '[:space:]')"
+                # Belt to the braces above: a predicateType is a URI
+                # (`https://slsa.dev/provenance/v1`), so anything that is not
+                # one is not an attestation, whatever wrote it to stdout.
+                if [[ -n "$predicate" && "$predicate" != https://* ]]; then
+                  echo "  $spec: registry answered \"$predicate\", which is not a predicateType URI — not an attestation."
+                  predicate=""
+                fi
+                # The registry answered. An absent attestation is retried only
+                # because the attestation service lags the packument by
+                # seconds, never because the read itself failed.
+                [[ -n "$predicate" ]] && break
+                echo "  $spec: registry answered, no attestation yet (attempt $attempt), waiting…"
+              else
+                answered=0
+                error="$(tail -n 3 "$stderr" | tr '\n' ' ')"
+                echo "  $spec: \`npm view\` failed (attempt $attempt) — ${error:-no output}; retrying…"
+              fi
+              sleep 10
+            done
+            if [[ -n "$predicate" ]]; then
+              echo "✅ $spec — $predicate"
+            elif [[ "$answered" -eq 1 ]]; then
+              unattested+=("$spec")
+            else
+              unverified+=("$spec ($error)")
+            fi
+          done
+
+          fail=0
+          if [[ "${#unattested[@]}" -gt 0 ]]; then
+            echo "::error title=Published without provenance::${unattested[*]} is on the registry, the registry answered for it, and it carries no provenance attestation. A publish that is missing \`--provenance\`, or that ran in a job without \`id-token: write\`, succeeds and looks exactly like this one did in the log — the registry is the only place the difference shows. This is not a retry: the version cannot be republished, and the fix is to restore the attestation path and cut the next version."
+            fail=1
+          fi
+          if [[ "${#unverified[@]}" -gt 0 ]]; then
+            echo "::error title=Could not verify provenance::\`npm view\` never answered for ${unverified[*]} after 5 attempts, so this step does not know whether the attestation is there. Do NOT cut a new version on the strength of this failure — the publish above succeeded and may well be attested. Check \`npm view <spec> dist.attestations\` by hand, and re-run this workflow on the same tag once the registry is reachable: an already-published version is treated as published, so the re-run costs nothing."
+            fail=1
+          fi
+          exit "$fail"
+
   github-release:
     name: Attach tarballs + SHA256SUMS to the GitHub Release
     # The Release is the last thing to appear, after both images are published:
@@ -593,7 +895,16 @@ jobs:
     # — and kept named because a `needs:` list is the only place a reader
     # learns what a job waits for. A SHA256SUMS covering a subset of the
     # architectures the docs promise is worse than a release that is late.
-    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
+    #
+    # `npm` is in here as of #159, and it is the one `needs:` in this list that
+    # can hold the Release back over something already published. That is the
+    # intended direction: the Release is the announcement, npm is the least
+    # undoable thing the release does, and an announcement that precedes a
+    # failed `npm publish` sends people to an `npm i` that 404s. The re-run path
+    # (`workflow_dispatch` on the same tag) recreates every asset and treats an
+    # already-published version as published, so a release stopped here is
+    # resumable — which is the property that makes ordering it this way safe.
+    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core, npm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write

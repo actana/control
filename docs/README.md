@@ -72,7 +72,7 @@ routing around it.
 | [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
 | [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows |
 | [0017](adr/0017-remembered-session-settings-are-core-facts.md) | Remembered session settings are Core facts |
-| [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired |
+| [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired. **Amended:** npm is a second registry, for the published packages |
 | [0018](adr/0018-the-task-mutation-frame-carries-delete.md) | The task mutation frame carries delete |
 | [0019](adr/0019-archived-rows-cross-the-core-link-on-their-own-path.md) | Archived rows cross the core-link on their own path |
 | [0020](adr/0020-the-core-detects-its-own-harness-status.md) | The Core detects its own Harness status |

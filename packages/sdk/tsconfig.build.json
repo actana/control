@@ -1,0 +1,30 @@
+// The published build (ADR 0018 as amended, #129 D12).
+//
+// `tsconfig.json` is `noEmit` on purpose: inside the workspace the SDK is
+// consumed as TypeScript source, and its relative imports carry `.ts` so a
+// plain `node script.mjs` resolves them through Node's own type stripping with
+// no bundler and no loader. That property is worth keeping and it is not what
+// npm can install — a registry consumer on Node 22 has no type stripping at
+// all, so the tarball ships compiled JavaScript and `.d.ts` beside it.
+//
+// `rewriteRelativeImportExtensions` is what lets both be true from one source
+// tree: the `.ts` specifiers are rewritten to `.js` in the emit, so the
+// published files are ordinary ESM that Node resolves without help.
+//
+// The tests are excluded rather than merely unpublished: they import
+// `@actana/core` and `@actana/shared` through the test-only `paths` above, and
+// compiling them here would pull two private packages into the SDK's build.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rewriteRelativeImportExtensions": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "dist",
+    "rootDir": "src"
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "src/__tests__/**"]
+}

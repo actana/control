@@ -14,8 +14,8 @@
 //   * a backport is *structurally* incapable of emitting `latest` — not
 //     "loses the comparison", but never reaches it, for any version and any
 //     ladder including one where it would win
-//   * the Docker tag list and the `gh release --latest` flag are one decision
-//     rendered twice and cannot drift apart
+//   * the Docker tag list, the `gh release --latest` flag and the npm dist-tag
+//     are one decision rendered three times and cannot drift apart
 //   * a prerelease publishes its own version and nothing else (D30)
 //   * `latest` follows an explicit highest-version test, which is the test the
 //     old `tags="$version latest"` did not have
@@ -28,6 +28,7 @@ import {
   assertNeverLatest,
   compareReleaseVersions,
   isHighestRelease,
+  npmDistTag,
   parseReleaseVersion,
   publishedVersionsFromTags,
   resolveReleaseTags,
@@ -70,6 +71,9 @@ describe("backport mode is structurally incapable of emitting latest (D28)", () 
         const decision = resolveReleaseTags({ mode: "backport", version, published });
         expect(decision.latest, `${version} against [${published}]`).toBe(false);
         expect(decision.tags, `${version} against [${published}]`).toEqual([version]);
+        // The third surface, held to the same standard: not "usually not
+        // latest" but never, for any version against any ladder.
+        expect(decision.npmTag, `${version} against [${published}]`).not.toBe("latest");
       }
     }
   });
@@ -77,18 +81,89 @@ describe("backport mode is structurally incapable of emitting latest (D28)", () 
   it("throws rather than publishes if a backport ever arrives carrying latest", () => {
     expect(() => assertNeverLatest({ mode: "backport", tags: ["1.2.4", "latest"], latest: true }))
       .toThrow(/never move `latest`/);
-    // Either surface alone is enough to fail it: the tag list and the flag are
-    // checked independently, because a half-applied guard is the failure this
-    // assertion exists to catch.
+    // Any surface alone is enough to fail it: the tag list, the flag and the
+    // dist-tag are checked independently, because a half-applied guard is the
+    // failure this assertion exists to catch.
     expect(() => assertNeverLatest({ mode: "backport", tags: ["1.2.4"], latest: true })).toThrow();
     expect(() =>
       assertNeverLatest({ mode: "backport", tags: ["1.2.4", "latest"], latest: false }),
     ).toThrow();
+    expect(() =>
+      assertNeverLatest({ mode: "backport", tags: ["1.2.4"], latest: false, npmTag: "latest" }),
+    ).toThrow(/npm i @actana\/sdk/);
     expect(() => assertNeverLatest({ mode: "backport", tags: ["1.2.4"], latest: false })).not.toThrow();
+    expect(() =>
+      assertNeverLatest({ mode: "backport", tags: ["1.2.4"], latest: false, npmTag: "release-1.2" }),
+    ).not.toThrow();
     // Not a backport, not this assertion's business.
     expect(() =>
       assertNeverLatest({ mode: "promote", tags: ["1.4.0", "latest"], latest: true }),
     ).not.toThrow();
+  });
+});
+
+// The third surface, added by #159. `npm publish` with no `--tag` takes
+// `latest` — the same unwritten default as `gh release create`'s `make_latest`
+// and the same one the old `resolve` had in its docker tag list. It differs in
+// one way that shapes the function: a dist-tag is mandatory, so withholding
+// `latest` means naming a replacement rather than passing nothing.
+describe("the npm dist-tag is decided, never defaulted (D28, D30)", () => {
+  it("gives latest to the release that moves latest, and to nothing else", () => {
+    expect(resolveReleaseTags({ mode: "promote", version: "1.5.0", published: LADDER }).npmTag).toBe(
+      "latest",
+    );
+    // Not the highest — a promote that loses the comparison is still not latest
+    // on npm, which is the case a `mode === "backport"` shortcut would miss.
+    expect(resolveReleaseTags({ mode: "promote", version: "1.3.0", published: LADDER }).npmTag).toBe(
+      "release-1.3",
+    );
+  });
+
+  it("puts a backport on its own line's tag rather than on latest", () => {
+    const decision = resolveReleaseTags({ mode: "backport", version: "1.2.4", published: LADDER });
+    expect(decision.npmTag).toBe("release-1.2");
+    // Which is the point: `npm i @actana/sdk@release-1.2` is how somebody
+    // pinned to that line gets the patch, and `npm i @actana/sdk` does not.
+    expect(decision.npmTag).not.toBe("latest");
+  });
+
+  // A prerelease on main and an rc of an old line are not the same channel, and
+  // `next` for both would put a backport's rc where a consumer tracking main's
+  // prereleases would find it.
+  it("separates a main-line prerelease from a backport's rc", () => {
+    expect(
+      resolveReleaseTags({ mode: "promote", version: "2.0.0-rc.1", published: LADDER }).npmTag,
+    ).toBe("next");
+    expect(
+      resolveReleaseTags({ mode: "backport", version: "1.2.4-rc.1", published: LADDER }).npmTag,
+    ).toBe("release-1.2-next");
+  });
+
+  // npm rejects a dist-tag that parses as a semver range, which would fail the
+  // publish after both images had shipped. None of the three non-`latest`
+  // names can: each starts with `release-` or is the bare word `next`.
+  it("emits a name npm will accept, for every mode and every version", () => {
+    const versions = ["0.0.1", "1.2.4", "1.4.1", "9.9.9", "1.2.4-rc.1", "2.0.0-beta.7"];
+    for (const mode of ["promote", "backport"]) {
+      for (const version of versions) {
+        const tag = resolveReleaseTags({ mode, version, published: LADDER }).npmTag;
+        expect(tag, `${mode} ${version}`).toMatch(/^(latest|next|release-\d+\.\d+(-next)?)$/);
+        // A dist-tag npm reads as a version or a range is refused at publish.
+        expect(parseReleaseVersion(tag), `${mode} ${version}`).toBeNull();
+      }
+    }
+  });
+
+  it("is a pure function of the decision, callable on its own", () => {
+    expect(npmDistTag({ mode: "promote", version: "1.5.0", latest: true, prerelease: false })).toBe(
+      "latest",
+    );
+    expect(npmDistTag({ mode: "backport", version: "0.1.5", latest: false, prerelease: false })).toBe(
+      "release-0.1",
+    );
+    expect(() => npmDistTag({ mode: "promote", version: "not-a-version", latest: false })).toThrow(
+      /not a version/,
+    );
   });
 });
 
@@ -226,6 +301,7 @@ describe("the CLI's $GITHUB_OUTPUT contract", () => {
       "tags=1.5.0 latest",
       "latest=true",
       "prerelease=false",
+      "npm_tag=latest",
     ]);
   });
 
@@ -241,6 +317,10 @@ describe("the CLI's $GITHUB_OUTPUT contract", () => {
     expect(stdout).toContain("tags=1.2.4\n");
     expect(stdout).toContain("latest=false");
     expect(stdout).not.toContain("latest\n");
+    // The third surface `release.yml` reads off this stdout. `npm_tag=latest`
+    // here is the backport downgrade, delivered by `npm i`.
+    expect(stdout).toContain("npm_tag=release-1.2\n");
+    expect(stdout).not.toContain("npm_tag=latest");
   });
 
   it("exits non-zero rather than emitting a decision it could not make", () => {
