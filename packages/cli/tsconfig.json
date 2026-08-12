@@ -20,7 +20,17 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "@actana/sdk/*": ["../sdk/src/*"]
+      "@actana/sdk/*": ["../sdk/src/*"],
+      // Test-only, and the mate of the same two entries in `vitest.config.ts` —
+      // the type checker and the test runner resolve independently, so a path
+      // that exists for one and not the other is a suite that runs and does not
+      // typecheck. Neither package is a dependency of this one and neither may
+      // be imported by a shipped module: `@actana/core` is a private package
+      // and a daemon, `@actana/shared` is private (ADR 0025 D4).
+      // `src/__tests__/no-local-escape.test.ts` is what enforces that, and it
+      // sweeps imports rather than trusting this file to withhold the mapping.
+      "@actana/core/*": ["../core/src/*"],
+      "@actana/shared/*": ["../shared/src/*"]
     }
   },
   "include": ["src/**/*"],
