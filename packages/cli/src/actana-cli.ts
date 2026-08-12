@@ -1,8 +1,8 @@
 // `actana` — the client half (#129 D8, D9, D10).
 //
 // One command name, split by noun. `actana daemon` runs a Core and lives in
-// `packages/core`; `actana core …`, `project …`, `harness …`, and the
-// `session` / `events` nouns the rest of this phase adds, talk to one. **The published
+// `packages/core`; `actana core …`, `project …`, `harness …`, `events …`, and
+// the `session` noun the rest of this phase adds, talk to one. **The published
 // package carries the client subcommands only** — a `daemon` verb here would
 // put a Node daemon, `better-sqlite3` and `node-pty` into the dependency graph
 // of a program whose entire job is to need none of them, and it would mean two
@@ -29,6 +29,7 @@ import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
 import { runProjectCommand } from "./project-command.ts";
 import { runHarnessCommand } from "./harness-command.ts";
+import { runEventsCommand } from "./events-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -51,7 +52,6 @@ export const CLI_VERSION: string = manifest.version;
  */
 const RESERVED_NOUNS: Record<string, string> = {
   session: "start, ls, logs, resume, kill, send, attach — #160 and #163",
-  events: "tail — #161",
 };
 
 export const ROOT_HELP = `actana — drive AI coding agents across your Cores.
@@ -63,10 +63,10 @@ Nouns
   core      register, select and inspect the Cores this machine can reach
   project   the Projects a Core owns: ls, add, browse
   harness   the coding agents a Core can run: ls, install
+  events    follow a Core's event log: tail
 
 Reserved, landing later in this phase
   session   ${RESERVED_NOUNS.session}
-  events    ${RESERVED_NOUNS.events}
 
 Flags
   --core <name>   which registered Core to talk to
@@ -121,6 +121,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
       return runProjectCommand(deps, args, paths);
     case "harness":
       return runHarnessCommand(deps, args, paths);
+    case "events":
+      return runEventsCommand(deps, args, paths);
     case "help":
       deps.out(ROOT_HELP);
       return EXIT_OK;

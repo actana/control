@@ -26,16 +26,13 @@ afterEach(() => {
 /**
  * Every noun reserved in the tree, and the ticket each names.
  *
- * `project` and `harness` left this list when #161 built them — which is the
- * shape a reservation is supposed to have.
+ * `project`, `harness` and `events` left this list when #161 built them — which
+ * is the shape a reservation is supposed to have. `session` is what is left.
  */
-const RESERVED = [
-  ["session", "#160"],
-  ["events", "#161"],
-] as const;
+const RESERVED = [["session", "#160"]] as const;
 
 /** The nouns that are built, so the help below cannot go quiet about them. */
-const BUILT = ["core", "project", "harness"] as const;
+const BUILT = ["core", "project", "harness", "events"] as const;
 
 describe("a reserved noun is `not built yet`, not `you typed it wrong`", () => {
   it.each(RESERVED)("exits EXIT_UNIMPLEMENTED for `%s`, naming its ticket", async (noun, ticket) => {

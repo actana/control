@@ -78,7 +78,7 @@ describe("no verb prints a blob, with --verbose on", () => {
   });
 
   it("sweeps the nouns that dial with the credential in hand", async () => {
-    // `project` and `harness` (#161) reach a Core, which means the
+    // `project`, `harness` and `events` (#161) reach a Core, which means the
     // blob is decoded, handed to a client and quoted back by any failure on the
     // way. Every verb runs with `--verbose`, including the paths where the Core
     // refuses — the diagnostic that explains a refusal is the line most likely
@@ -99,11 +99,20 @@ describe("no verb prints a blob, with --verbose on", () => {
       ["harness ls --json", ["harness", "ls", "--json", "--verbose"]],
       ["project --help", ["project", "--help", "--verbose"]],
       ["harness --help", ["harness", "--help", "--verbose"]],
+      ["events --help", ["events", "--help", "--verbose"]],
     ];
     for (const [what, argv] of runs) {
       const run = await cli().run(argv, { connect: core.connect });
       expectNoSecrets(what, run.all);
     }
+
+    // …and the one that follows a stream, which has to be driven to its limit.
+    const tail = cli().run(["events", "tail", "--since", "start", "--limit", "1", "--verbose"], {
+      connect: core.connect,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    core.emitEvent({ eventId: 1, kind: "task:created" });
+    expectNoSecrets("events tail", (await tail).all);
   });
 
   it("sweeps a dial that failed, where the error quotes the endpoint it could not reach", async () => {
@@ -111,6 +120,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     for (const argv of [
       ["project", "ls", "--verbose"],
       ["harness", "ls", "--verbose"],
+      ["events", "tail", "--verbose"],
     ]) {
       const run = await cli().run(argv, {
         connect: async () => {
