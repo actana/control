@@ -29,6 +29,19 @@ import { makeMockPtyCore } from "./fake-core-link";
 
 const SECRET = "mtls-suite-secret-at-least-32-bytes";
 
+/**
+ * What a refusal *at the TLS layer* looks like by the time it reaches a caller:
+ * the peer resetting the connection, or an SSL alert naming the reason. Node
+ * words it differently across OpenSSL versions — a missing client cert is an
+ * `alert certificate required` on this one and a bare `socket hang up` on
+ * others — hence the alternation.
+ *
+ * What is *not* in it matters as much as what is. No `closed`, no `ECONNREFUSED`,
+ * no `timed out`: every one of those is how the client reports a Core it never
+ * reached, and a control that accepted them would pass with no Core at all.
+ */
+const TLS_REFUSAL = /ECONNRESET|EPIPE|socket hang up|ERR_SSL|SSL routines|alert|handshake/i;
+
 /** A free TCP port on 127.0.0.1, found by briefly binding port 0. */
 function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
@@ -181,12 +194,42 @@ describe("Core client over mTLS", () => {
     // control that passes on any error would pass against a Core that is not
     // running, and then the test above would be meaningful against nothing at
     // all. A TLS-layer refusal shows up as the peer closing the connection or as
-    // an SSL alert, never as a `connect` deadline.
+    // an SSL alert, never as a `connect` deadline and never as a refused TCP
+    // connection.
+    //
+    // `closed` is deliberately *not* in that alternation. Every transport
+    // failure reaches a caller as `core-link closed: …` (`core-client.ts`), so
+    // matching on it would accept the very thing this control exists to rule
+    // out — which is what the test below pins.
     expect(err).toBeInstanceOf(Error);
-    expect((err as Error).message).toMatch(
-      /closed|ECONNRESET|EPIPE|socket hang up|ERR_SSL|alert|handshake/i,
+    expect((err as Error).message).toMatch(TLS_REFUSAL);
+    expect((err as Error).message).not.toMatch(/timed out|ECONNREFUSED/i);
+    expect(client.isAuthenticated()).toBe(false);
+  }, 20_000);
+
+  it("tells a refused handshake from a Core that is not running", async () => {
+    // The control above is only worth its runtime if its matcher can *fail*.
+    // Here is the failure it has to catch: the same client, the same valid
+    // material, aimed at a port with nothing behind it — a Core that is down, a
+    // wrong port in a blob, a daemon that never started. That error is a
+    // `core-link closed: connect ECONNREFUSED …`, so the alternation the control
+    // uses must reject it. Put `closed|` back and this test goes red.
+    const { blob } = await startCore();
+    const nowhere = await freePort();
+
+    client = CoreClient.fromRegistrationBlob(
+      { ...blob, endpoint: `wss://127.0.0.1:${nowhere}` },
+      { connectTimeoutMs: 5_000 },
     );
-    expect((err as Error).message).not.toMatch(/timed out/);
+
+    const err = await client.connect().then(
+      () => null,
+      (e: unknown) => e,
+    );
+
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toMatch(/ECONNREFUSED/i);
+    expect((err as Error).message).not.toMatch(TLS_REFUSAL);
     expect(client.isAuthenticated()).toBe(false);
   }, 20_000);
 });
