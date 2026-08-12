@@ -8,11 +8,26 @@
 // machine only they have — so without this, the claims that matter most would
 // be covered by a suite a default `pnpm test` skips.
 //
-// What #161 added is the ability to **stop a Core and start another on the same
-// port with the same log**. That is not a nicety: `events tail` claims to
-// survive a reconnect without duplicating or dropping an event, and there is no
-// way to observe that claim except by dropping the connection under a running
-// tail and looking at what comes out the other side.
+// **#160 and #161 each extracted one of these, and this is the merge of the
+// two** (review of #205). Four suites share it now: `core status` against a
+// Core that answers no request frames, the `session` verbs against one holding
+// tasks and a live PTY, `project`/`harness` against one with a disk and an
+// installer, and `events tail` against one that is stopped and restarted under
+// a running command. What each of them varies is a port or two; the handshake,
+// the certificates and the blob an operator would be handed are the same
+// object, which is the point of there being one of these rather than two.
+//
+// Two things that look like conveniences are load-bearing:
+//
+//   • **Stopping a Core and starting another on the same port with the same
+//     log** (`opts.port`, `opts.material`, {@link InProcessCore.stop}).
+//     `events tail` claims to survive a reconnect without duplicating or
+//     dropping an event, and there is no way to observe that claim except by
+//     dropping the connection under a running tail and reading what comes out.
+//
+//   • **A teardown that actually frees the port** — see
+//     {@link recordingCreateServer}. Without it the restart above is an
+//     `EADDRINUSE` rather than the reconnect the suite meant to stage.
 //
 // **`@actana/core` and `@actana/shared` stay out of `package.json`** (ADR 0025
 // D4) — both are private, one is a daemon, and a manifest entry would put them
@@ -45,12 +60,15 @@ export const CORE_ID = "core_in_process";
 export type CertMaterial = Awaited<ReturnType<typeof generateCertMaterial>>;
 
 /**
- * A PTY manager that is never asked for anything.
+ * A PTY manager that is never asked for anything — the default when a suite
+ * passes no `ptyCore` of its own.
  *
- * Every method throws rather than returning an empty: none of the verbs these
+ * Every method throws rather than returning an empty: none of the verbs those
  * suites drive spawns anything, so a call reaching here means a change has
  * started a process on somebody's machine, and this should fail loudly instead
- * of quietly proving less.
+ * of quietly proving less. A suite that *does* mean to reach the PTY manager —
+ * `in-process-core-session.test.ts` drives `logs`, `send` and `kill` against a
+ * live PTY — passes {@link InProcessCoreOptions.ptyCore} and gets its own.
  */
 export function unusedPtyCore(): never[] & Record<string, unknown> {
   const unreachable = (name: string) => () => {
@@ -168,6 +186,16 @@ export type InProcessCoreOptions = {
   material?: CertMaterial;
   protocolVersion?: string;
   bearerExpiresInMs?: number;
+  /**
+   * The PTY manager this Core drives, for a suite that means to reach one.
+   *
+   * `unknown` rather than the Core's own type: the Core takes it as `never`
+   * through an internal interface this package deliberately does not import
+   * (ADR 0025 D4 keeps `@actana/core` out of the manifest), and a suite's fake
+   * implements the handful of methods its own verbs touch rather than all of
+   * it. Defaults to {@link unusedPtyCore}, which throws on every method.
+   */
+  ptyCore?: unknown;
   eventLog?: EventLogPort;
   queryPort?: CoreQueryPort;
   mutationPort?: CoreMutationPort;
@@ -202,7 +230,7 @@ export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promi
   const material = opts.material ?? (await generateCertMaterial({ host: "127.0.0.1" }));
   const port = opts.port ?? (await freePort());
   const bound = { port: 0 };
-  const server = new PtyCoreLinkServer(unusedPtyCore() as never, {
+  const server = new PtyCoreLinkServer((opts.ptyCore ?? unusedPtyCore()) as never, {
     port,
     host: "127.0.0.1",
     createServer: recordingCreateServer(bound),

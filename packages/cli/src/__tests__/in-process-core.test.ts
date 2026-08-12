@@ -10,11 +10,19 @@
 // exactly why that suite cannot say whether the probe works.
 //
 // So this one brings the Core with it. The rig moved to `in-process-core.ts`
-// when #161's `events tail` needed one too — same real `PtyCoreLinkServer`, same
-// real `wss://` port, same mTLS material from the Core's own
-// `generateCertMaterial` and a bearer the Core's own verifier accepts. Nothing
-// is faked between the CLI and the Core except the machine they would otherwise
-// be on.
+// when #160's `session` verbs and #161's `events tail` each needed one too —
+// same real `PtyCoreLinkServer`, same real `wss://` port, same mTLS material
+// from the Core's own `generateCertMaterial` and a bearer the Core's own
+// verifier accepts. Nothing is faked between the CLI and the Core except the
+// machine they would otherwise be on.
+//
+// **This is what `vitest.config.ts`'s `@actana/core` alias is for.** The alias
+// was written for exactly this and nothing imported it, so the comment
+// justifying it described something that did not happen — which the review of
+// #201 noted. `@actana/core` stays out of `package.json` on purpose: it is a
+// private package and a daemon, and a manifest entry would put both in the
+// published CLI's dependency graph for the sake of a test (ADR 0025 D4). A
+// test-only module alias buys the coverage without the graph.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { probeCore } from "../core-probe.ts";
