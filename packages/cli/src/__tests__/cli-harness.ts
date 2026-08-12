@@ -12,6 +12,11 @@ import path from "node:path";
 import { runActanaCli } from "../actana-cli.ts";
 import { registryPaths, type RegistryPaths } from "../blob-registry.ts";
 import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
+import type {
+  OpenSessionGateway,
+  SessionGateway,
+  StartedSession,
+} from "../session-gateway.ts";
 
 /** One run's captured output, plus the exit code. */
 export type CliRun = {
@@ -44,8 +49,54 @@ export type RunOptions = {
   stdinIsTty?: boolean;
   /** What `core status` gets back, or a throw. */
   probe?: CoreProbeFn;
+  /** What the `session` noun's verbs get back, or a throw. */
+  sessions?: OpenSessionGateway;
   now?: number;
 };
+
+/**
+ * A Session that started, for a fake gateway to hand back.
+ *
+ * `wait` resolves with whatever the test says the Core reported — the CLI never
+ * decides idleness, so a fake has to be the one holding the answer.
+ */
+export function fakeStartedSession(overrides: Partial<StartedSession> = {}): StartedSession {
+  return {
+    taskId: "task_1",
+    ptyId: "pty_1",
+    harness: "claude-code",
+    command: "claude",
+    projectId: "proj_1",
+    project: "web",
+    wait: async () => ({ status: "finished", exited: false }),
+    screen: () => "the transcript",
+    dispose: () => {},
+    ...overrides,
+  };
+}
+
+/**
+ * A gateway that answers without a Core.
+ *
+ * Every verb throws by default and a test overrides the one it is about: a
+ * suite that reaches a verb it did not mean to exercise should fail loudly
+ * rather than pass against a stub that said yes.
+ */
+export function fakeSessionGateway(overrides: Partial<SessionGateway> = {}): OpenSessionGateway {
+  const refuse = (verb: string) => async () => {
+    throw new Error(`this test did not expect session ${verb}`);
+  };
+  return async () => ({
+    list: refuse("ls"),
+    start: refuse("start"),
+    resume: refuse("resume"),
+    logs: refuse("logs"),
+    send: refuse("send"),
+    kill: refuse("kill"),
+    close: () => {},
+    ...overrides,
+  });
+}
 
 /** A probe that answers like a healthy Core on the current protocol. */
 export function healthyProbe(overrides: Partial<CoreProbe> = {}): CoreProbeFn {
@@ -87,6 +138,11 @@ export function makeCliFixture(): CliFixture {
           opts.probe ??
           (async () => {
             throw new Error("this test did not expect to dial a Core");
+          }),
+        openSessions:
+          opts.sessions ??
+          (async () => {
+            throw new Error("this test did not expect to open a session gateway");
           }),
         now: () => opts.now ?? Date.UTC(2026, 7, 12),
       });

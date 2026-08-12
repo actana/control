@@ -25,6 +25,23 @@ export type ParsedArgs = {
   version: boolean;
   /** `--core <name>`, or null when the flag was absent. */
   core: string | null;
+  // ─── The `session` noun's flags (#160) ───
+  /** `--wait`: block until the Core reports a started Session settled. */
+  wait: boolean;
+  /** `--wait-timeout <seconds>`, unparsed — the verb decides what a bad value means. */
+  waitTimeout: string | null;
+  /** `--harness <name>`, or null to take the Project's remembered one. */
+  harness: string | null;
+  /** `--cwd <path>`: a directory on the **Core's** machine. */
+  cwd: string | null;
+  /** `--title <text>`: what a started Session is called in a listing. */
+  title: string | null;
+  /** `--raw`: hand over bytes rather than a rendered screen. */
+  raw: boolean;
+  /** `--enter`: follow sent text with a carriage return, because the operator asked. */
+  enter: boolean;
+  /** `--dangerously-skip-permissions`: start the harness without permission prompts. */
+  skipPermissions: boolean;
   /** Flags this build does not know, in the order they appeared. */
   unknown: string[];
   /** A flag that takes a value and was given none, or null. */
@@ -32,7 +49,7 @@ export type ParsedArgs = {
 };
 
 /** Flags that take a value. */
-const VALUE_FLAGS = new Set(["--core"]);
+const VALUE_FLAGS = new Set(["--core", "--wait-timeout", "--harness", "--cwd", "--title"]);
 
 /** Parse `process.argv.slice(2)`. Never throws; malformed input is reported in the result. */
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -43,6 +60,14 @@ export function parseArgs(argv: string[]): ParsedArgs {
     help: false,
     version: false,
     core: null,
+    wait: false,
+    waitTimeout: null,
+    harness: null,
+    cwd: null,
+    title: null,
+    raw: false,
+    enter: false,
+    skipPermissions: false,
     unknown: [],
     missingValue: null,
   };
@@ -74,6 +99,10 @@ export function parseArgs(argv: string[]): ParsedArgs {
         continue;
       }
       if (name === "--core") parsed.core = value;
+      else if (name === "--wait-timeout") parsed.waitTimeout = value;
+      else if (name === "--harness") parsed.harness = value;
+      else if (name === "--cwd") parsed.cwd = value;
+      else if (name === "--title") parsed.title = value;
       continue;
     }
 
@@ -83,6 +112,18 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--verbose":
         parsed.verbose = true;
+        break;
+      case "--wait":
+        parsed.wait = true;
+        break;
+      case "--raw":
+        parsed.raw = true;
+        break;
+      case "--enter":
+        parsed.enter = true;
+        break;
+      case "--dangerously-skip-permissions":
+        parsed.skipPermissions = true;
         break;
       case "-h":
       case "--help":

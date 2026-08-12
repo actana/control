@@ -27,6 +27,7 @@
 import { parseArgs } from "./cli-args.ts";
 import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
+import { runSessionCommand } from "./session-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -48,7 +49,6 @@ export const CLI_VERSION: string = manifest.version;
  * English off stderr to find it.
  */
 const RESERVED_NOUNS: Record<string, string> = {
-  session: "start, ls, logs, resume, kill, send, attach — #160 and #163",
   project: "ls, add, browse, and later `cp` / `files` — #161 and #168",
   harness: "ls, install — #161",
   events: "tail — #161",
@@ -61,9 +61,9 @@ Usage
 
 Nouns
   core      register, select and inspect the Cores this machine can reach
+  session   start, ls, logs, resume, kill and send to Sessions on one
 
 Reserved, landing later in this phase
-  session   ${RESERVED_NOUNS.session}
   project   ${RESERVED_NOUNS.project}
   harness   ${RESERVED_NOUNS.harness}
   events    ${RESERVED_NOUNS.events}
@@ -117,6 +117,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   switch (noun) {
     case "core":
       return runCoreCommand(deps, args, paths);
+    case "session":
+      return runSessionCommand(deps, args, paths);
     case "help":
       deps.out(ROOT_HELP);
       return EXIT_OK;
