@@ -640,10 +640,21 @@ export class CoreClient {
     });
   }
 
-  /** Send now if there is a link, otherwise hold it for the next one. */
+  /**
+   * Send now if there is an established link, otherwise hold it for the next
+   * one.
+   *
+   * **Established, not merely writable.** On the no-bearer path writability
+   * rides the socket opening and can land before `ready`, so a request *issued*
+   * in that window would go out ahead of the `reclaim` and `subscribe` this
+   * connection owes the Core — the ordering `onConnectionEstablished` documents
+   * as load-bearing, and the same property `onWritable`'s guard keeps for a
+   * request that was already queued. Both doors, one rule: nothing reaches the
+   * wire before the connection has been established (issue 153 review, #156).
+   */
   private dispatch(entry: PendingRequest): void {
     const transport = this.transport;
-    if (!transport?.writable) {
+    if (!this.established || !transport?.writable) {
       this.queue.push(entry);
       return;
     }
