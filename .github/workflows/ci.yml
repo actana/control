@@ -258,8 +258,16 @@ jobs:
                 fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to \`promote.yml\`'s cut, and amend ADR 0023 D3 with the new count — that is what #152 did for \`packages/sdk\`."
               fi
             done
-            [[ "$intact" == "1" ]] &&
+            # An `if`, not `[[ … ]] && echo`: the `&&` form makes the function
+            # return non-zero when the set is broken, and under `set -e` a bare
+            # call to it aborts the step before the `failed` accumulator at the
+            # bottom is reached — so a set violation would report only itself
+            # and leave every other rule in this step unevaluated. Every
+            # violation here already went through `fail`, which is how this
+            # step reports.
+            if [[ "$intact" == "1" ]]; then
               echo "  ✅ the version set is ${#MANIFESTS[@]} manifests, and covers every workspace package"
+            fi
           }
 
           assert_versions() {
