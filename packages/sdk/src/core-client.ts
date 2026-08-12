@@ -38,7 +38,7 @@ import {
   type CoreLinkSessionTakenFrom,
   type CoreLinkTaskMutation,
   type CoreLinkTaskSnapshot,
-} from "./core-link-frames";
+} from "./core-link-frames.ts";
 import {
   CoreLinkTransport,
   type CoreLinkAuthErrorReason,
@@ -47,13 +47,13 @@ import {
   type CoreLinkExitFrame,
   type CoreLinkHeartbeatOptions,
   type CoreLinkReadyFrame,
-} from "./core-link-transport";
+} from "./core-link-transport.ts";
 import {
   createNodeCoreLinkSocket,
   type CoreLinkSocketFactory,
   type CoreLinkTlsMaterial,
-} from "./core-link-socket";
-import { coreConnectionFromBlob, type CoreRegistrationBlob } from "./core-registration-blob";
+} from "./core-link-socket.ts";
+import { coreConnectionFromBlob, type CoreRegistrationBlob } from "./core-registration-blob.ts";
 
 /**
  * Request frames that only mean anything against a Core announcing

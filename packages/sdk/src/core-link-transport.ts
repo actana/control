@@ -34,8 +34,8 @@ import type {
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
   CoreLinkStreamFrame,
-} from "./core-link-frames";
-import type { CoreLinkSocket, CoreLinkSocketFactory } from "./core-link-socket";
+} from "./core-link-frames.ts";
+import type { CoreLinkSocket, CoreLinkSocketFactory } from "./core-link-socket.ts";
 
 /** The Core's opening frame on every connection — protocol version, capability. */
 export type CoreLinkReadyFrame = Extract<CoreLinkResponseFrame, { type: "ready" }>;
