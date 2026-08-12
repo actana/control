@@ -203,7 +203,9 @@ export class TerminalScreen {
       }
       while (buffer.grid.length < nextRows) buffer.grid.push(this.blankLine(nextCols));
       // The cursor lives on the active buffer, so only that one's shrink moves
-      // it — and only the main buffer's keeps what it loses.
+      // it. What each buffer loses off the top it keeps, in its own scrollback —
+      // the alternate screen included, which is this module's deliberate
+      // departure from a real terminal (see the header).
       const active = buffer === this.buffer;
       while (buffer.grid.length > nextRows) {
         // Take the blank rows below the cursor first. A terminal shrinking a

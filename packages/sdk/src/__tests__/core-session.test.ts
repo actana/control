@@ -33,7 +33,13 @@ import type {
   CoreLinkTaskSnapshot,
 } from "../core-link-frames.ts";
 import { CoreClient } from "../core-client.ts";
-import { CoreSession, CoreSessionStartError, HARNESS_LAUNCH_COMMANDS } from "../core-session.ts";
+import {
+  CoreSession,
+  CoreSessionStartError,
+  HARNESS_LAUNCH_COMMANDS,
+  STATUS_READ_RETRIES,
+  STATUS_READ_RETRY_MS,
+} from "../core-session.ts";
 import {
   FakeEventLog,
   FakeSocketPair,
@@ -325,6 +331,35 @@ describe("CoreSession.start", () => {
     expect(banner).toBe(true);
     expect(session.screen()).toContain("banner line");
   });
+
+  it("keeps its own exit when a co-tenant PTY exits in the same window", async () => {
+    // The exit listener hears every PTY this connection holds, and during the
+    // spawn's round trip it cannot yet filter by id — the id is what has not
+    // come back. So the frames are held like the bytes are, all of them: a
+    // Session that started while another one was dying used to lose its own
+    // exit to the co-tenant's, leaving `onExit` silent and `waitForIdle` short
+    // an exit route.
+    let spawned = 0;
+    rig = startRig({
+      spawn: vi.fn(async () => ({ ptyId: `pty-${++spawned}` })) as unknown as PtyCore["spawn"],
+      afterServerFrame: (frame, rig2) => {
+        if (frame.type !== "spawned" || frame.ptyId !== "pty-2") return;
+        // The co-tenant first, so a hold with one slot is already full when
+        // this Session's own exit arrives behind it.
+        rig2().ptyCore.emitEvent({ type: "exit", ptyId: "pty-1", exitCode: 0 });
+        rig2().ptyCore.emitEvent({ type: "exit", ptyId: "pty-2", exitCode: 7, signal: 15 });
+      },
+    });
+    const cotenant = await startSession(rig);
+
+    session = await startSession(rig);
+
+    expect(cotenant.ptyId).toBe("pty-1");
+    expect(session.ptyId).toBe("pty-2");
+    expect(session.exitStatus()).toEqual({ exitCode: 7, signal: 15 });
+    await expect(session.waitForIdle()).resolves.toMatchObject({ exited: true, exitCode: 7 });
+    cotenant.dispose();
+  });
 });
 
 describe("programmatic I/O", () => {
@@ -540,6 +575,49 @@ describe("waiting on the Core's report", () => {
     await expect(idle).resolves.toMatchObject({ exited: false });
   });
 
+  it("asks again when the status read fails, because the event will not come twice", async () => {
+    // `needs-input`, `interrupted` and `terminated` reach this layer as a bare
+    // `task:updated` — the event says a row moved and nothing more, so the
+    // status is read back off the Core, and that event is appended once. A read
+    // swallowed on the transition that mattered leaves `waitForIdle()` waiting
+    // for a report already made, and by design it has no deadline to end on.
+    rig = startRig();
+    session = await startSession(rig);
+    const r = rig;
+    const answer = r.client.sessionsList.bind(r.client);
+    let failed = 0;
+    vi.spyOn(r.client, "sessionsList").mockImplementation(async () => {
+      if (failed === 0) {
+        failed += 1;
+        throw new Error("link dropped mid-read");
+      }
+      return answer();
+    });
+    const idle = session.waitForIdle();
+
+    r.tasks.setStatus(session.taskId, "needs-input");
+
+    await expect(idle).resolves.toEqual({ status: "needs-input", exited: false });
+    expect(failed).toBe(1);
+  });
+
+  it("stops re-asking rather than polling a Core that is gone", async () => {
+    // The re-ask is bounded: a link still down after this many tries is not
+    // going to be talked round by more, and a Session that asked forever would
+    // be the busy-loop version of the timer #191 deleted.
+    rig = startRig();
+    session = await startSession(rig);
+    const r = rig;
+    vi.spyOn(r.client, "sessionsList").mockRejectedValue(new Error("link dropped"));
+
+    r.tasks.setStatus(session.taskId, "needs-input");
+
+    const attempts = () => vi.mocked(r.client.sessionsList).mock.calls.length;
+    await vi.waitFor(() => expect(attempts()).toBe(1 + STATUS_READ_RETRIES), { timeout: 3000 });
+    await new Promise((done) => setTimeout(done, STATUS_READ_RETRY_MS * 2));
+    expect(attempts()).toBe(1 + STATUS_READ_RETRIES);
+  });
+
   it("subscribes the client to the event log when nothing else has", async () => {
     rig = startRig();
     expect(rig.client.isSubscribedToEvents()).toBe(false);
@@ -557,25 +635,40 @@ describe("D11 — no terminal, anywhere", () => {
     // raw mode would be unusable from the cron job, the CI runner and the web
     // service this package exists for. A grep is a poor test of behaviour and a
     // good test of a boundary nobody may cross by accident.
-    const src = path.resolve(import.meta.dirname, "..");
+    // `examples/` is swept with `src/`, not instead of it: the one file in this
+    // package a user is *invited* to run with plain `node` is the example, so it
+    // is the last place a `process.stdin` may appear. Its extension is `.mjs`,
+    // which is why the match is on a set rather than on `.ts`.
+    const root = path.resolve(import.meta.dirname, "..", "..");
+    const roots = [path.join(root, "src"), path.join(root, "examples")];
+    const shipped = /\.(ts|mts|cts|js|mjs|cjs)$/;
     const forbidden = /process\.stdin|process\.stdout|setRawMode|\/dev\/tty|isTTY|readline/;
     const offences: string[] = [];
+    const swept: string[] = [];
     const sweep = (dir: string): void => {
       for (const entry of readdirSync(dir, { withFileTypes: true })) {
         if (entry.isDirectory()) {
           if (entry.name === "__tests__" || entry.name === "node_modules") continue;
           sweep(path.join(dir, entry.name));
-        } else if (entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
+        } else if (shipped.test(entry.name) && !/\.test\.[a-z]+$/.test(entry.name)) {
           const file = path.join(dir, entry.name);
+          swept.push(path.relative(root, file).split(path.sep).join("/"));
           const source = readFileSync(file, "utf8")
             .replace(/\/\*[\s\S]*?\*\//g, "")
             .replace(/^\s*\/\/.*$/gm, "");
-          if (forbidden.test(source)) offences.push(entry.name);
+          if (forbidden.test(source)) {
+            offences.push(path.relative(root, file).split(path.sep).join("/"));
+          }
         }
       }
     };
-    sweep(src);
+    for (const dir of roots) sweep(dir);
 
     expect(offences).toEqual([]);
+    // An empty sweep passes an empty assertion, and this one walked `src` alone
+    // until now: name a file from each tree so a narrowed walk fails here.
+    expect(swept).toEqual(
+      expect.arrayContaining(["src/core-session.ts", "examples/start-a-session.mjs"]),
+    );
   });
 });

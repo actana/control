@@ -44,7 +44,9 @@
 //   3. **It does not decide what "done" means from the bytes.** Idleness is the
 //      Core's report — the harness's own lifecycle hooks moving the Session's
 //      status — read off the event log. Watching the stream go quiet is the
-//      450 ms timer that #191 deleted, in a new place.
+//      450 ms timer that #191 deleted, in a new place. (A status read the link
+//      lost is asked again, which is a retry of a *question*: it can only ever
+//      report what the Core already decided, never decide it here.)
 
 import type {
   CoreLinkEvent,
@@ -125,6 +127,26 @@ const STATUS_BEARING_EVENT_KINDS: ReadonlySet<string> = new Set([
   "task:statusChanged",
   "session:finished",
 ]);
+
+/**
+ * How a failed status read is re-asked: this many further attempts, this long
+ * apart.
+ *
+ * A retry of a *read*, and only of a read. It re-asks the Core a question whose
+ * answer the Core already settled on — it does not retry a prompt, a keystroke
+ * or a spawn, and it cannot make a Session look idle sooner than the Core says
+ * it is. The reason it has to exist: `needs-input`, `interrupted` and
+ * `terminated` reach this layer only as `task:updated`, and that event is
+ * appended once. Swallowing the read that failed on it leaves
+ * {@link CoreSession.waitForIdle} waiting for a report that will not be made
+ * again, and by design there is no deadline to end that wait.
+ *
+ * Bounded rather than indefinite: a link that is still down after three tries a
+ * quarter-second apart is not going to be talked round by a fourth, and a
+ * Session that polls forever is the busy-loop version of the timer #191 deleted.
+ */
+export const STATUS_READ_RETRIES = 3;
+export const STATUS_READ_RETRY_MS = 250;
 
 export type CoreSessionStartOptions = {
   /**
@@ -258,6 +280,9 @@ export class CoreSession {
   /** A status read is in flight; another event arrived while it was. */
   private statusReadInFlight = false;
   private statusReadAgain = false;
+  /** Re-asks left for the read that failed, and the timer carrying the next. */
+  private statusReadRetriesLeft = STATUS_READ_RETRIES;
+  private statusRetryTimer: ReturnType<typeof setTimeout> | null = null;
 
   private constructor(opts: {
     client: CoreClient;
@@ -320,7 +345,7 @@ export class CoreSession {
     // by anything but the id, and the id is what has not come back yet.
     const held: CoreLinkDataFrame[] = [];
     const heldEvents: CoreLinkEvent[] = [];
-    let heldExit: CoreLinkExitFrame | null = null;
+    const heldExits: CoreLinkExitFrame[] = [];
     let ptyId: string | null = null;
     const terminal = new TerminalScreen({ cols, rows, scrollback: opts.scrollback });
     let session: CoreSession | null = null;
@@ -335,7 +360,12 @@ export class CoreSession {
     });
     const stopExit = client.onExit((frame) => {
       if (ptyId === null) {
-        if (!heldExit) heldExit = frame;
+        // Every exit, not the first: this listener hears the whole Core, so a
+        // co-tenant PTY exiting inside the spawn's round trip would otherwise
+        // take the one slot and this Session's own exit frame would be dropped
+        // — `onExit` silent, and `waitForIdle` short an exit route. Held like
+        // the bytes above and filtered by id for the same reason.
+        heldExits.push(frame);
         return;
       }
       if (frame.ptyId !== ptyId) return;
@@ -397,9 +427,8 @@ export class CoreSession {
     for (const frame of held) {
       if (frame.ptyId === ptyId) session.ingest(frame.data);
     }
-    if (heldExit !== null && (heldExit as CoreLinkExitFrame).ptyId === ptyId) {
-      session.ingestExit(heldExit as CoreLinkExitFrame);
-    }
+    const mineExit = heldExits.find((frame) => frame.ptyId === ptyId);
+    if (mineExit) session.ingestExit(mineExit);
 
     return session;
   }
@@ -510,6 +539,12 @@ export class CoreSession {
    *
    * Resolves as soon as it can: if the Session has already settled by the time
    * this is called, it answers from what it saw.
+   *
+   * With no {@link CoreSessionWaitOptions.timeoutMs} this waits indefinitely, on
+   * purpose. A status read that fails is re-asked, so a link that blinks does
+   * not cost the report; a link that stays down does, and nothing here invents a
+   * status the Core never sent. A caller that must not hang on a broken Core
+   * passes a deadline it chose itself.
    */
   waitForIdle(opts: CoreSessionWaitOptions = {}): Promise<CoreSessionIdle> {
     const settled = this.settledNow();
@@ -562,6 +597,10 @@ export class CoreSession {
     this.disposed = true;
     for (const off of this.unsubscribes) off();
     this.unsubscribes.length = 0;
+    if (this.statusRetryTimer) {
+      clearTimeout(this.statusRetryTimer);
+      this.statusRetryTimer = null;
+    }
     // Anyone still waiting is waiting on a report this Session will no longer
     // hear, so they are settled on the way out rather than left pending
     // forever. `kill()` disposes, and `await session.kill()` after starting a
@@ -625,6 +664,10 @@ export class CoreSession {
    * hook events arrives in a burst and each one would otherwise be its own round
    * trip: a read already in flight is re-run once at the end rather than queued
    * behind itself.
+   *
+   * A read that fails is re-asked ({@link STATUS_READ_RETRIES}), because on
+   * `needs-input`, `interrupted` and `terminated` there is no second event to
+   * carry the news.
    */
   private async readStatus(): Promise<void> {
     if (this.disposed) return;
@@ -633,20 +676,42 @@ export class CoreSession {
       return;
     }
     this.statusReadInFlight = true;
+    let failed = false;
     try {
       const sessions = await this.client.sessionsList();
       const mine = sessions.find((s: CoreLinkSessionSnapshot) => s.taskId === this.taskId);
       if (mine) this.noteStatus(mine.status);
+      this.statusReadRetriesLeft = STATUS_READ_RETRIES;
     } catch {
-      // A read that failed is a link that dropped or a Core that is busy. The
-      // next event asks again, and an exit resolves the wait regardless.
+      // A read that failed is a link that dropped or a Core that is busy. It is
+      // re-asked below rather than swallowed: on the transitions that reach this
+      // layer as a bare `task:updated` there is no later event to ask on, so a
+      // dropped read is the difference between a caller learning the harness is
+      // waiting for an answer and a caller waiting forever for one.
+      failed = true;
     } finally {
       this.statusReadInFlight = false;
       if (this.statusReadAgain && !this.disposed) {
+        // An event that arrived mid-read is the re-ask, and a fresher one.
         this.statusReadAgain = false;
         void this.readStatus();
+      } else if (failed && !this.disposed && this.statusReadRetriesLeft > 0) {
+        this.statusReadRetriesLeft -= 1;
+        this.scheduleStatusRetry();
       }
     }
+  }
+
+  /** The next re-ask of a read that failed. Cleared by {@link dispose}. */
+  private scheduleStatusRetry(): void {
+    if (this.statusRetryTimer) return;
+    this.statusRetryTimer = setTimeout(() => {
+      this.statusRetryTimer = null;
+      if (!this.disposed) void this.readStatus();
+    }, STATUS_READ_RETRY_MS);
+    // A pending re-ask is not a reason for a script that is otherwise done to
+    // stay alive.
+    this.statusRetryTimer.unref?.();
   }
 
   private noteStatus(status: string): void {
