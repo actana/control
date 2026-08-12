@@ -719,7 +719,31 @@ container tag's re-pointability transfers, and three things follow:
 - Every publish is **attested**. The job carries `id-token: write` and passes
   `--provenance`; afterwards it reads the attestation back off the registry and
   fails if it is not there, because a publish that lost the flag succeeds and
-  looks identical in the log.
+  looks identical in the log. That read-back distinguishes its two failures:
+  "the registry answered and there is no attestation" says cut the next version,
+  and "the registry never answered" says explicitly not to — it is a re-run, and
+  a re-run is free because an already-published version is treated as published.
+
+**The dist-tag is decided, never defaulted.** `npm publish` with no `--tag`
+takes `latest`, which is the same unwritten default as `gh release create`'s
+`make_latest` and the same one the old `resolve` had in its Docker tag list —
+so npm is the third surface of the `latest` guard (ADR 0023 D28), not an
+exception to it. `resolve` emits `npm_tag` from
+[`scripts/lib/release-latest.mjs`](../scripts/lib/release-latest.mjs), the same
+module that decides the other two, and `release.yml` passes it explicitly:
+
+| release | dist-tag | what `npm i @actana/sdk` gets |
+| --- | --- | --- |
+| the highest version, promoted | `latest` | this release |
+| a prerelease on the main line (D30) | `next` | unchanged |
+| a backport of an old line | `release-<major>.<minor>` | unchanged |
+| a backport's release candidate | `release-<major>.<minor>-next` | unchanged |
+
+A consumer pinned to an old line gets its patches with
+`npm i @actana/sdk@release-0.1`. The `resolve` guard step fails the release if a
+backport ever resolves `latest` on **any** of the three surfaces, and if the
+dist-tag comes out empty — `npm publish --tag ""` is rejected by npm, and it
+would be rejected after both images had already shipped.
 
 A package is published exactly when its workspace manifest drops
 `private: true`. `scripts/lib/npm-packages.mjs` holds the intended set and
@@ -997,9 +1021,14 @@ which in the log:
   that branch, because no beta digest exists to promote.
 
 The two Linux tarball legs and the installer e2e run straight away, the mac
-tarball builds alongside them, and the two image jobs and the GitHub Release
-follow. Each image's Docker Hub page is no longer part of it — that syncs on a
-weekly clock now (D43). The tag must already exist on origin.
+tarball builds alongside them, the two image jobs follow, then the **npm
+publish**, and the GitHub Release last of all. The npm job is in that position
+deliberately and it is the only one that cannot be redone: it waits on both
+image jobs, both tarball legs and the installer e2e, and the Release waits on
+it, so a release never announces an `npm i` that 404s. See
+[npm](#npm) for what it publishes and under which dist-tag. Each image's Docker
+Hub page is no longer part of it — that syncs on a weekly clock now (D43). The
+tag must already exist on origin.
 
 `release.yml` attaches nothing until its arm64 installer legs are green
 (see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
@@ -1018,9 +1047,12 @@ in `release.yml`, so both are yours:
   and the promotion waves itself through — silently, and green. It is
   `promote.yml` that holds it. See [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
-`resolve` does fail the run outright when `DOCKERHUB_USERNAME` or
-`DOCKERHUB_TOKEN` is missing on `actana/control`, before anything is built —
-that one the workflow does check.
+`resolve` does fail the run outright when `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
+or `NPM_TOKEN` is missing on `actana/control`, before anything is built — those
+three the workflow does check. `NPM_TOKEN` is checked in the same shape and in
+the same job as the Docker Hub pair, and for a sharper reason: the npm job is
+last in the graph, so a token discovered missing at the publish would be
+discovered with both images pushed and their `:latest` already re-pointed.
 
 ### The approval pause — a release waits for a person
 
@@ -1034,12 +1066,20 @@ got round to approving yet.
 The gated job goes to **waiting** the moment the run starts.
 
 **Nothing leaves the repository until a reviewer approves.** No image moves, no
-`:latest` moves, no GitHub Release appears, and `main` does not advance.
+`:latest` moves, **no package reaches npm**, no GitHub Release appears, and
+`main` does not advance.
 
 That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
 `:latest` is a pointer with no history to roll back to. A reviewer who hits a
 blocker and rejects has to be able to believe nothing shipped.
+
+The npm publish is the item on that list that cannot be taken back **at all**.
+An image tag is a pointer and can be re-pointed; an npm version number is
+consumed by its first publish, and unpublishing inside the 72-hour window frees
+the bytes and not the name. That is why it sits behind this pause and last
+within the workflow, and why the packing is rehearsed on every pull request
+long before a tag exists.
 
 The pause is the manual test window, not a rubber stamp. Before dispatching and
 approving, the reviewer:

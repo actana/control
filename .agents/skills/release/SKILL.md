@@ -79,6 +79,12 @@ GitHub Release. Nothing here rolls that back — an image push is not undoable a
 version, never by moving or deleting a published tag. The approval pause is the
 last point at which "no" is still cheap.
 
+> **This file is stale above this point.** The trigger section and the
+> `macos-release` placement still describe the pre-ADR-0023 world (D40 removed
+> the tag trigger, D15 moved the environment to `promote.yml`). Tracked in
+> [#202](https://github.com/actana/control/issues/202); the two rules below and
+> the npm paragraph are current.
+
 **npm is stricter than that, and it is the one irreversibility with no
 workaround at all.** A container tag can at least be re-pointed at better bytes.
 An npm version number is consumed by its first publish: unpublishing inside the
