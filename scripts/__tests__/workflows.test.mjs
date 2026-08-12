@@ -359,7 +359,46 @@ describe("npm publishing (#129 D13, ADR 0018 as amended)", () => {
   it("publishes with id-token: write, and with the flag", () => {
     const job = jobBlock(source, "npm");
     expect(job).toMatch(/^ {4}permissions:\n(?: {6}.+\n)* {6}id-token: write$/m);
-    expect(code(job)).toContain("npm publish \"$tarball\" --provenance --access public");
+    expect(code(job)).toContain(
+      'npm publish "$tarball" --provenance --access public --tag "$NPM_TAG"',
+    );
+  });
+
+  // D28's third surface. `npm publish` with no `--tag` takes `latest`, which is
+  // the same default this file already refuses for the docker tag list and for
+  // `gh release create --latest`. The assertion is in two halves because the
+  // interesting failure is not "the flag is gone" but "the flag is there and
+  // hard-coded": a literal `--tag latest` would satisfy a check that only
+  // looked for `--tag`.
+  it("never lets npm default the dist-tag, and takes it from resolve", () => {
+    const job = jobBlock(source, "npm");
+    const publish = code(job);
+    // Every `npm publish` *command* in the job carries an explicit `--tag` —
+    // the job's own `name:` says "npm publish" too, and it is not one.
+    const commands = publish.split("\n").filter((line) => /^\s*npm publish /.test(line));
+    expect(commands.length, "no npm publish command in the npm job").toBeGreaterThan(0);
+    for (const line of commands) {
+      expect(line, `npm publish with no --tag: ${line.trim()}`).toMatch(/--tag /);
+      expect(line, `npm publish with a hard-coded dist-tag: ${line.trim()}`).not.toMatch(
+        /--tag +"?(latest|next)"?/,
+      );
+    }
+    // And the value is the one `resolve` decided, not a second opinion.
+    expect(job).toContain("NPM_TAG: ${{ needs.resolve.outputs.npm_tag }}");
+    expect(jobBlock(source, "resolve")).toContain("npm_tag: ${{ steps.tags.outputs.npm_tag }}");
+  });
+
+  // The guard step covers all three surfaces in one place, so a backport cannot
+  // move `latest` on any of them. The docker and GitHub arms predate #159; the
+  // npm arm is the one that was missing.
+  it("guards the npm dist-tag in resolve, beside the other two surfaces", () => {
+    const job = code(jobBlock(source, "resolve"));
+    expect(job).toContain("::error title=A backport must never take the npm latest dist-tag::");
+    expect(job).toContain("::error title=A backport must never move latest::");
+    expect(job).toContain("::error title=A backport must never be the GitHub latest release::");
+    // An empty dist-tag is not "no tag" — `npm publish --tag ""` fails, and it
+    // would fail after both images had shipped.
+    expect(job).toContain("::error title=No npm dist-tag resolved::");
   });
 
   // Least privilege, and a second reading of the same line: `id-token: write`

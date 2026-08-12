@@ -167,6 +167,7 @@ jobs:
       tags: ${{ steps.tags.outputs.tags }}
       latest: ${{ steps.tags.outputs.latest }}
       prerelease: ${{ steps.tags.outputs.prerelease }}
+      npm_tag: ${{ steps.tags.outputs.npm_tag }}
     steps:
       # Every branch and every tag. Both questions this job answers are
       # questions about the whole ref graph rather than about one commit:
@@ -242,13 +243,21 @@ jobs:
             echo "source_tag=$source_tag"
           } >> "$GITHUB_OUTPUT"
 
-      # The `latest` guard (D28) — the one that reaches end users. Both
-      # surfaces come from here: `tags` below feeds the docker tag list, and
-      # `latest` feeds `gh release create --latest=` in `github-release`. They
-      # are two renderings of one decision taken in
-      # scripts/lib/release-latest.mjs, which is where the rule is written down
-      # and unit-tested, because the failure is silent, reaches every existing
-      # user, and lies dormant until the first backport.
+      # The `latest` guard (D28) — the one that reaches end users. All three
+      # surfaces come from here: `tags` below feeds the docker tag list,
+      # `latest` feeds `gh release create --latest=` in `github-release`, and
+      # `npm_tag` feeds `npm publish --tag` in `npm`. They are three renderings
+      # of one decision taken in scripts/lib/release-latest.mjs, which is where
+      # the rule is written down and unit-tested, because the failure is
+      # silent, reaches every existing user, and lies dormant until the first
+      # backport.
+      #
+      # npm is the surface that had to be added rather than fixed, and it is
+      # the same defaulting bug in a third dialect: `npm publish` with no
+      # `--tag` takes `latest`, as `gh release create` with no `--latest`
+      # defaults `make_latest` to true. A dist-tag is mandatory, so unlike the
+      # other two "withhold latest" here has to name a replacement — which is
+      # why the module returns a tag rather than a boolean.
       #
       # The script's stdout is `key=value` and nothing else, so it pipes
       # straight into $GITHUB_OUTPUT; `tee` keeps it in the log, and its
@@ -267,16 +276,24 @@ jobs:
       # `latest` — and it is re-asserted here because *these* are the values
       # that flow into the two publishing jobs, and because a guard that only
       # exists inside the thing it guards is one edit away from being gone.
-      - name: A backport moves latest on neither surface
+      - name: A backport moves latest on none of the three surfaces
         env:
           MODE: ${{ steps.ref.outputs.mode }}
           TAGS: ${{ steps.tags.outputs.tags }}
           LATEST: ${{ steps.tags.outputs.latest }}
+          NPM_TAG: ${{ steps.tags.outputs.npm_tag }}
           RELEASE_REF: ${{ steps.ref.outputs.ref }}
         run: |
           set -euo pipefail
+          # An empty dist-tag would reach `npm publish --tag ""`, which npm
+          # rejects — but only after the images are out, so it is decided here
+          # with everything else.
+          if [[ -z "$NPM_TAG" ]]; then
+            echo "::error title=No npm dist-tag resolved::scripts/release-tags.mjs emitted no npm_tag for $RELEASE_REF. Every publish to npm lands under some dist-tag, so an empty one is not 'no tag' — it is a release that the registry refuses, after both images have already shipped."
+            exit 1
+          fi
           if [[ "$MODE" != "backport" ]]; then
-            echo "$MODE $RELEASE_REF: the highest-version test decided latest=$LATEST, publishing '$TAGS'."
+            echo "$MODE $RELEASE_REF: the highest-version test decided latest=$LATEST, publishing '$TAGS' and npm dist-tag '$NPM_TAG'."
             exit 0
           fi
           for tag in $TAGS; do
@@ -289,7 +306,11 @@ jobs:
             echo "::error title=A backport must never be the GitHub latest release::Backport $RELEASE_REF resolved latest=$LATEST. /releases/latest is what install.sh installs by default and what the in-product update checker compares against, so this would tell every user on a newer line to downgrade (ADR 0023 D28)."
             exit 1
           fi
-          echo "✅ backport $RELEASE_REF publishes '$TAGS' and passes --latest=false. Neither surface moves."
+          if [[ "$NPM_TAG" == "latest" ]]; then
+            echo "::error title=A backport must never take the npm latest dist-tag::Backport $RELEASE_REF resolved the npm dist-tag '$NPM_TAG'. \`npm i @actana/sdk\` resolves the \`latest\` dist-tag, so this hands every consumer an old line's patch as a downgrade on their next install — the same failure as the other two surfaces, on the one that reaches people without them asking for anything (ADR 0023 D28)."
+            exit 1
+          fi
+          echo "✅ backport $RELEASE_REF publishes '$TAGS', passes --latest=false, and takes the npm dist-tag '$NPM_TAG'. None of the three surfaces moves."
 
       # D31, amended by ADR 0018: Docker Hub is the only registry, so missing
       # credentials mean the images have nowhere to go — on any repo, fork or
@@ -707,27 +728,46 @@ jobs:
       # answer 403 and fail a release whose only fault is having succeeded
       # before — so an existing version is a notice, and the attestation check
       # below still runs against it.
+      #
+      # `--tag` is explicit and comes from `resolve` (D28). `npm publish` with
+      # no `--tag` takes `latest`, which is the same default this file already
+      # refuses for the docker tag list and for `gh release create --latest`;
+      # a backport or an rc taking it would hand every consumer a downgrade on
+      # their next `npm i`. The value is decided once in
+      # scripts/lib/release-latest.mjs and re-asserted in `resolve`.
       - name: Publish to npm with provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           TARBALLS: ${{ steps.pack.outputs.tarballs }}
+          PACKAGES: ${{ steps.pack.outputs.packages }}
+          NPM_TAG: ${{ needs.resolve.outputs.npm_tag }}
           RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
         run: |
           set -euo pipefail
+          # The rehearsal emits both lists in publish order, so the names come
+          # from where they were already computed rather than being read out of
+          # each tarball a second time. Two sources for one fact drift; a
+          # length mismatch means they already have.
+          read -ra tarballs <<< "$TARBALLS"
+          read -ra names <<< "$PACKAGES"
+          if [[ "${#tarballs[@]}" -ne "${#names[@]}" ]]; then
+            echo "::error title=Rehearsal outputs disagree::${#tarballs[@]} tarball(s) and ${#names[@]} package name(s). scripts/rehearse-npm-publish.mjs emits both in publish order and they are paired by position here."
+            exit 1
+          fi
           published=()
-          for tarball in $TARBALLS; do
-            name="$(tar -xzOf "$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).name')"
-            spec="$name@$RELEASE_VERSION"
+          for i in "${!tarballs[@]}"; do
+            tarball="${tarballs[$i]}"
+            spec="${names[$i]}@$RELEASE_VERSION"
             if npm view "$spec" version >/dev/null 2>&1; then
               echo "::notice title=Already on npm::$spec is already published — this is a re-run, and an npm version is published exactly once. Leaving it alone; its attestation is verified below."
             else
-              echo "Publishing $spec from $(basename "$tarball")"
-              npm publish "$tarball" --provenance --access public
+              echo "Publishing $spec from $(basename "$tarball") under dist-tag '$NPM_TAG'"
+              npm publish "$tarball" --provenance --access public --tag "$NPM_TAG"
             fi
             published+=("$spec")
           done
           printf '%s\n' "${published[@]}" > artifacts/npm/published.txt
-          echo "Published or confirmed: ${published[*]}"
+          echo "Published or confirmed: ${published[*]} (dist-tag $NPM_TAG)"
 
       # The assertion that the flag above actually did something. A publish that
       # lost `--provenance` succeeds and reads as a normal publish in every log
