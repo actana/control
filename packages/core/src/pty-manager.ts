@@ -38,6 +38,7 @@ import {
 } from "./harness-cli-version-requirements";
 import { applyHarnessPtyEnv } from "@actana/shared/harness-pty-env";
 import { acquireSpawnSlot, SPAWN_SETTLE_MS } from "./pty-spawn-queue";
+import { HarnessPromptDelivery } from "./harness-prompt-delivery";
 
 function sanitizeEnv(): Record<string, string> {
   const out = sanitizedProcessEnv();
@@ -613,35 +614,42 @@ export class PtyCore {
     };
     ptys.set(id, p);
 
-    const INITIAL_INPUT_SETTLE_MS = 450;
-    const INITIAL_INPUT_SUBMIT_DELAY_MS = 150;
-    const INITIAL_INPUT_MAX_WAIT_MS = 4000;
+    // The starting prompt is delivered by the Core, on the harness's own
+    // schedule (ADR 0026). Nothing here decides *when* — `harness-prompt-
+    // delivery.ts` watches this PTY's output for the TUI to stop painting,
+    // answers whatever dialog is in the way, and sends the carriage return as
+    // its own keystroke once the paste has settled. The client sent a string
+    // and nothing else, whether it was a Panel, the CLI or an SDK automation.
     const initialInput =
       plan.mode === "agent" && !opts.shell && !opts.shellSession
         ? sanitizeInitialInput(opts.initialInput)
         : undefined;
-    let initialInputScheduled = false;
-    let initialInputTimer: ReturnType<typeof setTimeout> | undefined;
-    const sendInitialInput = () => {
-      if (!initialInput) return;
-      try {
-        proc.write(initialInput);
-        setTimeout(() => {
-          try {
-            proc.write("\r");
-          } catch {
-            /* pty already exited */
-          }
-        }, INITIAL_INPUT_SUBMIT_DELAY_MS);
-      } catch {
-        /* pty already exited before the starting prompt could be written */
-      }
-    };
-    const scheduleInitialInput = (delayMs: number) => {
-      if (initialInputScheduled) return;
-      initialInputScheduled = true;
-      initialInputTimer = setTimeout(sendInitialInput, delayMs);
-    };
+    const promptDelivery =
+      initialInput && plan.mode === "agent"
+        ? new HarnessPromptDelivery({
+            harness: plan.agent,
+            prompt: initialInput,
+            write: (data) => {
+              try {
+                proc.write(data);
+              } catch {
+                /* pty already exited before the starting prompt could be written */
+              }
+            },
+            onEvent: ({ phase, ...detail }) => {
+              // A dialog's label is harness output, so it goes through the same
+              // cleaner every other borrowed string in this file does.
+              const safe = Object.fromEntries(
+                Object.entries(detail).map(([key, value]) => [key, safeLogValue(value)]),
+              );
+              log.info(`pty.prompt-delivery.${phase}`, {
+                taskId: safeLogValue(p.taskId),
+                agent: plan.agent,
+                ...safe,
+              });
+            },
+          })
+        : undefined;
 
     // First output means the agent is mostly booted — hand the spawn slot to
     // whoever is queued behind it. The timeout is the backstop for an agent
@@ -672,16 +680,12 @@ export class PtyCore {
       }
       const seq = appendBuffer(p, data);
       outputBatcher.push(id, seq, data, Date.now() - p.lastInputAt < PTY_INTERACTIVE_WINDOW_MS);
-      if (initialInput) scheduleInitialInput(INITIAL_INPUT_SETTLE_MS);
+      promptDelivery?.onOutput(data);
     });
-    const initialInputFallback = initialInput
-      ? setTimeout(() => scheduleInitialInput(0), INITIAL_INPUT_MAX_WAIT_MS)
-      : undefined;
     proc.onExit(({ exitCode, signal }: { exitCode: number; signal?: number }) => {
       clearTimeout(settleTimer);
       releaseSpawnHold();
-      if (initialInputTimer) clearTimeout(initialInputTimer);
-      if (initialInputFallback) clearTimeout(initialInputFallback);
+      promptDelivery?.dispose();
       outputBatcher.flush(id);
       sendToEmitTarget({ type: "exit", ptyId: id, exitCode, signal });
       // The Session's process is gone; its row has to settle whether or not a
