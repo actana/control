@@ -482,3 +482,86 @@ describe("housekeeping.yml", () => {
     );
   });
 });
+
+// ADR 0023 D3, as amended by #152 — the five manifests, and the wiring that
+// makes asserting them non-vacuous.
+//
+// The trap this guards is specific and does not look like a bug: a check that
+// asserts the right thing under the wrong name. `Train rules` is the context
+// pinned by all three rulesets in `docs/rulesets/`, so the version assertion
+// gates only for as long as it lives inside the job named exactly that. Move it
+// to a new job, rename the job, or split it out for tidiness, and the assertion
+// still runs, still goes red on drift, and still blocks nothing — because the
+// ruleset is waiting on a context nothing produces, and a required check nobody
+// reports is not a failure, it is a Pending that gets bypassed.
+//
+// So the name is asserted against the rulesets rather than against a literal,
+// and the manifest list is asserted against the workspace rather than against a
+// count. `packages/sdk` is the fifth (#152, ADR 0025); the sixth fails here.
+describe("the five-manifest version assertion (ADR 0023 D3, amended by #152)", () => {
+  const MANIFESTS = [
+    "package.json",
+    "packages/core/package.json",
+    "packages/panel/package.json",
+    "packages/sdk/package.json",
+    "packages/shared/package.json",
+  ];
+
+  /** The check contexts every ruleset in `docs/rulesets/` requires. */
+  const requiredContexts = () => {
+    const dir = path.join(repoRoot, "docs/rulesets");
+    const contexts = new Map();
+    for (const file of fs.readdirSync(dir).filter((f) => f.endsWith(".json"))) {
+      const found = [
+        ...JSON.stringify(JSON.parse(fs.readFileSync(path.join(dir, file), "utf8")))
+          .matchAll(/"context":"([^"]+)"/g),
+      ].map((m) => m[1]);
+      contexts.set(file, found);
+    }
+    return contexts;
+  };
+
+  it("is the set of every workspace manifest, not a number that goes stale", () => {
+    const packages = fs
+      .readdirSync(path.join(repoRoot, "packages"))
+      .filter((name) => fs.existsSync(path.join(repoRoot, "packages", name, "package.json")))
+      .map((name) => `packages/${name}/package.json`);
+    expect([...packages, "package.json"].sort()).toEqual([...MANIFESTS].sort());
+  });
+
+  it("lives in the job the rulesets pin, so it actually gates", () => {
+    const job = jobBlock(read("ci.yml"), "train-rules");
+    // The context in the rulesets is the job's `name:`, not its key. This is
+    // the assertion that fails if the version check is ever moved out of the
+    // job the required-checks list names.
+    expect(job).toMatch(/^ {4}name: Train rules$/m);
+    // Every ruleset that gates on checks at all gates on this one. The rulesets
+    // with no contexts are the tag rulesets and the retired-line template,
+    // which restrict pushes rather than require checks — asserting over them
+    // would be asserting the wrong thing, so they are excluded by that
+    // property rather than by name.
+    const gating = [...requiredContexts()].filter(([, contexts]) => contexts.length > 0);
+    expect(gating.length, "no ruleset requires any check").toBeGreaterThan(0);
+    for (const [file, contexts] of gating) {
+      expect(contexts, `${file} does not require Train rules`).toContain("Train rules");
+    }
+  });
+
+  it("compares all five manifests inside that job", () => {
+    const job = code(jobBlock(read("ci.yml"), "train-rules"));
+    for (const manifest of MANIFESTS) {
+      expect(job, `${manifest} is not asserted`).toContain(manifest);
+    }
+    // The set is checked before the versions are, so a manifest that vanishes
+    // or a package that is added cannot shrink the loop silently.
+    expect(job).toContain("assert_manifest_set");
+    expect(job).toMatch(/for file in packages\/\*\/package\.json/);
+  });
+
+  it("writes all five in the cut, which is where the versions come from", () => {
+    const job = code(jobBlock(read("promote.yml"), "next-train"));
+    const files = /files=\(([^)]*)\)/.exec(job);
+    expect(files, "no files=() array in the cut").not.toBeNull();
+    expect(files[1].trim().split(/\s+/).sort()).toEqual([...MANIFESTS].sort());
+  });
+});
