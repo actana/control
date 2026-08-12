@@ -10,7 +10,7 @@ import {
   CORE_LINK_PROTOCOL_VERSION,
   SESSION_LOCKED_ERROR_CODE,
   type CoreLinkRequestFrame,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 // The Panel records `multiConnection` per Core and gates on it (issue 143,
 // ADR 0024 D11).

@@ -27,7 +27,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // A Session finishing on a Core, end to end inside the Core: a `tasksMutate`
 // frame patches the row's status through the real mutation store, and the real

@@ -6,7 +6,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // Many core-link connections on one Core (issue 141, ADR 0024 D1).
 //

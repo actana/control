@@ -1,4 +1,4 @@
-import type { CoreLinkProjectSnapshot } from "@actana/shared/core-link-frames";
+import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
 import { TASK_STATUSES, type Harness } from "@actana/shared/domain";
 import type { Project, ProjectPresentation, TaskStatus } from "~/db/schema";
 

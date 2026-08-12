@@ -22,7 +22,7 @@ import {
 import { api, ApiError } from "./api";
 import type { Harness } from "@actana/shared/domain";
 import type { Task } from "~/db/schema";
-import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
+import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
 import { projectScopeKey, scopeKeyForProject, type ScopedProject } from "./scoped-project";
 import { projectSettingsFromSnapshot } from "~/shared/projects";
 import { getDefaultModelForHarness } from "./default-model-store";

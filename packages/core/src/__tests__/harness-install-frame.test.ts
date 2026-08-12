@@ -18,7 +18,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore } from "../pty-manager";
-import { HARNESS_INSTALL_FAILED_EVENT_KIND } from "@actana/shared/core-link-frames";
+import { HARNESS_INSTALL_FAILED_EVENT_KIND } from "@actana/sdk/core-link-frames";
 
 // The `harnessInstall` frame, at the Core's edge (issue 83).
 //

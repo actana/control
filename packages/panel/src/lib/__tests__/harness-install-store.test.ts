@@ -6,7 +6,7 @@ import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
   type CoreLinkEvent,
   type CoreLinkHarnessAvailabilityMap,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 // The pending-install state (issue 83). It lives beside the availability stores
 // and outlives every React thing around it, because what it tracks does too: a

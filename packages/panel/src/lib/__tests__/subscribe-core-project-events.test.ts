@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { subscribeCoreProjectEvents } from "../subscribe-core-project-events";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 import type { PanelBridge } from "~/lib/panel-bridge";
 
 // The filter between "a Core said something happened" and "this view's project

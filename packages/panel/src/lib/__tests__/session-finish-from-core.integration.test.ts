@@ -29,7 +29,7 @@ import {
   readEventTail,
 } from "@actana/core/event-log-store";
 import type { PtyCore } from "@actana/core/pty-manager";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // The notification a real Core raises. ADR 0008 assumed `session:finished`
 // already crossed the core-link; it never did, and the suite next door proves

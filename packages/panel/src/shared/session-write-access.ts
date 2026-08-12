@@ -24,7 +24,7 @@
 // two read as different sentences to the operator: a Session **held** by
 // another client, or a Session **driven** in another tab.
 
-import type { CoreLinkSessionLockState } from "@actana/shared/core-link-frames";
+import type { CoreLinkSessionLockState } from "@actana/sdk/core-link-frames";
 
 /**
  * The Session lock as it applies to this Panel, which is what its tabs are told.

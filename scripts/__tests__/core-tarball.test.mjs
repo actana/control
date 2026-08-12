@@ -206,11 +206,11 @@ describe("parseCoreLinkProtocolVersion", () => {
     );
   });
 
-  it("finds the real constant in the shared package", () => {
+  it("finds the real constant in the SDK package", () => {
     // Guards the rename that would otherwise ship a stale protocol version in
     // every tarball.
     const source = fs.readFileSync(
-      path.join(repoRoot, "packages", "shared", "src", "core-link-frames.ts"),
+      path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"),
       "utf8",
     );
     expect(parseCoreLinkProtocolVersion(source)).toMatch(/^\d+\.\d+\.\d+$/);

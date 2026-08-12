@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render, screen } from "@testing-library/react";
-import type { CoreLinkDirListing } from "@actana/shared/core-link-frames";
+import type { CoreLinkDirListing } from "@actana/sdk/core-link-frames";
 import type { Project } from "~/db/schema";
 
 // A Core-owned Project's path is set at create and immutable afterwards: it is

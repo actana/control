@@ -12,7 +12,7 @@ import {
   SESSION_LOCK_CHANGED_EVENT_KIND,
   type CoreLinkEvent,
   type CoreLinkSessionLockChangedPayload,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 // A connection presents a stable client id, and it is used for reaping and
 // nothing else (issue 146, ADR 0024 D9).

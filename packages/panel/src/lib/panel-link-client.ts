@@ -9,7 +9,7 @@ import type {
   CoreLinkEvent,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { PanelSessionLock } from "~/shared/session-write-access";
 

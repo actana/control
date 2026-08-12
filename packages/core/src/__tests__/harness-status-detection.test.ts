@@ -29,7 +29,7 @@ import {
 } from "../harness-hook-receiver";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 import { TITLE_WAITING } from "@actana/shared/task-sentinels";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // Harness status detection on a Core, driven the way it really happens: a hook
 // POSTs to the Core's own loopback receiver, that lands a row change in the

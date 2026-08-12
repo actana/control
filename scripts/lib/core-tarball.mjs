@@ -229,7 +229,7 @@ export function tarballRootDirName(version, target) {
 
 /**
  * Extract `CORE_LINK_PROTOCOL_VERSION` from the text of
- * `packages/shared/src/core-link-frames.ts`.
+ * `packages/sdk/src/core-link-frames.ts`.
  *
  * The tarball must embed the protocol version so `actana status` and the
  * Panel's needs-update gate can compare against it, but the build script is

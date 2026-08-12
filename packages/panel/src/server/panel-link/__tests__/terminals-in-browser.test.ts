@@ -16,7 +16,7 @@ import { generateCertMaterial } from "@actana/core/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
-import type { CoreLinkEvent, CoreLinkPtySpawnOptions } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent, CoreLinkPtySpawnOptions } from "@actana/sdk/core-link-frames";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 import { PanelLinkClient, type PanelLinkSocketLike } from "~/lib/panel-link-client";
 import { corePtyBridgeFor } from "~/lib/core-pty-bridge";

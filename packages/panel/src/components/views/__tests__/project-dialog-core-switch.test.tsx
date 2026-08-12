@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { CoreLinkDirListing } from "@actana/shared/core-link-frames";
+import type { CoreLinkDirListing } from "@actana/sdk/core-link-frames";
 
 // A Project's path is a VM path, so the folder browser is always browsing ONE
 // machine's disk. Changing the Core in the create dialog changes which machine

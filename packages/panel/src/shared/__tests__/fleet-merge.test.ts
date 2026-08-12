@@ -5,7 +5,7 @@ import {
   type CoreFanOutResult,
   type CoreFanOutTarget,
 } from "../fleet-merge";
-import type { CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
 
 // The Fleet view fans out `tasksList` to every connected Core in parallel and
 // merges results keyed by `coreId/taskId` (CONTEXT.md "Fleet view"). Offline

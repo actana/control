@@ -14,7 +14,7 @@ import {
   type HarnessOfferOptions,
 } from "../actana-harnesses";
 import type { ActanaSystem, CommandResult } from "../actana-system";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 
 const ALL_MISSING: CoreLinkHarnessAvailabilityMap = {
   "claude-code": { status: "missing", reason: "not-found" },

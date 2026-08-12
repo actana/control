@@ -20,7 +20,7 @@ import {
   type CoreLinkHarnessAvailability,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import { createListenerSet } from "./listener-set";
 
 export type CliAvailabilityStatus = "unknown" | "checking" | "available" | "missing" | "outdated";

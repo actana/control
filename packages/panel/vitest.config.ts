@@ -11,6 +11,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "~": path.resolve(__dirname, "./src"),
+      "@actana/sdk": path.resolve(__dirname, "../sdk/src"),
       "@actana/shared": path.resolve(__dirname, "../shared/src"),
       // Test-only: the core-link suites drive the Panel's client against the
       // real Core server rather than a hand-rolled stand-in.

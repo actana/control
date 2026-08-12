@@ -14,7 +14,7 @@ import {
   type CoreLinkEvent,
   type CoreLinkRequestFrame,
   type CoreLinkResponseFrame,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /**
  * The Panel service's core-links: one dialed connection per registered Core,
