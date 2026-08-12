@@ -11,8 +11,15 @@ Companion script: [`spike-151-node22-mtls.mjs`](spike-151-node22-mtls.mjs).
 
 Both connections succeed on Node 22 with the CA, client certificate and client
 key read from a registration blob, against a live Core. Node 24 was run as the
-control and produced byte-identical results. Nothing fails on 22 that passes on
-24, so there is no decision to escalate and extraction is not blocked.
+control: **the same six legs passed on both**, with the same frames, the same
+certificate subjects, the same TLS version and the same error codes. Nothing
+fails on 22 that passes on 24, so there is no decision to escalate and
+extraction is not blocked.
+
+The two runs are not byte-identical and cannot be — the script stamps
+`process.version` into its banner and summary, and leg 2c binds a fresh
+ephemeral port each run. Those three lines are the only differences; the
+transcripts are below in full so the claim is checkable rather than trusted.
 
 | Leg | Node 22.23.2 | Node 24.19.0 |
 | --- | --- | --- |
@@ -22,6 +29,61 @@ control and produced byte-identical results. Nothing fails on 22 that passes on
 | 2b — `fetch` without a client cert is refused | PASS | PASS |
 | 2c — `fetch` gets an HTTP response over mTLS | PASS | PASS |
 | 3 — wrong host fails SAN validation | PASS | PASS |
+
+## Transcripts, verbatim
+
+Both produced by `spike-151-node22-mtls.mjs` as committed on this branch, run
+back to back against the same live Core (`coreId=core_17504d4b830baffc`,
+protocol `0.15.0`), from the same registration blob. Exit status 0 in both.
+
+### Node 22.23.2
+
+```
+node v22.23.2  •  endpoint wss://127.0.0.1:9444  •  blob /home/core/.config/actana/registration-blob.txt
+
+PASS  1  ws → ready
+        ready frame: version=0.15.0 multiConnection=null
+PASS  1b  ws → authOk
+        coreId=core_17504d4b830baffc exp=1817638207292
+PASS  2a  fetch → mutual TLS
+        authorized=true authorizationError=null TLSv1.3
+        server=[CN=127.0.0.1] client=[CN=mission-control-panel]
+        HTTP layer: no response — Core serves no HTTP route on this port (see 2c)
+PASS  2b  fetch without client cert is refused
+        UND_ERR_SOCKET: other side closed
+PASS  2c  fetch → HTTP response over mTLS
+        HTTP 200 {"ok":true,"clientCn":"mission-control-panel","path":"/spike"} (loopback listener on the Core's own server cert, port 40021)
+PASS  3  wrong host fails SAN validation
+        dialled https://172.17.0.2:9444 → ERR_TLS_CERT_ALTNAME_INVALID
+
+6/6 legs passed on v22.23.2
+```
+
+### Node 24.19.0 (control)
+
+```
+node v24.19.0  •  endpoint wss://127.0.0.1:9444  •  blob /home/core/.config/actana/registration-blob.txt
+
+PASS  1  ws → ready
+        ready frame: version=0.15.0 multiConnection=null
+PASS  1b  ws → authOk
+        coreId=core_17504d4b830baffc exp=1817638207292
+PASS  2a  fetch → mutual TLS
+        authorized=true authorizationError=null TLSv1.3
+        server=[CN=127.0.0.1] client=[CN=mission-control-panel]
+        HTTP layer: no response — Core serves no HTTP route on this port (see 2c)
+PASS  2b  fetch without client cert is refused
+        UND_ERR_SOCKET: other side closed
+PASS  2c  fetch → HTTP response over mTLS
+        HTTP 200 {"ok":true,"clientCn":"mission-control-panel","path":"/spike"} (loopback listener on the Core's own server cert, port 43529)
+PASS  3  wrong host fails SAN validation
+        dialled https://172.17.0.2:9444 → ERR_TLS_CERT_ALTNAME_INVALID
+
+6/6 legs passed on v24.19.0
+```
+
+Line-for-line the two differ only in the banner's version, the summary's
+version, and leg 2c's ephemeral port (`40021` vs `43529`).
 
 ## The trap, confirmed
 
@@ -41,6 +103,14 @@ built as `new Agent({ connect: { ca } })` — CA only, no client cert — is ref
 by the Core at the TLS layer (`UND_ERR_SOCKET: other side closed`), because the
 Core sets `requestCert: true, rejectUnauthorized: true`. Without that control, a
 passing leg 2a would be indistinguishable from a server that never asked.
+
+The leg asserts on the *shape* of the refusal — `UND_ERR_SOCKET`/`ECONNRESET`/
+`EPIPE`, or an `ERR_SSL_*` alert — not merely on "it failed and wasn't slow".
+A control that passes on any error is not a control: `ECONNREFUSED` from a Core
+that is not running would otherwise read as PASS and make leg 2a look meaningful
+against nothing at all. Confirmed by pointing the blob at a dead port, where the
+leg now reports
+`ECONNREFUSED ... — not a TLS-layer refusal (is the Core up on this port?)`.
 
 ## Correction to the `experiment/action.md` §5 trap
 
@@ -116,4 +186,6 @@ SPIKE_MODULES=/tmp/spike-rig/node_modules node experiment/spike-151-node22-mtls.
 Needs a live Core and its registration blob (default
 `~/.config/actana/registration-blob.txt`). Leg 2c additionally reads
 `~/.config/actana/material.json` for the Core's server certificate. Exit status
-is 0 only when every leg passes.
+is 0 only when every leg passes — including the case where the `ws` socket dies
+or stalls between `ready` and `authOk`, which records leg 1b as a failure rather
+than dropping it from the tally.

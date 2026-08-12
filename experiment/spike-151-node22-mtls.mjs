@@ -43,7 +43,8 @@ if (!MODULES) {
 const load = (name) => import(pathToFileURL(path.join(MODULES, name)).href);
 const wsMod = await load("ws/index.js");
 const WebSocket = wsMod.default ?? wsMod.WebSocket;
-const undici = (await load("undici/index.js")).default ?? (await load("undici/index.js"));
+const undiciMod = await load("undici/index.js");
+const undici = undiciMod.default ?? undiciMod;
 const { Agent, buildConnector } = undici;
 
 const BLOB_PATH =
@@ -92,13 +93,23 @@ async function legWsReady() {
       key: clientKey,
       ...(isIpLiteral(HOST) ? {} : { servername: HOST }),
     });
+    let sawReady = false;
+    let sawAuth = false;
+    // Whichever leg the socket died on is the one that has to land in
+    // `results`. Recording leg 1 unconditionally would both contradict an
+    // already-passed leg 1 and let a stall between `ready` and `authOk` drop
+    // leg 1b entirely — and a dropped leg is an empty `failed`, i.e. exit 0.
+    const recordUnfinished = (detail) => {
+      if (!sawReady) record("1", "ws → ready", false, detail);
+      else if (!sawAuth) record("1b", "ws → authOk", false, `after \`ready\`: ${detail}`);
+    };
+
     const timer = setTimeout(() => {
       socket.terminate();
-      record("1", "ws → ready", false, "timed out after 10000ms without a `ready` frame");
+      recordUnfinished("timed out after 10000ms");
       resolve();
     }, 10_000);
 
-    let sawReady = false;
     socket.on("message", (raw) => {
       const frame = JSON.parse(String(raw));
       if (frame.type === "ready") {
@@ -115,6 +126,7 @@ async function legWsReady() {
         return;
       }
       if (frame.type === "authOk") {
+        sawAuth = true;
         record("1b", "ws → authOk", true, `coreId=${frame.coreId} exp=${frame.exp}`);
         clearTimeout(timer);
         socket.close();
@@ -122,6 +134,7 @@ async function legWsReady() {
         return;
       }
       if (frame.type === "authError") {
+        sawAuth = true;
         record("1b", "ws → authOk", false, `authError reason=${frame.reason}`);
         clearTimeout(timer);
         socket.close();
@@ -131,7 +144,7 @@ async function legWsReady() {
 
     socket.on("error", (err) => {
       clearTimeout(timer);
-      if (!sawReady) record("1", "ws → ready", false, `${err.code ?? err.name}: ${err.message}`);
+      recordUnfinished(`${err.code ?? err.name}: ${err.message}`);
       resolve();
     });
   });
@@ -216,11 +229,24 @@ async function legFetchNoCert() {
     });
     record("2b", "fetch without client cert is refused", false, `unexpectedly got HTTP ${res.status}`);
   } catch (err) {
-    const code = err.cause?.code ?? err.name;
-    // A TLS-layer refusal is the pass. A timeout would mean the Core let a
-    // certless client through to the HTTP layer.
-    const ok = !t.timedOut();
-    record("2b", "fetch without client cert is refused", ok, `${code}: ${err.cause?.message ?? err.message}`);
+    const code = String(err.cause?.code ?? err.name);
+    // A TLS-layer refusal is the pass, and it has to be asserted on its shape.
+    // `!t.timedOut()` alone passes on *any* non-slow failure: ECONNREFUSED
+    // against a Core that is not running, or a wrong port, would read as a
+    // clean negative control and make leg 2a look meaningful when nothing was
+    // listening. The Core tears the connection down after asking for a client
+    // cert it did not get (undici surfaces that as UND_ERR_SOCKET/ECONNRESET),
+    // or OpenSSL raises an explicit alert. Anything else is a broken rig.
+    const REFUSALS = new Set(["UND_ERR_SOCKET", "ECONNRESET", "EPIPE"]);
+    const isTlsRefusal = REFUSALS.has(code) || code.startsWith("ERR_SSL_");
+    const ok = !t.timedOut() && isTlsRefusal;
+    record(
+      "2b",
+      "fetch without client cert is refused",
+      ok,
+      `${code}: ${err.cause?.message ?? err.message}` +
+        (ok ? "" : " — not a TLS-layer refusal (is the Core up on this port?)"),
+    );
   } finally {
     t.done();
     await agent.close().catch(() => {});
