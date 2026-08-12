@@ -319,6 +319,7 @@ export class CoreSession {
     // single-connection Core arrives on this listener, so nothing can be routed
     // by anything but the id, and the id is what has not come back yet.
     const held: CoreLinkDataFrame[] = [];
+    const heldEvents: CoreLinkEvent[] = [];
     let heldExit: CoreLinkExitFrame | null = null;
     let ptyId: string | null = null;
     const terminal = new TerminalScreen({ cols, rows, scrollback: opts.scrollback });
@@ -340,6 +341,18 @@ export class CoreSession {
       if (frame.ptyId !== ptyId) return;
       session?.ingestExit(frame);
     });
+    // Held for the same reason the bytes are, and with a sharper consequence:
+    // a status change is not a stream, and the one event saying the harness
+    // finished is the only one that will ever say it. Dropped in the window
+    // between the spawn going out and its answer landing, `waitForIdle` waits
+    // for a report that has already been made.
+    const stopEvents = client.onEvent(({ event }) => {
+      if (session === null) {
+        heldEvents.push(event);
+        return;
+      }
+      session.onCoreEvent(event);
+    });
 
     let spawned: { ptyId: string };
     try {
@@ -360,6 +373,7 @@ export class CoreSession {
     } catch (err) {
       stopData();
       stopExit();
+      stopEvents();
       throw new CoreSessionStartError(
         `the Core refused to start a ${opts.harness} Session in ${opts.cwd}: ${
           err instanceof Error ? err.message : String(err)
@@ -377,9 +391,9 @@ export class CoreSession {
       command,
       terminal,
     });
-    session.unsubscribes.push(stopData, stopExit);
-    session.unsubscribes.push(client.onEvent(({ event }) => session?.onCoreEvent(event)));
+    session.unsubscribes.push(stopData, stopExit, stopEvents);
 
+    for (const event of heldEvents) session.onCoreEvent(event);
     for (const frame of held) {
       if (frame.ptyId === ptyId) session.ingest(frame.data);
     }
@@ -548,6 +562,13 @@ export class CoreSession {
     this.disposed = true;
     for (const off of this.unsubscribes) off();
     this.unsubscribes.length = 0;
+    // Anyone still waiting is waiting on a report this Session will no longer
+    // hear, so they are settled on the way out rather than left pending
+    // forever. `kill()` disposes, and `await session.kill()` after starting a
+    // `waitForIdle()` is an ordinary thing to write.
+    for (const waiter of [...this.idleWaiters]) {
+      waiter(this.settledNow() ?? { status: this.lastStatus ?? "disposed", exited: false });
+    }
     this.dataListeners.clear();
     this.exitListeners.clear();
     this.statusListeners.clear();
@@ -583,6 +604,7 @@ export class CoreSession {
     this.releaseWaiters();
   }
 
+  /** @internal — called by {@link start} for events held during the spawn. */
   private onCoreEvent(event: CoreLinkEvent): void {
     if (event.taskId !== this.taskId) return;
     if (!STATUS_BEARING_EVENT_KINDS.has(event.kind)) return;

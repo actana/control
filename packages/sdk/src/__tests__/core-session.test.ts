@@ -527,6 +527,19 @@ describe("waiting on the Core's report", () => {
     await expect(session.waitForIdle({ timeoutMs: 30 })).rejects.toThrow(/still running/);
   });
 
+  it("settles a pending wait when the Session is disposed rather than stranding it", async () => {
+    // `await session.kill()` while a `waitForIdle()` is outstanding is an
+    // ordinary thing to write, and a disposed Session hears no more reports —
+    // so the waiter is answered on the way out instead of left pending forever.
+    rig = startRig();
+    session = await startSession(rig);
+    const idle = session.waitForIdle();
+
+    session.dispose();
+
+    await expect(idle).resolves.toMatchObject({ exited: false });
+  });
+
   it("subscribes the client to the event log when nothing else has", async () => {
     rig = startRig();
     expect(rig.client.isSubscribedToEvents()).toBe(false);
