@@ -261,6 +261,13 @@ export class CoreClient {
 
   protected transport: CoreLinkTransport | null = null;
   protected closed = false;
+  /**
+   * True once a `subscribe` has gone out for this client — see
+   * {@link subscribeEvents}. Per client rather than per connection: it records
+   * that this client *wants* the event stream, which is what a reconnecting
+   * subclass re-asks for, and what stops a second caller asking twice.
+   */
+  private eventsSubscribed = false;
   /** True once this connection has been established — reset per connection. */
   private established = false;
 
@@ -787,6 +794,46 @@ export class CoreClient {
   onEvent(cb: (msg: { event: CoreLinkEvent }) => void): Unsubscribe {
     this.eventListeners.add(cb);
     return () => this.eventListeners.delete(cb);
+  }
+
+  /**
+   * Ask this Core for its event log: the tail past `lastEventId`, then live
+   * push for as long as this connection lasts.
+   *
+   * Fire-and-forget, because the answer is a *stream* — the replay tail as
+   * `event` frames and the {@link onEventsReplayed} marker behind them — rather
+   * than a reqId-correlated response. Returns false when there was no writable
+   * connection to put the frame on.
+   *
+   * A one-shot client sends this only if it is asked to. That is the difference
+   * between the two entry points here: {@link DurableCoreClient} owes the Core a
+   * subscribe on every connection and sends one through this method, whereas a
+   * program that connects to ask one question wants no event stream at all.
+   * What made it public is the session layer (issue 155): a script that starts a
+   * Session and waits for the harness to finish is reading the Core's own
+   * report of that, and the report is an event.
+   *
+   * `lastEventId` defaults to 0, which asks for the whole tail the Core will
+   * serve. That is the honest default for a caller with no cursor — the
+   * alternative is inventing a high-water mark, and a cursor that runs ahead of
+   * the log stops live push entirely. A caller that keeps a cursor passes it.
+   */
+  subscribeEvents(lastEventId = 0): boolean {
+    if (this.closed) return false;
+    this.eventsSubscribed = true;
+    return this.sendNow({ type: "subscribe", reqId: "", lastEventId }, "sub");
+  }
+
+  /**
+   * Has a `subscribe` gone out on this client's behalf?
+   *
+   * For a caller that needs the event stream but does not know whether the
+   * client it was handed is already receiving one — a durable client subscribes
+   * itself, a one-shot client does not, and a second subscribe would replay the
+   * tail a second time.
+   */
+  isSubscribedToEvents(): boolean {
+    return this.eventsSubscribed;
   }
 
   /** Notified when a `subscribe` replay tail has been fully streamed. */

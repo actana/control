@@ -171,7 +171,7 @@ export class DurableCoreClient extends CoreClient {
    */
   private sendSubscribe(): void {
     this.caughtUp = false;
-    this.sendNow({ type: "subscribe", reqId: "", lastEventId: this.lastEventId }, "sub");
+    this.subscribeEvents(this.lastEventId);
   }
 
   /**
