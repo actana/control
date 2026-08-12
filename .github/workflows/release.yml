@@ -1,16 +1,19 @@
 name: Release
 
 # Everything a release publishes: the three Core tarballs and their
-# SHA256SUMS, the Panel and Core images, and the GitHub Release. One file
-# rather than four, because they are one event (ADR 0016 D34).
+# SHA256SUMS, the Panel and Core images, the npm packages, and the GitHub
+# Release. One file rather than five, because they are one event (ADR 0016
+# D34).
 #
 #   resolve ─┬─ tarball ──────── installer-e2e ─┐
 #            │                                  │
-#            └─ tarball-macos ─┬─ panel ────────┤
-#                              └─ core ─────────┴── github-release
+#            └─ tarball-macos ─┬─ panel ────────┼── npm ── github-release
+#                              └─ core ─────────┘
 #
 # `panel` and `core` go through the reusable container-image.yml with
-# push: true, and both they and the tarball legs feed `github-release`.
+# push: true; `npm` waits on all of them and on both tarball legs, because it
+# is the only publish here that cannot be repeated (#129 D13 — see its own
+# header); and `github-release` is last, because it is the announcement.
 #
 # The Docker Hub pages are **not** here. `descriptions` moved to
 # housekeeping.yml and now covers all four repositories on a weekly tick (ADR
@@ -81,11 +84,20 @@ name: Release
 #
 # ── The registry posture ─────────────────────────────────────────────────────
 #
-# Docker Hub is the only registry (ADR 0018 — GHCR was retired). A *missing*
-# credential is decided here in `resolve` before anything is built: fatal, on
-# any repo, because there is no longer a registry that authenticates for free.
-# A present-but-*broken* credential fails at the `docker login` in
-# container-image.yml, before any tag is pushed.
+# Docker Hub is the only registry the **images** go to (ADR 0018 — GHCR was
+# retired), and since #159 that ADR is amended: npm is a second registry, for
+# the two published packages. A *missing* credential for either is decided here
+# in `resolve` before anything is built — fatal, on any repo, because there is
+# no registry left that authenticates for free. A present-but-*broken*
+# credential fails later and in its own place: at the `docker login` in
+# container-image.yml before any tag is pushed, and at `npm publish` in the
+# `npm` job below, after everything else has already succeeded.
+#
+# The asymmetry between the two registries is worth stating once, because the
+# rest of this file is built on the half that is no longer universally true: a
+# container tag is a pointer and can be re-pointed, which is what promote mode
+# *is*. An npm version is not a pointer. It is consumed on first publish and
+# never returns.
 
 # ── The trigger (ADR 0023 D40) ───────────────────────────────────────────────
 #
@@ -299,6 +311,29 @@ jobs:
             exit 0
           fi
           echo "::error title=Missing Docker Hub credential::DOCKERHUB_USERNAME and DOCKERHUB_TOKEN must both be set — Docker Hub is the only registry the images are published to, so a release without them is not a release. One personal access token (Read & Write, from an account with Admin on the org) serves both the image push and the description sync. See docs/REPO_SETUP.md section 2."
+          exit 1
+
+      # The same shape as the check above, for the second registry (#129 D13,
+      # ADR 0018 as amended). It is deliberately a copy rather than a merged
+      # "credentials" step: the two failures are different sentences, and an
+      # operator who has just added npm to a working release needs to be told
+      # which one is missing, not that "a credential" is.
+      #
+      # Being *here* is the whole point. `npm` is the last job in the graph —
+      # after both images are published — so a missing token discovered at the
+      # publish itself would be discovered with `x.y.z` and `latest` already
+      # re-pointed on Docker Hub and nothing on npm: a release that is half out,
+      # in the one direction that cannot be undone by re-running it. Fifteen
+      # seconds into `resolve`, nothing has been built and nothing published.
+      - name: Require an npm token
+        env:
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$NPM_TOKEN" ]]; then
+            exit 0
+          fi
+          echo "::error title=Missing npm token::NPM_TOKEN must be set — npm is a release registry alongside Docker Hub (ADR 0018 as amended by #159), and @actana/sdk and @actana/cli publish on this tag at this version. An automation token with Read and write on the @actana scope, from an account with Owner on it: \`gh secret set NPM_TOKEN --repo actana/control\`. See docs/REPO_SETUP.md section 2."
           exit 1
 
   # The two Linux legs. The mac leg is `tarball-macos` below rather than a third
@@ -578,6 +613,153 @@ jobs:
       tags: ${{ needs.resolve.outputs.tags }}
       push: true
 
+  # npm, the second release registry (#129 D12, D13; ADR 0018 as amended by
+  # #159). `@actana/sdk` and `@actana/cli` go out on the same tag that builds
+  # the images, at the same version as everything else.
+  #
+  # ── Why it is last ───────────────────────────────────────────────────────────
+  #
+  # Every other publish in this workflow is re-doable. A Docker tag can be
+  # re-pointed; the whole promote mode is built on that. `gh release upload
+  # --clobber` overwrites an asset. **An npm version number is burned by its
+  # first publish** — unpublishing inside the 72-hour window frees the bytes and
+  # not the name, so `@actana/sdk@0.2.2` can never mean anything else, on any
+  # future train, and the recovery is to burn the next number too.
+  #
+  # So this waits on everything: both tarball legs, the installer e2e, and both
+  # image publishes. A CVE gate that fires, an arm64 tarball the one-liner
+  # cannot install, a digest whose revision label names another commit — each of
+  # those is a release that stops, and none of them should cost a version
+  # number. Ordering it last is not caution about npm; it is the one job whose
+  # failure mode the rest of the pipeline cannot absorb.
+  #
+  # It also sits downstream of the human, as every publishing job in this
+  # workflow does. The pause is no longer the `macos-release` environment on
+  # `tarball-macos` — ADR 0023 D15 moved it to the head of `promote.yml`, which
+  # is upstream of this entire file, so "downstream of the approval" is now a
+  # property of being in this workflow at all. `needs: tarball-macos` is kept
+  # for the guarantee that survived the move: a release is atomic or it is not a
+  # release.
+  #
+  # ── Provenance ───────────────────────────────────────────────────────────────
+  #
+  # `id-token: write` is what makes the attestation possible, and its absence is
+  # the trap: `npm publish --provenance` in a job without it fails loudly, but a
+  # publish that simply stopped passing `--provenance` would succeed, silently
+  # unattested, and look identical in the log. Three things stand in the way of
+  # that, deliberately overlapping — the flag here, `publishConfig.provenance`
+  # inside the package (asserted by scripts/lib/npm-packages.mjs), and the
+  # post-publish check below that reads the attestation back off the registry
+  # and fails the release if it is not there.
+  npm:
+    name: npm publish
+    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      # Provenance. Without it the publish is unattested; see the header.
+      id-token: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+          # Writes an `.npmrc` under RUNNER_TEMP that reads `NODE_AUTH_TOKEN`,
+          # and points `NPM_CONFIG_USERCONFIG` at it. The repository's own
+          # `.npmrc` is untouched.
+          registry-url: "https://registry.npmjs.org"
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Pack, and assert the tarballs — the same rehearsal every pull request
+      # runs through `pnpm test`, here re-run on the tag and against the version
+      # being released, so what is asserted and what is published are the same
+      # bytes rather than the same intent.
+      #
+      # `pnpm pack`, not `npm pack`: the SDK's working `exports` map points at
+      # TypeScript source because inside the workspace it is consumed as source,
+      # and `publishConfig.exports` — which pnpm applies at pack time and npm
+      # does not — is what turns it into the compiled map a consumer resolves.
+      - id: pack
+        name: Rehearse the publish, on the tag
+        env:
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/rehearse-npm-publish.mjs \
+            --out-dir artifacts/npm \
+            --version "$RELEASE_VERSION" | tee -a "$GITHUB_OUTPUT"
+
+      # One tarball at a time, with the already-published case handled rather
+      # than raced: `workflow_dispatch` re-runs a whole release (D26, D30), and
+      # on that path the registry already has this version. `npm publish` would
+      # answer 403 and fail a release whose only fault is having succeeded
+      # before — so an existing version is a notice, and the attestation check
+      # below still runs against it.
+      - name: Publish to npm with provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          TARBALLS: ${{ steps.pack.outputs.tarballs }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          published=()
+          for tarball in $TARBALLS; do
+            name="$(tar -xzOf "$tarball" package/package.json | node -p 'JSON.parse(require("fs").readFileSync(0,"utf8")).name')"
+            spec="$name@$RELEASE_VERSION"
+            if npm view "$spec" version >/dev/null 2>&1; then
+              echo "::notice title=Already on npm::$spec is already published — this is a re-run, and an npm version is published exactly once. Leaving it alone; its attestation is verified below."
+            else
+              echo "Publishing $spec from $(basename "$tarball")"
+              npm publish "$tarball" --provenance --access public
+            fi
+            published+=("$spec")
+          done
+          printf '%s\n' "${published[@]}" > artifacts/npm/published.txt
+          echo "Published or confirmed: ${published[*]}"
+
+      # The assertion that the flag above actually did something. A publish that
+      # lost `--provenance` succeeds and reads as a normal publish in every log
+      # line; the only place the difference is visible is the registry, so that
+      # is where it is checked. Read back rather than trusted — with a couple of
+      # retries, because the attestation is written by a different service than
+      # the packument and can lag it by seconds.
+      - name: Every published package is attested
+        run: |
+          set -euo pipefail
+          fail=0
+          # `mapfile` rather than `while read < file`: the loop body runs `npm`,
+          # and a command that touches stdin inside a `while read` loop eats the
+          # list it is iterating.
+          mapfile -t specs < artifacts/npm/published.txt
+          for spec in "${specs[@]}"; do
+            predicate=""
+            for attempt in 1 2 3 4 5; do
+              predicate="$(npm view "$spec" dist.attestations.provenance.predicateType 2>/dev/null || true)"
+              [[ -n "$predicate" ]] && break
+              echo "  $spec: no attestation yet (attempt $attempt), waiting…"
+              sleep 10
+            done
+            if [[ -z "$predicate" ]]; then
+              echo "::error title=Published without provenance::$spec is on the registry with no provenance attestation. A publish that is missing \`--provenance\`, or that ran in a job without \`id-token: write\`, succeeds and looks exactly like this one did in the log — the registry is the only place the difference shows. The version cannot be republished; the fix is to restore the attestation path and cut the next version."
+              fail=1
+            else
+              echo "✅ $spec — $predicate"
+            fi
+          done
+          exit "$fail"
+
   github-release:
     name: Attach tarballs + SHA256SUMS to the GitHub Release
     # The Release is the last thing to appear, after both images are published:
@@ -593,7 +775,16 @@ jobs:
     # — and kept named because a `needs:` list is the only place a reader
     # learns what a job waits for. A SHA256SUMS covering a subset of the
     # architectures the docs promise is worse than a release that is late.
-    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core]
+    #
+    # `npm` is in here as of #159, and it is the one `needs:` in this list that
+    # can hold the Release back over something already published. That is the
+    # intended direction: the Release is the announcement, npm is the least
+    # undoable thing the release does, and an announcement that precedes a
+    # failed `npm publish` sends people to an `npm i` that 404s. The re-run path
+    # (`workflow_dispatch` on the same tag) recreates every asset and treats an
+    # already-published version as published, so a release stopped here is
+    # resumable — which is the property that makes ordering it this way safe.
+    needs: [resolve, tarball, tarball-macos, installer-e2e, panel, core, npm]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
