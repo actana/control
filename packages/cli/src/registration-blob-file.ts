@@ -47,12 +47,23 @@ export function decodeRegistrationBlobText(raw: string): BlobDecodeResult {
   const trimmed = typeof raw === "string" ? raw.trim() : "";
   if (!trimmed) return { ok: false, error: "the blob is empty" };
 
-  let json: string;
-  try {
-    json = Buffer.from(trimmed, "base64").toString("utf8");
-  } catch {
+  // Base64 is checked, not caught. `Buffer.from(x, "base64")` does not throw on
+  // input that is not base64 — it *skips* every character outside the alphabet
+  // and decodes what is left — so the `try`/`catch` this replaces had an
+  // unreachable arm, and "the blob is not base64" was a sentence that could
+  // never print. Input that was not base64 at all fell through to the JSON
+  // message instead, which sent the reader looking for a line break in
+  // something that was never a blob.
+  //
+  // Interior whitespace is stripped before the check rather than rejected: the
+  // skipping behaviour meant a blob line-wrapped by a terminal, a mail client
+  // or a copy out of a web page has always decoded, and this is a correction to
+  // a diagnosis, not a narrowing of what is accepted.
+  const compact = trimmed.replace(/\s+/g, "");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
     return { ok: false, error: "the blob is not base64" };
   }
+  const json = Buffer.from(compact, "base64").toString("utf8");
 
   let parsed: unknown;
   try {
