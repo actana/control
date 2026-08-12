@@ -33,23 +33,53 @@ import {
   PUBLISHABLE,
   PUBLISHED_ENGINES,
   assertMonorepoKeepsTheGuard,
+  assertPackedBin,
   assertPackedFiles,
   assertPackedManifest,
   assertPublishSet,
+  binTargets,
   discoverPublishable,
+  publishOrder,
   workspaceManifests,
 } from "../lib/npm-packages.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
-/** A manifest as it comes out of a pack: everything D12 and D13 want, and nothing else. */
+const repository = (directory) => ({
+  type: "git",
+  url: "git+https://github.com/actana/control.git",
+  directory,
+});
+
+/**
+ * A **library** manifest as it comes out of a pack: everything D12 and D13
+ * want, and nothing else. `@actana/sdk`'s shape.
+ */
 const packed = (overrides = {}) => ({
   name: "@actana/sdk",
   version: "0.2.2",
   engines: { node: PUBLISHED_ENGINES },
   exports: { "./*": { types: "./dist/*.d.ts", default: "./dist/*.js" } },
+  repository: repository("packages/sdk"),
   publishConfig: { access: "public", provenance: true },
   scripts: { build: "tsc -p tsconfig.build.json" },
+  ...overrides,
+});
+
+/**
+ * The other kind: a **command**. `@actana/cli`'s shape — a `bin` map, an
+ * esbuild bundle, no `exports` and no types, because nothing imports a
+ * program. Every rule that is not about being imported still applies to it.
+ */
+const packedCommand = (overrides = {}) => ({
+  name: "@actana/cli",
+  version: "0.2.2",
+  engines: { node: PUBLISHED_ENGINES },
+  bin: { actana: "bin/actana.mjs" },
+  repository: repository("packages/cli"),
+  publishConfig: { access: "public", provenance: true },
+  scripts: { build: "node build.mjs" },
+  dependencies: { "@actana/sdk": "0.2.2", ws: "8.21.0" },
   ...overrides,
 });
 
@@ -61,14 +91,71 @@ const files = (...extra) => [
   ...extra,
 ];
 
+const commandFiles = (...extra) => [
+  "package/package.json",
+  "package/LICENSE",
+  "package/README.md",
+  "package/bin/actana.mjs",
+  "package/dist/actana-cli.mjs",
+  "package/dist/actana-cli.mjs.map",
+  ...extra,
+];
+
+/** A workspace package as `workspaceManifests` reports it. */
+const workspace = (name, { private: isPrivate = false } = {}) => ({
+  name,
+  dir: `/repo/packages/${name.split("/")[1]}`,
+  relative: `packages/${name.split("/")[1]}/package.json`,
+  manifest: { name, ...(isPrivate ? { private: true } : {}) },
+});
+
 describe("what this repository publishes to npm (#129 D13)", () => {
-  it("is @actana/sdk today and @actana/cli when #157 lands, and nothing else", () => {
+  it("is @actana/sdk and @actana/cli — both of them, and nothing else", () => {
     expect(PUBLISHABLE).toEqual(["@actana/sdk", "@actana/cli"]);
     const found = discoverPublishable(repoRoot);
-    expect(found.map((pkg) => pkg.name)).toContain("@actana/sdk");
-    // The CLI is created in parallel by #157. Its absence is allowed and
-    // reported; anything *else* being publishable is not.
-    expect(assertPublishSet(found).every((name) => PUBLISHABLE.includes(name))).toBe(true);
+    // Both, not a superset check: #159's first acceptance clause is that *both*
+    // packages publish, and the way it was nearly missed is that a set which
+    // happens to contain the SDK satisfies every weaker assertion.
+    expect(found.map((pkg) => pkg.name).sort()).toEqual([...PUBLISHABLE].sort());
+    // Nothing is merely intended any more: the whole set exists and publishes.
+    expect(assertPublishSet(found, workspaceManifests(repoRoot))).toEqual([]);
+  });
+
+  // The seam between #157 and #159, and the reason it needed its own error.
+  // #157 landed `packages/cli` with `private: true` saying #159 would flip it;
+  // to a rule that only looks at what it discovered, that is indistinguishable
+  // from a package nobody has written — one is a release waiting on a ticket,
+  // the other is a release that publishes half of what its own docs claim and
+  // goes green.
+  it("refuses a package that exists, is meant to publish, and is held private", () => {
+    const all = [workspace("@actana/sdk"), workspace("@actana/cli", { private: true })];
+    const found = all.filter((pkg) => pkg.manifest.private !== true);
+    expect(() => assertPublishSet(found, all)).toThrow(/@actana\/cli has a manifest .* and carries/s);
+    expect(() => assertPublishSet(found, all)).toThrow(/not the same thing as a package that has not been written/);
+  });
+
+  // The absence that is still allowed, and is reported rather than thrown: a
+  // name in PUBLISHABLE with no manifest anywhere in the workspace.
+  it("allows an intended package that has not been written, and names it", () => {
+    const all = [workspace("@actana/sdk")];
+    expect(assertPublishSet(all, all)).toEqual(["@actana/cli"]);
+  });
+
+  // The CLI depends on the SDK at exactly the version being released, and the
+  // release publishes this list in order. Alphabetically the CLI comes first,
+  // which would put a package on the registry whose dependency is not there —
+  // permanently, if the second publish then fails.
+  it("publishes a package after the one it depends on", () => {
+    const sdk = { ...workspace("@actana/sdk"), manifest: { name: "@actana/sdk" } };
+    const cli = {
+      ...workspace("@actana/cli"),
+      manifest: { name: "@actana/cli", dependencies: { "@actana/sdk": "0.2.2" } },
+    };
+    expect(publishOrder([cli, sdk]).map((pkg) => pkg.name)).toEqual(["@actana/sdk", "@actana/cli"]);
+    expect(publishOrder(discoverPublishable(repoRoot)).map((pkg) => pkg.name)).toEqual([
+      "@actana/sdk",
+      "@actana/cli",
+    ]);
   });
 
   // The Panel is a web service and the Core is a daemon. Neither is an npm
@@ -84,24 +171,67 @@ describe("what this repository publishes to npm (#129 D13)", () => {
   });
 
   it("refuses a package that quietly became publishable", () => {
-    const found = [
-      { name: "@actana/sdk", relative: "packages/sdk/package.json" },
-      { name: "@actana/panel", relative: "packages/panel/package.json" },
-    ];
-    expect(() => assertPublishSet(found)).toThrow(/@actana\/panel would be published/);
+    const found = [workspace("@actana/sdk"), workspace("@actana/panel")];
+    expect(() => assertPublishSet(found, found)).toThrow(/@actana\/panel would be published/);
   });
 
   // The opposite direction, and the reason it is an error rather than a skip: a
   // release that publishes nothing reports the same green as one that
   // published, and the first anyone would hear of it is an `npm i` that 404s.
   it("refuses a release that would publish nothing", () => {
-    expect(() => assertPublishSet([])).toThrow(/@actana\/sdk is not publishable/);
+    expect(() => assertPublishSet([], [])).toThrow(/@actana\/sdk is not publishable/);
   });
 });
 
 describe("the published manifest (#129 D12)", () => {
   it("accepts the shape D12 describes", () => {
     expect(() => assertPackedManifest(packed(), { version: "0.2.2" })).not.toThrow();
+  });
+
+  // The two kinds, and the reason the rules had to split: the CLI is an
+  // esbuild bundle behind a `bin` map with no type surface at all, so a
+  // library's `exports`-and-`.d.ts` requirement applied to it has exactly one
+  // outcome — the CLI never becomes publishable, which is finding A.
+  it("accepts a command: a bin map, no exports, no types", () => {
+    expect(() => assertPackedManifest(packedCommand(), { version: "0.2.2" })).not.toThrow();
+  });
+
+  it("refuses a package that can be neither imported nor run", () => {
+    expect(() => assertPackedManifest(packed({ exports: undefined }))).toThrow(
+      /neither an `exports` map nor a `bin` map/,
+    );
+  });
+
+  it("refuses a command that installs no command", () => {
+    expect(() => assertPackedManifest(packedCommand({ bin: {} }))).toThrow(/empty `bin` map/);
+  });
+
+  // `npm publish --provenance` is refused by the registry without one, and the
+  // refusal would land in the last job of the release, after both images and
+  // their `:latest` have moved.
+  it("requires a repository the attestation can name", () => {
+    expect(() => assertPackedManifest(packed({ repository: undefined }))).toThrow(
+      /declares no `repository.url`/,
+    );
+    expect(() => assertPackedManifest(packed({ repository: { type: "git" } }))).toThrow(
+      /declares no `repository.url`/,
+    );
+  });
+
+  // D13's lockstep where a consumer actually meets it. `workspace:*` in a
+  // packed manifest means pnpm did not pack it and npm will refuse it; a
+  // resolved-but-different version is worse, because it installs.
+  it("refuses a published package pinned to another train's sibling", () => {
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "workspace:*" } })),
+    ).toThrow(/`workspace:` protocol reached the packed manifest/);
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "0.2.1" } })),
+    ).toThrow(/not on 0\.2\.2/);
+    // A third-party dependency is nobody's train and is left alone.
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { ws: "8.21.0" } })),
+    ).not.toThrow();
   });
 
   it("requires the >=22 floor rather than the monorepo's own", () => {
@@ -162,12 +292,12 @@ describe("the published manifest (#129 D12)", () => {
 
 describe("the published tarball (#129 D12, #159)", () => {
   it("accepts compiled JavaScript with types beside it", () => {
-    expect(() => assertPackedFiles("@actana/sdk", files())).not.toThrow();
+    expect(() => assertPackedFiles(packed(), files())).not.toThrow();
   });
 
   // #159, literally: the guard cannot reach a published tarball.
   it("refuses a tarball carrying the Node-24 guard", () => {
-    expect(() => assertPackedFiles("@actana/sdk", files(`package/scripts/${NODE_GUARD}`))).toThrow(
+    expect(() => assertPackedFiles(packed(), files(`package/scripts/${NODE_GUARD}`))).toThrow(
       new RegExp(NODE_GUARD),
     );
   });
@@ -176,21 +306,21 @@ describe("the published tarball (#129 D12, #159)", () => {
   // `require-node-24.mjs`" would pass a tarball carrying the whole of
   // `scripts/` the day somebody renames that file.
   it("refuses anything outside dist/ and the paperwork", () => {
-    expect(() => assertPackedFiles("@actana/sdk", files("package/scripts/ensure-node-sqlite.mjs"))).toThrow(
+    expect(() => assertPackedFiles(packed(), files("package/scripts/ensure-node-sqlite.mjs"))).toThrow(
       /outside `dist\/`/,
     );
-    expect(() => assertPackedFiles("@actana/sdk", files("package/src/core-client.ts"))).toThrow(
+    expect(() => assertPackedFiles(packed(), files("package/src/core-client.ts"))).toThrow(
       /outside `dist\/`/,
     );
   });
 
   it("refuses a module that resolves at runtime but not at compile time", () => {
     const withoutTypes = files().filter((entry) => !entry.endsWith(".d.ts"));
-    expect(() => assertPackedFiles("@actana/sdk", withoutTypes)).toThrow(/no `\.d\.ts` beside it/);
+    expect(() => assertPackedFiles(packed(), withoutTypes)).toThrow(/no `\.d\.ts` beside it/);
   });
 
   it("refuses a tarball with no compiled output at all", () => {
-    expect(() => assertPackedFiles("@actana/sdk", ["package/package.json"])).toThrow(
+    expect(() => assertPackedFiles(packed(), ["package/package.json"])).toThrow(
       /no compiled JavaScript/,
     );
   });
@@ -202,10 +332,75 @@ describe("the published tarball (#129 D12, #159)", () => {
   // it. Asserted here rather than inferred from how many files a pack emitted.
   it("refuses a tarball with no licence text in it", () => {
     const unlicensed = files().filter((entry) => entry !== "package/LICENSE");
-    expect(() => assertPackedFiles("@actana/sdk", unlicensed)).toThrow(/packs no LICENSE/);
+    expect(() => assertPackedFiles(packed(), unlicensed)).toThrow(/packs no LICENSE/);
     expect(() =>
-      assertPackedFiles("@actana/sdk", [...unlicensed, "package/LICENSE.md"]),
+      assertPackedFiles(packed(), [...unlicensed, "package/LICENSE.md"]),
     ).not.toThrow();
+  });
+});
+
+// A command's tarball. Everything above still applies — the guard, the
+// whitelist, the licence — and the two rules that are about being *imported*
+// give way to the two that are about being *run*.
+describe("the published command's tarball (#129 D12, D13)", () => {
+  it("accepts a bundle behind a bin shim", () => {
+    expect(() => assertPackedFiles(packedCommand(), commandFiles())).not.toThrow();
+  });
+
+  // npm links `node_modules/.bin/actana` at whatever the manifest says and
+  // never checks the target is in the tarball — the install is green and the
+  // command is a link to nothing. `files` cannot cause this (npm packs a `bin`
+  // target regardless of it); a renamed shim or an extension typo can, which is
+  // why the assertion is against the file list rather than against `files`.
+  it("refuses a command whose entry point is not in the tarball", () => {
+    const withoutShim = commandFiles().filter((entry) => entry !== "package/bin/actana.mjs");
+    expect(() => assertPackedFiles(packedCommand(), withoutShim)).toThrow(
+      /maps a command to package\/bin\/actana\.mjs and does not pack it/,
+    );
+  });
+
+  it("refuses a command with no bundle for the shim to load", () => {
+    const withoutBundle = commandFiles().filter((entry) => !entry.startsWith("package/dist/"));
+    expect(() => assertPackedFiles(packedCommand(), withoutBundle)).toThrow(/packs no bundle/);
+  });
+
+  // The whitelist is per kind, in both directions: `bin/` is a published path
+  // for a command and a stray in a library, which is the same rule as before —
+  // a published package is what it offers a consumer and nothing else.
+  it("keeps bin/ out of a library, and src/ out of a command", () => {
+    expect(() => assertPackedFiles(packed(), files("package/bin/actana.mjs"))).toThrow(
+      /outside `dist\/`/,
+    );
+    expect(() =>
+      assertPackedFiles(packedCommand(), commandFiles("package/src/actana-cli.ts")),
+    ).toThrow(/outside `dist\/`/);
+    expect(() =>
+      assertPackedFiles(packedCommand(), commandFiles(`package/scripts/${NODE_GUARD}`)),
+    ).toThrow(new RegExp(NODE_GUARD));
+  });
+
+  it("reads the bin map the way npm does", () => {
+    expect(binTargets(packedCommand())).toEqual(["package/bin/actana.mjs"]);
+    expect(binTargets(packedCommand({ bin: "./bin/actana.mjs" }))).toEqual([
+      "package/bin/actana.mjs",
+    ]);
+    expect(binTargets(packed())).toEqual([]);
+  });
+
+  // The one rule that is about the file's contents. npm symlinks
+  // `node_modules/.bin/actana` at this path; without `#!` the kernel hands it
+  // to the shell, and the consumer's first `actana` prints a syntax error from
+  // inside JavaScript they did not write.
+  it("requires the linked file to start with a node shebang", () => {
+    expect(() =>
+      assertPackedBin("@actana/cli", "package/bin/actana.mjs", "#!/usr/bin/env node\nawait main()\n"),
+    ).not.toThrow();
+    expect(() =>
+      assertPackedBin("@actana/cli", "package/bin/actana.mjs", "await main()\n"),
+    ).toThrow(/no shebang/);
+    expect(() =>
+      assertPackedBin("@actana/cli", "package/bin/actana.mjs", "#!/bin/sh\nexec node \"$0\"\n"),
+    ).toThrow(/does not name node/);
   });
 });
 
@@ -236,9 +431,23 @@ describe("the monorepo keeps the guard the tarball drops (#129 D12)", () => {
 // the message "run the packing test first", and held only because Vitest
 // happens to run `it`s in file order. A test whose precondition is another
 // test's ordering is one refactor from a confusing red.
-describe("packing @actana/sdk for real", () => {
+//
+// Both packages, and the reason that word is load-bearing: this block used to
+// loop over "every tarball the rehearsal produced" while asserting
+// `core-client.js` and a `.d.ts` beside every module — assertions only the SDK
+// can satisfy. It passed because there was exactly one tarball. A CLI added to
+// that loop would have failed on the SDK's rules rather than on its own, which
+// is how a publish set of two ends up quietly staying a publish set of one.
+describe("packing both published packages for real", () => {
   /** @type {string} */ let outDir;
-  /** @type {{tarball: string, entries: string[], manifest: object}[]} */ let packed;
+  /** @type {Map<string, {tarball: string, entries: string[], manifest: object}>} */ let packs;
+  /** @type {string[]} */ let order;
+
+  const pack = (name) => {
+    const found = packs.get(name);
+    expect(found, `${name} was not packed by the rehearsal`).toBeDefined();
+    return found;
+  };
 
   beforeAll(() => {
     outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-publish-test-"));
@@ -247,44 +456,103 @@ describe("packing @actana/sdk for real", () => {
       [path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"), "--out-dir", outDir],
       { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
     );
-    packed = /^tarballs=(.*)$/m
-      .exec(stdout)[1]
-      .split(" ")
-      .filter(Boolean)
-      .map((tarball) => ({
-        tarball,
-        // Read the artifact again here rather than trusting the script's own
-        // exit code: what #159 wants asserted is a property of the bytes.
-        entries: execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
-          .split("\n")
-          .filter(Boolean),
-        manifest: JSON.parse(
-          execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" }),
-        ),
-      }));
+    order = /^packages=(.*)$/m.exec(stdout)[1].split(" ").filter(Boolean);
+    packs = new Map(
+      /^tarballs=(.*)$/m
+        .exec(stdout)[1]
+        .split(" ")
+        .filter(Boolean)
+        .map((tarball) => {
+          // Read the artifact again here rather than trusting the script's own
+          // exit code: what #159 wants asserted is a property of the bytes.
+          const entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
+            .split("\n")
+            .filter(Boolean);
+          const manifest = JSON.parse(
+            execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" }),
+          );
+          return [manifest.name, { tarball, entries, manifest }];
+        }),
+    );
   }, 300_000);
 
   afterAll(() => {
     if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
   });
 
-  it("produces a tarball that passes every rule", () => {
-    expect(packed.length).toBeGreaterThan(0);
-    for (const { entries, manifest } of packed) {
+  // The clause this PR exists to satisfy — #159's first, *both* packages — read
+  // off real tarballs rather than off the manifest that would produce them.
+  it("packs both of D13's packages, the dependency before the dependent", () => {
+    expect([...packs.keys()].sort()).toEqual([...PUBLISHABLE].sort());
+    expect(order).toEqual(["@actana/sdk", "@actana/cli"]);
+  });
+
+  // D13's lockstep, on the artifacts: one version line, and the CLI's
+  // dependency on the SDK resolved to exactly it. `workspace:*` surviving the
+  // pack would be a tarball npm rejects; a different version would be a CLI
+  // installed against another train's SDK.
+  it("ships one version line, with the CLI pinned to this SDK", () => {
+    const versions = new Set([...packs.values()].map(({ manifest }) => manifest.version));
+    expect([...versions]).toHaveLength(1);
+    const cli = pack("@actana/cli").manifest;
+    expect(cli.dependencies["@actana/sdk"]).toBe(pack("@actana/sdk").manifest.version);
+  });
+
+  it("produces tarballs that pass every rule that applies to them", () => {
+    for (const { entries, manifest } of packs.values()) {
       expect(entries.some((entry) => entry.endsWith(NODE_GUARD))).toBe(false);
-      expect(entries).toContain("package/dist/core-client.js");
-      expect(entries).toContain("package/dist/core-client.d.ts");
       // pnpm copies the workspace root's LICENSE in; the real pack is where
       // that behaviour is confirmed rather than assumed.
       expect(entries).toContain("package/LICENSE");
 
       expect(manifest.engines.node).toBe(PUBLISHED_ENGINES);
       expect(manifest.scripts?.preinstall).toBeUndefined();
+      expect(manifest.scripts?.prepack).toBeUndefined();
       expect(manifest.private).toBeUndefined();
-      // `publishConfig.exports` was applied by the pack — the tarball's map
-      // points at what is in it.
-      expect(JSON.stringify(manifest.exports)).not.toContain("./src/");
+      expect(manifest.repository.url).toMatch(/github\.com\/actana\/control/);
+      expect(manifest.publishConfig.provenance).toBe(true);
+      expect(manifest.publishConfig.access).toBe("public");
     }
+
+    const sdk = pack("@actana/sdk");
+    expect(sdk.entries).toContain("package/dist/core-client.js");
+    expect(sdk.entries).toContain("package/dist/core-client.d.ts");
+    // `publishConfig.exports` was applied by the pack — the tarball's map
+    // points at what is in it.
+    expect(JSON.stringify(sdk.manifest.exports)).not.toContain("./src/");
+
+    const cli = pack("@actana/cli");
+    expect(cli.entries).toContain("package/bin/actana.mjs");
+    expect(cli.entries).toContain("package/dist/actana-cli.mjs");
+    expect(cli.entries).toContain("package/README.md");
+    expect(cli.manifest.bin).toEqual({ actana: "bin/actana.mjs" });
+  });
+
+  // The command npm installs, out of the bytes that would be published. The
+  // shim is the path npm links, so its shebang and the relative hop to the
+  // bundle beside it are the two things that decide whether `actana` runs at
+  // all — and neither is visible in a manifest.
+  it("packs an `actana` that runs, with its shebang and its bundle", () => {
+    const { tarball, entries } = pack("@actana/cli");
+    const shim = execFileSync("tar", ["-xzOf", tarball, "package/bin/actana.mjs"], {
+      encoding: "utf8",
+    });
+    expect(shim.startsWith("#!/usr/bin/env node")).toBe(true);
+    // The shim loads `../dist/<bundle>` relative to itself, so the two are
+    // siblings in the tarball or the command exits 70 on a fresh install.
+    expect(entries).toContain("package/dist/actana-cli.mjs");
+
+    // Run it. `packages/cli/bin` rather than an extraction, for the reason the
+    // SDK's import loop gives: the bundle leaves `ws` external, and a temp
+    // directory outside the workspace has no `node_modules` to resolve it from
+    // — that would test the extraction. `pnpm pack` ran `prepack`, so these are
+    // the bytes in the tarball, in the same `bin/` → `../dist/` layout.
+    const version = execFileSync(
+      process.execPath,
+      [path.join(repoRoot, "packages/cli/bin/actana.mjs"), "--version"],
+      { encoding: "utf8" },
+    ).trim();
+    expect(version).toBe(`actana ${pack("@actana/cli").manifest.version}`);
   });
 
   // Every published module loads under a plain `node`. A `dist/` that
@@ -303,49 +571,42 @@ describe("packing @actana/sdk for real", () => {
   // module added to `src/` is covered the day it is published rather than the
   // day somebody remembers this file.
   it("compiles to something Node can actually import — every published module", async () => {
-    expect(packed.length).toBeGreaterThan(0);
-    for (const { entries } of packed) {
-      const modules = entries
-        .filter((entry) => /^package\/dist\/[^/]+\.js$/.test(entry))
-        .map((entry) => path.basename(entry));
-      // Nine today. A bare `toBeGreaterThan(0)` here would pass a `dist/`
-      // containing one file, which is the shape this test exists to refuse.
-      const sources = fs
-        .readdirSync(path.join(repoRoot, "packages/sdk/src"))
-        .filter((file) => file.endsWith(".ts"));
-      expect(
-        modules.length,
-        `${modules.length} module(s) in dist/ for ${sources.length} in src/ — the tarball ships a subset of the SDK`,
-      ).toBe(sources.length);
+    const modules = pack("@actana/sdk")
+      .entries.filter((entry) => /^package\/dist\/[^/]+\.js$/.test(entry))
+      .map((entry) => path.basename(entry));
+    // Nine today. A bare `toBeGreaterThan(0)` here would pass a `dist/`
+    // containing one file, which is the shape this test exists to refuse.
+    const sources = fs
+      .readdirSync(path.join(repoRoot, "packages/sdk/src"))
+      .filter((file) => file.endsWith(".ts"));
+    expect(
+      modules.length,
+      `${modules.length} module(s) in dist/ for ${sources.length} in src/ — the tarball ships a subset of the SDK`,
+    ).toBe(sources.length);
 
-      for (const basename of modules) {
-        // `beforeAll` packed with `pnpm pack`, whose `prepack` is the build, so
-        // these are the compiled bytes that went into the tarball. They are
-        // imported from `dist/` rather than from the extracted tarball because
-        // the SDK depends on `ws`, and a temp directory outside the workspace
-        // has no `node_modules` to resolve it from — which would test the
-        // extraction rather than the specifiers.
-        const entry = path.join(repoRoot, "packages/sdk/dist", basename);
-        const module = await import(entry);
-        expect(Object.keys(module).length, `${basename} exports nothing at runtime`).toBeGreaterThan(
-          0,
-        );
-      }
-
-      // The three the README leads with, by name: a module can import cleanly
-      // and still have lost the export a consumer copied out of the docs.
-      const { CoreClient } = await import(
-        path.join(repoRoot, "packages/sdk/dist/core-client.js")
+    for (const basename of modules) {
+      // `beforeAll` packed with `pnpm pack`, whose `prepack` is the build, so
+      // these are the compiled bytes that went into the tarball. They are
+      // imported from `dist/` rather than from the extracted tarball because
+      // the SDK depends on `ws`, and a temp directory outside the workspace
+      // has no `node_modules` to resolve it from — which would test the
+      // extraction rather than the specifiers.
+      const entry = path.join(repoRoot, "packages/sdk/dist", basename);
+      const module = await import(entry);
+      expect(Object.keys(module).length, `${basename} exports nothing at runtime`).toBeGreaterThan(
+        0,
       );
-      const { CoreSession } = await import(
-        path.join(repoRoot, "packages/sdk/dist/core-session.js")
-      );
-      const { DurableCoreClient } = await import(
-        path.join(repoRoot, "packages/sdk/dist/durable-core-client.js")
-      );
-      expect(typeof CoreClient).toBe("function");
-      expect(typeof CoreSession).toBe("function");
-      expect(typeof DurableCoreClient).toBe("function");
     }
+
+    // The three the README leads with, by name: a module can import cleanly
+    // and still have lost the export a consumer copied out of the docs.
+    const { CoreClient } = await import(path.join(repoRoot, "packages/sdk/dist/core-client.js"));
+    const { CoreSession } = await import(path.join(repoRoot, "packages/sdk/dist/core-session.js"));
+    const { DurableCoreClient } = await import(
+      path.join(repoRoot, "packages/sdk/dist/durable-core-client.js")
+    );
+    expect(typeof CoreClient).toBe("function");
+    expect(typeof CoreSession).toBe("function");
+    expect(typeof DurableCoreClient).toBe("function");
   });
 });

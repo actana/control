@@ -48,12 +48,32 @@
 //     for the opposite reason: a release that silently publishes nothing looks
 //     exactly like a release that published.
 //
-// `@actana/cli` is in `PUBLISHABLE` and does not exist yet — issue #157 creates
-// `packages/cli` in parallel with this change. That is the one asymmetry the
-// rule allows: an intended package may be absent, and the moment #157 lands a
-// non-private manifest it is discovered and published with no edit here and
-// none in `release.yml`. Its absence is reported by the rehearsal rather than
-// passed over, so "the CLI leg never ran" cannot read as "the CLI leg passed".
+// The one asymmetry the rule allows is a package in `PUBLISHABLE` with **no
+// manifest at all** — an intended package that has not been written yet. Its
+// absence is reported by the rehearsal rather than passed over, so "that leg
+// never ran" cannot read as "that leg passed".
+//
+// It does **not** allow a manifest that exists and is `private: true`. #157
+// landed `packages/cli` private, saying #159 would flip it; #159's discovery
+// rule would then have skipped it in silence, published one tarball, and gone
+// green while five statements in this repository said two packages had shipped.
+// "The package is not written yet" and "the package is written and will never
+// ship" are one empty set to a rule that only looks at what it discovered, and
+// they are opposite facts. `assertPublishSet` therefore takes the whole
+// workspace as well as the discovered set, and the second case is an error.
+//
+// ── Two kinds of published package ───────────────────────────────────────────
+//
+// `@actana/sdk` is **imported** and `@actana/cli` is **run**, and the rules
+// that can be stated about one cannot be stated about the other. A library
+// resolves through an `exports` map and owes a consumer `.d.ts` beside every
+// module; a command resolves through `bin`, is an esbuild bundle with no type
+// surface at all, and owes a consumer a linked entry point that is actually in
+// the tarball and actually starts with a shebang. Everything else — the
+// engines floor, the lifecycle refusal, the whitelist, the licence, the
+// version lockstep — is common, and applying a library's `.d.ts` rule to a
+// bundled command would have exactly one outcome: the CLI kept out of the
+// publish set, which is the failure this file just finished describing.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -74,29 +94,69 @@ export const MONOREPO_ENGINES = ">=24.0.0 <25";
 export const NODE_GUARD = "require-node-24.mjs";
 
 /**
- * Everything a published tarball may contain, as anchored patterns against the
- * `package/`-prefixed paths npm writes.
+ * The manifest and its paperwork — allowed in any published tarball, whichever
+ * kind of package it is.
  *
- * A whitelist, not a blocklist. "No `require-node-24.mjs`" is the criterion
- * #159 names, but asserting only that would pass a tarball carrying the whole
- * of `scripts/` as long as one file had been renamed. What has to hold is that
- * a published package is its own compiled output and its paperwork — nothing
- * from the repository around it.
- *
- * **`dist/` is deliberately flat.** The third pattern permits one level and no
- * more, so the day `src/` grows a subdirectory the rehearsal fails with
- * "outside `dist/` and its paperwork" — which reads as a leak and is not one.
- * That is a fail-closed choice rather than an oversight: the published subpath
- * map is `./*` → `./dist/*.js`, so a nested module would be unreachable to a
- * consumer anyway, and a tarball is the wrong place to discover it. If a
- * nested layout is ever wanted, this pattern and `publishConfig.exports` move
- * together — the failure is telling you they have to.
+ * These lists are a whitelist, not a blocklist. "No `require-node-24.mjs`" is
+ * the criterion #159 names, but asserting only that would pass a tarball
+ * carrying the whole of `scripts/` as long as one file had been renamed. What
+ * has to hold is that a published package is its own compiled output and its
+ * paperwork — nothing from the repository around it.
  */
-const ALLOWED_ENTRIES = [
+const PAPERWORK_ENTRIES = [
   /^package\/package\.json$/,
   /^package\/(README|LICENSE|NOTICE|CHANGELOG)(\.md)?$/,
-  /^package\/dist\/[^/]+\.(js|d\.ts|js\.map|d\.ts\.map)$/,
 ];
+
+/**
+ * What a library may ship: compiled JavaScript, its types, and their maps.
+ *
+ * **`dist/` is deliberately flat.** The pattern permits one level and no more,
+ * so the day `src/` grows a subdirectory the rehearsal fails with "outside
+ * `dist/` and its paperwork" — which reads as a leak and is not one. That is a
+ * fail-closed choice rather than an oversight: the published subpath map is
+ * `./*` → `./dist/*.js`, so a nested module would be unreachable to a consumer
+ * anyway, and a tarball is the wrong place to discover it. If a nested layout
+ * is ever wanted, this pattern and `publishConfig.exports` move together — the
+ * failure is telling you they have to.
+ */
+const LIBRARY_ENTRIES = [/^package\/dist\/[^/]+\.(js|d\.ts|js\.map|d\.ts\.map)$/];
+
+/**
+ * What a command may ship: the bundle, its map, and the `bin/` shims npm links.
+ *
+ * `bin/` is a published path in the strongest sense — it is what npm records
+ * when it links the command — so it is in the whitelist rather than swept up
+ * as a stray. `.mjs` because a bundle is one file with an unambiguous
+ * extension rather than a module map, and no `.d.ts`: nothing imports a
+ * command, and requiring types of one would mean either a fake declaration
+ * file or a package left unpublished.
+ */
+const COMMAND_ENTRIES = [
+  /^package\/dist\/[^/]+\.(mjs|mjs\.map)$/,
+  /^package\/bin\/[^/]+\.mjs$/,
+];
+
+/**
+ * Which kinds a packed manifest is, from what it offers a consumer: an
+ * `exports` map is a library, a `bin` map is a command. A package may be both;
+ * a package that is neither is unreachable and refused by
+ * {@link assertPackedManifest}.
+ */
+export function packageKind(packed) {
+  return {
+    library: packed.exports !== undefined,
+    command: packed.bin !== undefined,
+  };
+}
+
+/** The bin targets a manifest declares, as tarball paths. `{ actana: "bin/actana.mjs" }` → `package/bin/actana.mjs`. */
+export function binTargets(packed) {
+  const bin = packed.bin;
+  if (bin === undefined) return [];
+  const targets = typeof bin === "string" ? [bin] : Object.values(bin);
+  return targets.map((target) => `package/${target.replace(/^\.\//, "")}`);
+}
 
 /** Lifecycle scripts a consumer's `npm install` would execute. D12 forbids all of them. */
 const INSTALL_LIFECYCLE = ["preinstall", "install", "postinstall", "prepare"];
@@ -140,13 +200,63 @@ export function discoverPublishable(repoRoot) {
 }
 
 /**
- * Check the discovered set against D13's intent, both directions.
+ * The discovered set in publish order: a package after every publishable
+ * package it depends on, and alphabetical otherwise.
  *
- * Returns the names in `PUBLISHABLE` that do not exist yet — `@actana/cli`
- * until #157 lands — so the caller can report them. Throws on anything else.
+ * This did not matter while the SDK published alone. It does now: `@actana/cli`
+ * depends on `@actana/sdk` at exactly the version being released, and the two
+ * are published one after another by a loop. Publishing the CLI first opens a
+ * window — seconds if the SDK follows, permanent if the SDK's publish fails —
+ * in which `npm i @actana/cli` resolves a dependency that is not on the
+ * registry. The CLI's version number is burned by then, so "publish the other
+ * one and it fixes itself" is only true on the happy path.
+ *
+ * Alphabetical would have put `@actana/cli` first, which is how this was found.
  */
-export function assertPublishSet(found) {
+export function publishOrder(found) {
+  const byName = new Map(found.map((pkg) => [pkg.name, pkg]));
+  const state = new Map();
+  const ordered = [];
+
+  const visit = (pkg, trail) => {
+    const status = state.get(pkg.name);
+    if (status === "done") return;
+    if (status === "visiting") {
+      throw new Error(
+        `the published packages depend on each other in a cycle: ${[...trail, pkg.name].join(" → ")}. There is no order ` +
+          "that publishes each after the one it needs, so one of these dependencies has to go.",
+      );
+    }
+    state.set(pkg.name, "visiting");
+    for (const dependency of Object.keys(pkg.manifest.dependencies ?? {}).sort()) {
+      const sibling = byName.get(dependency);
+      if (sibling !== undefined) visit(sibling, [...trail, pkg.name]);
+    }
+    state.set(pkg.name, "done");
+    ordered.push(pkg);
+  };
+
+  for (const pkg of [...found].sort((a, b) => a.name.localeCompare(b.name))) visit(pkg, []);
+  return ordered;
+}
+
+/**
+ * Check the discovered set against D13's intent, in every direction that has a
+ * different failure behind it.
+ *
+ * `found` is `discoverPublishable(repoRoot)`; `all` is
+ * `workspaceManifests(repoRoot)` — the whole workspace, discovered set
+ * included. Both are needed because the interesting mistake is invisible in
+ * the first alone: a `PUBLISHABLE` name missing from `found` means "no
+ * manifest" and "a manifest carrying `private: true`" at the same time, and
+ * those are opposite facts about a release. Only `all` can tell them apart.
+ *
+ * Returns the names in `PUBLISHABLE` with no manifest anywhere, so the caller
+ * can report them by name. Throws on everything else.
+ */
+export function assertPublishSet(found, all) {
   const names = found.map((pkg) => pkg.name);
+  const existing = new Set(all.map((pkg) => pkg.name));
 
   const unexpected = names.filter((name) => !PUBLISHABLE.includes(name));
   if (unexpected.length > 0) {
@@ -158,14 +268,30 @@ export function assertPublishSet(found) {
     );
   }
 
+  // The case #157 and #159 each expected the other to close. A manifest that
+  // exists and is private is not an absent package: nothing further is going
+  // to land, the release publishes a subset and goes green, and the docs that
+  // name the package go on saying it shipped.
+  const withheld = PUBLISHABLE.filter((name) => existing.has(name) && !names.includes(name));
+  if (withheld.length > 0) {
+    throw new Error(
+      `${withheld.join(", ")} ${withheld.length === 1 ? "has a manifest in `packages/` and carries" : "have manifests in `packages/` and carry"} ` +
+        "`private: true`, so a release would publish the rest and report success. That is not the same thing as a package " +
+        "that has not been written yet — this one exists and is being withheld. Drop `private: true` from it, or take it " +
+        `out of \`PUBLISHABLE\` and amend #129 D13, which says these ${PUBLISHABLE.length} packages publish together.`,
+    );
+  }
+
+  const absent = PUBLISHABLE.filter((name) => !existing.has(name));
+
   if (!names.includes("@actana/sdk")) {
     throw new Error(
-      "@actana/sdk is not publishable — its manifest carries `private: true`. A release that publishes nothing " +
+      "@actana/sdk is not publishable — no manifest of it was discovered. A release that publishes nothing " +
         "reports exactly the same green as one that published, which is why this is an error rather than a skip (#129 D13).",
     );
   }
 
-  return PUBLISHABLE.filter((name) => !names.includes(name));
+  return absent;
 }
 
 /**
@@ -204,20 +330,79 @@ export function assertPackedManifest(packed, { version } = {}) {
     }
   }
 
-  const exportsMap = packed.exports;
-  if (!exportsMap || typeof exportsMap !== "object") {
-    throw new Error(`${where} publishes no \`exports\` map, so no subpath resolves.`);
-  }
-  const targets = JSON.stringify(exportsMap);
-  if (targets.includes("./src/")) {
+  const kind = packageKind(packed);
+  if (!kind.library && !kind.command) {
     throw new Error(
-      `${where} exports ${targets} — the published map still points at TypeScript source. Inside the workspace the SDK ` +
-        "is consumed as source and that is deliberate (Node strips the types); on npm it is compiled JavaScript, and " +
-        "the two are reconciled by `publishConfig.exports`, which pnpm applies when it packs. This manifest was not packed.",
+      `${where} publishes neither an \`exports\` map nor a \`bin\` map, so nothing in it is reachable: a consumer can ` +
+        "neither import it nor run it. A published package is one of the two — the SDK is imported, the CLI is run — and " +
+        "a tarball that is neither installs cleanly and does nothing at all.",
     );
   }
-  if (!targets.includes(".d.ts")) {
-    throw new Error(`${where} exports ${targets} — no \`types\` condition, so a TypeScript consumer sees \`any\` (D12).`);
+
+  if (kind.library) {
+    const exportsMap = packed.exports;
+    if (typeof exportsMap !== "object" || exportsMap === null) {
+      throw new Error(`${where} publishes no \`exports\` map, so no subpath resolves.`);
+    }
+    const targets = JSON.stringify(exportsMap);
+    if (targets.includes("./src/")) {
+      throw new Error(
+        `${where} exports ${targets} — the published map still points at TypeScript source. Inside the workspace the SDK ` +
+          "is consumed as source and that is deliberate (Node strips the types); on npm it is compiled JavaScript, and " +
+          "the two are reconciled by `publishConfig.exports`, which pnpm applies when it packs. This manifest was not packed.",
+      );
+    }
+    if (!targets.includes(".d.ts")) {
+      throw new Error(`${where} exports ${targets} — no \`types\` condition, so a TypeScript consumer sees \`any\` (D12).`);
+    }
+  }
+
+  if (kind.command) {
+    const targets = binTargets(packed);
+    if (targets.length === 0) {
+      throw new Error(`${where} declares an empty \`bin\` map, so it installs no command.`);
+    }
+    // The path npm links, so it is the one path in a command package that
+    // cannot point outside the tarball. `assertPackedFiles` is what checks the
+    // file is actually in it.
+    const escaping = targets.filter((target) => target.includes("/../") || target.endsWith("/.."));
+    if (escaping.length > 0) {
+      throw new Error(`${where} maps a command to ${escaping.join(", ")}, which is outside the package.`);
+    }
+  }
+
+  // Provenance needs a `repository` npm can resolve the attestation against: a
+  // publish with `--provenance` and no `repository.url` is rejected by the
+  // registry. That refusal would land in the `npm` job — last in the graph,
+  // after both images and their `:latest` have already moved — so it is
+  // asserted on a pull request instead, where being wrong is free.
+  if (typeof packed.repository?.url !== "string" || packed.repository.url.length === 0) {
+    throw new Error(
+      `${where} declares no \`repository.url\`. \`npm publish --provenance\` refuses a package without one — the ` +
+        "attestation names the repository and the commit that built it, and there is nothing to name. The failure " +
+        "would arrive in the last job of the release, with both images already published.",
+    );
+  }
+
+  // D13's lockstep, in the one place a consumer meets it: `@actana/cli`
+  // depends on `@actana/sdk`, pnpm rewrites `workspace:*` to a real version as
+  // it packs, and a tarball that still carries the protocol was not packed by
+  // pnpm and is rejected by npm. A resolved-but-wrong version is worse: it
+  // installs, and pairs a CLI with an SDK from another train.
+  for (const [dependency, range] of Object.entries(packed.dependencies ?? {})) {
+    if (range.startsWith("workspace:")) {
+      throw new Error(
+        `${where} depends on ${dependency}@${range} — the \`workspace:\` protocol reached the packed manifest. pnpm ` +
+          "replaces it with a real version at pack time and npm rejects what is left, so this manifest was not packed by pnpm.",
+      );
+    }
+    if (PUBLISHABLE.includes(dependency) && range !== packed.version) {
+      throw new Error(
+        `${where} depends on ${dependency}@${range}, not on ${packed.version}. D13 is one version line, and these two ` +
+          "packages are published from the same tag on the same train — a CLI pinned to another train's SDK is the " +
+          "mismatch the single version line exists to make impossible.",
+      );
+    }
   }
 
   if (packed.publishConfig?.access !== "public") {
@@ -246,9 +431,18 @@ export function assertPackedManifest(packed, { version } = {}) {
 /**
  * The file list of a packed tarball, against the whitelist.
  *
- * `entries` are the paths `tar -tzf` reports, `package/`-prefixed.
+ * `packed` is the manifest from inside the tarball — it decides which rules
+ * apply, because a library and a command ship different things — and `entries`
+ * are the paths `tar -tzf` reports, `package/`-prefixed.
  */
-export function assertPackedFiles(name, entries) {
+export function assertPackedFiles(packed, entries) {
+  const name = packed.name;
+  const kind = packageKind(packed);
+  const allowed = [
+    ...PAPERWORK_ENTRIES,
+    ...(kind.library ? LIBRARY_ENTRIES : []),
+    ...(kind.command ? COMMAND_ENTRIES : []),
+  ];
   const files = entries.filter((entry) => entry.length > 0 && !entry.endsWith("/"));
 
   const guard = files.filter((entry) => path.basename(entry) === NODE_GUARD);
@@ -259,7 +453,7 @@ export function assertPackedFiles(name, entries) {
     );
   }
 
-  const stray = files.filter((entry) => !ALLOWED_ENTRIES.some((pattern) => pattern.test(entry)));
+  const stray = files.filter((entry) => !allowed.some((pattern) => pattern.test(entry)));
   if (stray.length > 0) {
     throw new Error(
       `${name} packs ${stray.join(", ")}, which is outside \`dist/\` and its paperwork. A published package is its own ` +
@@ -267,18 +461,41 @@ export function assertPackedFiles(name, entries) {
     );
   }
 
-  const js = files.filter((entry) => /^package\/dist\/[^/]+\.js$/.test(entry));
-  if (js.length === 0) {
-    throw new Error(`${name} packs no compiled JavaScript under \`dist/\` (D12). Did the build run?`);
+  if (kind.library) {
+    const js = files.filter((entry) => /^package\/dist\/[^/]+\.js$/.test(entry));
+    if (js.length === 0) {
+      throw new Error(`${name} packs no compiled JavaScript under \`dist/\` (D12). Did the build run?`);
+    }
+    const missingTypes = js.filter((entry) => !files.includes(entry.replace(/\.js$/, ".d.ts")));
+    if (missingTypes.length > 0) {
+      throw new Error(
+        `${name} ships ${missingTypes.join(", ")} with no \`.d.ts\` beside it. D12 is compiled JS **plus** types; a module ` +
+          "that resolves at runtime and not at compile time is the half-published state nobody notices until a consumer builds.",
+      );
+    }
   }
-  const missingTypes = js.filter(
-    (entry) => !files.includes(entry.replace(/\.js$/, ".d.ts")),
-  );
-  if (missingTypes.length > 0) {
-    throw new Error(
-      `${name} ships ${missingTypes.join(", ")} with no \`.d.ts\` beside it. D12 is compiled JS **plus** types; a module ` +
-        "that resolves at runtime and not at compile time is the half-published state nobody notices until a consumer builds.",
-    );
+
+  if (kind.command) {
+    // The `bin` map is a promise npm keeps by linking a path out of the
+    // tarball, and it does not check the path is in there. npm packs a `bin`
+    // target whatever `files` says, so what reaches this is the case `files`
+    // cannot fix: the map names a file that does not exist — the shim renamed
+    // with the manifest not followed, an extension typo, a build writing
+    // somewhere else. The install stays green and `actana` is a dangling link.
+    const missing = binTargets(packed).filter((target) => !files.includes(target));
+    if (missing.length > 0) {
+      throw new Error(
+        `${name} maps a command to ${missing.join(", ")} and does not pack ${missing.length === 1 ? "it" : "them"}. npm ` +
+          "links that path on install without checking it exists, so this publishes a package whose command is a " +
+          "dangling link. The `bin` map and the file it names have to move together.",
+      );
+    }
+    const bundle = files.filter((entry) => /^package\/dist\/[^/]+\.mjs$/.test(entry));
+    if (bundle.length === 0) {
+      throw new Error(
+        `${name} packs no bundle under \`dist/\` (D12). The \`bin/\` shim loads one and exits 70 without it. Did \`prepack\` run?`,
+      );
+    }
   }
 
   // Asserted rather than inferred from a file count. `packages/sdk/` has no
@@ -293,6 +510,29 @@ export function assertPackedFiles(name, entries) {
       `${name} packs no LICENSE. The manifest declares a licence and the tarball is what a consumer actually receives; ` +
         "pnpm copies the workspace root's LICENSE in at pack time, so an absent one means that behaviour changed or the " +
         "root file moved — either way the published package would carry a licence claim with no text behind it.",
+    );
+  }
+}
+
+/**
+ * A linked command's entry point, read out of the tarball.
+ *
+ * On a POSIX install npm symlinks `node_modules/.bin/<name>` at this file and
+ * the kernel reads its first two bytes; without `#!` the shell runs it as a
+ * shell script and the consumer gets a syntax error out of their own `import`
+ * statements. Nothing else in the publish path can see this: it is a property
+ * of the file's contents, not of its name, its manifest, or the file list.
+ */
+export function assertPackedBin(name, target, contents) {
+  if (!contents.startsWith("#!")) {
+    throw new Error(
+      `${name} packs ${target} with no shebang. npm links this path as a command, and a linked file without \`#!\` is ` +
+        "handed to the shell — the failure a consumer sees is a syntax error inside JavaScript they never wrote.",
+    );
+  }
+  if (!/^#![^\n]*node/.test(contents)) {
+    throw new Error(
+      `${name} packs ${target} with a shebang that does not name node: ${contents.split("\n")[0]}.`,
     );
   }
 }

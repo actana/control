@@ -44,9 +44,9 @@
 //                   default so the test that calls this needs no network.
 //
 // Output, on stdout:
-//   tarballs=<path> <path>    the packed tarballs, in publish order
-//   packages=@actana/sdk      the names they carry
-//   absent=@actana/cli        intended by D13 and not created yet (#157)
+//   tarballs=<path> <path>              the packed tarballs, in publish order
+//   packages=@actana/sdk @actana/cli    the names they carry
+//   absent=                             intended by D13 and not written yet
 
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
@@ -56,10 +56,14 @@ import * as path from "node:path";
 import { makeFail, parseArgs, stringFlag } from "./lib/cli.mjs";
 import {
   assertMonorepoKeepsTheGuard,
+  assertPackedBin,
   assertPackedFiles,
   assertPackedManifest,
   assertPublishSet,
+  binTargets,
   discoverPublishable,
+  publishOrder,
+  workspaceManifests,
 } from "./lib/npm-packages.mjs";
 
 const fail = makeFail("rehearse-npm-publish");
@@ -96,21 +100,26 @@ try {
   fail(error.message);
 }
 
-const publishable = discoverPublishable(repoRoot);
+// Dependency-first: the CLI depends on the SDK at the version being released,
+// and it is published by a loop over this list.
+const publishable = publishOrder(discoverPublishable(repoRoot));
 let absent = [];
 try {
-  absent = assertPublishSet(publishable);
+  // The whole workspace, not only what was discovered: a `PUBLISHABLE` package
+  // whose manifest exists and carries `private: true` is an error rather than
+  // an absence, and the discovered set alone cannot tell the two apart.
+  absent = assertPublishSet(publishable, workspaceManifests(repoRoot));
 } catch (error) {
   fail(error.message);
 }
 
-// Reported, never passed over. `@actana/cli` is created by #157 in parallel
-// with this change, and the danger of a set discovered from the workspace is
-// that "the CLI leg never ran" and "the CLI leg passed" produce the same green.
+// Reported, never passed over: the danger of a set discovered from the
+// workspace is that "that leg never ran" and "that leg passed" produce the same
+// green. Empty today — D13's two packages both exist and both publish.
 for (const name of absent) {
   note(
-    `${name} is one of D13's packages and has no manifest in packages/ yet — it is created by #157. ` +
-      "Nothing here has exercised it; it publishes with no further edit the moment that manifest lands non-private.",
+    `${name} is one of D13's packages and has no manifest in packages/ yet. Nothing here has exercised it; ` +
+      "it publishes with no further edit the moment a non-private manifest lands.",
   );
 }
 
@@ -133,11 +142,18 @@ for (const pkg of publishable) {
 
   try {
     const packed = JSON.parse(readEntry(tarball, "package/package.json"));
+    const entries = listEntries(tarball);
     assertPackedManifest(packed, { version });
-    assertPackedFiles(pkg.name, listEntries(tarball));
+    assertPackedFiles(packed, entries);
+    // The one rule that is about a file's contents rather than its name, so it
+    // has to read the file: a linked command without `#!` reaches the shell.
+    for (const target of binTargets(packed)) {
+      assertPackedBin(packed.name, target, readEntry(tarball, target));
+    }
+    const shape = packed.exports ? "library" : `command \`${Object.keys(packed.bin).join("`, `")}\``;
     note(
-      `${packed.name}@${packed.version} — engines ${packed.engines.node}, ` +
-        `${listEntries(tarball).length} files, no install lifecycle, no Node-24 guard.`,
+      `${packed.name}@${packed.version} — ${shape}, engines ${packed.engines.node}, ` +
+        `${entries.length} files, no install lifecycle, no Node-24 guard.`,
     );
   } catch (error) {
     fail(`${pkg.name}: ${error.message}`);
