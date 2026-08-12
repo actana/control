@@ -9,6 +9,7 @@
 
 import type { CoreProbeFn } from "./core-probe.ts";
 import type { CoreConnectFn } from "./core-connection.ts";
+import type { OpenSessionGateway } from "./session-gateway.ts";
 
 export type ActanaCliDeps = {
   /** `process.argv.slice(2)`. */
@@ -48,6 +49,8 @@ export type ActanaCliDeps = {
    * that refuses to hand it a client when the Core is on another train.
    */
   connect: CoreConnectFn;
+  /** How the `session` noun reaches a Core. See `session-gateway.ts`. */
+  openSessions: OpenSessionGateway;
   /** Epoch ms. Only the bearer-expiry line reads it. */
   now: () => number;
 };

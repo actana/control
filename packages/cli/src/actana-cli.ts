@@ -30,6 +30,7 @@ import { runCoreCommand } from "./core-command.ts";
 import { runProjectCommand } from "./project-command.ts";
 import { runHarnessCommand } from "./harness-command.ts";
 import { runEventsCommand } from "./events-command.ts";
+import { runSessionCommand } from "./session-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -39,20 +40,24 @@ import manifest from "../package.json" with { type: "json" };
 export const CLI_VERSION: string = manifest.version;
 
 /**
- * The nouns this phase reserves but has not built (#129 D10, and phase-3
- * guardrail 3 — *reserve `actana project cp` and `actana project files` in the
- * command tree before `--help` is written*).
+ * The nouns this phase reserves but has not built (#129 D10).
  *
- * They are listed here rather than left to fall through to "unknown noun"
- * because the two answers differ in what the reader should do: a reserved noun
- * has a ticket number, and a typo does not. They exit {@link EXIT_UNIMPLEMENTED}
- * rather than {@link EXIT_USAGE} for the same reason `core shell` does — the
- * difference is a fact about this build, and a script should not have to read
- * English off stderr to find it.
+ * A reserved noun is listed here rather than left to fall through to "unknown
+ * noun" because the two answers differ in what the reader should do: a reserved
+ * noun has a ticket number, and a typo does not. They exit
+ * {@link EXIT_UNIMPLEMENTED} rather than {@link EXIT_USAGE} for the same reason
+ * `core shell` does — the difference is a fact about this build, and a script
+ * should not have to read English off stderr to find it.
+ *
+ * **Empty on this train**, which is what a reservation is supposed to end as:
+ * #160 built `session`, #161 built `project`, `harness` and `events`, and each
+ * row left as its noun landed. The table stays because the distinction it draws
+ * has not gone anywhere — a noun a later phase adds owes the reader a ticket
+ * number, and a row here is the whole of saying so. The reservations this build
+ * still carries are at the verb level: `project cp` / `project files` (#168,
+ * phase-3 guardrail 3) and `core shell` (#162).
  */
-const RESERVED_NOUNS: Record<string, string> = {
-  session: "start, ls, logs, resume, kill, send, attach — #160 and #163",
-};
+const RESERVED_NOUNS: Record<string, string> = {};
 
 export const ROOT_HELP = `actana — drive AI coding agents across your Cores.
 
@@ -64,9 +69,7 @@ Nouns
   project   the Projects a Core owns: ls, add, browse
   harness   the coding agents a Core can run: ls, install
   events    follow a Core's event log: tail
-
-Reserved, landing later in this phase
-  session   ${RESERVED_NOUNS.session}
+  session   start, ls, logs, resume, kill and send to Sessions on one
 
 Flags
   --core <name>   which registered Core to talk to
@@ -123,6 +126,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
       return runHarnessCommand(deps, args, paths);
     case "events":
       return runEventsCommand(deps, args, paths);
+    case "session":
+      return runSessionCommand(deps, args, paths);
     case "help":
       deps.out(ROOT_HELP);
       return EXIT_OK;
