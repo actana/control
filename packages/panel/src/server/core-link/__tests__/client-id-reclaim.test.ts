@@ -4,7 +4,7 @@ import {
   type CoreLinkCursorStorage,
   type WebSocketLike as ClientWebSocketLike,
 } from "../client";
-import { CORE_LINK_PROTOCOL_VERSION } from "@actana/shared/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core-link-frames";
 
 // The Panel's side of the stable client id (issue 146, ADR 0024 D9).
 //

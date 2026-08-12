@@ -1,6 +1,13 @@
 // Core-link frame schema — the generalized protocol for Panel ↔ Core
 // communication.
 //
+// This file is the **one** definition of every frame type in the repository,
+// and it lives in `@actana/sdk` because the protocol ships with the client that
+// speaks it (ADR 0025). The Core is the server answering these frames and
+// imports them from here too — deliberately, so that "the protocol" and "the
+// package a third party installs to speak it" are the same artifact rather
+// than two that have to be kept in step.
+//
 // A single WebSocket (`ws://127.0.0.1`) carries multiplexed frames keyed by
 // `ptyId`/`taskId` where relevant. Loopback-only (trusted) at this stage;
 // mTLS + bearer auth is added in a later issue.

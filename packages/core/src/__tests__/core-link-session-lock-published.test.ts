@@ -15,7 +15,7 @@ import {
   type CoreLinkSessionLockChangedPayload,
   type CoreLinkSessionSnapshot,
   type CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 // Lock state is published, not discovered by failing (issue 145, ADR 0024 D8).
 //

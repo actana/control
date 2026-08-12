@@ -10,7 +10,7 @@ import { Icon } from "~/components/ui/Icon";
 import { Kbd } from "~/components/ui/Kbd";
 import { Btn } from "~/components/ui/Btn";
 import { getPanelBridge } from "~/lib/panel-bridge";
-import type { CoreLinkDirListing } from "@actana/shared/core-link-frames";
+import type { CoreLinkDirListing } from "@actana/sdk/core-link-frames";
 
 type Listing = CoreLinkDirListing;
 

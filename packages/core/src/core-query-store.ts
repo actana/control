@@ -27,7 +27,7 @@ import {
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import type { CoreQueryPort } from "./pty-core-link-server";
 
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot, CoreQueryPort };

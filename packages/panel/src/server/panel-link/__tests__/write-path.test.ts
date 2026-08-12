@@ -21,7 +21,7 @@ import type {
   CoreLinkEvent,
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**

@@ -19,7 +19,7 @@ import {
   type HarnessHookBody,
 } from "@actana/shared/harness-hook-pipeline";
 import { HARNESS_HOOK_EVENTS } from "@actana/shared/harness-hook-events";
-import type { CoreLinkTaskStatus } from "@actana/shared/core-link-frames";
+import type { CoreLinkTaskStatus } from "@actana/sdk/core-link-frames";
 import type { CoreTaskWriter } from "./core-task-writer";
 
 export type CoreHarnessStatusDeps = {

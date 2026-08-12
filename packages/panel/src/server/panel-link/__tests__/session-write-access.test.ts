@@ -1,10 +1,10 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { SESSION_LOCK_CHANGED_EVENT_KIND } from "@actana/shared/core-link-frames";
+import { SESSION_LOCK_CHANGED_EVENT_KIND } from "@actana/sdk/core-link-frames";
 import type {
   CoreLinkEvent,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { CoreLinkClientLike } from "../../services/core-link-manager";
 import { PanelLinkRouter, type CoreLinkSource } from "../router";

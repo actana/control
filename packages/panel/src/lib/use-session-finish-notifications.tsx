@@ -22,7 +22,7 @@ import {
   type SessionFinishNotification,
   type SessionNotificationPruneTarget,
 } from "~/lib/session-notification-store";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 export type NormalizedFinish = {
   /** The Core the session ran on; null for a row in the Panel's own DB. */

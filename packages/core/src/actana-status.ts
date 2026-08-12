@@ -11,7 +11,7 @@
 // Operator-facing strings say "pairing token" — the glossary's UI note. Code
 // and frames keep "Registration blob".
 
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
 import { coreUpdateCommand } from "./actana-container";
 import type { ActanaServiceState } from "./actana-service";

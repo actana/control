@@ -163,7 +163,7 @@ jobs:
           # know about — without this every promotion fails a required check
           # and the train can never reach `main`. The shape is asserted rather
           # than waved through: `beta/` plus a bare `x.y.z`, which is what the
-          # cut writes into all four manifests.
+          # cut writes into all five manifests.
           if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1)."
             exit 0
@@ -219,17 +219,64 @@ jobs:
             failed=1
           }
 
-          # D3. The cut writes one version into all four manifests; this is
-          # what makes drift afterwards impossible rather than discouraged.
-          # Hand-editing four files is how three of them end up disagreeing,
-          # and the one that disagrees is found at promotion, by a person.
+          # D3, as amended by #152. The cut writes one version into all five
+          # manifests; this is what makes drift afterwards impossible rather
+          # than discouraged. Hand-editing five files is how four of them end up
+          # disagreeing, and the one that disagrees is found at promotion, by a
+          # person.
+          #
+          # `packages/sdk` is the fifth (#152, ADR 0025). It was four until the
+          # core-link frames moved out of `packages/shared`.
+          MANIFESTS=(package.json packages/core/package.json \
+                     packages/panel/package.json packages/sdk/package.json \
+                     packages/shared/package.json)
+
+          # The failure mode this guards is not drift — it is a check that
+          # quietly stops covering the repository. A manifest deleted or renamed
+          # out from under the list, or a sixth package added without extending
+          # it, would leave this loop passing over a shrinking set and reporting
+          # green, which is worse than no check at all because the promotion
+          # checklist cites it by name. So the set is asserted before it is
+          # read: every file exists, and every workspace package under
+          # `packages/` is in the list. A new package fails here until it is
+          # added, which is the ticket that should have added it anyway.
+          assert_manifest_set() {
+            local file candidate found intact=1
+            for file in "${MANIFESTS[@]}"; do
+              if [[ ! -f "$file" ]]; then
+                intact=0
+                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152)."
+              fi
+            done
+            for file in packages/*/package.json; do
+              found=0
+              for candidate in "${MANIFESTS[@]}"; do
+                [[ "$candidate" == "$file" ]] && found=1
+              done
+              if [[ "$found" != "1" ]]; then
+                intact=0
+                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to \`promote.yml\`'s cut, and amend ADR 0023 D3 with the new count — that is what #152 did for \`packages/sdk\`."
+              fi
+            done
+            # An `if`, not `[[ … ]] && echo`: the `&&` form makes the function
+            # return non-zero when the set is broken, and under `set -e` a bare
+            # call to it aborts the step before the `failed` accumulator at the
+            # bottom is reached — so a set violation would report only itself
+            # and leave every other rule in this step unevaluated. Every
+            # violation here already went through `fail`, which is how this
+            # step reports.
+            if [[ "$intact" == "1" ]]; then
+              echo "  ✅ the version set is ${#MANIFESTS[@]} manifests, and covers every workspace package"
+            fi
+          }
+
           assert_versions() {
             local expected="$1" file version
-            for file in package.json packages/core/package.json \
-                        packages/panel/package.json packages/shared/package.json; do
+            assert_manifest_set
+            for file in "${MANIFESTS[@]}"; do
               version="$(jq -r .version "$file")"
               if [[ "$version" != "$expected" ]]; then
-                fail "Version drift in $file" "$file says $version; the train is $expected. All four manifests carry the train's version (ADR 0023 D3) — the cut wrote them and nothing else should be editing them."
+                fail "Version drift in $file" "$file says $version; the train is $expected. All five manifests carry the train's version (ADR 0023 D3, amended by #152) — the cut wrote them and nothing else should be editing them."
               else
                 echo "  ✅ $file is $version"
               fi

@@ -12,7 +12,7 @@
 // there is a hole, and the honest move is to reset the surface and paint the
 // returned tail as a fresh screen rather than splice it onto a stale one.
 
-import type { CoreLinkPtyReplay } from "@actana/shared/core-link-frames";
+import type { CoreLinkPtyReplay } from "@actana/sdk/core-link-frames";
 
 export type PtyReplayChunk = {
   seq: number;

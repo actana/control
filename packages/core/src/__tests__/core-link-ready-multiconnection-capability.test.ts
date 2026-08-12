@@ -6,7 +6,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/shared/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // The `multiConnection` capability on `ready` (issue 143, ADR 0024 D11).
 //

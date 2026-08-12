@@ -14,7 +14,7 @@ import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
   type CoreLinkSessionLock,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 
 /**
@@ -302,7 +302,7 @@ import type { CoreQueryPort } from "@actana/core/pty-core-link-server";
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /** In-memory CoreQueryPort for tests. */
 class FakeQueryPort implements CoreQueryPort {
@@ -1361,7 +1361,7 @@ import type {
   CoreLinkProjectMutation,
   CoreLinkSessionSnapshot,
   CoreLinkTaskMutation,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /** In-memory CoreMutationPort for tests. Records every call so assertions
  *  can verify the server threaded the frame through unchanged. */

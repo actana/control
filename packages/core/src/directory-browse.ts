@@ -13,7 +13,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import type { CoreLinkDirEntry, CoreLinkDirListing } from "@actana/shared/core-link-frames";
+import type { CoreLinkDirEntry, CoreLinkDirListing } from "@actana/sdk/core-link-frames";
 
 /**
  * How many folders one listing carries. A directory with thousands of children

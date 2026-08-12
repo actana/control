@@ -25,7 +25,7 @@ import {
   readEventTail as readTail,
   type EventLogSqlite,
 } from "@actana/shared/event-log";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 export type { CoreLinkEvent };
 

@@ -87,7 +87,8 @@ docker compose restart
 
 ## 6. Version surfaces agree
 
-- [ ] All four manifests say `x.y.z` — the `Train rules` check asserts this, so
+- [ ] All five manifests say `x.y.z` — root, `packages/core`, `packages/panel`,
+      `packages/sdk`, `packages/shared`. The `Train rules` check asserts this, so
       it should already be green; look if it is not
 - [ ] `actana status` inside the Core reports the same version
 - [ ] The Panel's UI reports the same version

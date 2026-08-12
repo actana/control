@@ -30,7 +30,7 @@ import {
   type CoreLinkTaskSnapshot,
   type CoreLinkLaunchProcessKillResult,
   type CoreLinkPtyReplay,
-} from "../../../../shared/src/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /**
  * Request frames that only mean anything against a Core announcing

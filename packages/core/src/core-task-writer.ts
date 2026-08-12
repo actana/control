@@ -16,7 +16,7 @@
 import type {
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import type { TaskStatus } from "@actana/shared/domain";
 import type { CoreMutationPort, CoreQueryPort, EventLogPort } from "./pty-core-link-server";
 

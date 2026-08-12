@@ -12,12 +12,18 @@
     "skipLibCheck": true,
     "noEmit": true,
     "types": ["node"],
-    // Core reaches `packages/shared` by package name, never by relative path
-    // (ADR 0016 D3): the declared `@actana/shared` dependency is the boundary,
-    // and a bundle that inlines the source is an implementation detail rather
-    // than the contract. Mirrors the Panel's mapping.
+    // Core reaches its workspace siblings by package name, never by relative
+    // path (ADR 0016 D3): the declared dependency is the boundary, and a bundle
+    // that inlines the source is an implementation detail rather than the
+    // contract. Mirrors the Panel's mapping.
+    //
+    // `@actana/sdk` holds the core-link frames (ADR 0025). The Core is the
+    // server answering them and still imports them from the client package —
+    // deliberately, because the protocol has one definition and it ships with
+    // the client (ADR 0025 D2).
     "baseUrl": ".",
     "paths": {
+      "@actana/sdk/*": ["../sdk/src/*"],
       "@actana/shared/*": ["../shared/src/*"]
     }
   },
