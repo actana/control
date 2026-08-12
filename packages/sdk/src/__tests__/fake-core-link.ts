@@ -108,15 +108,14 @@ export class FakeSocket {
 
   /** The client-side view of this socket, as the SDK's transport wants it. */
   asClientSocket(): CoreLinkSocket {
-    const self = this;
-    const socket: CoreLinkSocket = {
-      get readyState() {
-        return self.readyState;
-      },
-      send: (data: string) => self.send(data),
-      close: () => self.close(),
-      on: (event: string, cb: Listener) => self.on(event, cb),
-    } as CoreLinkSocket;
+    const socket = {
+      send: (data: string) => this.send(data),
+      close: () => this.close(),
+      on: (event: string, cb: Listener) => this.on(event, cb),
+    } as unknown as CoreLinkSocket;
+    // A live getter rather than a number copied at wiring time: `readyState`
+    // moves under the transport's feet as the socket opens and closes.
+    Object.defineProperty(socket, "readyState", { get: () => this.readyState });
     if (this.pingable) {
       socket.ping = () => {
         this.pings++;
