@@ -25,119 +25,16 @@
 // A test-only module alias buys the coverage without the graph.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { Server } from "node:net";
-import https from "node:https";
-import { WebSocketServer } from "ws";
-import {
-  PtyCoreLinkServer,
-  type WebSocketLike as ServerSocketLike,
-  type WebSocketServerLike,
-} from "@actana/core/pty-core-link-server";
-import { generateCertMaterial } from "@actana/core/core-cert-material";
-import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
+import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import { probeCore } from "../core-probe.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import { CORE_ID, startInProcessCore } from "./in-process-core-harness.ts";
 
-const SECRET = "cli-in-process-core-secret-at-least-32-bytes";
-const CORE_ID = "core_in_process";
-
-/**
- * A PTY manager that is never asked for anything.
- *
- * `core status` sends no request frames at all — it reads the `ready` and
- * `authOk` frames the Core opens every connection with, and hangs up — so every
- * method here is unreachable by design rather than by stubbing. They throw
- * rather than returning empties: if a later change to the probe starts spawning
- * something, this suite should fail loudly instead of quietly proving less.
- */
-function unusedPtyCore(): never[] & Record<string, unknown> {
-  const unreachable = (name: string) => () => {
-    throw new Error(`core status reached the PTY manager (${name}) — it is meant to be read-only`);
-  };
-  return {
-    setEmitTarget: () => {},
-    spawn: unreachable("spawn"),
-    write: unreachable("write"),
-    resize: unreachable("resize"),
-    kill: unreachable("kill"),
-    killAll: unreachable("killAll"),
-    killLaunchProcesses: unreachable("killLaunchProcesses"),
-    killPtysUnderPath: unreachable("killPtysUnderPath"),
-    findByTask: unreachable("findByTask"),
-    taskIdForPty: () => null,
-    replay: unreachable("replay"),
-  } as unknown as never[] & Record<string, unknown>;
-}
-
-/** A free TCP port on 127.0.0.1, found by briefly binding port 0. */
-function freePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const s = new Server();
-    s.on("error", reject);
-    s.listen(0, "127.0.0.1", () => {
-      const addr = s.address();
-      if (addr && typeof addr === "object") {
-        const { port } = addr;
-        s.close(() => resolve(port));
-      } else {
-        s.close();
-        reject(new Error("no port"));
-      }
-    });
-  });
-}
-
-/**
- * The real `wss://` server the Core builds, with the bound port recorded.
- * `requestCert` plus `rejectUnauthorized` are what make this a mutual
- * handshake — without them the blob's client cert would be decoration.
- */
-function recordingCreateServer(
-  bound: { port: number },
-): (opts: { port: number; host: string; tls?: unknown }) => WebSocketServerLike {
-  return (opts) => {
-    const tls = opts.tls as { caCert: string; serverCert: string; serverKey: string };
-    const tlsServer = https.createServer({
-      cert: tls.serverCert,
-      key: tls.serverKey,
-      ca: tls.caCert,
-      requestCert: true,
-      rejectUnauthorized: true,
-    });
-    tlsServer.listen(opts.port, opts.host, () => {
-      const addr = tlsServer.address();
-      if (addr && typeof addr === "object") bound.port = addr.port;
-    });
-    const wss = new WebSocketServer({ server: tlsServer });
-    return {
-      close: (cb?: () => void) => wss.close(() => tlsServer.close(cb)),
-      on: (event: string, cb: unknown) => {
-        if (event === "connection") {
-          wss.on("connection", (ws) => (cb as (s: ServerSocketLike) => void)(adapt(ws)));
-        } else if (event === "error") {
-          wss.on("error", (err: Error) => (cb as (e: Error) => void)(err));
-        }
-      },
-    } as WebSocketServerLike;
-  };
-}
-
-function adapt(ws: import("ws").WebSocket): ServerSocketLike {
-  return {
-    get readyState() {
-      return ws.readyState;
-    },
-    send: (data: string) => ws.send(data),
-    close: () => ws.close(),
-    on: (event: string, cb: unknown) => {
-      if (event === "message") ws.on("message", (d: unknown) => (cb as (d: unknown) => void)(d));
-      else if (event === "close") ws.on("close", () => (cb as () => void)());
-      else if (event === "error") ws.on("error", (e: Error) => (cb as (e: Error) => void)(e));
-    },
-    removeAllListeners: () => ws.removeAllListeners(),
-  } as ServerSocketLike;
-}
+// The Core itself, the certificates and the blob live in
+// `in-process-core-harness.ts` — #160 needed the same Core for the `session`
+// verbs, and two suites standing one up separately would be two chances to
+// build it slightly differently.
 
 let server: PtyCoreLinkServer | null = null;
 let fixture: CliFixture | null = null;
@@ -153,49 +50,9 @@ afterEach(() => {
 async function startCore(
   opts: { protocolVersion?: string; bearerExpiresInMs?: number } = {},
 ): Promise<{ blobText: string; endpoint: string }> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
-  const port = await freePort();
-  const bound = { port: 0 };
-  server = new PtyCoreLinkServer(unusedPtyCore() as never, {
-    port,
-    host: "127.0.0.1",
-    createServer: recordingCreateServer(bound),
-    tls: {
-      caCert: material.ca.cert,
-      serverCert: material.server.cert,
-      serverKey: material.server.key,
-    },
-    authVerifier: (bearer: string) => verifyBearer(bearer, SECRET),
-    ...(opts.protocolVersion === undefined ? {} : { protocolVersion: opts.protocolVersion }),
-  });
-
-  await new Promise<void>((resolve, reject) => {
-    const deadline = Date.now() + 10_000;
-    const tick = () => {
-      if (bound.port > 0) return resolve();
-      if (Date.now() > deadline) return reject(new Error("TLS server never bound"));
-      setTimeout(tick, 10);
-    };
-    tick();
-  });
-
-  const endpoint = `wss://127.0.0.1:${bound.port}`;
-  const blobText = Buffer.from(
-    JSON.stringify({
-      endpoint,
-      label: "in-process",
-      caCert: material.ca.cert,
-      clientCert: material.client.cert,
-      clientKey: material.client.key,
-      bearer: signBearer(
-        { coreId: CORE_ID, exp: Date.now() + (opts.bearerExpiresInMs ?? 3_600_000) },
-        SECRET,
-      ),
-    }),
-    "utf8",
-  ).toString("base64");
-
-  return { blobText, endpoint };
+  const core = await startInProcessCore(opts);
+  server = core.server;
+  return { blobText: core.blobText, endpoint: core.endpoint };
 }
 
 describe("actana core status, against a Core in this process", () => {
