@@ -1,6 +1,6 @@
 {
   "name": "@actana/sdk",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "Actana Control SDK — the Core client and the core-link wire protocol it speaks: frame schema, protocol version, codec, transport.",
   "license": "MIT",
   "private": true,
