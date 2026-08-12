@@ -99,6 +99,11 @@ Sessions are the Core's, not this command's
   \`logs\` name a Session by that id and work on any Session on the Core,
   including ones a Panel or another terminal started.
 
+What \`logs\` can show you
+  The Core's replay ring, which belongs to the harness's PTY — so a Session that
+  has already exited has no transcript left to print, and the way to keep one is
+  \`start --wait --json\`, whose object carries the screen as it settled.
+
 Who delivers the prompt
   The Core does (ADR 0026). It waits for the harness to settle, answers the
   dialog it opened, and writes the prompt. This CLI adds no timing of its own,
