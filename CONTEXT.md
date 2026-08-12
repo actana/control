@@ -95,6 +95,24 @@ _Avoid_: offset, sequence number
 One Core client's standing request for one PTY's byte stream. A Core sends a PTY's `data` and `exit` to the connections that asked for it and to no others, so a client attached to one Session never receives another's output. Held on the connection, so it dies with the socket and is re-asked for on reconnect. Catch-up is the existing `replay { ptyId, sinceSeq }`, ordered behind the subscription rather than in front of it (ADR 0024 D2).
 _Avoid_: channel, stream registration, attach (an attach is the Panel gesture; this is what it asks for)
 
+### Core client entry points
+
+**`CoreClient`**:
+The default way a program becomes a **Core client**: connect, authenticate, ask, close. One socket, one Core, mTLS plus the bearer out of a **Registration blob** — the shape the `actana` CLI and a script want, and the name a third party types against in `@actana/sdk`. It reconnects nothing and remembers nothing between runs; a program that stays up wants the durable entry point below. Frames that only a multi-connection Core understands are withheld until that Core has announced the capability, so one client drives an old Core and a new one without a second code path (ADR 0024 D11, ADR 0025).
+_Avoid_: session, socket wrapper, connection object, SDK consumer
+
+**Durable Core client**:
+The second entry point on the same transport, for a program that stays connected — the Panel, and anything watching a Core rather than asking it one question. `CoreClient` plus a heartbeat, reconnection with backoff, an **Event cursor**, and subscribe-then-replay. On every connection it re-presents its **Core client id**, re-asks for its **PTY subscriptions**, and replays the gap it was away for, so nothing above it has to know the socket ever dropped. There is no fleet here and there must not be: one client is one Core, and holding several is the Panel's job.
+_Avoid_: manager, pool, supervisor, reconnecting socket
+
+**Core connection**:
+What a **Registration blob** unpacks into: the core-link endpoint, that machine's HTTPS origin, the mTLS material, and the bearer. One name because it is one authenticated reach into one machine — the core link and the machine's HTTPS surface are two faces of it, not two connections. A Core client is handed this rather than a URL, and the material is exposed rather than only dialed with, so a surface that needs the same credentials over HTTPS needs no new format.
+_Avoid_: socket, endpoint, credentials bundle
+
+**Event cursor store**:
+Where a **Durable Core client** keeps its **Event cursor** between reconnects and between runs. Always **injected, never imported**: `localStorage` in a browser-shaped Panel, a file for the CLI, memory by default — because the client itself runs in a Node process that has no DOM to reach into. Memory is a real answer rather than a stub: every reconnect still replays its tail, and only a restart starts from the beginning of the log.
+_Avoid_: cache, persistence layer, local storage (that is one implementation of it)
+
 ### Panel views
 
 **Fleet view**:
