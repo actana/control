@@ -410,20 +410,52 @@ describe("actana session send", () => {
     expect(run.out).toEqual([]);
   });
 
-  it("sends a carriage return as a separate write, and only with --enter", async () => {
+  it("asks for the return in the same call, so the PTY is resolved once", async () => {
     await withRegisteredCore();
-    const writes: string[] = [];
+    const calls: Array<{ text: string; enter: boolean | undefined }> = [];
     const run = await cli().run(["session", "send", "task_1", "2", "--enter", "--json"], {
       sessions: fakeSessionGateway({
-        send: async (_taskId, text) => {
-          writes.push(text);
+        send: async (_taskId, text, opts) => {
+          calls.push({ text, enter: opts?.enter });
           return true;
         },
       }),
     });
     expect(run.code).toBe(EXIT_OK);
-    expect(writes).toEqual(["2", "\r"]);
+    // One call, not two: the gateway resolves the PTY once and writes both, so
+    // there is no window in which the text lands and the return goes nowhere.
+    // That the return is a *separate write* to that PTY is asserted against a
+    // real Core in `in-process-core-session.test.ts`.
+    expect(calls).toEqual([{ text: "2", enter: true }]);
     expect(JSON.parse(run.out.join("\n"))).toMatchObject({ enter: true, delivered: true });
+  });
+
+  it("refuses empty stdin rather than reporting a delivery it never made", async () => {
+    await withRegisteredCore();
+    // The Core is never reached, so the fixture's gateway would throw if it
+    // were — which is the assertion: nothing claimed a write it did not do.
+    const run = await cli().run(["session", "send", "task_1", "-"], {
+      sessions: fakeSessionGateway(),
+      stdin: "",
+    });
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain("stdin was empty");
+  });
+
+  it("still sends a bare carriage return when stdin is empty and --enter was asked for", async () => {
+    await withRegisteredCore();
+    const calls: Array<{ text: string; enter: boolean | undefined }> = [];
+    const run = await cli().run(["session", "send", "task_1", "-", "--enter"], {
+      sessions: fakeSessionGateway({
+        send: async (_taskId, text, opts) => {
+          calls.push({ text, enter: opts?.enter });
+          return true;
+        },
+      }),
+      stdin: "",
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(calls).toEqual([{ text: "", enter: true }]);
   });
 
   it("fails when the Core declined the write", async () => {

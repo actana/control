@@ -419,8 +419,9 @@ async function sessionLogs(
  * Verbatim, and nothing appended (ADR 0026, and the module header). `--enter`
  * adds a second write of a carriage return **because the operator asked for
  * one** — no pause between them, no waiting for the harness to look ready, and
- * nothing that decides on its own that Enter is due. A *starting* prompt goes
- * through `session start`, where the Core owns the schedule.
+ * nothing that decides on its own that Enter is due. Both writes go to one PTY
+ * resolved once, so the harness cannot move between them. A *starting* prompt
+ * goes through `session start`, where the Core owns the schedule.
  */
 async function sessionSend(
   deps: ActanaCliDeps,
@@ -444,11 +445,22 @@ async function sessionSend(
       "nothing to send — pass text, `-` to read stdin, or --enter for a bare carriage return",
     );
   }
+  if (read.text === "" && !args.enter) {
+    // Empty stdin, and nothing else asked for. Reporting a delivery here would
+    // be a lie in the one direction that matters: no Core was contacted, no
+    // Session was proved to exist, and nothing was written.
+    return usage(
+      deps,
+      "send",
+      "nothing to send — stdin was empty; pass --enter to send a bare carriage return",
+    );
+  }
 
   return withGateway(deps, args, paths, "send", async (gateway) => {
     const text = read.text ?? "";
-    let delivered = text.length === 0 ? true : await gateway.send(taskId, text);
-    if (delivered && args.enter) delivered = await gateway.send(taskId, "\r");
+    // One call, one PTY resolution, both writes (#204 review). The command no
+    // longer decides anything about the return beyond passing on the flag.
+    const delivered = await gateway.send(taskId, text, { enter: args.enter });
 
     if (args.json) {
       deps.out(formatJson({ taskId, characters: text.length, enter: args.enter, delivered }));
