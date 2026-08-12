@@ -295,6 +295,36 @@ describe("DurableCoreClient", () => {
     expect(seen).toEqual([3]);
   });
 
+  it("subscribes on a loopback Core too, whichever of ready and writability lands last", async () => {
+    // No auth gate and no bearer: the trusted loopback shape, where there is no
+    // `authOk` to hang the connection's opening frames off and writability rides
+    // the socket opening instead. Establishment waits for *both* signals rather
+    // than assuming an order — a `subscribe` sent against a socket that is not
+    // writable yet is dropped, and a client that dropped its subscribe never
+    // receives an event again.
+    rig = startCoreRig();
+    rig.eventLog.appendEvent("task:created", "{}", { taskId: "t1" });
+    const dial = rig.dialer();
+    client = new DurableCoreClient({
+      url: URL_A,
+      bearer: null,
+      createSocket: dial.createSocket,
+      reconnectInitialMs: 5,
+      reconnectMaxMs: 5,
+      heartbeat: false,
+    });
+    const durable = client;
+    const seen: number[] = [];
+    durable.onEvent(({ event }) => seen.push(event.eventId));
+
+    await durable.connect();
+    await vi.waitFor(() => expect(durable.isCaughtUp()).toBe(true));
+
+    expect(dial.last().client.framesOfType("auth")).toHaveLength(0);
+    expect(dial.last().client.framesOfType("subscribe")).toHaveLength(1);
+    expect(seen).toEqual([1]);
+  });
+
   it("gives every Core its own cursor key", () => {
     // Two Cores sharing a key would each replay from the other's position, and
     // the one that fell behind would lose the events in between.

@@ -261,6 +261,8 @@ export class CoreClient {
 
   protected transport: CoreLinkTransport | null = null;
   protected closed = false;
+  /** True once this connection has been established — reset per connection. */
+  private established = false;
 
   /** Requests written to no socket yet. They survive a reconnect; a timeout is what ends them. */
   private readonly queue: PendingRequest[] = [];
@@ -366,6 +368,7 @@ export class CoreClient {
     this.ready = null;
     this.multiConnection = null;
     this.authOkFrame = null;
+    this.established = false;
     this.transport = new CoreLinkTransport({
       url: this.url,
       createSocket: this.createSocket,
@@ -377,21 +380,10 @@ export class CoreClient {
           this.multiConnection = readMultiConnectionCapability(frame.multiConnection);
           const info = this.connectionInfo();
           for (const cb of this.readyListeners) cb(info);
-          // With no bearer there is no `authOk` coming, so this frame is both
-          // the capability announcement and the go-ahead. `onWritable` has
-          // already fired by now (it rides the socket opening), which is why the
-          // connection's opening frames are sent from here in that case — see
-          // `onConnectionWritable`.
-          if (!this.bearer) this.onConnectionEstablished();
+          this.maybeEstablish();
         },
         onWritable: () => {
-          // With a bearer this runs after `authOk`, so the Core has accepted
-          // this connection and the capability off `ready` is already recorded
-          // (`ready` is frame one, always ahead of any auth answer). Without one
-          // it runs on open, before `ready` — so the frames that depend on the
-          // capability are sent from `onConnectionEstablished` instead, and only
-          // the queue is drained here.
-          if (this.bearer) this.onConnectionEstablished();
+          this.maybeEstablish();
           this.flushQueue();
         },
         onAuthOk: (frame) => {
@@ -437,6 +429,29 @@ export class CoreClient {
    */
   protected onConnectionEstablished(): void {
     this.sendReclaim();
+  }
+
+  /**
+   * Establish the connection once both halves of "established" are true: the
+   * Core has said who it is (`ready`), and the link can be written to (open, and
+   * authenticated when a bearer was configured).
+   *
+   * **Whichever lands last is what triggers it**, and that is not a fixed order.
+   * With a bearer it is `authOk`, well after `ready`. Without one, writability
+   * rides the socket opening and `ready` normally follows — but a Core that got
+   * its frame in first would otherwise have the connection's opening frames sent
+   * against a socket that is not writable yet, and a `subscribe` dropped there is
+   * a client that never receives an event again. Waiting for both removes the
+   * ordering assumption instead of relying on it.
+   */
+  private maybeEstablish(): void {
+    if (this.established || this.closed) return;
+    if (!this.ready || !this.transport?.writable) return;
+    this.established = true;
+    this.onConnectionEstablished();
+    // The queue goes out behind what the connection owed the Core, so a replay
+    // tail is delivered ahead of the answers to requests that were waiting.
+    this.flushQueue();
     this.settleConnect();
   }
 
