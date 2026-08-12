@@ -68,6 +68,16 @@ export type RunOptions = {
    * connection. Every other suite reads {@link CliRun.out} afterwards.
    */
   onOut?: (line: string) => void;
+  /**
+   * Called with each stderr line as it is written, `--verbose` included.
+   *
+   * The other half of {@link onOut}, and for the same reason: `events tail`
+   * runs until something makes it stop, and the notice that it has found the
+   * end of the Core's log is on stderr. A suite that has to append an event
+   * *after* that moment — and not before, or the event is history and is
+   * suppressed — has no other way to know it has arrived.
+   */
+  onErr?: (line: string) => void;
   now?: number;
 };
 
@@ -150,8 +160,16 @@ export function makeCliFixture(): CliFixture {
           out.push(line);
           opts.onOut?.(line);
         },
-        err: (line) => err.push(line),
-        verbose: verboseOn ? (line) => err.push(`actana: ${line}`) : () => {},
+        err: (line) => {
+          err.push(line);
+          opts.onErr?.(line);
+        },
+        verbose: verboseOn
+          ? (line) => {
+              err.push(`actana: ${line}`);
+              opts.onErr?.(`actana: ${line}`);
+            }
+          : () => {},
         readStdin: async () => opts.stdin ?? "",
         stdinIsTty: opts.stdinIsTty ?? opts.stdin === undefined,
         probe:

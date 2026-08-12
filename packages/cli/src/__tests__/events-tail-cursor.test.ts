@@ -62,6 +62,18 @@ function idsOf(lines: string[]): number[] {
   return lines.map((line) => (JSON.parse(line) as { eventId: number }).eventId);
 }
 
+/**
+ * Fill a log past `EVENT_TAIL_LIMIT`, the cap the Core replays under.
+ *
+ * 1500 rather than 1001 so the second tail is a real one too: the first comes
+ * back capped at 1000, the second carries 500, and only the third comes back
+ * empty. A Core that has been up a day is well past this; nothing prunes the
+ * store.
+ */
+function fillPastTheCap(log: ArrayEventLog): void {
+  for (let i = 0; i < 1_500; i += 1) log.push("task:updated");
+}
+
 describe("actana events tail, across a Core restart", () => {
   it("delivers every event exactly once, in order, over a dropped connection", async () => {
     const log = arrayEventLog();
@@ -152,6 +164,57 @@ describe("actana events tail, across a Core restart", () => {
     // #6 and only #6: the second run replayed from the cursor rather than from
     // the beginning, and did not skip past what it had not shown.
     expect(idsOf(second.out)).toEqual([6]);
+  }, 60_000);
+
+  it("prints none of a history longer than the Core replays in one tail", async () => {
+    // The defect the review of #205 blocked on, against the Core that produces
+    // it. `handleSubscribe` streams at most `EVENT_TAIL_LIMIT` (1000) events and
+    // then sends `eventsReplayed` carrying the last id it *sent* — so on a log
+    // of 1500 the first marker says #1000, and everything from #1001 up arrives
+    // afterwards through `pushLiveEvents` as ordinary events with no second
+    // marker behind them. A first run that took that marker for the tip would
+    // print 500 events of history: the replay storm, on the first command an
+    // operator types. Nothing prunes the event log, so this is what any Core
+    // that has been up a while looks like.
+    const log = arrayEventLog();
+    fillPastTheCap(log);
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+
+    const printed: string[] = [];
+    const notices: string[] = [];
+    const tail = fixture.run(["events", "tail", "--json", "--limit", "1", "--verbose"], {
+      connect: connectCore,
+      onOut: (line) => printed.push(line),
+      onErr: (line) => notices.push(line),
+    });
+
+    // Where this run decided the log ends. Waiting for the notice is also what
+    // makes the push below live rather than history.
+    await waitFor(
+      () => notices.some((line) => line.includes("the Core's log ends at #")),
+      "the tail never found the end of the log",
+    );
+    const end = notices.find((line) => line.includes("the Core's log ends at #"));
+    // #1500 and not #1000: the first marker was a receipt for a tail the Core
+    // had cut short at the cap, and a run that stopped there would follow from
+    // the middle of the history — printing the 500 events above it as if they
+    // had just happened.
+    expect(end, "the end of the log was read off a marker the Core cut short").toContain("#1500");
+    // More than one read: the cap was really hit, so this suite is exercising
+    // the path it means to. One read would mean the log was short after all.
+    expect(log.tailReads).toBeGreaterThan(1);
+    expect(printed, "history was printed while the end of the log was being found").toEqual([]);
+
+    log.push("session:finished");
+
+    const result = await tail;
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    // One line: the event that happened after this command started following.
+    // The 1500 before it were the tail it walked to get there.
+    expect(idsOf(result.out)).toEqual([1501]);
   }, 60_000);
 
   it("leaves the stored cursor alone when --since asks for a one-off rewind", async () => {

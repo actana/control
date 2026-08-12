@@ -19,6 +19,7 @@ import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import { makeCliFixture, projectSnapshot, type CliFixture } from "./cli-harness.ts";
 import { arrayEventLog, startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 import {
+  HARNESS_INSTALL_FAILED_EVENT_KIND,
   HARNESSES_AVAILABILITY_EVENT_KIND,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkProjectMutation,
@@ -255,6 +256,103 @@ describe("actana harness, against a Core in this process", () => {
     expect(payload.installed).toBe(true);
     expect(payload.path).toBe("/root/.opencode/bin/opencode");
   }, 30_000);
+
+  it("ignores a stale `available` sitting past the cap on a long event log", async () => {
+    // The blocking defect from the review of #205, in the direction that ends
+    // in a lie. The Core replays at most `EVENT_TAIL_LIMIT` (1000) events and
+    // closes the tail with the last id it *sent*, so a command that took that
+    // marker for the log's tip pins itself at #1000 — and this Core's log holds
+    // an `agents:availabilityChanged` at #1200 from an install that worked an
+    // hour ago and has since been undone. Past a tip of #1000, that stale map
+    // resolves the wait as `{ok: true}` and exits 0 on an install that in fact
+    // failed. `harness-command.test.ts` cannot catch it: its fake Core never
+    // truncates a replay.
+    const log = arrayEventLog();
+    const wasAvailable: CoreLinkHarnessAvailabilityMap = {
+      ...missing,
+      opencode: { status: "available", version: "0.6.0", path: "/root/.opencode/bin/opencode" },
+    };
+    for (let i = 0; i < 1_500; i += 1) {
+      if (i === 1_200) log.push(HARNESSES_AVAILABILITY_EVENT_KIND, JSON.stringify(wasAvailable));
+      else log.push("task:updated");
+    }
+
+    const installPort: HarnessInstallPort = {
+      installable: (id) => id === "opencode",
+      // …and today it is not there, and installing it does not put it there.
+      install: async () => ({
+        ok: false,
+        message: "opencode was installed, but `opencode` is still not on this Core's PATH.",
+      }),
+    };
+    core = await startInProcessCore({
+      eventLog: log,
+      availabilityPort: { snapshot: () => missing },
+      installPort,
+      liveEventPollMs: 25,
+    });
+    fixture = makeCliFixture();
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+
+    const run = await fixture.run(["harness", "install", "opencode", "--json"], {
+      connect: connectCore,
+    });
+
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.installed, "an hour-old availability map was read as this install's verdict")
+      .toBe(false);
+    expect(run.code).toBe(EXIT_FAILURE);
+    expect(payload.message).toContain("still not on this Core's PATH");
+  }, 60_000);
+
+  it("ignores an install that failed before it asked, past the cap on a long log", async () => {
+    // The same defect the other way round, and the case the PR body claims to
+    // prevent: `harness:installFailed` for this Harness, from an install that
+    // failed an hour ago, sitting at #1200 on a 1500-event log. Read as this
+    // install's outcome it turns a success into a reported failure — with the
+    // Core's own sentence from an hour ago quoted as the reason.
+    const log = arrayEventLog();
+    const availability: CoreLinkHarnessAvailabilityMap = structuredClone(missing);
+    for (let i = 0; i < 1_500; i += 1) {
+      if (i === 1_200) {
+        log.push(
+          HARNESS_INSTALL_FAILED_EVENT_KIND,
+          JSON.stringify({ harness: "opencode", message: "an hour ago, this failed" }),
+        );
+      } else log.push("task:updated");
+    }
+
+    const installPort: HarnessInstallPort = {
+      installable: (id) => id === "opencode",
+      install: async () => {
+        availability.opencode = {
+          status: "available",
+          version: "0.6.0",
+          path: "/root/.opencode/bin/opencode",
+        };
+        log.push(HARNESSES_AVAILABILITY_EVENT_KIND, JSON.stringify(availability));
+        return { ok: true };
+      },
+    };
+    core = await startInProcessCore({
+      eventLog: log,
+      availabilityPort: { snapshot: () => availability },
+      installPort,
+      liveEventPollMs: 25,
+    });
+    fixture = makeCliFixture();
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+
+    const run = await fixture.run(["harness", "install", "opencode", "--json"], {
+      connect: connectCore,
+    });
+
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.installed, "a failure from before this command asked was read as its verdict")
+      .toBe(true);
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(payload.path).toBe("/root/.opencode/bin/opencode");
+  }, 60_000);
 
   it("reports a Core that cannot install anything, rather than waiting on it", async () => {
     core = await startInProcessCore({ availabilityPort: { snapshot: () => missing } });

@@ -92,11 +92,52 @@ describe("actana events tail", () => {
     core.emitEvent({ eventId: 2, kind: "task:updated" });
     core.emitReplayed(2);
     await settle();
+
+    // A marker that closed a tail with events in it is a receipt for what was
+    // sent, not a statement that the log has ended — the Core caps a replay at
+    // `EVENT_TAIL_LIMIT` and reports the last id it managed. So the command
+    // asks again from there, and only an empty tail ends the hunt.
+    expect(core.subscribes).toContain(2);
+    core.emitReplayed(2);
+    await settle();
+
     core.emitEvent({ eventId: 3, kind: "session:finished" });
 
     const result = await run;
     expect(result.out).toHaveLength(1);
     expect(JSON.parse(result.out[0]!).eventId).toBe(3);
+  });
+
+  it("keeps printing off while a truncated replay is still being drained", async () => {
+    // The blocking defect from the review of #205, at this suite's level: a
+    // marker arrives, and everything after it would have been printed as if it
+    // were live. Here the Core has more to give and says so by sending events
+    // rather than by any flag — so a marker after a non-empty tail must not
+    // start the stream, however many of them arrive.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(["events", "tail", "--json", "--limit", "1"], { connect: core.connect });
+    await settle();
+
+    for (const round of [1, 2, 3]) {
+      core.emitEvent({ eventId: round * 2 - 1, kind: "task:created" });
+      core.emitEvent({ eventId: round * 2, kind: "task:updated" });
+      core.emitReplayed(round * 2);
+      await settle();
+      // Each round is history, and each re-ask carries the cursor it reached.
+      expect(core.subscribes).toContain(round * 2);
+    }
+
+    core.emitReplayed(6);
+    await settle();
+    core.emitEvent({ eventId: 7, kind: "session:finished" });
+
+    const result = await run;
+    // One line, and it is the only event that happened after the log's end was
+    // found. Six events of history, printed never.
+    expect(result.out).toHaveLength(1);
+    expect(JSON.parse(result.out[0]!).eventId).toBe(7);
   });
 
   it("prints the whole tail the Core holds with --since start", async () => {

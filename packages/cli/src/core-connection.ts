@@ -33,7 +33,7 @@ import type {
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
 } from "@actana/sdk/core-link-frames.ts";
-import { resolveCore } from "./core-resolution.ts";
+import { resolveCore, type ResolveResult } from "./core-resolution.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -62,6 +62,23 @@ export type CoreLinkClient = {
   onReady(cb: (info: CoreConnectionInfo) => void): () => void;
   subscribeEvents(lastEventId?: number): boolean;
   close(): void;
+};
+
+/**
+ * {@link openCore}'s options: everything {@link CoreConnectOptions} carries,
+ * plus the one thing a caller can already have done for itself.
+ */
+export type OpenCoreOptions = CoreConnectOptions & {
+  /**
+   * A resolution this command already made, rather than one made here.
+   *
+   * `events tail` needs the Core's endpoint *before* the link comes up — it
+   * reads the stored cursor off disk to decide whether this is a first run, and
+   * a durable client starts writing that same cursor the moment it connects. So
+   * it resolves first and hands the answer over, and the Core this command
+   * means is still decided in exactly one place.
+   */
+  resolved?: ResolveResult;
 };
 
 export type CoreConnectOptions = {
@@ -150,18 +167,26 @@ export async function openCore(
   args: ParsedArgs,
   paths: RegistryPaths,
   label: string,
-  opts: CoreConnectOptions = {},
+  opts: OpenCoreOptions = {},
 ): Promise<OpenCoreResult> {
-  const resolved = resolveCore({ paths, env: deps.env, home: deps.home, coreFlag: args.core });
+  const resolved =
+    opts.resolved ?? resolveCore({ paths, env: deps.env, home: deps.home, coreFlag: args.core });
   if (!resolved.ok) {
     deps.err(`${label}: ${resolved.error}`);
     return { ok: false, code: EXIT_FAILURE };
   }
 
+  // Only the connect half goes on: `resolved` is this function's own argument
+  // and means nothing to a client.
+  const connectOpts: CoreConnectOptions = {};
+  if (opts.durable !== undefined) connectOpts.durable = opts.durable;
+  if (opts.storage !== undefined) connectOpts.storage = opts.storage;
+  if (opts.timeoutMs !== undefined) connectOpts.timeoutMs = opts.timeoutMs;
+
   const { name, blob } = resolved.core;
   deps.verbose(`dialling ${blob.endpoint}`);
   try {
-    const client = await deps.connect(blob, opts);
+    const client = await deps.connect(blob, connectOpts);
     return { ok: true, core: { client, name, endpoint: blob.endpoint } };
   } catch (err) {
     deps.err(`${label}: ${blob.endpoint} — ${errorText(err)}`);

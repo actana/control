@@ -31,6 +31,7 @@
 
 import { formatJson, formatTable } from "./cli-output.ts";
 import { errorText, openCore, type CoreLinkClient } from "./core-connection.ts";
+import { trackEventTip } from "./event-tip.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
@@ -56,6 +57,9 @@ const INSTALL_TIMEOUT_MS = 15 * 60_000;
 
 /** How often the wait says it is still waiting, and re-reads the Core's map. */
 const INSTALL_PROGRESS_MS = 10_000;
+
+/** How long a silent Core has before the event subscription is given up on. */
+const SUBSCRIBE_ANSWER_MS = 30_000;
 
 /** Where the live harness-install failures are tracked. */
 const CANARY_ISSUE = "https://github.com/actana/control/issues/128";
@@ -214,7 +218,7 @@ async function harnessInstall(
       });
     }
 
-    const tip = await establishEventTip(client);
+    const tip = await establishEventTip(deps, client);
     deps.verbose(`watching the Core's event log past #${tip}`);
 
     const ack = await sendInstall(client, harness);
@@ -249,27 +253,69 @@ async function harnessInstall(
  *
  * The Core has no "current tip" frame, so the tip is learned the one way it is
  * published: subscribe, let the tail stream, and read the `eventsReplayed`
- * marker that closes it. The tail is discarded rather than read, which costs one
- * replay of a bounded log and buys the guarantee that no earlier install's
- * outcome can be mistaken for this one's.
+ * markers that close it. The tail is discarded rather than read, which buys the
+ * guarantee that no earlier install's outcome can be mistaken for this one's.
+ *
+ * **Markers, plural.** A single one is a receipt for what the Core sent, not a
+ * statement about where its log ends — it caps a replay at `EVENT_TAIL_LIMIT`,
+ * and a tip taken from a capped marker sits in the middle of the history, with
+ * an hour-old `harness:installFailed` above it waiting to be read as this
+ * install's verdict. {@link trackEventTip} is that argument in full and owns the
+ * asking-again; this holds the deadline around it.
+ *
+ * The deadline is re-armed on every marker rather than run against the whole
+ * hunt: what it exists to catch is a Core that has gone quiet, and a long log is
+ * a Core answering — slowly, and correctly.
+ *
+ * **The cost this pays is a subscribe from `0` on every run**, which drags the
+ * Core's whole event log over the wire to learn one number. That is inherent
+ * while the tip is only knowable by walking to it: a cursor guessed high stops
+ * live push silently (the Core sends only what is past it), and a cursor
+ * remembered from a previous run is not this command's tip. What removes it is
+ * the true tip travelling on `subscribeAck` beside `fromEventId`, where no
+ * client cursor consumes it — a protocol change, and #161 is not where the wire
+ * format moves.
  */
-function establishEventTip(client: CoreLinkClient): Promise<number> {
+function establishEventTip(deps: ActanaCliDeps, client: CoreLinkClient): Promise<number> {
   return new Promise<number>((resolve, reject) => {
-    const timer = setTimeout(() => {
-      stop();
-      reject(new Error("the Core did not answer the event subscription"));
-    }, 30_000);
-    const off = client.onEventsReplayed(({ lastEventId }) => {
-      stop();
-      resolve(lastEventId);
-    });
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout>;
+
     const stop = () => {
+      settled = true;
       clearTimeout(timer);
-      off();
+      offEvent();
+      offReplayed();
     };
-    if (!client.subscribeEvents(0)) {
+    const fail = (message: string) => {
+      if (settled) return;
       stop();
-      reject(new Error("the link dropped before the event subscription went out"));
+      reject(new Error(message));
+    };
+    const wait = (message: string) => {
+      if (settled) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => fail(message), SUBSCRIBE_ANSWER_MS);
+    };
+
+    const tip = trackEventTip(client, deps, {
+      onSendFailed: () => fail("the link dropped while reading the Core's event log"),
+    });
+    const offEvent = client.onEvent(({ event }) => tip.saw(event.eventId));
+    const offReplayed = client.onEventsReplayed(({ lastEventId }) => {
+      const end = tip.tipFrom(lastEventId);
+      if (end === null) {
+        wait("the Core stopped answering the event subscription");
+        return;
+      }
+      if (settled) return;
+      stop();
+      resolve(end);
+    });
+
+    wait("the Core did not answer the event subscription");
+    if (!client.subscribeEvents(0)) {
+      fail("the link dropped before the event subscription went out");
     }
   });
 }

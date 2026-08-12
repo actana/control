@@ -20,6 +20,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { coreLinkCursorStorageKey } from "@actana/sdk/core-link-cursor-storage.ts";
 import type { CoreLinkCursorStorage } from "@actana/sdk/core-link-cursor-storage.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 
@@ -46,27 +47,23 @@ export function cursorsDir(paths: RegistryPaths): string {
  */
 export class FileCursorStorage implements CoreLinkCursorStorage {
   private readonly dir: string;
-  /**
-   * Whether the first read found a cursor already on disk.
-   *
-   * `events tail` needs this and cannot ask any other way: "no cursor" and
-   * "cursor at 0" are the same number to the SDK, and they are different
-   * commands — the first run of a `tail` on a machine should start at the end of
-   * the log, the way `tail -f` does, rather than replaying everything a Core has
-   * ever recorded.
-   */
-  hadCursor = false;
+  private readonly onWriteFailed: (message: string) => void;
 
-  constructor(dir: string) {
+  /**
+   * @param onWriteFailed Told about a swallowed write failure, once per
+   * failure. `events tail` passes `deps.verbose`, which turns "this tail
+   * repeats itself every run" from a mystery into a line an operator can read
+   * — see {@link setItem}.
+   */
+  constructor(dir: string, onWriteFailed: (message: string) => void = () => {}) {
     this.dir = dir;
+    this.onWriteFailed = onWriteFailed;
   }
 
   getItem(key: string): string | null {
     try {
       const raw = fs.readFileSync(this.file(key), "utf8").trim();
-      if (raw === "") return null;
-      this.hadCursor = true;
-      return raw;
+      return raw === "" ? null : raw;
     } catch {
       return null;
     }
@@ -76,14 +73,46 @@ export class FileCursorStorage implements CoreLinkCursorStorage {
     try {
       fs.mkdirSync(this.dir, { recursive: true, mode: 0o700 });
       fs.writeFileSync(this.file(key), `${value}\n`, "utf8");
-    } catch {
-      /* see the class comment: an unwritable cursor is not a reason to stop */
+    } catch (err) {
+      // Still swallowed, for the reason in the class comment: a read-only
+      // config directory is not a reason to refuse to stream a Core's events.
+      // But it is reported, because the symptom it produces — every run of
+      // `events tail` starting where the last one started — looks like a bug in
+      // the cursor rather than a failure to write it.
+      this.onWriteFailed(
+        `could not write the event cursor to ${this.file(key)} (${err instanceof Error ? err.message : String(err)}); ` +
+          "the next run of this command will start where this one did",
+      );
     }
   }
 
   private file(key: string): string {
     return path.join(this.dir, `${key}.txt`);
   }
+}
+
+/**
+ * The cursor already on disk for one Core, or null when there is none.
+ *
+ * A separate read rather than something observed on the way past, because the
+ * question is asked *before* a client exists: "no cursor" and "cursor at 0" are
+ * the same number to the SDK and they are different commands — a first
+ * `events tail` on a machine starts at the end of the log, the way `tail -f`
+ * does, and a second one carries on from where the first stopped. A durable
+ * client begins writing this same file as soon as its link comes up, so the
+ * only moment the answer is still true is before it dials.
+ *
+ * The key comes from the SDK's own {@link coreLinkCursorStorageKey}, given the
+ * endpoint the blob carries — which is exactly what a client derives it from
+ * (`coreConnectionFromBlob` trims the endpoint and hands it over as the URL).
+ * Deriving it a second way here would be a second opinion about which file a
+ * Core's cursor lives in.
+ */
+export function storedCursorFor(dir: string, endpoint: string): number | null {
+  const raw = new FileCursorStorage(dir).getItem(coreLinkCursorStorageKey(endpoint.trim()));
+  if (raw === null) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : null;
 }
 
 /**
