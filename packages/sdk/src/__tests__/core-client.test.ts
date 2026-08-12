@@ -15,7 +15,7 @@ import {
   unwrapResponse,
 } from "../core-client";
 import { coreConnectionFromBlob } from "../core-registration-blob";
-import { startCoreRig, type CoreRig } from "./fake-core-link";
+import { FakeSocketPair, startCoreRig, type CoreRig } from "./fake-core-link";
 
 const SECRET = "core-client-suite-secret-32-bytes-x";
 
@@ -369,6 +369,80 @@ describe("CoreClient", () => {
 
   it("needs somewhere to dial", () => {
     expect(() => new CoreClient({})).toThrow(/url or a registration blob/);
+  });
+
+  it("dials again after a failed connect instead of replaying the rejection", async () => {
+    // `connect()` is memoized so two callers racing share one socket. The memo
+    // must not outlive the attempt: a client that failed once — a Core still
+    // starting up, a laptop that had not joined the network yet — would
+    // otherwise hand every later caller that same rejection for the rest of the
+    // process, with no way back short of building another client.
+    const core = authenticatingRig();
+    const pairs: FakeSocketPair[] = [];
+    const createSocket = () => {
+      const pair = new FakeSocketPair();
+      pairs.push(pair);
+      if (pairs.length === 1) {
+        // Nothing listening yet: the socket dies without ever opening.
+        queueMicrotask(() => pair.client.close());
+      } else {
+        core.wss.accept(pair.server);
+        queueMicrotask(() => pair.open());
+      }
+      return pair.client.asClientSocket();
+    };
+    client = new CoreClient({
+      url: "wss://core.test:9444",
+      bearer: bearerFor(),
+      createSocket,
+    });
+    const c = client;
+
+    await expect(c.connect()).rejects.toThrow(/core-link closed/);
+    await expect(c.connect()).resolves.toMatchObject({ compatible: true });
+
+    expect(pairs).toHaveLength(2);
+    expect(c.isConnected()).toBe(true);
+  });
+
+  it("answers a connect() made on a live link without dialing a second one", async () => {
+    const core = authenticatingRig();
+    const { client: c, dial } = await connected(core);
+
+    await expect(c.connect()).resolves.toMatchObject({ coreId: "core_test" });
+
+    expect(dial.pairs).toHaveLength(1);
+  });
+
+  it("holds a queued caller request behind what the connection owed the Core", async () => {
+    // The loopback shape, and the ordering that only shows up there: with no
+    // bearer the link is writable the instant the socket opens, which can be
+    // *before* the Core has said `ready`. Flushing the queue on writability
+    // alone would put this caller's `replay` on the wire ahead of the `reclaim`
+    // the connection owes — the opposite of what `onConnectionEstablished`
+    // promises, and the same ordering assumption the establishment race had.
+    rig = startCoreRig();
+    const core = rig;
+    const pair = new FakeSocketPair();
+    const createSocket = () => {
+      // Open first; the Core accepts — and so speaks its `ready` — only after.
+      queueMicrotask(() => pair.open());
+      setTimeout(() => core.wss.accept(pair.server), 5);
+      return pair.client.asClientSocket();
+    };
+    client = new CoreClient({ url: "wss://core.test:9444", bearer: null, createSocket });
+    const c = client;
+
+    // Asked for before there is any link at all, so it is queued rather than sent.
+    const pending = c.replay("pty-1");
+    await c.connect();
+    await pending;
+
+    const ordered = pair.client
+      .frames()
+      .map((f) => f.type)
+      .filter((t) => t === "reclaim" || t === "replay");
+    expect(ordered).toEqual(["reclaim", "replay"]);
   });
 
   it("authenticates nothing and is writable at once against a loopback Core", async () => {

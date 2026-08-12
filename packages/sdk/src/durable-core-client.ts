@@ -126,6 +126,15 @@ export class DurableCoreClient extends CoreClient {
   }
 
   /**
+   * The supervisor is the only thing that dials here once the first connection
+   * has been asked for, so a `connect()` made during the backoff waits for the
+   * dial that is already coming rather than racing one of its own.
+   */
+  protected override reconnectScheduled(): boolean {
+    return this.reconnectTimer !== null;
+  }
+
+  /**
    * What this client owes the Core on every connection, in the one order that
    * works.
    *

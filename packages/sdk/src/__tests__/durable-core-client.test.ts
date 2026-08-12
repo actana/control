@@ -15,7 +15,7 @@ import {
   coreLinkCursorStorageKey,
   InMemoryCoreLinkCursorStorage,
 } from "../core-link-cursor-storage";
-import { startCoreRig, type CoreRig } from "./fake-core-link";
+import { FakeSocketPair, startCoreRig, type CoreRig } from "./fake-core-link";
 
 const SECRET = "durable-client-suite-secret-32-byte";
 const URL_A = "wss://core-a.test:9444";
@@ -323,6 +323,103 @@ describe("DurableCoreClient", () => {
     expect(dial.last().client.framesOfType("auth")).toHaveLength(0);
     expect(dial.last().client.framesOfType("subscribe")).toHaveLength(1);
     expect(seen).toEqual([1]);
+  });
+
+  it("sends reclaim and subscribe ahead of a caller's queued request", async () => {
+    // The loopback shape again, for the ordering it is the only place to see:
+    // writability rides the socket opening, so it can land before `ready`. A
+    // queue flushed on writability alone would put this caller's `replay` on the
+    // wire first, and the Core would answer it while the Sessions this client is
+    // reclaiming still belonged to the socket this one replaced — the ordering
+    // `onConnectionEstablished` documents as load-bearing, tested rather than
+    // asserted in a comment.
+    rig = startCoreRig();
+    const core = rig;
+    const pair = new FakeSocketPair();
+    const createSocket = () => {
+      queueMicrotask(() => pair.open());
+      setTimeout(() => core.wss.accept(pair.server), 5);
+      return pair.client.asClientSocket();
+    };
+    client = new DurableCoreClient({
+      url: URL_A,
+      bearer: null,
+      createSocket,
+      reconnectInitialMs: 5,
+      reconnectMaxMs: 5,
+      heartbeat: false,
+    });
+    const durable = client;
+
+    const pending = durable.replay("pty-1");
+    await durable.connect();
+    await pending;
+
+    const ordered = pair.client
+      .frames()
+      .map((f) => f.type)
+      .filter((t) => t === "reclaim" || t === "subscribe" || t === "replay");
+    expect(ordered).toEqual(["reclaim", "subscribe", "replay"]);
+  });
+
+  it("answers a connect() made mid-backoff with the connection that comes, not the one that died", async () => {
+    // The gap between a socket dying and the backoff opening the next one. A
+    // caller that asks to connect in there is asking about the link it is going
+    // to have — answering out of the dead connection's state would hand it a
+    // `coreId` of null and an incompatible protocol version for a Core that is
+    // about to be perfectly reachable.
+    const core = remoteRig();
+    const { client: c, dial } = makeClient(core);
+    await c.connect();
+
+    dial.last().server.close();
+    const duringBackoff = c.connect();
+
+    await expect(duringBackoff).resolves.toMatchObject({ compatible: true, coreId: "core_test" });
+    expect(dial.pairs).toHaveLength(2);
+  });
+
+  it("stops handing back a rejected connect once the supervisor has reconnected", async () => {
+    // The deadline on `connect()` and the supervisor underneath it are separate
+    // clocks: the deadline can expire on a Core that is merely slow to come up,
+    // and the backoff then reconnects perfectly well a moment later. A memoized
+    // rejection would leave every later caller — #156's Panel migration included
+    // — being told the client is unusable while its link is up and carrying
+    // events.
+    rig = startCoreRig();
+    const core = rig;
+    const pairs: FakeSocketPair[] = [];
+    const createSocket = () => {
+      const pair = new FakeSocketPair();
+      pairs.push(pair);
+      if (pairs.length === 1) {
+        // The Core is not up yet: this socket dies without ever opening.
+        queueMicrotask(() => pair.client.close());
+      } else {
+        core.wss.accept(pair.server);
+        queueMicrotask(() => pair.open());
+      }
+      return pair.client.asClientSocket();
+    };
+    client = new DurableCoreClient({
+      url: URL_A,
+      bearer: null,
+      createSocket,
+      // A deadline that expires well before the backoff dials again, so the
+      // rejection and the recovery are ordered the way the note describes.
+      connectTimeoutMs: 1,
+      reconnectInitialMs: 40,
+      reconnectMaxMs: 40,
+      heartbeat: false,
+    });
+    const durable = client;
+
+    await expect(durable.connect()).rejects.toThrow(/timed out/);
+    await vi.waitFor(() => expect(durable.isConnected()).toBe(true));
+
+    await expect(durable.connect()).resolves.toMatchObject({ compatible: true });
+    // The retry read the live link rather than dialing over it.
+    expect(pairs).toHaveLength(2);
   });
 
   it("gives every Core its own cursor key", () => {

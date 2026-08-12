@@ -337,8 +337,17 @@ export class CoreClient {
    * Open the link and settle when the Core has said who it is: resolves after
    * `ready` and, when a bearer is configured, after `authOk`.
    *
-   * Idempotent — a second call returns the first call's promise, so two callers
-   * racing to connect share one socket rather than opening two.
+   * Idempotent **while it is in flight** — a second call returns the first
+   * call's promise, so two callers racing to connect share one socket rather
+   * than opening two. Once it settles the memo is dropped, and what a later
+   * call gets is the state of the link *now*: the current connection's info if
+   * one is up, and a fresh attempt if none is.
+   *
+   * That distinction is the whole point. A memo kept past its rejection is a
+   * client that reports itself permanently unconnectable — a durable client
+   * whose connect deadline expired once would hand every later caller that same
+   * rejection long after its supervisor had reconnected, because nothing here
+   * ever cleared it (issue 153 review, note 3; #156 builds on this).
    *
    * Rejects on a refused bearer, on a socket that closed before it was
    * established, and on the connect deadline. A {@link DurableCoreClient} keeps
@@ -348,14 +357,30 @@ export class CoreClient {
   connect(): Promise<CoreConnectionInfo> {
     if (this.closed) return Promise.reject(new Error("core-link client closed"));
     if (this.connectPromise) return this.connectPromise;
+    // A link that is already up answers straight away rather than dialing a
+    // second one over a working first.
+    if (this.established) return Promise.resolve(this.connectionInfo());
     this.connectPromise = new Promise<CoreConnectionInfo>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.failConnect(new Error(`core-link connect to ${this.url} timed out`));
       }, this.connectTimeoutMs);
       this.connectSettle = { resolve, reject, timer };
     });
-    this.openTransport();
+    // Dial only when nothing is already dialing on this client's behalf. A
+    // transport mid-handshake, or a durable client's backoff timer about to make
+    // one, will settle the promise above through the ordinary handlers — opening
+    // another socket here would orphan whichever of the two lost the race.
+    if (!this.transport && !this.reconnectScheduled()) this.openTransport();
     return this.connectPromise;
+  }
+
+  /**
+   * Is a reconnect already pending, so `connect()` must not dial itself? Never
+   * for a one-shot client, which has no supervisor; {@link DurableCoreClient}
+   * overrides it with its backoff timer.
+   */
+  protected reconnectScheduled(): boolean {
+    return false;
   }
 
   /**
@@ -383,8 +408,16 @@ export class CoreClient {
           this.maybeEstablish();
         },
         onWritable: () => {
+          // Writability alone does not drain the queue. `maybeEstablish` flushes
+          // it once the connection is established, *behind* what that connection
+          // owed the Core — and on the no-bearer path writability lands before
+          // `ready`, so flushing here regardless would put a caller's request on
+          // the wire ahead of `reclaim` and `subscribe`, which is the ordering
+          // the comment on `onConnectionEstablished` promises callers. The guard
+          // covers the case where writability returns on a connection that is
+          // already established.
           this.maybeEstablish();
-          this.flushQueue();
+          if (this.established) this.flushQueue();
         },
         onAuthOk: (frame) => {
           this.authOkFrame = frame;
@@ -406,6 +439,12 @@ export class CoreClient {
           this.ready = null;
           this.multiConnection = null;
           this.authOkFrame = null;
+          // Cleared here and not only on the next dial: between a socket dying
+          // and a durable client's backoff opening the next one, this client is
+          // not established, and a `connect()` arriving in that gap must wait
+          // for the connection that is coming rather than be told about the one
+          // that just died.
+          this.established = false;
           this.transport = null;
           this.failInFlight();
           for (const cb of this.disconnectedListeners) cb({ error: reason });
@@ -465,6 +504,7 @@ export class CoreClient {
     const settle = this.connectSettle;
     if (!settle) return;
     this.connectSettle = null;
+    this.connectPromise = null;
     clearTimeout(settle.timer);
     settle.resolve(this.connectionInfo());
   }
@@ -473,6 +513,9 @@ export class CoreClient {
     const settle = this.connectSettle;
     if (!settle) return;
     this.connectSettle = null;
+    // Dropped on failure as well as on success: a rejected promise held in the
+    // memo would be handed to every later caller forever. See `connect()`.
+    this.connectPromise = null;
     clearTimeout(settle.timer);
     settle.reject(err);
   }
