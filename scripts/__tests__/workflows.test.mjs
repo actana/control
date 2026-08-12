@@ -401,6 +401,32 @@ describe("npm publishing (#129 D13, ADR 0018 as amended)", () => {
     expect(job).toContain("::error title=No npm dist-tag resolved::");
   });
 
+  // The read-back after the publish is the one check that can catch a publish
+  // that already succeeded unattested — and it runs at the only point in this
+  // workflow where a false alarm costs a version number. "The registry said no
+  // attestation" and "the registry never answered" must therefore be different
+  // failures with different advice.
+  it("tells an unattested publish apart from a registry it could not reach", () => {
+    const job = jobBlock(source, "npm");
+    const step = job.slice(job.indexOf("Every published package is attested"));
+    // The read is authenticated, for the same reason the publish is: the
+    // `.npmrc` setup-node wrote references NODE_AUTH_TOKEN, and an unset one is
+    // sent as a literal bearer token.
+    expect(step).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}");
+    // The exit status is captured apart from the output. `2>/dev/null || true`
+    // is precisely what collapsed the two cases into one empty string.
+    expect(step).not.toContain("2>/dev/null || true");
+    expect(step).toMatch(/if output="\$\(npm view "\$spec" dist\.attestations/);
+    // Two errors, two messages, and the advice differs on the point that
+    // matters: one says cut the next version, the other says do not.
+    expect(step).toContain("::error title=Published without provenance::");
+    expect(step).toContain("::error title=Could not verify provenance::");
+    expect(step).toMatch(/Could not verify provenance::[^\n]*Do NOT cut a new version/);
+    // And it still fails the release either way.
+    expect(step).toContain('exit "$fail"');
+    expect(step).not.toContain("continue-on-error");
+  });
+
   // Least privilege, and a second reading of the same line: `id-token: write`
   // is a token-minting permission, and it belongs to the one job that mints a
   // token. Its appearance anywhere else in this file would most likely be

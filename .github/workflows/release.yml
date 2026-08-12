@@ -775,29 +775,83 @@ jobs:
       # is where it is checked. Read back rather than trusted — with a couple of
       # retries, because the attestation is written by a different service than
       # the packument and can lag it by seconds.
+      #
+      # ── Two failure modes, and they must not be one ──────────────────────
+      #
+      # This step runs after the version number is burned, which makes it the
+      # one place in this workflow where a false alarm is expensive: "restore
+      # the attestation path and cut the next version" is right for an
+      # unattested publish and a wasted version number for a registry that was
+      # briefly unreachable. So `npm view`'s exit status is captured apart from
+      # its output, and the two are reported as different failures:
+      #
+      #   * the query answered and the field is empty → **unattested**. The
+      #     publish really did lose its provenance. Not retryable.
+      #   * the query never answered at all → **unverified**. The publish may
+      #     be perfectly attested; nothing here can tell. Re-runnable, and the
+      #     re-run is cheap because an already-published version is a notice.
+      #
+      # Neither can wear the other's message. An empty string used to be both,
+      # and `2>/dev/null || true` was what collapsed them.
+      #
+      # `NODE_AUTH_TOKEN` is set here for the same reason it is set on the
+      # publish: `setup-node` wrote an `.npmrc` whose `_authToken` references
+      # it, and with the variable unset npm sends the unexpanded literal as a
+      # bearer token — a 401 on a read that needs no auth, which is the most
+      # likely way this step reaches the "could not ask" branch at all.
       - name: Every published package is attested
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           set -euo pipefail
-          fail=0
+          unattested=()
+          unverified=()
           # `mapfile` rather than `while read < file`: the loop body runs `npm`,
           # and a command that touches stdin inside a `while read` loop eats the
           # list it is iterating.
           mapfile -t specs < artifacts/npm/published.txt
           for spec in "${specs[@]}"; do
             predicate=""
+            answered=0
+            error=""
             for attempt in 1 2 3 4 5; do
-              predicate="$(npm view "$spec" dist.attestations.provenance.predicateType 2>/dev/null || true)"
-              [[ -n "$predicate" ]] && break
-              echo "  $spec: no attestation yet (attempt $attempt), waiting…"
+              # `set -e` does not fire inside an `if` condition, so a non-zero
+              # `npm view` lands in the else branch rather than killing the
+              # step — which is what keeps "it errored" separable from "it
+              # answered, and the answer was empty".
+              if output="$(npm view "$spec" dist.attestations.provenance.predicateType 2>&1)"; then
+                answered=1
+                predicate="$(printf '%s' "$output" | tr -d '[:space:]')"
+                # The registry answered. An absent attestation is retried only
+                # because the attestation service lags the packument by
+                # seconds, never because the read itself failed.
+                [[ -n "$predicate" ]] && break
+                echo "  $spec: registry answered, no attestation yet (attempt $attempt), waiting…"
+              else
+                answered=0
+                error="$(printf '%s' "$output" | tail -n 3 | tr '\n' ' ')"
+                echo "  $spec: \`npm view\` failed (attempt $attempt) — ${error:-no output}; retrying…"
+              fi
               sleep 10
             done
-            if [[ -z "$predicate" ]]; then
-              echo "::error title=Published without provenance::$spec is on the registry with no provenance attestation. A publish that is missing \`--provenance\`, or that ran in a job without \`id-token: write\`, succeeds and looks exactly like this one did in the log — the registry is the only place the difference shows. The version cannot be republished; the fix is to restore the attestation path and cut the next version."
-              fail=1
-            else
+            if [[ -n "$predicate" ]]; then
               echo "✅ $spec — $predicate"
+            elif [[ "$answered" -eq 1 ]]; then
+              unattested+=("$spec")
+            else
+              unverified+=("$spec ($error)")
             fi
           done
+
+          fail=0
+          if [[ "${#unattested[@]}" -gt 0 ]]; then
+            echo "::error title=Published without provenance::${unattested[*]} is on the registry, the registry answered for it, and it carries no provenance attestation. A publish that is missing \`--provenance\`, or that ran in a job without \`id-token: write\`, succeeds and looks exactly like this one did in the log — the registry is the only place the difference shows. This is not a retry: the version cannot be republished, and the fix is to restore the attestation path and cut the next version."
+            fail=1
+          fi
+          if [[ "${#unverified[@]}" -gt 0 ]]; then
+            echo "::error title=Could not verify provenance::\`npm view\` never answered for ${unverified[*]} after 5 attempts, so this step does not know whether the attestation is there. Do NOT cut a new version on the strength of this failure — the publish above succeeded and may well be attested. Check \`npm view <spec> dist.attestations\` by hand, and re-run this workflow on the same tag once the registry is reachable: an already-published version is treated as published, so the re-run costs nothing."
+            fail=1
+          fi
           exit "$fail"
 
   github-release:
