@@ -9,59 +9,44 @@
 // flags, the output and the exit codes testable without a Core, and it is
 // exactly why that suite cannot say whether the probe works.
 //
-// So this one brings the Core with it: `packages/core`'s real
-// `PtyCoreLinkServer`, on a real `wss://` port, with mTLS material from the
-// Core's own `generateCertMaterial` and a bearer the Core's own verifier
-// accepts. The blob is assembled from that material, registered through `core
-// add`, and read back through the real `probeCore`. Nothing is faked between
-// the CLI and the Core except the machine they would otherwise be on.
+// So this one brings the Core with it. The rig moved to `in-process-core.ts`
+// when #160's `session` verbs and #161's `events tail` each needed one too —
+// same real `PtyCoreLinkServer`, same real `wss://` port, same mTLS material
+// from the Core's own `generateCertMaterial` and a bearer the Core's own
+// verifier accepts. Nothing is faked between the CLI and the Core except the
+// machine they would otherwise be on.
 //
 // **This is what `vitest.config.ts`'s `@actana/core` alias is for.** The alias
 // was written for exactly this and nothing imported it, so the comment
 // justifying it described something that did not happen — which the review of
 // #201 noted. `@actana/core` stays out of `package.json` on purpose: it is a
 // private package and a daemon, and a manifest entry would put both in the
-// published CLI's dependency graph for the sake of a test (ADR 0025 D4).
-// A test-only module alias buys the coverage without the graph.
+// published CLI's dependency graph for the sake of a test (ADR 0025 D4). A
+// test-only module alias buys the coverage without the graph.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import { probeCore } from "../core-probe.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
-import { CORE_ID, startInProcessCore } from "./in-process-core-harness.ts";
+import { CORE_ID, startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 
-// The Core itself, the certificates and the blob live in
-// `in-process-core-harness.ts` — #160 needed the same Core for the `session`
-// verbs, and two suites standing one up separately would be two chances to
-// build it slightly differently.
-
-let server: PtyCoreLinkServer | null = null;
+let core: InProcessCore | null = null;
 let fixture: CliFixture | null = null;
 
 afterEach(() => {
-  server?.close();
-  server = null;
+  core?.close();
+  core = null;
   fixture?.cleanup();
   fixture = null;
 });
 
-/** A Core on a real port, and the base64 blob an operator would be handed for it. */
-async function startCore(
-  opts: { protocolVersion?: string; bearerExpiresInMs?: number } = {},
-): Promise<{ blobText: string; endpoint: string }> {
-  const core = await startInProcessCore(opts);
-  server = core.server;
-  return { blobText: core.blobText, endpoint: core.endpoint };
-}
-
 describe("actana core status, against a Core in this process", () => {
   it("registers a Core from a pipe and reports the version it answers with", async () => {
-    const { blobText, endpoint } = await startCore();
+    core = await startInProcessCore();
     fixture = makeCliFixture();
 
     // `core add` from stdin — the path the ticket names, and never a shell-out.
-    const added = await fixture.run(["core", "add", "inproc"], { stdin: blobText });
+    const added = await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
     expect(added.code, added.err.join("\n")).toBe(EXIT_OK);
 
     // The real probe. This is the module no other unconditional suite runs.
@@ -70,7 +55,7 @@ describe("actana core status, against a Core in this process", () => {
 
     const payload = JSON.parse(status.out.join("\n"));
     expect(payload.reachable).toBe(true);
-    expect(payload.endpoint).toBe(endpoint);
+    expect(payload.endpoint).toBe(core.endpoint);
     expect(payload.coreId).toBe(CORE_ID);
     // "reports its version": the core-link protocol version off `ready`, which
     // is the only version a Core puts on the wire.
@@ -80,9 +65,9 @@ describe("actana core status, against a Core in this process", () => {
   }, 30_000);
 
   it("prints the same facts in the human table", async () => {
-    const { blobText } = await startCore();
+    core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: blobText });
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
 
     const status = await fixture.run(["core", "status", "--verbose"], { probe: probeCore });
     expect(status.code, status.err.join("\n")).toBe(EXIT_OK);
@@ -95,11 +80,11 @@ describe("actana core status, against a Core in this process", () => {
     // The sweep in `never-logs-a-blob.test.ts` runs against sentinel strings.
     // This runs it against *real* PEM material and a *real* signed bearer, on
     // the one path that has a live socket and a Core's answers to quote.
-    const { blobText } = await startCore();
+    core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: blobText });
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
 
-    const decoded = JSON.parse(Buffer.from(blobText, "base64").toString("utf8")) as {
+    const decoded = JSON.parse(Buffer.from(core.blobText, "base64").toString("utf8")) as {
       caCert: string;
       clientCert: string;
       clientKey: string;
@@ -128,9 +113,9 @@ describe("actana core status, against a Core in this process", () => {
     // The gate that matters most on a real fleet: a Core on a different train.
     // `protocolVersion` exists on the server options for exactly this — a real
     // drifted Core is a different build entirely.
-    const { blobText } = await startCore({ protocolVersion: "999.0.0" });
+    core = await startInProcessCore({ protocolVersion: "999.0.0" });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: blobText });
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
 
     const status = await fixture.run(["core", "status", "--json"], { probe: probeCore });
     expect(status.code).toBe(EXIT_FAILURE);
@@ -144,11 +129,11 @@ describe("actana core status, against a Core in this process", () => {
     // The control that makes the tests above mean something: the same CLI, the
     // same real probe, aimed at a port with nothing behind it. Without it,
     // every assertion here would pass against a suite that never started a Core.
-    const { blobText } = await startCore();
+    core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: blobText });
-    server?.close();
-    server = null;
+    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    core.close();
+    core = null;
 
     const status = await fixture.run(["core", "status", "--json"], { probe: probeCore });
     expect(status.code).toBe(EXIT_FAILURE);

@@ -25,6 +25,17 @@ export type ParsedArgs = {
   version: boolean;
   /** `--core <name>`, or null when the flag was absent. */
   core: string | null;
+  /**
+   * `--since <eventId>` — where `events tail` starts, overriding the stored
+   * cursor. Kept as the raw string: "what the operator typed" and "a number" are
+   * different things, and the verb that reads it is the one that can say what a
+   * bad value means (`--since start` is a word, not a number).
+   */
+  since: string | null;
+  /** `--kind <k>`, repeatable — the event kinds `events tail` prints. Empty means all. */
+  kind: string[];
+  /** `--limit <n>` — stop after this many rows. Raw, for the same reason as `since`. */
+  limit: string | null;
   // ─── The `session` noun's flags (#160) ───
   /** `--wait`: block until the Core reports a started Session settled. */
   wait: boolean;
@@ -49,7 +60,16 @@ export type ParsedArgs = {
 };
 
 /** Flags that take a value. */
-const VALUE_FLAGS = new Set(["--core", "--wait-timeout", "--harness", "--cwd", "--title"]);
+const VALUE_FLAGS = new Set([
+  "--core",
+  "--since",
+  "--kind",
+  "--limit",
+  "--wait-timeout",
+  "--harness",
+  "--cwd",
+  "--title",
+]);
 
 /** Parse `process.argv.slice(2)`. Never throws; malformed input is reported in the result. */
 export function parseArgs(argv: string[]): ParsedArgs {
@@ -60,6 +80,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     help: false,
     version: false,
     core: null,
+    since: null,
+    kind: [],
+    limit: null,
     wait: false,
     waitTimeout: null,
     harness: null,
@@ -99,6 +122,12 @@ export function parseArgs(argv: string[]): ParsedArgs {
         continue;
       }
       if (name === "--core") parsed.core = value;
+      else if (name === "--since") parsed.since = value;
+      // Repeatable, unlike the other three: `--kind task:created --kind
+      // pty:exit` is a filter somebody will build up, and the alternative — one
+      // comma-joined string — puts a second syntax inside a flag value.
+      else if (name === "--kind") parsed.kind.push(value);
+      else if (name === "--limit") parsed.limit = value;
       else if (name === "--wait-timeout") parsed.waitTimeout = value;
       else if (name === "--harness") parsed.harness = value;
       else if (name === "--cwd") parsed.cwd = value;

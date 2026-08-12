@@ -16,10 +16,12 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  fakeCore,
   fakeSessionGateway,
   fakeStartedSession,
   healthyProbe,
   makeCliFixture,
+  projectSnapshot,
   sentinelBlobText,
   SENTINELS,
   type CliFixture,
@@ -74,6 +76,61 @@ describe("no verb prints a blob, with --verbose on", () => {
     for (const [what, argv] of runs) {
       const run = await cli().run(argv, { probe: healthyProbe() });
       expectNoSecrets(what, run.all);
+    }
+  });
+
+  it("sweeps the nouns that dial with the credential in hand", async () => {
+    // `project`, `harness` and `events` (#161) reach a Core, which means the
+    // blob is decoded, handed to a client and quoted back by any failure on the
+    // way. Every verb runs with `--verbose`, including the paths where the Core
+    // refuses — the diagnostic that explains a refusal is the line most likely
+    // to reach for its input.
+    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    const core = fakeCore({
+      projects: [projectSnapshot("api", "/srv/work/api")],
+      availability: { opencode: { status: "missing" } },
+    });
+
+    const runs: Array<[string, string[]]> = [
+      ["project ls", ["project", "ls", "--verbose"]],
+      ["project ls --json", ["project", "ls", "--json", "--verbose"]],
+      ["project add", ["project", "add", "api", "/srv/work/api", "--verbose"]],
+      ["project browse", ["project", "browse", "--verbose"]],
+      ["project browse --json", ["project", "browse", "--json", "--verbose"]],
+      ["harness ls", ["harness", "ls", "--verbose"]],
+      ["harness ls --json", ["harness", "ls", "--json", "--verbose"]],
+      ["project --help", ["project", "--help", "--verbose"]],
+      ["harness --help", ["harness", "--help", "--verbose"]],
+      ["events --help", ["events", "--help", "--verbose"]],
+    ];
+    for (const [what, argv] of runs) {
+      const run = await cli().run(argv, { connect: core.connect });
+      expectNoSecrets(what, run.all);
+    }
+
+    // …and the one that follows a stream, which has to be driven to its limit.
+    const tail = cli().run(["events", "tail", "--since", "start", "--limit", "1", "--verbose"], {
+      connect: core.connect,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    core.emitEvent({ eventId: 1, kind: "task:created" });
+    expectNoSecrets("events tail", (await tail).all);
+  });
+
+  it("sweeps a dial that failed, where the error quotes the endpoint it could not reach", async () => {
+    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    for (const argv of [
+      ["project", "ls", "--verbose"],
+      ["harness", "ls", "--verbose"],
+      ["events", "tail", "--verbose"],
+    ]) {
+      const run = await cli().run(argv, {
+        connect: async () => {
+          throw new Error("connect ECONNREFUSED");
+        },
+      });
+      expect(run.code).not.toBe(0);
+      expectNoSecrets(argv.join(" "), run.all);
     }
   });
 

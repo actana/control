@@ -1,8 +1,8 @@
 // `actana` — the client half (#129 D8, D9, D10).
 //
 // One command name, split by noun. `actana daemon` runs a Core and lives in
-// `packages/core`; `actana core …`, and the `session` / `project` / `harness` /
-// `events` nouns the rest of this phase adds, talk to one. **The published
+// `packages/core`; `actana core …`, `project …`, `harness …`, `events …`, and
+// the `session` noun the rest of this phase adds, talk to one. **The published
 // package carries the client subcommands only** — a `daemon` verb here would
 // put a Node daemon, `better-sqlite3` and `node-pty` into the dependency graph
 // of a program whose entire job is to need none of them, and it would mean two
@@ -27,6 +27,9 @@
 import { parseArgs } from "./cli-args.ts";
 import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
+import { runProjectCommand } from "./project-command.ts";
+import { runHarnessCommand } from "./harness-command.ts";
+import { runEventsCommand } from "./events-command.ts";
 import { runSessionCommand } from "./session-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
@@ -37,22 +40,24 @@ import manifest from "../package.json" with { type: "json" };
 export const CLI_VERSION: string = manifest.version;
 
 /**
- * The nouns this phase reserves but has not built (#129 D10, and phase-3
- * guardrail 3 — *reserve `actana project cp` and `actana project files` in the
- * command tree before `--help` is written*).
+ * The nouns this phase reserves but has not built (#129 D10).
  *
- * They are listed here rather than left to fall through to "unknown noun"
- * because the two answers differ in what the reader should do: a reserved noun
- * has a ticket number, and a typo does not. They exit {@link EXIT_UNIMPLEMENTED}
- * rather than {@link EXIT_USAGE} for the same reason `core shell` does — the
- * difference is a fact about this build, and a script should not have to read
- * English off stderr to find it.
+ * A reserved noun is listed here rather than left to fall through to "unknown
+ * noun" because the two answers differ in what the reader should do: a reserved
+ * noun has a ticket number, and a typo does not. They exit
+ * {@link EXIT_UNIMPLEMENTED} rather than {@link EXIT_USAGE} for the same reason
+ * `core shell` does — the difference is a fact about this build, and a script
+ * should not have to read English off stderr to find it.
+ *
+ * **Empty on this train**, which is what a reservation is supposed to end as:
+ * #160 built `session`, #161 built `project`, `harness` and `events`, and each
+ * row left as its noun landed. The table stays because the distinction it draws
+ * has not gone anywhere — a noun a later phase adds owes the reader a ticket
+ * number, and a row here is the whole of saying so. The reservations this build
+ * still carries are at the verb level: `project cp` / `project files` (#168,
+ * phase-3 guardrail 3) and `core shell` (#162).
  */
-const RESERVED_NOUNS: Record<string, string> = {
-  project: "ls, add, browse, and later `cp` / `files` — #161 and #168",
-  harness: "ls, install — #161",
-  events: "tail — #161",
-};
+const RESERVED_NOUNS: Record<string, string> = {};
 
 export const ROOT_HELP = `actana — drive AI coding agents across your Cores.
 
@@ -61,12 +66,10 @@ Usage
 
 Nouns
   core      register, select and inspect the Cores this machine can reach
+  project   the Projects a Core owns: ls, add, browse
+  harness   the coding agents a Core can run: ls, install
+  events    follow a Core's event log: tail
   session   start, ls, logs, resume, kill and send to Sessions on one
-
-Reserved, landing later in this phase
-  project   ${RESERVED_NOUNS.project}
-  harness   ${RESERVED_NOUNS.harness}
-  events    ${RESERVED_NOUNS.events}
 
 Flags
   --core <name>   which registered Core to talk to
@@ -117,6 +120,12 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   switch (noun) {
     case "core":
       return runCoreCommand(deps, args, paths);
+    case "project":
+      return runProjectCommand(deps, args, paths);
+    case "harness":
+      return runHarnessCommand(deps, args, paths);
+    case "events":
+      return runEventsCommand(deps, args, paths);
     case "session":
       return runSessionCommand(deps, args, paths);
     case "help":

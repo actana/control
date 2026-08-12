@@ -18,9 +18,13 @@
 // harness binary on this machine's PATH and a real PTY, which is
 // `packages/sdk`'s `live-session.test.ts` — an opt-in suite against an
 // operator's own Core. What is provable without one is proved here.
+//
+// The Core comes from `in-process-core.ts`, which #160 and #161 each extracted
+// a version of and the review of #205 merged into one. `ptyCore` is this
+// suite's contribution to it: the manager below is the live PTY that `logs`,
+// `send` and `kill` reach, and every other suite takes the default that throws.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
@@ -29,7 +33,7 @@ import type {
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
-import { startInProcessCore } from "./in-process-core-harness.ts";
+import { startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 
 const PROJECT: CoreLinkProjectSnapshot = {
   projectId: "proj_web",
@@ -142,12 +146,12 @@ function ports(tasks: CoreLinkTaskSnapshot[], live: (taskId: string) => string |
   };
 }
 
-let server: PtyCoreLinkServer | null = null;
+let core: InProcessCore | null = null;
 let fixture: CliFixture | null = null;
 
 afterEach(() => {
-  server?.close();
-  server = null;
+  core?.close();
+  core = null;
   fixture?.cleanup();
   fixture = null;
 });
@@ -162,8 +166,7 @@ async function coreWithSessions(): Promise<{ writes: string[]; killed: string[] 
   const { queryPort, mutationPort } = ports(tasks, (taskId) =>
     (pty.core as { findByTask(id: string): { ptyId: string | null } }).findByTask(taskId).ptyId,
   );
-  const core = await startInProcessCore({ ptyCore: pty.core, queryPort, mutationPort });
-  server = core.server;
+  core = await startInProcessCore({ ptyCore: pty.core, queryPort, mutationPort });
   fixture = makeCliFixture();
   await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
   return { writes: pty.writes, killed: pty.killed };

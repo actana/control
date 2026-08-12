@@ -12,11 +12,17 @@ import path from "node:path";
 import { runActanaCli } from "../actana-cli.ts";
 import { registryPaths, type RegistryPaths } from "../blob-registry.ts";
 import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
+import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
+import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
 import type {
-  OpenSessionGateway,
-  SessionGateway,
-  StartedSession,
-} from "../session-gateway.ts";
+  CoreLinkDirListing,
+  CoreLinkEvent,
+  CoreLinkHarnessAvailabilityMap,
+  CoreLinkProjectMutation,
+  CoreLinkProjectSnapshot,
+  CoreLinkRequestFrame,
+  CoreLinkResponseFrame,
+} from "@actana/sdk/core-link-frames.ts";
 
 /** One run's captured output, plus the exit code. */
 export type CliRun = {
@@ -49,8 +55,29 @@ export type RunOptions = {
   stdinIsTty?: boolean;
   /** What `core status` gets back, or a throw. */
   probe?: CoreProbeFn;
+  /** What every other noun gets when it dials, or a throw. */
+  connect?: CoreConnectFn;
   /** What the `session` noun's verbs get back, or a throw. */
   sessions?: OpenSessionGateway;
+  /**
+   * Called with each stdout line as it is written, rather than at the end.
+   *
+   * For the one command that does not finish on its own: `events tail` follows
+   * until a `--limit` is reached, and a suite driving a Core through a restart
+   * underneath it has to know what has already been printed before it drops the
+   * connection. Every other suite reads {@link CliRun.out} afterwards.
+   */
+  onOut?: (line: string) => void;
+  /**
+   * Called with each stderr line as it is written, `--verbose` included.
+   *
+   * The other half of {@link onOut}, and for the same reason: `events tail`
+   * runs until something makes it stop, and the notice that it has found the
+   * end of the Core's log is on stderr. A suite that has to append an event
+   * *after* that moment — and not before, or the event is history and is
+   * suppressed — has no other way to know it has arrived.
+   */
+  onErr?: (line: string) => void;
   now?: number;
 };
 
@@ -129,13 +156,29 @@ export function makeCliFixture(): CliFixture {
         argv,
         env: { XDG_CONFIG_HOME: configHome, ...opts.env },
         home,
-        out: (line) => out.push(line),
-        err: (line) => err.push(line),
-        verbose: verboseOn ? (line) => err.push(`actana: ${line}`) : () => {},
+        out: (line) => {
+          out.push(line);
+          opts.onOut?.(line);
+        },
+        err: (line) => {
+          err.push(line);
+          opts.onErr?.(line);
+        },
+        verbose: verboseOn
+          ? (line) => {
+              err.push(`actana: ${line}`);
+              opts.onErr?.(`actana: ${line}`);
+            }
+          : () => {},
         readStdin: async () => opts.stdin ?? "",
         stdinIsTty: opts.stdinIsTty ?? opts.stdin === undefined,
         probe:
           opts.probe ??
+          (async () => {
+            throw new Error("this test did not expect to dial a Core");
+          }),
+        connect:
+          opts.connect ??
           (async () => {
             throw new Error("this test did not expect to dial a Core");
           }),
@@ -149,6 +192,153 @@ export function makeCliFixture(): CliFixture {
       return { code, out, err, all: [...out, ...err].join("\n") };
     },
   };
+}
+
+/** What a {@link fakeCore} was asked, and the levers a test pulls on it. */
+export type FakeCore = {
+  /** What `deps.connect` hands the command under test. */
+  connect: CoreConnectFn;
+  /** Every frame that went through `request`, in order. */
+  requests: CoreLinkRequestFrame[];
+  /** Every project mutation, in order. */
+  mutations: CoreLinkProjectMutation[];
+  /** The cursor each `subscribe` carried. */
+  subscribes: number[];
+  /** True once the command hung up — a link left open is a defect worth failing on. */
+  closed: boolean;
+  /** The options each `connect` was asked for — durability, cursor storage. */
+  connectOptions: CoreConnectOptions[];
+  /** Deliver one event, as the Core's live push would. */
+  emitEvent: (event: Partial<CoreLinkEvent> & Pick<CoreLinkEvent, "eventId" | "kind">) => void;
+  /** Close a replay tail, as `eventsReplayed` does. */
+  emitReplayed: (lastEventId: number) => void;
+  /** Report the link as lost, as a dropped socket does. */
+  emitDisconnected: (error?: string) => void;
+};
+
+export type FakeCoreOptions = {
+  projects?: CoreLinkProjectSnapshot[];
+  availability?: CoreLinkHarnessAvailabilityMap;
+  listing?: CoreLinkDirListing;
+  /** Answer `request` yourself — for `dirList` / `harnessInstall` shapes. */
+  respond?: (frame: CoreLinkRequestFrame) => CoreLinkResponseFrame | Promise<CoreLinkResponseFrame>;
+  /** Reject `projectsMutate` the way a Core rejecting a path does. */
+  refuseMutation?: string;
+  /** What `projectsMutate` answers when it is not refused. Default: echo the create. */
+  mutationResult?: CoreLinkProjectSnapshot | null;
+};
+
+/**
+ * A Core client that never opens a socket.
+ *
+ * The three nouns' surfaces — flags, columns, `--json` shapes, exit codes — are
+ * what these suites are about, and none of them is a fact about a WebSocket.
+ * `CoreLinkClient` is structural and eight members wide precisely so this can
+ * exist; `live-core.test.ts` and the in-process Core cover the wire.
+ */
+export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
+  const eventListeners = new Set<(msg: { event: CoreLinkEvent }) => void>();
+  const replayedListeners = new Set<(msg: { lastEventId: number }) => void>();
+  const downListeners = new Set<(msg: { error?: string }) => void>();
+  const state: FakeCore = {
+    connect: async (_blob, connectOpts = {}) => {
+      state.connectOptions.push(connectOpts);
+      return client;
+    },
+    requests: [],
+    mutations: [],
+    subscribes: [],
+    connectOptions: [],
+    closed: false,
+    emitEvent: (event) => {
+      const full: CoreLinkEvent = {
+        ts: Date.UTC(2026, 7, 12),
+        ptyId: null,
+        taskId: null,
+        payload: "{}",
+        ...event,
+      };
+      for (const cb of [...eventListeners]) cb({ event: full });
+    },
+    emitReplayed: (lastEventId) => {
+      for (const cb of [...replayedListeners]) cb({ lastEventId });
+    },
+    emitDisconnected: (error) => {
+      for (const cb of [...downListeners]) cb(error === undefined ? {} : { error });
+    },
+  };
+
+  const client: CoreLinkClient = {
+    request: async (frame) => {
+      state.requests.push(frame);
+      if (opts.respond) return opts.respond(frame);
+      if (frame.type === "dirList") {
+        return {
+          type: "dirListResult",
+          reqId: "r",
+          listing: opts.listing ?? emptyListing(),
+        };
+      }
+      return { type: "error", reqId: "r", message: `fake Core has no answer for ${frame.type}` };
+    },
+    projectsList: async () => opts.projects ?? [],
+    projectsMutate: async (mutation) => {
+      state.mutations.push(mutation);
+      if (opts.refuseMutation !== undefined) throw new Error(opts.refuseMutation);
+      if (opts.mutationResult !== undefined) return opts.mutationResult;
+      return mutation.op === "create" ? projectSnapshot(mutation.name, mutation.path) : null;
+    },
+    agentsAvailabilityList: async () => opts.availability ?? {},
+    onEvent: (cb) => {
+      eventListeners.add(cb);
+      return () => eventListeners.delete(cb);
+    },
+    onEventsReplayed: (cb) => {
+      replayedListeners.add(cb);
+      return () => replayedListeners.delete(cb);
+    },
+    onDisconnected: (cb) => {
+      downListeners.add(cb);
+      return () => downListeners.delete(cb);
+    },
+    onReady: () => () => {},
+    subscribeEvents: (lastEventId = 0) => {
+      state.subscribes.push(lastEventId);
+      return true;
+    },
+    close: () => {
+      state.closed = true;
+    },
+  };
+
+  return state;
+}
+
+/** A project row with the columns a CLI renders and defaults for the rest. */
+export function projectSnapshot(
+  name: string,
+  projectPath: string,
+  overrides: Partial<CoreLinkProjectSnapshot> = {},
+): CoreLinkProjectSnapshot {
+  return {
+    projectId: `p-${name}`,
+    name,
+    path: projectPath,
+    icon: "PR",
+    iconColor: "#7ce58a",
+    pinned: false,
+    rememberHarnessSettings: false,
+    savedHarness: null,
+    savedSkipPermissions: false,
+    savedBareSession: false,
+    defaultGridView: false,
+    updatedAt: Date.UTC(2026, 7, 12),
+    ...overrides,
+  };
+}
+
+function emptyListing(): CoreLinkDirListing {
+  return { path: "/", parent: null, home: "/root", roots: [], entries: [], truncated: false };
 }
 
 /**

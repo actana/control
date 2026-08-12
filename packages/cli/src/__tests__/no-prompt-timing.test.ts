@@ -20,6 +20,22 @@
 // anything, and its expiry is reported as this side giving up rather than as a
 // status. Passing a number is not scheduling; that is why the sweep below looks
 // for the scheduling primitives themselves.
+//
+// **One file is allowed to hold a timer, and it is named here rather than
+// waved through** (#161, merged into #160's rule). `harness install` waits for
+// a verdict a vendor installer takes minutes to produce, so it carries a
+// deadline and a progress tick of its own. That is the same trade
+// `--wait-timeout` already makes and it fails the same way: it re-sends
+// nothing, it cannot make a Harness look installed sooner, and its expiry is
+// reported as *this side* giving up ("the Core reported no outcome within 15
+// minutes. The install may still be running there."), never as an outcome. The
+// difference from `--wait-timeout` is only which package the timer object sits
+// in, which is not the thing ADR 0026 moved.
+//
+// The allowance is a table with a reason per row, so it stays a rule: a new
+// timer in any other file still fails, a timer in a file that writes to a
+// Session fails even if it is listed, and a row for a file that no longer
+// exists fails rather than quietly widening.
 
 import { describe, it, expect } from "vitest";
 import { readdirSync, readFileSync } from "node:fs";
@@ -67,20 +83,68 @@ const SCHEDULERS = [
   /\bnew\s+Promise\s*\([^)]*\)\s*=>\s*setTimeout/,
 ];
 
+/**
+ * The files allowed to schedule, and the reason each is.
+ *
+ * One row, and it buys a wait on a Core's own verdict rather than a nudge at a
+ * harness. Anything that writes to a Session is barred from this table by the
+ * test below it — that is the boundary the rule is actually about.
+ */
+const SCHEDULING_ALLOWED: Record<string, string> = {
+  "harness-command.ts":
+    "waits for the Core's install verdict: a deadline on this side's patience and a progress tick, neither of which re-sends anything (#161)",
+};
+
+/** Modules that put text or keystrokes into a Session. Never allowed a timer. */
+const TOUCHES_A_SESSION = /session|prompt|pty|harness-resume/;
+
 describe("the CLI schedules nothing (#129 D3, ADR 0026)", () => {
   it("has sources to sweep", () => {
     // The guard on the guard: a sweep over an empty list proves nothing.
     expect(shippedSources().length).toBeGreaterThan(5);
   });
 
-  it("contains no timer, anywhere", () => {
+  it("contains no timer, anywhere it is not named and argued for", () => {
     for (const file of shippedSources()) {
+      const name = path.relative(SRC, file);
+      if (SCHEDULING_ALLOWED[name]) continue;
       const source = withoutComments(readFileSync(file, "utf8"));
       for (const scheduler of SCHEDULERS) {
         expect(
           scheduler.test(source),
-          `${path.relative(SRC, file)} schedules something — prompt delivery is the Core's (ADR 0026)`,
+          `${name} schedules something — prompt delivery is the Core's (ADR 0026)`,
         ).toBe(false);
+      }
+    }
+  });
+
+  it("keeps the allowance narrow: every row is a real file, and none writes to a Session", () => {
+    // Two ways an allowlist stops meaning anything, both closed here. A row for
+    // a deleted file is a hole left open for whatever takes that name next; a
+    // row for a module that delivers input is the exact thing ADR 0026 forbids,
+    // wearing the exception as cover.
+    const shipped = new Set(shippedSources().map((file) => path.relative(SRC, file)));
+    for (const [name, why] of Object.entries(SCHEDULING_ALLOWED)) {
+      expect(shipped.has(name), `${name} is allowed to schedule but is not a shipped module`).toBe(
+        true,
+      );
+      expect(why.length, `${name} is allowed to schedule with no reason given`).toBeGreaterThan(20);
+      expect(
+        TOUCHES_A_SESSION.test(name),
+        `${name} writes to a Session and may not schedule, allowance or not`,
+      ).toBe(false);
+    }
+  });
+
+  it("bars a timer from every module that writes to a Session, listed or not", () => {
+    // The rule at its narrowest, and the one no table can widen: the modules on
+    // the path from an operator's text to a harness's stdin schedule nothing.
+    for (const file of shippedSources()) {
+      const name = path.relative(SRC, file);
+      if (!TOUCHES_A_SESSION.test(name)) continue;
+      const source = withoutComments(readFileSync(file, "utf8"));
+      for (const scheduler of SCHEDULERS) {
+        expect(scheduler.test(source), `${name} schedules something on a Session path`).toBe(false);
       }
     }
   });
