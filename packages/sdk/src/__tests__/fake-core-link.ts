@@ -18,7 +18,7 @@ import type {
 } from "@actana/core/pty-core-link-server";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
-import type { CoreLinkEvent } from "../core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "../core-link-frames";
 import type { CoreLinkSocket, CoreLinkSocketFactory } from "../core-link-socket";
 
 type Listener = (...args: unknown[]) => void;
@@ -226,6 +226,77 @@ export class FakeEventLog implements EventLogPort {
   getLastEventId(): number {
     return this.seq;
   }
+}
+
+/**
+ * A dialer with no Core behind it: every dial hands back a socket whose inbound
+ * frames the test writes itself.
+ *
+ * Everything else in this file exists so a suite does not have to fake a Core,
+ * and that is the right default — a hand-rolled server answers whatever the
+ * client expects, which is the agreement worth testing. This is the exception,
+ * for the frames a real `PtyCoreLinkServer` cannot be made to produce:
+ *
+ *   - **`authOk` before `ready`.** The Core sends `ready` as frame one on every
+ *     connection, which is exactly why nothing in the client enforces the order
+ *     — so the only way to pin what that order buys is to invert it here.
+ *   - **an `error` answer to a `reclaim`.** The server's reclaim handler cannot
+ *     fail, and the client's tolerance of one that does is a `.catch()` no
+ *     reachable server path exercises.
+ *
+ * Reach for it only for those; a test a real Core can drive belongs on one.
+ */
+export type HandDrivenDialer = {
+  createSocket: CoreLinkSocketFactory;
+  /** Every socket handed out, in dial order — a reconnect is the next entry. */
+  sockets: FakeSocket[];
+  last(): FakeSocket;
+  /** Frame one on the current connection, with or without the capability. */
+  ready(opts?: { multiConnection?: unknown }): void;
+  /** The Core accepting this connection's bearer. */
+  authOk(opts?: { coreId?: string }): void;
+  /** Answer the last frame of `type` this client sent, correlated by its reqId. */
+  answerLast(type: string, frame: Record<string, unknown>): void;
+  /** The socket dies, as a Core restart or a reaped NAT flow does. */
+  drop(): void;
+};
+
+export function handDrivenDialer(): HandDrivenDialer {
+  const sockets: FakeSocket[] = [];
+  const last = (): FakeSocket => {
+    const socket = sockets[sockets.length - 1];
+    if (!socket) throw new Error("nothing dialed yet");
+    return socket;
+  };
+  return {
+    sockets,
+    last,
+    createSocket: () => {
+      const socket = new FakeSocket();
+      sockets.push(socket);
+      // A tick later, so the transport is fully wired before `open` fires and
+      // its `auth` frame goes out — the same order the real dialer gives it.
+      queueMicrotask(() => {
+        socket.readyState = 1;
+        socket.emit("open");
+      });
+      return socket.asClientSocket();
+    },
+    ready: ({ multiConnection }: { multiConnection?: unknown } = {}) =>
+      last().receive({
+        type: "ready",
+        version: CORE_LINK_PROTOCOL_VERSION,
+        ...(multiConnection === undefined ? {} : { multiConnection }),
+      }),
+    authOk: ({ coreId = "core_hand_driven" }: { coreId?: string } = {}) =>
+      last().receive({ type: "authOk", reqId: "auth-1", coreId, exp: 1_700_000_000_000 }),
+    answerLast: (type, frame) => {
+      const asked = last().framesOfType(type).at(-1);
+      if (!asked) throw new Error(`no ${type} frame on the wire to answer`);
+      last().receive({ ...frame, reqId: asked.reqId });
+    },
+    drop: () => last().close(),
+  };
 }
 
 export type CoreRig = {
