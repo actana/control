@@ -483,8 +483,8 @@ describe("housekeeping.yml", () => {
   });
 });
 
-// ADR 0023 D3, as amended by #152 — the five manifests, and the wiring that
-// makes asserting them non-vacuous.
+// ADR 0023 D3, as amended by #152 and #157 — the manifest set, and the wiring
+// that makes asserting it non-vacuous.
 //
 // The trap this guards is specific and does not look like a bug: a check that
 // asserts the right thing under the wrong name. `Train rules` is the context
@@ -497,10 +497,12 @@ describe("housekeeping.yml", () => {
 //
 // So the name is asserted against the rulesets rather than against a literal,
 // and the manifest list is asserted against the workspace rather than against a
-// count. `packages/sdk` is the fifth (#152, ADR 0025); the sixth fails here.
-describe("the five-manifest version assertion (ADR 0023 D3, amended by #152)", () => {
+// count. `packages/sdk` is the fifth (#152, ADR 0025) and `packages/cli` the
+// sixth (#157); the seventh fails here, which is the design working.
+describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)", () => {
   const MANIFESTS = [
     "package.json",
+    "packages/cli/package.json",
     "packages/core/package.json",
     "packages/panel/package.json",
     "packages/sdk/package.json",
@@ -552,7 +554,7 @@ describe("the five-manifest version assertion (ADR 0023 D3, amended by #152)", (
     }
   });
 
-  it("compares all five manifests inside that job", () => {
+  it("compares every manifest inside that job", () => {
     const job = code(jobBlock(read("ci.yml"), "train-rules"));
     for (const manifest of MANIFESTS) {
       expect(job, `${manifest} is not asserted`).toContain(manifest);
@@ -563,7 +565,7 @@ describe("the five-manifest version assertion (ADR 0023 D3, amended by #152)", (
     expect(job).toMatch(/for file in packages\/\*\/package\.json/);
   });
 
-  it("writes all five in the cut, which is where the versions come from", () => {
+  it("writes every one of them in the cut, which is where the versions come from", () => {
     const job = code(jobBlock(read("promote.yml"), "next-train"));
     const files = /files=\(([^)]*)\)/.exec(job);
     expect(files, "no files=() array in the cut").not.toBeNull();

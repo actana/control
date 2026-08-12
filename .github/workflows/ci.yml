@@ -163,7 +163,7 @@ jobs:
           # know about — without this every promotion fails a required check
           # and the train can never reach `main`. The shape is asserted rather
           # than waved through: `beta/` plus a bare `x.y.z`, which is what the
-          # cut writes into all five manifests.
+          # cut writes into every manifest.
           if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1)."
             exit 0
@@ -219,21 +219,27 @@ jobs:
             failed=1
           }
 
-          # D3, as amended by #152. The cut writes one version into all five
-          # manifests; this is what makes drift afterwards impossible rather
-          # than discouraged. Hand-editing five files is how four of them end up
-          # disagreeing, and the one that disagrees is found at promotion, by a
-          # person.
+          # D3, as amended by #152 and #157. The cut writes one version into
+          # every manifest; this is what makes drift afterwards impossible
+          # rather than discouraged. Hand-editing six files is how five of them
+          # end up disagreeing, and the one that disagrees is found at
+          # promotion, by a person.
           #
-          # `packages/sdk` is the fifth (#152, ADR 0025). It was four until the
-          # core-link frames moved out of `packages/shared`.
-          MANIFESTS=(package.json packages/core/package.json \
-                     packages/panel/package.json packages/sdk/package.json \
-                     packages/shared/package.json)
+          # `packages/sdk` is the fifth (#152, ADR 0025) — it was four until the
+          # core-link frames moved out of `packages/shared`. `packages/cli` is
+          # the sixth (#157): the `actana` command's client half, and the second
+          # package #129 publishes.
+          #
+          # The list below and the one in `promote.yml`'s cut are the same set
+          # by construction, and the assertion under it is what keeps them that
+          # way — read the count off `${#MANIFESTS[@]}`, never off this comment.
+          MANIFESTS=(package.json packages/cli/package.json \
+                     packages/core/package.json packages/panel/package.json \
+                     packages/sdk/package.json packages/shared/package.json)
 
           # The failure mode this guards is not drift — it is a check that
           # quietly stops covering the repository. A manifest deleted or renamed
-          # out from under the list, or a sixth package added without extending
+          # out from under the list, or another package added without extending
           # it, would leave this loop passing over a shrinking set and reporting
           # green, which is worse than no check at all because the promotion
           # checklist cites it by name. So the set is asserted before it is
@@ -245,7 +251,7 @@ jobs:
             for file in "${MANIFESTS[@]}"; do
               if [[ ! -f "$file" ]]; then
                 intact=0
-                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152)."
+                fail "A manifest in the version set is missing" "$file is in this check's list and does not exist. Either the file moved and this list was not updated, or the package was deleted — the version assertion below would otherwise cover a smaller set than ADR 0023 D3 describes (amended by #152 and #157)."
               fi
             done
             for file in packages/*/package.json; do
@@ -255,7 +261,7 @@ jobs:
               done
               if [[ "$found" != "1" ]]; then
                 intact=0
-                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to \`promote.yml\`'s cut, and amend ADR 0023 D3 with the new count — that is what #152 did for \`packages/sdk\`."
+                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to \`promote.yml\`'s cut, and amend ADR 0023 D3 — that is what #152 did for \`packages/sdk\` and #157 for \`packages/cli\`."
               fi
             done
             # An `if`, not `[[ … ]] && echo`: the `&&` form makes the function
@@ -276,7 +282,7 @@ jobs:
             for file in "${MANIFESTS[@]}"; do
               version="$(jq -r .version "$file")"
               if [[ "$version" != "$expected" ]]; then
-                fail "Version drift in $file" "$file says $version; the train is $expected. All five manifests carry the train's version (ADR 0023 D3, amended by #152) — the cut wrote them and nothing else should be editing them."
+                fail "Version drift in $file" "$file says $version; the train is $expected. Every manifest carries the train's version (ADR 0023 D3, amended by #152 and #157) — the cut wrote them and nothing else should be editing them."
               else
                 echo "  ✅ $file is $version"
               fi
