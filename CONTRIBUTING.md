@@ -14,7 +14,13 @@ Actana Control is two programs that talk over one WebSocket:
 - The **Core** (`packages/core`) — the daemon installed on each machine
   you want to run harnesses on. It owns everything task-shaped: PTYs, SQLite, the
   event log, the project registry.
-- `packages/shared` — the types and wire contracts both sides agree on.
+- `packages/sdk` — the core-link wire protocol: the frame schema both sides
+  agree on, and the only definition of it in the repository. It lives with the
+  client that speaks it, and the Core imports its frames from here too
+  ([ADR 0025](docs/adr/0025-the-protocol-ships-with-the-client.md)).
+- `packages/shared` — the other types both sides agree on: the mutation and
+  query contracts, the registration-blob codec, the event log, the harness
+  registry. Private, and it stays private.
 
 A **Core** is one machine in the fleet; a **Harness** is the agentic CLI it
 runs. If that vocabulary is new, read [`CONTEXT.md`](CONTEXT.md) before you write code — it is the
