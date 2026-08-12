@@ -16,6 +16,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  fakeSessionGateway,
+  fakeStartedSession,
   healthyProbe,
   makeCliFixture,
   sentinelBlobText,
@@ -71,6 +73,47 @@ describe("no verb prints a blob, with --verbose on", () => {
 
     for (const [what, argv] of runs) {
       const run = await cli().run(argv, { probe: healthyProbe() });
+      expectNoSecrets(what, run.all);
+    }
+  });
+
+  it("sweeps every session verb, which dials with the same credential (#160)", async () => {
+    // The `session` noun resolves a blob on every verb and hands it to a
+    // gateway, so it has the credential in scope everywhere — including on the
+    // failure path, which is where a diagnostic would quote what it dialled
+    // with. The gateway refuses so that path is the one swept; the successes
+    // are covered by the verbs above it.
+    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+
+    const refusing = fakeSessionGateway({
+      list: async () => {
+        throw new Error("the Core refused");
+      },
+      kill: async () => {
+        throw new Error("the Core refused");
+      },
+    });
+    const starting = fakeSessionGateway({
+      start: async () => fakeStartedSession(),
+      resume: async () => fakeStartedSession(),
+      logs: async () => ({ taskId: "task_1", ptyId: "pty_1", screen: "a screen", raw: "raw" }),
+      send: async () => true,
+    });
+
+    const runs: Array<[string, string[], typeof refusing]> = [
+      ["session ls", ["session", "ls", "--verbose"], refusing],
+      ["session ls --json", ["session", "ls", "--json", "--verbose"], refusing],
+      ["session kill", ["session", "kill", "task_1", "--verbose"], refusing],
+      ["session start", ["session", "start", "web", "go", "--verbose"], starting],
+      ["session start --json", ["session", "start", "web", "go", "--json", "--verbose"], starting],
+      ["session resume", ["session", "resume", "task_1", "--verbose"], starting],
+      ["session logs", ["session", "logs", "task_1", "--verbose"], starting],
+      ["session send", ["session", "send", "task_1", "hi", "--verbose"], starting],
+      ["session --help", ["session", "--help", "--verbose"], refusing],
+    ];
+
+    for (const [what, argv, sessions] of runs) {
+      const run = await cli().run(argv, { sessions });
       expectNoSecrets(what, run.all);
     }
   });

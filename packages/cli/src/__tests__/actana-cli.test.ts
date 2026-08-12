@@ -25,7 +25,8 @@ afterEach(() => {
 
 /** Every noun reserved in the tree, and the ticket each names. */
 const RESERVED = [
-  ["session", "#160"],
+  // `session` left this list when #160 built it — the row moving out is what a
+  // noun landing looks like from here.
   ["project", "#161"],
   ["harness", "#161"],
   ["events", "#161"],
@@ -43,7 +44,7 @@ describe("a reserved noun is `not built yet`, not `you typed it wrong`", () => {
   });
 
   it("agrees with `core shell`, which is the same fact about the same build", async () => {
-    const noun = await cli().run(["session"]);
+    const noun = await cli().run(["project"]);
     const verb = await cli().run(["core", "shell"]);
     expect(noun.code).toBe(verb.code);
   });
