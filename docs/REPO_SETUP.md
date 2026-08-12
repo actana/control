@@ -42,6 +42,7 @@ section is what each one is.
 | `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
 | `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read & Write`, not the account password |
 | `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second**, delete-capable PAT |
+| `NPM_TOKEN` | Secret | Publishing `@actana/sdk` and `@actana/cli` to npm from `release.yml` |
 | `APP_ID` | Secret | The GitHub App's numeric id. Every job in `promote.yml` that pushes |
 | `APP_PRIVATE_KEY` | Secret | That App's private key, the whole PEM. Same jobs — **both or neither** |
 | `DOCKERHUB_NAMESPACE` | Variable | Docker Hub org to publish under. Optional; defaults to the GitHub owner (`actana`) |
@@ -52,12 +53,51 @@ and `docker.io/actana/core`, and each image's Docker Hub page is rewritten from
 pair substitutes for the other, and a missing one is a different failure: the
 Docker Hub pair fails a build, the App pair fails a promotion.
 
-Docker Hub is the **only** registry
+Docker Hub is the only registry the **images** go to
 ([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired),
 so the pair is required wherever images are published: a train build or a
 release without it fails before anything is built. PR builds never push and
 need no credentials, so a fork gets green PRs with nothing set. See
 [`ci-cd.md`](ci-cd.md).
+
+### `NPM_TOKEN` — the second registry
+
+That ADR is amended
+([#159](https://github.com/actana/control/issues/159)): npm is a release
+registry too, for the two published packages rather than for any image.
+`release.yml`'s `npm` job publishes `@actana/sdk` and `@actana/cli` on the same
+tag that builds the images, at the same version as everything else
+([#129](https://github.com/actana/control/issues/129) D13).
+
+It is an **automation token** on the `@actana` scope, with **Read and write**,
+created under **Access Tokens** on an npmjs.com account that has **Owner** on
+the scope. A granular token works too and is preferable if you set one up —
+scope it to `@actana/*` with read-and-write on packages, and give it an expiry
+you will actually notice. Classic *publish* tokens work; classic *read-only*
+tokens do not, and fail at the publish rather than at the check.
+
+```bash
+gh secret set NPM_TOKEN --repo actana/control
+```
+
+Three things about this one specifically:
+
+- **The check is in `resolve`, before anything is built** — the same shape as
+  the Docker Hub check above, because the publish job is *last* and a token
+  discovered missing there would be discovered with both images already
+  published and their `:latest` moved.
+- **The token does not need 2FA-bypass configured for provenance**, but it does
+  need to be an automation or granular token if the account has 2FA on
+  publishing: an interactive token prompts for an OTP that no runner can answer.
+- **A publish is not undoable and its version number is not reusable.** Rotating
+  or fixing this secret costs nothing; publishing with a wrong package
+  configuration costs the version number. `pnpm npm:rehearse` packs and asserts
+  the real tarballs locally and publishes nothing — the same script the release
+  runs, and the same one `pnpm test` runs on every pull request.
+
+The scope itself must exist and the account must own it before the first
+release. `npm access list packages @actana` answers that, and an npm 404 on
+`@actana/sdk` before the first publish is expected rather than a problem.
 
 ### It must be a *personal* access token, and one token does both jobs
 

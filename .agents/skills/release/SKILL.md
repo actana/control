@@ -22,6 +22,11 @@ release fails or publishes something it shouldn't; the third is why it hangs.
   `release.yml`'s `resolve` job fails the whole run outright when either is
   missing on `actana/control` — before anything is built. See
   [`docs/REPO_SETUP.md`](../../../docs/REPO_SETUP.md) §1.
+- **`NPM_TOKEN` exists as a repo secret.** Since
+  [#159](https://github.com/actana/control/issues/159) a release also publishes
+  `@actana/sdk` and `@actana/cli` to npm, and `resolve` fails the whole run when
+  the token is missing — in the same place and the same shape as the Docker Hub
+  check, before anything is built. `REPO_SETUP.md` §2.
 - **The `macos-release` environment exists, with required reviewers on it.**
   Check with `gh api repos/actana/control/environments --jq
   '.environments[].name'`. If it is absent, GitHub auto-creates an unprotected
@@ -68,11 +73,21 @@ tag, for versions this repository never made. See
 [`docs/REPO_SETUP.md`](../../../docs/REPO_SETUP.md) §6.
 
 **A published release is never unpublished.** Once the approval lands, the run
-moves `:latest` on both images and creates the GitHub Release. Nothing here
-rolls that back — an image push is not undoable and `:latest` has no history —
-so a bad release is fixed by tagging the next version, never by moving or
-deleting a published tag. The approval pause is the last point at which "no"
-is still cheap.
+moves `:latest` on both images, publishes the npm packages, and creates the
+GitHub Release. Nothing here rolls that back — an image push is not undoable and
+`:latest` has no history — so a bad release is fixed by tagging the next
+version, never by moving or deleting a published tag. The approval pause is the
+last point at which "no" is still cheap.
+
+**npm is stricter than that, and it is the one irreversibility with no
+workaround at all.** A container tag can at least be re-pointed at better bytes.
+An npm version number is consumed by its first publish: unpublishing inside the
+72-hour window frees the bytes and not the name, so `@actana/sdk@0.2.2` can
+never mean anything else, and the recovery from a bad publish is to burn the
+next version too. This is why the `npm` job is last in the graph — nothing is
+burned until every other gate has passed — and why `pnpm npm:rehearse` exists:
+run it locally, on any branch, before a tag is anywhere near the picture. It
+packs and asserts the real tarballs and publishes nothing.
 
 ## What the tag decides
 

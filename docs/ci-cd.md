@@ -134,7 +134,9 @@ silently left out.
 | `actana/core-dev` | The same for the Core. |
 
 All four are published to Docker Hub (`docker.io/actana/…`) — the only registry
-([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md)).
+the images go to ([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md), as
+amended: npm is a second registry, for the two published **packages** rather
+than for any image).
 
 The split is by **audience**, and it is load-bearing rather than tidy: the
 `-dev` repositories hold handles for people debugging, the release repositories
@@ -654,9 +656,14 @@ bumps it and not CI's Node is *meant* to go red there.
 
 ## Registries
 
-**Docker Hub, and nothing else**
-([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired).
-It authenticates with the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so:
+**Docker Hub for the images, npm for the packages**
+([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired;
+npm was added by [#159](https://github.com/actana/control/issues/159)).
+
+### Docker Hub
+
+**The only registry any image goes to.** It authenticates with the
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so:
 
 - A **non-pushing build** — the PR path, `push: false` — needs no credentials
   at all. Forks get green PR builds with zero configuration.
@@ -686,6 +693,49 @@ The image name is derived, never hardcoded:
 `docker.io/<DOCKERHUB_NAMESPACE or repo owner>/panel`. A fork that sets its
 own keys publishes under its own namespace with no edit to any workflow; see
 [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+
+### npm
+
+`@actana/sdk` and `@actana/cli`, published by `release.yml`'s `npm` job on the
+same tag that builds the images and at the same version as everything else
+([#129](https://github.com/actana/control/issues/129) D13). It authenticates
+with `NPM_TOKEN`, and a missing one fails in `resolve` in exactly the shape the
+Docker Hub check does — before anything is built.
+
+**An npm version number is burned by its first publish.** Unpublishing within
+the 72-hour window frees the bytes and not the name, so nothing about a
+container tag's re-pointability transfers, and three things follow:
+
+- The `npm` job is **last** — after both tarball legs, the installer e2e, and
+  both image publishes. Everything else in a release can be redone; a version
+  number cannot.
+- The publish is **rehearsed on every pull request**, long before a tag exists.
+  `pnpm npm:rehearse` (`scripts/rehearse-npm-publish.mjs`) packs each
+  publishable package with `pnpm pack` and asserts the tarball: the `>=22`
+  engines floor, no install-time lifecycle script, compiled JS with `.d.ts`
+  beside it, and a file list that is a whitelist — so `scripts/require-node-24.mjs`
+  cannot reach a tarball by any route, including a rename. `pnpm test` runs it;
+  the release runs the same script on the tarballs it then publishes.
+- Every publish is **attested**. The job carries `id-token: write` and passes
+  `--provenance`; afterwards it reads the attestation back off the registry and
+  fails if it is not there, because a publish that lost the flag succeeds and
+  looks identical in the log.
+
+A package is published exactly when its workspace manifest drops
+`private: true`. `scripts/lib/npm-packages.mjs` holds the intended set and
+checks the discovered one against it both ways: an unexpected package
+publishing is an error, and so is `@actana/sdk` not publishing.
+
+`@actana/sdk` declares `engines: ">=22"` while the monorepo, the Core and the
+Panel keep `>=24 <25`. That is not a contradiction — one is the runtime this
+repository is developed and released on, the other is the floor a consumer of
+the SDK needs, measured against a live Core in
+[`experiment/findings-151-node22-mtls.md`](../experiment/findings-151-node22-mtls.md).
+The tarball ships compiled JavaScript because a consumer on Node 22 has no type
+stripping; inside the workspace the SDK is consumed as TypeScript source, and
+`publishConfig.exports` — applied by **pnpm** at pack time and ignored by npm —
+is what reconciles the two. That is why the rehearsal packs with `pnpm` and
+asserts that the packed map no longer points at `src/`.
 
 ### `gcr.io` is a second registry, and it is in the build path
 
