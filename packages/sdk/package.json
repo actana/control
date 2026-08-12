@@ -1,7 +1,7 @@
 {
   "name": "@actana/sdk",
   "version": "0.2.1",
-  "description": "Actana Control SDK — the core-link wire protocol a client speaks to a Core: frame schema, protocol version, codec.",
+  "description": "Actana Control SDK — the Core client and the core-link wire protocol it speaks: frame schema, protocol version, codec, transport.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -12,8 +12,12 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
   },
+  "dependencies": {
+    "ws": "8.21.0"
+  },
   "devDependencies": {
     "@types/node": "25.8.0",
+    "@types/ws": "8.18.1",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
   }
