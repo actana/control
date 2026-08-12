@@ -15,11 +15,19 @@ export const EXIT_FAILURE = 1;
 export const EXIT_USAGE = 2;
 
 /**
- * The verb exists in the tree and is not built yet.
+ * The noun or verb exists in the tree and is not built yet.
  *
  * Distinct from {@link EXIT_USAGE} on purpose: "you typed something that is not
  * a command" and "you typed a command this build cannot do yet" are different
  * facts, and a script that reaches for `core shell` before #162 lands should be
  * able to tell them apart without parsing English off stderr.
+ *
+ * **Every reserved name in the tree returns this, not just the reserved verb.**
+ * `core shell` (#162) and the `session` / `project` / `harness` / `events`
+ * nouns (#160, #161, #163) are the same fact about the same build, and the
+ * nouns were the ones the argument above was really written for: they are what
+ * a script written against a later train will hit first. Splitting them — 3 for
+ * the verb, 2 for the nouns — would have meant this comment arguing for a
+ * distinction the command tree did not make.
  */
 export const EXIT_UNIMPLEMENTED = 3;

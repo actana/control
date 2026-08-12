@@ -28,7 +28,7 @@ import { parseArgs } from "./cli-args.ts";
 import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
-import { EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
+import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import manifest from "../package.json" with { type: "json" };
 
@@ -42,7 +42,10 @@ export const CLI_VERSION: string = manifest.version;
  *
  * They are listed here rather than left to fall through to "unknown noun"
  * because the two answers differ in what the reader should do: a reserved noun
- * has a ticket number, and a typo does not.
+ * has a ticket number, and a typo does not. They exit {@link EXIT_UNIMPLEMENTED}
+ * rather than {@link EXIT_USAGE} for the same reason `core shell` does — the
+ * difference is a fact about this build, and a script should not have to read
+ * English off stderr to find it.
  */
 const RESERVED_NOUNS: Record<string, string> = {
   session: "start, ls, logs, resume, kill, send, attach — #160 and #163",
@@ -128,7 +131,7 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
       const reserved = RESERVED_NOUNS[noun];
       if (reserved) {
         deps.err(`actana ${noun}: not built yet — ${reserved}.`);
-        return EXIT_USAGE;
+        return EXIT_UNIMPLEMENTED;
       }
       deps.err(`actana: unknown noun "${noun}".`);
       deps.err("`actana --help` lists them.");
