@@ -23,13 +23,19 @@ afterEach(() => {
   fixture = null;
 });
 
-/** Every noun reserved in the tree, and the ticket each names. */
+/**
+ * Every noun reserved in the tree, and the ticket each names.
+ *
+ * `project` and `harness` left this list when #161 built them — which is the
+ * shape a reservation is supposed to have.
+ */
 const RESERVED = [
   ["session", "#160"],
-  ["project", "#161"],
-  ["harness", "#161"],
   ["events", "#161"],
 ] as const;
+
+/** The nouns that are built, so the help below cannot go quiet about them. */
+const BUILT = ["core", "project", "harness"] as const;
 
 describe("a reserved noun is `not built yet`, not `you typed it wrong`", () => {
   it.each(RESERVED)("exits EXIT_UNIMPLEMENTED for `%s`, naming its ticket", async (noun, ticket) => {
@@ -81,6 +87,13 @@ describe("the root itself", () => {
     // from being reserved in one and not the other.
     const run = await cli().run(["--help"]);
     for (const [noun] of RESERVED) expect(run.out.join("\n")).toContain(noun);
+  });
+
+  it("lists every built noun in the help too", async () => {
+    // The other half, and the one a reservation turns into: a noun that works
+    // and is not in the help is a noun nobody finds.
+    const run = await cli().run(["--help"]);
+    for (const noun of BUILT) expect(run.out.join("\n"), `${noun} is not in the help`).toContain(noun);
   });
 
   it("prints the train's version", async () => {

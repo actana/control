@@ -1,8 +1,8 @@
 // `actana` — the client half (#129 D8, D9, D10).
 //
 // One command name, split by noun. `actana daemon` runs a Core and lives in
-// `packages/core`; `actana core …`, and the `session` / `project` / `harness` /
-// `events` nouns the rest of this phase adds, talk to one. **The published
+// `packages/core`; `actana core …`, `project …`, `harness …`, and the
+// `session` / `events` nouns the rest of this phase adds, talk to one. **The published
 // package carries the client subcommands only** — a `daemon` verb here would
 // put a Node daemon, `better-sqlite3` and `node-pty` into the dependency graph
 // of a program whose entire job is to need none of them, and it would mean two
@@ -27,6 +27,8 @@
 import { parseArgs } from "./cli-args.ts";
 import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
+import { runProjectCommand } from "./project-command.ts";
+import { runHarnessCommand } from "./harness-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -49,8 +51,6 @@ export const CLI_VERSION: string = manifest.version;
  */
 const RESERVED_NOUNS: Record<string, string> = {
   session: "start, ls, logs, resume, kill, send, attach — #160 and #163",
-  project: "ls, add, browse, and later `cp` / `files` — #161 and #168",
-  harness: "ls, install — #161",
   events: "tail — #161",
 };
 
@@ -61,11 +61,11 @@ Usage
 
 Nouns
   core      register, select and inspect the Cores this machine can reach
+  project   the Projects a Core owns: ls, add, browse
+  harness   the coding agents a Core can run: ls, install
 
 Reserved, landing later in this phase
   session   ${RESERVED_NOUNS.session}
-  project   ${RESERVED_NOUNS.project}
-  harness   ${RESERVED_NOUNS.harness}
   events    ${RESERVED_NOUNS.events}
 
 Flags
@@ -117,6 +117,10 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   switch (noun) {
     case "core":
       return runCoreCommand(deps, args, paths);
+    case "project":
+      return runProjectCommand(deps, args, paths);
+    case "harness":
+      return runHarnessCommand(deps, args, paths);
     case "help":
       deps.out(ROOT_HELP);
       return EXIT_OK;
