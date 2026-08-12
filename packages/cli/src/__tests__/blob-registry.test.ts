@@ -11,6 +11,7 @@ import {
   coreBlobPath,
   coreNameError,
   listCoreNames,
+  listUsableCoreNames,
   loadCoreBlob,
   readCurrentCore,
   readRegistry,
@@ -136,6 +137,41 @@ describe("listing and the current pointer", () => {
   it("clears cleanly when there is no pointer to clear", () => {
     const paths = registryPaths({ XDG_CONFIG_HOME: tempRoot() }, "/unused");
     expect(() => clearCurrentCore(paths)).not.toThrow();
+  });
+
+  it("lists a hand-placed file whose name no verb would accept", () => {
+    // The registry used to filter these out of the listing entirely, so `actana
+    // core ls` and `ls ~/.config/actana/cores` disagreed with each other and
+    // nothing said why — the same failure the corrupt-entry row below exists to
+    // prevent, one directory earlier. Somebody who copies a blob in by hand, or
+    // restores a `cores/` from a backup that renamed things, gets told.
+    const paths = registryPaths({ XDG_CONFIG_HOME: tempRoot() }, "/unused");
+    writeCoreBlob(paths, "good", sentinelBlobText());
+    mkdirSync(paths.coresDir, { recursive: true });
+    writeFileSync(path.join(paths.coresDir, "my core.txt"), sentinelBlobText());
+
+    expect(listCoreNames(paths)).toEqual(["good", "my core"]);
+
+    const rows = readRegistry(paths);
+    const odd = rows.find((r) => r.name === "my core");
+    expect(odd?.error).toContain("not a usable Core name");
+    // The one action that changes anything is named, and the file is named too.
+    expect(odd?.error).toContain("my core.txt");
+    // No summary: the row is about the name, not about what the file decodes to.
+    expect(odd?.summary).toBeNull();
+  });
+
+  it("does not suggest a name a verb would then refuse", () => {
+    // `core use` and `core rm` print "Known: …" as a next command to type.
+    // Listing everything there would propose `actana core use "my core"`, which
+    // the name check refuses — the listing's honesty and the suggestion's
+    // usefulness are different jobs, so they read different functions.
+    const paths = registryPaths({ XDG_CONFIG_HOME: tempRoot() }, "/unused");
+    writeCoreBlob(paths, "good", sentinelBlobText());
+    mkdirSync(paths.coresDir, { recursive: true });
+    writeFileSync(path.join(paths.coresDir, "my core.txt"), sentinelBlobText());
+
+    expect(listUsableCoreNames(paths)).toEqual(["good"]);
   });
 
   it("surfaces a corrupt entry as a row with a reason, not as a missing row", () => {

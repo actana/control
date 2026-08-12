@@ -120,7 +120,22 @@ export function coreExists(paths: RegistryPaths, name: string): boolean {
 }
 
 /**
- * Every Core this machine knows, by name, sorted.
+ * Every entry in `cores/`, by name, sorted — **including the ones this package
+ * would not have written.**
+ *
+ * A stem that fails {@link coreNameError} is listed rather than filtered out.
+ * It used to be filtered, and that was the same mistake {@link RegisteredCore}'s
+ * `error` field exists to avoid one screen further down: a hand-placed
+ * `my core.txt` was invisible, so `actana core ls` disagreed with `ls
+ * ~/.config/actana/cores` and the operator had no way to find out why. A
+ * registry that quietly omits a file it can see is a registry you cannot debug
+ * from its own output. {@link readRegisteredCore} reports the reason on the row;
+ * that is where the judgement belongs, not here.
+ *
+ * A `readdir` entry is always a single path segment — it cannot hold a
+ * separator and cannot be `..` — so listing an unvalidated stem does not widen
+ * what {@link coreBlobPath} can name. The name check stays where it matters: on
+ * the caller-supplied strings the five verbs pass in.
  *
  * Sorted rather than in readdir order so that `actana core ls` prints the same
  * table twice in a row, and so a `--json` consumer diffing two runs sees a
@@ -137,8 +152,19 @@ export function listCoreNames(paths: RegistryPaths): string[] {
   return entries
     .filter((entry) => entry.isFile() && entry.name.endsWith(".txt"))
     .map((entry) => entry.name.slice(0, -".txt".length))
-    .filter((name) => coreNameError(name) === null)
     .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+}
+
+/**
+ * The subset of {@link listCoreNames} a verb can actually be given.
+ *
+ * `core use` and `core rm` suggest names to type; suggesting one the name check
+ * will then refuse would be worse than not suggesting it. `core ls` shows
+ * everything, because its job is to describe the directory rather than to
+ * propose a next command.
+ */
+export function listUsableCoreNames(paths: RegistryPaths): string[] {
+  return listCoreNames(paths).filter((name) => coreNameError(name) === null);
 }
 
 /** Remove a named Core's blob. False when there was nothing there to remove. */
@@ -229,6 +255,14 @@ export function readRegisteredCore(paths: RegistryPaths, name: string, current: 
   } catch {
     // A file that vanished between the listing and the stat is not a mode
     // problem, and the decode below reports it as the missing entry it is.
+  }
+  // A name no verb will accept is the row's headline, ahead of whatever is in
+  // the file: the operator cannot `use`, `status` or `rm` this entry whatever it
+  // decodes to, and renaming the file is the one action that changes that.
+  const nameError = coreNameError(name);
+  if (nameError !== null) {
+    row.error = `not a usable Core name (${nameError}) — rename ${name}.txt to reach it`;
+    return row;
   }
   if (text === null) {
     row.error = "no blob stored for this Core";

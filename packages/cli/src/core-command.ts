@@ -23,6 +23,7 @@ import {
   coreExists,
   coreNameError,
   listCoreNames,
+  listUsableCoreNames,
   readCurrentCore,
   readRegistry,
   removeCoreBlob,
@@ -79,17 +80,20 @@ export async function runCoreCommand(
     return verb === undefined && !args.help ? EXIT_USAGE : EXIT_OK;
   }
 
+  // Only the two verbs with flags of their own take `args`. `add`, `use` and
+  // `rm` have none — passing it to them anyway made every verb look like it
+  // read the flag set, which is the one thing a reader checks a dispatch for.
   switch (verb) {
     case "add":
-      return coreAdd(deps, args, paths, rest);
+      return coreAdd(deps, paths, rest);
     case "ls":
     case "list":
       return coreLs(deps, args, paths);
     case "use":
-      return coreUse(deps, args, paths, rest);
+      return coreUse(deps, paths, rest);
     case "rm":
     case "remove":
-      return coreRm(deps, args, paths, rest);
+      return coreRm(deps, paths, rest);
     case "status":
       return coreStatus(deps, args, paths);
     case "shell":
@@ -110,7 +114,6 @@ export async function runCoreCommand(
  */
 async function coreAdd(
   deps: ActanaCliDeps,
-  args: ParsedArgs,
   paths: RegistryPaths,
   rest: string[],
 ): Promise<number> {
@@ -227,12 +230,7 @@ function coreLs(deps: ActanaCliDeps, args: ParsedArgs, paths: RegistryPaths): nu
 }
 
 /** `actana core use <name>` — move the `current` pointer. */
-function coreUse(
-  deps: ActanaCliDeps,
-  args: ParsedArgs,
-  paths: RegistryPaths,
-  rest: string[],
-): number {
+function coreUse(deps: ActanaCliDeps, paths: RegistryPaths, rest: string[]): number {
   const [name] = rest;
   if (name === undefined) {
     deps.err("actana core use: a name is required — `actana core use <name>`.");
@@ -240,8 +238,8 @@ function coreUse(
   }
   if (coreNameError(name) !== null || !coreExists(paths, name)) {
     deps.err(`actana core use: no Core named "${name}".`);
-    const known = listCoreNames(paths);
-    deps.err(known.length > 0 ? `Known: ${known.join(", ")}` : "This machine has no Cores registered.");
+    const known = listUsableCoreNames(paths);
+    deps.err(known.length > 0 ? `Known: ${known.join(", ")}` : nothingToSelect(paths));
     return EXIT_FAILURE;
   }
   writeCurrentCore(paths, name);
@@ -250,12 +248,7 @@ function coreUse(
 }
 
 /** `actana core rm <name>` — forget a Core, and the pointer if it named it. */
-function coreRm(
-  deps: ActanaCliDeps,
-  args: ParsedArgs,
-  paths: RegistryPaths,
-  rest: string[],
-): number {
+function coreRm(deps: ActanaCliDeps, paths: RegistryPaths, rest: string[]): number {
   const [name] = rest;
   if (name === undefined) {
     deps.err("actana core rm: a name is required — `actana core rm <name>`.");
@@ -276,11 +269,11 @@ function coreRm(
 
   deps.out(`Removed Core "${name}".`);
   if (wasCurrent) {
-    const left = listCoreNames(paths);
+    const left = listUsableCoreNames(paths);
     deps.out(
       left.length > 0
         ? `Nothing is \`current\` now — \`actana core use <name>\` selects one of: ${left.join(", ")}`
-        : "Nothing is `current` now, and no Cores are registered.",
+        : `Nothing is \`current\` now, and ${nothingToSelect(paths)}`,
     );
   }
   return EXIT_OK;
@@ -396,6 +389,22 @@ function coreShell(deps: ActanaCliDeps): number {
   deps.err("actana core shell: not built yet — it is #162, in this phase.");
   deps.err("A Core shell is a free-form login shell on the Core: no project, no harness.");
   return EXIT_UNIMPLEMENTED;
+}
+
+/**
+ * What to say when there is no Core a verb could be pointed at.
+ *
+ * "No Cores are registered" and "nothing in `cores/` has a name a verb will
+ * take" are different situations with different fixes, and now that the
+ * registry lists an oddly-named file rather than hiding it, saying the first
+ * when the second is true would put this line in plain disagreement with the
+ * row `actana core ls` prints one command earlier. Registering a Core will not
+ * help somebody whose blob is already there under the wrong filename.
+ */
+function nothingToSelect(paths: RegistryPaths): string {
+  return listCoreNames(paths).length > 0
+    ? "no Core in the registry has a usable name — `actana core ls` shows what is there."
+    : "no Cores are registered.";
 }
 
 /** How a credential's provenance is named in output. */
