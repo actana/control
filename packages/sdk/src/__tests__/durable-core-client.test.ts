@@ -422,6 +422,30 @@ describe("DurableCoreClient", () => {
     expect(pairs).toHaveLength(2);
   });
 
+  it("leaves no orphan socket when a disconnect listener dials on the spot", async () => {
+    // The window between a socket dying and the backoff arming. A listener that
+    // calls `connect()` in there used to find no transport and no timer, dial a
+    // socket of its own, and have it overwritten by the backoff's dial a moment
+    // later — a live link plus an orphan nobody holds, which nothing will ever
+    // close. The Panel registers disconnect handlers, so this is #156's window
+    // rather than a hypothetical one.
+    const core = remoteRig();
+    const { client: c, dial } = makeClient(core);
+    await c.connect();
+    c.onDisconnected(() => {
+      void c.connect().catch(() => {});
+    });
+
+    const first = dial.last();
+    first.server.close();
+    await vi.waitFor(() => expect(c.isConnected()).toBe(true));
+
+    // One reconnect, one socket: the listener's call waited for the dial that
+    // was already coming instead of racing one of its own.
+    expect(dial.pairs).toHaveLength(2);
+    expect(first.client.readyState).toBe(3);
+  });
+
   it("gives every Core its own cursor key", () => {
     // Two Cores sharing a key would each replay from the other's position, and
     // the one that fell behind would lose the events in between.

@@ -454,8 +454,19 @@ export class CoreClient {
           this.established = false;
           this.transport = null;
           this.failInFlight();
-          for (const cb of this.disconnectedListeners) cb({ error: reason });
+          // Before the listeners, not after. A disconnect listener may call
+          // `connect()` synchronously — the Panel registers such handlers
+          // (#156) — and with no transport and no backoff armed yet, that call
+          // would dial a socket of its own, which the backoff's own
+          // `openTransport()` then overwrote a moment later: one live link, one
+          // orphan nobody holds a reference to, and no `close()` coming for it.
+          // Arming first makes `reconnectScheduled()` true for that call, so it
+          // waits for the connection already on its way rather than opening a
+          // second one. Nothing observable moves: what this runs before the
+          // listeners either arms a timer or rejects a promise, and a promise
+          // rejection is a microtask that lands after the whole loop either way.
           this.onConnectionClosed(reason);
+          for (const cb of this.disconnectedListeners) cb({ error: reason });
         },
       },
     });
