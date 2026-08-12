@@ -9,7 +9,7 @@ import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { EventLogPort } from "@actana/core/pty-core-link-server";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 /**
  * The Cores surface, driven the way a browser drives it: pair a Core by pasting

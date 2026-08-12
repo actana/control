@@ -117,10 +117,12 @@ Five things follow from that, and each is enforced rather than asked for:
   approval are the point; `promote.yml` performs the advance. Do not press
   GitHub's merge button on it.
 
-All four package manifests — root, `packages/core`, `packages/panel`,
-`packages/shared` — carry the train's version, written by the cut itself, and a
-required check asserts all four still agree (D3). Nothing else should be
-editing them.
+All five package manifests — root, `packages/core`, `packages/panel`,
+`packages/sdk`, `packages/shared` — carry the train's version, written by the cut
+itself, and a required check asserts all five still agree (D3, amended by #152).
+Nothing else should be editing them. The check also asserts that its own list
+covers every workspace package, so a sixth package fails it rather than being
+silently left out.
 
 ## The published images
 
@@ -828,11 +830,11 @@ guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
 the next release is a patch, or a major, delete the branch and re-cut it before
 anything merges into it.
 
-The cut creates `beta/x.y.z` from `main` and writes that version into all four
-manifests in its first commit (D3). Do not hand-edit those files: hand-editing
-four manifests is how three of them end up disagreeing, and the one that
-disagrees is found at promotion, by a person. A required check on the train
-asserts all four equal the branch's version.
+The cut creates `beta/x.y.z` from `main` and writes that version into all five
+manifests in its first commit (D3, amended by #152). Do not hand-edit those
+files: hand-editing five manifests is how four of them end up disagreeing, and
+the one that disagrees is found at promotion, by a person. A required check on
+the train asserts all five equal the branch's version.
 
 A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
 still has an image to promote, because **the cut itself publishes one** (D7).

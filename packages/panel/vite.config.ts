@@ -22,6 +22,7 @@ export default defineConfig({
   resolve: {
     alias: {
       "~": path.resolve(__dirname, "./src"),
+      "@actana/sdk": path.resolve(__dirname, "../sdk/src"),
       "@actana/shared": path.resolve(__dirname, "../shared/src"),
     },
     // Language packages and @uiw/react-codemirror can otherwise pull distinct

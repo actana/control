@@ -14,7 +14,15 @@
     "useDefineForClassFields": true,
     "ignoreDeprecations": "6.0",
     "noEmit": true,
-    "types": ["node"]
+    "types": ["node"],
+    // Shared reaches the SDK by package name for the same reason Core and the
+    // Panel do (ADR 0016 D3): the frames have one definition and it lives in
+    // `@actana/sdk` (ADR 0025). `core-mutations`, `core-query` and `event-log`
+    // are typed against them; they do not redeclare them.
+    "baseUrl": ".",
+    "paths": {
+      "@actana/sdk/*": ["../sdk/src/*"]
+    }
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules"]

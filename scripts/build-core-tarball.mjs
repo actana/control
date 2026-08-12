@@ -236,7 +236,7 @@ async function main() {
   }
 
   const protocolVersion = parseCoreLinkProtocolVersion(
-    fs.readFileSync(path.join(repoRoot, "packages", "shared", "src", "core-link-frames.ts"), "utf8"),
+    fs.readFileSync(path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"), "utf8"),
   );
 
   log(`target=${descriptor.target} version=${version} node=${nodeVersion} protocol=${protocolVersion}`);

@@ -1,0 +1,35 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2022"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    // Relative imports inside this package carry their `.ts` extension so Node
+    // can resolve them directly — `node script.mjs` importing `@actana/sdk/…`
+    // works with no bundler and no loader, which is what makes the session
+    // layer's "a plain Node script" (issue 155) literally that. Safe with
+    // `noEmit`: nothing here is compiled, and every consumer resolves through a
+    // bundler that reads the same specifiers.
+    "allowImportingTsExtensions": true,
+    "strict": true,
+    "noFallthroughCasesInSwitch": true,
+    "esModuleInterop": true,
+    "allowSyntheticDefaultImports": true,
+    "resolveJsonModule": true,
+    "isolatedModules": true,
+    "skipLibCheck": true,
+    "useDefineForClassFields": true,
+    "ignoreDeprecations": "6.0",
+    "noEmit": true,
+    "types": ["node"],
+    "paths": {
+      // Test-only paths, mirroring `vitest.config.ts` — see the comment there.
+      // Nothing under `src/` outside `src/__tests__/` may import either package:
+      // the SDK's runtime dependencies are `ws` and the protocol it defines.
+      "@actana/core/*": ["../core/src/*"],
+      "@actana/shared/*": ["../shared/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules"]
+}

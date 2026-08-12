@@ -12,7 +12,7 @@
 // shared across the renderer and main process. It compiles under both the Vite
 // tsconfigs (no `~/` imports), mirroring `core-link-frames.ts`.
 
-import type { CoreLinkTaskSnapshot } from "../../../shared/src/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
 
 /**
  * One Core's contribution to a fan-out. The caller (the Panel's fleet manager)

@@ -80,6 +80,7 @@ routing around it.
 | [0022](adr/0022-a-core-owned-project-has-a-panel-side-presentation-row.md) | A Core-owned project has a Panel-side presentation row |
 | [0023](adr/0023-release-trains-and-digest-promotion.md) | Release trains and digest promotion |
 | [0024](adr/0024-a-core-serves-many-clients-one-holds-a-sessions-write-lock.md) | A Core serves many clients, and one connection holds a Session's write lock |
+| [0025](adr/0025-the-protocol-ships-with-the-client.md) | The protocol ships with the client |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

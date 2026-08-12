@@ -11,7 +11,7 @@ import {
   SESSION_LOCKED_ERROR_CODE,
   type CoreLinkEvent,
   type CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 // One Session, at most one writer, named by the core-link connection
 // (issue 144, ADR 0024 D3–D7, D10).

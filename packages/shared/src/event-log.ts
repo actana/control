@@ -13,7 +13,7 @@
 // minimal `EventLogSqlite` interface so tests can pass an in-memory
 // better-sqlite3 handle without dragging in the full db/client bootstrap.
 
-import type { CoreLinkEvent } from "./core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // ─── SqliteLike interface ───────────────────────────────────────────────────
 

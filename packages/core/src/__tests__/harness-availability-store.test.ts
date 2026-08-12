@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { HarnessAvailabilityStore } from "../harness-availability-store";
-import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/shared/core-link-frames";
+import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core-link-frames";
 import { UI_HARNESSES } from "@actana/shared/harnesses";
 import type { Harness } from "@actana/shared/domain";
 

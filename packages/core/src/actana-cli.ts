@@ -28,7 +28,7 @@
 import * as fs from "node:fs";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/shared/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import {
   loadMaterialFromFile,
   materialFilePath,

@@ -1,5 +1,4 @@
-import { PtyCoreLinkClient } from "../core-link/client";
-import { createNodeCoreLinkSocket } from "../core-link/node-socket";
+import { DurableCoreClient } from "@actana/sdk/durable-core-client";
 import {
   advanceCoreCursor,
   getCore,
@@ -14,7 +13,7 @@ import {
   type CoreLinkEvent,
   type CoreLinkRequestFrame,
   type CoreLinkResponseFrame,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /**
  * The Panel service's core-links: one dialed connection per registered Core,
@@ -303,32 +302,112 @@ export class CoreLinkManager {
   }
 }
 
+/**
+ * One link to one Core: the SDK's durable Core client, dialed (#156, #129 D1).
+ *
+ * The Panel keeps no client of its own any more. `DurableCoreClient` is that
+ * client — it *is* the Panel's, extracted (issue 153) — and everything this
+ * manager used to configure it with is configured on it here: the same backoff
+ * window, the same heartbeat cadence by default, the same registry-backed
+ * cursor, the same bearer and pinned cert material.
+ *
+ * The dial happens where it always did, at construction. The SDK made
+ * connecting explicit because a one-shot client wants to await it; nothing
+ * above here does, so the promise is started and its failures dropped — a
+ * refused bearer arrives on `onAuthError` and a dead Core on `onDisconnected`,
+ * which is where this manager has always read them, and the client keeps
+ * reconnecting underneath either way. Awaiting it here would make `dial()`
+ * asynchronous for no reader.
+ */
 function defaultCreateClient(
   core: Core,
   secrets: CoreSecrets,
   cursor: CoreCursor,
 ): CoreLinkClientLike {
-  return new PtyCoreLinkClient({
+  const client = new DurableCoreClient({
     url: core.endpoint,
-    createSocket: (url) =>
-      createNodeCoreLinkSocket(url, {
-        ca: secrets.caCert,
-        cert: secrets.clientCert,
-        key: secrets.clientKey,
-      }),
+    // The mTLS material the SDK's own Node dial presents (ADR 0002). The Panel
+    // service is what holds it, and terminates every core link for exactly that
+    // reason: no browser WebSocket can present a client certificate (ADR 0012).
+    tls: { ca: secrets.caCert, cert: secrets.clientCert, key: secrets.clientKey },
     bearer: secrets.bearer,
+    // Keeps this link identifiable as the Panel's on the Core it reclaims from
+    // (ADR 0024 D9). The SDK mints `sdk-…` by default, which is the honest name
+    // for a client it knows nothing else about; this Core client has a name, it
+    // has always presented it, and once the CLI ships on the same package the
+    // prefix is the only thing telling the two apart on the Core.
+    clientId: mintPanelCoreClientId(),
     reconnectInitialMs: RECONNECT_INITIAL_MS,
     reconnectMaxMs: RECONNECT_MAX_MS,
-    // The client was written against a localStorage-shaped store because it
-    // used to run in a browser. Here that store is the Core registry: one
-    // cursor per Core, keyed by coreId, so the key the client passes is
-    // irrelevant. This is the whole of the cursor path — the client persists
-    // through it as each event lands and reads it back when it subscribes.
+    // The cursor store is `localStorage`-shaped because a browser store is the
+    // shape the SDK is injected with rather than reaching for (issue 153). Here
+    // it is the Core registry: one cursor per Core, keyed by coreId, so the key
+    // the client passes is irrelevant. This is the whole of the cursor path —
+    // the client persists through it as each event lands and reads it back when
+    // it subscribes.
     storage: {
       getItem: () => String(cursor.read()),
       setItem: (_key, value) => cursor.write(Number(value)),
     },
   });
+  void client.connect().catch(() => {
+    /* reported on onAuthError / onDisconnected; the client dials again itself */
+  });
+  return asPanelLink(client);
+}
+
+/**
+ * Mint this link's Core client id (ADR 0024 D9).
+ *
+ * Random rather than derived: two links must not collide, and every input that
+ * would make one stable across processes — the endpoint, the coreId, the bearer
+ * — is shared by every client dialing that machine, which is the one shape D9
+ * forbids. Unguessability buys nothing security-wise and is not claimed to.
+ *
+ * The `panel-` prefix is the point: on the Core, a reclaim is otherwise an
+ * opaque token with no clue which of a machine's clients reconnected.
+ *
+ * @internal — exported for the test that pins the prefix and the randomness.
+ */
+export function mintPanelCoreClientId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return `panel-${random}`;
+  // Node 24 has `crypto.randomUUID`. The fallback keeps an id — which only has
+  // to differ from its neighbours — from being the thing that throws.
+  return `panel-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * The SDK's client as this manager's port (#156).
+ *
+ * Thin on purpose, and one method wide: a durable Core client already answers
+ * every call on {@link CoreLinkClientLike} except `onProtocolVersion`, which is
+ * `onReady` under the name this Panel's dial states are written in. Renaming
+ * the port instead would have rippled into the router and into every fake in
+ * the suite — the migration would then be visible in tests, which is exactly
+ * what it must not be.
+ */
+function asPanelLink(client: DurableCoreClient): CoreLinkClientLike {
+  return {
+    onAuthOk: (cb) => client.onAuthOk(cb),
+    onAuthError: (cb) => client.onAuthError(cb),
+    onDisconnected: (cb) => client.onDisconnected(cb),
+    // Every connection's `ready`, which is what this manager reads drift off.
+    // The SDK carries the same two fields on a wider answer.
+    onProtocolVersion: (cb) =>
+      client.onReady(({ protocolVersion, compatible }) =>
+        cb({ version: protocolVersion, compatible }),
+      ),
+    request: (frame, timeoutMs) => client.request(frame, timeoutMs),
+    onData: (cb) => client.onData(cb),
+    onExit: (cb) => client.onExit(cb),
+    onEvent: (cb) => client.onEvent(cb),
+    ptySubscribe: (ptyId, opts) => client.ptySubscribe(ptyId, opts),
+    ptyUnsubscribe: (ptyId) => client.ptyUnsubscribe(ptyId),
+    canSendMultiConnectionFrames: () => client.canSendMultiConnectionFrames(),
+    onReclaimed: (cb) => client.onReclaimed(cb),
+    close: () => client.close(),
+  };
 }
 
 let singleton: CoreLinkManager | null = null;

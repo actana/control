@@ -6,7 +6,7 @@ import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
   type CoreLinkEvent,
   type CoreLinkHarnessAvailabilityMap,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 // Installing a missing Harness from the "Start a new session" picker (issue 83).
 //

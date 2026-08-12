@@ -61,7 +61,7 @@ import {
   type CoreLinkTaskMutation,
   type CoreLinkTaskSnapshot,
   type CoreLinkLaunchProcessKillResult,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 // Re-export the snapshot types so tests / callers can import them from the
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).

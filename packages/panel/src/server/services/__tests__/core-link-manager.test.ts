@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import type { Core } from "~/shared/cores";
 import type { CoreSecrets } from "../cores";
 import { CoreLinkManager, type CoreCursor, type CoreLinkClientLike } from "../core-link-manager";
-import { CORE_LINK_PROTOCOL_VERSION } from "@actana/shared/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core-link-frames";
 
 /**
  * The manager is driven through its injected seams: a fake core-link client and

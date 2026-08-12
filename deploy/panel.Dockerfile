@@ -36,6 +36,7 @@ COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY scripts/require-node-24.mjs scripts/
 COPY packages/core/package.json packages/core/
 COPY packages/panel/package.json packages/panel/
+COPY packages/sdk/package.json packages/sdk/
 COPY packages/shared/package.json packages/shared/
 RUN pnpm install --frozen-lockfile
 

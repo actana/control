@@ -1,5 +1,5 @@
 import type { PanelBridge } from "~/lib/panel-bridge";
-import type { CoreLinkEvent } from "@actana/shared/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 // A Core's projectsList result changes when the Core appends one of these
 // event kinds to its monotonic event log. Everything else (task lifecycle,

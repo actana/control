@@ -1,3 +1,18 @@
+// The Core's core-link server, driven frame by frame over a socket pair.
+//
+// **These are `@actana/core`'s tests, living in the Panel's package for the reason
+// they were written here**: the Panel's own core-link client used to sit in the
+// directory above, and every suite below was written against the real server it
+// talked to rather than a stand-in — the auth gate that closes a connection on a
+// pre-auth frame, the `ready` frame nobody asked for, the event tail replayed
+// past a cursor, the mutation port's throw becoming an `error` frame.
+//
+// That client is gone: the Panel dials with `@actana/sdk`'s durable Core client
+// now (#156), and the client-side suites went with it — `packages/sdk` covers
+// that half against this same server, plus a real `wss://` handshake. What is
+// left here is every server-side test, unchanged, because nothing about the
+// Core moved and coverage of it should not have been collateral.
+
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import {
   PtyCoreLinkServer,
@@ -5,16 +20,12 @@ import {
   type WebSocketServerLike,
   type EventLogPort,
 } from "@actana/core/pty-core-link-server";
-import {
-  PtyCoreLinkClient,
-  type WebSocketLike as ClientWebSocketLike,
-} from "../client";
 import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
   type CoreLinkSessionLock,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 import { signBearer, verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 
 /**
@@ -37,7 +48,7 @@ function published<T extends { taskId: string }>(
 // ─── Fake WebSocket ───────────────────────────────────────────────────────────
 //
 // A pair of connected fakes: `server` is the WebSocket the PtyCoreLinkServer
-// holds; `client` is the one the PtyCoreLinkClient holds. `send` on one side
+// holds; `client` is the one the peer on the other end holds. `send` on one side
 // delivers to the other's "message" listeners. `receive` simulates an inbound
 // message WITHOUT recording it in `sent` (so tests can distinguish "what I
 // sent" from "what I received").
@@ -302,7 +313,7 @@ import type { CoreQueryPort } from "@actana/core/pty-core-link-server";
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /** In-memory CoreQueryPort for tests. */
 class FakeQueryPort implements CoreQueryPort {
@@ -737,449 +748,7 @@ describe("PtyCoreLinkServer event log", () => {
   });
 });
 
-describe("PtyCoreLinkClient", () => {
-  let pair: FakeWebSocketPair;
 
-  beforeEach(() => {
-    pair = new FakeWebSocketPair();
-  });
-
-  function makeClient(storage?: { getItem: (k: string) => string | null; setItem: (k: string, v: string) => void }): PtyCoreLinkClient {
-    const client = new PtyCoreLinkClient({
-      url: "ws://127.0.0.1:0",
-      createSocket: () => pair.client as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000, // prevent auto-reconnect during tests
-      reconnectMaxMs: 10_000,
-      storage,
-    });
-    pair.openClient();
-    return client;
-  }
-
-  it("sends a spawn frame and resolves with { ptyId } on spawned", async () => {
-    const client = makeClient();
-    const p = client.spawn({
-      taskId: "t1",
-      cwd: "/tmp",
-      command: "claude",
-      agent: "claude-code",
-    } as any);
-    // The client sent a spawn frame — check pair.client.sent.
-    expect(pair.client.lastSent()).toMatchObject({ type: "spawn" });
-    const reqId = (pair.client.lastSent() as { reqId: string }).reqId;
-    // Server responds — deliver to the client via pair.client.receive().
-    pair.client.receive({ type: "spawned", reqId, ptyId: "pty-xyz" });
-    await expect(p).resolves.toEqual({ ptyId: "pty-xyz" });
-    client.close();
-  });
-
-  it("rejects spawn when the server sends spawnError", async () => {
-    const client = makeClient();
-    const p = client.spawn({
-      taskId: "t1",
-      cwd: "/tmp",
-      command: "claude",
-      agent: "claude-code",
-    } as any);
-    const reqId = (pair.client.lastSent() as { reqId: string }).reqId;
-    pair.client.receive({ type: "spawnError", reqId, message: "spawn failed" });
-    await expect(p).rejects.toThrow(/spawn failed/);
-    client.close();
-  });
-
-  it("resolves replay with { data, nextSeq }", async () => {
-    const client = makeClient();
-    const p = client.replay("p1");
-    const reqId = (pair.client.lastSent() as { reqId: string }).reqId;
-    pair.client.receive({ type: "replayResult", reqId, data: "history", nextSeq: 10 });
-    await expect(p).resolves.toEqual({ data: "history", nextSeq: 10, from: undefined });
-    client.close();
-  });
-
-  it("asks for the ring tail past a cursor on a reattach, and reports where it starts", async () => {
-    // A Panel coming back from a dropped link resumes at the seq after the one
-    // it painted; `from` is how it learns whether the ring still covers it.
-    const client = makeClient();
-    const p = client.replay("p1", 41);
-    const sent = pair.client.lastSent() as { reqId: string; sinceSeq?: number };
-    expect(sent.sinceSeq).toBe(41);
-    pair.client.receive({
-      type: "replayResult",
-      reqId: sent.reqId,
-      data: "tail",
-      nextSeq: 43,
-      from: 41,
-    });
-    await expect(p).resolves.toEqual({ data: "tail", nextSeq: 43, from: 41 });
-    client.close();
-  });
-
-  it("resolves findByTask with { ptyId }", async () => {
-    const client = makeClient();
-    const p = client.findByTask("t1");
-    const reqId = (pair.client.lastSent() as { reqId: string }).reqId;
-    pair.client.receive({ type: "findByTaskResult", reqId, ptyId: "p1" });
-    await expect(p).resolves.toEqual({ ptyId: "p1" });
-    client.close();
-  });
-
-  it("delivers data frames to onData listeners", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onData(cb);
-    pair.client.receive({ type: "data", ptyId: "p1", data: "hello", seq: 1 });
-    expect(cb).toHaveBeenCalledWith({ ptyId: "p1", data: "hello", seq: 1 });
-    client.close();
-  });
-
-  it("delivers exit frames to onExit listeners", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onExit(cb);
-    pair.client.receive({ type: "exit", ptyId: "p1", exitCode: 0 });
-    expect(cb).toHaveBeenCalledWith({ ptyId: "p1", exitCode: 0, signal: undefined });
-    client.close();
-  });
-
-  it("unsubscribes onData/onExit listeners", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    const unsub = client.onData(cb);
-    unsub();
-    pair.client.receive({ type: "data", ptyId: "p1", data: "x", seq: 1 });
-    expect(cb).not.toHaveBeenCalled();
-    client.close();
-  });
-
-  it("rejects pending RPCs on close", async () => {
-    const client = makeClient();
-    const p = client.replay("p1");
-    client.close();
-    await expect(p).rejects.toThrow(/closed/);
-  });
-
-  // ─── Issue 05: mutation + session RPCs ────────────────────────────────────
-  // The client sends discriminant-typed mutation frames and resolves with the
-  // result snapshot (or `null` when the mutation targeted a missing row). A
-  // Core-side validation error comes back as an `error` frame and rejects.
-
-  it("resolves projectsMutate with the returned project snapshot", async () => {
-    const client = makeClient();
-    const p = client.projectsMutate({ op: "create", name: "mc", path: "/home/op/mc" });
-    const frame = pair.client.lastSent() as { type: string; reqId: string };
-    expect(frame.type).toBe("projectsMutate");
-    const project = {
-      projectId: "p1",
-      name: "mc",
-      path: "/home/op/mc",
-      icon: "MC",
-      iconColor: "#7ce58a",
-      pinned: false,
-      rememberHarnessSettings: false,
-      savedHarness: null,
-      savedSkipPermissions: false,
-      savedBareSession: false,
-      defaultGridView: false,
-      updatedAt: 1,
-    };
-    pair.client.receive({ type: "projectsMutateResult", reqId: frame.reqId, project });
-    await expect(p).resolves.toEqual(project);
-    client.close();
-  });
-
-  it("resolves projectsMutate with null when the Core returned no row", async () => {
-    const client = makeClient();
-    const p = client.projectsMutate({ op: "archive", projectId: "unknown" });
-    const frame = pair.client.lastSent() as { type: string; reqId: string };
-    pair.client.receive({ type: "projectsMutateResult", reqId: frame.reqId, project: null });
-    await expect(p).resolves.toBeNull();
-    client.close();
-  });
-
-  it("rejects projectsMutate when the server sends an error frame", async () => {
-    const client = makeClient();
-    const p = client.projectsMutate({ op: "create", name: "mc", path: "relative/x" });
-    const frame = pair.client.lastSent() as { type: string; reqId: string };
-    pair.client.receive({ type: "error", reqId: frame.reqId, message: "invalid path" });
-    await expect(p).rejects.toThrow(/invalid path/);
-    client.close();
-  });
-
-  it("resolves tasksMutate with the returned task snapshot", async () => {
-    const client = makeClient();
-    const p = client.tasksMutate({
-      op: "create",
-      projectId: "p1",
-      title: "hello",
-      agent: "claude-code",
-    });
-    const frame = pair.client.lastSent() as { type: string; reqId: string };
-    expect(frame.type).toBe("tasksMutate");
-    const task = {
-      taskId: "t1",
-      projectId: "p1",
-      title: "hello",
-      titleManuallySet: false,
-      claudeSessionId: null,
-      agent: "claude-code",
-      status: "ready",
-      pinned: false,
-      archived: false,
-      icon: null,
-      updatedAt: 1,
-    };
-    pair.client.receive({ type: "tasksMutateResult", reqId: frame.reqId, task });
-    await expect(p).resolves.toEqual(task);
-    client.close();
-  });
-
-  it("resolves sessionsList with the returned session snapshots", async () => {
-    const client = makeClient();
-    const p = client.sessionsList("p1");
-    const frame = pair.client.lastSent() as { type: string; reqId: string; projectId?: string };
-    expect(frame.type).toBe("sessionsList");
-    expect(frame.projectId).toBe("p1");
-    const sessions = [{ taskId: "t1", ptyId: "pty_1", status: "ready", updatedAt: 1 }];
-    pair.client.receive({ type: "sessionsListResult", reqId: frame.reqId, sessions });
-    await expect(p).resolves.toEqual(sessions);
-    client.close();
-  });
-
-  // ─── Protocol version (issue 07) ───
-
-  it("reports the version from the ready frame as compatible when it matches", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onProtocolVersion(cb);
-    pair.client.receive({ type: "ready", version: CORE_LINK_PROTOCOL_VERSION });
-    expect(cb).toHaveBeenCalledWith({
-      version: CORE_LINK_PROTOCOL_VERSION,
-      compatible: true,
-    });
-    client.close();
-  });
-
-  it("reports a Core on an older protocol as incompatible", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onProtocolVersion(cb);
-    pair.client.receive({ type: "ready", version: "0.1.0" });
-    expect(cb).toHaveBeenCalledWith({ version: "0.1.0", compatible: false });
-    client.close();
-  });
-
-  it("reports a ready frame with no version as incompatible", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onProtocolVersion(cb);
-    pair.client.receive({ type: "ready" });
-    expect(cb).toHaveBeenCalledWith({ version: null, compatible: false });
-    client.close();
-  });
-
-  it("replaces the reported version on the next connection's ready frame", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onProtocolVersion(cb);
-    pair.client.receive({ type: "ready", version: "0.1.0" });
-    // The Core was updated and came back speaking this build's protocol.
-    pair.client.receive({ type: "ready", version: CORE_LINK_PROTOCOL_VERSION });
-    expect(cb).toHaveBeenLastCalledWith({
-      version: CORE_LINK_PROTOCOL_VERSION,
-      compatible: true,
-    });
-    client.close();
-  });
-});
-
-// ─── Client event-cursor replay ────────────────────────────────────────────
-
-function makeMemoryStorage(): { getItem: (k: string) => string | null; setItem: (k: string, v: string) => void } & Record<string, string> {
-  const map: Record<string, string> = {};
-  return {
-    ...map,
-    getItem: (k: string) => (k in map ? map[k] : null),
-    setItem: (k: string, v: string) => {
-      map[k] = v;
-    },
-  } as { getItem: (k: string) => string | null; setItem: (k: string, v: string) => void } & Record<string, string>;
-}
-
-describe("PtyCoreLinkClient event cursor", () => {
-  let pair: FakeWebSocketPair;
-  let storage: ReturnType<typeof makeMemoryStorage>;
-
-  beforeEach(() => {
-    pair = new FakeWebSocketPair();
-    storage = makeMemoryStorage();
-  });
-
-  function makeClient(url = "ws://127.0.0.1:0"): PtyCoreLinkClient {
-    const client = new PtyCoreLinkClient({
-      url,
-      createSocket: () => pair.client as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-      storage,
-      // Explicit key so the tests can read/write the cursor without computing
-      // the per-Core suffix. Per-Core isolation is covered by its own test.
-      cursorStorageKey: "mc.coreLink.lastEventId",
-    });
-    pair.openClient();
-    return client;
-  }
-
-  it("sends a subscribe frame on connect with the persisted lastEventId", () => {
-    storage.setItem("mc.coreLink.lastEventId", "7");
-    const client = makeClient();
-    const sent = pair.client.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-    const subscribe = sent.find((f) => f.type === "subscribe");
-    expect(subscribe).toBeDefined();
-    expect(subscribe).toMatchObject({ type: "subscribe", lastEventId: 7 });
-    client.close();
-  });
-
-  it("sends lastEventId 0 on first connect (no persisted cursor)", () => {
-    const client = makeClient();
-    const sent = pair.client.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-    const subscribe = sent.find((f) => f.type === "subscribe");
-    expect(subscribe).toMatchObject({ type: "subscribe", lastEventId: 0 });
-    client.close();
-  });
-
-  it("delivers event frames to onEvent listeners and advances lastEventId", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onEvent(cb);
-    pair.client.receive({
-      type: "event",
-      event: {
-        eventId: 5,
-        ts: 1,
-        kind: "task:updated",
-        ptyId: null,
-        taskId: "t1",
-        payload: '{"status":"running"}',
-      },
-    });
-    expect(cb).toHaveBeenCalledTimes(1);
-    expect(cb.mock.calls[0]![0].event.kind).toBe("task:updated");
-    // Cursor persisted.
-    expect(storage.getItem("mc.coreLink.lastEventId")).toBe("5");
-    client.close();
-  });
-
-  it("ignores event frames with eventId <= lastEventId (dedupe)", () => {
-    storage.setItem("mc.coreLink.lastEventId", "10");
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onEvent(cb);
-    // An event with an older id (e.g. a duplicate from a late replay) — skipped.
-    pair.client.receive({
-      type: "event",
-      event: { eventId: 9, ts: 1, kind: "task:updated", ptyId: null, taskId: null, payload: "{}" },
-    });
-    expect(cb).not.toHaveBeenCalled();
-    // Cursor unchanged.
-    expect(storage.getItem("mc.coreLink.lastEventId")).toBe("10");
-    client.close();
-  });
-
-  it("eventsReplayed marker advances the cursor without calling onEvent", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onEvent(cb);
-    pair.client.receive({ type: "eventsReplayed", lastEventId: 42 });
-    expect(cb).not.toHaveBeenCalled();
-    expect(storage.getItem("mc.coreLink.lastEventId")).toBe("42");
-    client.close();
-  });
-
-  it("notifies onEventsReplayed listeners when caught up", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onEventsReplayed(cb);
-    pair.client.receive({ type: "eventsReplayed", lastEventId: 42 });
-    expect(cb).toHaveBeenCalledWith({ lastEventId: 42 });
-    client.close();
-  });
-
-  it("unsubscribes onEvent listeners", () => {
-    const client = makeClient();
-    const cb = vi.fn();
-    const unsub = client.onEvent(cb);
-    unsub();
-    pair.client.receive({
-      type: "event",
-      event: { eventId: 1, ts: 1, kind: "task:created", ptyId: null, taskId: null, payload: "{}" },
-    });
-    expect(cb).not.toHaveBeenCalled();
-    client.close();
-  });
-
-  it("restores a missed event/task timeline on reconnect", () => {
-    // The Panel saw up to eventId 3 before it was killed. On reopen it sends
-    // lastEventId=3 and the server replays the tail.
-    storage.setItem("mc.coreLink.lastEventId", "3");
-    const client = makeClient();
-    const cb = vi.fn();
-    client.onEvent(cb);
-
-    // Server replays the events the Panel missed while away.
-    pair.client.receive({
-      type: "event",
-      event: { eventId: 4, ts: 1, kind: "task:updated", ptyId: null, taskId: "t1", payload: '{"status":"running"}' },
-    });
-    pair.client.receive({
-      type: "event",
-      event: { eventId: 5, ts: 2, kind: "session:finished", ptyId: null, taskId: "t1", payload: '{}' },
-    });
-    pair.client.receive({ type: "eventsReplayed", lastEventId: 5 });
-
-    expect(cb).toHaveBeenCalledTimes(2);
-    expect(cb.mock.calls[0]![0].event.kind).toBe("task:updated");
-    expect(cb.mock.calls[1]![0].event.kind).toBe("session:finished");
-    expect(storage.getItem("mc.coreLink.lastEventId")).toBe("5");
-    client.close();
-  });
-
-  it("isolates the cursor per Core (per-endpoint storage key by default)", () => {
-    // Two Cores on different ports must not share a lastEventId cursor
-    // (CONTEXT.md: "the single number the Panel stores per Core").
-    const clientA = new PtyCoreLinkClient({
-      url: "ws://127.0.0.1:5001",
-      createSocket: () => pair.client as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-      storage,
-    });
-    pair.openClient();
-    // Advance core A's cursor.
-    pair.client.receive({
-      type: "event",
-      event: { eventId: 11, ts: 1, kind: "task:updated", ptyId: null, taskId: null, payload: "{}" },
-    });
-    // Dots in the host are sanitized to underscores (filesystem-safe key).
-    expect(storage.getItem("mc.coreLink.lastEventId.127_0_0_1-5001")).toBe("11");
-    clientA.close();
-
-    // A second Core on a different port starts fresh — cursor 0, not 11.
-    const pairB = new FakeWebSocketPair();
-    const clientB = new PtyCoreLinkClient({
-      url: "ws://127.0.0.1:5002",
-      createSocket: () => pairB.client as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-      storage,
-    });
-    pairB.openClient();
-    const sent = pairB.client.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-    const subscribe = sent.find((f) => f.type === "subscribe");
-    expect(subscribe).toMatchObject({ type: "subscribe", lastEventId: 0 });
-    expect(storage.getItem("mc.coreLink.lastEventId.127_0_0_1-5002")).toBeNull();
-    clientB.close();
-  });
-});
 
 // ─── Bearer auth (issue 04) ────────────────────────────────────────────────
 
@@ -1286,70 +855,6 @@ describe("PtyCoreLinkServer bearer auth", () => {
   });
 });
 
-describe("PtyCoreLinkClient bearer auth", () => {
-  let pair: FakeWebSocketPair;
-
-  beforeEach(() => {
-    pair = new FakeWebSocketPair();
-  });
-
-  function makeClient(bearer?: string): PtyCoreLinkClient {
-    const client = new PtyCoreLinkClient({
-      url: "ws://127.0.0.1:0",
-      createSocket: () => pair.client as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-      bearer,
-    });
-    pair.openClient();
-    return client;
-  }
-
-  it("sends an auth frame on connect when a bearer is configured", () => {
-    const bearer = signBearer({ coreId: "core_1", exp: Date.now() + 60_000 }, AUTH_SECRET);
-    const client = makeClient(bearer);
-    const sent = pair.client.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-    const auth = sent.find((f) => f.type === "auth");
-    expect(auth).toBeDefined();
-    expect(auth).toMatchObject({ type: "auth", bearer });
-    // No subscribe yet — it's sent only after authOk.
-    expect(sent.some((f) => f.type === "subscribe")).toBe(false);
-    client.close();
-  });
-
-  it("does NOT send auth (and goes straight to subscribe) when no bearer is set", () => {
-    const client = makeClient();
-    const sent = pair.client.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-    expect(sent.some((f) => f.type === "auth")).toBe(false);
-    expect(sent.some((f) => f.type === "subscribe")).toBe(true);
-    client.close();
-  });
-
-  it("sends subscribe after authOk and notifies onAuthOk", () => {
-    const bearer = signBearer({ coreId: "core_1", exp: Date.now() + 60_000 }, AUTH_SECRET);
-    const client = makeClient(bearer);
-    const okCb = vi.fn();
-    client.onAuthOk(okCb);
-    pair.client.sent.length = 0;
-    pair.client.receive({ type: "authOk", reqId: "auth-1", coreId: "core_1", exp: 123 });
-    expect(okCb).toHaveBeenCalledWith({ coreId: "core_1", exp: 123 });
-    const sent = pair.client.sent.map((s) => JSON.parse(s) as Record<string, unknown>);
-    expect(sent.some((f) => f.type === "subscribe")).toBe(true);
-    expect(client.isAuthenticated()).toBe(true);
-    client.close();
-  });
-
-  it("notifies onAuthError on authError and stays unauthenticated", () => {
-    const bearer = signBearer({ coreId: "core_1", exp: Date.now() + 60_000 }, AUTH_SECRET);
-    const client = makeClient(bearer);
-    const errCb = vi.fn();
-    client.onAuthError(errCb);
-    pair.client.receive({ type: "authError", reason: "expired" });
-    expect(errCb).toHaveBeenCalledWith({ reason: "expired" });
-    expect(client.isAuthenticated()).toBe(false);
-    client.close();
-  });
-});
 
 // ─── projectsMutate / tasksMutate / sessionsList via CoreMutationPort ────
 // Issue 04 (ADR 0004): the Core process owns the write path against its
@@ -1361,7 +866,7 @@ import type {
   CoreLinkProjectMutation,
   CoreLinkSessionSnapshot,
   CoreLinkTaskMutation,
-} from "@actana/shared/core-link-frames";
+} from "@actana/sdk/core-link-frames";
 
 /** In-memory CoreMutationPort for tests. Records every call so assertions
  *  can verify the server threaded the frame through unchanged. */
@@ -1967,172 +1472,5 @@ describe("core-link heartbeat", () => {
     expect(pair.server.readyState).toBe(1);
 
     server.close();
-  });
-
-  it("client rejects in-flight RPCs when the connection drops", async () => {
-    const socket = new PingableFakeWebSocket();
-    const client = new PtyCoreLinkClient({
-      url: "wss://example:8443",
-      createSocket: () => socket as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-    });
-    socket.readyState = 1;
-    socket.emit("open");
-
-    const pending = client.replay("pty-1");
-    const rejected = expect(pending).rejects.toThrow(/connection lost/);
-
-    // The socket dies with the request already on the wire — its reply can
-    // never arrive, so waiting out the 30s RPC timeout is pure dead time.
-    socket.readyState = 3;
-    socket.emit("close");
-    await rejected;
-
-    client.close();
-  });
-
-  it("client terminates a half-open socket after the heartbeat timeout", () => {
-    const socket = new PingableFakeWebSocket();
-    const client = new PtyCoreLinkClient({
-      url: "wss://example:8443",
-      createSocket: () => socket as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-    });
-    socket.readyState = 1;
-    socket.emit("open");
-
-    vi.advanceTimersByTime(15_000);
-    expect(socket.pings).toBe(1);
-    socket.pong();
-
-    // Peer stops answering — the client destroys the socket rather than
-    // waiting for a FIN that a half-open connection will never send.
-    vi.advanceTimersByTime(60_000);
-    expect(socket.terminated).toBe(true);
-
-    client.close();
-  });
-});
-
-/**
- * PTY subscriptions on the Panel's side of the link (issue 142, ADR 0024 D2).
- *
- * The link is the only thing that knows when its socket dropped, and a Core
- * hangs subscriptions off the connection — so re-establishing them is the
- * client's job, not something the router or a browser can be asked to notice.
- *
- * Every Core here announces `multiConnection` on `ready`, because these frames
- * are gated on it (issue 143, ADR 0024 D11) — a Core that fans a PTY out by
- * subscription is a multi-connection Core by definition. What a Core WITHOUT
- * the capability gets instead is the deliberate single-connection fallback,
- * covered in `multiconnection-capability.test.ts`.
- */
-describe("PtyCoreLinkClient pty subscriptions", () => {
-  let pair: FakeWebSocketPair;
-
-  beforeEach(() => {
-    pair = new FakeWebSocketPair();
-  });
-
-  /** The Core's frame one on every connection, capability included. */
-  function announceReady(): void {
-    pair.client.receive({
-      type: "ready",
-      version: CORE_LINK_PROTOCOL_VERSION,
-      multiConnection: { version: 1 },
-    });
-  }
-
-  function makeClient(): PtyCoreLinkClient {
-    const client = new PtyCoreLinkClient({
-      url: "ws://127.0.0.1:0",
-      createSocket: () => pair.client as unknown as ClientWebSocketLike,
-      reconnectInitialMs: 10_000,
-      reconnectMaxMs: 10_000,
-      storage: makeMemoryStorage(),
-      cursorStorageKey: "mc.coreLink.lastEventId",
-    });
-    pair.openClient();
-    announceReady();
-    return client;
-  }
-
-  /**
-   * Fire a subscription call the way every caller does: the answer is a frame
-   * nobody here is going to send, and a link that drops rejects whatever it had
-   * in flight. What is asserted is what went out on the wire.
-   */
-  function fire(promise: Promise<void>): void {
-    void promise.catch(() => {});
-  }
-
-  function ptyFrames(): Array<Record<string, unknown>> {
-    return pair.client.sent
-      .map((s) => JSON.parse(s) as Record<string, unknown>)
-      .filter((f) => f.type === "ptySubscribe" || f.type === "ptyUnsubscribe");
-  }
-
-  it("asks the Core for a pty, carrying the catch-up contract", () => {
-    const client = makeClient();
-    fire(client.ptySubscribe("pty_1", { catchUp: true }));
-
-    expect(ptyFrames()).toMatchObject([
-      { type: "ptySubscribe", ptyId: "pty_1", catchUp: true },
-    ]);
-    client.close();
-  });
-
-  it("asks once for a pty it already holds", () => {
-    const client = makeClient();
-    fire(client.ptySubscribe("pty_1"));
-    fire(client.ptySubscribe("pty_1"));
-
-    expect(ptyFrames()).toHaveLength(1);
-    client.close();
-  });
-
-  it("re-asks for every held pty when the link comes back", () => {
-    const client = makeClient();
-    fire(client.ptySubscribe("pty_1"));
-    fire(client.ptySubscribe("pty_2"));
-    fire(client.ptyUnsubscribe("pty_1"));
-    pair.client.sent.length = 0;
-
-    pair.closeClient();
-    pair.openClient();
-    announceReady();
-
-    // Only what is still held, and live rather than holding: nothing here is
-    // going to send the `replay` a hold waits for, and a hold nobody releases
-    // is a pane that never repaints.
-    expect(ptyFrames()).toMatchObject([
-      { type: "ptySubscribe", ptyId: "pty_2", catchUp: false },
-    ]);
-    client.close();
-  });
-
-  it("does not re-ask for a pty it has released", () => {
-    const client = makeClient();
-    fire(client.ptySubscribe("pty_1"));
-    fire(client.ptyUnsubscribe("pty_1"));
-    expect(ptyFrames().at(-1)).toMatchObject({ type: "ptyUnsubscribe", ptyId: "pty_1" });
-    pair.client.sent.length = 0;
-
-    pair.closeClient();
-    pair.openClient();
-    announceReady();
-
-    expect(ptyFrames()).toEqual([]);
-    client.close();
-  });
-
-  it("sends nothing for a release of a pty it never held", () => {
-    const client = makeClient();
-    fire(client.ptyUnsubscribe("pty_never"));
-
-    expect(ptyFrames()).toEqual([]);
-    client.close();
   });
 });

@@ -65,6 +65,10 @@ _UI note_: user-facing strings label a Task as "Session" (e.g. "Start a new sess
 The live or replayable conversation backing a Task — the PTY stream plus the harness's own session id. A Core runs many sessions; each session drives exactly one Harness. Replayable after Panel reconnect via the Core's event log.
 _Avoid_: conversation, thread
 
+**Prompt delivery** (Core-scoped):
+Getting a Session's starting prompt from "a Core client sent a string" to "the Harness has it and has been asked to work on it". Owned entirely by the Core, because it is a sequence of reactions to one Harness's own output — wait for its TUI to stop painting, answer whatever blocking dialog it opened, write the text, then send the carriage return as a separate keystroke — and none of that is knowable, or the same, from outside the machine the Harness runs on. A Core client supplies text and **never** timing: no delay, no ready-signal, no retry. Two of the three things that go wrong here are not timing at all — a Harness folder-trust dialog whose highlighted default *exits*, and text long enough that the Harness treats it as a paste and swallows the carriage return riding behind it — and a client that owned any part of this would get them wrong in its own way, so a Panel, the `actana` CLI and an SDK automation would disagree about a machine none of them is on. See ADR 0026.
+_Avoid_: initial input, seeding, auto-typing, priming (those name the mechanism; the concept is that the prompt arrives)
+
 **Session lock** (Core-scoped):
 The exclusive right of one Core client to mutate one Session — its writes, its kill, and every task mutation addressed at it. Held by a core-link connection, never by a person or a program; scoped to a single Session, so different Sessions on one Core may be held by different clients. A Session starts unlocked and its creator gets no privilege; claiming is an explicit gesture; the lock ends on release, on connection drop, or on force takeover, and never on idle. It lives in memory and dies with the Core, exactly like the PTYs it guards. **Published, not discovered by failing:** every Session snapshot carries the lock as the client it was sent to must be told it — whether *you* may write, never who holds it — and every change appends a `session:lockChanged` event that replays by cursor. See ADR 0024.
 _Avoid_: session owner, mutex, reservation, ownership
@@ -94,6 +98,32 @@ _Avoid_: offset, sequence number
 **PTY subscription** (per Core link):
 One Core client's standing request for one PTY's byte stream. A Core sends a PTY's `data` and `exit` to the connections that asked for it and to no others, so a client attached to one Session never receives another's output. Held on the connection, so it dies with the socket and is re-asked for on reconnect. Catch-up is the existing `replay { ptyId, sinceSeq }`, ordered behind the subscription rather than in front of it (ADR 0024 D2).
 _Avoid_: channel, stream registration, attach (an attach is the Panel gesture; this is what it asks for)
+
+### Core client entry points
+
+**`CoreClient`**:
+The default way a program becomes a **Core client**: connect, authenticate, ask, close. One socket, one Core, mTLS plus the bearer out of a **Registration blob** — the shape the `actana` CLI and a script want, and the name a third party types against in `@actana/sdk`. It reconnects nothing and remembers nothing between runs; a program that stays up wants the durable entry point below. Frames that only a multi-connection Core understands are withheld until that Core has announced the capability, so one client drives an old Core and a new one without a second code path (ADR 0024 D11, ADR 0025).
+_Avoid_: session, socket wrapper, connection object, SDK consumer
+
+**Durable Core client**:
+The second entry point on the same transport, for a program that stays connected — the Panel, and anything watching a Core rather than asking it one question. `CoreClient` plus a heartbeat, reconnection with backoff, an **Event cursor**, and subscribe-then-replay. On every connection it re-presents its **Core client id**, re-asks for its **PTY subscriptions**, and replays the gap it was away for, so nothing above it has to know the socket ever dropped. There is no fleet here and there must not be: one client is one Core, and holding several is the Panel's job.
+_Avoid_: manager, pool, supervisor, reconnecting socket
+
+**`CoreSession`**:
+The SDK's second level, on top of either Core client entry point: start a **Session** in a registered **Project**, let the Core deliver the starting prompt, read the result. Programmatic I/O only — `send(text)` writes exactly those bytes, `onData(…)` streams them, `screen()` returns the rendered screen — and **no TTY, ever**: it never reads `process.stdin`, never sets raw mode, and is usable from a cron job, a CI runner or a web service, which is D11. It owns none of the three things it depends on: **Prompt delivery** is the Core's, so the prompt goes over as text and the Core decides when it lands; the spawn policy is the Core's, so a working directory outside a Project root or a flag off the allow-list is surfaced as a rejection rather than pre-empted; and "the turn is over" is the Core's report on its event log rather than a guess from the byte stream falling quiet. See ADR 0025, ADR 0026.
+_Avoid_: terminal, pty wrapper, agent runner, REPL
+
+**Screen**:
+What a terminal would be showing for a **Session**, plus every line that has scrolled off the top of it. Produced by a small terminal emulator in the SDK — cursor movement, erase, insert/delete line and character, scroll, the alternate screen — because a Harness positions text with cursor moves rather than spaces, so deleting the escape sequences yields one line of concatenated spinner frames instead of a screen. The scrolled-off half is not an extra: a Harness's conversation left the visible rows long ago, so the transcript *is* the scrollback, and a reader of the viewport alone reads a status bar.
+_Avoid_: output, log, buffer, stdout (those name a stream; this is what a stream was painted into)
+
+**Core connection**:
+What a **Registration blob** unpacks into: the core-link endpoint, that machine's HTTPS origin, the mTLS material, and the bearer. One name because it is one authenticated reach into one machine — the core link and the machine's HTTPS surface are two faces of it, not two connections. A Core client is handed this rather than a URL, and the material is exposed rather than only dialed with, so a surface that needs the same credentials over HTTPS needs no new format.
+_Avoid_: socket, endpoint, credentials bundle
+
+**Event cursor store**:
+Where a **Durable Core client** keeps its **Event cursor** between reconnects and between runs. Always **injected, never imported**: `localStorage` in a browser-shaped Panel, a file for the CLI, memory by default — because the client itself runs in a Node process that has no DOM to reach into. Memory is a real answer rather than a stub: every reconnect still replays its tail, and only a restart starts from the beginning of the log.
+_Avoid_: cache, persistence layer, local storage (that is one implementation of it)
 
 ### Panel views
 
@@ -161,3 +191,4 @@ _Avoid_: service, daemon config, when you mean the concept — those are impleme
 - **The Panel and its Cores are version-locked, except for additive capabilities announced on `ready`.** The core-link handshake exchanges a protocol version; a mismatched Core renders as "needs update" with the command to run — never a degraded mode. The one narrow exception: a purely additive surface may announce itself on the `ready` frame, and only where its absence yields today's behaviour *exactly*, not a lesser one. A capability that changes what an existing frame means is not additive and still moves the version (ADR 0024 D11).
 - **Task metadata lives Core-side.** Titles, session icons, pin flags — all owned by the Core. Panel mutations flow over the core-link; two Panels connected to the same Core see identical state.
 - **CLI availability is Core-published state, not Panel probing.** The Panel never inspects a remote machine's PATH directly; it reads the Core's own availability snapshot from the core-link state stream.
+- **A Core client sends a starting prompt as text, and sends no timing with it.** **Prompt delivery** is the Core's, end to end: when to write, which dialog is in the way and how it is answered, and when the carriage return goes out. There is no frame, field or option through which a client can express an opinion about any of it, so every client behaves identically on the same Harness without knowing that Harnesses differ (ADR 0026).

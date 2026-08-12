@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "./api";
 import { getPanelBridge } from "./panel-bridge";
 import { mergeFleetTasks, type CoreFanOutResult, type FleetMergeResult } from "~/shared/fleet-merge";
-import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/core-link-frames";
+import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
 import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";

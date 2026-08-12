@@ -1,7 +1,7 @@
 {
   "name": "@actana/shared",
   "version": "0.2.1",
-  "description": "Actana Control shared wire contract — core-link frames, protocol types, mutation/query contracts, registration-blob codec.",
+  "description": "Actana Control shared internals — mutation/query contracts, registration-blob codec, event log. The core-link frames live in @actana/sdk.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -11,6 +11,9 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run"
+  },
+  "dependencies": {
+    "@actana/sdk": "workspace:*"
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",

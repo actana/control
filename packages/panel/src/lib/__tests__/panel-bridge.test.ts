@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createPanelBridge } from "../panel-bridge";
 import { PanelLinkClient, type PanelLinkSocketLike } from "../panel-link-client";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
-import type { CoreLinkProjectSnapshot } from "@actana/shared/core-link-frames";
+import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
 
 /**
  * The bridge is what UI components call. What matters here is which frame each
