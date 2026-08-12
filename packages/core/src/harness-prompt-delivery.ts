@@ -27,7 +27,15 @@
 //      option's own number. If it cannot read the menu it presses nothing at
 //      all and lets the operator finish the dialog by hand — a session waiting
 //      on a visible dialog is recoverable, a session that answered it wrong is
-//      gone.
+//      gone. The one Enter it will send is the confirm behind a digit, and
+//      only once the harness has moved its highlight onto the option that
+//      digit chose: an Enter is justified by what is on screen or not at all.
+//
+//      Which means the screen has to be tracked honestly. The buffer here is
+//      an approximation of a terminal, and the one thing it must not do is go
+//      on believing in a dialog that is no longer displayed — an operator who
+//      answers by hand, or a harness that dismisses its own dialog, both leave
+//      by way of a full-screen clear. See `lastScreenClearIndex`.
 //
 //   3. SUBMIT AS A SEPARATE KEYSTROKE, AFTER THE PASTE SETTLES. Text long
 //      enough to arrive as a burst is treated as a paste: the harness renders
@@ -57,9 +65,91 @@ const ANSI = new RegExp(
 /** Spinner frames — the glyphs a harness cycles while it is busy. */
 const SPINNER_GLYPHS = /[⠀-⣿◐-◓◜-◟✻✽✳✢·•∴⋆]/g;
 
+/**
+ * Sequences after which nothing painted before them is on screen any more.
+ *
+ * `stripAnsi` throws these away with every other escape, which is right for
+ * reading text and wrong for deciding what is *currently* displayed — so
+ * {@link lastScreenClearIndex} looks for them in the raw chunk first.
+ *
+ * `ESC[2J` / `ESC[3J` erase the display; the alternate-screen switches swap
+ * the whole buffer out; `ESC[H` with `ESC[J` straight after it is the same
+ * clear written in two steps; and a long run of erase-line-and-go-up is that
+ * clear written by a TUI that never emits ED2 at all, which is what Claude
+ * Code 2.1.228 does. A bare `ESC[0J` is *not* in the list: it
+ * erases from wherever the cursor happens to be, and treating it as a clear
+ * would let the Core forget a dialog that is still on screen — the one error
+ * worse than remembering one that is gone.
+ */
+const SCREEN_CLEAR = new RegExp(
+  [
+    "\\u001B\\[[23]J", // ED2 / ED3 — erase the display
+    "\\u001B\\[\\?(?:47|1047|1049)[hl]", // the alternate screen, in and out
+    "\\u001B\\[(?:1;1)?H\\u001B\\[0?J", // home, then erase everything below it
+    // A run of line-erases walking back up the screen: how Claude Code 2.1.228
+    // actually clears, since it never emits ED2 at all. Five is well past any
+    // incremental repaint — a spinner erases one line, a status block a few —
+    // and the frame that replaces it arrives after the run in the same chunk,
+    // so what survives the reset is the new screen.
+    "(?:\\u001B\\[2K(?:\\u001B\\[[0-9]*G)?\\u001B\\[[0-9]*A){5,}",
+  ].join("|"),
+  "g",
+);
+
+/**
+ * Where in `chunk` the last full-screen clear ends, or `-1` if it has none.
+ *
+ * Everything before that index was wiped by the harness and must not be
+ * matched against again.
+ */
+export function lastScreenClearIndex(chunk: string): number {
+  SCREEN_CLEAR.lastIndex = 0;
+  let end = -1;
+  for (let m = SCREEN_CLEAR.exec(chunk); m; m = SCREEN_CLEAR.exec(chunk)) {
+    end = m.index + m[0].length;
+  }
+  return end;
+}
+
+/**
+ * Horizontal cursor positioning: `ESC[<n>G` (go to column) and `ESC[<n>C`
+ * (move forward).
+ *
+ * These are *layout*, not decoration. A TUI that lays a menu out with them
+ * writes `ESC[4G1.ESC[7GYes,ESC[12GIESC[14Gtrust`, and deleting them the way
+ * every other escape is deleted yields `1.Yes,Itrust` — one word, no menu,
+ * and nothing a numbered-option pattern can read. Claude Code 2.1.228 draws
+ * its folder-trust dialog exactly like that, which on its own is enough to
+ * make the dialog unreadable, the answer `null`, and the prompt abandoned on
+ * a session that was perfectly healthy. So they become one space each.
+ */
+const CURSOR_SPACING = new RegExp("\\u001B\\[[0-9]*[GC]", "g");
+
 /** The rendered screen, minus the escape sequences that drew it. */
 export function stripAnsi(text: string): string {
-  return text.replace(ANSI, "").replace(/\r/g, "\n");
+  return text.replace(CURSOR_SPACING, " ").replace(ANSI, "").replace(/\r/g, "\n");
+}
+
+/**
+ * The marker a TUI uses for "this row is selected", kept as one character.
+ *
+ * Reverse video (`ESC[7m`, alone or as one parameter of a longer SGR run) is
+ * how the harnesses observed here highlight a menu row, and `stripAnsi` would
+ * drop it along with the colour. Substituting a sentinel keeps the *fact* of
+ * the highlight attached to its line while the rest of the escape goes away.
+ *
+ * A harness that highlights with a background colour instead leaves no mark,
+ * and the caller then reads "no option is highlighted" — which holds rather
+ * than confirms. That is the safe direction to be wrong in.
+ */
+const HIGHLIGHT_MARK = "\u0001";
+
+const SGR = new RegExp("\\u001B\\[([0-9;]*)m", "g");
+
+function markHighlights(text: string): string {
+  return text.replace(SGR, (seq, params: string) =>
+    params.split(";").includes("7") ? HIGHLIGHT_MARK : seq,
+  );
 }
 
 /**
@@ -109,10 +199,24 @@ export type BlockingDialogSpec = {
   refuse: RegExp;
 };
 
-export type DialogOption = { number: number; label: string };
+export type DialogOption = {
+  number: number;
+  label: string;
+  /**
+   * Whether this row is the one the harness has selected — a pointer glyph in
+   * front of it, or reverse video on it.
+   *
+   * This is what makes a confirming Enter justifiable: the highlight is the
+   * only evidence on screen that the harness took the digit, and the option it
+   * sits on is the option that Enter would choose.
+   */
+  highlighted: boolean;
+};
 
 export type BlockingDialogMatch = {
   spec: BlockingDialogSpec;
+  /** Every option read off the menu, including which one is highlighted. */
+  options: readonly DialogOption[];
   /**
    * The option to press, or `null` when the dialog is up but its menu could
    * not be read. `null` is not "carry on" — it is "stop, and do not type into
@@ -131,24 +235,48 @@ export type BlockingDialogMatch = {
  * same. Auto mode on its own survives, because nothing types into it; a prompt
  * on its own survives, because there is no dialog in the way. The two together
  * were what died, and this table is why they no longer do.
+ *
+ * Both are scoped to `claude-code`, because both are transcriptions of *that*
+ * harness's screens: the wording, the option labels and the fact that the
+ * highlighted default exits were all read off Claude Code and nothing else.
+ * Applying them to a harness nobody has observed would mean pressing a digit
+ * into a menu on the strength of another vendor's layout, which is the guess
+ * D5 exists to refuse. A harness with no entry here still gets the quiet gap,
+ * the separate carriage return and the length-scaled pause; what it does not
+ * get is Claude Code's answers to questions it was never asked.
  */
 export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   {
     id: "folder-trust",
+    harnesses: ["claude-code"],
     match: [/\btrust\b/i, /\b(folder|directory|files)\b/i, /\?/],
     affirmative: /\b(yes|proceed|trust|allow)\b/i,
     refuse: /\b(no|exit|quit|cancel|deny)\b/i,
   },
   {
     id: "bypass-permissions",
-    match: [/bypass\s+permissions/i, /\?/],
+    harnesses: ["claude-code"],
+    // `mode` is load-bearing. A session already running in that mode says
+    // "⏵⏵ bypass permissions on" in its status footer, for as long as it is
+    // open, and the composer's own placeholder supplies a question mark — so
+    // `bypass permissions` plus `?` matches a perfectly healthy screen and
+    // parks delivery on a dialog that is not there. Observed on 2.1.228; the
+    // warning screen itself says "Bypass Permissions mode".
+    match: [/bypass\s+permissions\s+mode/i, /\?/],
     affirmative: /\b(yes|accept|proceed|continue)\b/i,
     refuse: /\b(no|exit|quit|cancel)\b/i,
   },
 ];
 
-// `❯ 2. Yes, proceed` / `2) Yes, proceed` / `  2. No, exit`
-const OPTION_LINE = /^[\s>❯➤→*·-]*(\d{1,2})[.)]\s+(\S.*?)\s*$/;
+// `❯ 2. Yes, proceed` / `2) Yes, proceed` / `  2. No, exit` — the leading run
+// is captured rather than skipped, because what is in it says which row the
+// harness has selected.
+const OPTION_LINE = new RegExp(
+  "^([\\s>❯➤→*·\\-" + HIGHLIGHT_MARK + "]*)(\\d{1,2})[.)]\\s+(\\S.*?)\\s*$",
+);
+
+/** Pointer glyphs; a bullet or a dash is decoration, a pointer is a selection. */
+const POINTER = /[>❯➤→]/;
 
 /**
  * Read a numbered menu off a screen.
@@ -158,15 +286,18 @@ const OPTION_LINE = /^[\s>❯➤→*·-]*(\d{1,2})[.)]\s+(\S.*?)\s*$/;
  * one the operator would be looking at.
  */
 export function readDialogOptions(screen: string): DialogOption[] {
-  const byNumber = new Map<number, string>();
-  for (const line of stripAnsi(screen).split("\n")) {
+  const byNumber = new Map<number, DialogOption>();
+  for (const line of stripAnsi(markHighlights(screen)).split("\n")) {
     const m = OPTION_LINE.exec(line);
     if (!m) continue;
-    byNumber.set(Number(m[1]), m[2]!);
+    const marker = m[1]!;
+    byNumber.set(Number(m[2]), {
+      number: Number(m[2]),
+      label: m[3]!,
+      highlighted: marker.includes(HIGHLIGHT_MARK) || POINTER.test(marker),
+    });
   }
-  return [...byNumber.entries()]
-    .map(([number, label]) => ({ number, label }))
-    .sort((a, b) => a.number - b.number);
+  return [...byNumber.values()].sort((a, b) => a.number - b.number);
 }
 
 /**
@@ -211,9 +342,29 @@ export function matchBlockingDialog(
   const text = stripAnsi(screen);
   for (const spec of specs) {
     if (!spec.match.every((pattern) => pattern.test(text))) continue;
-    return { spec, answer: chooseDialogOption(readDialogOptions(text), spec) };
+    // `screen` and not `text`: the highlight lives in the escapes that
+    // `stripAnsi` removes, and it is what decides whether a confirming Enter
+    // can ever be justified.
+    const options = readDialogOptions(screen);
+    return { spec, options, answer: chooseDialogOption(options, spec) };
   }
   return null;
+}
+
+/**
+ * Whether the harness has visibly put its selection on `option`, and on
+ * nothing else.
+ *
+ * Requiring exactly one highlighted row is the point: a screen where several
+ * rows look selected is a screen this module cannot read, and a screen where
+ * none does is a harness that has not acted on the digit yet.
+ */
+export function highlightIsOn(
+  options: readonly DialogOption[],
+  option: DialogOption,
+): boolean {
+  const highlighted = options.filter((o) => o.highlighted);
+  return highlighted.length === 1 && highlighted[0]!.number === option.number;
 }
 
 // ─── Timing ──────────────────────────────────────────────────────────
@@ -304,6 +455,8 @@ export type PromptDeliveryEvent =
   | { phase: "settled"; waitedMs: number }
   | { phase: "dialog"; dialog: string; option: number; label: string }
   | { phase: "dialog-unreadable"; dialog: string }
+  /** Its number went out and the harness did not move its highlight. */
+  | { phase: "dialog-unconfirmed"; dialog: string }
   | { phase: "delivered"; waitedMs: number; promptChars: number; submitPauseMs: number }
   | { phase: "abandoned"; reason: string };
 
@@ -356,11 +509,15 @@ export class HarnessPromptDelivery {
   private recentSignatures: string[] = [];
   private lastPaintAt: number;
   private sawOutput = false;
+  /** Whether anything with content has been drawn since our last keystroke. */
+  private paintedSinceKeystroke = false;
   private submitAt = 0;
   private dialogKeystrokes = 0;
   /** Set when the dialog's own number went out and the confirm may still be due. */
   private pendingConfirm: string | null = null;
   private answeringDialogId: string | null = null;
+  /** The dialog whose unmoved highlight has already been reported. */
+  private unconfirmedDialogId: string | null = null;
   private deadlinePassed = false;
 
   private cancelIdle: (() => void) | null = null;
@@ -381,16 +538,45 @@ export class HarnessPromptDelivery {
   /** Every chunk the PTY produced, in order. */
   onOutput(chunk: string): void {
     if (this.finished) return;
-    this.sawOutput = true;
-    this.screen = (this.screen + chunk).slice(-SCREEN_WINDOW_CHARS);
 
+    // The quiet window opens on the harness's first byte, not on the spawn.
+    // Before there is any output there is nothing that could have gone quiet,
+    // and a harness whose first chunk is pure terminal setup — no text, so no
+    // signature, so not a paint — would otherwise be declared settled the
+    // instant it spoke, on the strength of a gap it spent booting. Observed:
+    // Claude Code 2.1.228's first chunk arrives at 368 ms and carries no
+    // content at all, and the prompt went into the folder-trust dialog.
+    if (!this.sawOutput) this.lastPaintAt = this.timers.now();
+    this.sawOutput = true;
+
+    // A full-screen clear is the harness saying that what came before is no
+    // longer displayed, and it is the only way this module can tell that a
+    // dialog *someone else* answered has gone. Without it the buffer is a
+    // scrollback that only we can empty, and a dialog the operator dismissed
+    // by hand stays matchable for the next 8 000 characters: long enough to
+    // abandon delivery on a session sitting at a healthy composer, or to press
+    // a menu digit into that composer.
+    const cleared = lastScreenClearIndex(chunk);
+    this.screen =
+      cleared >= 0
+        ? chunk.slice(cleared)
+        : (this.screen + chunk).slice(-SCREEN_WINDOW_CHARS);
+
+    // The signature ring is deliberately *not* reset with the screen: it
+    // records which frames have been seen lately, which is a fact about the
+    // output and not about the buffer. Emptying it on every clear would make a
+    // harness that repaints one identical frame behind `ESC[2J` look like it
+    // was painting forever, and D3 exists to keep that from happening.
     const signature = redrawSignature(chunk);
     const painted = signature !== "" && !this.recentSignatures.includes(signature);
     if (signature !== "") {
       this.recentSignatures.push(signature);
       if (this.recentSignatures.length > SIGNATURE_RING) this.recentSignatures.shift();
     }
-    if (painted) this.lastPaintAt = this.timers.now();
+    if (painted) {
+      this.lastPaintAt = this.timers.now();
+      this.paintedSinceKeystroke = true;
+    }
     this.schedule();
   }
 
@@ -445,6 +631,21 @@ export class HarnessPromptDelivery {
 
   /** The harness stopped painting. Decide what is on screen and act on it. */
   private onQuiet(): void {
+    // "The painting stopped" presumes it started. If nothing with content has
+    // been drawn since the last keystroke, this is not a settled screen — it
+    // is a harness that has not got to its screen yet, and typing into that is
+    // typing into whatever it puts there next.
+    //
+    // Observed on claude-code 2.1.228: the trust dialog is answered, the
+    // harness acknowledges in escapes alone, and then says nothing at all for
+    // 497 ms while it loads before painting its composer. Any gap shorter than
+    // that silence — 350 ms here, and the 450 ms this module replaced — fires
+    // into the hole. A longer gap is just a bigger guess about that hole; the
+    // honest condition is that the harness has actually drawn something. The
+    // backstop still overrides, so a harness that draws nothing at all after a
+    // keystroke gets its prompt rather than losing it.
+    if (!this.paintedSinceKeystroke && !this.deadlinePassed) return;
+
     const dialog = matchBlockingDialog(this.screen, this.specs);
 
     if (this.phase === "answering" && !dialog) {
@@ -452,6 +653,7 @@ export class HarnessPromptDelivery {
       // answering caused — which has just gone quiet, so carry straight on.
       this.phase = "settling";
       this.answeringDialogId = null;
+      this.unconfirmedDialogId = null;
       this.pendingConfirm = null;
     }
 
@@ -483,18 +685,29 @@ export class HarnessPromptDelivery {
       return;
     }
 
-    // Same dialog still up after its number went out: some harnesses select on
-    // the digit, others want the digit confirmed. Send the confirm now — the
-    // selection is already on the safe option, so this Enter cannot be the one
-    // that exits. The id has to match: a *second* dialog behind the first (the
-    // bypass-permissions warning behind folder-trust) is a fresh menu whose
-    // highlighted default is dangerous again, and a stale confirm would be
-    // exactly the Enter this module exists not to send.
+    // Same dialog still up after its number went out. Two different things
+    // look like this, and only one of them may be confirmed: a harness that
+    // wants the digit confirmed has *moved its highlight onto the affirmative
+    // option*, and a harness that never took the digit at all has left the
+    // highlight where it was — on `No, exit`. An Enter into the second is the
+    // three-second death this module exists to prevent, so the highlight is
+    // checked rather than assumed. The id has to match too: a *second* dialog
+    // behind the first (the bypass-permissions warning behind folder-trust) is
+    // a fresh menu whose highlighted default is dangerous again.
     if (
       this.phase === "answering" &&
       this.answeringDialogId === dialog.spec.id &&
       this.pendingConfirm
     ) {
+      if (!highlightIsOn(dialog.options, dialog.answer)) {
+        // No evidence the digit landed. Hold: the operator sees the dialog,
+        // one keystroke fixes it, and the backstop abandons delivery rather
+        // than sending an Enter this module cannot justify. `pendingConfirm`
+        // stays set, so a harness that moves its highlight late still gets
+        // confirmed on a later quiet.
+        this.holdUnconfirmed(dialog.spec.id);
+        return;
+      }
       const confirm = this.pendingConfirm;
       this.pendingConfirm = null;
       this.press(confirm);
@@ -513,6 +726,15 @@ export class HarnessPromptDelivery {
     this.press(String(dialog.answer.number));
   }
 
+  /** The dialog is still up and unmoved by our digit. Type nothing more. */
+  private holdUnconfirmed(dialogId: string): void {
+    this.phase = "answering";
+    if (this.unconfirmedDialogId !== dialogId) {
+      this.unconfirmedDialogId = dialogId;
+      this.emit({ phase: "dialog-unconfirmed", dialog: dialogId });
+    }
+  }
+
   /**
    * Send a keystroke and start reading the screen again from scratch — the
    * scrollback still holds the dialog we just answered, and matching against
@@ -522,6 +744,7 @@ export class HarnessPromptDelivery {
     this.dialogKeystrokes += 1;
     this.screen = "";
     this.recentSignatures = [];
+    this.paintedSinceKeystroke = false;
     this.opts.write(keys);
     this.lastPaintAt = this.timers.now();
     this.schedule();

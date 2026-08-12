@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   BLOCKING_DIALOGS,
@@ -5,6 +7,8 @@ import {
   HarnessPromptDelivery,
   chooseDialogOption,
   dialogsForHarness,
+  highlightIsOn,
+  lastScreenClearIndex,
   matchBlockingDialog,
   readDialogOptions,
   redrawSignature,
@@ -132,11 +136,57 @@ const BYPASS_DIALOG =
   `${ESC}[7m❯ 1. No, exit${ESC}[0m\n` +
   `  2. Yes, I accept\n`;
 
+/**
+ * The same trust dialog after the harness *took* the digit: the highlight has
+ * moved onto the affirmative option, and only now is an Enter a confirm rather
+ * than a `No, exit`.
+ */
+const TRUST_DIALOG_SELECTED =
+  `${ESC}[2J${ESC}[H` +
+  `${ESC}[1mDo you trust the files in this folder?${ESC}[0m\n` +
+  `\n` +
+  `/home/operator/projects/api\n` +
+  `\n` +
+  `Claude Code may read, run and modify files in this folder.\n` +
+  `\n` +
+  `  1. No, exit\n` +
+  `${ESC}[7m❯ 2. Yes, proceed${ESC}[0m\n`;
+
 const READY_SCREEN =
   `${ESC}[2J${ESC}[H` +
   `╭──────────────────────────────────────╮\n` +
   `│ > Try "refactor the auth module"     │\n` +
   `╰──────────────────────────────────────╯\n`;
+
+/** The dialog a session hits when the menu is prose rather than a numbered list. */
+const UNREADABLE_TRUST = "Do you trust the files in this folder?\n\n  Yes / No\n";
+
+/**
+ * The folder-trust dialog as `claude` 2.1.228 actually paints it, captured
+ * byte-for-byte from a live session on this branch (only the project path is
+ * substituted). Two things in it are not guessable from a hand-written
+ * fixture, and both of them decided a real prompt's fate:
+ *
+ * - the menu is laid out with column moves rather than spaces, so a screen
+ *   reader that deletes every escape sees `1.Yes,Itrustthisfolder`;
+ * - the affirmative option is numbered **1** and is the highlighted default,
+ *   the opposite of the ordering #154 recorded — which is the case D4 is
+ *   built for, and a hard-coded `2` would have chosen `No, exit`.
+ */
+const REAL_TRUST_DIALOG = readFileSync(
+  path.resolve(__dirname, "fixtures/claude-code-2.1.228-folder-trust.txt"),
+  "utf8",
+);
+
+/**
+ * The composer that harness paints once the dialog is answered, captured from
+ * the same live session. It opens with the harness's idea of clearing the
+ * screen — a run of erase-line-and-go-up, and not one `ESC[2J` anywhere.
+ */
+const REAL_COMPOSER = readFileSync(
+  path.resolve(__dirname, "fixtures/claude-code-2.1.228-composer.txt"),
+  "utf8",
+);
 
 // ─── screen reading ──────────────────────────────────────────────────
 
@@ -178,18 +228,170 @@ describe("redrawSignature", () => {
 
 // ─── dialog reading ──────────────────────────────────────────────────
 
+describe("lastScreenClearIndex", () => {
+  it("finds the clear that stripAnsi throws away", () => {
+    const chunk = `stale dialog${ESC}[2J${ESC}[Hfresh`;
+    expect(chunk.slice(lastScreenClearIndex(chunk))).toBe(`${ESC}[Hfresh`);
+  });
+
+  it("takes the last clear in a chunk that cleared twice", () => {
+    const chunk = `a${ESC}[2Jb${ESC}[2Jc`;
+    expect(chunk.slice(lastScreenClearIndex(chunk))).toBe("c");
+  });
+
+  it("counts home-then-erase-below, which is the same clear in two steps", () => {
+    expect(lastScreenClearIndex(`${ESC}[H${ESC}[Jfresh`)).toBeGreaterThan(-1);
+    expect(lastScreenClearIndex(`${ESC}[?1049h`)).toBeGreaterThan(-1);
+  });
+
+  it("counts a run of erase-line-and-go-up, which is how the real harness clears", () => {
+    // Claude Code 2.1.228 never emits ED2. It walks back up the screen erasing
+    // lines, and if that is not a clear then nothing it does ever is.
+    const eraseUp = `${ESC}[2K${ESC}[1A`.repeat(8);
+    expect(`stale dialog${eraseUp}fresh`.slice(lastScreenClearIndex(`stale dialog${eraseUp}fresh`))).toBe(
+      "fresh",
+    );
+  });
+
+  it("is not fooled by a line erase or a bare erase-below", () => {
+    // Three erased lines is a status block repainting, not a screen going away.
+    expect(lastScreenClearIndex(`${ESC}[2K${ESC}[1A`.repeat(3))).toBe(-1);
+    // A spinner erases its own line every tick, and a composer erases below
+    // the cursor. Treating either as a clear would make the Core forget a
+    // dialog that is still on screen — the dangerous direction.
+    expect(lastScreenClearIndex(spinnerFrame("⠋", 3))).toBe(-1);
+    expect(lastScreenClearIndex(`${ESC}[0J`)).toBe(-1);
+  });
+});
+
 describe("readDialogOptions", () => {
   it("reads a numbered menu through its highlight and cursor glyph", () => {
     expect(readDialogOptions(TRUST_DIALOG)).toEqual([
-      { number: 1, label: "No, exit" },
-      { number: 2, label: "Yes, proceed" },
+      { number: 1, label: "No, exit", highlighted: true },
+      { number: 2, label: "Yes, proceed", highlighted: false },
+    ]);
+  });
+
+  it("reads reverse video as the highlight even with no pointer glyph", () => {
+    expect(readDialogOptions(`  1. No, exit\n${ESC}[7m  2. Yes, proceed${ESC}[0m`)).toEqual([
+      { number: 1, label: "No, exit", highlighted: false },
+      { number: 2, label: "Yes, proceed", highlighted: true },
+    ]);
+  });
+
+  it("does not read a bullet or a dash as a selection", () => {
+    expect(readDialogOptions("- 1. No, exit\n* 2. Yes, proceed")).toEqual([
+      { number: 1, label: "No, exit", highlighted: false },
+      { number: 2, label: "Yes, proceed", highlighted: false },
     ]);
   });
 
   it("takes the most recent paint of a repeated option", () => {
     expect(readDialogOptions("1. No, exit\n1. No, exit (still)")).toEqual([
-      { number: 1, label: "No, exit (still)" },
+      { number: 1, label: "No, exit (still)", highlighted: false },
     ]);
+  });
+});
+
+describe("the harness as it really paints", () => {
+  it("reads a menu laid out with column moves instead of spaces", () => {
+    // Deleting the column moves the way every other escape is deleted yields
+    // `1.Yes,Itrustthisfolder` — one word, and no menu at all.
+    expect(readDialogOptions(REAL_TRUST_DIALOG)).toEqual([
+      { number: 1, label: "Yes, I trust this folder", highlighted: true },
+      { number: 2, label: "No, exit", highlighted: false },
+    ]);
+  });
+
+  it("answers the real dialog by its label, where the affirmative is option 1", () => {
+    const match = matchBlockingDialog(REAL_TRUST_DIALOG, dialogsForHarness("claude-code"))!;
+    expect(match.spec.id).toBe("folder-trust");
+    expect(match.answer).toEqual({
+      number: 1,
+      label: "Yes, I trust this folder",
+      highlighted: true,
+    });
+  });
+
+  it("does not see a dialog in the composer of a session already in bypass mode", () => {
+    // The footer of a `--dangerously-skip-permissions` session reads
+    // "⏵⏵ bypass permissions on", and the placeholder is `Try "how do I log an
+    // error?"`. A `bypass permissions` + `?` rule matches that pair for the
+    // whole life of the session, and holds delivery on a dialog that is not
+    // there.
+    expect(matchBlockingDialog(REAL_COMPOSER, dialogsForHarness("claude-code"))).toBeNull();
+  });
+
+  it("waits through the silence between the answered dialog and the composer", () => {
+    // A replay of the observed live boot (claude-code 2.1.228):
+    //   274 ms  terminal setup, no content
+    //   286 ms  the folder-trust dialog
+    //   636 ms  the quiet gap elapses and we press `1`
+    //   707 ms  300 bytes of escapes acknowledging it — still no content
+    //  1204 ms  the composer, after 497 ms of complete silence
+    // A gap-only rule fires at 986 ms, into a screen that does not exist yet,
+    // and the prompt is swallowed. This is the run that lost it.
+    const h = startDelivery("ship it");
+    h.clock.advance(274);
+    h.delivery.onOutput(`${ESC}[?25l${ESC}[?2004h`);
+    h.clock.advance(12);
+    h.delivery.onOutput(REAL_TRUST_DIALOG);
+    h.clock.advance(357);
+    expect(h.writes).toEqual(["1"]);
+
+    h.clock.advance(64);
+    h.delivery.onOutput(`${ESC}[2K${ESC}[1A${ESC}[2K`);
+    h.clock.advance(497);
+    expect(h.writes).toEqual(["1"]);
+
+    h.delivery.onOutput(REAL_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["1", "ship it"]);
+  });
+
+  it("still delivers at the backstop if the harness draws nothing after the digit", () => {
+    // The other side of that rule: waiting for a paint must not become a wait
+    // that never ends. D8's ceiling still applies.
+    const h = startDelivery("ship it");
+    h.delivery.onOutput(REAL_TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["1"]);
+
+    h.clock.advance(PROFILE.maxWaitMs + 1);
+    expect(h.writes).toContain("ship it");
+  });
+
+  it("opens the quiet window on the harness's first byte, not on the spawn", () => {
+    // Observed live: the first chunk arrives at 368 ms and is pure terminal
+    // setup — no text, so no signature, so not a paint. Measuring the gap from
+    // the spawn made that chunk look like a settled screen, and the prompt was
+    // typed into the folder-trust dialog and lost.
+    const h = startDelivery("ship it");
+    h.clock.advance(2_000);
+    h.delivery.onOutput(`${ESC}[?25l${ESC}[?2004h`);
+    h.clock.advance(PROFILE.quietGapMs - 1);
+    expect(h.writes).toEqual([]);
+
+    h.delivery.onOutput(REAL_TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["1"]);
+  });
+});
+
+describe("highlightIsOn", () => {
+  const options = readDialogOptions(TRUST_DIALOG_SELECTED);
+  const affirmative = options.find((o) => o.number === 2)!;
+
+  it("is true only when the harness put its selection on that option", () => {
+    expect(highlightIsOn(options, affirmative)).toBe(true);
+    expect(highlightIsOn(readDialogOptions(TRUST_DIALOG), affirmative)).toBe(false);
+  });
+
+  it("is false when nothing is highlighted, and when everything is", () => {
+    const none = readDialogOptions("  1. No, exit\n  2. Yes, proceed");
+    expect(highlightIsOn(none, affirmative)).toBe(false);
+    const all = readDialogOptions("❯ 1. No, exit\n❯ 2. Yes, proceed");
+    expect(highlightIsOn(all, affirmative)).toBe(false);
   });
 });
 
@@ -199,7 +401,7 @@ describe("chooseDialogOption", () => {
   it("picks the affirmative option and not the highlighted default", () => {
     // The observed default is `1. No, exit`, so "whatever is highlighted" and
     // "whatever is first" are both the wrong answer.
-    expect(chooseDialogOption(readDialogOptions(TRUST_DIALOG), trust)).toEqual({
+    expect(chooseDialogOption(readDialogOptions(TRUST_DIALOG), trust)).toMatchObject({
       number: 2,
       label: "Yes, proceed",
     });
@@ -207,23 +409,40 @@ describe("chooseDialogOption", () => {
 
   it("picks by label even when the affirmative option is numbered first", () => {
     const flipped = "❯ 1. Yes, proceed\n  2. No, exit\n";
-    expect(chooseDialogOption(readDialogOptions(flipped), trust)).toEqual({
+    expect(chooseDialogOption(readDialogOptions(flipped), trust)).toMatchObject({
       number: 1,
       label: "Yes, proceed",
     });
   });
 
   it("refuses a menu with no refusing option — that is not a trust dialog", () => {
-    expect(chooseDialogOption([{ number: 1, label: "Yes, proceed" }], trust)).toBeNull();
+    expect(
+      chooseDialogOption([{ number: 1, label: "Yes, proceed", highlighted: false }], trust),
+    ).toBeNull();
   });
 
   it("refuses an ambiguous menu rather than guessing", () => {
     const ambiguous = [
-      { number: 1, label: "Yes, proceed" },
-      { number: 2, label: "Yes, and remember this folder" },
-      { number: 3, label: "No, exit" },
+      { number: 1, label: "Yes, proceed", highlighted: false },
+      { number: 2, label: "Yes, and remember this folder", highlighted: false },
+      { number: 3, label: "No, exit", highlighted: true },
     ];
     expect(chooseDialogOption(ambiguous, trust)).toBeNull();
+  });
+});
+
+describe("dialogsForHarness", () => {
+  it("keeps Claude Code's dialogs to Claude Code", () => {
+    // Both specs are transcriptions of Claude Code's own screens. Applying
+    // them to a harness nobody has observed would mean pressing a digit into
+    // another vendor's layout on the strength of the word "trust".
+    expect(dialogsForHarness("claude-code").map((d) => d.id)).toEqual([
+      "folder-trust",
+      "bypass-permissions",
+    ]);
+    expect(dialogsForHarness("codex")).toEqual([]);
+    expect(dialogsForHarness("cursor-cli")).toEqual([]);
+    expect(dialogsForHarness("opencode")).toEqual([]);
   });
 });
 
@@ -233,13 +452,19 @@ describe("matchBlockingDialog", () => {
   it("finds the folder-trust dialog and its answer", () => {
     const match = matchBlockingDialog(TRUST_DIALOG, specs)!;
     expect(match.spec.id).toBe("folder-trust");
-    expect(match.answer).toEqual({ number: 2, label: "Yes, proceed" });
+    expect(match.answer).toEqual({ number: 2, label: "Yes, proceed", highlighted: false });
+  });
+
+  it("keeps the highlight, which stripAnsi would have dropped", () => {
+    const match = matchBlockingDialog(TRUST_DIALOG_SELECTED, specs)!;
+    expect(match.answer).toEqual({ number: 2, label: "Yes, proceed", highlighted: true });
+    expect(match.options.find((o) => o.number === 1)!.highlighted).toBe(false);
   });
 
   it("finds the bypass-permissions warning behind auto mode", () => {
     const match = matchBlockingDialog(BYPASS_DIALOG, specs)!;
     expect(match.spec.id).toBe("bypass-permissions");
-    expect(match.answer).toEqual({ number: 2, label: "Yes, I accept" });
+    expect(match.answer).toEqual({ number: 2, label: "Yes, I accept", highlighted: false });
   });
 
   it("does not fire on a ready composer", () => {
@@ -252,8 +477,7 @@ describe("matchBlockingDialog", () => {
   });
 
   it("reports a dialog it cannot answer rather than reporting nothing", () => {
-    const unreadable = "Do you trust the files in this folder?\n\n  Yes / No\n";
-    const match = matchBlockingDialog(unreadable, specs)!;
+    const match = matchBlockingDialog(UNREADABLE_TRUST, specs)!;
     expect(match.spec.id).toBe("folder-trust");
     expect(match.answer).toBeNull();
   });
@@ -365,14 +589,54 @@ describe("HarnessPromptDelivery", () => {
     expect(h.writes).toEqual(["2", "ship it"]);
   });
 
-  it("confirms the selection when the dialog stays up, and only then", () => {
+  it("confirms the selection once the harness has moved its highlight onto it", () => {
     const h = startDelivery("ship it");
     h.delivery.onOutput(TRUST_DIALOG);
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["2"]);
 
-    // The harness moved the highlight and is waiting for a confirm.
-    h.delivery.onOutput(TRUST_DIALOG.replace("❯ 1. No, exit", "  1. No, exit"));
+    // The harness took the digit and moved the highlight to `2. Yes, proceed`.
+    // Enter now means "confirm that", and it is the only Enter this module
+    // will ever send into a dialog.
+    h.delivery.onOutput(TRUST_DIALOG_SELECTED);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["2", "\r"]);
+  });
+
+  it("never confirms a dialog whose highlight did not move — that Enter is No, exit", () => {
+    // The reviewer's repro for #191: repaint the *identical* dialog after the
+    // digit. The harness did not take it, so the selection is still on
+    // `❯ 1. No, exit` and an Enter here ends the session in three seconds.
+    const h = startDelivery("ship it");
+    h.delivery.onOutput(TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["2"]);
+
+    h.delivery.onOutput(TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["2"]);
+    expect(h.writes).not.toContain("\r");
+    expect(h.events).toContainEqual({ phase: "dialog-unconfirmed", dialog: "folder-trust" });
+
+    // It holds there and abandons with the dialog on screen, rather than
+    // spending an Enter it cannot justify.
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+    expect(h.writes).toEqual(["2"]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+  });
+
+  it("still confirms a harness that moves its highlight late", () => {
+    const h = startDelivery("ship it");
+    h.delivery.onOutput(TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["2"]);
+
+    // Holding is not giving up: the confirm is still owed, and the moment the
+    // screen justifies it, it goes out.
+    h.delivery.onOutput(TRUST_DIALOG_SELECTED);
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["2", "\r"]);
   });
@@ -398,9 +662,60 @@ describe("HarnessPromptDelivery", () => {
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
+  it("delivers after an operator answers by hand the dialog it could not read", () => {
+    // The reviewer's repro A for #191, and the recovery ADR 0026 D5 promises:
+    // "a session parked on a visible dialog is one keystroke from an operator
+    // being fine". The keystroke is not ours, so the only evidence the dialog
+    // is gone is the harness clearing the screen to paint its composer.
+    const h = startDelivery("ship it");
+    h.delivery.onOutput(UNREADABLE_TRUST);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual([]);
+    expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "folder-trust" });
+
+    h.delivery.onOutput(READY_SCREEN);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["ship it"]);
+
+    h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual(["ship it", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("presses no menu digit into a composer whose dialog someone else answered", () => {
+    // The reviewer's repro B for #191: the operator answers inside the quiet
+    // gap, before this module has acted. A screen buffer that only *we* can
+    // empty would still parse the stale menu and type `2` into the composer,
+    // leaving `2ship it` to be submitted.
+    const h = startDelivery("ship it");
+    h.delivery.onOutput(TRUST_DIALOG);
+    h.clock.advance(PROFILE.quietGapMs - 100);
+    expect(h.writes).toEqual([]);
+
+    h.delivery.onOutput(READY_SCREEN);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["ship it"]);
+    expect(h.writes).not.toContain("2");
+
+    h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual(["ship it", "\r"]);
+  });
+
+  it("holds while the dialog is still on screen behind an unrelated repaint", () => {
+    // The other half of tracking the screen honestly: output that does *not*
+    // clear must not lose the dialog either. A spinner ticking under the menu
+    // is not the menu going away.
+    const h = startDelivery("ship it");
+    h.delivery.onOutput(UNREADABLE_TRUST);
+    spinFor(h, 2_000);
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("answering");
+    expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "folder-trust" });
+  });
+
   it("types nothing at all into a dialog it cannot read", () => {
     const h = startDelivery("ship it");
-    h.delivery.onOutput("Do you trust the files in this folder?\n\n  Yes / No\n");
+    h.delivery.onOutput(UNREADABLE_TRUST);
     h.clock.advance(PROFILE.maxWaitMs * 2);
 
     expect(h.writes).toEqual([]);
