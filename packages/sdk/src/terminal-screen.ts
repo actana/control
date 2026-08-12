@@ -50,6 +50,43 @@
 // Nothing here reads or writes a file descriptor. It is fed strings and hands
 // back strings; the process it runs in may have no terminal at all, which is
 // D11 and the whole reason the session layer can be used from a script.
+//
+// ## Deferred: reverse video is dropped with the rest of the colour (#156)
+//
+// **Known gap, deliberately open.** `ESC[7m` is not decoration on a harness
+// menu — it is how the harnesses observed here say *this is the row Enter would
+// take*, and the Core reads exactly that when it answers the folder-trust
+// dialog on a Session's behalf (`harness-prompt-delivery.ts`, D3: a pointer
+// glyph in front of the row, **or reverse video on it**). Dropping SGR here
+// means a caller answering a dialog through `send()` can read the options and
+// cannot read the selection: `send("2")` then `send("\r")` is answerable,
+// "press Enter on whatever is highlighted" is not.
+//
+// Left open rather than fixed, on three counts:
+//
+//   - **Nothing in this build needs it.** The Panel does not use this class at
+//     all — its terminals are xterm.js in the browser, which renders the
+//     highlight for an operator to see, and the one dialog the product answers
+//     unattended is answered in the Core off the raw stream. The Panel's
+//     migration onto this package (#156) does not read a screen, so shipping a
+//     fix with it would be shipping it blind.
+//   - **The fix has a shape, and it is a surface decision.** The Core marks the
+//     highlight with a sentinel character before stripping the escapes
+//     (`HIGHLIGHT_MARK`), which works precisely because its output is consumed
+//     by one caller in the same package. `screen()` here returns text to
+//     somebody else's script, so putting a `\u0001` in it — or growing a second
+//     accessor, or a per-line attribute — changes a published shape, and that
+//     is the session layer's call to make with its caller in front of it
+//     (#129 D11, issue 155), not this one's.
+//   - **The honest failure is the safe one.** A caller that cannot see a
+//     highlight reads "no option is selected" and answers by number, which
+//     works on every harness. A half-done version that marked *some* highlights
+//     would have it confidently answer the wrong row on the rest — and the row
+//     it would be wrong about is a trust dialog whose first option is "No,
+//     exit".
+//
+// So: colour is parsed and dropped, reverse video with it, and a caller that
+// needs the selection answers by number until this is designed.
 
 /** How many scrolled-off lines are kept by default. */
 export const DEFAULT_SCROLLBACK_LINES = 5_000;
@@ -511,6 +548,11 @@ export class TerminalScreen {
         return;
       default:
         // SGR (`m`), device reports, mode sets: colour and protocol, not layout.
+        //
+        // **Reverse video goes with the colour, and that is a known gap — see
+        // the header.** `ESC[7m` is how the harnesses observed here mark the
+        // selected row of a menu, so a caller reading a dialog off this screen
+        // is told what the options are and not which one an Enter would take.
         return;
     }
   }
