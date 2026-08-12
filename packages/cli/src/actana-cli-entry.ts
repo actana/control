@@ -10,6 +10,7 @@
 
 import { runActanaCli } from "./actana-cli.ts";
 import { probeCore } from "./core-probe.ts";
+import { openSessionGateway } from "./session-gateway.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 import { homedir } from "node:os";
 
@@ -38,6 +39,7 @@ const code = await runActanaCli({
   readStdin,
   stdinIsTty: Boolean(process.stdin.isTTY),
   probe: probeCore,
+  openSessions: openSessionGateway,
   now: () => Date.now(),
 }).catch((err: unknown) => {
   // A throw that reached here is a defect, not an operator error: every

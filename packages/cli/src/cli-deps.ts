@@ -8,6 +8,7 @@
 // `process`.
 
 import type { CoreProbeFn } from "./core-probe.ts";
+import type { OpenSessionGateway } from "./session-gateway.ts";
 
 export type ActanaCliDeps = {
   /** `process.argv.slice(2)`. */
@@ -37,6 +38,8 @@ export type ActanaCliDeps = {
   stdinIsTty: boolean;
   /** How `core status` reaches a Core. See `core-probe.ts`. */
   probe: CoreProbeFn;
+  /** How the `session` noun reaches a Core. See `session-gateway.ts`. */
+  openSessions: OpenSessionGateway;
   /** Epoch ms. Only the bearer-expiry line reads it. */
   now: () => number;
 };
