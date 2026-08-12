@@ -14,24 +14,37 @@
  * the command, so it is the one path here that cannot be renamed without
  * breaking every installed copy; the bundle it loads is free to move.
  */
-import { pathToFileURL } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import { existsSync } from "node:fs";
 import path from "node:path";
 
-const here = path.dirname(new URL(import.meta.url).pathname);
+// `fileURLToPath`, never `new URL(…).pathname`. A URL's pathname is
+// percent-encoded and keeps its leading slash, so the one thing this file has
+// to get right — where it is — comes out wrong exactly where it matters most:
+// `C:\Users\First Last\…` is the ordinary install path on Windows, not an
+// exotic one, and `.../dir with space/bin` arrives as `.../dir%20with%20space/bin`.
+// The join below would then name a bundle that does not exist, and the check
+// after it would blame the build for a path bug.
+const here = path.dirname(fileURLToPath(import.meta.url));
 const bundle = path.join(here, "..", "dist", "actana-cli.mjs");
 
-try {
-  await import(pathToFileURL(bundle).href);
-} catch (err) {
-  if (err && typeof err === "object" && err.code === "ERR_MODULE_NOT_FOUND") {
-    // The checkout case, not the installed case: a published tarball ships
-    // `dist/`. Say which command builds it rather than printing a resolver
-    // stack trace at somebody who has just cloned the repository.
-    process.stderr.write(
-      "actana: this checkout has no build yet.\n" +
-        "  pnpm --filter @actana/cli build\n",
-    );
-    process.exit(70);
-  }
-  throw err;
+// Gate on the bundle itself, not on the error the import throws.
+//
+// A missing `dist/` is the checkout case, not the installed case — a published
+// tarball ships one — and naming the command that builds it beats a resolver
+// stack trace at somebody who has just cloned the repository. But that advice
+// is only *true* when the bundle is what is missing. Keying on
+// `ERR_MODULE_NOT_FOUND` around the import instead swept up every dependency
+// the bundle itself fails to resolve — a missing `ws` was reported as an
+// unbuilt checkout, sending the reader to run a build that had already run.
+// Asking the filesystem one question first cannot make that mistake, and
+// anything else the bundle throws now reaches the operator with its own message.
+if (!existsSync(bundle)) {
+  process.stderr.write(
+    "actana: this checkout has no build yet.\n" +
+      "  pnpm --filter @actana/cli build\n",
+  );
+  process.exit(70);
 }
+
+await import(pathToFileURL(bundle).href);
