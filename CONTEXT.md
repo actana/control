@@ -109,6 +109,14 @@ _Avoid_: session, socket wrapper, connection object, SDK consumer
 The second entry point on the same transport, for a program that stays connected — the Panel, and anything watching a Core rather than asking it one question. `CoreClient` plus a heartbeat, reconnection with backoff, an **Event cursor**, and subscribe-then-replay. On every connection it re-presents its **Core client id**, re-asks for its **PTY subscriptions**, and replays the gap it was away for, so nothing above it has to know the socket ever dropped. There is no fleet here and there must not be: one client is one Core, and holding several is the Panel's job.
 _Avoid_: manager, pool, supervisor, reconnecting socket
 
+**`CoreSession`**:
+The SDK's second level, on top of either Core client entry point: start a **Session** in a registered **Project**, let the Core deliver the starting prompt, read the result. Programmatic I/O only — `send(text)` writes exactly those bytes, `onData(…)` streams them, `screen()` returns the rendered screen — and **no TTY, ever**: it never reads `process.stdin`, never sets raw mode, and is usable from a cron job, a CI runner or a web service, which is D11. It owns none of the three things it depends on: **Prompt delivery** is the Core's, so the prompt goes over as text and the Core decides when it lands; the spawn policy is the Core's, so a working directory outside a Project root or a flag off the allow-list is surfaced as a rejection rather than pre-empted; and "the turn is over" is the Core's report on its event log rather than a guess from the byte stream falling quiet. See ADR 0025, ADR 0026.
+_Avoid_: terminal, pty wrapper, agent runner, REPL
+
+**Screen**:
+What a terminal would be showing for a **Session**, plus every line that has scrolled off the top of it. Produced by a small terminal emulator in the SDK — cursor movement, erase, insert/delete line and character, scroll, the alternate screen — because a Harness positions text with cursor moves rather than spaces, so deleting the escape sequences yields one line of concatenated spinner frames instead of a screen. The scrolled-off half is not an extra: a Harness's conversation left the visible rows long ago, so the transcript *is* the scrollback, and a reader of the viewport alone reads a status bar.
+_Avoid_: output, log, buffer, stdout (those name a stream; this is what a stream was painted into)
+
 **Core connection**:
 What a **Registration blob** unpacks into: the core-link endpoint, that machine's HTTPS origin, the mTLS material, and the bearer. One name because it is one authenticated reach into one machine — the core link and the machine's HTTPS surface are two faces of it, not two connections. A Core client is handed this rather than a URL, and the material is exposed rather than only dialed with, so a surface that needs the same credentials over HTTPS needs no new format.
 _Avoid_: socket, endpoint, credentials bundle

@@ -20,15 +20,15 @@
 // Extracted from `PtyCoreLinkClient` (issue 153), whose reconnect loop, cursor
 // handling and PTY re-subscription are the four sections below.
 
-import type { CoreLinkEvent } from "./core-link-frames";
-import { CoreClient, type CoreClientOptions } from "./core-client";
-import type { CoreRegistrationBlob } from "./core-registration-blob";
+import type { CoreLinkEvent } from "./core-link-frames.ts";
+import { CoreClient, type CoreClientOptions } from "./core-client.ts";
+import type { CoreRegistrationBlob } from "./core-registration-blob.ts";
 import {
   coreLinkCursorStorageKey,
   InMemoryCoreLinkCursorStorage,
   type CoreLinkCursorStorage,
-} from "./core-link-cursor-storage";
-import type { CoreLinkHeartbeatOptions } from "./core-link-transport";
+} from "./core-link-cursor-storage.ts";
+import type { CoreLinkHeartbeatOptions } from "./core-link-transport.ts";
 
 /** Reconnect backoff floor: the delay after the first unexpected drop. */
 export const DEFAULT_RECONNECT_INITIAL_MS = 500;
@@ -171,7 +171,7 @@ export class DurableCoreClient extends CoreClient {
    */
   private sendSubscribe(): void {
     this.caughtUp = false;
-    this.sendNow({ type: "subscribe", reqId: "", lastEventId: this.lastEventId }, "sub");
+    this.subscribeEvents(this.lastEventId);
   }
 
   /**

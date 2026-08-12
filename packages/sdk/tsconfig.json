@@ -4,6 +4,13 @@
     "lib": ["ES2022"],
     "module": "ESNext",
     "moduleResolution": "Bundler",
+    // Relative imports inside this package carry their `.ts` extension so Node
+    // can resolve them directly — `node script.mjs` importing `@actana/sdk/…`
+    // works with no bundler and no loader, which is what makes the session
+    // layer's "a plain Node script" (issue 155) literally that. Safe with
+    // `noEmit`: nothing here is compiled, and every consumer resolves through a
+    // bundler that reads the same specifiers.
+    "allowImportingTsExtensions": true,
     "strict": true,
     "noFallthroughCasesInSwitch": true,
     "esModuleInterop": true,

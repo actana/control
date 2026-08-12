@@ -24,7 +24,7 @@
 //
 // [adr]: ../../docs/adr/0025-the-protocol-ships-with-the-client.md
 
-import type { CoreLinkTlsMaterial } from "./core-link-socket";
+import type { CoreLinkTlsMaterial } from "./core-link-socket.ts";
 
 /**
  * A decoded registration blob. `endpoint` is the Core's `wss://host:port` core
