@@ -14,7 +14,7 @@
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
 import { cleanupTrees, makeTree } from "./files-fixture";
 
@@ -95,6 +95,8 @@ function project(id: string, tree: Parameters<typeof makeTree>[0] = {}): string 
 }
 
 const listed = (body: Buffer): string[] => entries(body).map((entry) => String(entry.path)).sort();
+
+const isRoot = typeof process.getuid === "function" && process.getuid() === 0;
 
 // ─── The stream ──────────────────────────────────────────────────────────────
 
@@ -434,4 +436,117 @@ describe("a large tree is streamed, not assembled", () => {
     expect(sawOneInFlight).toBe(true);
     expect(openUnderRoot()).toEqual([]);
   }, 20_000);
+});
+
+// ─── A walk that stops part-way ──────────────────────────────────────────────
+
+describe("a listing that fails after the 200 is spent", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  /**
+   * The one fault a real tree cannot be asked to produce.
+   *
+   * Everything a walk can blame on a single path is a `skipped` line and the
+   * listing carries on — an unreadable directory, a file whose bytes will not
+   * digest, an entry that vanished mid-walk — and those are tested against a
+   * real filesystem in `files-listing.test.ts`. What is left is the directory
+   * *read itself* failing part-way: an `EIO` off a dying disk, an `ENFILE`, a
+   * network mount going away underneath the walk. There is no way to ask a
+   * kernel for that on demand, so it is injected at exactly the syscall that
+   * raises it in production — `opendir`'s iteration — and nothing else here is
+   * faked: a real server, a real tree, real entries out of the real handle
+   * until the fault lands.
+   *
+   * It earns a test because the response is already `200` by then, so the
+   * failure has to travel as the last line of the body, and #167's reader is
+   * the thing that meets it (`docs/external-api.md`, the Listing section).
+   */
+  function failReadingDirectoriesAfter(entries: number): void {
+    const realOpendir = fs.promises.opendir.bind(fs.promises);
+    vi.spyOn(fs.promises, "opendir").mockImplementation(async (dirPath: fs.PathLike, options?: fs.OpenDirOptions) => {
+      const dir = await realOpendir(dirPath as string, options as fs.OpenDirOptions);
+      return {
+        path: dir.path,
+        close: () => dir.close(),
+        async *[Symbol.asyncIterator]() {
+          let seen = 0;
+          for await (const child of dir) {
+            if (seen >= entries) {
+              const err = new Error(`EIO: i/o error, scandir '${dir.path}'`);
+              (err as NodeJS.ErrnoException).code = "EIO";
+              throw err;
+            }
+            seen += 1;
+            yield child;
+          }
+        },
+      } as unknown as fs.Dir;
+    });
+  }
+
+  it("sends the failure as an error line, because the status line is already gone", async () => {
+    project("p1", { "a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d" });
+    failReadingDirectoriesAfter(2);
+
+    const res = await call("GET", "/v1/projects/p1/files/list");
+
+    // The 200 and its headers went out with the first line and cannot be taken
+    // back — which is the whole reason this line type exists.
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/x-ndjson");
+    const lines = ndjson(res.body);
+    expect(lines.at(-1)).toMatchObject({ type: "error", code: "read-failed" });
+    expect(String(lines.at(-1)!.message)).toContain("EIO");
+  });
+
+  it("ends there — no done line, so a truncated listing is never mistaken for a whole one", async () => {
+    project("p1", { "a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d" });
+    failReadingDirectoriesAfter(2);
+
+    const res = await call("GET", "/v1/projects/p1/files/list");
+
+    const lines = ndjson(res.body);
+    // The assertion #167's reader depends on: `done` is the only proof a
+    // listing is complete, so it must be absent exactly when the tree is not.
+    expect(lines.filter((line) => line.type === "done")).toEqual([]);
+    expect(lines.filter((line) => line.type === "error")).toHaveLength(1);
+  });
+
+  it("keeps the entries it had already produced, because NDJSON is readable up to where it stops", async () => {
+    project("p1", { "a.txt": "a", "b.txt": "b", "c.txt": "c", "d.txt": "d" });
+    failReadingDirectoriesAfter(2);
+
+    const res = await call("GET", "/v1/projects/p1/files/list");
+
+    // Two real entries out of the real directory handle, then the fault. A
+    // reader that stopped at the error line still has a valid partial tree —
+    // it just may not call it the tree.
+    expect(entries(res.body)).toHaveLength(2);
+    for (const entry of entries(res.body)) {
+      expect(entry).toMatchObject({ kind: "file", size: 1 });
+      expect(String(entry.path)).toMatch(/^[abcd]\.txt$/);
+    }
+  });
+
+  // `skipIf(isRoot)`, like the skip cases in `files-listing.test.ts`: a mode of
+  // `000` does not stop uid 0 from reading the directory, and the case would
+  // fail for a reason that has nothing to do with the listing.
+  it.skipIf(isRoot)("is the walk stopping, not one path failing: a skip leaves the done line where it was", async () => {
+    const root = project("p1", { "a.txt": "a", "vendor/locked/x.txt": "x" });
+    fs.chmodSync(path.join(root, "vendor/locked"), 0o000);
+    try {
+      const res = await call("GET", "/v1/projects/p1/files/list");
+
+      const lines = ndjson(res.body);
+      expect(lines.filter((line) => line.type === "error")).toEqual([]);
+      expect(lines.filter((line) => line.type === "skipped")).toHaveLength(1);
+      // The contrast that gives `error` its meaning: a failure the walk can
+      // blame on one path costs that path and nothing else.
+      expect(lines.at(-1)).toMatchObject({ type: "done", skipped: 1 });
+    } finally {
+      fs.chmodSync(path.join(root, "vendor/locked"), 0o700);
+    }
+  });
 });
