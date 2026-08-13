@@ -29,6 +29,15 @@
 //     {@link recordingCreateServer}. Without it the restart above is an
 //     `EADDRINUSE` rather than the reconnect the suite meant to stage.
 //
+//   • **Killing a live connection while the Core keeps running**
+//     ({@link InProcessCore.dropConnections}). `session attach` claims a Session
+//     write lock and the Core releases it when the holding connection goes (ADR
+//     0024 D7) — the case #163 calls the one that gets missed and the one that
+//     strands a Session unwritable. A client cannot stage that from its own side:
+//     hanging up politely is not the same event, and stopping the whole Core
+//     proves nothing about a lock table that died with it. This destroys the
+//     socket the way a network does.
+//
 // **`@actana/core` and `@actana/shared` stay out of `package.json`** (ADR 0025
 // D4) — both are private, one is a daemon, and a manifest entry would put them
 // in the published CLI's dependency graph for the sake of a test. The module
@@ -113,7 +122,7 @@ export function freePort(): Promise<number> {
  * handshake — without them the blob's client cert would be decoration.
  */
 function recordingCreateServer(
-  bound: { port: number },
+  bound: { port: number; dropAll: () => void },
 ): (opts: { port: number; host: string; tls?: unknown }) => WebSocketServerLike {
   return (opts) => {
     const tls = opts.tls as { caCert: string; serverCert: string; serverKey: string };
@@ -129,6 +138,18 @@ function recordingCreateServer(
       if (addr && typeof addr === "object") bound.port = addr.port;
     });
     const wss = new WebSocketServer({ server: tlsServer });
+    // `terminate`, not `close`: the socket is destroyed with no close frame and
+    // no handshake, which is what a network drop looks like to the Core — and
+    // the only way the release-on-drop path (D7) can be reached from a test.
+    bound.dropAll = () => {
+      for (const client of wss.clients) {
+        try {
+          client.terminate();
+        } catch {
+          /* already gone */
+        }
+      }
+    };
     return {
       // Torn down the way a Core process being killed tears down, and in an
       // order that actually releases the port. `wss.close()` stops the upgrade
@@ -214,6 +235,14 @@ export type InProcessCore = {
   material: CertMaterial;
   close: () => void;
   /**
+   * Destroy every live core-link connection, leaving the Core running.
+   *
+   * The abrupt disconnect: no close frame, no `release`, nothing the client
+   * chose. What the Core does next — drop that connection's Session locks (ADR
+   * 0024 D7) — is the claim `session-attach-live.test.ts` exists to check.
+   */
+  dropConnections: () => void;
+  /**
    * Close, and resolve once the port is genuinely free again.
    *
    * `close()` is enough for teardown and not enough for a restart: the
@@ -229,7 +258,7 @@ export type InProcessCore = {
 export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promise<InProcessCore> {
   const material = opts.material ?? (await generateCertMaterial({ host: "127.0.0.1" }));
   const port = opts.port ?? (await freePort());
-  const bound = { port: 0 };
+  const bound = { port: 0, dropAll: () => {} };
   const server = new PtyCoreLinkServer((opts.ptyCore ?? unusedPtyCore()) as never, {
     port,
     host: "127.0.0.1",
@@ -275,6 +304,7 @@ export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promi
     blobText,
     material,
     close: () => server.close(),
+    dropConnections: () => bound.dropAll(),
     stop: async () => {
       server.close();
       await waitForPortFree(bound.port);
