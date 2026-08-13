@@ -36,6 +36,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "undici": "8.9.0",
     "ws": "8.21.0"
   },
   "devDependencies": {

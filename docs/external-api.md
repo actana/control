@@ -169,6 +169,37 @@ A write transfer holds its Project's lease only for as long as the request
 lives. A client that aborts mid-upload — including one whose progress stream has
 backpressured — releases it, so the 409 above is never permanent.
 
+### `project.files.*` — the surface to type against
+
+The routes above are the wire. What a third party writes against is
+`@actana/sdk`, where the same three operations are `list`, `upload` and
+`download` on a Project handle:
+
+```js
+const project = client.project(projectId);
+for await (const entry of project.files.list()) …
+for await (const line of project.files.upload({ path, body })) …
+const { stream } = await project.files.download({ path });
+```
+
+| Property | Why it is that way |
+| --- | --- |
+| `download` returns a **stream, never a buffer** | a gigabyte file must not be resident. There is no method on the result that hands over bytes, so a caller that wants the whole thing writes that themselves |
+| `upload` takes a stream and returns progress as an async iterable | one line per entry, each naming `written` or `overwritten`; a `done` line closes it. A mid-transfer failure is the last line, not a status code |
+| all three are **pull-driven** | nothing runs ahead of the consumer. A slow reader becomes backpressure on the socket and then on the Core, rather than a queue filling in the client |
+| the capability is checked **before every call** | against a Core that announces no `files`, they throw `CoreFilesUnavailableError` with the reason and send nothing |
+| a conflict is an **error, never a retry** | `CoreFilesConflictError` carries the `code`. This package has no retry loop anywhere: a silent one would turn the Core's immediate refusal into a hang |
+
+The client presents its certificate through an undici `Agent` — `fetch` has no
+`cert`/`key` option, and the dispatcher is the only seam (#151). It uses
+**undici's own `fetch`** rather than the global one, because a dispatcher only
+satisfies the undici implementation it came from and Node embeds its own copy.
+
+**Listing is not on this table yet.** `project.files.list` reads an NDJSON
+manifest of `{path, size, mtime, mode, sha256}` from the same origin; the Core
+route that serves it is [#166](https://github.com/actana/control/issues/166),
+and this row lands when it does.
+
 ## The Panel's own routes
 
 The Panel's `/api/*` surface exists to serve its own browser tab. It is
