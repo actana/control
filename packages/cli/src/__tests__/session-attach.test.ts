@@ -214,6 +214,44 @@ describe("the write lock is the first thing this command settles (ADR 0024 D3–
     expect(result.err.join("\n")).toContain("claimable again");
   });
 
+  it("does not tell an attach that held nothing that the Session is claimable again", async () => {
+    // D7 releases the locks the dropped connection *held*, and a read-only
+    // attach held none. The unconditional line was wrong twice over in the
+    // operator's favour: this connection freed nothing, and the Session is still
+    // held by the client that has it.
+    const { run, attachment } = await attach({ authority: "held-by-another" });
+    attachment.drop("socket hang up");
+    const said = (await run).err.join("\n");
+
+    expect(said).not.toContain("claimable again");
+    expect(said).toContain("stays held by the client that does");
+  });
+
+  it("says a `--read-only` drop left the Session's lock exactly as it was", async () => {
+    const { run, attachment } = await attach({
+      authority: "not-claimed",
+      argv: ["session", "attach", "task_1", "--read-only"],
+    });
+    attachment.drop("socket hang up");
+    const said = (await run).err.join("\n");
+
+    expect(said).not.toContain("claimable again");
+    expect(said).toContain("leaves the Session's lock as it was");
+  });
+
+  it("does not claim a drop freed a lock this attach had already lost", async () => {
+    const { run, terminal, attachment } = await attach();
+
+    attachment.takeLock();
+    terminal.type("x");
+    await Promise.resolve();
+    attachment.drop("socket hang up");
+    const said = (await run).err.join("\n");
+
+    expect(said).not.toContain("claimable again");
+    expect(said).toContain("stays held by the client that took it");
+  });
+
   it("gives the terminal back before the release goes out, not after", async () => {
     // Ordering, not politeness. A release is a round trip to a Core that may
     // have stopped answering, and every millisecond of it would be a millisecond
@@ -382,6 +420,52 @@ describe("the keyboard", () => {
     expect(result.err.join("\n")).toContain("Detached from session task_1");
   });
 
+  it("makes Ctrl-C a detach once the lock has been taken away", async () => {
+    // The honest reading of a demoted attach: it is a Reader now, so `Ctrl-C`
+    // means what it means for every other Reader. Gating it on the authority
+    // this attach *opened* with left the key doing nothing at all — not
+    // forwarded, because there is no lock, and not a detach, because the
+    // read-only affordance never activated — which is the one outcome the
+    // operator cannot act on. They are told, on the terminal, at the moment it
+    // changes.
+    const { run, terminal, attachment } = await attach();
+
+    attachment.takeLock();
+    terminal.type("into the void\r");
+    await Promise.resolve();
+    expect(terminal.painted()).toContain("Ctrl-C now detaches");
+
+    terminal.type(CTRL_C);
+    const result = await run;
+
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.err.join("\n")).toContain("Detached from session task_1");
+    // And it is still a detach rather than a stray keystroke on the new holder's
+    // harness: nothing after the takeover reached the far side.
+    expect(attachment.typed()).toBe("");
+  });
+
+  it("says the lock was lost rather than that the attach was read-only", async () => {
+    // An attach that opened holding the lock and had it taken was not read-only;
+    // it was demoted. Telling the operator they had been read-only all along
+    // describes a session they did not have.
+    const { run, terminal, attachment } = await attach();
+
+    attachment.takeLock();
+    // The chunk that discovers the takeover is refused on the wire and answered
+    // on the terminal there and then; the tally is for the ones typed after,
+    // when this attach already knew it could not write.
+    terminal.type("x");
+    await Promise.resolve();
+    terminal.type("abc");
+    terminal.type(DETACH);
+    const said = (await run).err.join("\n");
+
+    expect(said).toContain("3 keystrokes were not forwarded");
+    expect(said).toContain("lost the write lock partway through");
+    expect(said).not.toContain("this attach was read-only");
+  });
+
   it("forwards what was typed before the detach key and nothing after it", async () => {
     // A chunk can carry both — a fast typist, or a paste. The bytes before the
     // key are keystrokes the operator meant; the ones after it were typed at a
@@ -439,6 +523,26 @@ describe("the screen", () => {
     await run;
 
     expect(attachment.resizes).toEqual([]);
+  });
+
+  it("stops resizing the PTY the moment the lock is taken away", async () => {
+    // The same restraint as the read-only case, but for the attach that used to
+    // be allowed — and the one that actually does damage. The Core does not gate
+    // `resize` on the lock, so a demoted attach that kept sending them reflows
+    // the *new* holder's PTY: somebody else's full-screen harness redrawn
+    // because this window changed size, from the one client whose frames the
+    // lock cannot see coming.
+    const { run, terminal, attachment } = await attach();
+
+    terminal.resizeTo(120, 40);
+    attachment.takeLock();
+    terminal.type("x");
+    await Promise.resolve();
+    terminal.resizeTo(200, 60);
+    terminal.type(DETACH);
+    await run;
+
+    expect(attachment.resizes).toEqual([{ cols: 120, rows: 40 }]);
   });
 
   it("tells the Core the terminal's size when it attaches", async () => {

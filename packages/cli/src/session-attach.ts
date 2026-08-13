@@ -42,10 +42,14 @@
 // is nothing to interrupt on the far side, so `Ctrl-C` detaches there too rather
 // than being swallowed.
 //
-// **A read-only attach does not resize the PTY.** The Core does not gate
+// **An attach that cannot write does not resize the PTY, and `Ctrl-C` detaches
+// it.** Both follow the lock as it stands, not the authority the attach opened
+// with — a force takeover demotes a holder to a Reader mid-session, and a demoted
+// attach that kept the holder's affordances would keep them against somebody
+// else's Session. The resize half is the one with teeth: the Core does not gate
 // `resize` on the lock (D4 covers `write`, `kill` and task mutations, and a
-// Reader has a viewport like anyone else), so this is the CLI's own restraint
-// and not a refusal it met: reflowing the terminal of the person actually typing
+// Reader has a viewport like anyone else), so this is the CLI's own restraint and
+// not a refusal it met — reflowing the terminal of the person actually typing
 // because an observer widened a window is interference in the one direction the
 // lock cannot see.
 
@@ -268,7 +272,7 @@ export async function runSessionAttach(
   }
 
   // Cooked again from here down, so it is safe to print lines.
-  return report(deps, terminal, taskId, blob.endpoint, end, state);
+  return report(deps, terminal, taskId, blob.endpoint, end, state, attached.authority);
 }
 
 /**
@@ -320,22 +324,35 @@ function runAttachedSession(
     // what lets the operator interrupt whatever the harness is doing.
     disposers.push(
       terminal.onInput((data) => {
+        // Current authority, not the authority this attach opened with. A force
+        // takeover (D7) demotes a holder to a Reader mid-session, and every key
+        // below has to follow the lock rather than the flag it was captured with.
+        const canWrite = writes && !state.lockLost;
         const detachAt = data.indexOf(DETACH_KEY);
-        // A read-only attach has nothing to interrupt on the far side, so
-        // `Ctrl-C` means the only thing left it can mean: leave.
-        const quitAt = writes ? -1 : data.indexOf(ETX);
+        // An attach that cannot write has nothing to interrupt on the far side,
+        // so `Ctrl-C` means the only thing left it can mean: leave. That has to
+        // include an attach that *lost* the lock — otherwise the one key the
+        // operator was just told they now have is the one that does nothing:
+        // neither forwarded (there is no lock) nor a detach.
+        const quitAt = canWrite ? -1 : data.indexOf(ETX);
         const stopAt = firstOf(detachAt, quitAt);
 
         const forward = stopAt === -1 ? data : data.slice(0, stopAt);
         if (forward.length > 0) {
-          if (writes && !state.lockLost) {
+          if (canWrite) {
             void attached.write(forward).catch((err: unknown) => {
               // A lock taken away underneath is not an ending. The Session is
               // still worth watching, and an attach that quit on it would take
               // the operator's view away as well as their keyboard.
               if (err instanceof SessionWriteRefused) {
                 state.lockLost = true;
-                paint(`\r\n[actana] ${err.message} — this attach is read-only from here.\r\n`);
+                // Says the affordance changed as well as the authority: `Ctrl-C`
+                // was going to the harness a keystroke ago and detaches from
+                // here, which is not something the operator can be left to
+                // discover by pressing it.
+                paint(
+                  `\r\n[actana] ${err.message} — this attach is read-only from here, and Ctrl-C now detaches instead of going to the harness.\r\n`,
+                );
                 return;
               }
               settle({
@@ -351,14 +368,18 @@ function runAttachedSession(
       }),
     );
 
-    // `SIGWINCH`, as a resize frame — and only from the attach that writes. See
-    // the module header: the Core would accept it from a Reader, and a Reader
-    // sending it reflows the writer's terminal. A failure is not worth ending a
-    // working session over; the harness keeps running and is merely drawing at
-    // the old size.
+    // `SIGWINCH`, as a resize frame — and only from the attach that writes *now*.
+    // See the module header: the Core would accept it from a Reader, and a Reader
+    // sending it reflows the writer's terminal. `state.lockLost` is in the guard
+    // because a demoted holder is a Reader like any other: the Core does not gate
+    // `resize` on the lock, so an attach that kept resizing after a takeover
+    // would reflow the *new* holder's PTY — the interference in the one
+    // direction the lock cannot see, arriving from the one attach that used to be
+    // allowed. A failure is not worth ending a working session over; the harness
+    // keeps running and is merely drawing at the old size.
     disposers.push(
       terminal.onResize(() => {
-        if (!writes) return;
+        if (!writes || state.lockLost) return;
         const { cols, rows } = terminal.size();
         void attached.resize(cols, rows).catch(() => {});
       }),
@@ -420,6 +441,7 @@ function report(
   endpoint: string,
   end: Ending,
   state: SessionState,
+  authority: AttachAuthority,
 ): number {
   // A Session that ended mid-line — a dropped link lands wherever the last byte
   // fell, and a full-screen harness leaves the cursor anywhere — would otherwise
@@ -430,7 +452,15 @@ function report(
   // that answered every key with a line would repaint the Session's screen out
   // from under the person reading it.
   if (state.dropped > 0) {
-    deps.err(`${state.dropped} keystrokes were not forwarded — this attach was read-only.`);
+    // "This attach was read-only" is true of an attach that opened read-only and
+    // misleading about one that opened holding the lock and had it taken: the
+    // operator typed those keys at a terminal that *was* writing, and being told
+    // it was read-only reads as though it never was.
+    deps.err(
+      state.lockLost
+        ? `${state.dropped} keystrokes were not forwarded — this attach lost the write lock partway through.`
+        : `${state.dropped} keystrokes were not forwarded — this attach was read-only.`,
+    );
   }
 
   switch (end.kind) {
@@ -453,7 +483,10 @@ function report(
       deps.err(
         `actana session attach: the link to ${endpoint} dropped${end.error ? ` — ${end.error}` : ""}.`,
       );
-      deps.err("The Core releases a dropped connection's Session locks, so this one is claimable again.");
+      {
+        const note = lockNoteOnDrop(authority, state);
+        if (note !== undefined) deps.err(note);
+      }
       return EXIT_FAILURE;
     case "signal":
       deps.err(`actana session attach: ${end.signal} — detached from session ${taskId}.`);
@@ -461,6 +494,33 @@ function report(
     case "link-error":
       deps.err(`actana session attach: ${end.message}`);
       return EXIT_FAILURE;
+  }
+}
+
+/**
+ * What a dropped link meant for *this* Session's lock — which depends entirely
+ * on whether this connection was the one holding it.
+ *
+ * D7's release-on-drop is about the locks the dropped connection held, so an
+ * attach that held none has nothing to report as freed. Saying it anyway is
+ * wrong twice over in the operator's favour: this connection released nothing,
+ * and the Session is still held by whoever actually has it. `no-lock-table` gets
+ * no line at all — that Core arbitrates no writes, so a drop changes nothing
+ * there is a word for.
+ */
+function lockNoteOnDrop(authority: AttachAuthority, state: SessionState): string | undefined {
+  if (state.lockLost) {
+    return "This attach had already lost the write lock, so the Session stays held by the client that took it.";
+  }
+  switch (authority) {
+    case "held":
+      return "The Core releases a dropped connection's Session locks, so this one is claimable again.";
+    case "held-by-another":
+      return "This attach never held the write lock, so the Session stays held by the client that does.";
+    case "not-claimed":
+      return "This attach never claimed the write lock (--read-only), so the drop leaves the Session's lock as it was.";
+    case "no-lock-table":
+      return undefined;
   }
 }
 
