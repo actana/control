@@ -30,7 +30,7 @@ afterAll(() => cleanupRoots());
 
 /** A Core with a real file surface behind it that never announces one. */
 async function silentCore(): Promise<CoreClient> {
-  rig = await startFilesRig({ seed: { "a.txt": "a" }, listing: true });
+  rig = await startFilesRig({ seed: { "a.txt": "a" } });
   const connected = await connectedClient(rig, { announceFiles: false });
   client = connected.client;
   coreRig = connected.coreRig;

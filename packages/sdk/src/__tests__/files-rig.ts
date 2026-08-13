@@ -12,7 +12,15 @@
 // So: `node:http` on loopback, with `createCoreFilesRequestHandler` mounted
 // exactly as `core-files-wiring.ts` mounts it, over a real directory on a real
 // disk.
-import { createHash } from "node:crypto";
+//
+// **Every route is that handler's, listing included.** This rig used to answer
+// `?list=1` with a hand-rolled manifest, intercepted *ahead of* the real
+// handler, while #166's route was still being built in parallel. It outlived
+// its reason: once the route merged, that stand-in was the only thing making
+// the SDK's suite green about a URL the Core does not serve, and it answered
+// the SDK's own URL by construction, so no test on either side could see the
+// disagreement (#218). Nothing here shims the Core any more, and nothing here
+// should.
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -45,18 +53,6 @@ export type FilesRigOptions = {
   /** Files to seed the Project with. `dir/` keys make empty directories. */
   seed?: Record<string, string | { content?: string; mode?: number }>;
   authVerifier?: FilesAuthVerifier;
-  /**
-   * Answer `?list=1` with an NDJSON manifest — **the #166 stand-in**.
-   *
-   * Issue 166 owns the Core's listing route and is being built in parallel, so
-   * nothing here creates or modifies one. What this serves is the contract that
-   * ticket inherits: the manifest shape PR 215 established — `{path, size,
-   * mtime, mode, sha256}` per entry — streamed as NDJSON on the file route's
-   * origin. That is enough to prove the *reader* in `CoreFiles.list`, which is
-   * the SDK's half and the only half #167 owns. The live wiring lands when #166
-   * merges; what changes then is a URL, not this shape.
-   */
-  listing?: boolean;
 };
 
 /** Stand up a Core file surface on loopback. */
@@ -74,7 +70,6 @@ export async function startFilesRig(opts: FilesRigOptions = {}): Promise<FilesRi
 
   const server = http.createServer((req, res) => {
     requests.push({ method: req.method ?? "?", url: req.url ?? "" });
-    if (opts.listing && serveListing(req, res, root, projectId)) return;
     if (routes.handle(req, res)) return;
     res.writeHead(404, { "content-type": "application/json" });
     res.end(JSON.stringify({ code: "not-found", error: "no route" }));
@@ -133,58 +128,6 @@ export async function connectedClient(
   });
   await client.connect();
   return { client, coreRig };
-}
-
-/**
- * The #166 stand-in: walk the tree and stream it as NDJSON.
- *
- * Answers `true` when it took the request. `sha256` is computed eagerly here
- * because a fixture can afford it and the reader under test must cope with the
- * field being present — #166 gets to decide whether a real Core computes it
- * eagerly or on request, and `CoreFileEntry.sha256` is nullable so that either
- * answer is readable.
- */
-function serveListing(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  root: string,
-  projectId: string,
-): boolean {
-  const url = new URL(req.url ?? "/", "http://rig.invalid");
-  if (!url.searchParams.has("list")) return false;
-  if (url.pathname !== `/v1/projects/${encodeURIComponent(projectId)}/files`) return false;
-
-  const base = url.searchParams.get("path") ?? "";
-  const maxDepth = url.searchParams.has("depth") ? Number(url.searchParams.get("depth")) : Infinity;
-  res.writeHead(200, { "content-type": "application/x-ndjson", "cache-control": "no-store" });
-  for (const entry of walk(root, base, maxDepth)) res.write(`${JSON.stringify(entry)}\n`);
-  res.write(`${JSON.stringify({ type: "done" })}\n`);
-  res.end();
-  return true;
-}
-
-function* walk(
-  root: string,
-  base: string,
-  maxDepth: number,
-  depth = 1,
-): Generator<Record<string, unknown>> {
-  const absolute = path.join(root, base);
-  for (const name of fs.readdirSync(absolute).sort()) {
-    const child = path.join(absolute, name);
-    const relative = base.length > 0 ? `${base}/${name}` : name;
-    const stats = fs.lstatSync(child);
-    const directory = stats.isDirectory();
-    yield {
-      path: relative,
-      kind: directory ? "directory" : stats.isSymbolicLink() ? "symlink" : "file",
-      size: stats.size,
-      mtime: Math.floor(stats.mtimeMs),
-      mode: stats.mode & 0o777,
-      sha256: directory ? null : createHash("sha256").update(fs.readFileSync(child)).digest("hex"),
-    };
-    if (directory && depth < maxDepth) yield* walk(root, relative, maxDepth, depth + 1);
-  }
 }
 
 /** Seed a directory. A `dir/` key makes an empty directory. */

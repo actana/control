@@ -4,7 +4,7 @@
 // Every assertion here goes over a real loopback socket to the Core's own route
 // handler, writing to a real directory — see `files-rig.ts` for why a fake
 // would prove nothing this ticket cares about.
-import { afterAll, afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, afterEach, describe, expect, it } from "vitest";
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -225,15 +225,15 @@ describe("download", () => {
 });
 
 describe("list", () => {
-  beforeEach(() => {
-    // Every assertion in this block reads the #166 stand-in described in
-    // `files-rig.ts`: the manifest shape PR 215 established, served in process.
-    // The reader is what #167 owns; the route is #166's.
-  });
-
+  // Every assertion in this block goes to the Core's real listing route, like
+  // every other block in this file. It used to read a stand-in mounted ahead of
+  // the handler, which is how #218 stayed invisible; `files-rig.ts` says what
+  // that cost. Paths are sorted before comparison because the real walk hands
+  // entries back in the filesystem's order and promises no more than that —
+  // sorting a directory means holding all of it, which is what the walk exists
+  // not to do.
   it("is an async iterable over the tree, in the manifest shape", async () => {
     const core = await open({
-      listing: true,
       seed: { "a.txt": "aaa", "src/b.txt": "bb", "src/deep/c.txt": "c" },
     });
     const project = core.project(rig!.projectId);
@@ -241,26 +241,38 @@ describe("list", () => {
     const entries = [];
     for await (const entry of project.files.list()) entries.push(entry);
 
-    expect(entries.map((entry) => entry.path)).toEqual([
+    expect(entries.map((entry) => entry.path).sort()).toEqual([
       "a.txt",
       "src",
       "src/b.txt",
       "src/deep",
       "src/deep/c.txt",
     ]);
-    expect(entries[0]).toEqual({
+    expect(entries.find((entry) => entry.path === "a.txt")).toEqual({
       path: "a.txt",
       kind: "file",
       size: 3,
       mtime: expect.any(Number),
       mode: expect.any(Number),
-      sha256: sha256("aaa"),
+      // Null because nobody asked: a listing has no bytes in hand, so digests
+      // cost a read of every file under the path and are opt-in (ADR 0027 D6).
+      sha256: null,
     });
+  });
+
+  it("computes digests when they are asked for", async () => {
+    const core = await open({ seed: { "a.txt": "aaa" } });
+    const project = core.project(rig!.projectId);
+
+    const entries = [];
+    for await (const entry of project.files.list({ sha256: true })) entries.push(entry);
+
+    expect(entries).toHaveLength(1);
+    expect(entries[0]!.sha256).toBe(sha256("aaa"));
   });
 
   it("lists a subtree to a depth", async () => {
     const core = await open({
-      listing: true,
       seed: { "a.txt": "a", "src/b.txt": "b", "src/deep/c.txt": "c" },
     });
     const project = core.project(rig!.projectId);
@@ -268,11 +280,11 @@ describe("list", () => {
     const entries = [];
     for await (const entry of project.files.list({ path: "src", depth: 1 })) entries.push(entry);
 
-    expect(entries.map((entry) => entry.path)).toEqual(["src/b.txt", "src/deep"]);
+    expect(entries.map((entry) => entry.path).sort()).toEqual(["src/b.txt", "src/deep"]);
   });
 
   it("sends nothing until the iterable is consumed", async () => {
-    const core = await open({ listing: true, seed: { "a.txt": "a" } });
+    const core = await open({ seed: { "a.txt": "a" } });
     const project = core.project(rig!.projectId);
 
     const listing = project.files.list();
