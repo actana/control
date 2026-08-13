@@ -1,3 +1,26 @@
+<!-- FROZEN REFERENCE — added by #158. Everything below the rule is the
+     prototype's own README, copied unchanged. -->
+
+# The prototype CLI, frozen
+
+This directory is a **read-only, frozen copy** of the prototype `core-client`
+CLI — the throwaway tool that drove a real Core over core-link before
+`packages/cli` existed. It is kept only so the parity check in phase 2 step 4
+has something to check the shipped `actana` command against.
+
+**It is not built, linted, typechecked, tested or published**, and it is not a
+workspace package: the pnpm workspace globs `packages/*` and the npm publish
+discovery in `scripts/lib/npm-packages.mjs` both read `packages/` only, so
+nothing here is reachable from the toolchain. Do not import from it, do not fix
+it, and do not bring it up to date — `src/protocol.ts` is a hand-copied
+90-line mirror of the core-link protocol and is **deliberately stale**. Its
+drift from the real protocol is the thing being preserved.
+
+**This directory is deleted at the end of phase 2, by #164.** Nothing may come
+to depend on it.
+
+---
+
 # experiment
 
 Tooling for running an Actana Core locally in a container and driving it from
