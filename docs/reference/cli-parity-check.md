@@ -425,9 +425,13 @@ rather than by the green check.
 ## 7. What the deletion removes, and what nothing loses
 
 `docs/reference/experiment-cli/` — 17 files, 2,643 lines — is deleted in the
-commit after this document. Nothing in the repository referenced it: a
-binary-safe sweep of all 1,045 tracked files for `experiment-cli` finds zero
-occurrences outside the tree itself.
+commit after this document. **Nothing in the repository referenced it.** Before
+the deletion, a binary-safe sweep of all 1,045 tracked files for
+`experiment-cli` found zero occurrences outside the tree itself; after it, the
+sweep of the remaining 1,029 files finds five, all of them in this document,
+all of them prose describing what was removed. A parity check has to name the
+thing it checked, and naming it is not depending on it: no import, no path
+reference, no build input.
 
 On [#207][207]'s review note about `eslint.config.mjs`: the reviewer observed
 that the frozen tree was out of lint's reach only *incidentally* — `pnpm lint`
