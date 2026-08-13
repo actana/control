@@ -22,7 +22,11 @@ import {
 import { HarnessUpdateRequiredDialog } from "~/components/views/HarnessUpdateRequiredDialog";
 import { ProjectDialog } from "~/components/views/ProjectDialog";
 import { GridLayoutButton } from "~/components/views/GridLayoutButton";
+import { ProjectFilesPanel } from "~/components/views/ProjectFilesPanel";
 import { SessionGrid } from "~/components/views/SessionGrid";
+import { filesFromDrop, type DroppedFile } from "~/lib/core-files";
+import { dragCarriesFiles, useProjectFilesAvailability } from "~/lib/use-project-files";
+import { takeProjectFileDrop } from "~/lib/pending-file-drop";
 import { archiveOpenSession, invalidateSessionQueries } from "~/lib/archive-session";
 import { consumeProjectOnboardIntent, type ProjectOnboardIntent } from "~/lib/project-onboard-intent";
 import { useHideableMenu } from "~/lib/hideable-elements";
@@ -282,6 +286,29 @@ function ProjectPage() {
   const [newHarnessTarget, setNewHarnessTarget] = useState<"default" | "newRow">("default");
   const [showEdit, setShowEdit] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
+  // The Project's files, on the Core that owns them (#129 F6/F11, #169).
+  //
+  // The affordance is withheld entirely against a Core that announces no `files`
+  // capability — no button, no drop target, no empty panel to explain itself.
+  // Such a Core predates the surface, which is a supported state and not a
+  // fault (F9, ADR 0024 D11), so the honest UI is the one that has never heard
+  // of files either.
+  const filesAvailable = useProjectFilesAvailability(coreId).available;
+  const [showFiles, setShowFiles] = useState(false);
+  const [fileDropHot, setFileDropHot] = useState(false);
+  // A drop that landed on the board rather than in the panel. The `File`
+  // handles survive the event; the `DataTransfer` they came from does not, so
+  // they are read out here and handed on.
+  const [pendingFileDrop, setPendingFileDrop] = useState<DroppedFile[] | null>(null);
+  // A drop that landed on this Project's tile in the rail and navigated here.
+  // Taken once, on arrival: the handoff is one-shot by construction, so a
+  // remount cannot replay it as a second upload.
+  useEffect(() => {
+    const parked = takeProjectFileDrop(id);
+    if (!parked) return;
+    setShowFiles(true);
+    setPendingFileDrop(parked.files);
+  }, [id]);
   const [sessionView, setSessionView] = useState<SessionView>("active");
   const showArchived = sessionView === "archived";
   const showPinned = sessionView === "pinned";
@@ -1785,6 +1812,36 @@ function ProjectPage() {
       <div
         ref={boardRef}
         tabIndex={-1}
+        // Dropping a file anywhere on a Project's board sends it to that
+        // Project on its Core. `dragCarriesFiles` is what keeps this off the
+        // Panel's own drags — a project path dragged from the rail into a
+        // terminal still belongs to the handler that already understands it.
+        onDragOver={
+          filesAvailable
+            ? (e) => {
+                if (!dragCarriesFiles(e)) return;
+                e.preventDefault();
+                e.dataTransfer.dropEffect = "copy";
+                setFileDropHot(true);
+              }
+            : undefined
+        }
+        onDragLeave={filesAvailable ? () => setFileDropHot(false) : undefined}
+        onDrop={
+          filesAvailable
+            ? (e) => {
+                if (!dragCarriesFiles(e)) return;
+                e.preventDefault();
+                setFileDropHot(false);
+                // Opened first: the upload is about to run, and a progress list
+                // nobody can see is the same as no progress at all.
+                setShowFiles(true);
+                void filesFromDrop(e.dataTransfer).then((files) => {
+                  if (files.length > 0) setPendingFileDrop(files);
+                });
+              }
+            : undefined
+        }
         style={{
           flex: 1,
           minHeight: 0,
@@ -1792,7 +1849,8 @@ function ProjectPage() {
           padding: 0,
           display: "flex",
           flexDirection: "column",
-          outline: "none",
+          outline: fileDropHot ? "2px dashed var(--accent, #60a5fa)" : "none",
+          outlineOffset: -4,
         }}
         className="dot-grid-bg"
       >
@@ -2040,6 +2098,17 @@ function ProjectPage() {
               minWidth: 0,
             }}
           >
+            {filesAvailable && (
+              <Btn
+                variant={showFiles ? "primary" : "ghost"}
+                icon="folder"
+                onClick={() => setShowFiles((open) => !open)}
+                title="This Project's files, on its Core"
+                aria-pressed={showFiles}
+              >
+                Files
+              </Btn>
+            )}
             {headerButtons.gridView && gridViewToggle}
             {!showArchived && (
               <NewHarnessButton
@@ -2529,6 +2598,57 @@ function ProjectPage() {
           can restore archived sessions later, but in-progress runs won&rsquo;t resume.
         </div>
       </ConfirmDialog>
+
+      {/* The volume view, as a drawer beside the board rather than a modal: an
+        * operator watching a folder's worth of files land wants the Project
+        * still in front of them, and a drop that arrives while the drawer is
+        * open must not have to fight a backdrop for the event. */}
+      {filesAvailable && showFiles && (
+        <CardFrame
+          solid
+          style={{
+            position: "fixed",
+            top: 64,
+            right: 12,
+            bottom: 12,
+            width: 380,
+            maxWidth: "calc(100vw - 24px)",
+            display: "flex",
+            flexDirection: "column",
+            padding: 0,
+            overflow: "hidden",
+            zIndex: Z_INDEX.popover,
+            boxShadow: "0 14px 32px rgba(0,0,0,0.42)",
+          }}
+        >
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "space-between",
+              padding: "8px 8px 0 12px",
+            }}
+          >
+            <span style={{ fontSize: 13, fontWeight: 600 }}>Files</span>
+            <Btn
+              variant="ghost"
+              size="sm"
+              icon="x"
+              onClick={() => setShowFiles(false)}
+              title="Close the file view"
+            />
+          </div>
+          <div style={{ flex: 1, minHeight: 0, padding: 8 }}>
+            <ProjectFilesPanel
+              coreId={coreId}
+              projectId={project.id}
+              projectName={project.name}
+              pendingDrop={pendingFileDrop}
+              onPendingDropTaken={() => setPendingFileDrop(null)}
+            />
+          </div>
+        </CardFrame>
+      )}
       </div>
     </>
   );

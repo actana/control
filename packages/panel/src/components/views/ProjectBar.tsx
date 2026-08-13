@@ -5,7 +5,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { useGroups, useProjects, queryKeys } from "~/queries";
-import { useRemotePinnedProjects } from "~/lib/use-fleet";
+import { useCores, useRemotePinnedProjects } from "~/lib/use-fleet";
+import { filesFromDrop } from "~/lib/core-files";
+import { dragCarriesFiles } from "~/lib/use-project-files";
+import { stashProjectFileDrop } from "~/lib/pending-file-drop";
 import type { ProjectWithCounts } from "~/shared/projects";
 import type { Group } from "~/db/schema";
 import { ProjectIcon } from "~/components/ui/ProjectIcon";
@@ -110,6 +113,14 @@ export const ProjectBar = memo(function ProjectBar({
     },
     [queryClient],
   );
+  // Which Cores can take a dropped file (#129 F9, #169). Read once for the
+  // whole rail rather than per tile: `useCores` polls, and thirty tiles each
+  // holding their own poller would be thirty pollers for one answer.
+  const { cores } = useCores();
+  const fileCapableCoreIds = useMemo(
+    () => new Set(cores.filter((c) => c.dial.files && c.dial.state === "connected").map((c) => c.id)),
+    [cores],
+  );
   const sortedPinned = useMemo(() => getPinnedProjects(projects ?? []), [projects]);
   const { activeGroup } = useActiveGroup();
   // With a group active the rail becomes that group's workspace: every project
@@ -120,6 +131,8 @@ export const ProjectBar = memo(function ProjectBar({
     null
   );
   const [editingProject, setEditingProject] = useState<ProjectWithCounts | null>(null);
+  /** Which tile a file drag is currently over — the drop affordance, one at a time. */
+  const [fileDropTargetId, setFileDropTargetId] = useState<string | null>(null);
   // Live project-tile drag. Same architecture as the group drag below: the
   // clustered DOM stays exactly as rendered (groups and labels visible the
   // whole time), the grabbed tile rides the pointer via `delta`, and the other
@@ -1108,6 +1121,45 @@ export const ProjectBar = memo(function ProjectBar({
               if (project.pinned) startProjectPointerDrag(project.id, e);
             }}
             onDragStart={(e) => e.preventDefault()}
+            // Drop a file from the desktop onto a Project's tile and it goes to
+            // that Project on its Core (#129 F6/F11). The tile has nowhere to
+            // show a progress list, so the drop opens the Project and the upload
+            // lands there — see `pending-file-drop.ts`.
+            //
+            // `dragCarriesFiles` is what keeps this clear of the rail's own
+            // reordering, which is a *pointer* drag rather than an HTML5 one:
+            // the two gestures never produce the same events, and this guard is
+            // what says so out loud.
+            onDragOver={
+              project.coreId && fileCapableCoreIds.has(project.coreId)
+                ? (e) => {
+                    if (!dragCarriesFiles(e)) return;
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = "copy";
+                    setFileDropTargetId(project.id);
+                  }
+                : undefined
+            }
+            onDragLeave={() => setFileDropTargetId((id) => (id === project.id ? null : id))}
+            onDrop={
+              project.coreId && fileCapableCoreIds.has(project.coreId)
+                ? (e) => {
+                    if (!dragCarriesFiles(e)) return;
+                    e.preventDefault();
+                    setFileDropTargetId(null);
+                    const targetCoreId = project.coreId!;
+                    void filesFromDrop(e.dataTransfer).then((files) => {
+                      if (files.length === 0) return;
+                      stashProjectFileDrop({ projectId: project.id, coreId: targetCoreId, files });
+                      router.navigate({
+                        to: "/projects/$id",
+                        params: { id: project.id },
+                        search: { coreId: targetCoreId },
+                      });
+                    });
+                  }
+                : undefined
+            }
             onMouseEnter={(e) => {
               if (projectDrag || groupDrag) return;
               showHoverLabel(project.name, e);
@@ -1159,9 +1211,11 @@ export const ProjectBar = memo(function ProjectBar({
               transform: `translateY(${tileOffset}px)`,
               boxShadow: isDragging
                 ? "0 0 0 2px color-mix(in srgb, var(--accent) 70%, white), 0 10px 24px -10px rgba(0, 0, 0, 0.6)"
-                : clusterDragging
-                  ? "0 8px 18px -8px rgba(0, 0, 0, 0.55)"
-                  : undefined,
+                : fileDropTargetId === project.id
+                  ? "0 0 0 2px var(--accent, #60a5fa)"
+                  : clusterDragging
+                    ? "0 8px 18px -8px rgba(0, 0, 0, 0.55)"
+                    : undefined,
               // Keep the tile's own hover transitions (from .mc-pinned-tile);
               // transform eases only while displaced/settling — never while
               // glued to the pointer, and not on the post-settle commit render
