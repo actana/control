@@ -102,6 +102,7 @@ export type CoreFilesErrorCode =
   | "unsupported-entry-type"
   | "hardlink-outside-root"
   | "symlink-outside-root"
+  | "directory-in-the-way"
   | "write-failed"
   | "read-failed";
 
@@ -257,10 +258,20 @@ export function createCoreFilesRequestHandler(
       if (req.method === "HEAD") return void res.end();
       try {
         for await (const chunk of packDirectory(absolute)) {
-          if (!res.write(chunk)) await once(res, "drain");
+          if (!res.write(chunk)) await drained(res);
         }
         res.end();
       } catch (err) {
+        // A client that walked away is the ordinary end of a download — an
+        // operator hitting Ctrl-C on a `node_modules` — so it is not logged as
+        // a failure. It still had to throw to get here: that is what closed the
+        // `packDirectory` generator and, with it, the file handle in its own
+        // `finally`.
+        if (err instanceof ClientGoneError) {
+          log.info("core-files.pack-aborted", { path: relative });
+          res.destroy();
+          return;
+        }
         // The status line went out long ago. Destroying the socket is the only
         // way left to tell the client this body is not the whole folder — a
         // truncated tar that ended cleanly would unpack as a short one.
@@ -294,10 +305,15 @@ export function createCoreFilesRequestHandler(
     if (req.method === "HEAD") return void res.end();
     try {
       for await (const chunk of fs.createReadStream(absolute)) {
-        if (!res.write(chunk as Uint8Array)) await once(res, "drain");
+        if (!res.write(chunk as Uint8Array)) await drained(res);
       }
       res.end();
     } catch (err) {
+      if (err instanceof ClientGoneError) {
+        log.info("core-files.read-aborted", { path: relative });
+        res.destroy();
+        return;
+      }
       log.error("core-files.read-failed", { path: relative, error: err instanceof Error ? err.message : String(err) });
       res.destroy();
     }
@@ -319,6 +335,15 @@ export function createCoreFilesRequestHandler(
       return sendRefusal(res, transferInProgress(acquisition.held.path, acquisition.held.startedAt));
     }
     const lease = acquisition.lease;
+    // Belt and braces, and deliberately not the only guarantee. `drained` now
+    // throws when the connection dies, so the `finally` below runs and this
+    // listener finds nothing left to do — but the lease is the one piece of
+    // state whose leak outlives the request (the Project stays unwritable until
+    // the Core restarts), so it is also released the moment the socket closes,
+    // whatever this handler happens to be awaiting at the time. `release` is
+    // idempotent and compares identity before deleting, so the two paths cannot
+    // free each other's entry.
+    res.on("close", () => lease.release());
 
     try {
       const declared = Number(req.headers["content-length"] ?? Number.NaN);
@@ -345,6 +370,27 @@ export function createCoreFilesRequestHandler(
       const contentType = String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
       const asTar = contentType === "application/x-tar" || contentType === "application/tar";
 
+      // A single-file write onto a path that currently holds a **non-empty
+      // directory** is refused, not performed.
+      //
+      // F5's overwrite-by-default is about replacing a *file*. Recursively
+      // deleting a subtree is a different promise, and one nobody made: not the
+      // ticket, not ADR 0029 D6, not `docs/external-api.md`. A `PUT ?path=src`
+      // meant for `src/x.ts` is a typo, and answering it by deleting `src` and
+      // reporting an ordinary `overwritten` line is the worst of both — the
+      // damage is silent and the progress stream says nothing happened out of
+      // the ordinary. `tar(1)` refuses this case too.
+      //
+      // Checked here rather than in `writeSingleFile` because here the 200 has
+      // not gone out yet, so the operator gets a status and a code instead of an
+      // error line at the end of a stream. An *empty* directory is still
+      // replaced: there is nothing to lose, and a stray `mkdir` should not
+      // wedge a path forever.
+      if (!asTar) {
+        const refusal = await directoryInTheWay(absolute, relative);
+        if (refusal) return sendRefusal(res, refusal);
+      }
+
       res.writeHead(200, {
         "content-type": "application/x-ndjson",
         "transfer-encoding": "chunked",
@@ -352,8 +398,13 @@ export function createCoreFilesRequestHandler(
         "x-actana-transfer-kind": asTar ? "tar" : "file",
       });
 
+      // Throws `ClientGoneError` rather than parking when the client stops
+      // reading and hangs up — a folder upload backs this stream up past the
+      // 16 KB high-water mark within ~100 entries, so a client that only reads
+      // its progress at the end is the ordinary case and not a pathological
+      // one.
       const writeLine = async (value: unknown): Promise<void> => {
-        if (!res.write(`${JSON.stringify(value)}\n`)) await once(res, "drain");
+        if (!res.write(`${JSON.stringify(value)}\n`)) await drained(res);
       };
 
       try {
@@ -369,6 +420,14 @@ export function createCoreFilesRequestHandler(
           await writeLine({ type: "done", entries: 1, bytes: entry.size });
         }
       } catch (err) {
+        if (err instanceof ClientGoneError) {
+          // Nothing to report to a client that is gone, and nothing to log as a
+          // failure — the operator aborted their own upload. What matters is
+          // that it *threw*, so the `finally` below releases the lease.
+          log.info("core-files.write-aborted", { projectId, path: relative });
+          res.destroy();
+          return;
+        }
         // Mid-stream failure. The 200 is spent, so the failure is a *line* —
         // which is exactly why the progress stream is NDJSON and not a JSON
         // document: a document would have to be well-formed to be read at all,
@@ -406,6 +465,29 @@ function transferInProgress(heldPath: string, startedAt: number): Refusal {
   };
 }
 
+/**
+ * Is a non-empty directory sitting where this single-file write wants to land?
+ *
+ * 409 rather than 400: the request is well-formed and the path is legal, the
+ * disk just holds something this surface will not delete. Distinguishable from
+ * the other 409 by `code`, which is the contract F8 already establishes for
+ * `transfer-in-progress`.
+ */
+async function directoryInTheWay(absolute: string, relative: string): Promise<Refusal | null> {
+  const existing = await fs.promises.lstat(absolute).catch(() => null);
+  if (!existing?.isDirectory()) return null;
+  const contents = await fs.promises.readdir(absolute).catch(() => [] as string[]);
+  if (contents.length === 0) return null;
+  return {
+    status: 409,
+    code: "directory-in-the-way",
+    message:
+      `${relative || "."} is a directory holding ${contents.length} entr${contents.length === 1 ? "y" : "ies"} — ` +
+      "writing a file over it would delete the whole tree, which this surface does not do. " +
+      "Remove it first if that is what you meant.",
+  };
+}
+
 /** `PUT` of a single file: write it, hash it as it goes, report the five fields. */
 async function writeSingleFile(
   req: IncomingMessage,
@@ -415,6 +497,9 @@ async function writeSingleFile(
   await fs.promises.mkdir(path.dirname(absolute), { recursive: true });
   const existing = await fs.promises.lstat(absolute).catch(() => null);
   if (existing && !existing.isFile()) {
+    // Only an empty directory, a symlink or another odd node reaches here — a
+    // non-empty directory was refused before the 200 went out, by
+    // `directoryInTheWay`.
     await fs.promises.rm(absolute, { force: true, recursive: true });
   }
   const result: TarWriteOutcome = existing ? "overwritten" : "written";
@@ -520,6 +605,57 @@ function sendRefusal(res: ServerResponse, refusal: Refusal): void {
   res.end(body);
 }
 
-function once(emitter: NodeJS.EventEmitter, event: string): Promise<void> {
-  return new Promise((resolve) => emitter.once(event, () => resolve()));
+/**
+ * The client hung up while this handler was still writing to it.
+ *
+ * A named error rather than a bare one because the two call sites treat it
+ * differently from a real failure: it is the ordinary end of an aborted
+ * download and not something to log at error level, but it still has to
+ * *throw*, so that every `finally` between here and the top of the handler
+ * runs. That is the whole fix — see {@link drained}.
+ */
+class ClientGoneError extends Error {
+  constructor() {
+    super("the client hung up before this transfer finished");
+    this.name = "ClientGoneError";
+  }
+}
+
+/**
+ * Wait for a backpressured response to drain — or for the connection to die.
+ *
+ * **`'drain'` is never emitted on a destroyed stream.** A promise that waits
+ * for that event alone therefore never settles once the client hangs up, and
+ * the handler awaiting it parks forever: no `finally` between here and the top
+ * of the call stack ever runs. On the write side that stranded the Project's
+ * write lease for the lifetime of the process, so every later `PUT` answered
+ * `409 transfer-in-progress` — the refusal F8 asks to be *immediate* became
+ * permanent. On the read side it suspended the `packDirectory` generator, so
+ * its own `finally { handle.close() }` never ran and every aborted download
+ * leaked a file descriptor.
+ *
+ * So `close` and `error` settle it too, and they settle it by throwing. That
+ * unwinds the transfer exactly the way any other mid-stream failure does: the
+ * `for await` closes the generator it is draining (running its `finally`), the
+ * `catch` reports, and the `finally` releases the lease.
+ */
+function drained(res: ServerResponse): Promise<void> {
+  // Already gone. Registering a listener on a destroyed stream would wait for
+  // an event that has already been emitted.
+  if (res.destroyed || res.writableEnded) return Promise.reject(new ClientGoneError());
+  return new Promise<void>((resolve, reject) => {
+    const settle = (err: Error | null): void => {
+      res.off("drain", onDrain);
+      res.off("close", onClose);
+      res.off("error", onError);
+      if (err) reject(err);
+      else resolve();
+    };
+    const onDrain = (): void => settle(null);
+    const onClose = (): void => settle(new ClientGoneError());
+    const onError = (err: Error): void => settle(err);
+    res.on("drain", onDrain);
+    res.on("close", onClose);
+    res.on("error", onError);
+  });
 }
