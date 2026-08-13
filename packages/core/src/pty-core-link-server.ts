@@ -38,6 +38,12 @@
 // it, and the loser of a force takeover would learn of it on its next keystroke.
 
 import log from "./log";
+import {
+  createCoreFilesRequestHandler,
+  type CoreFilesPort,
+  type CoreHttpRoutes,
+} from "./core-files-routes";
+import { ProjectWriteLocks } from "./files-transfer-locks";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
@@ -230,7 +236,18 @@ export type PtyCoreLinkServerOptions = {
   /** The host to bind to — always 127.0.0.1 for the loopback core-link. */
   host?: string;
   /** Injectable WebSocketServer factory (tests). Default: real `ws.WebSocketServer`. */
-  createServer?: (opts: { port: number; host: string; tls?: TlsOptions }) => WebSocketServerLike;
+  createServer?: (opts: {
+    port: number;
+    host: string;
+    tls?: TlsOptions;
+    /**
+     * The Core's HTTP surface on the same server (#165). A factory that builds
+     * a real `https.Server` wires this to its `request` and `checkContinue`
+     * events; a fake one in a test may ignore it. Absent, the server answers
+     * no HTTP at all, which is what it did before this ticket.
+     */
+     httpRoutes?: CoreHttpRoutes;
+  }) => WebSocketServerLike;
   /**
    * The per-Core event log. When provided, PTY lifecycle events are
    * recorded and the `subscribe`/`event`/`eventsReplayed` replay path is
@@ -325,6 +342,37 @@ export type PtyCoreLinkServerOptions = {
    * one; a real old Core is a different build entirely.
    */
   announceMultiConnection?: boolean;
+  /**
+   * This machine's Project roots, for the `/v1/…` file routes (#165).
+   *
+   * Set it and two things happen: the routes are mounted on the same mTLS
+   * HTTPS server this WebSocket listens on, and `ready` announces the `files`
+   * capability. Omit it and neither does — which is every Core that shipped
+   * before this ticket, and a valid Core.
+   *
+   * The routes are a second protocol on one server, not a second listener: one
+   * port, one certificate, one bearer (ADR 0030). **No file byte crosses this
+   * WebSocket**, which is the whole reason they are over there.
+   */
+  filesPort?: CoreFilesPort;
+  /**
+   * Announce the `files` capability on `ready`. Defaults to "yes if the routes
+   * are actually being served" — that is, if {@link filesPort} is set *and*
+   * this server owns the HTTP surface they mount on.
+   *
+   * The default is a conjunction rather than just `Boolean(filesPort)` because
+   * announcing a capability whose routes are not answering is worse than
+   * announcing nothing: a client that reads the field stops feature-detecting
+   * and starts calling. An explicit `false` stands up the capability-less Core
+   * a real fleet is still full of, the way {@link announceMultiConnection}
+   * does; an explicit `true` is for a test that mounts the routes elsewhere.
+   */
+  announceFiles?: boolean;
+  /**
+   * One write transfer per Project at a time (#165 F8). Injected so a test can
+   * hold the table; a fresh one is made when omitted.
+   */
+  fileWriteLocks?: ProjectWriteLocks;
 };
 
 /**
@@ -443,6 +491,9 @@ export class PtyCoreLinkServer {
   private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
+  private readonly announceFiles: boolean;
+  /** One write transfer per Project (#165 F8). Exposed for tests and logging. */
+  readonly fileWriteLocks: ProjectWriteLocks;
   /**
    * The one seam every task-row change goes through — the Panel's
    * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
@@ -485,7 +536,19 @@ export class PtyCoreLinkServer {
   ) {
     const host = opts.host ?? "127.0.0.1";
     const create = opts.createServer ?? defaultCreateServer;
-    this.server = create({ port: opts.port, host, tls: opts.tls });
+    // The file routes are built before the server, because the server factory
+    // is what mounts them: one https.Server answering a WebSocket upgrade and
+    // three `/v1/…` routes, never two listeners (#165 F2, ADR 0030).
+    this.fileWriteLocks = opts.fileWriteLocks ?? new ProjectWriteLocks();
+    const httpRoutes = opts.filesPort
+      ? createCoreFilesRequestHandler({
+          filesPort: opts.filesPort,
+          authVerifier: opts.authVerifier,
+          locks: this.fileWriteLocks,
+        })
+      : undefined;
+    this.announceFiles = opts.announceFiles ?? Boolean(httpRoutes);
+    this.server = create({ port: opts.port, host, tls: opts.tls, httpRoutes });
     this.eventLog = opts.eventLog ?? null;
     this.liveEventPollMs = opts.liveEventPollMs ?? DEFAULT_LIVE_EVENT_POLL_MS;
     this.authVerifier = opts.authVerifier ?? null;
@@ -528,6 +591,12 @@ export class PtyCoreLinkServer {
       type: "ready",
       version: this.protocolVersion,
       ...(this.announceMultiConnection ? { multiConnection: { version: 1 as const } } : {}),
+      // And `files`, on the same terms and for the same reason (#165 F9): this
+      // Core answers the `/v1/…` routes on the HTTPS origin this socket is
+      // mounted on, so it says so, and the protocol version does not move for
+      // it either. A Core that omits the field has no file surface — not a
+      // stale one, and not one to mark needs-update.
+      ...(this.announceFiles ? { files: { version: 1 as const } } : {}),
     });
 
     // Start the live-event push poll for this connection. It stays silent
@@ -1792,6 +1861,7 @@ function defaultCreateServer(opts: {
   port: number;
   host: string;
   tls?: TlsOptions;
+  httpRoutes?: CoreHttpRoutes;
 }): WebSocketServerLike {
   // Lazy require so this module stays importable in tests without `ws` at
   // import time.
@@ -1815,6 +1885,7 @@ function defaultCreateServer(opts: {
       // the runtime's default.
       noDelay: true,
     });
+    mountHttpRoutes(tlsServer, opts.httpRoutes);
     tlsServer.listen(opts.port, opts.host);
     const wss = new WebSocketServer({ server: tlsServer });
     return {
@@ -1832,6 +1903,34 @@ function defaultCreateServer(opts: {
       },
     };
   }
+  if (opts.httpRoutes) {
+    // A loopback Core with a file surface. The explicit `http.Server` exists
+    // only on this branch and only when there are routes to mount: the
+    // `WebSocketServer({ port })` form below owns its own listener and gives no
+    // seam to hang a request handler on, and swapping every loopback Core onto
+    // this path to serve routes it does not have would change what a non-upgrade
+    // request gets back for no reason this ticket has.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const http = require("node:http") as typeof import("node:http");
+    const plainServer = http.createServer();
+    mountHttpRoutes(plainServer, opts.httpRoutes);
+    plainServer.listen(opts.port, opts.host);
+    const mounted = new WebSocketServer({ server: plainServer });
+    return {
+      close: (cb) => {
+        mounted.close(() => plainServer.close(cb));
+      },
+      on: (event, cb) => {
+        if (event === "connection") {
+          mounted.on("connection", (ws: WebSocket) => {
+            (cb as (ws: WebSocketLike) => void)(adaptWs(ws));
+          });
+        } else if (event === "error") {
+          mounted.on("error", (err: Error) => (cb as (err: Error) => void)(err));
+        }
+      },
+    };
+  }
   const wss = new WebSocketServer({ port: opts.port, host: opts.host });
   return {
     close: (cb) => wss.close(cb),
@@ -1845,6 +1944,44 @@ function defaultCreateServer(opts: {
       }
     },
   };
+}
+
+/**
+ * Hang the Core's `/v1/…` routes on the server the WebSocket is mounted on
+ * (#165 F2, ADR 0030).
+ *
+ * Everything the routes do not claim gets a 404 from here rather than from
+ * them, which is what keeps the Core's HTTP surface a closed list: a path this
+ * build does not serve is answered, not left hanging, and adding a route is a
+ * change in one file rather than an accident of prefix matching.
+ *
+ * `checkContinue` is listened for deliberately. Registering a listener is what
+ * stops Node auto-answering `Expect: 100-continue` with a `100 Continue`, and
+ * that auto-answer is precisely what would make a refused-because-busy upload
+ * (F8) send its whole body first.
+ */
+function mountHttpRoutes(
+  server: import("node:http").Server | import("node:https").Server,
+  routes: CoreHttpRoutes | undefined,
+): void {
+  if (!routes) return;
+  server.on("request", (req, res) => {
+    if (routes.handle(req, res)) return;
+    respondNotFound(res);
+  });
+  server.on("checkContinue", (req, res) => {
+    if (routes.handleContinue(req, res)) return;
+    respondNotFound(res);
+  });
+}
+
+function respondNotFound(res: import("node:http").ServerResponse): void {
+  const body = JSON.stringify({ code: "not-found", error: "no such route on this Core" });
+  res.writeHead(404, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(body)),
+  });
+  res.end(body);
 }
 
 /** Adapt a `ws.WebSocket` to the transport-agnostic `WebSocketLike` interface. */
