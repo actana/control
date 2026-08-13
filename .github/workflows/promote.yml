@@ -652,11 +652,11 @@ jobs:
   # ─────────────────────────────────────────────────────── 8. the next train
   #
   # D25. A train is always open, so the repository never enters a state where
-  # work cannot be proposed. The cut writes the version into all five manifests
-  # in its first commit (D3, amended by #152) — an administrative decision
-  # written by a machine, because hand-editing five files is how four of them
-  # end up disagreeing, and `ci.yml`'s train rules assert all five equal the
-  # branch's version.
+  # work cannot be proposed. The cut writes the version into every manifest
+  # in its first commit (D3, amended by #152 and #157) — an administrative
+  # decision written by a machine, because hand-editing six files is how five of
+  # them end up disagreeing, and `ci.yml`'s train rules assert every one of them
+  # equals the branch's version.
   #
   # **Skipped when a train already exists**, which is exactly the post-hotfix
   # case: the invariant already holds and there is nothing to cut. The condition
@@ -701,7 +701,7 @@ jobs:
           fetch-depth: 0
           token: ${{ steps.app-token.outputs.token }}
 
-      - name: Cut beta/<next-minor>.0 from main with the five versions written
+      - name: Cut beta/<next-minor>.0 from main with every version written
         env:
           NEXT: ${{ needs.resolve.outputs.next_train }}
           PROMOTED: ${{ needs.resolve.outputs.version }}
@@ -720,16 +720,17 @@ jobs:
           git fetch --force origin '+refs/heads/main:refs/remotes/origin/main'
           git checkout -B "$NEXT" refs/remotes/origin/main
 
-          # D3, as amended by #152. All five manifests, edited in place rather
-          # than reserialised: `jq` would reformat files it was only asked to
-          # change one line of, and the diff a reviewer reads on the promotion
-          # pull request should be five lines.
+          # D3, as amended by #152 and #157. Every manifest, edited in place
+          # rather than reserialised: `jq` would reformat files it was only
+          # asked to change one line of, and the diff a reviewer reads on the
+          # promotion pull request should be one line per manifest.
           #
-          # `packages/sdk` is the fifth (ADR 0025). This list and the one in
-          # `ci.yml`'s `Train rules` job are the same set by construction — the
-          # check asserts it covers every workspace package, so a sixth package
-          # fails there rather than being silently skipped here.
-          files=(package.json packages/core/package.json packages/panel/package.json packages/sdk/package.json packages/shared/package.json)
+          # `packages/sdk` is the fifth (ADR 0025) and `packages/cli` the sixth
+          # (#157). This list and the one in `ci.yml`'s `Train rules` job are
+          # the same set by construction — the check asserts it covers every
+          # workspace package, so the next package fails there rather than being
+          # silently skipped here.
+          files=(package.json packages/cli/package.json packages/core/package.json packages/panel/package.json packages/sdk/package.json packages/shared/package.json)
           VERSION="$version" node -e '
             const fs = require("node:fs");
             const version = process.env.VERSION;
@@ -747,7 +748,7 @@ jobs:
           for file in "${files[@]}"; do
             found="$(jq -r .version "$file")"
             if [[ "$found" != "$version" ]]; then
-              echo "::error title=The cut did not write a version::$file says $found, not $version. All five manifests carry the train's version and a required check on the train asserts it (ADR 0023 D3, amended by #152), so a train cut with a manifest missed cannot merge anything."
+              echo "::error title=The cut did not write a version::$file says $found, not $version. Every manifest carries the train's version and a required check on the train asserts it (ADR 0023 D3, amended by #152 and #157), so a train cut with a manifest missed cannot merge anything."
               exit 1
             fi
             echo "  ✅ $file is $version"
@@ -760,7 +761,7 @@ jobs:
           printf '%s\n' \
             "chore(release): cut $NEXT" \
             "" \
-            "All five manifests carry the train's version (ADR 0023 D3). Cut from main" \
+            "Every manifest carries the train's version (ADR 0023 D3). Cut from main" \
             "after promoting $PROMOTED, so a train is always open and work can always be" \
             "proposed (D25)." \
             "" \
@@ -768,7 +769,7 @@ jobs:
             "before anything merges if the next release is not $version." \
             > "$RUNNER_TEMP/cut-message.txt"
 
-          # Nothing to rewrite is not nothing to do. If the five manifests
+          # Nothing to rewrite is not nothing to do. If the manifests
           # already read `$version` — a re-run after the push below failed, or
           # `main` already sitting on the guessed next minor — the loop above
           # has just confirmed the state this commit exists to reach, and the

@@ -117,12 +117,12 @@ Five things follow from that, and each is enforced rather than asked for:
   approval are the point; `promote.yml` performs the advance. Do not press
   GitHub's merge button on it.
 
-All five package manifests — root, `packages/core`, `packages/panel`,
-`packages/sdk`, `packages/shared` — carry the train's version, written by the cut
-itself, and a required check asserts all five still agree (D3, amended by #152).
-Nothing else should be editing them. The check also asserts that its own list
-covers every workspace package, so a sixth package fails it rather than being
-silently left out.
+Every package manifest — root, `packages/cli`, `packages/core`, `packages/panel`,
+`packages/sdk`, `packages/shared` — carries the train's version, written by the
+cut itself, and a required check asserts they still agree (D3, amended by #152
+and #157). Nothing else should be editing them. The check also asserts that its
+own list covers every workspace package, so the next package fails it rather
+than being silently left out.
 
 ## The published images
 
@@ -134,7 +134,9 @@ silently left out.
 | `actana/core-dev` | The same for the Core. |
 
 All four are published to Docker Hub (`docker.io/actana/…`) — the only registry
-([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md)).
+the images go to ([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md), as
+amended: npm is a second registry, for the two published **packages** rather
+than for any image).
 
 The split is by **audience**, and it is load-bearing rather than tidy: the
 `-dev` repositories hold handles for people debugging, the release repositories
@@ -654,9 +656,14 @@ bumps it and not CI's Node is *meant* to go red there.
 
 ## Registries
 
-**Docker Hub, and nothing else**
-([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired).
-It authenticates with the `DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so:
+**Docker Hub for the images, npm for the packages**
+([ADR 0018](adr/0018-docker-hub-is-the-only-registry.md) — GHCR was retired;
+npm was added by [#159](https://github.com/actana/control/issues/159)).
+
+### Docker Hub
+
+**The only registry any image goes to.** It authenticates with the
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` secrets, so:
 
 - A **non-pushing build** — the PR path, `push: false` — needs no credentials
   at all. Forks get green PR builds with zero configuration.
@@ -686,6 +693,79 @@ The image name is derived, never hardcoded:
 `docker.io/<DOCKERHUB_NAMESPACE or repo owner>/panel`. A fork that sets its
 own keys publishes under its own namespace with no edit to any workflow; see
 [`REPO_SETUP.md`](REPO_SETUP.md) §2.
+
+### npm
+
+`@actana/sdk` and `@actana/cli`, published by `release.yml`'s `npm` job on the
+same tag that builds the images and at the same version as everything else
+([#129](https://github.com/actana/control/issues/129) D13). It authenticates
+with `NPM_TOKEN`, and a missing one fails in `resolve` in exactly the shape the
+Docker Hub check does — before anything is built.
+
+**An npm version number is burned by its first publish.** Unpublishing within
+the 72-hour window frees the bytes and not the name, so nothing about a
+container tag's re-pointability transfers, and three things follow:
+
+- The `npm` job is **last** — after both tarball legs, the installer e2e, and
+  both image publishes. Everything else in a release can be redone; a version
+  number cannot.
+- The publish is **rehearsed on every pull request**, long before a tag exists.
+  `pnpm npm:rehearse` (`scripts/rehearse-npm-publish.mjs`) packs each
+  publishable package with `pnpm pack` and asserts the tarball: the `>=22`
+  engines floor, no install-time lifecycle script, a `repository` for the
+  attestation to name, one version line with the CLI pinned to this train's
+  SDK, and a file list that is a whitelist — so `scripts/require-node-24.mjs`
+  cannot reach a tarball by any route, including a rename. The last rules
+  depend on which kind of package it is: the SDK is **imported**, so every
+  compiled module has a `.d.ts` beside it; the CLI is **run**, so the `bin`
+  path npm links is in the tarball, starts with a node shebang, and has its
+  bundle beside it. `pnpm test` runs it; the release runs the same script on
+  the tarballs it then publishes, in dependency order — the SDK before the CLI
+  that depends on it.
+- Every publish is **attested**. The job carries `id-token: write` and passes
+  `--provenance`; afterwards it reads the attestation back off the registry and
+  fails if it is not there, because a publish that lost the flag succeeds and
+  looks identical in the log. That read-back distinguishes its two failures:
+  "the registry answered and there is no attestation" says cut the next version,
+  and "the registry never answered" says explicitly not to — it is a re-run, and
+  a re-run is free because an already-published version is treated as published.
+
+**The dist-tag is decided, never defaulted.** `npm publish` with no `--tag`
+takes `latest`, which is the same unwritten default as `gh release create`'s
+`make_latest` and the same one the old `resolve` had in its Docker tag list —
+so npm is the third surface of the `latest` guard (ADR 0023 D28), not an
+exception to it. `resolve` emits `npm_tag` from
+[`scripts/lib/release-latest.mjs`](../scripts/lib/release-latest.mjs), the same
+module that decides the other two, and `release.yml` passes it explicitly:
+
+| release | dist-tag | what `npm i @actana/sdk` gets |
+| --- | --- | --- |
+| the highest version, promoted | `latest` | this release |
+| a prerelease on the main line (D30) | `next` | unchanged |
+| a backport of an old line | `release-<major>.<minor>` | unchanged |
+| a backport's release candidate | `release-<major>.<minor>-next` | unchanged |
+
+A consumer pinned to an old line gets its patches with
+`npm i @actana/sdk@release-0.1`. The `resolve` guard step fails the release if a
+backport ever resolves `latest` on **any** of the three surfaces, and if the
+dist-tag comes out empty — `npm publish --tag ""` is rejected by npm, and it
+would be rejected after both images had already shipped.
+
+A package is published exactly when its workspace manifest drops
+`private: true`. `scripts/lib/npm-packages.mjs` holds the intended set and
+checks the discovered one against it both ways: an unexpected package
+publishing is an error, and so is `@actana/sdk` not publishing.
+
+`@actana/sdk` declares `engines: ">=22"` while the monorepo, the Core and the
+Panel keep `>=24 <25`. That is not a contradiction — one is the runtime this
+repository is developed and released on, the other is the floor a consumer of
+the SDK needs, measured against a live Core in
+[`experiment/findings-151-node22-mtls.md`](../experiment/findings-151-node22-mtls.md).
+The tarball ships compiled JavaScript because a consumer on Node 22 has no type
+stripping; inside the workspace the SDK is consumed as TypeScript source, and
+`publishConfig.exports` — applied by **pnpm** at pack time and ignored by npm —
+is what reconciles the two. That is why the rehearsal packs with `pnpm` and
+asserts that the packed map no longer points at `src/`.
 
 ### `gcr.io` is a second registry, and it is in the build path
 
@@ -830,11 +910,11 @@ guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
 the next release is a patch, or a major, delete the branch and re-cut it before
 anything merges into it.
 
-The cut creates `beta/x.y.z` from `main` and writes that version into all five
-manifests in its first commit (D3, amended by #152). Do not hand-edit those
-files: hand-editing five manifests is how four of them end up disagreeing, and
-the one that disagrees is found at promotion, by a person. A required check on
-the train asserts all five equal the branch's version.
+The cut creates `beta/x.y.z` from `main` and writes that version into every
+manifest in its first commit (D3, amended by #152 and #157). Do not hand-edit
+those files: hand-editing six manifests is how five of them end up disagreeing,
+and the one that disagrees is found at promotion, by a person. A required check
+on the train asserts every one of them equals the branch's version.
 
 A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
 still has an image to promote, because **the cut itself publishes one** (D7).
@@ -947,9 +1027,14 @@ which in the log:
   that branch, because no beta digest exists to promote.
 
 The two Linux tarball legs and the installer e2e run straight away, the mac
-tarball builds alongside them, and the two image jobs and the GitHub Release
-follow. Each image's Docker Hub page is no longer part of it — that syncs on a
-weekly clock now (D43). The tag must already exist on origin.
+tarball builds alongside them, the two image jobs follow, then the **npm
+publish**, and the GitHub Release last of all. The npm job is in that position
+deliberately and it is the only one that cannot be redone: it waits on both
+image jobs, both tarball legs and the installer e2e, and the Release waits on
+it, so a release never announces an `npm i` that 404s. See
+[npm](#npm) for what it publishes and under which dist-tag. Each image's Docker
+Hub page is no longer part of it — that syncs on a weekly clock now (D43). The
+tag must already exist on origin.
 
 `release.yml` attaches nothing until its arm64 installer legs are green
 (see [The installer e2e](#the-installer-e2e-and-why-it-is-one-job-on-two-triggers)),
@@ -968,9 +1053,12 @@ in `release.yml`, so both are yours:
   and the promotion waves itself through — silently, and green. It is
   `promote.yml` that holds it. See [`REPO_SETUP.md`](REPO_SETUP.md) §2.
 
-`resolve` does fail the run outright when `DOCKERHUB_USERNAME` or
-`DOCKERHUB_TOKEN` is missing on `actana/control`, before anything is built —
-that one the workflow does check.
+`resolve` does fail the run outright when `DOCKERHUB_USERNAME`, `DOCKERHUB_TOKEN`
+or `NPM_TOKEN` is missing on `actana/control`, before anything is built — those
+three the workflow does check. `NPM_TOKEN` is checked in the same shape and in
+the same job as the Docker Hub pair, and for a sharper reason: the npm job is
+last in the graph, so a token discovered missing at the publish would be
+discovered with both images pushed and their `:latest` already re-pointed.
 
 ### The approval pause — a release waits for a person
 
@@ -984,12 +1072,20 @@ got round to approving yet.
 The gated job goes to **waiting** the moment the run starts.
 
 **Nothing leaves the repository until a reviewer approves.** No image moves, no
-`:latest` moves, no GitHub Release appears, and `main` does not advance.
+`:latest` moves, **no package reaches npm**, no GitHub Release appears, and
+`main` does not advance.
 
 That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
 `:latest` is a pointer with no history to roll back to. A reviewer who hits a
 blocker and rejects has to be able to believe nothing shipped.
+
+The npm publish is the item on that list that cannot be taken back **at all**.
+An image tag is a pointer and can be re-pointed; an npm version number is
+consumed by its first publish, and unpublishing inside the 72-hour window frees
+the bytes and not the name. That is why it sits behind this pause and last
+within the workflow, and why the packing is rehearsed on every pull request
+long before a tag exists.
 
 The pause is the manual test window, not a rubber stamp. Before dispatching and
 approving, the reviewer:
