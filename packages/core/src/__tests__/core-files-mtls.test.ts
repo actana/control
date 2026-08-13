@@ -22,6 +22,7 @@ import { generateCertMaterial } from "../core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { PtyCoreLinkServer } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
+import { createCoreFilesRequestHandler } from "../core-files-routes";
 import { packDirectory } from "../files-tar";
 import { cleanupTrees, collect, makeTree, readTree } from "./files-fixture";
 
@@ -87,7 +88,10 @@ async function startCore(entries: Parameters<typeof makeTree>[0] = {}): Promise<
     host: "127.0.0.1",
     tls: { caCert: material.ca.cert, serverCert: material.server.cert, serverKey: material.server.key },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
-    filesPort: { projectRoot: (id) => (id === "p1" ? projectRoot : null) },
+    httpRoutes: createCoreFilesRequestHandler({
+      filesPort: { projectRoot: (id: string) => (id === "p1" ? projectRoot : null) },
+      authVerifier: (bearer) => verifyBearer(bearer, SECRET),
+    }),
   });
 
   const rig: Rig = {

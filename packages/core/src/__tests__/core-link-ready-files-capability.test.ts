@@ -8,6 +8,12 @@ import {
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import { createCoreFilesRequestHandler } from "../core-files-routes";
+
+/** The real file routes, over a Project root nothing in this suite reads. */
+function fileRoutes(): ReturnType<typeof createCoreFilesRequestHandler> {
+  return createCoreFilesRequestHandler({ filesPort: { projectRoot: () => "/tmp/project" } });
+}
 
 // The `files` capability on `ready` (#165 F9, ADR 0024 D11).
 //
@@ -131,7 +137,7 @@ describe("the ready frame announces files (#165 F9, ADR 0024 D11)", () => {
 
   describe("a Core with a files port, which is a Core that serves the routes", () => {
     it("announces the capability at version 1", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" } });
+      startServer({ httpRoutes: fileRoutes() });
       expect(connect().ready()).toEqual({
         type: "ready",
         version: CORE_LINK_PROTOCOL_VERSION,
@@ -141,24 +147,24 @@ describe("the ready frame announces files (#165 F9, ADR 0024 D11)", () => {
     });
 
     it("hands the server factory the routes it announced, so the claim is not a lie", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" } });
+      startServer({ httpRoutes: fileRoutes() });
       expect(wss.lastFactoryOptions.httpRoutes).toBeTruthy();
     });
 
     it("announces the same protocol version it always did — the capability does not move it", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" } });
+      startServer({ httpRoutes: fileRoutes() });
       expect(connect().ready().version).toBe(CORE_LINK_PROTOCOL_VERSION);
     });
 
     it("announces it to every connection, not just the first", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" } });
+      startServer({ httpRoutes: fileRoutes() });
       for (const ws of [connect(), connect(), connect()]) {
         expect(ws.ready().files).toEqual({ version: 1 });
       }
     });
 
     it("announces it before auth — a client learns what the Core is on frame one", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" }, authVerifier: () => ({ ok: false, reason: "malformed" }) });
+      startServer({ httpRoutes: fileRoutes(), authVerifier: () => ({ ok: false, reason: "malformed" }) });
       expect(connect().ready().files).toEqual({ version: 1 });
     });
   });
@@ -188,7 +194,7 @@ describe("the ready frame announces files (#165 F9, ADR 0024 D11)", () => {
 
   describe("the announcement can be forced apart from the routes, for a test", () => {
     it("stays silent when told to, even with a files port wired", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" }, announceFiles: false });
+      startServer({ httpRoutes: fileRoutes(), announceFiles: false });
       expect("files" in connect().ready()).toBe(false);
     });
 
@@ -200,7 +206,7 @@ describe("the ready frame announces files (#165 F9, ADR 0024 D11)", () => {
 
   describe("the two capabilities are independent", () => {
     it("announces files on a Core that announces no multiConnection", () => {
-      startServer({ filesPort: { projectRoot: () => "/tmp/project" }, announceMultiConnection: false });
+      startServer({ httpRoutes: fileRoutes(), announceMultiConnection: false });
       expect(connect().ready()).toEqual({
         type: "ready",
         version: CORE_LINK_PROTOCOL_VERSION,

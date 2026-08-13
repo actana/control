@@ -38,12 +38,7 @@
 // it, and the loser of a force takeover would learn of it on its next keystroke.
 
 import log from "./log";
-import {
-  createCoreFilesRequestHandler,
-  type CoreFilesPort,
-  type CoreHttpRoutes,
-} from "./core-files-routes";
-import { ProjectWriteLocks } from "./files-transfer-locks";
+import type { CoreHttpRoutes } from "./core-files-routes";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
@@ -343,36 +338,32 @@ export type PtyCoreLinkServerOptions = {
    */
   announceMultiConnection?: boolean;
   /**
-   * This machine's Project roots, for the `/v1/…` file routes (#165).
+   * The Core's HTTP surface, mounted on the same server this WebSocket listens
+   * on (#165 F2, ADR 0028) — one port, one certificate, one bearer, two
+   * protocols. **No file byte crosses this WebSocket**, which is the whole
+   * reason the routes are over there.
    *
-   * Set it and two things happen: the routes are mounted on the same mTLS
-   * HTTPS server this WebSocket listens on, and `ready` announces the `files`
-   * capability. Omit it and neither does — which is every Core that shipped
-   * before this ticket, and a valid Core.
-   *
-   * The routes are a second protocol on one server, not a second listener: one
-   * port, one certificate, one bearer (ADR 0028). **No file byte crosses this
-   * WebSocket**, which is the whole reason they are over there.
+   * Handed in already built rather than constructed from a port here, and
+   * deliberately: this class's job is to mount whatever HTTP surface it is
+   * given, not to know what that surface is *about*. `core-entry.ts` wires the
+   * file routes, next to the query store they read Project roots from — so this
+   * module imports only the type, the tar codec never enters its import graph,
+   * and a Core with no file surface never loads a line of it.
    */
-  filesPort?: CoreFilesPort;
+  httpRoutes?: CoreHttpRoutes;
   /**
-   * Announce the `files` capability on `ready`. Defaults to "yes if the routes
-   * are actually being served" — that is, if {@link filesPort} is set *and*
-   * this server owns the HTTP surface they mount on.
+   * Announce the `files` capability on `ready` (#165 F9).
    *
-   * The default is a conjunction rather than just `Boolean(filesPort)` because
-   * announcing a capability whose routes are not answering is worse than
-   * announcing nothing: a client that reads the field stops feature-detecting
-   * and starts calling. An explicit `false` stands up the capability-less Core
-   * a real fleet is still full of, the way {@link announceMultiConnection}
-   * does; an explicit `true` is for a test that mounts the routes elsewhere.
+   * Defaults to "yes if an HTTP surface is mounted", because today that surface
+   * is the file routes and nothing else. **Pass it explicitly** rather than
+   * relying on the default if this ever mounts routes that are not the file
+   * ones — announcing a capability whose routes are not answering is worse than
+   * announcing nothing, since a client that reads the field stops
+   * feature-detecting and starts calling. An explicit `false` stands up the
+   * capability-less Core a real fleet is still full of, the way
+   * {@link announceMultiConnection} does.
    */
   announceFiles?: boolean;
-  /**
-   * One write transfer per Project at a time (#165 F8). Injected so a test can
-   * hold the table; a fresh one is made when omitted.
-   */
-  fileWriteLocks?: ProjectWriteLocks;
 };
 
 /**
@@ -492,8 +483,6 @@ export class PtyCoreLinkServer {
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
   private readonly announceFiles: boolean;
-  /** One write transfer per Project (#165 F8). Exposed for tests and logging. */
-  readonly fileWriteLocks: ProjectWriteLocks;
   /**
    * The one seam every task-row change goes through — the Panel's
    * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
@@ -536,19 +525,11 @@ export class PtyCoreLinkServer {
   ) {
     const host = opts.host ?? "127.0.0.1";
     const create = opts.createServer ?? defaultCreateServer;
-    // The file routes are built before the server, because the server factory
-    // is what mounts them: one https.Server answering a WebSocket upgrade and
-    // three `/v1/…` routes, never two listeners (#165 F2, ADR 0028).
-    this.fileWriteLocks = opts.fileWriteLocks ?? new ProjectWriteLocks();
-    const httpRoutes = opts.filesPort
-      ? createCoreFilesRequestHandler({
-          filesPort: opts.filesPort,
-          authVerifier: opts.authVerifier,
-          locks: this.fileWriteLocks,
-        })
-      : undefined;
-    this.announceFiles = opts.announceFiles ?? Boolean(httpRoutes);
-    this.server = create({ port: opts.port, host, tls: opts.tls, httpRoutes });
+    // The routes go to the server factory, because the factory is what mounts
+    // them: one https.Server answering a WebSocket upgrade and the `/v1/…`
+    // routes, never two listeners (#165 F2, ADR 0028).
+    this.announceFiles = opts.announceFiles ?? Boolean(opts.httpRoutes);
+    this.server = create({ port: opts.port, host, tls: opts.tls, httpRoutes: opts.httpRoutes });
     this.eventLog = opts.eventLog ?? null;
     this.liveEventPollMs = opts.liveEventPollMs ?? DEFAULT_LIVE_EVENT_POLL_MS;
     this.authVerifier = opts.authVerifier ?? null;

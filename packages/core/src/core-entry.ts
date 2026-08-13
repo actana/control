@@ -58,6 +58,7 @@ import {
   type PtyCoreDeps,
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
+import { createCoreFilesRequestHandler } from "./core-files-routes";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { configureProjectRootsDb } from "./project-roots";
 import {
@@ -304,23 +305,32 @@ async function startCore(): Promise<void> {
       list: (requestedPath) => listDirectory(requestedPath),
       create: (parent, name) => createDirectory(parent, name),
     },
-    // Issue 165: the `/v1/…` file routes, mounted on the same mTLS HTTPS
-    // server the core link is on (ADR 0028). Setting this is what both serves
-    // them and announces the `files` capability on `ready`.
-    //
-    // The lookup is a scan of the project list rather than a `WHERE id = ?`,
-    // and deliberately: a Core holds a handful of Projects, `listProjects`
-    // is the read seam that already exists and already degrades to `[]` on a
-    // broken DB, and a second by-id query in `@actana/shared` would be a
-    // second thing to keep in step with the first. If a Core ever holds
-    // enough Projects for this to matter, the fix is an index in SQLite, not
-    // a cache here — the filesystem is the model (ADR 0027) and this is the
-    // one lookup that is not the filesystem.
+  };
+
+  // Issue 165: the `/v1/…` file routes, mounted on the same mTLS HTTPS server
+  // the core link is on (ADR 0028). Built here rather than inside the server,
+  // next to the query store they read Project roots from — the core-link server
+  // mounts whatever HTTP surface it is handed and never imports the tar codec.
+  //
+  // The lookup is a scan of the project list rather than a `WHERE id = ?`, and
+  // deliberately: a Core holds a handful of Projects, `listProjects` is the read
+  // seam that already exists and already degrades to `[]` on a broken DB, and a
+  // second by-id query in `@actana/shared` would be a second thing to keep in
+  // step with the first. If a Core ever holds enough Projects for this to
+  // matter, the fix is an index in SQLite, not a cache here — the filesystem is
+  // the model (ADR 0027) and this is the one lookup that is not the filesystem.
+  const fileRoutes = createCoreFilesRequestHandler({
     filesPort: {
       projectRoot: (projectId) =>
         coreQueryStore.listProjects().find((project) => project.projectId === projectId)?.path ?? null,
     },
-  };
+    // Assigned below, once the remote-mode block has minted or loaded the
+    // material: the file routes are gated by the same bearer the `auth` frame
+    // is, and on a loopback Core there is none to check — the same trade that
+    // Core's core link already makes.
+    authVerifier: (bearer) => serverOpts.authVerifier?.(bearer) ?? { ok: false, reason: "malformed" },
+  });
+  serverOpts.httpRoutes = fileRoutes;
 
   if (remoteMode) {
     // In a container the public host is the operator's to supply and never
