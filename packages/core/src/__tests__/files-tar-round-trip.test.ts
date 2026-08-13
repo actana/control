@@ -324,11 +324,19 @@ describe("a file of 8 GiB or more — the size the ustar field cannot hold", () 
     expect(Buffer.from(blocks[0]!).subarray(124, 135).toString("ascii")).toBe(MAX_USTAR_SIZE.toString(8));
   });
 
-  it("round-trips such a header through this module's own reader", async () => {
-    // The two halves have to agree, and the reader's half is the one that used
-    // to parse base-256 as `NaN` and land the file empty. A pax `size` record
-    // and a real body of that size, so the assertion is about the parse rather
-    // than about the disk.
+  it("leaves an ordinary small file round-tripping exactly as it did before", async () => {
+    // Honest about what this asserts, per review: there is no pax record and no
+    // base-256 field anywhere in this archive, and nothing here is near the
+    // 8 GiB boundary. It is a regression guard on the *plain* path — the pax
+    // fallback added above must not have disturbed the size every other file in
+    // the world uses — and that is all it is worth.
+    //
+    // The reader's half of the boundary is asserted where the hostile headers
+    // live, in `files-tar-unpack-hardening.test.ts`: "reads a base-256 size
+    // field rather than treating it as zero" and "honours a pax `size` record,
+    // which is the other way a real tar says it". Both build the header by
+    // hand, so both test the parse without eight gibibytes of disk; both are
+    // red before this fix. Do not read coverage of them into this test.
     const source = makeTree({ "small.bin": "not eight gibibytes" });
     const destination = makeTree();
     const reports = await roundTrip(source, destination);

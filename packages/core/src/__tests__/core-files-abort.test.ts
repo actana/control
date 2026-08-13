@@ -194,13 +194,27 @@ describe("a client that hangs up mid-transfer", () => {
         })
         .filter((target) => target.startsWith(`${root}/`));
 
+    // The positive control, per review: both the precondition and the assertion
+    // below expect `[]`, so if `openUnderRoot` ever stopped matching — a moved
+    // Project root, a `/proc` shape change, a symlinked tmpdir — this test would
+    // go vacuously green rather than red, which is the same failure mode as the
+    // version that passed against the unfixed code. Sampling while a download is
+    // genuinely in flight pins the instrument as well as the result: the packer
+    // is parked inside a 4 MB file's read loop with its handle open, so a
+    // counter that works sees it.
+    let sawOneInFlight = false;
+
     const abortOneDownload = async (): Promise<void> => {
       await new Promise<void>((resolve, reject) => {
         const req = http.request(`${base}/v1/projects/p1/files?path=payload`, { method: "GET", agent: false }, (res) => {
           res.pause();
           res.on("error", () => {});
           // Long enough for the server to fill the socket and park mid-file.
+          const sampling = setInterval(() => {
+            if (openUnderRoot().length > 0) sawOneInFlight = true;
+          }, 25);
           setTimeout(() => {
+            clearInterval(sampling);
             req.destroy();
             resolve();
           }, 300);
@@ -215,6 +229,9 @@ describe("a client that hangs up mid-transfer", () => {
     expect(openUnderRoot()).toEqual([]);
     for (let i = 0; i < 3; i += 1) await abortOneDownload();
     await delay(400);
+
+    // Fails if the counter has gone blind, before the assertion that trusts it.
+    expect(sawOneInFlight).toBe(true);
 
     // Before the fix each aborted download left one descriptor open on a file
     // in `payload/`, and they accumulated — the generator stayed suspended, so
