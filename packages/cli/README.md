@@ -26,9 +26,38 @@ actana core use laptop              # point `current` at one
 actana core status                  # reach it, and report what it says
 ```
 
-`session`, `project`, `harness` and `events` are reserved in the command tree
-and land later in the phase; they exit with a distinct code and a ticket number
-rather than reading as a typo.
+```sh
+actana project ls                   # the Projects that Core owns
+actana project files api            # what is inside one
+actana project cp ./dist api:build  # copy a folder into it — and the reverse
+actana session start api "fix CI"   # run a harness on it
+actana events tail                  # follow what happens
+```
+
+Every noun and verb in the tree is built. A name this CLI does not know is a
+typo and says so; a name reserved for a later train would exit with a distinct
+code and a ticket number instead, which is how the two are told apart.
+
+## Copying files, in either direction
+
+One side carries the Project and the other is on this machine — the `scp` shape.
+
+```sh
+actana project cp ./dist api:build     # up:   build becomes a copy of dist
+actana project cp api:build ./dist     # down: dist becomes a copy of build
+actana project files api:build --json  # what is in there, machine-readable
+```
+
+A folder crosses as one streamed archive and keeps its permissions, so an
+executable arrives executable. Every file that replaced one already there is
+named in the output — never only counted — and `--json` lists them under
+`overwritten`. Progress appears on a terminal and never under `--json`, where
+stdout carries exactly one document.
+
+A local path is told apart from `<project>:<path>` by a rule rather than a
+guess: a separator before the colon means local, so `./notes:draft.md` and
+`C:\dist` are files on this machine, and that leading `./` is how you name any
+local file with a colon in it.
 
 **Running a Core is the other half of the name.** `actana daemon`, and the rest
 of the machine-side lifecycle, ships with the Core itself and is not in this
