@@ -12,6 +12,7 @@ import type { CliTerminal } from "./cli-terminal.ts";
 import type { OpenCoreShellFn } from "./core-shell-channel.ts";
 import type { CoreConnectFn } from "./core-connection.ts";
 import type { OpenSessionGateway } from "./session-gateway.ts";
+import type { OpenProjectFilesFn } from "./project-files-gateway.ts";
 import type { OpenSessionAttachFn } from "./session-attach-channel.ts";
 
 export type ActanaCliDeps = {
@@ -54,6 +55,19 @@ export type ActanaCliDeps = {
   connect: CoreConnectFn;
   /** How the `session` noun reaches a Core. See `session-gateway.ts`. */
   openSessions: OpenSessionGateway;
+  /**
+   * How `project cp` and `project files` reach a Core's file surface. See
+   * `project-files-gateway.ts` (#129 F12, #168).
+   *
+   * Its own seam rather than a verb on {@link connect}, because it is its own
+   * *protocol*: a Project's files cross the Core's HTTPS routes and deliberately
+   * not the core link (ADR 0028), so the client behind this is one that has both
+   * — a socket to resolve a Project's name on, and a `fetch` with the same mTLS
+   * material for the bytes. {@link CoreLinkClient} describes the socket half
+   * only, and widening it would put a file surface on the three nouns that have
+   * no use for one.
+   */
+  openFiles: OpenProjectFilesFn;
   /** Epoch ms. Only the bearer-expiry line reads it. */
   now: () => number;
   /**

@@ -36,6 +36,20 @@ export type ParsedArgs = {
   kind: string[];
   /** `--limit <n>` — stop after this many rows. Raw, for the same reason as `since`. */
   limit: string | null;
+  // ─── The `project` noun's file flags (#168) ───
+  /**
+   * `--depth <n>` — how far `project files` descends. Raw, like `--limit`: the
+   * verb that reads it is the one that can say what `--depth all` means.
+   */
+  depth: string | null;
+  /**
+   * `--sha256`: ask the Core to digest every file in a listing.
+   *
+   * Off by default and not free — a listing has no bytes in hand, so a digest
+   * means reading every one of them (ADR 0027 D6). A flag rather than always-on
+   * for that reason alone.
+   */
+  sha256: boolean;
   // ─── The `session` noun's flags (#160) ───
   /** `--wait`: block until the Core reports a started Session settled. */
   wait: boolean;
@@ -74,6 +88,7 @@ const VALUE_FLAGS = new Set([
   "--since",
   "--kind",
   "--limit",
+  "--depth",
   "--wait-timeout",
   "--harness",
   "--cwd",
@@ -92,6 +107,8 @@ export function parseArgs(argv: string[]): ParsedArgs {
     since: null,
     kind: [],
     limit: null,
+    depth: null,
+    sha256: false,
     wait: false,
     waitTimeout: null,
     harness: null,
@@ -138,6 +155,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       // comma-joined string — puts a second syntax inside a flag value.
       else if (name === "--kind") parsed.kind.push(value);
       else if (name === "--limit") parsed.limit = value;
+      else if (name === "--depth") parsed.depth = value;
       else if (name === "--wait-timeout") parsed.waitTimeout = value;
       else if (name === "--harness") parsed.harness = value;
       else if (name === "--cwd") parsed.cwd = value;
@@ -151,6 +169,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--verbose":
         parsed.verbose = true;
+        break;
+      case "--sha256":
+        parsed.sha256 = true;
         break;
       case "--wait":
         parsed.wait = true;

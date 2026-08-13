@@ -53,9 +53,14 @@ export const CLI_VERSION: string = manifest.version;
  * #160 built `session`, #161 built `project`, `harness` and `events`, and each
  * row left as its noun landed. The table stays because the distinction it draws
  * has not gone anywhere — a noun a later phase adds owes the reader a ticket
- * number, and a row here is the whole of saying so. The reservations this build
- * still carries are at the verb level: `project cp` / `project files` (#168,
- * phase-3 guardrail 3) and `core shell` (#162).
+ * number, and a row here is the whole of saying so.
+ *
+ * As of #168 the *verb*-level table in `project-command.ts` is empty too:
+ * `project cp` and `project files` were the last two reservations in the tree,
+ * and building them is what took them out of it. Nothing in this build answers
+ * {@link EXIT_UNIMPLEMENTED} any more — which is a fact about this train, not a
+ * reason to delete the mechanism, since #210 (`project rm`) and #211
+ * (`--model`) are the next things that will need it.
  */
 const RESERVED_NOUNS: Record<string, string> = {};
 
@@ -66,7 +71,7 @@ Usage
 
 Nouns
   core      register, select and inspect the Cores this machine can reach
-  project   the Projects a Core owns: ls, add, browse
+  project   the Projects a Core owns: ls, add, browse, files, cp
   harness   the coding agents a Core can run: ls, install
   events    follow a Core's event log: tail
   session   start, ls, logs, resume, kill and send to Sessions on one

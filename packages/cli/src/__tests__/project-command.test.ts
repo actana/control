@@ -148,13 +148,34 @@ describe("a Core-owned Project's path is immutable (ADR 0022)", () => {
     expect(core.mutations, "an edit verb reached the Core").toEqual([]);
   });
 
-  it("reserves the phase-3 verbs rather than leaving them to read as typos", async () => {
+  it("no longer reserves the phase-3 verbs: #168 built them", async () => {
+    // They were `EXIT_UNIMPLEMENTED` and named their ticket until this train.
+    // Now they are commands like any other, and answering `3` for either would
+    // be telling a script to come back later for something already shipped.
+    // What they *are* is `project-cp.test.ts` and `project-files-ls.test.ts`;
+    // what matters here is that this noun no longer disowns them.
     await withRegisteredCore();
     for (const verb of ["cp", "files"]) {
       const run = await cli().run(["project", verb]);
-      expect(run.code, `project ${verb}`).toBe(EXIT_UNIMPLEMENTED);
-      expect(run.err.join("\n")).toContain("#168");
+      expect(run.code, `project ${verb}`).not.toBe(EXIT_UNIMPLEMENTED);
+      expect(run.err.join("\n")).not.toContain("not built yet");
     }
+  });
+
+  it("lists both of them in the noun's help", async () => {
+    const run = await cli().run(["project", "--help"]);
+    expect(run.code).toBe(EXIT_OK);
+    const help = run.out.join("\n");
+    expect(help).toContain("actana project cp");
+    expect(help).toContain("actana project files");
+    // And the section they used to sit in is gone with them.
+    expect(help).not.toContain("Reserved, landing in phase 3");
+  });
+
+  it("still points at the noun grammar: there is no root-level `actana cp` (D8, F12)", async () => {
+    const run = await cli().run(["cp", "./a", "api:b"]);
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain('unknown noun "cp"');
   });
 });
 

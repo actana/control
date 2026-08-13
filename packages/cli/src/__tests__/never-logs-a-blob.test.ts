@@ -19,6 +19,7 @@ import {
   fakeAttachment,
   fakeTerminal,
   fakeCore,
+  fakeProjectFiles,
   fakeSessionGateway,
   fakeStartedSession,
   healthyProbe,
@@ -111,6 +112,28 @@ describe("no verb prints a blob, with --verbose on", () => {
       expectNoSecrets(what, run.all);
     }
 
+    // …and the two verbs that reach a Core over HTTPS rather than the link
+    // (#168). Their gateway holds the same bearer and the same PEM material,
+    // and both of them quote paths back in every message they print — including
+    // the refusals, which is where an error that reached for its whole input
+    // would show up.
+    const files = fakeProjectFiles({
+      entries: [
+        { path: "readme.md", kind: "file", size: 6, mtime: 0, mode: 0o644, sha256: null },
+      ],
+      progressFor: () => [{ type: "done", entries: 0, bytes: 0 }],
+    });
+    const fileRuns: Array<[string, string[]]> = [
+      ["project files", ["project", "files", "api", "--verbose"]],
+      ["project files --json", ["project", "files", "api", "--json", "--verbose"]],
+      ["project cp (up)", ["project", "cp", cli().home, "api:build", "--verbose"]],
+      ["project cp (bad args)", ["project", "cp", "./a", "./b", "--verbose"]],
+    ];
+    for (const [what, argv] of fileRuns) {
+      const run = await cli().run(argv, { files: files.open });
+      expectNoSecrets(what, run.all);
+    }
+
     // …and the one that follows a stream, which has to be driven to its limit.
     const tail = cli().run(["events", "tail", "--since", "start", "--limit", "1", "--verbose"], {
       connect: core.connect,
@@ -126,12 +149,12 @@ describe("no verb prints a blob, with --verbose on", () => {
       ["project", "ls", "--verbose"],
       ["harness", "ls", "--verbose"],
       ["events", "tail", "--verbose"],
+      ["project", "files", "api", "--verbose"],
     ]) {
-      const run = await cli().run(argv, {
-        connect: async () => {
-          throw new Error("connect ECONNREFUSED");
-        },
-      });
+      const refuse = async () => {
+        throw new Error("connect ECONNREFUSED");
+      };
+      const run = await cli().run(argv, { connect: refuse, files: refuse });
       expect(run.code).not.toBe(0);
       expectNoSecrets(argv.join(" "), run.all);
     }
