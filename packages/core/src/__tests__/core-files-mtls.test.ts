@@ -1,4 +1,4 @@
-// One port, one certificate, one bearer, two protocols (#165 F2, ADR 0030).
+// One port, one certificate, one bearer, two protocols (#165 F2, ADR 0028).
 //
 // Every other suite in this ticket exercises the routes over plain `http` with
 // the handler wired by hand. This one proves the claim the ticket actually

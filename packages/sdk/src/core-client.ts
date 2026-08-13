@@ -628,7 +628,7 @@ export class CoreClient {
    *
    * Note what this does *not* gate: nothing on this socket. No frame is
    * withheld, because the file surface adds none — it is a second protocol on
-   * the same server (ADR 0030), and this predicate is about where a caller
+   * the same server (ADR 0028), and this predicate is about where a caller
    * points an HTTPS request.
    */
   canUseFileRoutes(): boolean {

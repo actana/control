@@ -305,7 +305,7 @@ async function startCore(): Promise<void> {
       create: (parent, name) => createDirectory(parent, name),
     },
     // Issue 165: the `/v1/…` file routes, mounted on the same mTLS HTTPS
-    // server the core link is on (ADR 0030). Setting this is what both serves
+    // server the core link is on (ADR 0028). Setting this is what both serves
     // them and announces the `files` capability on `ready`.
     //
     // The lookup is a scan of the project list rather than a `WHERE id = ?`,
@@ -314,7 +314,7 @@ async function startCore(): Promise<void> {
     // broken DB, and a second by-id query in `@actana/shared` would be a
     // second thing to keep in step with the first. If a Core ever holds
     // enough Projects for this to matter, the fix is an index in SQLite, not
-    // a cache here — the filesystem is the model (ADR 0029) and this is the
+    // a cache here — the filesystem is the model (ADR 0027) and this is the
     // one lookup that is not the filesystem.
     filesPort: {
       projectRoot: (projectId) =>

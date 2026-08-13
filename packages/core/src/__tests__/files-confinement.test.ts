@@ -11,7 +11,7 @@ import { cleanupTrees, makeTree } from "./files-fixture";
 // that a mistake is refused with a reason an operator can read. They do not
 // assert containment against someone who wants out — `core shell` is the
 // sanctioned way onto this machine's disk, so there is nothing here to escape
-// and this suite must not be read as claiming otherwise (ADR 0029).
+// and this suite must not be read as claiming otherwise (ADR 0027).
 
 afterEach(() => cleanupTrees());
 

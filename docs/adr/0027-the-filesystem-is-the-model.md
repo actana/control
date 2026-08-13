@@ -1,0 +1,50 @@
+# The filesystem is the model
+
+[#129](https://github.com/actana/control/issues/129) phase 3 gives an Operator a way to move files between their machine and a Project on a Core. The first question such a feature asks is not "what does the API look like" — it is **what is a file, to this system?** Every answer that begins "a row with an id" leads to an index, an index leads to a synchroniser, and a synchroniser leads to the failure mode where the Panel confidently shows a file a harness deleted forty minutes ago.
+
+This record takes the other answer. **A Project's files are the directory on the Core's machine, and nothing else describes them.** There is no file table, no per-file id, no cached tree, no watcher. A path plus a Project root is the whole address space, and `readdir`, `stat` and `open` are the query engine.
+
+It also settles the thing that always gets confused with this one: the path check that keeps a transfer inside the Project root. That check is real, it is tested, and it is **not a security boundary** — see D5, which exists because the opposite claim is the one a reader will make on this record's behalf if it is not written down.
+
+## The decisions
+
+**D1 — A Project's files are the directory. There is no index.** No table of files, no id per file, no stored tree, no mtime cache, no inotify watcher feeding any of the above. Every answer this surface gives is produced by asking the operating system at the moment it is asked. The Core already holds the Project's root path in its `projects` table, which is the one lookup that is not the filesystem, and it is the only one.
+
+The alternative is not merely more code, it is a **second source of truth about a directory that a Harness is actively writing to.** A harness run creates, moves and deletes files continuously and tells nobody. An index over that is wrong between the moment the harness writes and the moment the watcher catches up, and the operator is never told which of those moments they are looking at. A `readdir` is right at the moment it returns, which is the strongest claim anything can make about a live directory, and it is the claim an operator can reason about.
+
+**D2 — The address of a file is `(projectId, relative path)`.** Project-relative, POSIX-shaped, `/`-separated; `""` and `"."` both mean the Project root. That is the whole naming scheme. There is no handle to open, no cursor to hold, no id to resolve — two consecutive requests naming the same path are two independent questions about the same directory, and neither carries state from the other.
+
+The consequence is that this surface is **stateless between requests**, which is what lets `GET` be repeated, cached by nobody, and interrupted without a cleanup step. The one piece of per-Project state in the whole ticket is the write lease (ADR 0028 D6), and it lives in memory and dies with the process, exactly like the Session locks beside it.
+
+**D3 — A path is a VM path and only the Core can resolve it.** This is not new — `CONTEXT.md` has said it since the fork, and the spawn path has enforced it since [ADR 0004](0004-core-owns-write-path.md). It is restated because a file surface is where it is most tempting to break: the Panel is rendering a tree, the Panel has the path strings, and checking one of them in the Panel would save a round trip.
+
+It would also be wrong, and not by a little. The Panel does not have the Core's disk. It cannot resolve a symlink on it, cannot know a mount point, cannot know that `~/work` is `/mnt/data/work` on that machine and not on another. **Exactly one machine validates paths: the one that owns the disk** ([#129](https://github.com/actana/control/issues/129) F11). The Panel is a dumb pipe here and forwards what it is given unexamined. If validating in the Panel ever looks convenient, that is the bug and not the shortcut.
+
+**D4 — The five fields travel from the first commit: `path`, `size`, `mtime`, `mode`, `sha256`.** Every entry in every progress stream carries all five ([#129](https://github.com/actana/control/issues/129) F10). Four are free — they are in the `stat` that had to happen anyway. The fifth is free *only while the bytes are in hand*, which is the entire argument: hashing during a transfer costs one pass that is already being made, and adding it later costs a second pass over every byte of a `node_modules`.
+
+What falls out of it is a diff endpoint — "which of these files differ from what I have" — that needs no new traversal and no index (D1). Nothing in this ticket consumes the digest. It is here anyway, because the version of this decision that is expensive to reverse is the one where it is missing.
+
+**D5 — The confinement check is an accident guard, and this record does not claim it is a security boundary.** The Core refuses a transfer path that is absolute, that contains `..`, or that resolves outside the Project root through a symlink. Those refusals are real and they are tested. What they are *for* is stopping a mistake: a `project cp` with a fat-fingered `../../etc`, a Panel drag-drop onto the wrong row, a tar built by a script that got its base directory wrong.
+
+They are **not containment**, and nobody should design as though they were. Whoever can call this surface holds a registration blob, and a registration blob opens a **VM Shell Session** — `core shell`, the sanctioned escape hatch, running as the same user on the same disk with no path check anywhere near it. A guard sitting next to an unlocked door is a guard against walking into the wall, not against an intruder.
+
+Writing this down is the point of the clause. The failure mode is not the check being weak; it is somebody two years from now reading "path confinement" in a file name, concluding the Core sandboxes file access, and putting something load-bearing on top of that conclusion. The tests say the same thing in their own header, for the same reason.
+
+None of this weakens the tar hardening in [ADR 0029](0029-a-folder-crosses-as-one-streamed-tar.md). An unpacker that writes outside the directory it was told to write into is a *defect* whatever the trust model is, and it is fixed as one.
+
+## Alternatives considered
+
+- **A file index in the Core's SQLite, refreshed by a watcher (rejected, D1).** The conventional answer, and it buys a fast listing and a cheap diff. Rejected on the Harness: a Project's directory is written by a program that reports none of its writes, so the index is a claim about the past presented as a claim about the present. The bug it produces — a Panel showing a file that is not there — is unfalsifiable from the Panel, because the Panel has nothing but the index to check against.
+- **Per-file ids, so a rename is trackable (rejected, D2).** Attractive for a future sync feature. Rejected because an id is only meaningful if something maintains it, which is D1's index by another name, and because inodes — the filesystem's own answer — do not survive the `mv` across devices that a Project reorganisation actually is.
+- **Validate paths in the Panel as well, "defence in depth" (rejected, D3).** Superficially free. Rejected because the Panel cannot do it correctly — it has no access to the disk whose symlinks decide the answer — so what it would actually add is a second, weaker, *divergent* rule that rejects legitimate paths the Core would have accepted, and an operator with two error messages to reconcile. Two validators is not depth when only one of them can see.
+- **Add `sha256` later, when a diff endpoint needs it (rejected, D4).** The version that looks cheaper today. Rejected on arithmetic: adding it later means re-reading every byte of every Project that wants to be diffed, and the first person to want that will be looking at a repository with a `node_modules` in it.
+- **Design the confinement check as a sandbox and say so (rejected, D5).** Rejected as false. It would require closing `core shell`, which is a deliberate product feature ([`CONTEXT.md`](../../CONTEXT.md), "VM Shell Session"), and even then a Harness spawned into a Project runs arbitrary code as the same user. Claiming a boundary the system does not have is worse than having no boundary, because a claim gets built on.
+
+## Consequences
+
+- **Listing is a `readdir`, and it is issue [#166](https://github.com/actana/control/issues/166)'s to build.** This record says what it will be reading; it does not build it.
+- **A very large directory is answered by walking it.** No index means no shortcut. That is accepted: the tar path (ADR 0029) makes the *transfer* bandwidth-bound, and a listing that is slow on a `node_modules` is slow because a `node_modules` is large, which is a true thing to show an operator.
+- **Nothing to migrate, ever.** There is no schema for a file, so there is no migration when the file surface changes shape — a new field on a progress entry is a new field, and an older reader ignores it.
+- **The `projects` table's `path` column is now load-bearing for a second surface.** It was the spawn path's root check; it is now also the file surface's address space. Both go through the Core, and neither caches it.
+- **A Panel-side path check would be a review finding, not a judgement call** (D3). Named here so a reviewer can cite a clause instead of an opinion.
+- **`files-confinement.ts` and its test both carry D5 in their header comments.** The claim is denied in the place a reader meets the code, not only here, because a file called "confinement" is read far more often than an ADR is.

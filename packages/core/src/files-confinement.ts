@@ -8,7 +8,7 @@
 // the Project root and runs as the same user with the same disk. A guard that
 // stops a mistake is worth having; a guard advertised as containment when the
 // sanctioned escape hatch sits next to it is worse than none, because someone
-// will build on the claim. See ADR 0029.
+// will build on the claim. See ADR 0027.
 //
 // **One machine validates paths: this one** (#129 F11). The Panel is a dumb
 // pipe and validates nothing, because it cannot — a Project's path is a VM path

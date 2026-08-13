@@ -1,6 +1,6 @@
 // A folder crosses as one streamed tar (#165 F4), packed and unpacked here.
 //
-// Why tar at all, and why not one request per file, is ADR 0031. Why the codec
+// Why tar at all, and why not one request per file, is ADR 0029. Why the codec
 // is written out longhand instead of pulled from npm is the same record: the
 // unpack side is this ticket's attack surface, every rule it enforces is a
 // rule about *this* Core's disk, and a dependency in the Core bundle whose

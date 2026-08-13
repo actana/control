@@ -351,7 +351,7 @@ export type PtyCoreLinkServerOptions = {
    * before this ticket, and a valid Core.
    *
    * The routes are a second protocol on one server, not a second listener: one
-   * port, one certificate, one bearer (ADR 0030). **No file byte crosses this
+   * port, one certificate, one bearer (ADR 0028). **No file byte crosses this
    * WebSocket**, which is the whole reason they are over there.
    */
   filesPort?: CoreFilesPort;
@@ -538,7 +538,7 @@ export class PtyCoreLinkServer {
     const create = opts.createServer ?? defaultCreateServer;
     // The file routes are built before the server, because the server factory
     // is what mounts them: one https.Server answering a WebSocket upgrade and
-    // three `/v1/…` routes, never two listeners (#165 F2, ADR 0030).
+    // three `/v1/…` routes, never two listeners (#165 F2, ADR 0028).
     this.fileWriteLocks = opts.fileWriteLocks ?? new ProjectWriteLocks();
     const httpRoutes = opts.filesPort
       ? createCoreFilesRequestHandler({
@@ -1948,7 +1948,7 @@ function defaultCreateServer(opts: {
 
 /**
  * Hang the Core's `/v1/…` routes on the server the WebSocket is mounted on
- * (#165 F2, ADR 0030).
+ * (#165 F2, ADR 0028).
  *
  * Everything the routes do not claim gets a 404 from here rather than from
  * them, which is what keeps the Core's HTTP surface a closed list: a path this

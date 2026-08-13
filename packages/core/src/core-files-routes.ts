@@ -2,7 +2,7 @@
 //
 // These mount on the **same mTLS HTTPS server the core-link WebSocket already
 // listens on** — one port, one certificate, one bearer, two protocols. Bytes
-// cross here and never over the core link (ADR 0030): a multi-gigabyte upload
+// cross here and never over the core link (ADR 0028): a multi-gigabyte upload
 // chunked into JSON frames would stutter every terminal pane sharing that
 // socket through head-of-line blocking, and base64 would cost a third of the
 // wire for the privilege.
@@ -36,7 +36,7 @@ import log from "./log";
  * The whole of #129 F1 is behind this one method: **the filesystem is the
  * model.** There is no file index, no per-file id, no shadow table to keep in
  * step with the disk — a path plus a Project root is the entire address space,
- * and `readdir` is the query engine. See ADR 0029.
+ * and `readdir` is the query engine. See ADR 0027.
  */
 export interface CoreFilesPort {
   /** Absolute path of a Project on this machine, or null when the id is unknown. */

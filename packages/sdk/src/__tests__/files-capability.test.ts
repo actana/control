@@ -117,7 +117,7 @@ describe("a newer client against an older Core that omits it", () => {
 
   it("drives that Core exactly as it always did — no frame is gated on this", async () => {
     // Unlike `multiConnection`, there is nothing to withhold: the file surface
-    // adds no frame to this socket (ADR 0030), so a client that cannot use it
+    // adds no frame to this socket (ADR 0028), so a client that cannot use it
     // loses nothing here.
     const connected = await connectTo();
     const result = await connected.request({ type: "projectsList", reqId: "r1" });

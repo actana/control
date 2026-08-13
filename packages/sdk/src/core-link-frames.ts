@@ -821,7 +821,7 @@ export type CoreLinkMultiConnectionCapability = { version: 1 };
  * **HTTPS origin** — the same server this WebSocket is mounted on, reachable at
  * {@link CoreConnection.httpsBaseUrl}. Nothing about the capability changes the
  * core link itself: no frame is added, none changes meaning, and not one byte
- * of a file transfer crosses this socket (ADR 0030).
+ * of a file transfer crosses this socket (ADR 0028).
  *
  * `version` is the capability's own number, independent of
  * {@link CORE_LINK_PROTOCOL_VERSION} — it moves when the file surface changes
@@ -1285,7 +1285,7 @@ export type CoreLinkServerFrame =
  * Issue 165 adds the optional `files` capability to the `ready` frame — and
  * does NOT move this version either (ADR 0024 D11), for the sixth time and, for
  * the first time, on a surface that is not the core link at all. The file
- * routes live on the Core's HTTPS origin (ADR 0030), so there is no frame here
+ * routes live on the Core's HTTPS origin (ADR 0028), so there is no frame here
  * to add, none to gate, and no existing frame whose meaning changes: the
  * capability is a pointer at a second protocol on the same socket's server.
  * That makes the "absence yields exactly today's behaviour" test trivially

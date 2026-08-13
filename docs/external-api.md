@@ -1,15 +1,21 @@
 # The HTTP surfaces
 
-Actana Control has two HTTP surfaces, and neither is a public integration API.
+Actana Control has three HTTP surfaces, and none is a public integration API.
 This page says what they are, so nobody has to guess from a port number.
 
 > **History.** The root README used to document a Core API of
 > `POST /api/projects/:id/tasks` and `POST /api/tasks/:id/status`, guarded by a
 > token from `actana status`. **That design is retired and those routes do not
 > exist.** Task and project writes now travel as core-link mutation frames, not
-> HTTP ([ADR 0004](adr/0004-core-owns-write-path.md)); the Core's only HTTP
-> surface is the hook receiver below. The old text is corrected here rather
-> than carried forward.
+> HTTP ([ADR 0004](adr/0004-core-owns-write-path.md)); the loopback hook receiver
+> below is the Core's only *unversioned* HTTP surface, and its `/v1/…` file
+> routes are the only other one. The old text is corrected here rather than
+> carried forward.
+>
+> This page said "the Core's only HTTP surface is the hook receiver" until
+> [#165](https://github.com/actana/control/issues/165) added the file routes.
+> That sentence is corrected above rather than deleted, because it is the kind
+> of claim a reader may have taken a dependency on.
 
 ## A Core's hook receiver
 
@@ -40,6 +46,52 @@ curl -sS -m 3 -X POST \
 
 A restart mints a fresh token, so a hook from a previous boot's PTY fails
 auth — which is correct, because that session's process is gone.
+
+## A Core's file routes
+
+A Core answers `/v1/…` on the **same mTLS HTTPS server its core-link WebSocket
+is mounted on** — one port, one certificate, one bearer, two protocols
+([ADR 0028](adr/0028-file-bytes-cross-https-not-the-core-link.md)). File bytes
+cross here and never over the core link: chunking a multi-gigabyte upload into
+JSON frames would stutter every terminal pane sharing that socket, and base64
+would cost a third of the wire.
+
+This is not a public integration API either. It is reached with the material in
+a **registration blob** — `CoreConnection.httpsBaseUrl` is the origin, and the
+same client certificate and bearer the core link uses — and the surface a third
+party is meant to type against is `project.files.*` in `@actana/sdk`.
+
+| Property | Value |
+| --- | --- |
+| Origin | the Core's public host and core-link port, over `https://` |
+| Auth | the pinned client certificate **and** `Authorization: Bearer <bearer>` — mTLS alone is not the gate |
+| Announced by | `files: { version: 1 }` on the core-link `ready` frame; absent means this Core has no file surface |
+
+| Route | Does |
+| --- | --- |
+| `GET /v1/projects/:projectId/files?path=<relative>` | a file's raw bytes, or a directory as one streamed `application/x-tar` |
+| `HEAD /v1/projects/:projectId/files?path=<relative>` | the same headers, no body |
+| `PUT /v1/projects/:projectId/files?path=<relative>` | write — `Content-Type: application/x-tar` unpacks an archive into that path, anything else writes one file at it |
+
+`PUT` answers `200` with a chunked `application/x-ndjson` progress stream, one
+line per entry carrying `{path, size, mtime, mode, sha256}` and a `result` of
+`written` or `overwritten`, then a `done` line. A failure part-way through is
+the last line rather than a status code, because the status line was spent on
+the first entry.
+
+Refusals carry a machine-readable `code` beside the prose:
+
+| Status | Code | Means |
+| --- | --- | --- |
+| 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside that Project. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5) |
+| 401 | `unauthorized` | no bearer, or one this Core refuses |
+| 404 | `project-not-found`, `not-found` | no such Project on this Core, or no such path in it |
+| 409 | `transfer-in-progress` | another write is already running on this Project. One write at a time per Project; reads are unrestricted and concurrent |
+| 507 | `insufficient-storage` | the declared body length does not fit on the Project's filesystem. There is no size cap — only a fit check |
+
+A client that sends `Expect: 100-continue` is refused before it uploads a byte,
+which is what makes the 409 immediate for a large transfer rather than merely
+quick.
 
 ## The Panel's own routes
 
