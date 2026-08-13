@@ -23,9 +23,11 @@
 
 import {
   coreLinkProtocolCompatible,
+  readFilesCapability,
   readMultiConnectionCapability,
   type CoreLinkErrorCode,
   type CoreLinkEvent,
+  type CoreLinkFilesCapability,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkLaunchProcessKillResult,
   type CoreLinkMultiConnectionCapability,
@@ -137,6 +139,14 @@ export type CoreConnectionInfo = {
   compatible: boolean;
   /** The `multiConnection` capability, or null on a single-connection Core. */
   multiConnection: CoreLinkMultiConnectionCapability | null;
+  /**
+   * The `files` capability, or null on a Core with no file surface (#165 F9).
+   *
+   * Non-null means this Core answers `/v1/projects/:projectId/files` on its
+   * HTTPS origin — {@link CoreConnection.httpsBaseUrl}, off the same
+   * registration blob that produced this connection's `wss://` url.
+   */
+  files: CoreLinkFilesCapability | null;
   /** The `coreId` off `authOk`; null when no bearer was configured. */
   coreId: string | null;
   /** The bearer's expiry off `authOk`; null when no bearer was configured. */
@@ -296,6 +306,13 @@ export class CoreClient {
    * during the window where the answer is genuinely unknown.
    */
   private multiConnection: CoreLinkMultiConnectionCapability | null = null;
+  /**
+   * This Core's `files` capability as announced on the *current* connection;
+   * null when absent and before `ready` lands. Re-read on every `ready` for the
+   * same reason `multiConnection` is: a Core can be downgraded, and a stale
+   * `true` here would send a caller at a route that is no longer there.
+   */
+  private files: CoreLinkFilesCapability | null = null;
   private authOkFrame: CoreLinkAuthOkFrame | null = null;
 
   private readonly readyListeners = new Set<(info: CoreConnectionInfo) => void>();
@@ -400,6 +417,7 @@ export class CoreClient {
     if (this.closed) return;
     this.ready = null;
     this.multiConnection = null;
+    this.files = null;
     this.authOkFrame = null;
     this.established = false;
     this.transport = new CoreLinkTransport({
@@ -411,6 +429,7 @@ export class CoreClient {
         onReady: (frame) => {
           this.ready = frame;
           this.multiConnection = readMultiConnectionCapability(frame.multiConnection);
+          this.files = readFilesCapability(frame.files);
           const info = this.connectionInfo();
           for (const cb of this.readyListeners) cb(info);
           this.maybeEstablish();
@@ -446,6 +465,7 @@ export class CoreClient {
         onClose: (reason) => {
           this.ready = null;
           this.multiConnection = null;
+          this.files = null;
           this.authOkFrame = null;
           // Cleared here and not only on the next dial: between a socket dying
           // and a durable client's backoff opening the next one, this client is
@@ -545,6 +565,7 @@ export class CoreClient {
       protocolVersion: this.ready?.version ?? null,
       compatible: coreLinkProtocolCompatible(this.ready?.version ?? null),
       multiConnection: this.multiConnection,
+      files: this.files,
       coreId: this.authOkFrame?.coreId ?? null,
       bearerExpiresAt: this.authOkFrame?.exp ?? null,
     };
@@ -588,6 +609,38 @@ export class CoreClient {
    */
   multiConnectionCapability(): CoreLinkMultiConnectionCapability | null {
     return this.multiConnection;
+  }
+
+  /**
+   * Does this Core answer the `/v1/…` file routes on its HTTPS origin
+   * (#165 F9)?
+   *
+   * **The one predicate to consult before making a file request.** False means
+   * this Core has no file surface: it is not a degraded Core and not one that
+   * needs updating, it is every Core that shipped before the surface existed,
+   * and a client is expected to withhold the affordance rather than call a
+   * route and read a 404 as an outage.
+   *
+   * False before `ready` lands and after a drop, for as long as the answer is
+   * unknown — the same closed-while-unknown gate `canSendMultiConnectionFrames`
+   * uses. A caller that needs the answer at startup awaits {@link connect},
+   * whose result carries it.
+   *
+   * Note what this does *not* gate: nothing on this socket. No frame is
+   * withheld, because the file surface adds none — it is a second protocol on
+   * the same server (ADR 0030), and this predicate is about where a caller
+   * points an HTTPS request.
+   */
+  canUseFileRoutes(): boolean {
+    return this.files !== null;
+  }
+
+  /**
+   * This connection's `files` capability, or null. For callers that need the
+   * version rather than the yes/no — the gate is {@link canUseFileRoutes}.
+   */
+  filesCapability(): CoreLinkFilesCapability | null {
+    return this.files;
   }
 
   /** Hang up. Rejects every outstanding request; fires no `onDisconnected`. */

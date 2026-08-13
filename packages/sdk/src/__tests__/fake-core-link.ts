@@ -334,6 +334,13 @@ export function startCoreRig(
       | { ok: true; coreId: string; exp: number }
       | { ok: false; reason: "expired" | "bad-signature" | "malformed" };
     announceMultiConnection?: boolean;
+    /**
+     * Announce the `files` capability (#165 F9). The rig serves no HTTP — it
+     * has no real server to mount routes on — so this is set outright, which is
+     * exactly what the option exists for: what the client sees on `ready` is
+     * the thing under test, not where the routes live.
+     */
+    announceFiles?: boolean;
     protocolVersion?: string;
     liveEventPollMs?: number;
     /** Wire one to exercise the Core's own thrown-mutation → `error` frame path. */
@@ -353,6 +360,7 @@ export function startCoreRig(
     ...(opts.announceMultiConnection === undefined
       ? {}
       : { announceMultiConnection: opts.announceMultiConnection }),
+    ...(opts.announceFiles === undefined ? {} : { announceFiles: opts.announceFiles }),
     ...(opts.protocolVersion ? { protocolVersion: opts.protocolVersion } : {}),
   });
   return {
