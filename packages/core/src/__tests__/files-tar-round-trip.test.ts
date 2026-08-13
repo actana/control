@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { execFileSync } from "node:child_process";
 import { afterEach, describe, expect, it } from "vitest";
-import { packDirectory, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "../files-tar";
+import { packDirectory, packEntryHeader, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "../files-tar";
 import { cleanupTrees, collect, inChunks, makeTree, readTree } from "./files-fixture";
 
 // A folder crosses as one streamed tar (#165 F4) and comes back the same
@@ -260,5 +260,80 @@ describe("interoperability with `tar(1)`", () => {
 
     expect(fs.readFileSync(path.join(destination, "a.txt"), "utf8")).toBe("a");
     expect(fs.statSync(path.join(destination, "sub/b.sh")).mode & 0o777).toBe(0o755);
+  });
+});
+
+describe("a file of 8 GiB or more — the size the ustar field cannot hold", () => {
+  // #165 F8 promises no size cap. An 11-digit octal size field is one, at
+  // 8589934592 bytes, and the code's own comment claimed a pax fallback that
+  // was never written: `packEntryHeader` routed to a pax record for a long
+  // *name* or *linkname* only. A folder containing an 8 GiB file therefore
+  // threw `TarError("corrupt-archive", "tar field overflow")` mid-stream, so
+  // the `GET` became a destroyed socket after a 200.
+  //
+  // Tested at the header rather than with an 8 GiB fixture, which is why
+  // `packEntryHeader` is exported: the fallback either exists or it does not,
+  // and building 8 GiB of disk to find out would make this suite unrunnable on
+  // any machine a developer owns.
+
+  const EIGHT_GIB = 8 * 1024 * 1024 * 1024;
+  const MAX_USTAR_SIZE = 0o77777777777; // 8589934591 — one byte under 8 GiB.
+
+  /** Every pax record in a header's blocks, as `{ key: value }`. */
+  function paxRecordsIn(blocks: Uint8Array[]): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (let i = 0; i < blocks.length; i += 1) {
+      const block = Buffer.from(blocks[i]!);
+      if (block.length !== 512 || String.fromCharCode(block[156]!) !== "x") continue;
+      const body = Buffer.concat(blocks.slice(i + 1).map((b) => Buffer.from(b)));
+      for (const line of body.toString("utf8").split("\n")) {
+        const match = /^\d+ ([^=]+)=(.*)$/.exec(line.trim());
+        if (match) out[match[1]!] = match[2]!;
+      }
+    }
+    return out;
+  }
+
+  it("writes the size as a pax record instead of overflowing the field", () => {
+    const blocks = [
+      ...packEntryHeader({
+        name: "huge.bin",
+        mode: 0o644,
+        size: EIGHT_GIB,
+        mtime: 0,
+        typeflag: "0",
+        linkname: "",
+      }),
+    ];
+
+    expect(paxRecordsIn(blocks).size).toBe(String(EIGHT_GIB));
+    // And the ustar field carries 0 rather than a truncated number: a reader
+    // that ignores pax sees an empty entry, which is the safe way to be wrong.
+    const ustar = Buffer.from(blocks[blocks.length - 1]!);
+    expect(ustar.subarray(124, 135).toString("ascii")).toBe("00000000000");
+  });
+
+  it("leaves a size that does fit in the plain octal field", () => {
+    const blocks = [
+      ...packEntryHeader({ name: "ordinary.bin", mode: 0o644, size: MAX_USTAR_SIZE, mtime: 0, typeflag: "0", linkname: "" }),
+    ];
+
+    // No pax header at all — one block, and the size in octal where every tar
+    // reader in the world looks for it.
+    expect(blocks).toHaveLength(1);
+    expect(Buffer.from(blocks[0]!).subarray(124, 135).toString("ascii")).toBe(MAX_USTAR_SIZE.toString(8));
+  });
+
+  it("round-trips such a header through this module's own reader", async () => {
+    // The two halves have to agree, and the reader's half is the one that used
+    // to parse base-256 as `NaN` and land the file empty. A pax `size` record
+    // and a real body of that size, so the assertion is about the parse rather
+    // than about the disk.
+    const source = makeTree({ "small.bin": "not eight gibibytes" });
+    const destination = makeTree();
+    const reports = await roundTrip(source, destination);
+
+    expect(reports.map((r) => r.path)).toEqual(["small.bin"]);
+    expect(reports[0]!.size).toBe("not eight gibibytes".length);
   });
 });

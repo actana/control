@@ -45,7 +45,8 @@ export type TarRefusalCode =
   | "entry-outside-root"
   | "unsupported-entry-type"
   | "hardlink-outside-root"
-  | "symlink-outside-root";
+  | "symlink-outside-root"
+  | "directory-in-the-way";
 
 export class TarError extends Error {
   readonly code: TarRefusalCode;
@@ -98,12 +99,41 @@ function readString(block: Uint8Array, offset: number, length: number): string {
   return Buffer.from(end === -1 ? slice : slice.subarray(0, end)).toString("utf8");
 }
 
+/**
+ * A ustar numeric field: octal, or GNU/pax base-256 for anything that does not
+ * fit.
+ *
+ * The 12-byte size field holds 11 octal digits — 8589934591 bytes, one byte
+ * under 8 GiB. Every real tar writer encodes a larger size some other way, and
+ * the two ways in the wild are a pax `size` record (handled by the caller) and
+ * **base-256**: the high bit of the first byte set, the rest of the field a
+ * big-endian integer. Parsing that as octal yields `NaN`, and returning 0 for
+ * it — which is what this did — lands the file empty and then desynchronises
+ * the stream into a checksum failure two entries later. So it is read properly.
+ *
+ * Above 2^53 the result stops being exact, but that is 8 PiB in a single tar
+ * entry and `Number` is what every field on this surface is.
+ */
 function readOctal(block: Uint8Array, offset: number, length: number): number {
+  const first = block[offset] ?? 0;
+  if ((first & 0x80) !== 0) {
+    // A leading 0xff is base-256's negative sign. No field this module reads is
+    // ever legitimately negative, so it is corruption rather than a value.
+    if (first === 0xff) {
+      throw new TarError("corrupt-archive", "tar numeric field is negative, which no field on this surface can be");
+    }
+    let value = first & 0x7f;
+    for (let i = offset + 1; i < offset + length; i += 1) value = value * 256 + (block[i] ?? 0);
+    return value;
+  }
   const raw = readString(block, offset, length).trim();
   if (raw.length === 0) return 0;
   const value = Number.parseInt(raw, 8);
   return Number.isFinite(value) ? value : 0;
 }
+
+/** The largest size an 11-digit octal ustar field can hold: 8 GiB minus a byte. */
+const MAX_USTAR_SIZE = 0o77777777777;
 
 function writeString(block: Uint8Array, offset: number, length: number, value: string): void {
   const bytes = Buffer.from(value, "utf8");
@@ -116,9 +146,11 @@ function writeString(block: Uint8Array, offset: number, length: number, value: s
 }
 
 function writeOctal(block: Uint8Array, offset: number, length: number, value: number): void {
-  // ustar writes N-1 octal digits then a NUL. Values that do not fit — a file
-  // over 8 GiB in a 12-byte size field — are the reason `packEntryHeader`
-  // falls back to a pax record.
+  // ustar writes N-1 octal digits then a NUL. A value that does not fit — a
+  // file of 8 GiB or more in a 12-byte size field — is written as a pax `size`
+  // record by `packEntryHeader`, which then passes 0 here for the ustar field
+  // the record overrides. So reaching the overflow in `writeString` below is a
+  // bug in this file rather than a file the operator is not allowed to send.
   const text = Math.max(0, Math.floor(value)).toString(8).padStart(length - 1, "0");
   writeString(block, offset, length, `${text}\0`);
 }
@@ -215,17 +247,34 @@ function* paxRecordBlocks(name: string, records: Record<string, string>): Genera
   if (padding(bytes.length) > 0) yield ZERO_BLOCK.subarray(0, padding(bytes.length));
 }
 
-function* packEntryHeader(header: TarHeader): Generator<Uint8Array> {
+/**
+ * One entry's header blocks — a pax header first when anything overflows ustar.
+ *
+ * Exported for the codec's own tests: the three overflow cases (a long name, a
+ * long link target, a size of 8 GiB or more) are the ones a round-trip test
+ * cannot reach without a fixture that costs 8 GiB of disk to build, and they
+ * are exactly the ones worth pinning.
+ */
+export function* packEntryHeader(header: TarHeader): Generator<Uint8Array> {
   const nameTooLong = Buffer.byteLength(header.name) > 100;
   const linkTooLong = Buffer.byteLength(header.linkname) > 100;
-  if (nameTooLong || linkTooLong) {
+  // #165 F8 says no size cap, and an 11-digit octal field is one at 8 GiB. A
+  // pax `size` record carries the real value in decimal and every reader that
+  // understands pax — including this module's — takes it over the ustar field.
+  const sizeTooBig = header.size > MAX_USTAR_SIZE;
+  if (nameTooLong || linkTooLong || sizeTooBig) {
     const records: Record<string, string> = {};
     if (nameTooLong) records.path = header.name;
     if (linkTooLong) records.linkpath = header.linkname;
+    if (sizeTooBig) records.size = String(header.size);
     yield* paxRecordBlocks(header.name, records);
   }
   yield buildHeaderBlock({
     ...header,
+    // 0, not the real size: the ustar field cannot hold it, and the pax record
+    // above is what a reader uses. A reader that ignores pax sees an empty
+    // entry rather than a wrong one, which is the safe way to be wrong.
+    size: sizeTooBig ? 0 : header.size,
     // The ustar fields still have to hold *something* legal. Truncation is safe
     // because the pax record above overrides them for any reader that
     // understands pax, and this Core's reader does.
@@ -488,6 +537,10 @@ export async function unpackTarInto(
   // header. Cleared as soon as they are consumed.
   let pendingName: string | null = null;
   let pendingLink: string | null = null;
+  // A pax `size` record is how a writer states a size the 11-digit octal ustar
+  // field cannot hold (8 GiB and up). It overrides the header field for the
+  // next real entry, exactly as `path` and `linkpath` do.
+  let pendingSize: number | null = null;
 
   for (;;) {
     const block = await reader.exact(BLOCK);
@@ -502,7 +555,15 @@ export async function unpackTarInto(
     zeroBlocks = 0;
 
     const header = parseHeader(block);
-    const bodySize = header.size;
+    // A pax record only ever describes the *next* real entry, and a pax or GNU
+    // metadata block is not one — so the override is applied here and consumed
+    // where the name and link overrides are, below.
+    const isMetadataEntry =
+      header.typeflag === TYPE_PAX_NEXT ||
+      header.typeflag === TYPE_PAX_GLOBAL ||
+      header.typeflag === TYPE_GNU_LONGNAME ||
+      header.typeflag === TYPE_GNU_LONGLINK;
+    const bodySize = !isMetadataEntry && pendingSize !== null ? pendingSize : header.size;
     const bodyPadding = padding(bodySize);
 
     // ── Metadata-only entries: read, remember, move on ──
@@ -516,6 +577,10 @@ export async function unpackTarInto(
         const records = parsePaxRecords(body);
         if (typeof records.path === "string") pendingName = records.path;
         if (typeof records.linkpath === "string") pendingLink = records.linkpath;
+        if (typeof records.size === "string") {
+          const declared = Number(records.size);
+          if (Number.isFinite(declared) && declared >= 0) pendingSize = declared;
+        }
       }
       continue;
     }
@@ -532,6 +597,7 @@ export async function unpackTarInto(
     const rawLink = pendingLink ?? header.linkname;
     pendingName = null;
     pendingLink = null;
+    pendingSize = null;
 
     // ── The refusals the ticket names, in the order they are cheapest ──
     //
@@ -593,7 +659,23 @@ export async function unpackTarInto(
         `tar entry ${JSON.stringify(rawName)} resolves to ${confined.absolute}, outside the Project root`,
       );
     }
-    if (entryRelative.length === 0) continue;
+    // ── Entries with no body of their own ──
+    //
+    // A directory, a symlink and a hardlink all carry size 0 from any writer
+    // that means well, so the three `continue`s below used to walk straight on
+    // to the next block. An archive that declares a non-zero size on one of
+    // them then desynchronises the stream: the next 512 bytes read as a header,
+    // fail their checksum, and the whole transfer dies as `corrupt-archive`.
+    //
+    // That fails closed and no escape follows from it — whatever is parsed
+    // still goes through `confineWriteTarget` — but "two parsers disagree about
+    // where the next entry starts" is the shape that produces real bugs later,
+    // and `tar(1)` skips the declared body. So this one does too, and the
+    // hardening suite has a case for it.
+    if (entryRelative.length === 0) {
+      await reader.skip(bodySize + bodyPadding);
+      continue;
+    }
 
     const target = confined.absolute;
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
@@ -607,6 +689,7 @@ export async function unpackTarInto(
       await fs.promises.chmod(target, mode);
       entries += 1;
       await onEntry({ path: confined.relative, kind: "directory", size: 0, mtime: header.mtime, mode, sha256: null, result });
+      await reader.skip(bodySize + bodyPadding);
       continue;
     }
 
@@ -626,7 +709,10 @@ export async function unpackTarInto(
           `tar entry ${JSON.stringify(rawName)} links to ${resolved}, which is outside the Project root ${realConfineRoot}`,
         );
       }
-      if (existing) await fs.promises.rm(target, { force: true, recursive: true });
+      if (existing) {
+        await refuseNonEmptyDirectory(target, confined.relative, existing);
+        await fs.promises.rm(target, { force: true, recursive: true });
+      }
       if (header.typeflag === TYPE_SYMLINK) await fs.promises.symlink(rawLink, target);
       else await fs.promises.link(resolved, target);
       entries += 1;
@@ -639,6 +725,7 @@ export async function unpackTarInto(
         sha256: createHash("sha256").update(rawLink).digest("hex"),
         result,
       });
+      await reader.skip(bodySize + bodyPadding);
       continue;
     }
 
@@ -649,8 +736,10 @@ export async function unpackTarInto(
     // writes `link` would land its bytes there with every string check passed.
     // The containment check above already refuses the *link*, so this is the
     // second of two independent reasons that write cannot happen.
-    if (existing && !existing.isFile()) await fs.promises.rm(target, { force: true, recursive: true });
-    else if (existing?.isSymbolicLink()) await fs.promises.rm(target, { force: true });
+    if (existing && !existing.isFile()) {
+      await refuseNonEmptyDirectory(target, confined.relative, existing);
+      await fs.promises.rm(target, { force: true, recursive: true });
+    } else if (existing?.isSymbolicLink()) await fs.promises.rm(target, { force: true });
 
     const hash = createHash("sha256");
     const handle = await fs.promises.open(target, "w", mode);
@@ -689,6 +778,31 @@ export async function unpackTarInto(
   }
 
   return { entries, bytes };
+}
+
+/**
+ * Refuse to delete a non-empty tree to make room for a file or a link.
+ *
+ * Overwrite-by-default (#165 F5) is about replacing a *file*. An archive whose
+ * `src` entry is a regular file, landing on a `src/` that holds a hundred, is
+ * asking for a recursive delete that nothing in the ticket, ADR 0029 D6 or
+ * `docs/external-api.md` promises — and `tar(1)` refuses it rather than
+ * performing it. An *empty* directory is still replaced: there is nothing to
+ * lose, and a stray `mkdir` should not wedge a path forever.
+ *
+ * Refusing mid-archive leaves the entries before this one written, which is
+ * true of every other refusal in this file and is why the progress stream
+ * reports each entry as it lands.
+ */
+async function refuseNonEmptyDirectory(target: string, relative: string, existing: fs.Stats): Promise<void> {
+  if (!existing.isDirectory()) return;
+  const contents = await fs.promises.readdir(target).catch(() => [] as string[]);
+  if (contents.length === 0) return;
+  throw new TarError(
+    "directory-in-the-way",
+    `tar entry ${JSON.stringify(relative)} would replace a directory holding ${contents.length} ` +
+      `entr${contents.length === 1 ? "y" : "ies"} with a file — this Core does not delete a tree to make room for one`,
+  );
 }
 
 async function lstatOrNull(target: string): Promise<fs.Stats | null> {

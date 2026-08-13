@@ -87,11 +87,25 @@ Refusals carry a machine-readable `code` beside the prose:
 | 401 | `unauthorized` | no bearer, or one this Core refuses |
 | 404 | `project-not-found`, `not-found` | no such Project on this Core, or no such path in it |
 | 409 | `transfer-in-progress` | another write is already running on this Project. One write at a time per Project; reads are unrestricted and concurrent |
+| 409 | `directory-in-the-way` | a **file** write landed on a path holding a non-empty directory. Overwrite-by-default replaces files; it does not delete trees |
 | 507 | `insufficient-storage` | the declared body length does not fit on the Project's filesystem. There is no size cap — only a fit check |
 
 A client that sends `Expect: 100-continue` is refused before it uploads a byte,
 which is what makes the 409 immediate for a large transfer rather than merely
 quick.
+
+**Overwriting replaces a file; it never removes a tree.** A `PUT` of a single
+file at a path that currently holds a non-empty directory is refused
+`409 directory-in-the-way` rather than performed, and a tar entry that would do
+the same is refused mid-archive with the same code. `tar(1)` refuses this case
+too. A `PUT ?path=src` meant for `src/x.ts` is a typo, and answering it by
+deleting `src` and reporting an ordinary `overwritten` line would make the
+damage silent. An **empty** directory is still replaced — there is nothing to
+lose, and a stray `mkdir` should not wedge a path forever.
+
+A write transfer holds its Project's lease only for as long as the request
+lives. A client that aborts mid-upload — including one whose progress stream has
+backpressured — releases it, so the 409 above is never permanent.
 
 ## The Panel's own routes
 

@@ -22,6 +22,16 @@ type RawEntry = {
   mode?: number;
   linkname?: string;
   content?: string;
+  /**
+   * A size field that disagrees with the body actually present.
+   *
+   * The whole point of some of the cases below: a link or directory entry that
+   * *claims* a body is how a writer and a reader end up disagreeing about where
+   * the next header starts.
+   */
+  declaredSize?: number;
+  /** Raw 12 bytes for the size field, for the base-256 encoding real tars use. */
+  sizeField?: Buffer;
   /** Overrides the computed checksum, for the corrupt-archive case. */
   checksum?: string;
 };
@@ -29,11 +39,13 @@ type RawEntry = {
 function block(entry: RawEntry): Buffer {
   const header = Buffer.alloc(512);
   const content = Buffer.from(entry.content ?? "", "utf8");
+  const declared = entry.declaredSize ?? content.length;
   header.write(entry.name, 0, 100, "utf8");
   header.write(`${(entry.mode ?? 0o644).toString(8).padStart(7, "0")}\0`, 100, 8, "ascii");
   header.write("0000000\0", 108, 8, "ascii");
   header.write("0000000\0", 116, 8, "ascii");
-  header.write(`${content.length.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
+  if (entry.sizeField) header.set(entry.sizeField.subarray(0, 12), 124);
+  else header.write(`${declared.toString(8).padStart(11, "0")}\0`, 124, 12, "ascii");
   header.write("00000000000\0", 136, 12, "ascii");
   header.write("        ", 148, 8, "ascii");
   header.write(entry.typeflag ?? "0", 156, 1, "ascii");
@@ -402,5 +414,167 @@ describe("what it still gets right while being careful", () => {
     expect(fs.lstatSync(path.join(destination, "alias.txt")).isSymbolicLink()).toBe(false);
     expect(fs.readFileSync(path.join(destination, "alias.txt"), "utf8")).toBe("replaced");
     expect(fs.readFileSync(path.join(destination, "real.txt"), "utf8")).toBe("original");
+  });
+});
+
+describe("an entry that declares a body it has no business having", () => {
+  // A directory, a symlink and a hardlink carry size 0 from any writer that
+  // means well. This module used to `continue` past all three *without*
+  // skipping the declared body, so an archive that declared one desynchronised
+  // the stream: the next 512 bytes of payload were read as a header, failed
+  // their checksum, and the transfer died as `corrupt-archive`.
+  //
+  // It fails closed and no escape follows from it — whatever is parsed still
+  // goes through `confineWriteTarget` — but "the writer and the reader disagree
+  // about where the next entry starts" is the shape that produces real parser
+  // bugs, and `tar(1)` skips the declared body. So this one does too.
+
+  it("skips a directory entry's declared body instead of desynchronising", async () => {
+    const destination = makeTree();
+    const archive = buildTar([
+      // 512 bytes of claimed body, and the body really is there — so a reader
+      // that does not skip it reads "sneaky.txt…" as its next header.
+      { name: "folder/", typeflag: "5", content: "Z".repeat(512) },
+      { name: "after.txt", content: "read as a file, not as a header" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.statSync(path.join(destination, "folder")).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(destination, "after.txt"), "utf8")).toBe("read as a file, not as a header");
+  });
+
+  it("skips a symlink entry's declared body instead of desynchronising", async () => {
+    const destination = makeTree({ "target.txt": "pointed at" });
+    const archive = buildTar([
+      { name: "link", typeflag: "2", linkname: "target.txt", content: "Z".repeat(512) },
+      { name: "after.txt", content: "still a file" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readlinkSync(path.join(destination, "link"))).toBe("target.txt");
+    expect(fs.readFileSync(path.join(destination, "after.txt"), "utf8")).toBe("still a file");
+  });
+
+  it("skips a hardlink entry's declared body instead of desynchronising", async () => {
+    const destination = makeTree({ "target.txt": "pointed at" });
+    const archive = buildTar([
+      { name: "hard", typeflag: "1", linkname: "target.txt", content: "Z".repeat(512) },
+      { name: "after.txt", content: "still a file" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readFileSync(path.join(destination, "hard"), "utf8")).toBe("pointed at");
+    expect(fs.readFileSync(path.join(destination, "after.txt"), "utf8")).toBe("still a file");
+  });
+});
+
+describe("a file entry landing where a directory already is", () => {
+  // #165 F5's overwrite-by-default is about replacing a *file*. Deleting a
+  // subtree to make room for one is a different promise, made nowhere: not in
+  // the ticket, not in ADR 0029 D6, not in `docs/external-api.md`. `tar(1)`
+  // refuses this rather than performing it, and so does this.
+
+  it("refuses rather than recursively deleting the tree", async () => {
+    const destination = makeTree({
+      "src/keep-me.ts": "a hundred files like this one",
+      "src/nested/deep.ts": "and this one",
+    });
+    const archive = buildTar([{ name: "src", content: "a regular file called src" }]);
+
+    expect((await refusal(archive, destination)).code).toBe("directory-in-the-way");
+    // The half that matters: nothing was deleted on the way to the refusal.
+    expect(fs.readFileSync(path.join(destination, "src/keep-me.ts"), "utf8")).toBe("a hundred files like this one");
+    expect(fs.readFileSync(path.join(destination, "src/nested/deep.ts"), "utf8")).toBe("and this one");
+  });
+
+  it("refuses a symlink entry landing on a non-empty directory too", async () => {
+    const destination = makeTree({ "vendor/lib.js": "keep" });
+    const archive = buildTar([{ name: "vendor", typeflag: "2", linkname: "lib.js" }]);
+
+    expect((await refusal(archive, destination)).code).toBe("directory-in-the-way");
+    expect(fs.readFileSync(path.join(destination, "vendor/lib.js"), "utf8")).toBe("keep");
+  });
+
+  it("still replaces an *empty* directory, which has nothing to lose", async () => {
+    // A stray `mkdir` should not wedge a path forever, and the asymmetry is the
+    // point: the refusal is about destroying work, not about the node type.
+    const destination = makeTree({ "placeholder/": "" });
+    const archive = buildTar([{ name: "placeholder", content: "now a file" }]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readFileSync(path.join(destination, "placeholder"), "utf8")).toBe("now a file");
+  });
+});
+
+describe("a size the 11-digit octal ustar field cannot hold", () => {
+  // #165 F8 says no size cap, and an 11-octal-digit size field is one at
+  // 8589934592 bytes (8 GiB). Real writers encode past it two ways and this
+  // module read neither: base-256 parsed to `NaN` and then to 0, so the file
+  // landed empty and the stream desynchronised into a checksum failure.
+  //
+  // Tested at the encoding rather than with an 8 GiB fixture — the parse is the
+  // thing that was broken, and it is broken or correct at any magnitude.
+
+  /** GNU/pax base-256: high bit set on the first byte, big-endian after it. */
+  function base256(value: number, length = 12): Buffer {
+    const field = Buffer.alloc(length);
+    let left = value;
+    for (let i = length - 1; i > 0; i -= 1) {
+      field[i] = left % 256;
+      left = Math.floor(left / 256);
+    }
+    field[0] = 0x80;
+    return field;
+  }
+
+  it("reads a base-256 size field rather than treating it as zero", async () => {
+    const destination = makeTree();
+    const body = "the bytes a base-256 size field describes";
+    const archive = buildTar([
+      { name: "big.bin", content: body, sizeField: base256(body.length) },
+      { name: "after.txt", content: "and the stream is still in step" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readFileSync(path.join(destination, "big.bin"), "utf8")).toBe(body);
+    expect(fs.readFileSync(path.join(destination, "after.txt"), "utf8")).toBe("and the stream is still in step");
+  });
+
+  it("honours a pax `size` record, which is the other way a real tar says it", async () => {
+    const destination = makeTree();
+    const body = "described by a pax record instead";
+    const archive = buildTar([
+      { name: "PaxHeaders/big.bin", typeflag: "x", content: paxRecord("size", String(body.length)) },
+      // The ustar field says 0, exactly as a pax writer leaves it. Before the
+      // fix this entry landed empty and swallowed the next header.
+      { name: "big.bin", content: body, declaredSize: 0 },
+      { name: "after.txt", content: "and the stream is still in step" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readFileSync(path.join(destination, "big.bin"), "utf8")).toBe(body);
+    expect(fs.readFileSync(path.join(destination, "after.txt"), "utf8")).toBe("and the stream is still in step");
+  });
+
+  it("refuses a negative base-256 field rather than reading it as a length", async () => {
+    const destination = makeTree();
+    const negative = Buffer.alloc(12, 0xff);
+    const archive = buildTar([{ name: "odd.bin", content: "x", sizeField: negative }]);
+
+    const error = await refusal(archive, destination);
+
+    expect(error.code).toBe("corrupt-archive");
+    // The message, not just the code: before base-256 was read at all this
+    // archive also died as `corrupt-archive`, but two entries later and for an
+    // unrelated reason — the size parsed as 0, the body was read as the next
+    // header, and its checksum failed. Asserting *why* keeps this test pinned
+    // to the field and not to the accident.
+    expect(error.message).toContain("negative");
   });
 });

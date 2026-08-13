@@ -649,3 +649,85 @@ describe("the bearer gate", () => {
     }
   });
 });
+
+describe("a single-file PUT onto a path that holds a directory", () => {
+  // F5's overwrite-by-default is about replacing a *file*. Recursively deleting
+  // a subtree to make room for one is a different promise, and it was made
+  // nowhere: not in the ticket, not in ADR 0029 D6, not in
+  // `docs/external-api.md`. The old behaviour deleted the tree and reported an
+  // ordinary `overwritten` line, so a `PUT ?path=src` meant for `src/x.ts` cost
+  // the operator `src` and the progress stream said nothing unusual happened.
+
+  it("refuses a non-empty directory rather than deleting the tree", async () => {
+    const root = project("p1", {
+      "src/index.ts": "export const x = 1;\n",
+      "src/nested/deep.ts": "still here",
+    });
+
+    const res = await call("PUT", "/v1/projects/p1/files?path=src", {
+      body: Buffer.from("a regular file called src"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(res.status).toBe(409);
+    expect(json(res.body).code).toBe("directory-in-the-way");
+    // A refusal that happens after the delete is not one.
+    expect(fs.readFileSync(path.join(root, "src/index.ts"), "utf8")).toBe("export const x = 1;\n");
+    expect(fs.readFileSync(path.join(root, "src/nested/deep.ts"), "utf8")).toBe("still here");
+  });
+
+  it("refuses before the 200, so it is a status and not an error line", async () => {
+    // The distinction matters to a client: a 409 is branchable in the same
+    // place `transfer-in-progress` is, whereas an error line arrives after a
+    // success status and after the client has uploaded its body.
+    project("p1", { "src/index.ts": "x" });
+
+    const res = await call("PUT", "/v1/projects/p1/files?path=src", {
+      body: Buffer.from("clobber"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(res.status).not.toBe(200);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(res.body.toString("utf8")).not.toContain("overwritten");
+  });
+
+  it("is distinguishable by code from the other 409 this surface has", async () => {
+    project("p1", { "src/index.ts": "x" });
+
+    const res = await call("PUT", "/v1/projects/p1/files?path=src", {
+      body: Buffer.from("clobber"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(res.status).toBe(409);
+    expect(json(res.body).code).not.toBe("transfer-in-progress");
+    expect(json(res.body).code).toBe("directory-in-the-way");
+  });
+
+  it("still replaces an empty directory, which has nothing to lose", async () => {
+    const root = project("p1", { "placeholder/": "" });
+
+    const res = await call("PUT", "/v1/projects/p1/files?path=placeholder", {
+      body: Buffer.from("now a file"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(fs.readFileSync(path.join(root, "placeholder"), "utf8")).toBe("now a file");
+  });
+
+  it("releases the write lease after refusing", async () => {
+    // The refusal returns from inside the `try` that holds the lease, so the
+    // `finally` is what frees it. Worth pinning: a refusal that stranded the
+    // lease would be the same defect this branch just fixed, by another route.
+    project("p1", { "src/index.ts": "x" });
+
+    await call("PUT", "/v1/projects/p1/files?path=src", {
+      body: Buffer.from("clobber"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(locks.current("p1")).toBeNull();
+  });
+});
