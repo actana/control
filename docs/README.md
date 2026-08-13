@@ -81,6 +81,11 @@ routing around it.
 | [0023](adr/0023-release-trains-and-digest-promotion.md) | Release trains and digest promotion |
 | [0024](adr/0024-a-core-serves-many-clients-one-holds-a-sessions-write-lock.md) | A Core serves many clients, and one connection holds a Session's write lock |
 | [0025](adr/0025-the-protocol-ships-with-the-client.md) | The protocol ships with the client |
+| [0026](adr/0026-prompt-delivery-is-a-core-responsibility.md) | Prompt delivery is a Core responsibility |
+| [0027](adr/0027-the-filesystem-is-the-model.md) | The filesystem is the model |
+| [0028](adr/0028-file-bytes-cross-https-not-the-core-link.md) | File bytes cross HTTPS, not the core link |
+| [0029](adr/0029-a-folder-crosses-as-one-streamed-tar.md) | A folder crosses as one streamed tar |
+| [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files
