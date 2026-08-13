@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  fakeAttachment,
   fakeTerminal,
   fakeCore,
   fakeSessionGateway,
@@ -234,6 +235,37 @@ describe("no verb prints a blob, with --verbose on", () => {
     });
     expect(run.code).not.toBe(0);
     expectNoSecrets("core shell (refused)", run.all);
+  });
+
+  it("sweeps `session attach`, the other verb that holds the credential for a whole session", async () => {
+    // Two lines are worth the sweep here. The one that reports an attach that
+    // would not open has the resolved blob in hand and is explaining a failure
+    // to reach the Core the blob names; and the one that says *why* an attach is
+    // read-only names another Core client, at a moment when the only identity
+    // this process holds is a credential. Everything else is bytes the harness
+    // chose, which never touch one.
+    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+
+    const refused = await cli().run(["session", "attach", "task_1", "--verbose"], {
+      terminal: fakeTerminal(),
+      openAttach: async () => {
+        throw new Error("connect ECONNREFUSED");
+      },
+    });
+    expect(refused.code).not.toBe(0);
+    expectNoSecrets("session attach (refused)", refused.all);
+
+    const readOnly = fakeAttachment({ authority: "held-by-another" });
+    const terminal = fakeTerminal();
+    const attached = cli().run(["session", "attach", "task_1", "--verbose"], {
+      terminal,
+      openAttach: async () => readOnly,
+    });
+    // Wired first: a drop delivered before the command is listening is a drop
+    // nobody hears, and the run would sit there until the suite timed out.
+    await terminal.wired;
+    readOnly.drop("socket hang up");
+    expectNoSecrets("session attach (read-only, dropped)", (await attached).all);
   });
 
   it("prints the endpoint and label, which are the non-secret half", async () => {
