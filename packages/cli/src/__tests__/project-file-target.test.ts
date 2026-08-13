@@ -56,6 +56,46 @@ describe("a Windows path is local, not a Project called C", () => {
   });
 });
 
+describe("a drive-relative Windows path — C:dist and a bare C: — is remote, and that is the trade", () => {
+  // The one collision rule 3 does not close, pinned here under the spelling a
+  // future reader will search for rather than by proxy through `x:src/main.ts`.
+  //
+  // `C:dist` is a real, if rare, Windows form: the current directory *on drive
+  // C*. It has no separator after the colon, so it is indistinguishable from a
+  // Project called `C` with a path called `dist`, and this parse chooses the
+  // Project. That is deliberate. Closing it would mean rule 3 firing on a
+  // single letter alone, which would make every one-character Project name
+  // untypeable — a live cost paid by everyone, to buy off a form that is
+  // ambiguous in the shell too and that `./C:dist` already escapes. `scp` makes
+  // exactly this trade.
+  //
+  // If this ever needs to change, it changes here first: this test failing is
+  // the decision being revisited, not a regression.
+  it.each(["C:dist", "C:", "c:build\\out", "Z:relative/path"])(
+    "reads %o as a Project, not as this machine's drive",
+    (token) => {
+      expect(parseTransferTarget(token).kind).toBe("remote");
+    },
+  );
+
+  it("names the Project as the drive letter, so the failure that follows is legible", () => {
+    // The consolation: nothing is silently copied to the wrong place. The Core
+    // is asked for a Project literally called `C`, and "no such Project: C" is
+    // an error an operator can act on.
+    expect(parseTransferTarget("C:dist")).toEqual({
+      kind: "remote",
+      project: "C",
+      path: "dist",
+      token: "C:dist",
+    });
+  });
+
+  it("is escaped the documented way, with the same ./ that escapes a colon in a filename", () => {
+    expect(parseTransferTarget("./C:dist").kind).toBe("local");
+    expect(parseTransferTarget(".\\C:dist").kind).toBe("local");
+  });
+});
+
 describe("a file whose name contains a colon", () => {
   // The second hazard, and the one with an escape hatch rather than a rule:
   // `notes:draft.md` really is ambiguous — it is a legal Project reference and

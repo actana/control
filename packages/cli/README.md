@@ -51,13 +51,22 @@ actana project files api:build --json  # what is in there, machine-readable
 A folder crosses as one streamed archive and keeps its permissions, so an
 executable arrives executable. Every file that replaced one already there is
 named in the output — never only counted — and `--json` lists them under
-`overwritten`. Progress appears on a terminal and never under `--json`, where
-stdout carries exactly one document.
+`overwritten`, on the failure document as well as the success one: a transfer
+that died part-way still replaced whatever it had already written, and that is
+the list you need most. Progress appears on a terminal and never under `--json`,
+where stdout carries exactly one document.
+
+`project files --json` emits `{entries, truncated}` rather than the bare array
+`project ls` emits, because `--limit` can clip the answer and `truncated` is how
+a script finds out. It is `false` on a complete listing, never absent.
 
 A local path is told apart from `<project>:<path>` by a rule rather than a
 guess: a separator before the colon means local, so `./notes:draft.md` and
 `C:\dist` are files on this machine, and that leading `./` is how you name any
-local file with a colon in it.
+local file with a colon in it. The one form this costs is a Windows
+*drive-relative* path — `C:dist`, meaning "the current directory on drive C" —
+which reads as a Project called `C`; `./C:dist` is the escape, the same one a
+filename with a colon in it uses.
 
 **Running a Core is the other half of the name.** `actana daemon`, and the rest
 of the machine-side lifecycle, ships with the Core itself and is not in this
