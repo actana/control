@@ -17,6 +17,16 @@
 //        Write. `Content-Type: application/x-tar` unpacks an archive into that
 //        path; anything else writes one file at it. The response is a chunked
 //        NDJSON progress stream, one line per entry.
+//   GET  /v1/projects/:projectId/files/list?path=<relative>&depth=<n>&sha256=1
+//        The tree under that path, as a chunked NDJSON stream — one line per
+//        entry, to arbitrary depth (#166, F7).
+//
+// Listing is a route of its own rather than a `?list=1` on the read above, and
+// the reason is what the two answer with: one hands back a tar of a folder and
+// the other hands back a manifest of it. A query parameter that a proxy,
+// redirect or hand-edited URL can drop would turn "list this folder" into
+// "download this folder", which for a `node_modules` is a mistake measured in
+// gigabytes rather than in a 400. A path segment cannot be dropped silently.
 //
 // Raw `node:http` handlers, `URL`-based dispatch, JSON error bodies — the same
 // shape as `harness-hook-receiver.ts`, which is this repository's other HTTP
@@ -26,6 +36,7 @@ import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as path from "node:path";
 import { confineToProjectRoot, confineWriteTarget, freeSpaceBytes } from "./files-confinement";
+import { listTree, type FileListingOptions } from "./files-listing";
 import { packDirectory, TarError, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "./files-tar";
 import { ProjectWriteLocks } from "./files-transfer-locks";
 import log from "./log";
@@ -170,11 +181,16 @@ export function createCoreFilesRequestHandler(
     }
     const target = parseRoute(url);
     if (!target) return { status: 404, code: "not-found", message: `no route for ${url.pathname}` };
-    if (req.method !== "GET" && req.method !== "HEAD" && req.method !== "PUT") {
+    // A listing is a read and only a read. `PUT /files/list` is refused here
+    // rather than falling through to the write path, which would otherwise
+    // create a *file called `list`* inside the Project — the one request on
+    // this surface where a typo's consequence is a write.
+    const allowed = target.leaf === "list" ? ["GET", "HEAD"] : ["GET", "HEAD", "PUT"];
+    if (!allowed.includes(req.method ?? "")) {
       return {
         status: 405,
         code: "method-not-allowed",
-        message: `${req.method ?? "?"} is not allowed here — use GET, HEAD or PUT`,
+        message: `${req.method ?? "?"} is not allowed here — use ${allowed.join(", ")}`,
       };
     }
     if (!opts.filesPort.projectRoot(target.projectId)) {
@@ -225,7 +241,87 @@ export function createCoreFilesRequestHandler(
     }
 
     if (req.method === "PUT") return await handlePut(req, res, target.projectId, root, confined.absolute, confined.relative);
+    if (target.leaf === "list") return await handleList(req, res, url, confined.absolute, confined.relative);
     return await handleGet(req, res, confined.absolute, confined.relative);
+  }
+
+  /**
+   * `GET /v1/projects/:projectId/files/list` — the tree as NDJSON (#166 F7).
+   *
+   * Chunked from the first entry and buffered nowhere: `listTree` yields a line
+   * at a time and this loop writes each one straight out, waiting on
+   * {@link drained} when the socket stops accepting them. A `node_modules`
+   * costs the same memory here as an empty folder, which is the requirement,
+   * and an operator who stops reading closes the walk rather than leaving it
+   * running against the disk.
+   */
+  async function handleList(
+    req: IncomingMessage,
+    res: ServerResponse,
+    url: URL,
+    absolute: string,
+    relative: string,
+  ): Promise<void> {
+    const query = parseListingQuery(url);
+    if (!query.ok) return sendRefusal(res, query.refusal);
+
+    // `lstat` before the 200, so "no such path" is a status code rather than an
+    // error line at the end of an otherwise empty stream.
+    const exists = await fs.promises.lstat(absolute).catch(() => null);
+    if (!exists) {
+      return sendRefusal(res, {
+        status: 404,
+        code: "not-found",
+        message: `no such path in this Project: ${relative || "."}`,
+      });
+    }
+
+    res.writeHead(200, {
+      "content-type": "application/x-ndjson",
+      // No content-length, and no way to have one: the tree is measured by
+      // walking it, and walking it twice to say how long the answer will be is
+      // the whole of what this design refuses to do.
+      "transfer-encoding": "chunked",
+      "cache-control": "no-store",
+      "x-actana-transfer-kind": "listing",
+    });
+    if (req.method === "HEAD") return void res.end();
+
+    const writeLine = async (value: unknown): Promise<void> => {
+      if (!res.write(`${JSON.stringify(value)}\n`)) await drained(res);
+    };
+
+    let entries = 0;
+    let skipped = 0;
+    let bytes = 0;
+    try {
+      for await (const line of listTree(absolute, relative, query.options)) {
+        if (line.type === "entry") {
+          entries += 1;
+          if (line.kind === "file") bytes += line.size;
+        } else {
+          skipped += 1;
+        }
+        await writeLine(line);
+      }
+      await writeLine({ type: "done", entries, skipped, bytes });
+    } catch (err) {
+      if (err instanceof ClientGoneError) {
+        // The ordinary end of a listing somebody stopped reading. The `for
+        // await` above has already closed the walk — and with it every
+        // directory handle it was holding — on its way out through here.
+        log.info("core-files.list-aborted", { path: relative, entries });
+        res.destroy();
+        return;
+      }
+      // The 200 is spent, so the failure is the last line rather than a status.
+      // Same reasoning as the write stream: NDJSON is readable up to the point
+      // it stops, and a JSON document would have to be complete to be read.
+      const message = err instanceof Error ? err.message : String(err);
+      log.warn("core-files.list-failed", { path: relative, error: message });
+      await writeLine({ type: "error", code: "read-failed", message }).catch(() => {});
+    }
+    res.end();
   }
 
   async function handleGet(
@@ -557,14 +653,64 @@ function prefixed<T extends { path: string }>(base: string, entry: T): T {
   return { ...entry, path: `${base}/${entry.path}` };
 }
 
-/** `/v1/projects/:projectId/files` → `{ projectId }`. Anything else → null. */
-function parseRoute(url: URL): { projectId: string } | null {
+/**
+ * `/v1/projects/:projectId/files[/list]` → the Project and which leaf.
+ * Anything else → null, and the caller keeps its 404.
+ */
+function parseRoute(url: URL): { projectId: string; leaf: "files" | "list" } | null {
   const segments = url.pathname.split("/").filter((s) => s.length > 0);
-  if (segments.length !== 4) return null;
-  const [v1, projects, projectId, leaf] = segments;
-  if (v1 !== "v1" || projects !== "projects" || leaf !== "files") return null;
+  if (segments.length !== 4 && segments.length !== 5) return null;
+  const [v1, projects, projectId, files, list] = segments;
+  if (v1 !== "v1" || projects !== "projects" || files !== "files") return null;
   if (!projectId || projectId.length === 0) return null;
-  return { projectId: decodeURIComponent(projectId) };
+  if (segments.length === 5 && list !== "list") return null;
+  return { projectId: decodeURIComponent(projectId), leaf: segments.length === 5 ? "list" : "files" };
+}
+
+/**
+ * `?depth=` and `?sha256=` on the listing route.
+ *
+ * Refused rather than defaulted when they are not understood. A `depth=two`
+ * silently read as "the whole tree" is the request an operator meant to bound
+ * answering with a `node_modules`, and `sha256=yes` silently read as "no" is
+ * the request a diff meant to be exact answering with nulls it would then read
+ * as unchanged. Both are cheap to get right and expensive to guess at.
+ */
+function parseListingQuery(url: URL): { ok: true; options: FileListingOptions } | { ok: false; refusal: Refusal } {
+  const options: FileListingOptions = {};
+
+  const depth = url.searchParams.get("depth");
+  if (depth !== null && depth !== "" && depth !== "all") {
+    const value = Number(depth);
+    if (!Number.isInteger(value) || value < 1) {
+      return {
+        ok: false,
+        refusal: {
+          status: 400,
+          code: "bad-request",
+          message: `depth must be a whole number of levels (1 or more) or \`all\`, got ${JSON.stringify(depth)}`,
+        },
+      };
+    }
+    options.depth = value;
+  }
+
+  const sha256 = url.searchParams.get("sha256");
+  if (sha256 !== null && sha256 !== "") {
+    if (sha256 === "1" || sha256 === "true") options.sha256 = true;
+    else if (sha256 !== "0" && sha256 !== "false") {
+      return {
+        ok: false,
+        refusal: {
+          status: 400,
+          code: "bad-request",
+          message: `sha256 must be 1, 0, true or false, got ${JSON.stringify(sha256)}`,
+        },
+      };
+    }
+  }
+
+  return { ok: true, options };
 }
 
 function checkBearer(req: IncomingMessage, verify: FilesAuthVerifier): Refusal | null {
