@@ -114,6 +114,24 @@ anything on the other end of it appearing in the listing. A directory that
 cannot be read, or a file that cannot be read to digest it, is a `skipped` line
 and the rest of the tree still lists.
 
+**A listing can also end without a `done` line.** A failure the walk cannot
+blame on one path — the directory read itself failing part-way, a mount going
+away underneath it — arrives as a fourth line type and the stream stops there:
+
+```jsonc
+{"type":"entry","path":"src/index.ts","kind":"file","size":184,"mtime":1755000000000,"mode":420,"sha256":null}
+{"type":"error","code":"read-failed","message":"EIO: i/o error, scandir '/srv/project/vendor'"}
+```
+
+The status line was spent on the first entry, so this is the only place left to
+say it — the same shape, and the same reasoning, as a `PUT` that fails
+part-way. `error` and `done` are mutually exclusive: a `skipped` line costs one
+path and the walk continues, while `error` **is** the walk stopping. So `done`
+is the only proof a listing is complete, and a reader that reaches end-of-stream
+without one is holding a truncated tree — a valid prefix of the listing, never
+the listing. Treating a missing `done` as an empty tail is how a partial tree
+gets mistaken for a whole one.
+
 **`sha256` is available on request, not free**
 ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D6). On a transfer the
 digest is computed eagerly, because the bytes are already in hand; a listing
