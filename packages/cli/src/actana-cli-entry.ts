@@ -14,6 +14,7 @@ import { openCoreShell } from "./core-shell-channel.ts";
 import { terminalFromProcess } from "./cli-terminal.ts";
 import { connectCore } from "./core-connection.ts";
 import { openSessionGateway } from "./session-gateway.ts";
+import { openSessionAttach } from "./session-attach-channel.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 import { homedir } from "node:os";
 
@@ -51,6 +52,9 @@ const code = await runActanaCli({
   // one file that knows about one (#129 D11).
   terminal: terminalFromProcess(process),
   openShell: openCoreShell,
+  // The other command that holds the terminal, and the only one that holds a
+  // Session write lock for as long as it runs (#163, ADR 0024 D3–D7).
+  openAttach: openSessionAttach,
 }).catch((err: unknown) => {
   // A throw that reached here is a defect, not an operator error: every
   // expected failure returns an exit code. Print the message and nothing about

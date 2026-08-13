@@ -53,6 +53,15 @@ export type ParsedArgs = {
   enter: boolean;
   /** `--dangerously-skip-permissions`: start the harness without permission prompts. */
   skipPermissions: boolean;
+  /**
+   * `--read-only`: attach without claiming the Session's write lock (#163).
+   *
+   * A Session starts unlocked and its creator gets no privilege (ADR 0024 D5),
+   * so an ordinary `attach` on a Session nobody has claimed takes the lock — and
+   * an operator who only meant to watch an automation would take it from the
+   * automation that was about to. This is how they say "watch, do not take".
+   */
+  readOnly: boolean;
   /** Flags this build does not know, in the order they appeared. */
   unknown: string[];
   /** A flag that takes a value and was given none, or null. */
@@ -91,6 +100,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     raw: false,
     enter: false,
     skipPermissions: false,
+    readOnly: false,
     unknown: [],
     missingValue: null,
   };
@@ -153,6 +163,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--dangerously-skip-permissions":
         parsed.skipPermissions = true;
+        break;
+      case "--read-only":
+        parsed.readOnly = true;
         break;
       case "-h":
       case "--help":

@@ -6,10 +6,16 @@
 //   actana session resume <session> [prompt] pick a conversation back up
 //   actana session send <session> <text>     type into a running Session
 //   actana session kill <session>            stop the harness, whoever started it
-//   actana session attach                    scaffolded here, built in #163
+//   actana session attach <session>          take the terminal (#163)
 //
 // Three rules this noun is built around. The first two are the ticket's, the
 // third is what makes the other two usable from a script.
+//
+// **`attach` is the one verb that is a terminal**, and it lives in
+// `session-attach.ts` because it is built out of things no other verb here needs
+// — raw mode, a detach key, signal handling, and the Session write lock held for
+// as long as it runs (ADR 0024 D3–D7). Everything below dials, prints and hangs
+// up; that one takes the terminal and gives it back.
 //
 // **The Core delivers prompts (ADR 0026, #129 D3).** `start` hands its prompt to
 // the SDK, which hands it to the Core, which waits for the harness's TUI to
@@ -40,7 +46,8 @@
 import { resolveCore } from "./core-resolution.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { isKnownHarness, KNOWN_HARNESSES } from "./session-gateway.ts";
-import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
+import { runSessionAttach } from "./session-attach.ts";
+import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
@@ -74,7 +81,7 @@ Usage
   actana session resume <session> [prompt]  start a Session that continues one
   actana session send <session> <text>      write text into a running Session
   actana session kill <session>             stop the harness running for it
-  actana session attach <session>           take the terminal (not built — #163)
+  actana session attach <session>           watch a Session live, and type into it
 
 Flags
   --core <name>       which registered Core to talk to
@@ -86,6 +93,7 @@ Flags
   --title <text>      start: what the Session is called in \`ls\`
   --raw               logs: the bytes, escape codes and all, unrendered
   --enter             send: follow the text with a carriage return
+  --read-only         attach: watch without claiming the Session's write lock
   --dangerously-skip-permissions
                       start/resume: run the harness without permission prompts
   --verbose           explain the steps, on stderr. Never prints a blob.
@@ -103,6 +111,13 @@ What \`logs\` can show you
   The Core's replay ring, which belongs to the harness's PTY — so a Session that
   has already exited has no transcript left to print, and the way to keep one is
   \`start --wait --json\`, whose object carries the screen as it settled.
+
+Attaching, and who is allowed to type
+  \`attach\` claims the Session's write lock. If another Core client already holds
+  it — a Panel, an automation, a second terminal — you get a read-only view and
+  a line saying so, never an error and never a takeover. Detaching gives the lock
+  back, and so does this process dying: the Core releases a dropped connection's
+  locks. Ctrl-] detaches; Ctrl-C goes to the harness.
 
 Who delivers the prompt
   The Core does (ADR 0026). It waits for the harness to settle, answers the
@@ -136,8 +151,15 @@ export async function runSessionCommand(
       return sessionSend(deps, args, paths, rest);
     case "kill":
       return sessionKill(deps, args, paths, rest);
-    case "attach":
-      return sessionAttach(deps);
+    case "attach": {
+      // The flag check every other verb makes, made here rather than inside
+      // `session-attach.ts`: the table of this noun's flags lives in this file,
+      // and a second copy of it in the one verb that is a terminal is how the
+      // two drift.
+      const misused = misusedFlag(args, ["--read-only"]);
+      if (misused) return usage(deps, "attach", misused);
+      return runSessionAttach(deps, args, paths, rest);
+    }
     default:
       deps.err(`actana session: unknown verb "${verb}".`);
       deps.err("Verbs: start, ls, logs, resume, kill, send, attach. `actana session --help` lists them.");
@@ -515,21 +537,6 @@ async function sessionKill(
   });
 }
 
-/**
- * `actana session attach` — scaffolded, not built.
- *
- * Deliberately a separate ticket: attaching is raw mode, resize forwarding and
- * signal handling on *this* terminal, and none of the rest of this noun needs a
- * terminal at all. It is in the tree and in the help for the reason `core shell`
- * is — the noun's shape is decided in one place — and it exits
- * {@link EXIT_UNIMPLEMENTED} rather than pretending.
- */
-function sessionAttach(deps: ActanaCliDeps): number {
-  deps.err("actana session attach: not built yet — it is #163, in this phase.");
-  deps.err("Until then: `actana session logs <session>` reads the transcript and `session send` types into it.");
-  return EXIT_UNIMPLEMENTED;
-}
-
 // ─── The plumbing every verb shares ──────────────────────────────────────────
 
 /**
@@ -595,6 +602,7 @@ const SESSION_FLAGS: ReadonlyArray<{ name: string; used: (args: ParsedArgs) => b
   { name: "--raw", used: (args) => args.raw },
   { name: "--enter", used: (args) => args.enter },
   { name: "--dangerously-skip-permissions", used: (args) => args.skipPermissions },
+  { name: "--read-only", used: (args) => args.readOnly },
 ];
 
 /**

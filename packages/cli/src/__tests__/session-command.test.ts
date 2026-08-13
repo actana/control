@@ -19,7 +19,7 @@ import {
   type CliFixture,
 } from "./cli-harness.ts";
 import { SessionGatewayError, type SessionRow } from "../session-gateway.ts";
-import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
+import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {
@@ -63,11 +63,18 @@ describe("actana session — the command tree", () => {
     expect(bare.code).toBe(EXIT_USAGE);
   });
 
-  it("names #163 for `attach` rather than failing as an unknown verb", async () => {
+  it("refuses `attach` from something that is not a terminal, rather than half-doing it", async () => {
+    // The fixture's default terminal is not a TTY, which is what a pipe or a CI
+    // job gets. `attach` is raw mode and keystrokes; there is nothing partial it
+    // could usefully do there, and it dials nothing to say so — the fixture
+    // throws on `openAttach`, so a run that reached the wire would fail here.
+    await withRegisteredCore();
     const run = await cli().run(["session", "attach", "task_1"]);
-    // The distinction `exit-codes.ts` exists to draw: reserved, not mistyped.
-    expect(run.code).toBe(EXIT_UNIMPLEMENTED);
-    expect(run.err.join("\n")).toContain("#163");
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain("not a terminal");
+    // And it points at the two verbs that *do* work from a script.
+    expect(run.err.join("\n")).toContain("session logs");
+    expect(run.err.join("\n")).toContain("session send");
   });
 
   it("rejects an unknown verb without dialling anything", async () => {

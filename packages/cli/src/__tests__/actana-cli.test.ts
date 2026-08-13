@@ -7,8 +7,10 @@
 // whole of `exit-codes.ts`'s argument, and until now nothing asserted it at the
 // root — the reserved nouns exited `2` and `core shell` exited `3` for the same
 // underlying fact, which the review of #201 caught. #162 built `core shell` and
-// #160/#161/#163 built the nouns, so what is reserved here is verbs inside a
-// built noun: `project cp`, `project files`, `session attach`.
+// #160/#161 built the nouns, so what is reserved here is verbs inside a built
+// noun: `project cp` and `project files`. `session attach` was the third until
+// #163 built it, and it is the counter-example below — the thing a reservation
+// is supposed to stop being.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
@@ -30,14 +32,14 @@ afterEach(() => {
  *
  * No *noun* is reserved any more: `session` left the list when #160 built it
  * and `project`, `harness` and `events` left when #161 did, which is the shape
- * a reservation is supposed to end in. What is still reserved is a verb — and
+ * a reservation is supposed to end in. `session attach` left it the same way
+ * when #163 built it. What is still reserved is a verb waiting on phase 3 — and
  * the distinction the exit code draws is the same one either way, so these are
  * what assert it.
  */
 const RESERVED = [
   [["project", "cp"], "#168"],
   [["project", "files"], "#168"],
-  [["session", "attach"], "#163"],
 ] as const;
 
 /** The nouns that are built, so the help below cannot go quiet about them. */
@@ -56,22 +58,28 @@ describe("a reservation is `not built yet`, not `you typed it wrong`", () => {
 
   it("is the answer for a name that is reserved, and not for one that is built", async () => {
     // `core shell` was the reserved *verb* and shared this code until #162
-    // built it. Now it is a command like any other, and a build that answered
-    // `3` for it would be telling a script to come back on a later train for
-    // something already shipped.
-    const reserved = await cli().run(["session", "attach"]);
+    // built it; `session attach` was the last one and #163 built it. Now they
+    // are commands like any other, and a build that answered `3` for either
+    // would be telling a script to come back on a later train for something
+    // already shipped.
+    const reserved = await cli().run(["project", "cp"]);
     expect(reserved.code).toBe(EXIT_UNIMPLEMENTED);
-    const built = await cli().run(["core", "shell"]);
-    expect(built.code).not.toBe(EXIT_UNIMPLEMENTED);
+    for (const built of [["core", "shell"], ["session", "attach"]]) {
+      const run = await cli().run(built);
+      expect(run.code, built.join(" ")).not.toBe(EXIT_UNIMPLEMENTED);
+    }
   });
 
-  it("answers the same for a reserved verb wherever it sits in the tree", async () => {
-    // `project cp` is reserved in `project-command.ts` and `session attach` in
-    // `session-command.ts`, and a script cannot be asked to know which file it
-    // landed in. One fact about this build, one exit code.
-    const project = await cli().run(["project", "cp"]);
-    const session = await cli().run(["session", "attach"]);
-    expect(project.code).toBe(session.code);
+  it("answers the same for every reserved verb, and not for a built one beside it", async () => {
+    // One fact about this build, one exit code — and it has to stay a *fact
+    // about the build* rather than about a file. `project cp` and `project ls`
+    // sit in the same module and differ only in whether they are built, which
+    // is the difference the code is supposed to carry.
+    const cp = await cli().run(["project", "cp"]);
+    const files = await cli().run(["project", "files"]);
+    expect(cp.code).toBe(files.code);
+    const built = await cli().run(["project", "ls"]);
+    expect(built.code).not.toBe(cp.code);
   });
 
   it("dials nothing to say it — a reservation is answered before a Core is", async () => {

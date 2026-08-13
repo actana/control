@@ -14,6 +14,13 @@ import { registryPaths, type RegistryPaths } from "../blob-registry.ts";
 import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
 import { nonInteractiveTerminal, type CliTerminal, type TerminalSignal } from "../cli-terminal.ts";
 import type { OpenCoreShellFn } from "../core-shell-channel.ts";
+import { SessionWriteRefused } from "../session-attach-channel.ts";
+import type {
+  AttachAuthority,
+  OpenSessionAttachFn,
+  SessionAttachExit,
+  SessionAttachment,
+} from "../session-attach-channel.ts";
 import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
 import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
 import type {
@@ -88,6 +95,8 @@ export type RunOptions = {
   terminal?: CliTerminal;
   /** What `core shell` gets back, or a throw. */
   openShell?: OpenCoreShellFn;
+  /** What `session attach` gets back, or a throw. */
+  openAttach?: OpenSessionAttachFn;
 };
 
 /**
@@ -205,6 +214,11 @@ export function makeCliFixture(): CliFixture {
           opts.openShell ??
           (async () => {
             throw new Error("this test did not expect to open a shell");
+          }),
+        openAttach:
+          opts.openAttach ??
+          (async () => {
+            throw new Error("this test did not expect to attach to a session");
           }),
       });
       return { code, out, err, all: [...out, ...err].join("\n") };
@@ -459,6 +473,112 @@ export function fakeTerminal(opts: { isTty?: boolean; cols?: number; rows?: numb
     },
     raise: (signal) => {
       for (const cb of [...(signalled.get(signal) ?? [])]) cb();
+    },
+  };
+}
+
+/**
+ * An attached Session, under the test's control.
+ *
+ * The counterpart to {@link fakeTerminal} for `session attach`: the lock is a
+ * value the test sets rather than a race it has to stage, and every ending —
+ * the harness exiting, the link dropping, a write refused because the lock
+ * moved — is a method. `session-attach-live.test.ts` is where those same
+ * endings are produced by a real Core instead.
+ */
+export type FakeAttachment = SessionAttachment & {
+  /** Everything the CLI forwarded, joined — keystrokes, in order. */
+  typed: () => string;
+  resizes: Array<{ cols: number; rows: number }>;
+  /** How many times the lock was handed back. Never more than once. */
+  releaseCount: () => number;
+  closeCount: () => number;
+  /** The harness prints. */
+  emit: (data: string) => void;
+  /** The harness's process exits. */
+  exit: (exit: SessionAttachExit) => void;
+  /** The link goes away underneath. */
+  drop: (error?: string) => void;
+  /** Somebody force-took the lock: every write from here is refused (ADR 0024 D7). */
+  takeLock: () => void;
+  /** Make every write fail for a reason that is *not* the lock. */
+  breakWrites: (err: Error) => void;
+};
+
+export function fakeAttachment(
+  opts: { authority?: AttachAuthority; backlog?: string; taskId?: string } = {},
+): FakeAttachment {
+  const authority = opts.authority ?? "held";
+  const sent: string[] = [];
+  const resizes: Array<{ cols: number; rows: number }> = [];
+  const data = new Set<(d: string) => void>();
+  const exits = new Set<(e: SessionAttachExit) => void>();
+  const drops = new Set<(i: { error?: string }) => void>();
+  let releases = 0;
+  let closes = 0;
+  let held = authority === "held";
+  let taken = false;
+  let writeError: Error | null = null;
+
+  return {
+    taskId: opts.taskId ?? "task_1",
+    ptyId: "pty_1",
+    authority,
+    backlog: opts.backlog ?? "",
+    typed: () => sent.join(""),
+    resizes,
+    releaseCount: () => releases,
+    closeCount: () => closes,
+    takeLock: () => {
+      taken = true;
+      held = false;
+    },
+    breakWrites: (err) => {
+      writeError = err;
+    },
+    write: async (d) => {
+      // The real channel refuses before the wire when it holds no authority and
+      // after the Core's refusal when the lock moved. One error for both, so a
+      // test that drives either path drives the command's one handler.
+      if (taken) throw new SessionWriteRefused("another Core client has taken this Session's write lock");
+      if (authority === "held-by-another" || authority === "not-claimed") {
+        throw new SessionWriteRefused("this attachment does not hold this Session's write lock");
+      }
+      if (writeError) throw writeError;
+      sent.push(d);
+    },
+    resize: async (cols, rows) => {
+      resizes.push({ cols, rows });
+    },
+    onData: (cb) => {
+      data.add(cb);
+      return () => data.delete(cb);
+    },
+    onExit: (cb) => {
+      exits.add(cb);
+      return () => exits.delete(cb);
+    },
+    onDisconnected: (cb) => {
+      drops.add(cb);
+      return () => drops.delete(cb);
+    },
+    release: async () => {
+      releases += 1;
+      const wasHeld = held;
+      held = false;
+      return wasHeld;
+    },
+    close: () => {
+      closes += 1;
+    },
+    emit: (d) => {
+      for (const cb of [...data]) cb(d);
+    },
+    exit: (e) => {
+      for (const cb of [...exits]) cb(e);
+    },
+    drop: (error) => {
+      for (const cb of [...drops]) cb(error === undefined ? {} : { error });
     },
   };
 }
