@@ -56,7 +56,14 @@ import {
   type CoreLinkSocketFactory,
   type CoreLinkTlsMaterial,
 } from "./core-link-socket.ts";
-import { coreConnectionFromBlob, type CoreRegistrationBlob } from "./core-registration-blob.ts";
+import {
+  coreConnectionFromBlob,
+  httpsBaseUrlFor,
+  type CoreRegistrationBlob,
+} from "./core-registration-blob.ts";
+import { createCoreFilesFetch, type CoreFilesFetch } from "./core-files-http.ts";
+import type { CoreFilesAvailability } from "./core-files.ts";
+import { CoreProject } from "./core-project.ts";
 
 /**
  * Request frames that only mean anything against a Core announcing
@@ -175,6 +182,14 @@ export type CoreClientOptions = {
    * Injectable for tests and for a runtime with its own WebSocket.
    */
   createSocket?: CoreLinkSocketFactory;
+  /**
+   * How {@link CoreClient.project}'s file surface sends its HTTPS requests.
+   * Defaults to `fetch` through an undici `Agent` carrying the same `tls`
+   * material the socket presents (#151's frozen shape). The socket's sibling:
+   * injectable for tests, for a proxy, and for a runtime with its own
+   * dispatcher.
+   */
+  filesFetch?: CoreFilesFetch;
   /** Deadline for {@link CoreClient.connect}. Default 30s. */
   connectTimeoutMs?: number;
   /** Default deadline for one request. Default 30s. */
@@ -254,6 +269,13 @@ export class CoreClient {
   /** The URL this client dials. Public because a log line without it is a riddle. */
   readonly url: string;
   /**
+   * The same Core's `https://` origin — where `project.files.*` sends its
+   * requests (#129 F2, ADR 0028). The server that terminates the WebSocket is
+   * the server that answers `/v1/…`, so this is the dial URL with its scheme
+   * swapped and nothing else.
+   */
+  readonly httpsBaseUrl: string;
+  /**
    * This client's Core client id — the same string on every connection it opens,
    * which is the whole of what makes a reconnect reclaimable (ADR 0024 D9).
    *
@@ -265,6 +287,18 @@ export class CoreClient {
 
   protected readonly createSocket: CoreLinkSocketFactory;
   protected readonly bearer: string | null;
+  /** PEM material for both protocols on this port — the socket's, and the file surface's. */
+  protected readonly tls: CoreLinkTlsMaterial | null;
+  /**
+   * The file surface's sender, built once on first use and shared by every
+   * {@link project} handle this client hands out.
+   *
+   * Shared rather than per-handle because the default carries an undici `Agent`,
+   * and an `Agent` is a connection pool: one per `client.project(id)` call would
+   * open a fresh TLS session for every Project a caller touched, and re-do the
+   * handshake for every loop iteration that re-derived the handle.
+   */
+  private filesFetch: CoreFilesFetch | null;
   protected readonly heartbeat: CoreLinkHeartbeatOptions | false;
   private readonly connectTimeoutMs: number;
   private readonly requestTimeoutMs: number;
@@ -336,7 +370,10 @@ export class CoreClient {
       throw new Error("CoreClient needs a url or a registration blob to dial");
     }
     this.url = url;
+    this.httpsBaseUrl = connection ? connection.httpsBaseUrl : httpsBaseUrlFor(url);
     const tls = connection ? connection.tls : (opts.tls ?? null);
+    this.tls = tls;
+    this.filesFetch = opts.filesFetch ?? null;
     this.bearer = connection ? connection.bearer : (opts.bearer ?? null);
     this.createSocket =
       opts.createSocket ?? ((dialUrl: string) => createNodeCoreLinkSocket(dialUrl, tls ?? undefined));
@@ -643,9 +680,84 @@ export class CoreClient {
     return this.files;
   }
 
+  /**
+   * A handle on one Project — today, its files (#129 F12).
+   *
+   * Opens nothing and validates nothing: this is a name and a base URL bound
+   * together, so calling it in a loop is free and calling it for a Project this
+   * Core has never heard of is not an error until a request is made, at which
+   * point the Core answers `404 project-not-found` and says so properly.
+   *
+   * The file surface reads {@link canUseFileRoutes} at the top of *every* call
+   * rather than here. A handle taken while a Core was connected and used after
+   * it dropped must not send a request into the dark, and a handle taken before
+   * `connect()` resolved must not be permanently poisoned — both follow from
+   * asking at the call rather than at construction.
+   */
+  project(projectId: string): CoreProject {
+    return new CoreProject({
+      id: projectId,
+      baseUrl: this.httpsBaseUrl,
+      bearer: this.bearer,
+      availability: () => this.filesAvailability(),
+      fetch: this.filesFetchOrDefault(),
+    });
+  }
+
+  /**
+   * Why the file surface can or cannot be used right now (F9), in words.
+   *
+   * The three answers are genuinely different situations and flattening them to
+   * a boolean is what makes "unavailable" an unactionable error message. A Core
+   * that announced no capability is the interesting one: it is **not** a fault
+   * and **not** a needs-update, it is every Core that shipped before the surface
+   * existed, and the honest thing to tell an operator is that this Core simply
+   * has no file surface — not that something went wrong.
+   */
+  private filesAvailability(): CoreFilesAvailability {
+    // Connectivity is asked **before** the capability, and the order is the
+    // whole of the check rather than a style choice. The capability is a fact
+    // about a connection; reading it first would let a `files` left over from a
+    // link that has since dropped answer for a client with no link at all, and
+    // send an upload at a Core nobody is talking to.
+    if (this.closed) {
+      return { available: false, reason: "this client has been closed" };
+    }
+    if (!this.isConnected() || this.ready === null) {
+      return {
+        available: false,
+        reason:
+          "this client is not connected, so the Core has not yet said whether it has a file " +
+          "surface — await connect() first",
+      };
+    }
+    if (this.files !== null) return { available: true };
+    return {
+      available: false,
+      reason:
+        "this Core announced no `files` capability on `ready`, so it has no file surface. That " +
+        "is a Core older than the surface itself, not a broken or out-of-date one — every other " +
+        "frame on this link behaves identically (#165 F9, ADR 0024 D11)",
+    };
+  }
+
+  /** The injected sender, or the default mTLS one — built once, then reused. */
+  private filesFetchOrDefault(): CoreFilesFetch {
+    this.filesFetch ??= createCoreFilesFetch(this.tls);
+    return this.filesFetch;
+  }
+
   /** Hang up. Rejects every outstanding request; fires no `onDisconnected`. */
   close(): void {
     this.closed = true;
+    // The capability belongs to a connection, and this ends the connection.
+    // Without this, `canUseFileRoutes()` went on answering `true` on a closed
+    // client — which contradicts its own documented "false after a drop" and
+    // would point a caller's HTTPS request at a Core this client is no longer
+    // talking to. `ready` is cleared for the same reason.
+    this.files = null;
+    this.multiConnection = null;
+    this.ready = null;
     const err = new Error("core-link client closed");
     for (const entry of [...this.queue, ...this.inFlight]) this.settle(entry, () => entry.reject(err));
     this.queue.length = 0;
