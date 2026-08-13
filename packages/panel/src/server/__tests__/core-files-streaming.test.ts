@@ -14,7 +14,7 @@
 // still writing*. That is a structural property, not a benchmark: no timeout, no
 // duration threshold, nothing that goes red on a loaded runner.
 //
-// The volume assertion is the second half — bounded memory across a body far
+// The large-body assertion is the second half — bounded memory across a body far
 // larger than any heap it could fit in — and the *deployed* version of it lives
 // in `scripts/e2e-panel-smoke.mjs`, which pushes a body several times the size
 // of a real memory-capped Panel process through the real `bin/panel.mjs`. That

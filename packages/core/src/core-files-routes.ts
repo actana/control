@@ -423,6 +423,42 @@ export function createCoreFilesRequestHandler(
     absolute: string,
     relative: string,
   ): Promise<void> {
+    const asTar = isTarUpload(req);
+
+    // A single-file write has to name a file, and the Project root is not one.
+    //
+    // `?path=` — and `path` omitted altogether, and `?path=.` — all confine to
+    // an empty `relative`, which *is* the Project root. Without this guard the
+    // empty-directory carve-out below reasons about it as it would about any
+    // other directory ("nothing to lose") and `writeSingleFile` then removes
+    // whatever is not a file and creates one in its place: on an empty Project
+    // that is `rm -r` of the root followed by a regular file at the root's
+    // path. Nothing is lost in bytes, and everything is lost in shape —
+    // listing, transfers and the harness's working directory all fail against
+    // a Project whose root is a file, and only a hand-fix on the Core machine
+    // brings it back.
+    //
+    // Refused here rather than inside `writeSingleFile`, for the reason the
+    // directory check gives: before the 200, so the answer is a status and a
+    // code rather than an error line at the end of a stream. Before the lease,
+    // too — a request this malformed should not so much as touch the lock
+    // table. 400 `malformed-path` puts it with the other "that path names
+    // nothing writable" refusals of this surface rather than with the 409s,
+    // which are about what is on the disk.
+    //
+    // The *tar* branch is untouched: an empty path there is the legitimate
+    // "unpack into the Project root", which is a write of the root's contents
+    // and not a write of the root.
+    if (!asTar && relative === "") {
+      return sendRefusal(res, {
+        status: 400,
+        code: "malformed-path",
+        message:
+          "a single-file write needs a name — this path resolves to the Project root itself. " +
+          "Send `?path=<file>` for a file, or `Content-Type: application/x-tar` to unpack an archive into the root.",
+      });
+    }
+
     // The lease is taken before anything is read, and refused without reading.
     // "Immediate" is the requirement (F8), and a refusal that first drains a
     // multi-gigabyte body is not one.
@@ -463,9 +499,6 @@ export function createCoreFilesRequestHandler(
       // and the transfer proceeds. Said out loud rather than silently skipped:
       // the precheck is an early, cheaper ENOSPC, never a guarantee.
 
-      const contentType = String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
-      const asTar = contentType === "application/x-tar" || contentType === "application/tar";
-
       // A single-file write onto a path that currently holds a **non-empty
       // directory** is refused, not performed.
       //
@@ -482,6 +515,12 @@ export function createCoreFilesRequestHandler(
       // error line at the end of a stream. An *empty* directory is still
       // replaced: there is nothing to lose, and a stray `mkdir` should not
       // wedge a path forever.
+      //
+      // "Nothing to lose" is true of a subfolder and false of the Project root,
+      // which has its shape to lose even when it holds no bytes. The root never
+      // reaches this check — the guard at the top of `handlePut` refused it —
+      // and that ordering is the point: this check reasons about *contents*,
+      // and the root is refused for *being the root*.
       if (!asTar) {
         const refusal = await directoryInTheWay(absolute, relative);
         if (refusal) return sendRefusal(res, refusal);
@@ -559,6 +598,18 @@ function transferInProgress(heldPath: string, startedAt: number): Refusal {
       `(${heldPath || "."}, started ${new Date(startedAt).toISOString()}) — ` +
       "one write at a time per Project; reads are unrestricted and concurrent",
   };
+}
+
+/**
+ * Is this `PUT` an archive to unpack, or one file's bytes?
+ *
+ * The content type decides, and it decides twice — once for the root guard in
+ * `handlePut` and once for the write itself — so it is read in one place. A
+ * charset or boundary parameter is ignored; only the media type is the answer.
+ */
+function isTarUpload(req: IncomingMessage): boolean {
+  const contentType = String(req.headers["content-type"] ?? "").split(";")[0]!.trim().toLowerCase();
+  return contentType === "application/x-tar" || contentType === "application/tar";
 }
 
 /**

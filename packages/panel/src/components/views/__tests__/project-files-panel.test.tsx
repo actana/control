@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// The volume view, and the shape of its absence (#129 F6/F9, #169).
+// The Project files view, and the shape of its absence (#129 F6/F9, #169).
 //
 // The interesting assertion in this file is the *negative* one. "The file view
 // is absent, not broken, against a Core that does not announce `files`" is one

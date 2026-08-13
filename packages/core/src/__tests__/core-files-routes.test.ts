@@ -731,3 +731,125 @@ describe("a single-file PUT onto a path that holds a directory", () => {
     expect(locks.current("p1")).toBeNull();
   });
 });
+
+describe("a single-file PUT that resolves to the Project root", () => {
+  // The empty-directory carve-out above — "there is nothing to lose" — is true
+  // of a subfolder and false of the root. A `PUT` with no `path` confines to
+  // the root itself, and on an *empty* Project `directoryInTheWay` finds
+  // nothing to refuse over, so the old code deleted the Project root and
+  // created a regular file at its path: listing, transfers and the harness's
+  // working directory all broken until someone fixed it by hand on the Core
+  // machine. A missing parameter is the plainest bad input this surface can
+  // receive and it must never be destructive.
+  //
+  // Both spellings reach the same place — `path` omitted entirely and
+  // `?path=` — and so does `?path=.`, because confinement answers `""` for all
+  // of them. Each is asserted against an empty root *and* a populated one: the
+  // populated case would have been caught by `directory-in-the-way`, and
+  // pinning both is what keeps the refusal about the root rather than about
+  // the root's contents.
+
+  async function tarOf(entries: Parameters<typeof makeTree>[0]): Promise<Buffer> {
+    return await collect(packDirectory(makeTree(entries)));
+  }
+
+  const spellings: Array<[string, string]> = [
+    ["no path parameter at all", "/v1/projects/p1/files"],
+    ["an explicitly empty path", "/v1/projects/p1/files?path="],
+    ["a path of `.`", "/v1/projects/p1/files?path=."],
+  ];
+
+  for (const [label, url] of spellings) {
+    it(`refuses ${label} against an empty Project, leaving the root a directory`, async () => {
+      const root = project("p1");
+
+      const res = await call("PUT", url, {
+        body: Buffer.from("a regular file at the Project root"),
+        headers: { "content-type": "text/plain" },
+      });
+
+      expect(res.status).toBe(400);
+      expect(fs.lstatSync(root).isDirectory()).toBe(true);
+      expect(readTree(root)).toEqual({});
+    });
+
+    it(`refuses ${label} against a populated Project, losing nothing`, async () => {
+      const root = project("p1", { "a.txt": "a", "src/index.ts": "export const x = 1;\n" });
+
+      const res = await call("PUT", url, {
+        body: Buffer.from("a regular file at the Project root"),
+        headers: { "content-type": "text/plain" },
+      });
+
+      expect(res.status).toBe(400);
+      expect(fs.lstatSync(root).isDirectory()).toBe(true);
+      expect(readTree(root)).toEqual({
+        "a.txt": { content: "a", mode: 0o644 },
+        "src/index.ts": { content: "export const x = 1;\n", mode: 0o644 },
+      });
+    });
+  }
+
+  it("is distinguishable by code, and says what a single-file write is missing", async () => {
+    // 400 with `malformed-path`, the code the other path refusals already use
+    // — a client branching on "the path you sent does not name a file" needs
+    // this to be neither the 409 of `directory-in-the-way` nor a bare 400.
+    project("p1");
+
+    const res = await call("PUT", "/v1/projects/p1/files", {
+      body: Buffer.from("x"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    const body = json(res.body);
+    expect(body.code).toBe("malformed-path");
+    expect(body.code).not.toBe("directory-in-the-way");
+    expect(String(body.error)).toContain("a single-file write needs a name");
+  });
+
+  it("refuses before the 200, and without taking the write lease", async () => {
+    project("p1");
+
+    const res = await call("PUT", "/v1/projects/p1/files", {
+      body: Buffer.from("x"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(res.status).not.toBe(200);
+    expect(res.headers["content-type"]).toContain("application/json");
+    expect(locks.current("p1")).toBeNull();
+  });
+
+  it("still unpacks a tar at the root, which is the legitimate empty-path write", async () => {
+    // The guard is about a *single file* named nothing. `PUT` a tar with no
+    // path is "unpack into the Project root" and stays exactly as it was.
+    const root = project("p1");
+    const archive = await tarOf({ "a.txt": "a", "sub/b.txt": "b" });
+
+    const res = await call("PUT", "/v1/projects/p1/files", {
+      body: archive,
+      headers: { "content-type": "application/x-tar" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(fs.lstatSync(root).isDirectory()).toBe(true);
+    expect(readTree(root)).toEqual({
+      "a.txt": { content: "a", mode: 0o644 },
+      "sub/b.txt": { content: "b", mode: 0o644 },
+    });
+  });
+
+  it("still writes a named file at the top level of the Project", async () => {
+    // The other half of the guard's boundary: one segment is a name, and a
+    // write to it is untouched.
+    const root = project("p1");
+
+    const res = await call("PUT", "/v1/projects/p1/files?path=notes.txt", {
+      body: Buffer.from("kept"),
+      headers: { "content-type": "text/plain" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(fs.readFileSync(path.join(root, "notes.txt"), "utf8")).toBe("kept");
+  });
+});

@@ -2599,7 +2599,7 @@ function ProjectPage() {
         </div>
       </ConfirmDialog>
 
-      {/* The volume view, as a drawer beside the board rather than a modal: an
+      {/* The Project files view, as a drawer beside the board rather than a modal: an
         * operator watching a folder's worth of files land wants the Project
         * still in front of them, and a drop that arrives while the drawer is
         * open must not have to fight a backdrop for the event. */}

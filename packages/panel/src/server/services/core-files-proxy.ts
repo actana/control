@@ -235,10 +235,15 @@ const FORWARDED_REQUEST_HEADERS = [
 /**
  * The headers an answer carries **back**, and nothing else.
  *
- * Same rule in the other direction. `content-length` is deliberately absent for
- * a reason worth stating: a chunked NDJSON progress stream has none, and copying
- * one from a Core that sent it for a different body length is how a browser ends
- * up waiting forever for bytes that already arrived.
+ * Same rule in the other direction, and `content-length` is on the list for a
+ * reason worth stating: it is copied because it is the Core's own answer about
+ * the body it is sending, never invented here. A single-file download carries
+ * one and it is accurate, which is what gives a browser its percentage; a
+ * chunked NDJSON progress stream carries none, so there is nothing to copy and
+ * none is set. A pipe that made one up — or kept one across a body of a
+ * different length — is how a browser ends up waiting forever for bytes that
+ * already arrived, which is exactly what forwarding rather than computing
+ * avoids. See ADR 0030 D2.
  */
 const FORWARDED_RESPONSE_HEADERS = [
   "content-type",

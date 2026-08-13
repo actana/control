@@ -1,4 +1,4 @@
-// The volume view — a Project's files as they are on its Core (#129 F6, #169).
+// The Project files view — a Project's files as they are on its Core (#129 F6, #169).
 //
 // It renders exactly what the Core's listing said and nothing it worked out for
 // itself: a path, a size, a modification time, from the manifest line the Core

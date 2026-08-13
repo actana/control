@@ -143,7 +143,7 @@ Refusals carry a machine-readable `code` beside the prose:
 
 | Status | Code | Means |
 | --- | --- | --- |
-| 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside that Project. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5) |
+| 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside that Project a write can land on. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5). `malformed-path` also answers a single-file `PUT` whose path resolves to the Project root itself — see below |
 | 401 | `unauthorized` | no bearer, or one this Core refuses |
 | 400 | `bad-request` | a query parameter the surface does not understand — a `depth` that is not a number, a `sha256` that is not a yes or a no |
 | 404 | `project-not-found`, `not-found` | no such Project on this Core, or no such path in it |
@@ -164,6 +164,16 @@ too. A `PUT ?path=src` meant for `src/x.ts` is a typo, and answering it by
 deleting `src` and reporting an ordinary `overwritten` line would make the
 damage silent. An **empty** directory is still replaced — there is nothing to
 lose, and a stray `mkdir` should not wedge a path forever.
+
+**The Project root is never the target of a single-file write.** A `PUT` of one
+file whose `path` resolves to the root — omitted entirely, `?path=`, or
+`?path=.` — is refused `400 malformed-path`: a single-file write needs a name,
+and "nothing to lose" is true of an empty subfolder and false of the root, which
+has its shape to lose even when it holds no bytes. A Project whose root is a
+regular file has no listing, no transfers and no working directory for a
+harness. A `PUT` of a **tar** with an empty path is unaffected: that is the
+legitimate "unpack into the Project root", a write of the root's contents rather
+than of the root.
 
 A write transfer holds its Project's lease only for as long as the request
 lives. A client that aborts mid-upload — including one whose progress stream has
