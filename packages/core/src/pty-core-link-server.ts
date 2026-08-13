@@ -246,7 +246,7 @@ export type PtyCoreLinkServerOptions = {
      * events; a fake one in a test may ignore it. Absent, the server answers
      * no HTTP at all, which is what it did before this ticket.
      */
-     httpRoutes?: CoreHttpRoutes;
+    httpRoutes?: CoreHttpRoutes;
   }) => WebSocketServerLike;
   /**
    * The per-Core event log. When provided, PTY lifecycle events are
