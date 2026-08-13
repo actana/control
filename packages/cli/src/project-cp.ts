@@ -121,14 +121,21 @@ export async function runProjectCp(
     return failed(deps, args, `${resolved.core.blob.endpoint} did not answer — ${messageOf(err)}`);
   }
 
+  // Owned out here rather than inside the transfer, because a transfer that
+  // throws part-way has still written the entries it got to and those entries
+  // are the answer to "what did this replace?". A `landed` that lived inside
+  // `upload`/`download` would be discarded by the throw along with the only
+  // record of them (F5).
+  const landed: LandedEntry[] = [];
   try {
     const project = await gateway.project(direction.remote.project);
     deps.verbose(`Project "${project.name}" is ${project.projectId} at ${project.path} on the Core`);
 
-    const landed =
-      direction.direction === "upload"
-        ? await upload(deps, args, project, direction.local, direction.remote.path)
-        : await download(deps, args, project, direction.remote.path, direction.local);
+    if (direction.direction === "upload") {
+      await upload(deps, args, project, direction.local, direction.remote.path, landed);
+    } else {
+      await download(deps, args, project, direction.remote.path, direction.local, landed);
+    }
 
     return report(deps, args, {
       core: resolved.core.name,
@@ -139,7 +146,7 @@ export async function runProjectCp(
       landed,
     });
   } catch (err) {
-    return failed(deps, args, messageOf(err), err);
+    return failed(deps, args, messageOf(err), err, landed);
   } finally {
     gateway.close();
   }
@@ -166,7 +173,9 @@ async function upload(
   project: ProjectFileTransfers,
   localPath: string,
   remotePath: string,
-): Promise<LandedEntry[]> {
+  /** Appended to as entries land. The caller owns it, so a throw does not take it. */
+  landed: LandedEntry[],
+): Promise<void> {
   const stats = await fs.promises.stat(localPath).catch(() => null);
   if (!stats) {
     // This machine's disk, so this machine answers. Nothing about the *remote*
@@ -175,7 +184,6 @@ async function upload(
   }
 
   const progress = openProgress(deps, args);
-  const landed: LandedEntry[] = [];
   try {
     const stream = stats.isDirectory()
       ? project.upload({
@@ -201,7 +209,6 @@ async function upload(
   } finally {
     progress.close();
   }
-  return landed;
 }
 
 /** One progress line as a landed entry, or null for the `done` line's totals. */
@@ -228,10 +235,11 @@ async function download(
   project: ProjectFileTransfers,
   remotePath: string,
   localPath: string,
-): Promise<LandedEntry[]> {
+  /** Appended to as entries land. The caller owns it, so a throw does not take it. */
+  landed: LandedEntry[],
+): Promise<void> {
   const answer = await project.download({ path: remoteDirectorySource(remotePath) });
   const progress = openProgress(deps, args);
-  const landed: LandedEntry[] = [];
 
   try {
     if (answer.kind === "tar") {
@@ -240,7 +248,7 @@ async function download(
         landed.push(one);
         progress.landed(one, landed);
       });
-      return landed;
+      return;
     }
 
     // A file landing on an existing directory takes its own name inside it,
@@ -276,7 +284,6 @@ async function download(
     const one: LandedEntry = { path: destination, result, size: bytes };
     landed.push(one);
     progress.landed(one, landed);
-    return landed;
   } finally {
     progress.close();
   }
@@ -402,14 +409,50 @@ function report(
  * One failure, reported the same way every time: JSON on stdout when `--json`
  * promised a document, prose on stderr always.
  *
- * The F8 refusal gets a second line and it is the only special case in here.
- * The Core's message already names the transfer holding the Project and when it
- * started — #168 asks for exactly that, *who holds it, not just "busy"* — so
- * what is added is the one thing the Core cannot know: that waiting is the
- * remedy, and that nothing here has been retrying behind the operator's back.
+ * **A part-way failure still names what it replaced.** F5 says every overwrite
+ * is named in the output, and a transfer that replaced eleven files and lost
+ * the connection on the twelfth has overwritten eleven files — the criterion
+ * does not stop applying because the verb is about to exit non-zero. Those
+ * entries are the ones an operator most needs, because they are the ones they
+ * now have to reason about restoring, and under `--json` there is no progress
+ * line they might have watched scroll past. So `overwritten` appears on the
+ * error document with the same name and the same shape it has on the success
+ * one: a script reads one key either way, and the exit code says which
+ * happened. Prose puts them *above* the failure, so the last line on the
+ * screen is still why it stopped.
+ *
+ * The F8 refusal gets a second line and it is the only other special case in
+ * here. The Core's message already names the transfer holding the Project and
+ * when it started — #168 asks for exactly that, *who holds it, not just
+ * "busy"* — so what is added is the one thing the Core cannot know: that
+ * waiting is the remedy, and that nothing here has been retrying behind the
+ * operator's back.
  */
-function failed(deps: ActanaCliDeps, args: ParsedArgs, message: string, err?: unknown): number {
-  if (args.json) deps.out(formatJson({ error: message }));
+function failed(
+  deps: ActanaCliDeps,
+  args: ParsedArgs,
+  message: string,
+  err?: unknown,
+  landed: LandedEntry[] = [],
+): number {
+  const overwritten = landed.filter((entry) => entry.result === "overwritten");
+
+  if (args.json) {
+    deps.out(
+      formatJson({
+        error: message,
+        entries: landed.length,
+        overwritten: overwritten.map((entry) => entry.path),
+      }),
+    );
+  } else {
+    for (const entry of overwritten) deps.err(`  overwrote ${entry.path}`);
+    if (overwritten.length > 0) {
+      const many =
+        overwritten.length === 1 ? "1 file was replaced" : `${overwritten.length} files were replaced`;
+      deps.err(`${many} before this stopped, named above.`);
+    }
+  }
   deps.err(`actana project cp: ${message}`);
   if (err instanceof ProjectFilesError && err.kind === "conflict") {
     deps.err("Nothing was retried — one write at a time per Project (F8). Try again once that one is done.");

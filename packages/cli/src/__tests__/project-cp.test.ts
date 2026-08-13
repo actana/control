@@ -29,7 +29,7 @@ import {
 } from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 import { packLocalTree, unpackTarInto } from "../local-tar.ts";
-import { CoreFilesConflictError } from "@actana/sdk/core-files-http.ts";
+import { CoreFilesConflictError, CoreFilesStreamError } from "@actana/sdk/core-files-http.ts";
 import type { CoreFileProgress } from "@actana/sdk/core-files.ts";
 
 let fixture: CliFixture | null = null;
@@ -351,6 +351,83 @@ describe("every overwrite is named (F5)", () => {
     const run = await cli().run(["project", "cp", "api:run.sh", dest], { files: files.open });
 
     expect(run.out.join("\n")).toContain(`overwrote ${dest}`);
+  });
+});
+
+describe("a transfer that fails part-way still names what it replaced (F5)", () => {
+  // The state the SDK models with `CoreFilesStreamError`: the status line was
+  // spent on the first entry, so a failure after that arrives as the last line
+  // of the progress stream. Entries really landed. F5 does not stop applying
+  // because the verb is about to exit non-zero — those files are exactly the
+  // ones an operator now has to reason about restoring.
+  const diedOnTheTwelfth = new CoreFilesStreamError(
+    "io-error",
+    "the transfer failed part-way through: write EPIPE",
+  );
+
+  it("names the overwrites it made before the connection went, in prose", async () => {
+    await withRegisteredCore();
+    const source = buildTree(scratch());
+    const files = fakeProjectFiles({
+      progressFor: () => [
+        entryLine("readme.md", "written"),
+        entryLine("bin/deploy", "overwritten"),
+        entryLine("config.json", "overwritten"),
+      ],
+      uploadFailsAfterProgress: diedOnTheTwelfth,
+    });
+
+    const run = await cli().run(["project", "cp", source, "api:build"], { files: files.open });
+
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("overwrote bin/deploy");
+    expect(err).toContain("overwrote config.json");
+    expect(err).not.toContain("overwrote readme.md");
+    expect(err).toContain("2 files were replaced");
+    // The last thing on the screen is still why it stopped, not a list.
+    expect(run.err.at(-1)).toContain("failed part-way through");
+  });
+
+  it("carries the same `overwritten` array on the --json error document", async () => {
+    // Under `--json` this is the only channel there is: no progress line ever
+    // painted, so an operator who cannot read this document cannot find out at
+    // all. Same key, same shape as the success payload — the exit code is what
+    // says which of the two happened.
+    await withRegisteredCore();
+    const source = buildTree(scratch());
+    const files = fakeProjectFiles({
+      progressFor: () => [entryLine("readme.md", "written"), entryLine("bin/deploy", "overwritten")],
+      uploadFailsAfterProgress: diedOnTheTwelfth,
+    });
+
+    const run = await cli().run(["project", "cp", source, "api:build", "--json"], {
+      files: files.open,
+    });
+
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.error).toContain("failed part-way through");
+    expect(payload.overwritten).toEqual(["bin/deploy"]);
+    expect(payload.entries).toBe(2);
+  });
+
+  it("says nothing extra when the transfer died before anything landed", async () => {
+    // The empty case must stay quiet: a failure that replaced nothing should
+    // not grow a report about the nothing it replaced.
+    await withRegisteredCore();
+    const source = buildTree(scratch());
+    const files = fakeProjectFiles({ uploadFails: diedOnTheTwelfth });
+
+    const run = await cli().run(["project", "cp", source, "api:build", "--json"], {
+      files: files.open,
+    });
+
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.overwritten).toEqual([]);
+    expect(payload.entries).toBe(0);
+    expect(run.err.join("\n")).not.toContain("were replaced");
   });
 });
 

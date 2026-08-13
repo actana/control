@@ -413,6 +413,16 @@ export type FakeProjectFilesOptions = {
   progressFor?: (upload: FakeProjectFiles["uploads"][number]) => CoreFileProgress[];
   /** Throw instead of streaming progress — the F8 conflict, a refusal, a stream error. */
   uploadFails?: Error;
+  /**
+   * Stream the progress `progressFor` supplies, **then** throw.
+   *
+   * The part-way failure the Core models with `CoreFileStreamError`: entries
+   * really landed, and then the transfer died. Distinct from `uploadFails`,
+   * which dies before anything crosses — the difference is the whole point of
+   * the test, because what is at stake is what the CLI does with the entries it
+   * already knows about.
+   */
+  uploadFailsAfterProgress?: Error;
   /** What a download answers with, given the path. */
   downloadWith?: (path: string) => CoreFileDownload;
   /** Throw instead of answering a download. */
@@ -470,6 +480,7 @@ export function fakeProjectFiles(opts: FakeProjectFilesOptions = {}): FakeProjec
         state.uploads.push(upload);
         if (opts.uploadFails) throw projectFilesErrorFrom(opts.uploadFails);
         for (const line of opts.progressFor?.(upload) ?? []) yield line;
+        if (opts.uploadFailsAfterProgress) throw projectFilesErrorFrom(opts.uploadFailsAfterProgress);
       },
     }),
     download: async (downloadOpts) => {
