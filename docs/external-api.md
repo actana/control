@@ -204,6 +204,31 @@ the client sent `?list=1` on the read route while the Core served
 `…/files/list` — and every suite stayed green, because each side was checked
 against its own idea of the other. A URL is not a fact either half owns alone.
 
+### `actana project cp` / `actana project files` — the same surface, typed
+
+The CLI is the first consumer of that SDK surface and consumes it as one: it
+builds no URL, sets no header and has no `fetch` of its own
+([#168](https://github.com/actana/control/issues/168)). Two things live on its
+side of the seam because neither is the Core's to do.
+
+**A folder is packed and unpacked locally.** The archive is the Core's format
+([ADR 0029](adr/0029-a-folder-crosses-as-one-streamed-tar.md)) but whichever side owns
+the disk owns the walk, so the CLI has its own ustar codec for the local half.
+That is what carries `mode` across, which is what makes an executable arrive
+executable.
+
+**A local path is told apart from `<project>:<path>` by a rule.** A separator
+before the colon means local — `./notes:draft.md`, `C:\dist` — and a single
+letter followed by a colon and a separator is a Windows drive. Everything else
+with a colon splits at the **first** one, so a colon inside a Project-relative
+path needs no escaping. The `./` prefix is the escape hatch for a local file
+whose name contains one, exactly as it is under `scp`.
+
+The refusals cross intact rather than being reworded. `409
+transfer-in-progress` in particular reaches the operator with the Core's own
+sentence, which names the transfer holding the Project and when it started —
+"busy" without those two facts is not something anybody can act on.
+
 ## The Panel's own routes
 
 The Panel's `/api/*` surface exists to serve its own browser tab. It is

@@ -3,6 +3,15 @@
 //   actana project ls [--json]         every Project on the selected Core
 //   actana project add <name> <path>   register one at a path on the Core
 //   actana project browse [path]       walk the Core's disk to find that path
+//   actana project cp <src> <dst>      copy files in or out of one (#168)
+//   actana project files <project>     list a Project's files (#168)
+//
+// The last two are phase 3's, and they hang off this noun rather than off the
+// root: **there is no `actana cp`** (#129 F12). D8's noun grammar holds — every
+// client verb hangs off a noun — and the two verbs are big enough that their
+// bodies live in `project-cp.ts` and `project-files-ls.ts` with the reasoning
+// that goes with them. What stays here is the dispatch and the help, so the
+// shape of the noun is still readable in one file.
 //
 // Two facts shape all three verbs, and both are about *whose machine* is being
 // talked about.
@@ -31,6 +40,8 @@
 // fact instead. Growing an op that carries a Core-validated path is #104.
 
 import { formatJson, formatTable } from "./cli-output.ts";
+import { runProjectCp } from "./project-cp.ts";
+import { runProjectFiles } from "./project-files-ls.ts";
 import { errorText, openCore, type CoreLinkClient } from "./core-connection.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
@@ -44,15 +55,31 @@ Usage
   actana project ls                    list the Projects on the selected Core
   actana project add <name> <path>     register a Project at a path on the Core
   actana project browse [path]         list folders on the Core's disk
-
-Reserved, landing in phase 3
-  actana project cp <src> <project>:<path>   copy files to a Project — #168
-  actana project files                       list a Project's files — #168
+  actana project files <project>       list the files inside a Project
+  actana project cp <src> <dst>        copy files in or out of a Project
 
 Flags
   --core <name>   which Core to talk to
-  --json          machine-readable output — \`ls\` and \`browse\`
+  --json          machine-readable output — every list command has it
+  --depth <n>     how far \`files\` descends. Default: the whole tree
+  --limit <n>     stop \`files\` after this many entries
+  --sha256        digest every file in a listing. Off by default: it reads them
   --verbose       explain the steps, on stderr. Never prints a blob.
+
+Copying files, in either direction
+  One side carries the Project, the other is on this machine — the \`scp\` shape.
+
+    actana project cp ./dist api:build     up: build becomes a copy of dist
+    actana project cp api:build ./dist     down: dist becomes a copy of build
+    actana project files api:build         what is in there now
+
+  A folder crosses as one archive and keeps its permissions, so an executable
+  arrives executable. Every file that replaced one already there is named in
+  the output, and \`--json\` lists them under "overwritten".
+
+  A local path is told apart from \`<project>:<path>\` by a rule, not a guess:
+  a separator before the colon means local (\`./notes:draft.md\`, \`C:\\dist\`),
+  and that leading \`./\` is how you name any local file with a colon in it.
 
 The path is the Core's, not this machine's
   \`add\` takes an absolute path on the Core and sends it as typed: nothing here
@@ -72,19 +99,19 @@ A Project's path is fixed once it exists
 const PATH_EDIT_VERBS = new Set(["edit", "mv", "move", "set-path", "setpath", "path", "update"]);
 
 /**
- * The two verbs phase 3 adds to this noun (#129 F12, #168), reserved in the
- * tree now rather than added to it later.
+ * The verbs this noun has reserved but not built.
  *
- * The reason is the one the `core` noun's `shell` scaffold gives: this ticket is
- * what decides the `project` noun's shape, and a verb bolted on by a different
- * ticket would be a second place that shape is decided. `actana cp` at the root
- * is explicitly not the spelling (F12) — the noun grammar holds — so reserving
- * them here is also what stops the shorter name looking available.
+ * **Empty on this train**, which is what a reservation is supposed to end as.
+ * `cp` and `files` were the two — reserved by #161 so that the shape of this
+ * noun was decided in one place rather than bolted on by whichever ticket got
+ * there first — and #168 built them, so each left the table as it landed. The
+ * table stays because the distinction it draws has not gone anywhere: a verb a
+ * later phase adds owes the reader a ticket number rather than "unknown verb",
+ * and a row here is the whole of saying so. `project rm` (#210) is the next one
+ * that will want it, and it is deliberately *not* pre-reserved: a reservation
+ * with no ticket in flight is a promise this build cannot keep.
  */
-const RESERVED_VERBS: Record<string, string> = {
-  cp: "`actana project cp <src> <project>:<path>` — file transfer, phase 3, #168",
-  files: "`actana project files` — listing a Project's files, phase 3, #168",
-};
+const RESERVED_VERBS: Record<string, string> = {};
 
 /** Dispatch a `project` verb. `args.positionals` still has `project` at [0]. */
 export async function runProjectCommand(
@@ -107,6 +134,10 @@ export async function runProjectCommand(
       return projectAdd(deps, args, paths, rest);
     case "browse":
       return projectBrowse(deps, args, paths, rest);
+    case "cp":
+      return runProjectCp(deps, args, paths, rest);
+    case "files":
+      return runProjectFiles(deps, args, paths, rest);
     default: {
       if (PATH_EDIT_VERBS.has(verb)) return refusePathEdit(deps, verb);
       const reserved = RESERVED_VERBS[verb];
@@ -115,7 +146,7 @@ export async function runProjectCommand(
         return EXIT_UNIMPLEMENTED;
       }
       deps.err(`actana project: unknown verb "${verb}".`);
-      deps.err("Verbs: ls, add, browse. `actana project --help` lists them.");
+      deps.err("Verbs: ls, add, browse, files, cp. `actana project --help` lists them.");
       return EXIT_USAGE;
     }
   }
