@@ -19,7 +19,7 @@
 // on either path calls `arrayBuffer`, `text`, `json`, `formData` or `blob` — the
 // helpers that make this easy to get wrong, because every one of them is a
 // one-word change that turns a gigabyte crossing a socket into a gigabyte in the
-// Panel's heap. `core-files-proxy-streaming.test.ts` pushes a body larger than a
+// Panel's heap. `core-files-streaming.test.ts` pushes a body larger than a
 // deliberately small heap cap through a real Panel process to hold that.
 //
 // **It does not unpack.** A folder crosses as one tar (ADR 0029) and the tar is

@@ -175,6 +175,15 @@ be stale the moment an agent wrote, which on these machines is constantly.
   known shortfall rather than a settled shape. Packing a tar in a tab has its own
   memory story and is worth doing on its own ticket; what ships first is the drop
   #129's done-means asks for.
+- **A file dropped in the browser lands without its mode bits.** F4's second
+  clause — a tar *"carries the executable bit natively"* — is the half a browser
+  cannot answer by packing a tar: `uploadProjectFile` sends
+  `x-actana-file-mtime`, but the DOM `File` it holds exposes no mode, so there is
+  nothing to put in `x-actana-file-mode`. The pipe is already ready for it (the
+  header is in both forwarded allowlists, and the Core applies it), so a shell
+  script dropped in the browser arrives without `+x` where the same file sent by
+  the CLI keeps it. The follow-up ticket therefore inherits **both** of F4's
+  arguments, and this one needs a source of mode that is not the drop event.
 - **`docs/external-api.md` gains no entry.** These routes are the Panel's own
   `/api/*` surface, behind the Operator session, and they forward to routes that
   document is already about. The Core's surface is the published one.

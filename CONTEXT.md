@@ -152,7 +152,7 @@ The Panel operator's own filing over a Project that lives on a Core: its group, 
 _Avoid_: project metadata, local overrides, project settings (that is the Core-scoped entry above)
 
 **Project files** (Core-scoped):
-The real files under a Project's root, on the machine that owns it. There is no index, no id and no metadata store: the filesystem *is* the model, and anything the Panel remembered about it would be stale the moment an agent wrote (ADR 0027). They cross over the Core's `/v1/…` HTTPS routes rather than the core link (ADR 0028), a folder crossing as one streamed tar (ADR 0029), and a Core announces whether it has the surface at all with an optional `files` capability on `ready`. A Core that announces none has no file view in the Panel — absent, not broken, and never "needs update".
+The real files under a Project's root, on the machine that owns it. There is no index, no id and no metadata store: the filesystem *is* the model, and anything the Panel remembered about it would be stale the moment an agent wrote (ADR 0027). They cross over the Core's `/v1/…` HTTPS routes rather than the core link (ADR 0028), a folder crossing as one streamed tar (ADR 0029) — from the CLI; a folder dropped in the browser still crosses file by file, and without its mode bits (ADR 0030) — and a Core announces whether it has the surface at all with an optional `files` capability on `ready`. A Core that announces none has no file view in the Panel — absent, not broken, and never "needs update".
 _Avoid_: the volume, project storage, uploads, attachments
 
 **Dumb pipe** (Panel-scoped):
