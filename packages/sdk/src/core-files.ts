@@ -404,7 +404,7 @@ async function* ndjsonLines(body: ReadableStream<Uint8Array>): AsyncGenerator<un
         buffered = buffered.slice(newline + 1);
         // Yield before looking for the next line, and before reading: this is
         // the suspension point that makes the consumer set the pace.
-        if (line.length > 0) yield JSON.parse(line);
+        if (line.length > 0) yield parseLine(line);
         continue;
       }
       const chunk = await reader.read();
@@ -414,7 +414,7 @@ async function* ndjsonLines(body: ReadableStream<Uint8Array>): AsyncGenerator<un
     // A final line with no trailing newline is still a line. The Core always
     // sends one, but a stream that ended mid-write may not have.
     const rest = (buffered + decoder.decode()).trim();
-    if (rest.length > 0) yield JSON.parse(rest);
+    if (rest.length > 0) yield parseLine(rest);
   } finally {
     // Runs on an early `break` out of the caller's `for await` too, which is
     // what tells the Core the reader walked away — without it an abandoned
@@ -422,6 +422,39 @@ async function* ndjsonLines(body: ReadableStream<Uint8Array>): AsyncGenerator<un
     // socket timed out, still holding the Project's write lease.
     await reader.cancel().catch(() => {});
   }
+}
+
+/**
+ * One NDJSON line, parsed **into this module's error taxonomy**.
+ *
+ * The comment above the last-line case anticipates exactly this shape: a stream
+ * that ended mid-write leaves a fragment of JSON behind, and `JSON.parse` on it
+ * throws a bare `SyntaxError`. That escapes {@link CoreFilesError} entirely, so
+ * a caller who had correctly written one `catch (e) { e instanceof
+ * CoreFilesError }` around the surface would see the one failure the module
+ * itself predicted come out as an unrelated language error, with no `code` and
+ * a message about a character position. Wrapping it here is what makes that
+ * single `catch` sufficient, which is the whole point of having a taxonomy.
+ *
+ * `read-failed` rather than `write-failed` because the failure is in reading
+ * this stream — whatever the Core was doing when it stopped, what is known here
+ * is that the progress line did not arrive whole.
+ */
+function parseLine(line: string): unknown {
+  try {
+    return JSON.parse(line);
+  } catch {
+    throw new CoreFilesStreamError(
+      "read-failed",
+      `the Core's progress stream ended mid-line — ${truncate(line)} is not a complete NDJSON record, ` +
+        "which is what a transfer that died part-way through leaves behind",
+    );
+  }
+}
+
+/** Enough of a bad line to recognise it, never a megabyte of it in an error message. */
+function truncate(line: string): string {
+  return line.length <= 120 ? JSON.stringify(line) : `${JSON.stringify(line.slice(0, 120))}…`;
 }
 
 /**
