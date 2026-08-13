@@ -67,11 +67,19 @@ party is meant to type against is `project.files.*` in `@actana/sdk`.
 | Auth | the pinned client certificate **and** `Authorization: Bearer <bearer>` — mTLS alone is not the gate |
 | Announced by | `files: { version: 1 }` on the core-link `ready` frame; absent means this Core has no file surface |
 
+Every route below rides that one capability, listing included: reads, writes and
+listing shipped on the same unreleased train, so no Core anywhere announces
+version 1 without all three and a client that checks for it is not guessing. A
+Core that does not announce `files` is **not asked** — the affordance is
+withheld rather than tried, because a 404 from a route that was never there
+reads like an outage.
+
 | Route | Does |
 | --- | --- |
 | `GET /v1/projects/:projectId/files?path=<relative>` | a file's raw bytes, or a directory as one streamed `application/x-tar` |
 | `HEAD /v1/projects/:projectId/files?path=<relative>` | the same headers, no body |
 | `PUT /v1/projects/:projectId/files?path=<relative>` | write — `Content-Type: application/x-tar` unpacks an archive into that path, anything else writes one file at it |
+| `GET /v1/projects/:projectId/files/list?path=<relative>` | the tree under that path, as a chunked `application/x-ndjson` stream — one line per entry, to arbitrary depth |
 
 `PUT` answers `200` with a chunked `application/x-ndjson` progress stream, one
 line per entry carrying `{path, size, mtime, mode, sha256}` and a `result` of
@@ -79,13 +87,49 @@ line per entry carrying `{path, size, mtime, mode, sha256}` and a `result` of
 the last line rather than a status code, because the status line was spent on
 the first entry.
 
+### Listing
+
+`GET …/files/list` streams the same five fields per entry, plus a `kind` of
+`file`, `directory` or `symlink`. Paths are relative to the **Project root**,
+not to the subtree that was listed, so what comes back is what goes into a
+later `?path=`. Nothing is buffered at either end: entries go out as the walk
+produces them and a large tree costs the Core the same memory as a small one.
+
+| Parameter | Default | Means |
+| --- | --- | --- |
+| `path` | the Project root | which subtree to list. Naming a file lists that one file |
+| `depth` | `all` | how many levels down to walk. `1` is the immediate children. A value that is neither `all` nor a whole number ≥ 1 is a `400`, never a silent "everything" |
+| `sha256` | `0` | compute the digest of every file and symlink. Off by default — see below |
+
+```jsonc
+{"type":"entry","path":"src/index.ts","kind":"file","size":184,"mtime":1755000000000,"mode":420,"sha256":null}
+{"type":"skipped","path":"vendor/locked","code":"unreadable-directory","message":"could not read this directory: EACCES"}
+{"type":"done","entries":812,"skipped":1,"bytes":9433600}
+```
+
+A symlink is an entry and is **never followed**: its `size` is the length of
+its target and, with `sha256=1`, the digest is of the target string. So a link
+pointing out of the Project is reported as a fact about the Project without
+anything on the other end of it appearing in the listing. A directory that
+cannot be read, or a file that cannot be read to digest it, is a `skipped` line
+and the rest of the tree still lists.
+
+**`sha256` is available on request, not free**
+([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D6). On a transfer the
+digest is computed eagerly, because the bytes are already in hand; a listing
+never has them, so asking for digests means reading every byte under the path.
+The field is present in every entry either way — `null` means "no bytes" for a
+directory and "nobody asked" for anything else.
+
 Refusals carry a machine-readable `code` beside the prose:
 
 | Status | Code | Means |
 | --- | --- | --- |
 | 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside that Project. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5) |
 | 401 | `unauthorized` | no bearer, or one this Core refuses |
+| 400 | `bad-request` | a query parameter the surface does not understand — a `depth` that is not a number, a `sha256` that is not a yes or a no |
 | 404 | `project-not-found`, `not-found` | no such Project on this Core, or no such path in it |
+| 405 | `method-not-allowed` | `…/files/list` is a read: `GET` and `HEAD` only |
 | 409 | `transfer-in-progress` | another write is already running on this Project. One write at a time per Project; reads are unrestricted and concurrent |
 | 409 | `directory-in-the-way` | a **file** write landed on a path holding a non-empty directory. Overwrite-by-default replaces files; it does not delete trees |
 | 507 | `insufficient-storage` | the declared body length does not fit on the Project's filesystem. There is no size cap — only a fit check |
