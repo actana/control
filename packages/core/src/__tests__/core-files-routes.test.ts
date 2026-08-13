@@ -4,7 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
 import { ProjectWriteLocks } from "../files-transfer-locks";
-import { packDirectory } from "../files-tar";
+import { packDirectory, packEntryHeader } from "../files-tar";
 import { cleanupTrees, collect, makeTree, readTree } from "./files-fixture";
 
 // The `/v1/…` routes over a real HTTP server (#165 F2–F6, F8).
@@ -851,5 +851,157 @@ describe("a single-file PUT that resolves to the Project root", () => {
 
     expect(res.status).toBe(200);
     expect(fs.readFileSync(path.join(root, "notes.txt"), "utf8")).toBe("kept");
+  });
+});
+
+describe("a tar entry that resolves to the Project root", () => {
+  // The same defect as the describe above, one branch over, and the reason the
+  // tar branch could not simply be cleared: the *request* path being empty is
+  // the legitimate "unpack into the Project root", but the *archive* can still
+  // name the root as an entry. A regular-file entry called `.` reproduced the
+  // root replacement byte for byte on an empty Project — and reported success
+  // while doing it, because a tar `PUT` answers `200` before it reads an entry.
+  //
+  // These are the route-level halves of the unit cases in
+  // `files-tar-unpack-hardening.test.ts`: what a client is told, and what the
+  // Project looks like afterwards.
+
+  async function tarOf(entries: Parameters<typeof makeTree>[0]): Promise<Buffer> {
+    return await collect(packDirectory(makeTree(entries)));
+  }
+
+  /** A one-entry archive whose name the packer would never produce. */
+  function rawTar(name: string, opts: { typeflag?: string; mode?: number; content?: string } = {}): Buffer {
+    const content = Buffer.from(opts.content ?? "", "utf8");
+    const parts: Buffer[] = [
+      ...packEntryHeader({
+        name,
+        mode: opts.mode ?? 0o644,
+        size: content.length,
+        mtime: 0,
+        typeflag: opts.typeflag ?? "0",
+        linkname: "",
+      }),
+    ].map((block) => Buffer.from(block));
+    if (content.length > 0) {
+      parts.push(content);
+      const pad = content.length % 512 === 0 ? 0 : 512 - (content.length % 512);
+      if (pad > 0) parts.push(Buffer.alloc(pad));
+    }
+    parts.push(Buffer.alloc(1024));
+    return Buffer.concat(parts);
+  }
+
+  const spellings: Array<[string, string]> = [
+    ["an entry named `.`", "."],
+    ["an entry named `./`", "./"],
+    ["an entry named `./.`", "./."],
+    ["a nameless entry", ""],
+  ];
+
+  for (const [label, name] of spellings) {
+    it(`refuses ${label} against an empty Project, leaving the root a directory`, async () => {
+      const root = project("p1");
+
+      const res = await call("PUT", "/v1/projects/p1/files", {
+        body: rawTar(name, { content: "CLOBBER" }),
+        headers: { "content-type": "application/x-tar" },
+      });
+
+      const lines = ndjson(res.body);
+      expect(lines.some((line) => line.type === "error" && line.code === "root-entry-path")).toBe(true);
+      expect(lines.some((line) => line.type === "done")).toBe(false);
+      expect(fs.lstatSync(root).isDirectory()).toBe(true);
+      expect(readTree(root)).toEqual({});
+    });
+
+    it(`refuses ${label} against a populated Project, losing nothing`, async () => {
+      const root = project("p1", { "a.txt": "a", "src/index.ts": "export const x = 1;\n" });
+
+      const res = await call("PUT", "/v1/projects/p1/files", {
+        body: rawTar(name, { content: "CLOBBER" }),
+        headers: { "content-type": "application/x-tar" },
+      });
+
+      const lines = ndjson(res.body);
+      expect(lines.some((line) => line.type === "error" && line.code === "root-entry-path")).toBe(true);
+      expect(lines.some((line) => line.type === "done")).toBe(false);
+      expect(fs.lstatSync(root).isDirectory()).toBe(true);
+      expect(readTree(root)).toEqual({
+        "a.txt": { content: "a", mode: 0o644 },
+        "src/index.ts": { content: "export const x = 1;\n", mode: 0o644 },
+      });
+    });
+  }
+
+  it("reports the refusal rather than success, and names it distinguishably", async () => {
+    // The 200 is spent by the time an entry is read, so the refusal is a
+    // *line* — which is what makes reporting it non-negotiable: the old code
+    // wrote `{type:"done", entries:1}` over a Project whose root it had just
+    // deleted. `root-entry-path` and not `directory-in-the-way`: this is about
+    // the entry naming the root, not about what the root happens to hold.
+    project("p1");
+
+    const res = await call("PUT", "/v1/projects/p1/files", {
+      body: rawTar(".", { content: "CLOBBER" }),
+      headers: { "content-type": "application/x-tar" },
+    });
+
+    const error = ndjson(res.body).find((line) => line.type === "error");
+    expect(error?.code).toBe("root-entry-path");
+    expect(error?.code).not.toBe("directory-in-the-way");
+    expect(String(error?.message)).toContain("names the unpack root itself");
+  });
+
+  it("releases the write lease after refusing, so the Project is not wedged", async () => {
+    project("p1");
+
+    await call("PUT", "/v1/projects/p1/files", {
+      body: rawTar(".", { content: "CLOBBER" }),
+      headers: { "content-type": "application/x-tar" },
+    });
+
+    expect(locks.current("p1")).toBeNull();
+  });
+
+  it("still accepts the `./` directory entry every `tar -cf - .` archive opens with", async () => {
+    // The one entry that may name the root. It is skipped rather than refused,
+    // so the ordinary archive keeps working — and skipped rather than applied,
+    // so the archive's mode bits do not restyle the Project root.
+    const root = project("p1");
+    fs.chmodSync(root, 0o755);
+    const archive = Buffer.concat([
+      rawTar("./", { typeflag: "5", mode: 0o700 }).subarray(0, 512),
+      await tarOf({ "a.txt": "a", "sub/b.txt": "b" }),
+    ]);
+
+    const res = await call("PUT", "/v1/projects/p1/files", {
+      body: archive,
+      headers: { "content-type": "application/x-tar" },
+    });
+
+    expect(res.status).toBe(200);
+    const lines = ndjson(res.body);
+    expect(lines.some((line) => line.type === "error")).toBe(false);
+    expect(lines.some((line) => line.type === "done")).toBe(true);
+    expect(fs.lstatSync(root).isDirectory()).toBe(true);
+    expect(fs.statSync(root).mode & 0o777).toBe(0o755);
+    expect(readTree(root)).toEqual({
+      "a.txt": { content: "a", mode: 0o644 },
+      "sub/b.txt": { content: "b", mode: 0o644 },
+    });
+  });
+
+  it("still unpacks an ordinary archive under a named path", async () => {
+    const root = project("p1");
+    const archive = await tarOf({ "a.txt": "a" });
+
+    const res = await call("PUT", "/v1/projects/p1/files?path=drop", {
+      body: archive,
+      headers: { "content-type": "application/x-tar" },
+    });
+
+    expect(res.status).toBe(200);
+    expect(fs.readFileSync(path.join(root, "drop/a.txt"), "utf8")).toBe("a");
   });
 });

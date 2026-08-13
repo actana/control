@@ -510,6 +510,183 @@ describe("a file entry landing where a directory already is", () => {
   });
 });
 
+describe("a tar entry that names the unpack root itself", () => {
+  // The same defect the single-file `PUT` guard refuses one branch over, and
+  // for a while it lived here undisturbed: `handlePut` reads the *resolved*
+  // path, and this loop used to test the *raw* entry name for emptiness. An
+  // entry called `.` survived that test with length 1 while confining to the
+  // root, and a regular-file typeflag then did what `writeSingleFile` used to —
+  // `lstat` finds a directory, an empty root has nothing to lose, `rm -r` takes
+  // the Project root away and `open(…, "w")` leaves a file at its path.
+  //
+  // Worse here than on the `PUT` branch, because a tar `PUT` answers `200`
+  // before it reads a byte: the old code reported `{type:"done"}` over a
+  // Project whose root it had just deleted.
+  //
+  // The spellings below are not a list this loop maintains — every one of them
+  // resolves to `relative === ""` through the one confinement function, which
+  // is why keying on the resolved answer is exhaustive where a string test over
+  // the raw name would not be.
+
+  const spellings: Array<[string, string]> = [
+    ["a bare `.`", "."],
+    ["`./`", "./"],
+    ["`./.`", "./."],
+    ["`././`", "././"],
+    ["a trailing run of slashes", ".///"],
+    ["a nameless entry", ""],
+    ["whitespace around the dot", " . "],
+  ];
+
+  for (const [label, name] of spellings) {
+    it(`refuses ${label} against an empty root, which is the destructive case`, async () => {
+      const destination = makeTree();
+      const archive = buildTar([{ name, content: "CLOBBER" }]);
+
+      expect((await refusal(archive, destination)).code).toBe("root-entry-path");
+      // The half that matters: the root is still a directory, not a file whose
+      // contents are the archive's.
+      expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+    });
+
+    it(`refuses ${label} against a populated root, losing nothing`, async () => {
+      const destination = makeTree({ "keep.txt": "keep", "src/deep.ts": "deep" });
+      const archive = buildTar([{ name, content: "CLOBBER" }]);
+
+      // Both halves matter, as on the `PUT` branch: the populated case was
+      // already caught by `directory-in-the-way`, so asserting it here is what
+      // keeps the refusal about *being the root* rather than about its
+      // contents.
+      const err = await refusal(archive, destination);
+      expect(err.code).toBe("root-entry-path");
+      expect(err.code).not.toBe("directory-in-the-way");
+      expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+      expect(fs.readFileSync(path.join(destination, "keep.txt"), "utf8")).toBe("keep");
+      expect(fs.readFileSync(path.join(destination, "src/deep.ts"), "utf8")).toBe("deep");
+    });
+  }
+
+  it("refuses a symlink entry that names the root", async () => {
+    // Refused before the containment check has an opinion about the link
+    // target, so the code names what is actually wrong with it.
+    const destination = makeTree();
+    const archive = buildTar([{ name: ".", typeflag: "2", linkname: "elsewhere" }]);
+
+    expect((await refusal(archive, destination)).code).toBe("root-entry-path");
+    expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+  });
+
+  it("refuses a hardlink entry that names the root", async () => {
+    const destination = makeTree({ "target.txt": "pointed at" });
+    const archive = buildTar([{ name: "./.", typeflag: "1", linkname: "target.txt" }]);
+
+    expect((await refusal(archive, destination)).code).toBe("root-entry-path");
+    expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+  });
+
+  it("refuses a pax `path` record that names the root, because the override is resolved too", async () => {
+    // The raw name is innocent and the override is not — the check runs after
+    // `rawName` has taken the pax value, which is the only ordering that works.
+    const destination = makeTree();
+    const record = paxRecord("path", ".");
+    const archive = buildTar([
+      { name: "PaxHeaders/innocent.txt", typeflag: "x", content: record },
+      { name: "innocent.txt", content: "CLOBBER" },
+    ]);
+
+    expect((await refusal(archive, destination)).code).toBe("root-entry-path");
+    expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+  });
+
+  it("refuses the root entry without keeping the entries that preceded it", async () => {
+    // No atomicity is promised — what is asserted is that the refusal lands
+    // before the root is touched, not that the archive rolls back.
+    const destination = makeTree();
+    const archive = buildTar([{ name: "before.txt", content: "landed" }, { name: ".", content: "CLOBBER" }]);
+
+    expect((await refusal(archive, destination)).code).toBe("root-entry-path");
+    expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(destination, "before.txt"), "utf8")).toBe("landed");
+  });
+
+  it("skips a *directory* entry naming the root rather than refusing it — that is `tar(1)`'s `./`", async () => {
+    // Every `tar -cf - .` archive opens with a `./` directory header, so
+    // refusing this would refuse the ordinary archive. It is skipped, and the
+    // rest of the archive unpacks into the root exactly as before.
+    const destination = makeTree();
+    const archive = buildTar([
+      { name: "./", typeflag: "5", mode: 0o700 },
+      { name: "a.txt", content: "a" },
+      { name: "sub/b.txt", content: "b" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(destination, "a.txt"), "utf8")).toBe("a");
+    expect(fs.readFileSync(path.join(destination, "sub/b.txt"), "utf8")).toBe("b");
+  });
+
+  it("does not apply a root directory entry's mode to the Project root", async () => {
+    // The behaviour change that comes with skipping rather than chmod'ing, said
+    // out loud because it is a change: an archive somebody dropped does not
+    // restyle the permissions of the Project root it was dropped on.
+    const destination = makeTree();
+    fs.chmodSync(destination, 0o755);
+    const archive = buildTar([{ name: "./", typeflag: "5", mode: 0o700 }, { name: "a.txt", content: "a" }]);
+
+    await unpack(archive, destination);
+
+    expect(fs.statSync(destination).mode & 0o777).toBe(0o755);
+  });
+
+  it("skips a root directory entry that declares a body, rather than desynchronising", async () => {
+    // The skip that the old empty-name branch was carrying: a bodyless entry
+    // claiming a body has to be walked past, or the next 512 bytes read as a
+    // header.
+    const destination = makeTree();
+    const archive = buildTar([
+      { name: "./", typeflag: "5", content: "Z".repeat(512) },
+      { name: "after.txt", content: "read as a file, not as a header" },
+    ]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readFileSync(path.join(destination, "after.txt"), "utf8")).toBe("read as a file, not as a header");
+  });
+
+  it("refuses `/` and `//`, which this loop strips to nothing before confinement sees them", async () => {
+    // Not `absolute-entry-path`, and the difference is worth pinning rather
+    // than discovering: the trailing-slash strip above runs *before*
+    // `confineWriteTarget`, so a name that is nothing but slashes reaches it as
+    // `""` and resolves to the root. Pre-fix these were the silent-skip case.
+    const destination = makeTree();
+    for (const name of ["/", "//", "///"]) {
+      expect((await refusal(buildTar([{ name, content: "x" }]), destination)).code).toBe("root-entry-path");
+      expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+    }
+  });
+
+  it("still refuses `/.` as absolute, which is a different complaint", async () => {
+    // This one keeps a non-slash last character, so confinement sees it whole
+    // and answers about what is actually wrong with it. The root check is not
+    // asked, and should not be.
+    const destination = makeTree();
+
+    expect((await refusal(buildTar([{ name: "/.", content: "x" }]), destination)).code).toBe("absolute-entry-path");
+    expect(fs.lstatSync(destination).isDirectory()).toBe(true);
+  });
+
+  it("leaves an entry called `.hidden` alone, which only looks like the root", async () => {
+    const destination = makeTree();
+    const archive = buildTar([{ name: ".hidden", content: "an ordinary dotfile" }]);
+
+    await unpack(archive, destination);
+
+    expect(fs.readFileSync(path.join(destination, ".hidden"), "utf8")).toBe("an ordinary dotfile");
+  });
+});
+
 describe("a size the 11-digit octal ustar field cannot hold", () => {
   // #165 F8 says no size cap, and an 11-octal-digit size field is one at
   // 8589934592 bytes (8 GiB). Real writers encode past it two ways and this

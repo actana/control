@@ -109,6 +109,7 @@ export type CoreFilesErrorCode =
   | "corrupt-archive"
   | "absolute-entry-path"
   | "dot-dot-entry-path"
+  | "root-entry-path"
   | "entry-outside-root"
   | "unsupported-entry-type"
   | "hardlink-outside-root"
@@ -446,9 +447,12 @@ export function createCoreFilesRequestHandler(
     // nothing writable" refusals of this surface rather than with the 409s,
     // which are about what is on the disk.
     //
-    // The *tar* branch is untouched: an empty path there is the legitimate
-    // "unpack into the Project root", which is a write of the root's contents
-    // and not a write of the root.
+    // The *tar* branch is not guarded here, and deliberately: an empty path
+    // there is the legitimate "unpack into the Project root", which is a write
+    // of the root's contents and not a write of the root. The archive can still
+    // *name* the root as an entry, which is the same defect one branch over —
+    // that one is refused inside `unpackTarInto`, as `root-entry-path`, on the
+    // resolved entry path rather than here on the request's.
     if (!asTar && relative === "") {
       return sendRefusal(res, {
         status: 400,

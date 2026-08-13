@@ -42,6 +42,7 @@ export type TarRefusalCode =
   | "corrupt-archive"
   | "absolute-entry-path"
   | "dot-dot-entry-path"
+  | "root-entry-path"
   | "entry-outside-root"
   | "unsupported-entry-type"
   | "hardlink-outside-root"
@@ -659,6 +660,56 @@ export async function unpackTarInto(
         `tar entry ${JSON.stringify(rawName)} resolves to ${confined.absolute}, outside the Project root`,
       );
     }
+    // ── An entry that names the unpack root itself ──
+    //
+    // Read off `confined.relative` and not off `rawName`, for the same reason
+    // the single-file guard at the top of `handlePut` reads the resolved answer:
+    // confinement already collapses every spelling of the root into one — `.`,
+    // `./`, `./.`, `././`, any trailing-slash or whitespace-padded variant, a
+    // nameless entry, and the same set arriving through a pax `path` or GNU
+    // long-name override, which are applied to `rawName` before this line. A
+    // string test over the raw name would instead be a list of spellings
+    // somebody has to keep complete, and the one that got missed is the bug.
+    //
+    // `/` and `//` land here too, and not on the absolute refusal above: the
+    // trailing-slash strip runs *first*, so a name that is nothing but slashes
+    // reaches confinement as `""`. `/.` keeps a non-slash last character and so
+    // is still answered as `absolute-entry-path`, which is the more specific
+    // and more useful complaint about it. Both are refused; only the code
+    // differs, and the hardening suite pins each.
+    //
+    // A **directory** entry here is `tar(1)`'s leading `./`, which every
+    // `tar -cf - .` archive opens with, so it is skipped rather than refused —
+    // the root already exists as a directory and the archive's *contents*
+    // unpack into it. Skipped rather than applied, note: the entry carries mode
+    // bits, and an archive somebody dropped has no business restyling the
+    // permissions of the Project root it was dropped on.
+    //
+    // Anything else is refused, and this is the same defect the single-file
+    // `PUT` guard refuses one branch over. A regular file named `.` asks this
+    // Core to replace the root with a node of another type, and the write below
+    // would have done it: `lstat` finds a directory, an *empty* root passes
+    // `refuseNonEmptyDirectory` with nothing to lose, `rm -r` then takes the
+    // Project root away, and `open(…, "w")` puts a file at its path — no
+    // listing, no transfers, no working directory for a harness, and a fix by
+    // hand on the Core machine. It is worse here than on the `PUT` branch,
+    // because the 200 is already spent and the stream would otherwise have
+    // reported `done` over it.
+    if (confined.relative.length === 0) {
+      if (header.typeflag === TYPE_DIRECTORY) {
+        // `skip` and not a bare `continue`, for the reason the "entries with no
+        // body of their own" note below gives: a bodyless entry that declares a
+        // body has to be walked past, or the stream desynchronises.
+        await reader.skip(bodySize + bodyPadding);
+        continue;
+      }
+      throw new TarError(
+        "root-entry-path",
+        `tar entry ${JSON.stringify(rawName)} names the unpack root itself, which no file transfer writes — ` +
+          "an archive carries the root's contents, and only a directory entry may name the root",
+      );
+    }
+
     // ── Entries with no body of their own ──
     //
     // A directory, a symlink and a hardlink all carry size 0 from any writer
@@ -672,11 +723,6 @@ export async function unpackTarInto(
     // where the next entry starts" is the shape that produces real bugs later,
     // and `tar(1)` skips the declared body. So this one does too, and the
     // hardening suite has a case for it.
-    if (entryRelative.length === 0) {
-      await reader.skip(bodySize + bodyPadding);
-      continue;
-    }
-
     const target = confined.absolute;
     await fs.promises.mkdir(path.dirname(target), { recursive: true });
     const existing = await lstatOrNull(target);

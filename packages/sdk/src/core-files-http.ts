@@ -75,6 +75,7 @@ export type CoreFilesErrorCode =
   | "corrupt-archive"
   | "absolute-entry-path"
   | "dot-dot-entry-path"
+  | "root-entry-path"
   | "entry-outside-root"
   | "unsupported-entry-type"
   | "hardlink-outside-root"

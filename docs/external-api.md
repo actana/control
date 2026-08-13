@@ -150,6 +150,7 @@ Refusals carry a machine-readable `code` beside the prose:
 | 405 | `method-not-allowed` | `…/files/list` is a read: `GET` and `HEAD` only |
 | 409 | `transfer-in-progress` | another write is already running on this Project. One write at a time per Project; reads are unrestricted and concurrent |
 | 409 | `directory-in-the-way` | a **file** write landed on a path holding a non-empty directory. Overwrite-by-default replaces files; it does not delete trees |
+| — | `root-entry-path` | a tar entry that is not a directory resolved to the unpack root itself. Reported as an NDJSON `error` line, since a tar `PUT` has already answered `200` by the time an entry is read — see below |
 | 507 | `insufficient-storage` | the declared body length does not fit on the Project's filesystem. There is no size cap — only a fit check |
 
 A client that sends `Expect: 100-continue` is refused before it uploads a byte,
@@ -174,6 +175,19 @@ regular file has no listing, no transfers and no working directory for a
 harness. A `PUT` of a **tar** with an empty path is unaffected: that is the
 legitimate "unpack into the Project root", a write of the root's contents rather
 than of the root.
+
+**Nor is it the target of a tar entry.** An archive carries the root's
+contents, so an entry that resolves to the root itself — `.`, `./`, `./.`, a
+nameless entry, a name that is nothing but slashes, or any of those arriving
+through a pax `path` or GNU long-name override — is refused mid-archive with
+`root-entry-path`. A *regular file*
+entry named `.` reproduces the single-file case exactly: on an empty Project it
+would delete the root and put a file at its path, and because a tar `PUT`
+answers `200` before it reads a byte, the client would have been told the
+transfer succeeded. The one exception is a **directory** entry naming the root,
+which is the `./` header every `tar -cf - .` archive opens with: it is skipped,
+not refused, and its mode bits are not applied — a dropped archive does not
+restyle the Project root's permissions.
 
 A write transfer holds its Project's lease only for as long as the request
 lives. A client that aborts mid-upload — including one whose progress stream has
