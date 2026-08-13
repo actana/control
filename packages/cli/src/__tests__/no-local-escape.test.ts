@@ -142,11 +142,45 @@ describe("the published CLI is the client half (#129 D8)", () => {
     }
   });
 
-  it("declares only the SDK and its socket library as runtime dependencies", () => {
+  it("declares only the SDK and the two libraries the SDK dials with", () => {
+    // The list is short because the CLI is the *client half* (#129 D8): it must
+    // not grow a server dependency, a database driver or a native addon, and a
+    // new name here is the first sign that one has arrived.
+    //
+    // `ws` and `undici` are on it for the same reason and neither is really the
+    // CLI's own: they are the SDK's runtime dependencies, and they are declared
+    // *here* as well because `build.mjs` marks them external — the bundle
+    // imports them by name at runtime, so this package's own `node_modules` is
+    // where they have to resolve from. Bundling either is not the alternative:
+    // undici reaches for `require("node:assert")` down a path esbuild cannot
+    // see, so an inlined copy throws `Dynamic require ... is not supported` the
+    // first time `actana` runs.
     const manifest = JSON.parse(
       readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
     ) as { dependencies: Record<string, string>; bin: Record<string, string> };
-    expect(Object.keys(manifest.dependencies).sort()).toEqual(["@actana/sdk", "ws"]);
+    expect(Object.keys(manifest.dependencies).sort()).toEqual(["@actana/sdk", "undici", "ws"]);
+  });
+
+  it("keeps that list and `build.mjs`'s externals in step", () => {
+    // Two statements of one fact, and the drift is only visible at runtime: a
+    // package marked external but not declared is `ERR_MODULE_NOT_FOUND` in a
+    // stranger's global install, and one declared but not external is a second
+    // copy quietly inlined into the bundle. Neither shows up in a build log.
+    const manifest = JSON.parse(
+      readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
+    ) as { dependencies: Record<string, string> };
+    const build = readFileSync(path.resolve(SRC, "..", "build.mjs"), "utf8");
+    const externals = /external:\s*\[([^\]]*)\]/
+      .exec(build)?.[1]
+      ?.match(/"([^"]+)"/g)
+      ?.map((quoted) => quoted.slice(1, -1))
+      .sort();
+
+    // Every external must be declared. The SDK is the exception in the other
+    // direction: it is a workspace package that *is* bundled, not resolved.
+    expect(externals).toBeDefined();
+    const declared = Object.keys(manifest.dependencies);
+    for (const external of externals!) expect(declared).toContain(external);
   });
 });
 
