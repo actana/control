@@ -814,6 +814,21 @@ export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId:
  */
 export type CoreLinkMultiConnectionCapability = { version: 1 };
 
+/**
+ * The `files` capability, announced on `ready` (#165 F9, ADR 0024 D11).
+ *
+ * Says that this Core answers the `/v1/projects/:projectId/files` routes on its
+ * **HTTPS origin** — the same server this WebSocket is mounted on, reachable at
+ * {@link CoreConnection.httpsBaseUrl}. Nothing about the capability changes the
+ * core link itself: no frame is added, none changes meaning, and not one byte
+ * of a file transfer crosses this socket (ADR 0028).
+ *
+ * `version` is the capability's own number, independent of
+ * {@link CORE_LINK_PROTOCOL_VERSION} — it moves when the file surface changes
+ * shape, and nothing about it marks a Core stale.
+ */
+export type CoreLinkFilesCapability = { version: 1 };
+
 /** Response frame — correlates to a request via `reqId`. */
 export type CoreLinkResponseFrame =
   | {
@@ -832,6 +847,19 @@ export type CoreLinkResponseFrame =
        * such a Core is connected and fully usable, never "needs update".
        */
       multiConnection?: CoreLinkMultiConnectionCapability;
+      /**
+       * Present on a Core that answers the `/v1/…` file routes over HTTPS
+       * (#165 F9). Absent means a Core with no file surface — every core-link
+       * frame behaves identically, because none of them was ever about files.
+       *
+       * Absence is a supported state and not a fault, on exactly the terms
+       * `multiConnection` set: a newer Panel reads the absence and does not
+       * offer the affordance, an older Panel never looks at the field, and
+       * neither is "needs update". The gate is a client-side capability check
+       * before an HTTPS call, not a withheld frame, because there is no frame
+       * to withhold.
+       */
+      files?: CoreLinkFilesCapability;
     }
   | {
       type: "spawned";
@@ -1253,6 +1281,23 @@ export type CoreLinkServerFrame =
  * is slower rather than lesser, which is the rule. `clientId` is not identity
  * and carries no authority a connection did not already have (D10), so there is
  * nothing here for an older client to be missing.
+ *
+ * Issue 165 adds the optional `files` capability to the `ready` frame — and
+ * does NOT move this version either (ADR 0024 D11), for the sixth time and, for
+ * the first time, on a surface that is not the core link at all. The file
+ * routes live on the Core's HTTPS origin (ADR 0028), so there is no frame here
+ * to add, none to gate, and no existing frame whose meaning changes: the
+ * capability is a pointer at a second protocol on the same socket's server.
+ * That makes the "absence yields exactly today's behaviour" test trivially
+ * true — a Core without it is a Core that has no file surface, which is every
+ * Core that has ever shipped, and its core link is byte-for-byte what it was.
+ * Both mismatch directions are therefore ordinary: an older Panel against a
+ * Core that announces `files` never reads the field and drives that Core
+ * exactly as it does today, and a newer Panel against a Core that omits it
+ * reads the absence and withholds the affordance rather than calling a route
+ * that would 404. Neither is "needs update", which is the whole point of D11 —
+ * and it is why `CORE_LINK_PROTOCOL_VERSION` staying at 0.15.0 is a decision
+ * rather than an oversight.
  */
 export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
 
@@ -1292,6 +1337,24 @@ export function coreLinkProtocolCompatible(reported: string | null | undefined):
 export function readMultiConnectionCapability(
   raw: unknown,
 ): CoreLinkMultiConnectionCapability | null {
+  if (!raw || typeof raw !== "object") return null;
+  const version = (raw as { version?: unknown }).version;
+  return version === 1 ? { version: 1 } : null;
+}
+
+/**
+ * Read the `files` capability off a raw `ready` frame, or null (#165 F9).
+ *
+ * The same rule as {@link readMultiConnectionCapability}, for the same reason:
+ * null for every shape that is not exactly `{ version: 1 }` — absent, a
+ * non-object, or a version this build does not know. **An unrecognised future
+ * version reads as absent on purpose.** A Core announcing `{ version: 2 }` is
+ * telling a client built against version 1 that its file surface is a shape
+ * this client has never seen, and the safe answer is the no-file-surface
+ * behaviour that predates the capability, never a guess that version 2 is a
+ * superset. Nothing here can mark a Core incompatible.
+ */
+export function readFilesCapability(raw: unknown): CoreLinkFilesCapability | null {
   if (!raw || typeof raw !== "object") return null;
   const version = (raw as { version?: unknown }).version;
   return version === 1 ? { version: 1 } : null;

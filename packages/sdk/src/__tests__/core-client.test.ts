@@ -70,6 +70,10 @@ describe("CoreClient", () => {
       protocolVersion: CORE_LINK_PROTOCOL_VERSION,
       compatible: true,
       multiConnection: { version: 1 },
+      // This rig's Core announces no `files` capability (#165 F9) — it serves
+      // no HTTP surface for one to point at. Null rather than absent: the field
+      // is always reported, and "this Core has no file routes" is an answer.
+      files: null,
       coreId: "core_abc",
       bearerExpiresAt: expect.any(Number),
     });
