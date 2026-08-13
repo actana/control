@@ -59,6 +59,24 @@ export type CoreDialStatus = {
   coreVersion?: string | null;
   /** On `needs-update`: the protocol version this Panel speaks. */
   panelVersion?: string;
+  /**
+   * The `files` capability this Core announced on its last `ready` frame (#129
+   * F9), or null for a Core that announced none.
+   *
+   * It rides the dial status rather than the registry row because it is a fact
+   * about the *current connection*, exactly like `coreVersion`: a Core can be
+   * downgraded, and a remembered answer would leave a browser drawing a Files
+   * view whose every request 404s. The service is the one holding the link, so
+   * the service is the one that learns it, and every tab already folds each
+   * dial push into its row (`useCores`) — so an upgraded Core grows the
+   * affordance and a downgraded one loses it without a reload.
+   *
+   * Absent and null read the same and both mean *no file surface*, which is
+   * every Core that shipped before #165. That is a supported state and **not**
+   * `needs-update` (ADR 0024 D11): the UI withholds the view rather than
+   * showing a broken one.
+   */
+  files?: { version: 1 } | null;
 };
 
 /**

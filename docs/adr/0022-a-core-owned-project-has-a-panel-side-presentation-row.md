@@ -28,3 +28,21 @@ The fields it was sending are not one kind of thing, and that is what this ADR s
 - **A Core-owned project's path is immutable, and the UI now says so.** A path is a VM path only the Core can validate, and no op carries one post-create, so the core arm has nothing to send it on. Rather than accept an edit and drop it — the half-save this ADR exists to end, reproduced at the field level — the Edit dialog disables the Working directory field for a Core-owned project, drops Browse… (which was gated on *exactly* the case that could not be edited), and says the folder is fixed. The missing-path dialog's "point the project at its new location from Edit project" branches on ownership for the same reason: for a Core-owned project the only honest advice is remove-and-add-again. Growing an op that carries a Core-validated path is the real fix, and is tracked in #104.
 - **Ownership and browsing are two different Cores, and the dialog now takes both.** `initialCoreId` names whose disk the folder browser walks and falls back to the open Core; `projectCoreId` names who owns the row being edited and does not. They diverge exactly where the project rail edits a Panel-owned project while a Core is open — the case where a fallback would disable a path that is genuinely editable, and route its edits at a Core that has never heard of it.
 - **`CONTEXT.md` gains **Project presentation**,** alongside **Remembered Session Settings**, which it is deliberately the mirror image of: one names the Core facts a Panel must not keep, the other the Panel facts a Core must not.
+
+## Amended by ADR 0030 (#169)
+
+The consequence above beginning *"Presentation is read as one list and joined
+client-side"* argues from a claim that is too broad: **"The Panel server has no
+transport of its own to a Core."** Its conclusion stands and nothing about
+project filing changes — a project list arrives over the panel link, inside a
+browser, and the Panel server still cannot join one to its own rows. But the
+Panel service *does* have a transport of its own to a Core, and
+[ADR 0030](0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) uses it: file bytes
+go browser → Panel → Core, with the Panel presenting the mTLS material it
+already dials every core link with.
+
+That ADR also draws the boundary this one implies but never had to state: **a
+Project's files are not presentation.** `project_presentation` holds the Panel
+operator's own filing of somebody else's Project — group, card image, launch URL
+— and a Project's disk is the opposite kind of thing. Nothing about the file
+view is stored on the Panel at all.

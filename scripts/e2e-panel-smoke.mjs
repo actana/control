@@ -25,8 +25,12 @@
 //   • the Core's secrets are unreadable at rest: the bearer appears nowhere in
 //     panel.db, and a data directory restored without its `secrets.key` cannot
 //     dial the Core it still lists;
-//   • and the `AC_SECRETS_KEY` path works: a Panel given the key by environment
-//     pairs and dials without ever writing a key file.
+//   • the `AC_SECRETS_KEY` path works: a Panel given the key by environment
+//     pairs and dials without ever writing a key file;
+//   • and a file dropped on a Project reaches that Core's disk — read back with
+//     `fs`, not taken on the Panel's word — with the overwrite named in the
+//     Core's own progress stream, and with a gigabyte crossing a Panel booted
+//     with a 256 MB heap without its memory moving (#129 F6/F11, #169).
 //
 // The Core it pairs with comes from `scripts/lib/core-fixture.mjs` — a local
 // Core process. The `--core-tarball` Core-in-a-box variant is gone with the
@@ -44,8 +48,10 @@
 // the Panel's and the Core's output is printed so triage doesn't need a
 // rerun.
 
+import { execFileSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 
@@ -69,6 +75,33 @@ const OPERATOR_PASSWORD = "correct-horse-battery-staple";
 const OTHER_PASSWORD = "definitely-not-the-password";
 
 const DIAL_TIMEOUT_MS = 30_000;
+
+// ─── The file-drop leg's numbers (#169) ──────────────────────────────────────
+//
+// The relationship between these three is the whole assertion, so they live
+// together: the drop is several times the heap the Panel is allowed, and the
+// resident-memory ceiling is a fraction of the drop. Move one and the leg stops
+// meaning what it says.
+
+/** The deployed Panel's heap limit for the file-drop phase, in MB. */
+const PANEL_HEAP_CAP_MB = 256;
+/**
+ * How much is pushed through it — two gigabytes, because #169 says
+ * *multi-gigabyte* and one is not that. `AC_E2E_FILE_DROP_BYTES` overrides it
+ * for a machine that cannot spare the disk.
+ */
+const BIG_DROP_BYTES = Number(process.env.AC_E2E_FILE_DROP_BYTES ?? 2 * 1024 * 1024 * 1024);
+/**
+ * How much resident memory the Panel process may grow by while that crosses.
+ *
+ * The half of the assertion `--max-old-space-size` cannot make: `Buffer`s and
+ * `ArrayBuffer`s are external memory and are not bounded by the heap cap at all,
+ * so a Panel that buffered with `await request.arrayBuffer()` would sail past
+ * the cap and be caught only here.
+ */
+const PANEL_RSS_CEILING_BYTES = 512 * 1024 * 1024;
+/** Free space the phase needs on the Core's disk before it writes a gigabyte. */
+const BIG_DROP_DISK_HEADROOM = BIG_DROP_BYTES * 3;
 const PTY_OUTPUT_TIMEOUT_MS = 30_000;
 const REPLAY_TIMEOUT_MS = 30_000;
 
@@ -112,6 +145,7 @@ async function main() {
 
   await keyFilePhase({ panelBin, panelEntry, core });
   await envKeyPhase({ panelBin, panelEntry, core });
+  await fileDropPhase({ panelBin, panelEntry, core });
 
   log("OK — the Panel service seam holds end to end");
 }
@@ -205,6 +239,80 @@ async function envKeyPhase({ panelBin, panelEntry, core }) {
   }
   await assertSecretsSealedAtRest(dataDir, core, fail);
   log("AC_SECRETS_KEY: paired and dialed with the key held outside the data directory");
+  // The Core takes one core-link at a time; hand it back before the next phase
+  // pairs with it, or the two Panels spend the run displacing each other.
+  await panel.stop();
+}
+
+/**
+ * Project files, through a **memory-limited deployed Panel** (#129 F6/F11, #169).
+ *
+ * This phase exists for one claim that cannot be made anywhere else: *"a
+ * multi-gigabyte drop does not put the upload through the Panel's memory."* The
+ * unit suite pins the streaming structurally — the Core reads a byte while the
+ * browser is still writing — but only here is the Panel a real deployed process
+ * with a real limit on it, which is what the claim is actually about.
+ *
+ * So this Panel is booted with `--max-old-space-size` set small and then handed
+ * a file several times that size. **Both halves of the memory assertion are
+ * needed and neither is redundant:**
+ *
+ *   • the heap cap catches a Panel that buffered into JS objects — it dies, and
+ *     the request fails, loudly;
+ *   • the RSS ceiling catches a Panel that buffered into `Buffer`s or
+ *     `ArrayBuffer`s, which live in *external* memory that `--max-old-space-size`
+ *     does not bound at all. That is the likelier accident, since it is what
+ *     `await request.arrayBuffer()` and every framework body helper produce.
+ *
+ * And the other done-means is checked with `fs`: the file the operator dropped
+ * is read straight off the Core's Project directory, which is what "`cat`-able
+ * by a harness on that Core" means when you stop paraphrasing it.
+ */
+async function fileDropPhase({ panelBin, panelEntry, core }) {
+  const dataDir = tempDir("ac-e2e-panel-files-");
+  const port = await pickFreePort();
+  const panel = await startPanelService({
+    bin: panelBin,
+    serverEntry: panelEntry,
+    dataDir,
+    port,
+    // The limit the whole phase is about. A Panel container is a small one; this
+    // is smaller, so that "bigger than the Panel's memory" needs a file measured
+    // in gigabytes rather than in tens of them.
+    extra: { NODE_OPTIONS: `--max-old-space-size=${PANEL_HEAP_CAP_MB}` },
+    log,
+  }).catch((err) => die(`panel (file drop) failed to boot: ${err.message}`, err.logLines));
+  teardown.push(() => panel.kill());
+  const fail = (message) => die(message, [...panel.logLines(), ...core.logLines()]);
+
+  await assertSetupAndLogin(panel, fail);
+  const coreId = await assertCoreRegisters(panel, core, fail);
+  const link = await openLink(panel, fail);
+  await assertDialConnects(link, coreId, fail);
+
+  const filesCapable = await pollUntil(
+    "the Core to announce its `files` capability",
+    DIAL_TIMEOUT_MS,
+    async () => {
+      const listed = await panel.client.get("/api/cores");
+      const row = listed.body?.cores?.find((c) => c.id === coreId);
+      return row?.dial?.files ? row.dial : null;
+    },
+  ).catch(() => null);
+  if (!filesCapable) {
+    fail("the Core never announced `files` on `ready` — the Panel would withhold the file view");
+  }
+
+  const projectPath = core.makeProjectDir("ac-e2e-files-");
+  const projectId = await assertProjectCreated(link, coreId, projectPath, "e2e-files", fail);
+  link.close();
+
+  await assertDropIsOnTheCoresDisk(panel, coreId, projectId, projectPath, fail);
+  await assertOverwriteIsNamed(panel, coreId, projectId, projectPath, fail);
+  await assertFileViewLists(panel, coreId, projectId, fail);
+  await assertBigDropDoesNotGoThroughPanelMemory(panel, coreId, projectId, projectPath, fail);
+
+  await panel.stop();
 }
 
 // ─── Legs ────────────────────────────────────────────────────────────────────
@@ -390,6 +498,253 @@ async function assertProjectAndTaskLists(link, coreId, projectPath, fail) {
     fail(`tasksList answered ${JSON.stringify(tasks).slice(0, 300)}`);
   }
   log(`projects and tasks list over the panel link (project ${projectId})`);
+}
+
+// ─── Project files (#129 F6/F11, #169) ───────────────────────────────────────
+
+/** Create one Project on the Core over the panel link, and hand back its id. */
+async function assertProjectCreated(link, coreId, projectPath, name, fail) {
+  const created = await link.request(coreId, {
+    type: "projectsMutate",
+    mutation: { op: "create", name, path: projectPath },
+  });
+  if (created.type !== "projectsMutateResult" || !created.project?.projectId) {
+    fail(`creating ${name} answered ${JSON.stringify(created).slice(0, 300)}`);
+  }
+  return created.project.projectId;
+}
+
+function filesPath(coreId, projectId, relative) {
+  return (
+    `/api/cores/${encodeURIComponent(coreId)}/projects/${encodeURIComponent(projectId)}` +
+    `/files?path=${encodeURIComponent(relative)}`
+  );
+}
+
+/**
+ * PUT a body at the Panel **without ever holding it**, and read the NDJSON back.
+ *
+ * `write` is called with the request stream and paces itself against `drain`, so
+ * a gigabyte is generated a chunk at a time on this side too — a test that
+ * assembled the body first would be measuring its own memory, not the Panel's.
+ */
+function putStreamed(panel, pathname, write, headers = {}) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(panel.origin + pathname);
+    const req = http.request(
+      {
+        host: url.hostname,
+        port: url.port,
+        method: "PUT",
+        path: url.pathname + url.search,
+        headers: {
+          "content-type": "application/octet-stream",
+          cookie: panel.client.jar.header(),
+          ...headers,
+        },
+      },
+      (res) => {
+        let text = "";
+        res.setEncoding("utf8");
+        res.on("data", (chunk) => (text += chunk));
+        res.on("end", () =>
+          resolve({
+            status: res.statusCode ?? 0,
+            lines: text
+              .split("\n")
+              .map((line) => line.trim())
+              .filter(Boolean)
+              .map((line) => {
+                try {
+                  return JSON.parse(line);
+                } catch {
+                  return { unparsed: line };
+                }
+              }),
+          }),
+        );
+      },
+    );
+    req.on("error", reject);
+    Promise.resolve(write(req)).then(
+      () => req.end(),
+      (err) => {
+        req.destroy();
+        reject(err);
+      },
+    );
+  });
+}
+
+/** One string body, written in a single chunk. */
+function putText(panel, pathname, text) {
+  return putStreamed(panel, pathname, (req) => {
+    req.write(text);
+  });
+}
+
+/**
+ * Criterion (#129's done-means for the whole phase): a file dropped on a Project
+ * in the Panel is on that Core's disk, readable, seconds later.
+ *
+ * Asserted with `fs` against the Core's own Project directory rather than
+ * against anything the Panel said — the Panel answering `200` is what a
+ * write-shaped bug looks like too.
+ */
+async function assertDropIsOnTheCoresDisk(panel, coreId, projectId, projectPath, fail) {
+  const contents = `dropped-by-the-e2e-${Date.now()}`;
+  const answer = await putText(panel, filesPath(coreId, projectId, "notes/dropped.txt"), contents);
+  if (answer.status !== 200) {
+    fail(`dropping a file: expected 200, got ${answer.status} (${JSON.stringify(answer.lines).slice(0, 300)})`);
+  }
+  const landed = path.join(projectPath, "notes", "dropped.txt");
+  if (!fs.existsSync(landed)) fail(`the dropped file is not on the Core's disk at ${landed}`);
+  const onDisk = fs.readFileSync(landed, "utf8");
+  if (onDisk !== contents) fail(`the file on the Core reads ${onDisk.slice(0, 80)}, not what was dropped`);
+  log("a file dropped on a Project is on that Core's disk, at the path the browser named");
+}
+
+/** Criterion (F5): the second drop of the same name is reported as an overwrite. */
+async function assertOverwriteIsNamed(panel, coreId, projectId, projectPath, fail) {
+  const pathname = filesPath(coreId, projectId, "notes/dropped.txt");
+  const answer = await putText(panel, pathname, "second");
+  const entry = answer.lines.find((line) => line.result);
+  if (!entry || entry.result !== "overwritten") {
+    fail(`a second drop should be named an overwrite, got ${JSON.stringify(answer.lines).slice(0, 300)}`);
+  }
+  if (fs.readFileSync(path.join(projectPath, "notes", "dropped.txt"), "utf8") !== "second") {
+    fail("the overwrite did not reach the Core's disk");
+  }
+  log("progress comes from the Core's NDJSON stream, and names the overwrite");
+}
+
+/** Criterion: the file view lists what is actually there. */
+async function assertFileViewLists(panel, coreId, projectId, fail) {
+  const listed = await panel.client.get(
+    `/api/cores/${coreId}/projects/${projectId}/files/list?path=`,
+  );
+  if (listed.status !== 200) fail(`listing files: expected 200, got ${listed.status}`);
+  const paths = listed.text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => JSON.parse(line).path);
+  if (!paths.includes("notes/dropped.txt")) {
+    fail(`the listing is missing the dropped file: ${JSON.stringify(paths).slice(0, 300)}`);
+  }
+  log("the file view lists the Project's tree off the Core");
+}
+
+/** This process's resident memory, from the OS rather than from the process. */
+function rssBytes(pid) {
+  try {
+    // Linux: field 2 of statm is resident pages.
+    const statm = fs.readFileSync(`/proc/${pid}/statm`, "utf8").split(/\s+/);
+    return Number(statm[1]) * 4096;
+  } catch {
+    try {
+      const out = execFileSync("ps", ["-o", "rss=", "-p", String(pid)], { encoding: "utf8" });
+      return Number(out.trim()) * 1024;
+    } catch {
+      return 0;
+    }
+  }
+}
+
+/**
+ * Criterion: a multi-gigabyte drop does not put the upload through the Panel's
+ * memory.
+ *
+ * The Panel under this leg was booted with a heap cap of
+ * {@link PANEL_HEAP_CAP_MB} MB and is handed {@link BIG_DROP_BYTES}. A Panel
+ * that buffers dies of the cap or blows the RSS ceiling; a Panel that streams
+ * finishes with its memory flat, whatever the file's size.
+ */
+async function assertBigDropDoesNotGoThroughPanelMemory(panel, coreId, projectId, projectPath, fail) {
+  const free = freeBytesOn(projectPath);
+  if (free !== null && free < BIG_DROP_DISK_HEADROOM) {
+    fail(
+      `the file-drop leg needs ~${mib(BIG_DROP_DISK_HEADROOM)} free on ${projectPath} and found ` +
+        `${mib(free)}. Set AC_E2E_FILE_DROP_BYTES to a smaller size to run it on a smaller disk — ` +
+        `it is not skipped silently, because the claim it makes is the point of the phase.`,
+    );
+  }
+
+  const baseline = rssBytes(panel.pid);
+  let peak = baseline;
+  const sampler = setInterval(() => {
+    peak = Math.max(peak, rssBytes(panel.pid));
+  }, 50);
+
+  // One buffer, reused: the generator must not be the thing under memory
+  // pressure, or the leg would be measuring itself.
+  const chunk = Buffer.alloc(4 * 1024 * 1024, 0xab);
+  const started = Date.now();
+  let answer;
+  try {
+    answer = await putStreamed(
+      panel,
+      filesPath(coreId, projectId, "big/blob.bin"),
+      async (req) => {
+        let written = 0;
+        while (written < BIG_DROP_BYTES) {
+          const size = Math.min(chunk.byteLength, BIG_DROP_BYTES - written);
+          const slice = size === chunk.byteLength ? chunk : chunk.subarray(0, size);
+          written += size;
+          if (!req.write(slice)) {
+            await new Promise((resolve) => req.once("drain", resolve));
+          }
+        }
+      },
+      { "content-length": String(BIG_DROP_BYTES) },
+    );
+  } finally {
+    clearInterval(sampler);
+  }
+
+  if (answer.status !== 200) {
+    fail(
+      `a ${mib(BIG_DROP_BYTES)} drop: expected 200, got ${answer.status} ` +
+        `(${JSON.stringify(answer.lines).slice(0, 300)}) — a Panel that died here buffered it`,
+    );
+  }
+
+  const landed = path.join(projectPath, "big", "blob.bin");
+  const size = fs.existsSync(landed) ? fs.statSync(landed).size : -1;
+  if (size !== BIG_DROP_BYTES) {
+    fail(`the big drop landed as ${size} bytes on the Core, not ${BIG_DROP_BYTES}`);
+  }
+  // Reclaimed straight away: a gigabyte left behind in a temp directory is the
+  // kind of thing that fills a runner's disk two runs later.
+  fs.rmSync(landed, { force: true });
+
+  const growth = peak - baseline;
+  log(
+    `${mib(BIG_DROP_BYTES)} crossed a Panel capped at ${PANEL_HEAP_CAP_MB} MB heap in ` +
+      `${((Date.now() - started) / 1000).toFixed(1)}s; its RSS grew ${mib(growth)} ` +
+      `(baseline ${mib(baseline)}, peak ${mib(peak)})`,
+  );
+  if (growth > PANEL_RSS_CEILING_BYTES) {
+    fail(
+      `the Panel's resident memory grew ${mib(growth)} while ${mib(BIG_DROP_BYTES)} crossed it — ` +
+        `the ceiling is ${mib(PANEL_RSS_CEILING_BYTES)}. It is buffering the upload, not streaming it.`,
+    );
+  }
+  log("a multi-gigabyte drop does not go through the Panel's memory");
+}
+
+/** Free bytes on the filesystem holding `target`, or null where it cannot be read. */
+function freeBytesOn(target) {
+  try {
+    const stats = fs.statfsSync(target);
+    return Number(stats.bavail) * Number(stats.bsize);
+  } catch {
+    return null;
+  }
+}
+
+function mib(bytes) {
+  return `${(bytes / (1024 * 1024)).toFixed(0)} MiB`;
 }
 
 /**
