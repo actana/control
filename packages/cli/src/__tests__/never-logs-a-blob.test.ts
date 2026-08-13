@@ -16,6 +16,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
+  fakeTerminal,
   fakeCore,
   fakeSessionGateway,
   fakeStartedSession,
@@ -70,6 +71,7 @@ describe("no verb prints a blob, with --verbose on", () => {
       ["core status", ["core", "status", "--verbose"]],
       ["core status --json", ["core", "status", "--json", "--verbose"]],
       ["core --help", ["core", "--help", "--verbose"]],
+      ["core shell (no terminal)", ["core", "shell", "--verbose"]],
       ["core rm", ["core", "rm", "prod", "--verbose"]],
     ];
 
@@ -216,6 +218,22 @@ describe("no verb prints a blob, with --verbose on", () => {
       },
     });
     expectNoSecrets("core status (refused)", refused.all);
+  });
+
+  it("sweeps `core shell`, the one verb that holds the credential for a whole session", async () => {
+    // The dangerous line here is the one that reports a shell that would not
+    // open: it has the resolved blob in hand and is explaining a failure to
+    // reach the Core the blob names. Everything after that point is bytes the
+    // remote shell chose, which never touch a credential.
+    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    const run = await cli().run(["core", "shell", "--verbose"], {
+      terminal: fakeTerminal(),
+      openShell: async () => {
+        throw new Error("connect ECONNREFUSED");
+      },
+    });
+    expect(run.code).not.toBe(0);
+    expectNoSecrets("core shell (refused)", run.all);
   });
 
   it("prints the endpoint and label, which are the non-secret half", async () => {

@@ -19,16 +19,16 @@ export const EXIT_USAGE = 2;
  *
  * Distinct from {@link EXIT_USAGE} on purpose: "you typed something that is not
  * a command" and "you typed a command this build cannot do yet" are different
- * facts, and a script that reaches for `core shell` before #162 lands should be
- * able to tell them apart without parsing English off stderr.
+ * facts, and a script that reaches for a name this phase has not finished
+ * should be able to tell them apart without parsing English off stderr.
  *
- * **Every reserved name in the tree returns this, not just the reserved verb.**
- * `core shell` (#162), the `session` noun (#160, #163) and `project cp` /
- * `project files` (#168) are the same fact about the same build, and the nouns
- * were the ones the argument above was really written for: they are what a
- * script written against a later train will hit first. Splitting them — 3 for
- * the verb, 2 for the nouns — would have meant this comment arguing for a
- * distinction the command tree did not make.
+ * **Every reserved name in the tree returns this, whether noun or verb.** The
+ * `session` / `project` / `harness` / `events` nouns (#160, #161, #163) and the
+ * `core shell` verb (#162) each returned it until its build landed, and
+ * `project cp` / `project files` (#168) still do: they are one fact about one
+ * build, and the nouns are what a script written against a later train hits
+ * first. Splitting them — 3 for a verb, 2 for a noun — would have meant this
+ * comment arguing for a distinction the command tree did not make.
  *
  * What it is *not* for is a verb the protocol cannot carry. `project set-path`
  * exits {@link EXIT_USAGE}, because a Core-owned Project's path is immutable

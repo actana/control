@@ -10,6 +10,8 @@
 
 import { runActanaCli } from "./actana-cli.ts";
 import { probeCore } from "./core-probe.ts";
+import { openCoreShell } from "./core-shell-channel.ts";
+import { terminalFromProcess } from "./cli-terminal.ts";
 import { connectCore } from "./core-connection.ts";
 import { openSessionGateway } from "./session-gateway.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
@@ -43,6 +45,12 @@ const code = await runActanaCli({
   connect: connectCore,
   openSessions: openSessionGateway,
   now: () => Date.now(),
+  // The real terminal, and the only place one is built. `core shell` is what
+  // uses it; every other verb is handed it and never asks. It takes `process`
+  // as an argument rather than reading the global, which is what keeps this the
+  // one file that knows about one (#129 D11).
+  terminal: terminalFromProcess(process),
+  openShell: openCoreShell,
 }).catch((err: unknown) => {
   // A throw that reached here is a defect, not an operator error: every
   // expected failure returns an exit code. Print the message and nothing about

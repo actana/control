@@ -6,7 +6,9 @@
 // and the fact that they are three rather than two. The distinction is the
 // whole of `exit-codes.ts`'s argument, and until now nothing asserted it at the
 // root — the reserved nouns exited `2` and `core shell` exited `3` for the same
-// underlying fact, which the review of #201 caught.
+// underlying fact, which the review of #201 caught. #162 built `core shell` and
+// #160/#161/#163 built the nouns, so what is reserved here is verbs inside a
+// built noun: `project cp`, `project files`, `session attach`.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
@@ -35,7 +37,7 @@ afterEach(() => {
 const RESERVED = [
   [["project", "cp"], "#168"],
   [["project", "files"], "#168"],
-  [["core", "shell"], "#162"],
+  [["session", "attach"], "#163"],
 ] as const;
 
 /** The nouns that are built, so the help below cannot go quiet about them. */
@@ -52,13 +54,24 @@ describe("a reservation is `not built yet`, not `you typed it wrong`", () => {
     expect(run.err.join("\n")).toContain(ticket);
   });
 
+  it("is the answer for a name that is reserved, and not for one that is built", async () => {
+    // `core shell` was the reserved *verb* and shared this code until #162
+    // built it. Now it is a command like any other, and a build that answered
+    // `3` for it would be telling a script to come back on a later train for
+    // something already shipped.
+    const reserved = await cli().run(["session", "attach"]);
+    expect(reserved.code).toBe(EXIT_UNIMPLEMENTED);
+    const built = await cli().run(["core", "shell"]);
+    expect(built.code).not.toBe(EXIT_UNIMPLEMENTED);
+  });
+
   it("answers the same for a reserved verb wherever it sits in the tree", async () => {
-    // `project cp` is reserved in `project-command.ts` and `core shell` in
-    // `core-command.ts`, and a script cannot be asked to know which file it
+    // `project cp` is reserved in `project-command.ts` and `session attach` in
+    // `session-command.ts`, and a script cannot be asked to know which file it
     // landed in. One fact about this build, one exit code.
     const project = await cli().run(["project", "cp"]);
-    const core = await cli().run(["core", "shell"]);
-    expect(project.code).toBe(core.code);
+    const session = await cli().run(["session", "attach"]);
+    expect(project.code).toBe(session.code);
   });
 
   it("dials nothing to say it — a reservation is answered before a Core is", async () => {
