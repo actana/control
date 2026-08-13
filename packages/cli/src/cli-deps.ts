@@ -12,6 +12,7 @@ import type { CliTerminal } from "./cli-terminal.ts";
 import type { OpenCoreShellFn } from "./core-shell-channel.ts";
 import type { CoreConnectFn } from "./core-connection.ts";
 import type { OpenSessionGateway } from "./session-gateway.ts";
+import type { OpenSessionAttachFn } from "./session-attach-channel.ts";
 
 export type ActanaCliDeps = {
   /** `process.argv.slice(2)`. */
@@ -67,4 +68,14 @@ export type ActanaCliDeps = {
   terminal: CliTerminal;
   /** How `core shell` opens a shell on a Core. See `core-shell-channel.ts`. */
   openShell: OpenCoreShellFn;
+  /**
+   * How `session attach` reaches a running Session — and claims its write lock
+   * on the way in. See `session-attach-channel.ts` (#163, ADR 0024 D3–D7).
+   *
+   * Separate from {@link openSessions} rather than a verb on the gateway,
+   * because the two are different lifetimes: a gateway is opened per verb, hands
+   * back plain data and is closed on the way out, while an attach is a live
+   * stream *and* a lock held for exactly as long as one connection is open.
+   */
+  openAttach: OpenSessionAttachFn;
 };
