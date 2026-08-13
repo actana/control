@@ -63,10 +63,11 @@ export type CoreFileWriteResult = "written" | "overwritten";
  * `path` is **Project-relative**, which is the address space F1 gives the
  * operator — the same string that goes back to `download`.
  *
- * `sha256` is nullable on purpose. #166's own trap is that hashing every entry
- * of a large tree is expensive, and whether it is computed eagerly or on request
- * is that ticket's call to make; a type that promised the digest would have to
- * change if it decides "on request", so it promises the field and not the value.
+ * `sha256` is nullable on purpose, and the Core settled which way it means:
+ * hashing every entry of a large tree is expensive, so a listing computes
+ * digests **on request** ({@link CoreFileListOptions.sha256}) and a transfer
+ * computes them eagerly, the bytes being already in hand. So `null` reads as
+ * "no bytes" for a directory and "nobody asked" for anything else.
  */
 export type CoreFileEntry = {
   path: string;
@@ -144,8 +145,15 @@ export type CoreFileDownloadOptions = {
 export type CoreFileListOptions = {
   /** Subtree to list, Project-relative. Default: the whole Project. */
   path?: string;
-  /** Maximum depth to descend. Default: the whole tree. */
+  /** Maximum depth to descend. `1` is the immediate children. Default: the whole tree. */
   depth?: number;
+  /**
+   * Ask the Core to compute {@link CoreFileEntry.sha256} for every file and
+   * symlink under the path. **Off by default, and not free**: a listing does not
+   * have the bytes in hand, so digests mean reading every one of them (ADR 0027
+   * D6). Left off, every `sha256` comes back `null`.
+   */
+  sha256?: boolean;
   signal?: AbortSignal;
 };
 
@@ -180,22 +188,16 @@ export class CoreFiles {
   /**
    * The Project's tree, one entry at a time.
    *
-   * ### Live wiring lands with #166
+   * Reads the Core's real listing route — `GET …/files/list`, see
+   * {@link listUrl} — which streams `{path, kind, size, mtime, mode, sha256}`
+   * per entry as NDJSON. `core-files-list-contract.test.ts` drives this method
+   * against that route in process and runs in **both** packages' suites, so the
+   * two halves of the URL cannot drift apart again without a red test (#218).
    *
-   * The Core's listing route is #166's to build and this module deliberately
-   * does not create or modify it. What is written against here is the contract
-   * that ticket inherits and cannot really move: the manifest shape PR 215
-   * established — `{path, size, mtime, mode, sha256}` per entry, streamed as
-   * NDJSON — on the file route's own origin. The suites drive it against an
-   * in-process fixture answering exactly that, so this reader is proven today
-   * and the remaining risk is one URL.
-   *
-   * That URL is {@link listUrl}, kept as a single override-able method for the
-   * same reason: when #166 merges, agreeing with it is a one-line change here
-   * and the parsing, the laziness and the error handling below are unaffected.
-   * Both plausible line shapes are accepted — a bare manifest entry and one
-   * wrapped as `{type: "entry", …}`, which is what the write route already
-   * emits — so whichever #166 picks, this reads it.
+   * Both line shapes are accepted — a bare manifest entry and one wrapped as
+   * `{type: "entry", …}`, which is what the Core's listing and its write route
+   * both emit. `skipped` lines are passed over: a path the walk could not read
+   * is a fact about the tree, not an entry in it, and not a reason to stop.
    */
   async *list(opts: CoreFileListOptions = {}): AsyncGenerator<CoreFileEntry, void, undefined> {
     this.requireAvailable("listing a Project's files");
@@ -332,28 +334,51 @@ export class CoreFiles {
   }
 
   /**
-   * The listing URL — the one line #166 gets to disagree with.
+   * `…/v1/projects/:projectId/files/list?path=<relative>` — a route of its own.
    *
-   * A query parameter on the existing route rather than a new path segment,
-   * because the Core's `parseRoute` matches `/v1/projects/:id/files` on an exact
-   * four-segment split: a `…/files/list` leaf is a change to that parser, and a
-   * parameter is not. `protected` so a caller pinned to a Core that chose
-   * otherwise can subclass rather than wait for a release.
+   * This module used to send `?list=1` on the read route instead, and argued for
+   * it on cost: the Core's `parseRoute` matched `/v1/projects/:id/files` on an
+   * exact four-segment split, so a `…/files/list` leaf was a change to that
+   * parser and a query parameter was not. That cost is now paid — #216 shipped a
+   * parser that reads the fifth segment — and what is left is the Core's
+   * argument, which was never about cost: a listing and a read of the same
+   * folder answer with completely different things, one a manifest and one a
+   * tar. A query parameter that a proxy, a redirect or a hand-edited URL can
+   * drop turns "list this folder" into "download this folder", which for a
+   * `node_modules` is a mistake measured in gigabytes rather than in a 400. A
+   * path segment cannot be dropped silently. See issue 218.
+   *
+   * Still `protected`: a caller pinned to an older Core can subclass rather than
+   * wait for a release.
    */
   protected listUrl(opts: CoreFileListOptions): string {
-    const url = new URL(this.fileUrl(opts.path ?? ""));
-    url.searchParams.set("list", "1");
+    const url = this.routeUrl("files/list");
+    url.searchParams.set("path", opts.path ?? "");
     if (opts.depth !== undefined) url.searchParams.set("depth", String(opts.depth));
+    // Off unless asked for, which is the Core's default too: a digest means
+    // reading every byte under the path, and a listing never has them in hand.
+    if (opts.sha256) url.searchParams.set("sha256", "1");
     return url.toString();
   }
 
-  /** `…/v1/projects/:projectId/files?path=<relative>`. */
+  /** `…/v1/projects/:projectId/files?path=<relative>` — the read and write route. */
   protected fileUrl(filePath: string): string {
-    const base = this.opts.baseUrl.replace(/\/+$/, "");
-    const project = encodeURIComponent(this.opts.projectId);
-    const url = new URL(`${base}/v1/projects/${project}/files`);
+    const url = this.routeUrl("files");
     url.searchParams.set("path", filePath);
     return url.toString();
+  }
+
+  /**
+   * `<baseUrl>/v1/projects/:projectId/<leaf>`, with the Project id escaped.
+   *
+   * The two routes above differ by their leaf and by nothing else, and that is
+   * worth having in one place: the day this surface gains a third, the origin,
+   * the version prefix and the escaping should not be a third opportunity to get
+   * one of them subtly wrong.
+   */
+  private routeUrl(leaf: string): URL {
+    const base = this.opts.baseUrl.replace(/\/+$/, "");
+    return new URL(`${base}/v1/projects/${encodeURIComponent(this.opts.projectId)}/${leaf}`);
   }
 
   private authHeaders(): Record<string, string> {
@@ -496,8 +521,8 @@ function isReadableStream(source: CoreFileSource): source is ReadableStream<Uint
  *
  * `path` is the only field worth refusing a line over — an entry with no path
  * names nothing and is unusable. The rest default, because a listing that
- * decided `sha256` is computed on request (#166's open question) or that a
- * directory has no meaningful size is still a listing.
+ * computes `sha256` only on request — which is what the Core settled on — or
+ * that gives a directory no meaningful size is still a listing.
  */
 function readEntry(record: Record<string, unknown>): CoreFileEntry | null {
   if (typeof record.path !== "string") return null;

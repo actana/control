@@ -184,6 +184,7 @@ const { stream } = await project.files.download({ path });
 
 | Property | Why it is that way |
 | --- | --- |
+| `list` is an async iterable of entries, from `GET …/files/list` | the same `{path, kind, size, mtime, mode, sha256}` lines the route streams, parsed. `path` and `depth` pass through, and `sha256: true` asks for digests — off by default, because a listing has no bytes in hand. `skipped` lines are passed over; an `error` line throws rather than ending the tree early |
 | `download` returns a **stream, never a buffer** | a gigabyte file must not be resident. There is no method on the result that hands over bytes, so a caller that wants the whole thing writes that themselves |
 | `upload` takes a stream and returns progress as an async iterable | one line per entry, each naming `written` or `overwritten`; a `done` line closes it. A mid-transfer failure is the last line, not a status code |
 | all three are **pull-driven** | nothing runs ahead of the consumer. A slow reader becomes backpressure on the socket and then on the Core, rather than a queue filling in the client |
@@ -195,10 +196,13 @@ The client presents its certificate through an undici `Agent` — `fetch` has no
 **undici's own `fetch`** rather than the global one, because a dispatcher only
 satisfies the undici implementation it came from and Node embeds its own copy.
 
-**Listing is not on this table yet.** `project.files.list` reads an NDJSON
-manifest of `{path, size, mtime, mode, sha256}` from the same origin; the Core
-route that serves it is [#166](https://github.com/actana/control/issues/166),
-and this row lands when it does.
+The client's listing URL and the route above are held together by a contract
+test that drives `project.files.list` against the Core's real handler in one
+process, registered in **both** packages' suites
+([#218](https://github.com/actana/control/issues/218)). They disagreed once —
+the client sent `?list=1` on the read route while the Core served
+`…/files/list` — and every suite stayed green, because each side was checked
+against its own idea of the other. A URL is not a fact either half owns alone.
 
 ## The Panel's own routes
 
