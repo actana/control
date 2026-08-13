@@ -58,7 +58,7 @@ import {
   type PtyCoreDeps,
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
-import { createCoreFilesRequestHandler } from "./core-files-routes";
+import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { configureProjectRootsDb } from "./project-roots";
 import {
@@ -307,31 +307,6 @@ async function startCore(): Promise<void> {
     },
   };
 
-  // Issue 165: the `/v1/…` file routes, mounted on the same mTLS HTTPS server
-  // the core link is on (ADR 0028). Built here rather than inside the server,
-  // next to the query store they read Project roots from — the core-link server
-  // mounts whatever HTTP surface it is handed and never imports the tar codec.
-  //
-  // The lookup is a scan of the project list rather than a `WHERE id = ?`, and
-  // deliberately: a Core holds a handful of Projects, `listProjects` is the read
-  // seam that already exists and already degrades to `[]` on a broken DB, and a
-  // second by-id query in `@actana/shared` would be a second thing to keep in
-  // step with the first. If a Core ever holds enough Projects for this to
-  // matter, the fix is an index in SQLite, not a cache here — the filesystem is
-  // the model (ADR 0027) and this is the one lookup that is not the filesystem.
-  const fileRoutes = createCoreFilesRequestHandler({
-    filesPort: {
-      projectRoot: (projectId) =>
-        coreQueryStore.listProjects().find((project) => project.projectId === projectId)?.path ?? null,
-    },
-    // Assigned below, once the remote-mode block has minted or loaded the
-    // material: the file routes are gated by the same bearer the `auth` frame
-    // is, and on a loopback Core there is none to check — the same trade that
-    // Core's core link already makes.
-    authVerifier: (bearer) => serverOpts.authVerifier?.(bearer) ?? { ok: false, reason: "malformed" },
-  });
-  serverOpts.httpRoutes = fileRoutes;
-
   if (remoteMode) {
     // In a container the public host is the operator's to supply and never
     // ours to guess (ADR 0016 D15): it is baked into the server certificate's
@@ -441,6 +416,38 @@ async function startCore(): Promise<void> {
       console.log(`${REGISTRATION_BLOB_SENTINEL}${blob}`);
     }
   }
+
+  // Issue 165: the `/v1/…` file routes, mounted on the same HTTPS server the
+  // core link is on (ADR 0028). Built here rather than inside the server, next
+  // to the query store they read Project roots from — the core-link server
+  // mounts whatever HTTP surface it is handed and never imports the tar codec.
+  //
+  // **After** the remote-mode block, not before it, and that ordering is the
+  // fix for a real defect rather than tidiness. Built earlier, the routes could
+  // only be handed a closure that reached for `serverOpts.authVerifier` later —
+  // and that closure was never *absent*, it just answered `{ ok: false }`. So
+  // the default loopback Core announced `files: { version: 1 }` on `ready` and
+  // then 401'd every request against it: exactly what ADR 0028 D4 says is worse
+  // than announcing nothing. Resolving the material first means the verifier
+  // can be passed by value, and "loopback" can be the absence it is documented
+  // to be. `buildCoreFileRoutes` holds the rule and is tested directly.
+  //
+  // The lookup is a scan of the project list rather than a `WHERE id = ?`, and
+  // deliberately: a Core holds a handful of Projects, `listProjects` is the read
+  // seam that already exists and already degrades to `[]` on a broken DB, and a
+  // second by-id query in `@actana/shared` would be a second thing to keep in
+  // step with the first. If a Core ever holds enough Projects for this to
+  // matter, the fix is an index in SQLite, not a cache here — the filesystem is
+  // the model (ADR 0027) and this is the one lookup that is not the filesystem.
+  const fileRoutes = buildCoreFileRoutes({
+    filesPort: {
+      projectRoot: (projectId) =>
+        coreQueryStore.listProjects().find((project) => project.projectId === projectId)?.path ?? null,
+    },
+    ...(serverOpts.authVerifier ? { authVerifier: serverOpts.authVerifier } : {}),
+  });
+  serverOpts.httpRoutes = fileRoutes;
+  serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 
