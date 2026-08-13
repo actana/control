@@ -1,0 +1,15 @@
+{
+  "name": "core-client",
+  "version": "0.1.0",
+  "description": "Drive an Actana Core over its core-link protocol",
+  "type": "module",
+  "bin": {
+    "core-client": "./core-client.ts"
+  },
+  "engines": {
+    "node": ">=24"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  }
+}
