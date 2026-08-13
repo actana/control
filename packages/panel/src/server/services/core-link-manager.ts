@@ -11,6 +11,7 @@ import type { Core, CoreDialStatus } from "~/shared/cores";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   type CoreLinkEvent,
+  type CoreLinkFilesCapability,
   type CoreLinkRequestFrame,
   type CoreLinkResponseFrame,
 } from "@actana/sdk/core-link-frames";
@@ -40,9 +41,20 @@ export interface CoreLinkClientLike {
   onAuthOk(cb: (msg: { coreId: string; exp: number }) => void): () => void;
   onAuthError(cb: (msg: { reason: "expired" | "bad-signature" | "malformed" }) => void): () => void;
   onDisconnected(cb: (msg: { error?: string }) => void): () => void;
-  /** Every connection's `ready` frame: which core-link the Core speaks. */
+  /**
+   * Every connection's `ready` frame: which core-link the Core speaks, and
+   * which optional capabilities came with it.
+   *
+   * `files` is optional on the message rather than required (#129 F9): a fake
+   * that predates the capability emits two fields and means "this Core
+   * announced none", which is the same thing a real Core omitting it means.
+   */
   onProtocolVersion(
-    cb: (msg: { version: string | null; compatible: boolean }) => void,
+    cb: (msg: {
+      version: string | null;
+      compatible: boolean;
+      files?: CoreLinkFilesCapability | null;
+    }) => void,
   ): () => void;
   /** Forward any core-link request frame; resolves with the raw answer frame. */
   request(frame: CoreLinkRequestFrame, timeoutMs?: number): Promise<CoreLinkResponseFrame>;
@@ -111,6 +123,15 @@ type Managed = {
    * version we share.
    */
   drift: { version: string | null } | null;
+  /**
+   * The `files` capability off this link's last `ready` frame (#129 F9), or
+   * null. Held beside the status rather than inside it because every `set()`
+   * builds a fresh status object and the capability outlives all of them: a
+   * Core that goes unreachable and comes back announcing `files` again should
+   * not have the answer reset by whichever state transition happened to be
+   * last. It is cleared on the next `ready` — which is where it is learnt.
+   */
+  files: CoreLinkFilesCapability | null;
 };
 
 function unreachable(coreId: string, lastSeenAt: number | null, detail?: string): CoreDialStatus {
@@ -186,10 +207,15 @@ export class CoreLinkManager {
     this.managed.get(coreId)!.client = client;
     for (const cb of this.clientListeners) cb(coreId, client);
 
-    client.onProtocolVersion(({ version, compatible }) => {
+    client.onProtocolVersion(({ version, compatible, files }) => {
       const managed = this.managed.get(coreId);
       if (!managed) return;
       managed.drift = compatible ? null : { version };
+      // Read off *this* connection, every connection. A Core that was upgraded
+      // into the file surface announces it on the `ready` that follows, and one
+      // downgraded out of it stops — either way the next status push carries the
+      // current answer rather than the one this link came up with.
+      managed.files = files ?? null;
       if (managed.drift) {
         this.set(coreId, this.needsUpdateStatus(coreId, managed.drift));
       } else if (managed.status.state === "needs-update") {
@@ -277,11 +303,32 @@ export class CoreLinkManager {
     return this.managed.get(coreId)?.status.lastSeenAt ?? null;
   }
 
+  /**
+   * Stamp the announced capabilities onto every status this manager publishes,
+   * in one place.
+   *
+   * Every caller of `set` builds a status from the transition it just saw and
+   * knows nothing about `ready`. Threading the capability through all of them
+   * would mean nine call sites that each have to remember it, and the one that
+   * forgot would silently take a Core's Files view away on an unrelated blink.
+   */
   private set(coreId: string, status: CoreDialStatus): void {
     const managed = this.managed.get(coreId);
-    if (managed) managed.status = status;
-    else this.managed.set(coreId, { client: null, status, drift: null });
-    for (const cb of this.statusListeners) cb(status);
+    const stamped: CoreDialStatus = { ...status, files: managed?.files ?? null };
+    if (managed) managed.status = stamped;
+    else this.managed.set(coreId, { client: null, status: stamped, drift: null, files: null });
+    for (const cb of this.statusListeners) cb(stamped);
+  }
+
+  /**
+   * This Core's announced `files` capability (#129 F9), or null.
+   *
+   * Read by the file proxy before it sends anything: a Core that announced no
+   * file surface is refused here rather than at a `404` from a Core that simply
+   * predates it, which is the same order the SDK checks in.
+   */
+  filesCapability(coreId: string): CoreLinkFilesCapability | null {
+    return this.managed.get(coreId)?.files ?? null;
   }
 
   /**
@@ -392,11 +439,12 @@ function asPanelLink(client: DurableCoreClient): CoreLinkClientLike {
     onAuthOk: (cb) => client.onAuthOk(cb),
     onAuthError: (cb) => client.onAuthError(cb),
     onDisconnected: (cb) => client.onDisconnected(cb),
-    // Every connection's `ready`, which is what this manager reads drift off.
-    // The SDK carries the same two fields on a wider answer.
+    // Every connection's `ready`, which is what this manager reads drift and
+    // the `files` capability off. The SDK carries the same three fields on a
+    // wider answer.
     onProtocolVersion: (cb) =>
-      client.onReady(({ protocolVersion, compatible }) =>
-        cb({ version: protocolVersion, compatible }),
+      client.onReady(({ protocolVersion, compatible, files }) =>
+        cb({ version: protocolVersion, compatible, files }),
       ),
     request: (frame, timeoutMs) => client.request(frame, timeoutMs),
     onData: (cb) => client.onData(cb),

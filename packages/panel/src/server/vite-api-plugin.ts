@@ -1,5 +1,6 @@
 import type { Plugin } from "vite";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { Readable } from "node:stream";
 import { HTTP_INTERNAL_SERVER_ERROR } from "../shared/http-status";
 
 const LOOPBACK_HOST_FALLBACK = "127.0.0.1";
@@ -22,7 +23,7 @@ export function missionControlApi(): Plugin {
           const { handleApiRequest } = await server.ssrLoadModule(
             "/src/server/api-router.ts"
           );
-          const request = await nodeRequestToFetch(req);
+          const request = nodeRequestToFetch(req);
           const response: Response | null = await (handleApiRequest as any)(request);
           if (!response) return next();
           await writeFetchResponse(response, res);
@@ -55,7 +56,7 @@ export function missionControlApi(): Plugin {
             "/src/server/panel-auth.ts",
           );
           const redirect: Response | null = await (documentAuthRedirect as any)(
-            await nodeRequestToFetch(req),
+            nodeRequestToFetch(req),
           );
           if (!redirect) return next();
           await writeFetchResponse(redirect, res);
@@ -81,7 +82,28 @@ export function missionControlApi(): Plugin {
   };
 }
 
-async function nodeRequestToFetch(req: IncomingMessage): Promise<Request> {
+/**
+ * A Node request as a Web `Request`, **without reading its body** (#169).
+ *
+ * This function used to `await` every byte into a `Buffer` first. That was
+ * invisible for the JSON bodies the `/api/*` surface carried at the time and
+ * fatal for the one it carries now: the Panel's file routes stream a dropped
+ * file through to a Core (#129 F11), and a dev Panel that concatenated a
+ * multi-gigabyte upload into an array of `Buffer`s would die of it — with the
+ * production entry point (`bin/panel.mjs`, which has always used
+ * `Readable.toWeb`) streaming the same request perfectly. A streaming proxy
+ * accidentally written as a buffering one is #169's named trap, and this is
+ * where it was already sitting.
+ *
+ * `duplex: "half"` is mandatory with a stream body and is not optional
+ * decoration — without it the `Request` constructor rejects the body outright.
+ * It is absent from the DOM `RequestInit` this file is typechecked against and
+ * present on every runtime that accepts a stream, hence the cast.
+ *
+ * Exported so `__tests__/vite-dev-body-streaming.test.ts` can hold the claim
+ * rather than trusting the comment.
+ */
+export function nodeRequestToFetch(req: IncomingMessage): Request {
   const host = req.headers.host || LOOPBACK_HOST_FALLBACK;
   const url = `http://${host}${req.url ?? "/"}`;
   const headers = new Headers();
@@ -93,20 +115,12 @@ async function nodeRequestToFetch(req: IncomingMessage): Promise<Request> {
     }
   }
   const method = (req.method || "GET").toUpperCase();
-  const init: RequestInit = { method, headers };
-  if (method !== "GET" && method !== "HEAD") {
-    const buf = await readBody(req);
-    if (buf.byteLength > 0) {
-      init.body = buf as BodyInit;
-    }
-  }
-  return new Request(url, init);
-}
-
-async function readBody(req: IncomingMessage): Promise<Uint8Array> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return new Uint8Array(Buffer.concat(chunks));
+  const hasBody = method !== "GET" && method !== "HEAD";
+  return new Request(url, {
+    method,
+    headers,
+    ...(hasBody ? { body: Readable.toWeb(req) as ReadableStream<Uint8Array>, duplex: "half" } : {}),
+  } as RequestInit);
 }
 
 async function writeFetchResponse(response: Response, res: ServerResponse) {
