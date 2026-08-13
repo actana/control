@@ -136,6 +136,18 @@ describe("GET a file", () => {
     expect(res.body).toHaveLength(0);
   });
 
+  it("answers HEAD on a directory with the tar headers and no body", async () => {
+    // The chunked branch, without the chunks. Worth its own case because a
+    // `HEAD` that starts packing a `node_modules` to answer a question about
+    // whether it exists is the shape of bug that only shows up on a big tree.
+    project("p1", { "src/a.txt": "a" });
+    const res = await call("HEAD", "/v1/projects/p1/files?path=src");
+
+    expect(res.status).toBe(200);
+    expect(res.headers["content-type"]).toBe("application/x-tar");
+    expect(res.body).toHaveLength(0);
+  });
+
   it("404s a path that is not there", async () => {
     project("p1");
     const res = await call("GET", "/v1/projects/p1/files?path=missing.txt");
