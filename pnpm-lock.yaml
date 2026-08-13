@@ -94,6 +94,9 @@ importers:
       '@actana/sdk':
         specifier: workspace:*
         version: link:../sdk
+      undici:
+        specifier: '>=7.28.0'
+        version: 8.9.0
       ws:
         specifier: '>=8.21.0'
         version: 8.21.0
