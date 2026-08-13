@@ -11,12 +11,22 @@
 // its ambiguities live in `project-file-target.ts`.
 //
 // **`--json` is the point of the verb as much as the table is.** #168 asks for
-// "machine-readable, like every other list command in the CLI", and the shape
-// that makes true is the one `project ls` and `session ls` already emit: a bare
-// array of objects on stdout, two-space indented, nothing else on the stream.
-// Not NDJSON, even though NDJSON is what crosses the wire — a consumer of this
-// CLI reads one document per command, and a list that streamed would be the
-// only one in the tree that did not.
+// "machine-readable, like every other list command in the CLI": one document on
+// stdout, two-space indented, nothing else on the stream. Not NDJSON, even
+// though NDJSON is what crosses the wire — a consumer of this CLI reads one
+// document per command, and a list that streamed would be the only one in the
+// tree that did not.
+//
+// That document is `{entries, truncated}` rather than the bare array `project
+// ls` and `session ls` emit, and the difference is `--limit`. Those two verbs
+// cannot clip their answer, so a bare array *is* the whole truth for them; this
+// one can, and a bare array has nowhere to say so. The warning on stderr does
+// not close it — a script reads stdout, and `2>/dev/null` is how most of them
+// are written, so the one consumer that most needs the fact is the one least
+// likely to see it. `project browse --json` already carries `truncated` beside
+// its `entries` for the same reason. The envelope is fixed: `truncated` is
+// present and `false` on every listing that was not clipped, so the shape does
+// not change with the answer.
 //
 // **`--sha256` is off unless asked for, and that is the Core's decision showing
 // through.** A listing does not have the bytes in hand, so a digest per entry
@@ -93,19 +103,30 @@ export async function runProjectFiles(
     let truncated = false;
     for await (const entry of handle.list(options)) {
       entries.push(entry);
-      if (limit.value !== null && entries.length >= limit.value) {
+      if (limit.value !== null && entries.length > limit.value) {
+        // Reading *one past* the limit is what tells a clipped tree from one
+        // that holds exactly `--limit` entries. Stopping at `>=` would report
+        // "there is more under it" for a tree with nothing more under it, and a
+        // warning that cries wolf on an exact fit is one an operator learns to
+        // ignore. The extra entry is dropped, never shown.
+        entries.pop();
+        truncated = true;
         // Breaking out here is what cancels the stream — the gateway's
         // `finally` reaches the SDK's, which cancels the response body and lets
         // the Core stop walking a tree nobody is reading any more.
-        truncated = true;
         break;
       }
+    }
+    // Said once, on stderr, in both modes: `--json` carries it in the document
+    // too, but a person watching a piped command still deserves the sentence.
+    if (truncated) {
+      deps.err(`warning: stopped at --limit ${limit.value} — the tree has more under it.`);
     }
 
     if (args.json) {
       deps.out(
-        formatJson(
-          entries.map((entry) => ({
+        formatJson({
+          entries: entries.map((entry) => ({
             path: entry.path,
             kind: entry.kind ?? "file",
             size: entry.size,
@@ -113,7 +134,11 @@ export async function runProjectFiles(
             mode: entry.mode,
             sha256: entry.sha256,
           })),
-        ),
+          // The fact a script cannot get anywhere else. `false` on a complete
+          // listing rather than absent, so `payload.truncated` is a question
+          // that always has an answer.
+          truncated,
+        }),
       );
       return EXIT_OK;
     }
@@ -136,9 +161,6 @@ export async function runProjectFiles(
       }),
     );
     for (const line of table) deps.out(line);
-    if (truncated) {
-      deps.err(`warning: stopped at --limit ${limit.value} — the tree has more under it.`);
-    }
     return EXIT_OK;
   } catch (err) {
     return failed(deps, args, messageOf(err));

@@ -2,10 +2,13 @@
 //
 // The claim under test is the ticket's fourth "done when": *`project files
 // --json` is machine-readable, like every other list command in the CLI.* What
-// makes that true is not that a JSON flag exists, but that its output has the
-// same shape every other list in this tree emits — one array, alone on stdout,
-// with the diagnostics that would corrupt it on stderr. The rest of the suite
-// is the table, the two flags that cost the Core real work, and the exit codes.
+// makes that true is not that a JSON flag exists, but that its output is one
+// document, alone on stdout, with the diagnostics that would corrupt it on
+// stderr — and that the document says everything the answer depends on. That
+// last part is why this verb carries `{entries, truncated}` where `project ls`
+// carries a bare array: `--limit` can clip the answer, and a consumer reading
+// stdout has no other way to find out. The rest of the suite is the table, the
+// two flags that cost the Core real work, and the exit codes.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { fakeProjectFiles, makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
@@ -38,7 +41,7 @@ const TREE: CoreFileEntry[] = [
 ];
 
 describe("--json is machine-readable, like every other list command", () => {
-  it("emits one array on stdout and nothing else, with --verbose on", async () => {
+  it("emits one document on stdout and nothing else, with --verbose on", async () => {
     await withRegisteredCore();
     const files = fakeProjectFiles({ entries: TREE });
 
@@ -48,25 +51,28 @@ describe("--json is machine-readable, like every other list command", () => {
 
     expect(run.code).toBe(EXIT_OK);
     const payload = JSON.parse(run.out.join("\n"));
-    expect(payload).toEqual([
-      { path: "bin", kind: "directory", size: 0, mtime: 1_760_000_000_000, mode: 0o755, sha256: null },
-      {
-        path: "bin/deploy",
-        kind: "file",
-        size: 18,
-        mtime: 1_760_000_000_000,
-        mode: 0o755,
-        sha256: null,
-      },
-      { path: "readme.md", kind: "file", size: 6, mtime: 1_760_000_000_000, mode: 0o644, sha256: null },
-      { path: "link.md", kind: "symlink", size: 9, mtime: 1_760_000_000_000, mode: 0o777, sha256: null },
-    ]);
+    expect(payload).toEqual({
+      entries: [
+        { path: "bin", kind: "directory", size: 0, mtime: 1_760_000_000_000, mode: 0o755, sha256: null },
+        {
+          path: "bin/deploy",
+          kind: "file",
+          size: 18,
+          mtime: 1_760_000_000_000,
+          mode: 0o755,
+          sha256: null,
+        },
+        { path: "readme.md", kind: "file", size: 6, mtime: 1_760_000_000_000, mode: 0o644, sha256: null },
+        { path: "link.md", kind: "symlink", size: 9, mtime: 1_760_000_000_000, mode: 0o777, sha256: null },
+      ],
+      truncated: false,
+    });
     // The diagnostics went somewhere, and it was not the stream being parsed.
     expect(run.err.length).toBeGreaterThan(0);
     expect(files.closed, "project files left the gateway open").toBe(true);
   });
 
-  it("emits an empty array for an empty Project, not a sentence", async () => {
+  it("emits an empty entries array for an empty Project, not a sentence", async () => {
     // The shape a script reads must not change with the number of rows: `[]` is
     // an answer, and "Nothing under api." is a parse error.
     await withRegisteredCore();
@@ -75,7 +81,7 @@ describe("--json is machine-readable, like every other list command", () => {
     const run = await cli().run(["project", "files", "api", "--json"], { files: files.open });
 
     expect(run.code).toBe(EXIT_OK);
-    expect(JSON.parse(run.out.join("\n"))).toEqual([]);
+    expect(JSON.parse(run.out.join("\n"))).toEqual({ entries: [], truncated: false });
   });
 
   it("carries the mode as a number, so a consumer can test the executable bit", async () => {
@@ -84,8 +90,60 @@ describe("--json is machine-readable, like every other list command", () => {
 
     const run = await cli().run(["project", "files", "api", "--json"], { files: files.open });
 
-    const [row] = JSON.parse(run.out.join("\n"));
+    const [row] = JSON.parse(run.out.join("\n")).entries;
     expect(row.mode & 0o111).toBeTruthy();
+  });
+});
+
+describe("a clipped listing says so in the document, not only on stderr", () => {
+  // The gap this closes: a script running `--json --limit 100` could not tell a
+  // complete tree from a clipped one, and the warning it would have needed was
+  // on the stream it does not read.
+  it("carries truncated:true, and the entries it did read", async () => {
+    await withRegisteredCore();
+    const files = fakeProjectFiles({ entries: TREE });
+
+    const run = await cli().run(["project", "files", "api", "--json", "--limit", "2"], {
+      files: files.open,
+    });
+
+    expect(run.code).toBe(EXIT_OK);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.truncated).toBe(true);
+    expect(payload.entries.map((row: { path: string }) => row.path)).toEqual(["bin", "bin/deploy"]);
+    // Still exactly one document on stdout — the fact went into it, not beside it.
+    expect(run.err.join("\n")).toContain("--limit 2");
+  });
+
+  it("says truncated:false when the tree holds exactly --limit entries", async () => {
+    // The false positive: stopping at `>=` made a tree of exactly four entries
+    // claim there was a fifth. There is not, and a warning that fires on an
+    // exact fit is one an operator learns to ignore.
+    await withRegisteredCore();
+    const files = fakeProjectFiles({ entries: TREE });
+
+    const run = await cli().run(["project", "files", "api", "--json", "--limit", "4"], {
+      files: files.open,
+    });
+
+    expect(run.code).toBe(EXIT_OK);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.truncated).toBe(false);
+    expect(payload.entries).toHaveLength(4);
+    expect(run.err.join("\n")).not.toContain("--limit");
+  });
+
+  it("stays quiet on an exact fit in the table mode too", async () => {
+    // Same rule, the other output mode — the count is decided before either
+    // branch, so neither can disagree with the other about it.
+    await withRegisteredCore();
+    const files = fakeProjectFiles({ entries: TREE });
+
+    const run = await cli().run(["project", "files", "api", "--limit", "4"], { files: files.open });
+
+    expect(run.code).toBe(EXIT_OK);
+    expect(run.out.join("\n")).toContain("link.md");
+    expect(run.err.join("\n")).not.toContain("--limit");
   });
 });
 

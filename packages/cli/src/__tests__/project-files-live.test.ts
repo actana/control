@@ -191,7 +191,7 @@ describe("the Core names the overwrites, and the CLI prints what it named", () =
 });
 
 describe("project files reads the Core's real listing route", () => {
-  it("lists the tree with modes, and --json is one array", async () => {
+  it("lists the tree with modes, and --json is one document", async () => {
     await withRegisteredCore();
     const core = await startCore();
     buildTree(core.root);
@@ -199,12 +199,14 @@ describe("project files reads the Core's real listing route", () => {
     const run = await cli().run(["project", "files", "api", "--json"], { files: core.open });
 
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
-    const payload = JSON.parse(run.out.join("\n")) as Array<{
-      path: string;
-      kind: string;
-      mode: number;
-      sha256: string | null;
-    }>;
+    const document = JSON.parse(run.out.join("\n")) as {
+      entries: Array<{ path: string; kind: string; mode: number; sha256: string | null }>;
+      truncated: boolean;
+    };
+    // Nothing asked for a `--limit`, so the Core's walk ended on its own and
+    // the document says the tree is whole.
+    expect(document.truncated).toBe(false);
+    const payload = document.entries;
     const deploy = payload.find((row) => row.path === "bin/deploy");
     expect(deploy).toBeDefined();
     expect(deploy!.mode & 0o777).toBe(0o755);
@@ -222,7 +224,8 @@ describe("project files reads the Core's real listing route", () => {
       files: core.open,
     });
 
-    const [row] = JSON.parse(run.out.join("\n")) as Array<{ sha256: string | null }>;
+    const [row] = (JSON.parse(run.out.join("\n")) as { entries: Array<{ sha256: string | null }> })
+      .entries;
     // sha256 of "hello\n".
     expect(row!.sha256).toBe("5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03");
   });
@@ -236,7 +239,9 @@ describe("project files reads the Core's real listing route", () => {
       files: core.open,
     });
 
-    const paths = (JSON.parse(run.out.join("\n")) as Array<{ path: string }>).map((row) => row.path);
+    const paths = (
+      JSON.parse(run.out.join("\n")) as { entries: Array<{ path: string }> }
+    ).entries.map((row) => row.path);
     expect(paths).toContain("bin");
     expect(paths).not.toContain("bin/deploy");
   });
