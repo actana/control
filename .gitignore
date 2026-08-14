@@ -2,6 +2,10 @@ node_modules
 .codex
 .claude
 .cursor
+# Written by the Core at spawn time, same as the three above. OpenCode also
+# installs `@opencode-ai/plugin` into `.opencode/node_modules` the first time
+# it sees a plugin there.
+.opencode
 .impeccable
 dist
 dist-electron
