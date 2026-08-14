@@ -17,6 +17,7 @@ import type { TaskStatus } from "@actana/shared/domain";
 import { useServerEvents } from "~/lib/use-events";
 import { useDebouncedCallback } from "~/lib/use-debounced-callback";
 import { isEditableTarget, useHotkey } from "~/lib/use-hotkey";
+import { useCoreProjectRows } from "~/lib/use-fleet";
 import { queryKeys, useGroups, useProjects } from "~/queries";
 import { getProjectActivity, isProjectActive, type ProjectWithCounts } from "~/shared/projects";
 
@@ -60,12 +61,33 @@ function ActivityCounts({ project, size = 6 }: { project: ProjectWithCounts; siz
   );
 }
 
-export function ProjectPicker({ projectId }: { projectId?: string }) {
+/**
+ * The top bar's Project switcher: it names the Project being viewed and opens
+ * onto the others alongside it.
+ *
+ * `coreId` is the shell's owning Core (`/projects/$id?coreId=`). A Project is a
+ * Core-scoped noun, so on a Core-owned shell the rows come off that Core's
+ * project snapshot over the link the tab already holds — the Panel's own
+ * `projects` table has no row for them, which is why this listbox opened onto
+ * nothing (issue 231). Without a `coreId` the shell is on the Panel's own rows
+ * and those are still the list.
+ *
+ * Only ever the *current* Core's Projects: the shell has no Core switcher, and
+ * switching Cores means going back to Fleet view (ADR-0005 §5).
+ */
+export function ProjectPicker({
+  projectId,
+  coreId = null,
+}: {
+  projectId: string;
+  coreId?: string | null;
+}) {
   const router = useRouter();
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
-  const { data: allProjects } = useProjects();
-  const projects = allProjects;
+  const { data: panelProjects } = useProjects();
+  const coreProjects = useCoreProjectRows(coreId);
+  const projects = coreId ? coreProjects.projects : panelProjects;
   const { data: groups = [] } = useGroups();
   const [query, setQuery] = useState("");
   const [highlight, setHighlight] = useState(0);
@@ -73,8 +95,7 @@ export function ProjectPicker({ projectId }: { projectId?: string }) {
   const inputRef = useRef<HTMLInputElement>(null);
   const itemRefs = useRef<(HTMLButtonElement | null)[]>([]);
 
-  const current = allProjects?.find((p) => p.id === projectId) ?? null;
-  const label = current?.name ?? "Project";
+  const current = projects?.find((p) => p.id === projectId) ?? null;
   const { activeGroup, setActiveGroup } = useActiveGroup();
   const groupScoped = activeGroup !== ACTIVE_GROUP_ALL;
   const searching = query.trim().length > 0;
@@ -129,7 +150,15 @@ export function ProjectPicker({ projectId }: { projectId?: string }) {
   const select = (id: string) => {
     setOpen(false);
     setQuery("");
-    if (id !== projectId) router.navigate({ to: "/projects/$id", params: { id } });
+    if (id === projectId) return;
+    // Same Core, so the shell we land in has to be told which one: a Core's
+    // project id means nothing to the Panel's own transport, and dropping the
+    // search param would send the next shell looking in the Panel's database.
+    router.navigate({
+      to: "/projects/$id",
+      params: { id },
+      search: coreId ? { coreId } : {},
+    });
   };
 
   const selectAllProjects = () => {
@@ -227,6 +256,12 @@ export function ProjectPicker({ projectId }: { projectId?: string }) {
     }
   };
 
+  // The switcher *is* the current Project — it wears its name. With no Project
+  // resolved there is nothing for it to be, so it isn't there: at the root path
+  // (where the caller renders no switcher at all) and in the window before the
+  // Core's rows land. Falling back to the literal word "Project" was the bug.
+  if (!current) return null;
+
   return (
     <div ref={wrapRef} style={{ position: "relative", display: "inline-flex" }}>
       <HotkeyTooltip action="project.picker" label="Switch project">
@@ -236,8 +271,8 @@ export function ProjectPicker({ projectId }: { projectId?: string }) {
           aria-haspopup="listbox"
           aria-expanded={open}
         >
-          {current && <ProjectIcon project={current} size={14} />}
-          <span>{label}</span>
+          <ProjectIcon project={current} size={14} />
+          <span>{current.name}</span>
           <Icon
             name="chevron-down"
             size={11}
