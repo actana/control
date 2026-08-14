@@ -16,6 +16,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CoreFilesApiError,
+  composeUploadPath,
   filesFromDrop,
   listProjectFiles,
   uploadProjectFile,
@@ -94,9 +95,15 @@ let uploadSeq = 0;
 export type ProjectFileUploads = {
   items: UploadItem[];
   busy: boolean;
-  /** Upload everything in a drop, in order. Resolves when the last one settles. */
+  /**
+   * Upload everything in a drop, in order. Resolves when the last one settles.
+   *
+   * `destination` is the Project-relative folder the drop landed on — a folder
+   * row's own path (#227), or the empty string for the Project root, which is
+   * where a drop on the panel itself goes.
+   */
   send(dropped: DroppedFile[], destination?: string): Promise<void>;
-  /** Read the files out of a `drop` event and send them. */
+  /** Read the files out of a `drop` event and send them under `destination`. */
   sendFromDrop(dataTransfer: DataTransfer, destination?: string): Promise<void>;
   clear(): void;
 };
@@ -140,7 +147,9 @@ export function useProjectFileUploads(
       if (!coreId || dropped.length === 0) return;
       const queued: UploadItem[] = dropped.map(({ path, file }) => ({
         id: `up-${(uploadSeq += 1)}`,
-        path: destination ? `${destination.replace(/\/+$/, "")}/${path}` : path,
+        // The folder dropped on, joined to the path the drop gave the file —
+        // both Project-relative, neither of them ever absolute (#227).
+        path: composeUploadPath(destination, path),
         size: file.size,
         state: "queued",
       }));

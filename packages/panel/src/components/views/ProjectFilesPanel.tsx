@@ -20,7 +20,15 @@
 // state this panel keeps, and deliberately not about the disk: it is about this
 // operator's reading of it, it lives as long as the drawer is on screen, and it
 // survives every refresh because it is keyed by path rather than by row.
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+//
+// **A folder row is a drop target** (#227). A drop on one writes under that
+// folder rather than at the Project root, which is the difference between
+// putting a file where it belongs and putting it where it can then never be
+// moved from — this view has no move. The row's own path and the dropped
+// entry's own path are joined by `composeUploadPath`, both of them relative,
+// and the row stops the event so the panel behind it does not take the same
+// drop a second time as a write to the root.
+import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { Icon } from "~/components/ui/Icon";
@@ -95,6 +103,10 @@ export function ProjectFilesPanel({
   const listing = useProjectFileListing(coreId, projectId, { enabled: availability.available });
   const uploads = useProjectFileUploads(coreId, projectId, listing.refresh);
   const [dragging, setDragging] = useState(false);
+  // The folder row a drag is currently over, if any (#227). One at a time, and
+  // it is what decides between the two highlights: a drop is going *into* that
+  // folder or into the Project root, never ambiguously both.
+  const [dropTarget, setDropTarget] = useState<string | null>(null);
 
   // Taken exactly once. `send` is recreated on every render of the hook, so
   // depending on it here would re-send the same drop on the next state change —
@@ -143,17 +155,24 @@ export function ProjectFilesPanel({
   return (
     <div
       data-testid="project-files-panel"
+      // The Project root, which is where a drop lands unless a folder row
+      // claimed it first — those stop the event before it reaches here (#227).
       onDragOver={(e) => {
         if (!dragCarriesFiles(e)) return;
         e.preventDefault();
         e.dataTransfer.dropEffect = "copy";
         setDragging(true);
+        setDropTarget(null);
       }}
-      onDragLeave={() => setDragging(false)}
+      onDragLeave={() => {
+        setDragging(false);
+        setDropTarget(null);
+      }}
       onDrop={(e) => {
         if (!dragCarriesFiles(e)) return;
         e.preventDefault();
         setDragging(false);
+        setDropTarget(null);
         void uploads.sendFromDrop(e.dataTransfer);
       }}
       style={{
@@ -238,6 +257,38 @@ export function ProjectFilesPanel({
                 key={node.path}
                 data-testid="project-file-row"
                 data-path={node.path}
+                {...(node.directory
+                  ? {
+                      // A folder row is a drop target, and the drop writes
+                      // under it (#227). `stopPropagation` is what makes the
+                      // target unambiguous: without it the panel behind this
+                      // row would take the same drop as a write to the root,
+                      // and the operator would get the file in both places.
+                      onDragOver: (e: DragEvent<HTMLLIElement>) => {
+                        if (!dragCarriesFiles(e)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        e.dataTransfer.dropEffect = "copy";
+                        setDragging(false);
+                        setDropTarget(node.path);
+                      },
+                      onDragLeave: (e: DragEvent<HTMLLIElement>) => {
+                        e.stopPropagation();
+                        setDropTarget((prev) => (prev === node.path ? null : prev));
+                      },
+                      onDrop: (e: DragEvent<HTMLLIElement>) => {
+                        if (!dragCarriesFiles(e)) return;
+                        e.preventDefault();
+                        e.stopPropagation();
+                        setDragging(false);
+                        setDropTarget(null);
+                        // The folder's own path, exactly as the listing spelled
+                        // it. What each dropped file is called under it is the
+                        // drop's business, and the two are joined in one place.
+                        void uploads.sendFromDrop(e.dataTransfer, node.path);
+                      },
+                    }
+                  : {})}
                 style={{
                   display: "flex",
                   alignItems: "center",
@@ -246,7 +297,15 @@ export function ProjectFilesPanel({
                   paddingLeft: 10 + depth * INDENT,
                   fontFamily: "var(--mono)",
                   fontSize: 12,
+                  ...(dropTarget === node.path
+                    ? {
+                        background: "color-mix(in srgb, var(--accent, #60a5fa) 18%, transparent)",
+                        outline: "1px dashed var(--accent, #60a5fa)",
+                        borderRadius: 4,
+                      }
+                    : {}),
                 }}
+                {...(dropTarget === node.path ? { "data-drop-target": "true" } : {})}
               >
                 {node.directory ? (
                   // The whole label is the control, VS Code-style: a chevron

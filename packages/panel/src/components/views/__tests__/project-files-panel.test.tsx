@@ -20,6 +20,36 @@ function renderedPaths(): string[] {
   );
 }
 
+/** The row for a path, as a drag would find it. */
+function row(path: string): HTMLElement {
+  const found = document.querySelector(`[data-path="${path}"]`);
+  if (!found) throw new Error(`no row for ${path} — rows are ${renderedPaths().join(", ")}`);
+  return found as HTMLElement;
+}
+
+/**
+ * A drag of files from the desktop.
+ *
+ * `types` is the load-bearing field: during a `dragover` the browser withholds
+ * a drag's contents, so it is all the view has to decide whether to accept the
+ * drop at all. The `files` list stands in for what the drop itself carries.
+ */
+function fileDrag(files: File[] = []): DataTransfer {
+  return {
+    types: ["Files"],
+    items: files.map(() => ({ kind: "file" })),
+    files,
+    dropEffect: "none",
+  } as unknown as DataTransfer;
+}
+
+/** The `PUT`s the panel has made, as [path, init] pairs. */
+function writes(): [string, RequestInit][] {
+  return fetchMock.mock.calls.filter(
+    (call) => (call[1] as RequestInit | undefined)?.method === "PUT",
+  ) as [string, RequestInit][];
+}
+
 type Dial = { state: string; files?: { version: 1 } | null };
 
 let CORES: { id: string; label: string; dial: Dial }[] = [];
@@ -218,5 +248,60 @@ describe("a dropped file's progress", () => {
     // string here would be the browser end of the same buffering the Panel
     // refuses to do — a gigabyte in the tab instead of a gigabyte in the service.
     expect(init.body).toBe(file);
+  });
+});
+
+describe("a drop onto a folder row", () => {
+  /** A listing with a folder in it, re-served on every read. */
+  function withIncoming(): void {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        return ndjsonResponse([
+          { type: "entry", path: "incoming/hello.txt", size: 2, mtime: 1, mode: 0o100644, sha256: null, result: "written" },
+          { type: "done", entries: 1, bytes: 2 },
+        ]);
+      }
+      void url;
+      return ndjsonResponse([
+        { type: "entry", path: "incoming", size: 0, mtime: 1, mode: 0o040755, sha256: null, kind: "directory" },
+        { type: "entry", path: "readme.md", size: 4, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
+        { type: "done" },
+      ]);
+    });
+  }
+
+  it("writes under that folder, once", async () => {
+    withIncoming();
+    render(<ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />);
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming", "readme.md"]));
+
+    const dataTransfer = fileDrag([new File(["hi"], "hello.txt")]);
+    fireEvent.dragOver(row("incoming"), { dataTransfer });
+    // The row says it is the target, and the panel's root-drop framing is off.
+    expect(row("incoming").getAttribute("data-drop-target")).toBe("true");
+
+    fireEvent.drop(row("incoming"), { dataTransfer });
+    await waitFor(() => expect(writes()).toHaveLength(1));
+
+    const [url] = writes()[0]!;
+    expect(url).toContain("path=incoming%2Fhello.txt");
+    // Once. A drop that also reached the panel behind the row would write the
+    // same file a second time at the root, and the Core would report the
+    // second as an overwrite of nothing the operator asked for.
+    expect(writes()).toHaveLength(1);
+    expect(screen.getByText("incoming/hello.txt")).toBeTruthy();
+  });
+
+  it("still writes at the root when the drop misses every folder", async () => {
+    withIncoming();
+    render(<ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />);
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming", "readme.md"]));
+
+    const dataTransfer = fileDrag([new File(["hi"], "hello.txt")]);
+    // A file row is not a folder, so this falls through to the panel — the
+    // behaviour every drop had before folders became targets.
+    fireEvent.drop(row("readme.md"), { dataTransfer });
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toContain("path=hello.txt");
   });
 });

@@ -246,6 +246,41 @@ export async function* uploadProjectFile(
 export type DroppedFile = { path: string; file: File };
 
 /**
+ * Where a dropped file lands: a folder's path, joined to the file's own (#227).
+ *
+ * Two Project-relative paths and nothing else. `destination` is the `path` a
+ * listing line carried — `incoming`, `src/lib` — which is already relative to
+ * the Project root, and `path` is what the drop said the file is called
+ * relative to the drop itself. **No absolute path appears on either side**, and
+ * none can: the Panel never learns where a Project lives on the Core's disk,
+ * and a browser never learns where a dropped file lives on the operator's. Both
+ * halves stay relative because both halves only ever were.
+ *
+ * Segments that are not names — the empties a leading, trailing or doubled
+ * slash leaves behind, and `.` — are dropped, so a folder row and the paths
+ * under it join with exactly one separator between them.
+ *
+ * **A file with no name still has none.** If nothing survives from `path`, the
+ * answer is the empty path rather than the folder's, and the Core refuses that
+ * write with 400 `malformed-path` — a single-file write has to name a file.
+ * Answering the folder's path instead would turn a nameless drop into a `PUT`
+ * *at* a folder, which against an empty one is a delete of the folder and a
+ * file in its place. The refusal only works if this never hides it, and that is
+ * as true one level down as it is at the root.
+ */
+export function composeUploadPath(destination: string, path: string): string {
+  const names = (raw: string): string =>
+    raw
+      .split("/")
+      .filter((segment) => segment !== "" && segment !== ".")
+      .join("/");
+  const name = names(path);
+  if (name === "") return "";
+  const folder = names(destination);
+  return folder ? `${folder}/${name}` : name;
+}
+
+/**
  * The files inside a drop, with the paths they should keep.
  *
  * A plain file drop is `event.dataTransfer.files` and its name. A *folder* drop
