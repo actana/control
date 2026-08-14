@@ -10,8 +10,15 @@
 // **and makes no request at all**: a request would mean the Panel had decided to
 // find out the hard way, off a Core that already told it the answer.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ProjectFilesPanel } from "../ProjectFilesPanel";
+
+/** The rows on screen, in order, as `path` — closed folders included. */
+function renderedPaths(): string[] {
+  return [...document.querySelectorAll("[data-testid='project-file-row']")].map(
+    (row) => row.getAttribute("data-path") ?? "",
+  );
+}
 
 type Dial = { state: string; files?: { version: 1 } | null };
 
@@ -56,21 +63,77 @@ describe("a Core with a file surface", () => {
       ndjsonResponse([
         { type: "entry", path: "src/index.ts", size: 2048, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
         { type: "entry", path: "src", size: 0, mtime: 1, mode: 0o040755, sha256: null, kind: "directory" },
+        { type: "entry", path: "readme.md", size: 12, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
         { type: "done" },
       ]),
     );
 
     render(<ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />);
 
-    await waitFor(() => expect(screen.getByText("src/index.ts")).toBeTruthy());
-    expect(screen.getByText("2.0 KB")).toBeTruthy();
-    const rows = [...document.querySelectorAll("li[title], li")]
-      .map((li) => li.textContent ?? "")
-      .filter((text) => text.includes("src"));
-    expect(rows[0]).toContain("src");
+    await waitFor(() => expect(renderedPaths()).toEqual(["src", "readme.md"]));
 
     const [url] = fetchMock.mock.calls[0] as [string];
     expect(url).toContain("/api/cores/core_a/projects/p1/files/list");
+  });
+
+  // #226. The whole listing at once is the defect: a Project holding a
+  // `node_modules` renders as thousands of rows nobody can close.
+  it("keeps folders closed until they are opened, and opens one level", async () => {
+    fetchMock.mockResolvedValue(
+      ndjsonResponse([
+        { type: "entry", path: "incoming", size: 0, mtime: 1, mode: 0o040755, sha256: null, kind: "directory" },
+        { type: "entry", path: "incoming/hello.txt", size: 2048, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
+        { type: "entry", path: "incoming/deep/bye.txt", size: 3, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
+        { type: "done" },
+      ]),
+    );
+
+    render(<ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />);
+
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming"]));
+    expect(screen.queryByText("hello.txt")).toBeNull();
+
+    fireEvent.click(screen.getByTitle("incoming"));
+    expect(renderedPaths()).toEqual(["incoming", "incoming/deep", "incoming/hello.txt"]);
+    // One level: `incoming/deep` is a row, and what is inside it is not.
+    expect(screen.queryByText("bye.txt")).toBeNull();
+    expect(screen.getByText("2.0 KB")).toBeTruthy();
+
+    fireEvent.click(screen.getByTitle("incoming/deep"));
+    expect(renderedPaths()).toEqual([
+      "incoming",
+      "incoming/deep",
+      "incoming/deep/bye.txt",
+      "incoming/hello.txt",
+    ]);
+
+    fireEvent.click(screen.getByTitle("incoming"));
+    expect(renderedPaths()).toEqual(["incoming"]);
+  });
+
+  it("keeps what is open across a refresh of the listing", async () => {
+    // A fresh body per call: a `Response` can only be read once, and this test
+    // reads the listing twice.
+    fetchMock.mockImplementation(async () =>
+      ndjsonResponse([
+        { type: "entry", path: "incoming", size: 0, mtime: 1, mode: 0o040755, sha256: null, kind: "directory" },
+        { type: "entry", path: "incoming/hello.txt", size: 1, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
+        { type: "done" },
+      ]),
+    );
+
+    render(<ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />);
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming"]));
+    fireEvent.click(screen.getByTitle("incoming"));
+    expect(renderedPaths()).toEqual(["incoming", "incoming/hello.txt"]);
+
+    // A re-read replaces every node in the tree — including the one the
+    // operator opened, which is why the open set is held by path.
+    fireEvent.click(screen.getByText("Refresh"));
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(1));
+    await waitFor(() =>
+      expect(renderedPaths()).toEqual(["incoming", "incoming/hello.txt"]),
+    );
   });
 });
 

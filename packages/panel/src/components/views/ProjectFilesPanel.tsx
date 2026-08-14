@@ -13,12 +13,20 @@
 // surface, which is a supported state (F9, ADR 0024 D11). The caller is expected
 // to withhold the button too; this component still answers correctly if it does
 // not, which is what "absent, not broken" has to mean when two places know.
-import { useEffect, useMemo, useRef, useState } from "react";
+//
+// **Folders are closed until an operator opens them** (#226). The listing is
+// flat and capped, so the shape is assembled client-side (`file-tree.ts`) and
+// only what is open is rendered. Which folders are open is state — the only
+// state this panel keeps, and deliberately not about the disk: it is about this
+// operator's reading of it, it lives as long as the drawer is on screen, and it
+// survives every refresh because it is keyed by path rather than by row.
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { Icon } from "~/components/ui/Icon";
 import { Spinner } from "~/components/ui/Spinner";
-import { projectFileDownloadUrl, type CoreFileEntry, type DroppedFile } from "~/lib/core-files";
+import { projectFileDownloadUrl, type DroppedFile } from "~/lib/core-files";
+import { buildFileTree, visibleRows } from "~/lib/file-tree";
 import {
   dragCarriesFiles,
   useProjectFileListing,
@@ -40,12 +48,8 @@ export function formatBytes(bytes: number): string {
   return `${value < 10 ? value.toFixed(1) : Math.round(value)} ${units[unit]}`;
 }
 
-/** A directory is a directory; everything else is judged by its mode bits. */
-function isDirectory(entry: CoreFileEntry): boolean {
-  if (entry.kind) return entry.kind === "directory";
-  // S_IFDIR. A listing that predates the `kind` field still says so in `mode`.
-  return (entry.mode & 0o170000) === 0o040000;
-}
+/** How far one level of nesting moves a row, in pixels. */
+const INDENT = 12;
 
 function uploadLabel(item: UploadItem): { text: string; color: string } {
   switch (item.state) {
@@ -104,16 +108,20 @@ export function ProjectFilesPanel({
     onPendingDropTaken?.();
   }, [pendingDrop, uploads, onPendingDropTaken]);
 
-  const rows = useMemo(
-    () =>
-      [...listing.entries].sort((a, b) => {
-        const dirA = isDirectory(a);
-        const dirB = isDirectory(b);
-        if (dirA !== dirB) return dirA ? -1 : 1;
-        return a.path.localeCompare(b.path);
-      }),
-    [listing.entries],
-  );
+  const tree = useMemo(() => buildFileTree(listing.entries), [listing.entries]);
+  // Held by path, not by node: `refresh` rebuilds every node in the tree, and a
+  // set of nodes would collapse the whole view each time the listing is re-read
+  // — including the re-read that follows every upload.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set<string>());
+  const rows = useMemo(() => visibleRows(tree, expanded), [tree, expanded]);
+
+  const toggle = useCallback((path: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(path)) next.add(path);
+      return next;
+    });
+  }, []);
 
   if (!availability.available) {
     // Every one of these is a sentence, not a failure. The Core is fine; there
@@ -225,35 +233,79 @@ export function ProjectFilesPanel({
           />
         ) : (
           <ul style={{ listStyle: "none", margin: 0, padding: "4px 0" }}>
-            {rows.map((entry) => (
+            {rows.map(({ node, depth, expanded: open }) => (
               <li
-                key={entry.path}
+                key={node.path}
+                data-testid="project-file-row"
+                data-path={node.path}
                 style={{
                   display: "flex",
                   alignItems: "center",
                   gap: 8,
                   padding: "3px 10px",
+                  paddingLeft: 10 + depth * INDENT,
                   fontFamily: "var(--mono)",
                   fontSize: 12,
                 }}
               >
-                <Icon name={isDirectory(entry) ? "folder" : "file"} size={12} />
-                <span
-                  style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
-                  title={entry.path}
-                >
-                  {entry.path}
-                </span>
+                {node.directory ? (
+                  // The whole label is the control, VS Code-style: a chevron
+                  // sized for a mouse is a chevron nobody hits, and the row is
+                  // the target an operator aims at anyway.
+                  <button
+                    type="button"
+                    onClick={() => toggle(node.path)}
+                    aria-expanded={open}
+                    title={node.path}
+                    style={{
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 8,
+                      flex: 1,
+                      minWidth: 0,
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      margin: 0,
+                      font: "inherit",
+                      color: "inherit",
+                      cursor: "pointer",
+                      textAlign: "left",
+                    }}
+                  >
+                    <Icon name={open ? "chevron-down" : "chevron-right"} size={12} />
+                    <Icon name="folder" size={12} />
+                    <span
+                      style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                    >
+                      {node.name}
+                    </span>
+                  </button>
+                ) : (
+                  <>
+                    {/* Where a folder's chevron would be, so names line up. */}
+                    <span style={{ width: 12, flexShrink: 0 }} aria-hidden />
+                    <Icon name="file" size={12} />
+                    <span
+                      style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                      title={node.path}
+                    >
+                      {node.name}
+                    </span>
+                  </>
+                )}
                 <span style={{ marginLeft: "auto", color: "var(--text-dim)", flexShrink: 0 }}>
-                  {isDirectory(entry) ? "" : formatBytes(entry.size)}
+                  {/* No entry means an implied folder — a name the paths agree
+                    * on, which the listing never described. Nothing to show. */}
+                  {node.directory || !node.entry ? "" : formatBytes(node.entry.size)}
                 </span>
-                {!isDirectory(entry) && coreId && (
+                {!node.directory && coreId && (
                   <a
-                    href={projectFileDownloadUrl(coreId, projectId, entry.path)}
+                    href={projectFileDownloadUrl(coreId, projectId, node.path)}
                     // The Panel hands back what the Core sent; the browser is
                     // what decides to save it. Nothing is read into the tab.
-                    download={entry.path.split("/").pop()}
-                    title={`Download ${entry.path}`}
+                    download={node.name}
+                    title={`Download ${node.path}`}
                     style={{ color: "var(--text-dim)", display: "inline-flex", flexShrink: 0 }}
                   >
                     <Icon name="download" size={12} />
@@ -272,7 +324,11 @@ export function ProjectFilesPanel({
               color: "var(--text-dim)",
             }}
           >
-            Showing the first {rows.length.toLocaleString()} entries — this Project has more.
+            {/* The manifest's count, not the visible rows': with folders closed
+              * the two differ by orders of magnitude, and what stopped is the
+              * read off the Core, which is what an operator needs told. */}
+            Showing the first {listing.entries.length.toLocaleString()} entries — this Project has
+            more.
           </div>
         )}
       </div>
