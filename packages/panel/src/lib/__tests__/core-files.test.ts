@@ -13,7 +13,12 @@
 //     burst of 409s with one arbitrary winner.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import { filesFromDrop, listProjectFiles, uploadProjectFile } from "~/lib/core-files";
+import {
+  composeUploadPath,
+  filesFromDrop,
+  listProjectFiles,
+  uploadProjectFile,
+} from "~/lib/core-files";
 import { useProjectFileUploads } from "~/lib/use-project-files";
 
 vi.mock("~/lib/use-fleet", () => ({
@@ -202,6 +207,72 @@ describe("one write transfer per Project", () => {
 
     expect(result.current.items[0]).toMatchObject({ state: "failed", error: "busy" });
     expect(result.current.items[1]).toMatchObject({ state: "written" });
+  });
+});
+
+describe("where a drop on a folder lands", () => {
+  it("joins the folder's relative path to the entry's own", () => {
+    expect(composeUploadPath("incoming", "hello.txt")).toBe("incoming/hello.txt");
+    // A dropped *folder* keeps its own tree under the row it landed on.
+    expect(composeUploadPath("incoming", "assets/logo.png")).toBe("incoming/assets/logo.png");
+    expect(composeUploadPath("src/lib", "deep/a.ts")).toBe("src/lib/deep/a.ts");
+  });
+
+  it("leaves a drop on the Project root exactly as it was", () => {
+    expect(composeUploadPath("", "hello.txt")).toBe("hello.txt");
+    expect(composeUploadPath("", "assets/logo.png")).toBe("assets/logo.png");
+  });
+
+  it("joins with one separator, whatever the spelling", () => {
+    expect(composeUploadPath("incoming/", "hello.txt")).toBe("incoming/hello.txt");
+    expect(composeUploadPath("/incoming//deep/", "/hello.txt")).toBe("incoming/deep/hello.txt");
+    // Not an absolute path on either side, and never one out: a leading slash
+    // is a spelling of the same Project-relative path, not a root.
+    expect(composeUploadPath("incoming", "/a//b.txt")).toBe("incoming/a/b.txt");
+  });
+
+  it("sends a whole dropped folder under the row, still one at a time", async () => {
+    fetchMock.mockImplementation(async () =>
+      ndjsonResponse([
+        { type: "entry", path: "x", size: 1, mtime: 1, mode: 0o100644, sha256: null, result: "written" },
+        { type: "done", entries: 1, bytes: 1 },
+      ]),
+    );
+
+    const { result } = renderHook(() => useProjectFileUploads("core_a", "p1"));
+    await act(async () => {
+      // What `filesFromDrop` gives for a dropped folder: paths relative to the
+      // drop. Dropped on `incoming`, they keep their shape underneath it.
+      await result.current.send(
+        [
+          { path: "assets/logo.png", file: new File(["1"], "logo.png") },
+          { path: "index.html", file: new File(["2"], "index.html") },
+        ],
+        "incoming",
+      );
+    });
+
+    expect(fetchMock.mock.calls.map((call) => call[0])).toEqual([
+      "/api/cores/core_a/projects/p1/files?path=incoming%2Fassets%2Flogo.png",
+      "/api/cores/core_a/projects/p1/files?path=incoming%2Findex.html",
+    ]);
+    // The progress list names where each file went, not what it was called.
+    expect(result.current.items.map((item) => item.path)).toEqual([
+      "incoming/assets/logo.png",
+      "incoming/index.html",
+    ]);
+  });
+
+  it("keeps a nameless drop nameless, so the Core still refuses it", () => {
+    // The Core answers an empty single-file path with 400 `malformed-path` — a
+    // write has to name a file. Answering the folder's path instead would send
+    // a `PUT` *at* `incoming`, which against an empty directory replaces the
+    // directory with a file. The refusal only holds if nothing hides it here,
+    // and that is as true one level down as at the root.
+    expect(composeUploadPath("incoming", "")).toBe("");
+    expect(composeUploadPath("incoming", "/")).toBe("");
+    expect(composeUploadPath("incoming", ".")).toBe("");
+    expect(composeUploadPath("", "")).toBe("");
   });
 });
 
