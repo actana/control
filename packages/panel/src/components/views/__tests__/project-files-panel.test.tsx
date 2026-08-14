@@ -10,7 +10,7 @@
 // **and makes no request at all**: a request would mean the Panel had decided to
 // find out the hard way, off a Core that already told it the answer.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { ProjectFilesPanel } from "../ProjectFilesPanel";
 
 /** The rows on screen, in order, as `path` — closed folders included. */
@@ -303,5 +303,91 @@ describe("a drop onto a folder row", () => {
     fireEvent.drop(row("readme.md"), { dataTransfer });
     await waitFor(() => expect(writes()).toHaveLength(1));
     expect(writes()[0]![0]).toContain("path=hello.txt");
+  });
+});
+
+describe("a drag held over a collapsed folder", () => {
+  const listing = [
+    { type: "entry", path: "incoming", size: 0, mtime: 1, mode: 0o040755, sha256: null, kind: "directory" },
+    { type: "entry", path: "incoming/deep/bye.txt", size: 3, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
+    { type: "done" },
+  ];
+
+  /** The panel, listed and settled, before the fake clock takes over. */
+  async function mounted() {
+    fetchMock.mockImplementation(async (_url: string, init?: RequestInit) =>
+      init?.method === "PUT"
+        ? ndjsonResponse([{ type: "done", entries: 1, bytes: 2 }])
+        : ndjsonResponse(listing),
+    );
+    render(<ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />);
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming"]));
+  }
+
+  it("opens it, so the drag can go on into what is inside", async () => {
+    await mounted();
+    vi.useFakeTimers();
+    try {
+      const dataTransfer = fileDrag([new File(["hi"], "bye.txt")]);
+      // A real drag fires this repeatedly for as long as it rests on the row.
+      for (let elapsed = 0; elapsed < 1_000; elapsed += 100) {
+        fireEvent.dragOver(row("incoming"), { dataTransfer });
+        act(() => void vi.advanceTimersByTime(100));
+      }
+
+      expect(renderedPaths()).toEqual(["incoming", "incoming/deep"]);
+
+      // And the folder it just revealed is itself a target the drag can reach.
+      fireEvent.dragOver(row("incoming/deep"), { dataTransfer });
+      act(() => void vi.advanceTimersByTime(1_000));
+      expect(renderedPaths()).toEqual([
+        "incoming",
+        "incoming/deep",
+        "incoming/deep/bye.txt",
+      ]);
+      fireEvent.drop(row("incoming/deep"), { dataTransfer });
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toContain("path=incoming%2Fdeep%2Fbye.txt");
+  });
+
+  it("leaves it closed when the drag passes over and moves on", async () => {
+    await mounted();
+    vi.useFakeTimers();
+    try {
+      const dataTransfer = fileDrag([new File(["hi"], "bye.txt")]);
+      fireEvent.dragOver(row("incoming"), { dataTransfer });
+      act(() => void vi.advanceTimersByTime(400));
+      fireEvent.dragLeave(row("incoming"), { dataTransfer });
+      act(() => void vi.advanceTimersByTime(2_000));
+
+      expect(renderedPaths()).toEqual(["incoming"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("stops counting once the drop has happened", async () => {
+    await mounted();
+    vi.useFakeTimers();
+    try {
+      const dataTransfer = fileDrag([new File(["hi"], "bye.txt")]);
+      fireEvent.dragOver(row("incoming"), { dataTransfer });
+      act(() => void vi.advanceTimersByTime(400));
+      // The drop is the answer to where the file goes; a folder springing open
+      // half a second later is a tree rearranging itself under the operator.
+      fireEvent.drop(row("incoming"), { dataTransfer });
+      act(() => void vi.advanceTimersByTime(2_000));
+
+      expect(renderedPaths()).toEqual(["incoming"]);
+    } finally {
+      vi.useRealTimers();
+    }
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toContain("path=incoming%2Fbye.txt");
   });
 });

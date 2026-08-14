@@ -28,6 +28,13 @@
 // entry's own path are joined by `composeUploadPath`, both of them relative,
 // and the row stops the event so the panel behind it does not take the same
 // drop a second time as a write to the root.
+//
+// **A drag held on a folder opens it** (#228). With the first two in place a
+// drop could still only reach a folder that happened to be open before the drag
+// began, because a drag cannot click a chevron. The timing lives in
+// `spring-loaded.ts`, and the reason it is a module of its own is one line of
+// it: `dragover` fires continuously, so the timer must not be restarted on
+// every event.
 import { useCallback, useEffect, useMemo, useRef, useState, type DragEvent } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { EmptyState } from "~/components/ui/EmptyState";
@@ -35,6 +42,7 @@ import { Icon } from "~/components/ui/Icon";
 import { Spinner } from "~/components/ui/Spinner";
 import { projectFileDownloadUrl, type DroppedFile } from "~/lib/core-files";
 import { buildFileTree, visibleRows } from "~/lib/file-tree";
+import { useSpringLoad } from "~/lib/spring-loaded";
 import {
   dragCarriesFiles,
   useProjectFileListing,
@@ -135,6 +143,13 @@ export function ProjectFilesPanel({
     });
   }, []);
 
+  // Opens rather than toggles, because the caller is a timer: a drag resting on
+  // a folder that is already open must leave it open (#228).
+  const expand = useCallback((path: string) => {
+    setExpanded((prev) => (prev.has(path) ? prev : new Set(prev).add(path)));
+  }, []);
+  const spring = useSpringLoad(expand);
+
   if (!availability.available) {
     // Every one of these is a sentence, not a failure. The Core is fine; there
     // is simply nothing here to show, and saying which of the reasons applies is
@@ -163,16 +178,21 @@ export function ProjectFilesPanel({
         e.dataTransfer.dropEffect = "copy";
         setDragging(true);
         setDropTarget(null);
+        // Over the panel's own space is over no folder at all, so nothing is
+        // waiting to spring open.
+        spring.cancel();
       }}
       onDragLeave={() => {
         setDragging(false);
         setDropTarget(null);
+        spring.cancel();
       }}
       onDrop={(e) => {
         if (!dragCarriesFiles(e)) return;
         e.preventDefault();
         setDragging(false);
         setDropTarget(null);
+        spring.cancel();
         void uploads.sendFromDrop(e.dataTransfer);
       }}
       style={{
@@ -271,10 +291,14 @@ export function ProjectFilesPanel({
                         e.dataTransfer.dropEffect = "copy";
                         setDragging(false);
                         setDropTarget(node.path);
+                        // Held here for a moment, this folder opens, and the
+                        // drag can go on into what is inside it (#228).
+                        spring.hover(node.path);
                       },
                       onDragLeave: (e: DragEvent<HTMLLIElement>) => {
                         e.stopPropagation();
                         setDropTarget((prev) => (prev === node.path ? null : prev));
+                        spring.leave(node.path);
                       },
                       onDrop: (e: DragEvent<HTMLLIElement>) => {
                         if (!dragCarriesFiles(e)) return;
@@ -282,6 +306,7 @@ export function ProjectFilesPanel({
                         e.stopPropagation();
                         setDragging(false);
                         setDropTarget(null);
+                        spring.cancel();
                         // The folder's own path, exactly as the listing spelled
                         // it. What each dropped file is called under it is the
                         // drop's business, and the two are joined in one place.
