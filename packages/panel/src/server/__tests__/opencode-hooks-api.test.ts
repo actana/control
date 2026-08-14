@@ -183,6 +183,63 @@ describe("OpenCode hook API", () => {
     expect(token.length).toBeGreaterThan(0);
   });
 
+  it("moves the card back to running when a permission is answered", async () => {
+    // OpenCode fires `permission.replied`, so the plugin can report the turn
+    // resuming outright. Claude Code fires nothing when a permission is
+    // GRANTED, which is why that family has to be healed by the next
+    // PostToolUse instead — the two harnesses genuinely differ here.
+    const sessionId = "ses_permission_flow";
+    const hook = (body: Record<string, unknown>) =>
+      handleApiRequest(
+        authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...body, session_id: sessionId }),
+        }),
+      );
+
+    await hook({ hook_event_name: "UserPromptSubmit", prompt: "run the tests" });
+    await hook({ hook_event_name: "PermissionRequest" });
+    expect(getTask(taskId)?.status).toBe("needs-input");
+
+    const replied = await hook({ hook_event_name: "PermissionReplied" });
+    expect(replied?.status).toBe(200);
+    await expect(replied?.json()).resolves.toEqual({ ok: true, status: "running" });
+    expect(getTask(taskId)?.status).toBe("running");
+  });
+
+  it("walks the sequence the installed plugin actually produced", async () => {
+    // Captured from opencode 1.18.18 running the Core's plugin: SessionStart
+    // with the id, UserPromptSubmit with the text, three more from the session
+    // going busy, then two Stops. The repeats matter — `session.status` idle
+    // and `session.idle` both fire, and the card must settle once and stay
+    // settled rather than flickering.
+    const sessionId = "ses_000c0422afferlN5ASgK5JDYj3";
+    const post = (body: Record<string, unknown>) =>
+      handleApiRequest(
+        authed(`/api/hooks/opencode?taskId=${encodeURIComponent(taskId)}`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ ...body, session_id: sessionId }),
+        }),
+      );
+
+    await post({ hook_event_name: "SessionStart" });
+    expect(getTask(taskId)?.claudeSessionId).toBe(sessionId);
+    expect(getTask(taskId)?.status).toBe("ready");
+
+    await post({ hook_event_name: "UserPromptSubmit", prompt: "say hello" });
+    expect(getTask(taskId)?.status).toBe("running");
+    for (let i = 0; i < 3; i += 1) await post({ hook_event_name: "UserPromptSubmit" });
+    expect(getTask(taskId)?.status).toBe("running");
+
+    await post({ hook_event_name: "Stop" });
+    await post({ hook_event_name: "Stop" });
+    // The whole point of #230: a settle the Core can report, so `--wait` and
+    // the SDK's wait-for-idle resolve instead of timing out "unreported".
+    expect(getTask(taskId)?.status).toBe("finished");
+  });
+
   it("ignores status hooks from a different captured session", async () => {
     const capturedSessionId = "ses_captured_session";
     const foreignSessionId = "ses_foreign_session";

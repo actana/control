@@ -44,6 +44,21 @@
 //      with the length of the prompt *and* after the echo has stopped
 //      repainting.
 //
+//   4. TYPE INTO A COMPOSER, AND CHECK THE TEXT ARRIVED. "The painting
+//      stopped" is evidence that the harness is between frames; it is not
+//      evidence that anything is listening to the keyboard. A harness whose
+//      TUI boots in two stages — paint a splash, start a server, *then* attach
+//      the input reader and paint the composer — is quiet in the middle, and a
+//      write into that hole is discarded when the reader finally attaches and
+//      flushes what it never read. Observed on opencode 1.18.18 (issue 229):
+//      the Core settled and delivered 1–1.4 s after spawn and the composer sat
+//      empty, while the very same text sent into the session seconds later
+//      landed. So delivery now asks for two things a settled screen does not
+//      supply on its own — a composer visible before the prompt is typed, and
+//      the prompt visible before the carriage return — and re-types rather
+//      than submitting into a composer the text never reached. Both are
+//      per-harness and off by default: see `HARNESS_READINESS`.
+//
 // Everything here is driven by injected timers so the sequence is testable
 // without sleeping: see `harness-prompt-delivery.test.ts`.
 
@@ -367,6 +382,131 @@ export function highlightIsOn(
   return highlighted.length === 1 && highlighted[0]!.number === option.number;
 }
 
+// ─── Readiness ───────────────────────────────────────────────────────
+
+/**
+ * What one harness has to show before this module will type into it, and
+ * whether it has to show the typing back.
+ *
+ * The same table shape as {@link BLOCKING_DIALOGS} and for the same reason
+ * (ADR 0026 D7): every field here is a transcription of a *named* harness's
+ * screen, so a harness with no entry gets none of it. The default is the
+ * behaviour every harness had before issue 229 — settle, type, submit — which
+ * is what keeps `claude-code`, `codex` and `cursor-cli` byte-for-byte
+ * unchanged by a fix that was only ever about opencode.
+ */
+export type HarnessReadiness = {
+  /**
+   * Patterns that prove an input composer is on screen. Any one of them is
+   * enough; an empty list means this module has never been shown what this
+   * harness's composer looks like and will not pretend otherwise — it settles
+   * on the quiet gap alone, exactly as before.
+   */
+  composer: readonly RegExp[];
+  /**
+   * Require the prompt to appear on screen before the carriage return goes
+   * out. A harness that swallows the write leaves no echo, and submitting into
+   * that is how a Session ends up looking stillborn.
+   */
+  confirmEcho: boolean;
+  /**
+   * How many times the prompt may be written. `1` is "type it once, whatever
+   * happens" — the pre-229 behaviour. Anything higher only matters when
+   * `confirmEcho` is set, and the real bound on retyping is `maxWaitMs`: at
+   * the backstop the prompt is written and submitted regardless.
+   */
+  maxPromptWrites: number;
+};
+
+const NO_READINESS: HarnessReadiness = {
+  composer: [],
+  confirmEcho: false,
+  maxPromptWrites: 1,
+};
+
+/**
+ * Per-harness readiness, keyed the same way the dialog table is.
+ *
+ * OpenCode is the only entry and issue 229 is why. Its TUI opens the alternate
+ * screen and paints its wordmark while the opencode server behind it is still
+ * starting; the composer — and the input reader that goes with it — arrives
+ * later, and the gap between the two is longer than any quiet gap worth
+ * measuring. `Ask anything` is the composer's own placeholder, read out of
+ * opencode 1.18.18: the TUI renders `Ask anything... "<suggestion>"` and the
+ * localised string table carries `Ask anything, {{slash}} for commands, …`.
+ * Only the prefix is common to both, so only the prefix is matched.
+ *
+ * If a future opencode reworded that placeholder the marker stops matching and
+ * delivery degrades to the backstop — the prompt goes out at `maxWaitMs`, late
+ * but not lost — which is the direction this module is always wrong in.
+ */
+export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
+  opencode: {
+    composer: [/ask anything/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+};
+
+export function readinessFor(harness: string): HarnessReadiness {
+  return HARNESS_READINESS[harness as Harness] ?? NO_READINESS;
+}
+
+/** Is one of this harness's composer markers on the screen? */
+export function composerOnScreen(screen: string, readiness: HarnessReadiness): boolean {
+  if (readiness.composer.length === 0) return true;
+  const text = stripAnsi(screen);
+  return readiness.composer.some((marker) => marker.test(text));
+}
+
+/**
+ * How many leading characters of the prompt are looked for in the echo.
+ *
+ * Short on purpose. The composer wraps, truncates and decorates what it echoes,
+ * and every one of those turns a long comparison into a false negative — which
+ * is the expensive direction here, because it re-types text that already
+ * landed. A short probe errs the other way, toward believing the prompt
+ * arrived, and believing that wrongly costs exactly what today already costs.
+ */
+const ECHO_PROBE_CHARS = 12;
+
+/** `[Pasted text #1 +12 lines]` — a landed prompt the composer does not echo. */
+const PASTE_PLACEHOLDER = /\[\s*pasted\s+text/i;
+
+/**
+ * Whitespace and the glyphs a composer draws its own frame out of.
+ *
+ * Both are things the harness inserts *into* the echo rather than things the
+ * operator typed. OpenCode renders its composer as a box, so a prompt long
+ * enough to wrap comes back as `┃ refactor the auth ┃ ┃ module today ┃` — the
+ * borders land flush against the text once the spaces are gone, and a
+ * comparison that kept them would report a swallowed prompt on a prompt that
+ * landed perfectly. Dropping them is the difference between re-typing when the
+ * text is missing and re-typing when it merely wrapped.
+ */
+const ECHO_NOISE = /[\s─-▟]+/g;
+
+function squeeze(text: string): string {
+  return text.replace(ECHO_NOISE, "");
+}
+
+export function promptEchoProbe(prompt: string): string {
+  return squeeze(prompt).slice(0, ECHO_PROBE_CHARS);
+}
+
+/** Is there evidence on screen that the prompt reached the composer? */
+export function promptEchoed(screen: string, prompt: string): boolean {
+  const probe = promptEchoProbe(prompt);
+  // Nothing to look for — a prompt of pure whitespace is not this module's
+  // problem to detect, and re-typing it forever would be.
+  if (!probe) return true;
+  const shown = stripAnsi(screen);
+  if (squeeze(shown).includes(probe)) return true;
+  // A harness that rendered the write as a paste is a harness that took it,
+  // and the one thing it deliberately does not do is echo the text.
+  return PASTE_PLACEHOLDER.test(shown);
+}
+
 // ─── Timing ──────────────────────────────────────────────────────────
 
 export type PromptDeliveryProfile = {
@@ -453,6 +593,10 @@ export type PromptDeliveryPhase =
 
 export type PromptDeliveryEvent =
   | { phase: "settled"; waitedMs: number }
+  /** The screen went quiet with no composer on it; holding rather than typing. */
+  | { phase: "waiting-for-composer"; waitedMs: number }
+  /** The prompt was written and never appeared. Typing it again. */
+  | { phase: "prompt-swallowed"; attempt: number }
   | { phase: "dialog"; dialog: string; option: number; label: string }
   | { phase: "dialog-unreadable"; dialog: string }
   /** Its number went out and the harness did not move its highlight. */
@@ -502,6 +646,7 @@ export class HarnessPromptDelivery {
   private readonly profile: PromptDeliveryProfile;
   private readonly timers: PromptDeliveryTimers;
   private readonly specs: BlockingDialogSpec[];
+  private readonly readiness: HarnessReadiness;
   private readonly startedAt: number;
 
   private phase: PromptDeliveryPhase = "settling";
@@ -519,6 +664,10 @@ export class HarnessPromptDelivery {
   /** The dialog whose unmoved highlight has already been reported. */
   private unconfirmedDialogId: string | null = null;
   private deadlinePassed = false;
+  /** How many times the prompt has been written into the composer. */
+  private promptWrites = 0;
+  /** Whether this settling round has already said it is waiting for a composer. */
+  private waitingForComposerReported = false;
 
   private cancelIdle: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
@@ -527,6 +676,7 @@ export class HarnessPromptDelivery {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
     this.timers = opts.timers ?? REAL_TIMERS;
     this.specs = dialogsForHarness(opts.harness);
+    this.readiness = readinessFor(opts.harness);
     this.startedAt = this.timers.now();
     this.lastPaintAt = this.startedAt;
     this.cancelDeadline = this.timers.setTimer(
@@ -623,10 +773,57 @@ export class HarnessPromptDelivery {
         this.schedule();
         return;
       }
+      // The paste has settled and the echo has stopped moving. If this harness
+      // is one that has to show the prompt back and has not, the write was
+      // swallowed — submitting now would send a carriage return into an empty
+      // composer and report a delivery that never happened.
+      if (!this.echoConfirmed()) {
+        this.retypePrompt();
+        return;
+      }
       this.submit(now);
       return;
     }
     this.onQuiet();
+  }
+
+  /**
+   * Is there enough evidence to justify the carriage return?
+   *
+   * `true` for every harness with no `confirmEcho` entry, so this is a no-op
+   * for the three families that were never affected. Past the backstop and
+   * past the retype budget it is also `true`: leaving a prompt typed-but-
+   * unsent is its own failure (D8), and an unjustified `\r` into an empty
+   * composer costs nothing — unlike the one into a menu that D4a guards.
+   */
+  private echoConfirmed(): boolean {
+    if (!this.readiness.confirmEcho) return true;
+    if (this.deadlinePassed) return true;
+    if (this.promptWrites >= this.readiness.maxPromptWrites) return true;
+    return promptEchoed(this.screen, this.opts.prompt);
+  }
+
+  /**
+   * The prompt did not arrive. Go back to watching the harness rather than
+   * hammering the same write at it: the reason it was swallowed is that the
+   * TUI was not listening, and the next write is worth no more than this one
+   * until the screen says something has changed. Returning to `settling`
+   * re-imposes the whole gate — a fresh paint, the quiet gap, and the composer
+   * marker — before the prompt is typed again.
+   *
+   * Nothing is typed to clear the composer first. A partial write is not a
+   * failure mode anyone has observed, and a `ctrl-u` this module cannot
+   * justify from the screen is the keystroke D4a exists to refuse.
+   */
+  private retypePrompt(): void {
+    this.emit({ phase: "prompt-swallowed", attempt: this.promptWrites });
+    this.phase = "settling";
+    this.screen = "";
+    this.recentSignatures = [];
+    this.paintedSinceKeystroke = false;
+    this.waitingForComposerReported = false;
+    this.lastPaintAt = this.timers.now();
+    this.schedule();
   }
 
   /** The harness stopped painting. Decide what is on screen and act on it. */
@@ -662,8 +859,31 @@ export class HarnessPromptDelivery {
       return;
     }
 
+    // Nothing is in the way — but "nothing is in the way" is not "something is
+    // listening". For a harness whose composer this module has been shown, the
+    // composer has to be on screen before a keystroke is worth sending; for
+    // every other harness `composerOnScreen` is `true` and this costs nothing.
+    if (!this.deadlinePassed && !composerOnScreen(this.screen, this.readiness)) {
+      this.holdForComposer();
+      return;
+    }
+
     this.emit({ phase: "settled", waitedMs: this.timers.now() - this.startedAt });
     this.writePrompt();
+  }
+
+  /**
+   * The harness is quiet and its composer is not up yet. Type nothing, say so
+   * once, and wait — either a later paint brings the composer, or the backstop
+   * delivers anyway rather than losing the prompt.
+   */
+  private holdForComposer(): void {
+    if (this.waitingForComposerReported) return;
+    this.waitingForComposerReported = true;
+    this.emit({
+      phase: "waiting-for-composer",
+      waitedMs: this.timers.now() - this.startedAt,
+    });
   }
 
   private handleDialog(dialog: BlockingDialogMatch): void {
@@ -754,6 +974,7 @@ export class HarnessPromptDelivery {
     this.phase = "typing";
     this.screen = "";
     this.recentSignatures = [];
+    this.promptWrites += 1;
     this.opts.write(this.opts.prompt);
     const now = this.timers.now();
     this.lastPaintAt = now;

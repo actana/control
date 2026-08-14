@@ -10,6 +10,10 @@ import {
   hookCommand,
   installHarnessHooks,
 } from "../harness-hooks";
+import {
+  OPENCODE_PLUGIN_MARKER,
+  OPENCODE_PLUGIN_PATH,
+} from "../harness-hooks-opencode";
 
 describe("installing a harness's lifecycle hooks (issue 84)", () => {
   let cwd: string;
@@ -135,8 +139,8 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
   it("reports honestly for a harness it has no writer for", () => {
     // The Panel arms its terminal-input fallback off this answer, so a
     // hopeful `true` here is a Session with no status signal at all.
-    expect(harnessSupportsHooks("opencode")).toBe(false);
-    expect(installHarnessHooks("opencode", cwd)).toEqual({
+    expect(harnessSupportsHooks("some-harness-invented-tomorrow")).toBe(false);
+    expect(installHarnessHooks("some-harness-invented-tomorrow", cwd)).toEqual({
       installed: false,
       reportsTurnStart: false,
     });
@@ -144,6 +148,46 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
       installed: false,
       reportsTurnStart: false,
     });
+  });
+
+  it("writes OpenCode a plugin, because that is the surface it has (issue 230)", () => {
+    // OpenCode has no JSON hooks file. Until now that meant no writer, which
+    // meant a Session that showed `ready` from spawn through a whole turn and
+    // every `--wait` timing out "unreported".
+    expect(harnessSupportsHooks("opencode")).toBe(true);
+    expect(installHarnessHooks("opencode", cwd)).toEqual({
+      installed: true,
+      // Its `chat.message` fires on the user's message and `session.status`
+      // goes `busy` — verified against opencode 1.18.18, not assumed.
+      reportsTurnStart: true,
+    });
+
+    const plugin = fs.readFileSync(path.join(cwd, OPENCODE_PLUGIN_PATH), "utf8");
+    expect(plugin).toContain(OPENCODE_PLUGIN_MARKER);
+    expect(plugin).toContain("/api/hooks/opencode");
+    // Same rule as the JSON writers: the file is in the operator's workspace
+    // and may be committed, so it names the env vars and holds no secret.
+    expect(plugin).toContain(`process.env.${HOOK_URL_ENV}`);
+    expect(plugin).toContain(`process.env.${HOOK_TOKEN_ENV}`);
+    expect(plugin).toContain(`process.env.${HOOK_TASK_ID_ENV}`);
+  });
+
+  it("replaces its own plugin on the next spawn and leaves the operator's alone", () => {
+    const file = path.join(cwd, OPENCODE_PLUGIN_PATH);
+    installHarnessHooks("opencode", cwd);
+    installHarnessHooks("opencode", cwd);
+    expect(fs.readFileSync(file, "utf8")).toContain(OPENCODE_PLUGIN_MARKER);
+
+    // A plugin without our marker is someone else's program. Overwriting it
+    // is the same failure as clobbering a settings file we could not parse,
+    // and answering `false` keeps the Panel's fallback armed rather than
+    // suppressing it on hooks that are not there.
+    fs.writeFileSync(file, "export const Mine = async () => ({});\n");
+    expect(installHarnessHooks("opencode", cwd)).toEqual({
+      installed: false,
+      reportsTurnStart: false,
+    });
+    expect(fs.readFileSync(file, "utf8")).toBe("export const Mine = async () => ({});\n");
   });
 
   it("reports false rather than clobbering a settings file it could not read", () => {
