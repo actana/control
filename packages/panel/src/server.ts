@@ -12,6 +12,16 @@ import { coreLinkManager } from "~/server/services/core-link-manager";
  */
 export { attachPanelLink } from "~/server/panel-link/ws-server";
 
+/**
+ * The Node ↔ Web translation `bin/panel.mjs` serves every request through
+ * (#225), exported for the same reason `attachPanelLink` is: only the host owns
+ * the `IncomingMessage`/`ServerResponse` pair, and only this bundle can be sure
+ * the dev middleware and the deployed service are running the *same* one. They
+ * were written twice before and disagreed twice — once about buffering a
+ * request body (#169) and once about surviving an answer that fails mid-stream.
+ */
+export { serveNodeRequest } from "~/server/node-http-bridge";
+
 // Subscribe the event-log recorder to the server's AppEvent stream for the life
 // of the server process (idempotent). Appends every task/session/hook event to
 // the monotonic `event_log` table so a reconnecting Panel can replay the

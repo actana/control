@@ -44,6 +44,7 @@ import { createCoreFilesFetch, type CoreFilesFetch } from "@actana/sdk/core-file
 import { CoreFiles } from "@actana/sdk/core-files";
 import { getCore, getCoreSecrets } from "./cores";
 import { coreLinkManager } from "./core-link-manager";
+import { HTTP_CLIENT_CLOSED_REQUEST } from "~/shared/http-status";
 
 /** Everything the pipe needs about one Core, resolved once per request. */
 export type CoreFilesTarget = {
@@ -286,6 +287,9 @@ export function forwardedResponseHeaders(from: Headers): Headers {
  * insufficient-storage`, and every path refusal (F3). Rewriting any of them
  * would be the Panel claiming to know something about a filesystem it cannot
  * see.
+ *
+ * The one answer invented here is `499`, and it is never delivered: it is what
+ * a transfer the *operator* cancelled looks like on the way out. See below.
  */
 export async function pipeToCore(opts: {
   target: CoreFilesTarget;
@@ -295,16 +299,32 @@ export async function pipeToCore(opts: {
   body?: ReadableStream<Uint8Array> | null;
   signal?: AbortSignal;
 }): Promise<Response> {
-  const answer = await opts.target.fetch({
-    method: opts.method,
-    url: opts.url,
-    headers: { ...opts.target.authHeaders(), ...opts.headers },
-    ...(opts.body ? { body: opts.body } : {}),
-    ...(opts.signal ? { signal: opts.signal } : {}),
-  });
-  return new Response(answer.body, {
-    status: answer.status,
-    statusText: answer.statusText,
-    headers: forwardedResponseHeaders(answer.headers),
-  });
+  try {
+    const answer = await opts.target.fetch({
+      method: opts.method,
+      url: opts.url,
+      headers: { ...opts.target.authHeaders(), ...opts.headers },
+      ...(opts.body ? { body: opts.body } : {}),
+      ...(opts.signal ? { signal: opts.signal } : {}),
+    });
+    return new Response(answer.body, {
+      status: answer.status,
+      statusText: answer.statusText,
+      headers: forwardedResponseHeaders(answer.headers),
+    });
+  } catch (err) {
+    // The browser went away mid-transfer and took this request with it (#225).
+    //
+    // Aborting the Core-bound request is the *point*, not the accident: it is
+    // what closes the Core's response and runs the `finally` that frees that
+    // Project's write lease, so the operator's next drop is answered rather
+    // than refused `409 transfer-in-progress` by an upload nobody is receiving.
+    // The socket this would be written to is already gone; the status exists
+    // only so a deliberate cancellation does not reach the router's `catch`
+    // and get logged — and counted — as an internal error.
+    if (opts.signal?.aborted) {
+      return new Response(null, { status: HTTP_CLIENT_CLOSED_REQUEST });
+    }
+    throw err;
+  }
 }

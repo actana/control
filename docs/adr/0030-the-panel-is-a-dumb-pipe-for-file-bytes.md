@@ -164,6 +164,31 @@ be stale the moment an agent wrote, which on these machines is constantly.
   no resumable transfer; the Core's write lease is released when the socket
   drops, and the operator drops the file again. Resumable transfer is a real
   feature and is not this one.
+- **The operator's socket is the transfer's lifetime, and the Panel had to be
+  taught to notice it (#225).** "The Core's write lease is released when the
+  socket drops" above was true only of the socket the *Core* can see. A browser
+  that goes away after its body is already sent leaves the Panel with nothing
+  left to fail: the request stream has ended, so the transfer ran to completion
+  holding that Project's lease, and the operator's next drop was refused
+  `409 transfer-in-progress` by an upload the Panel had already reported dead.
+  So the two hosts now hand `request.signal` down to `pipeToCore`, aborted when
+  the client's connection closes before its answer was finished. A cancelled
+  transfer leaves a partial file, which is what every interrupted write leaves
+  and what the next drop overwrites — the alternative is a doomed
+  multi-gigabyte upload holding a lock nobody is waiting on.
+- **Translating between Node and `fetch` is one module, not one per host
+  (`server/node-http-bridge.ts`, #225).** `bin/panel.mjs` and the Vite
+  middleware had written it twice and disagreed twice: about buffering a request
+  body (D2's own example), and about an answer whose body fails half-written —
+  where production's `Readable.fromWeb(body).pipe(res)` left the source's
+  `'error'` event unhandled, which in Node ends the process. The Core raises one
+  deliberately (`res.destroy()` on any interrupted stream, so a truncated body
+  cannot read as a whole one), so closing a big listing could take the Panel
+  down and every request in flight on it — the upload just started, the file
+  view beside it — died together with the browser's `Failed to fetch`. The
+  bridge is exported from the server bundle for the same reason
+  `attachPanelLink` is: only the host owns the socket, and only the bundle can
+  guarantee both hosts run the same translation.
 - **The Panel's outbound connection pool is now per Core rather than per
   request.** `createCoreFilesFetch` builds an undici `Agent` and an `Agent` is a
   pool, so one is kept per Core and re-keyed when its credentials change — a
