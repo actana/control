@@ -69,14 +69,34 @@ function withoutComments(source: string): string {
   return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
 }
 
-/** Every import in these files that is neither a relative path nor `ws`. */
+/**
+ * This package's whole dependency list, and the reason each entry is on it.
+ *
+ * Both are here because **Node's own global cannot present a client
+ * certificate**, which is the one thing every connection to a Core must do:
+ * `ws` because the global `WebSocket` cannot, and `undici` because the global
+ * `fetch` cannot either and the `Agent` that lets it is exposed by no builtin
+ * (#151, PR 189 — `fetch` ignores `options.cert` / `options.key` outright).
+ *
+ * Neither is `@actana/shared` or `@actana/core`, which is what this rule is
+ * actually about: those are private workspace packages, so importing one would
+ * make the published SDK unresolvable outside this repository (ADR 0025 D4) or
+ * a cycle back into the server that depends on it (D2). A public package on the
+ * registry is a dependency; a private one is a broken install. Adding to this
+ * set is a deliberate act and should stay a small list.
+ */
+const ALLOWED_DEPENDENCIES: ReadonlySet<string> = new Set(["ws", "undici"]);
+
+/** Every import in these files that is neither a relative path nor an allowed dependency. */
 function offendingImports(files: string[]): string[] {
   const offences: string[] = [];
   for (const file of files) {
     const source = withoutComments(readFileSync(file, "utf8"));
     for (const specifier of importSpecifiers(source)) {
       const allowed =
-        specifier.startsWith("./") || specifier.startsWith("../") || specifier === "ws";
+        specifier.startsWith("./") ||
+        specifier.startsWith("../") ||
+        ALLOWED_DEPENDENCIES.has(specifier);
       if (!allowed) offences.push(`${path.basename(file)} imports ${specifier}`);
     }
   }
@@ -92,7 +112,7 @@ afterAll(() => {
 });
 
 describe("package boundaries", () => {
-  it("imports nothing but its own modules and `ws`", () => {
+  it("imports nothing but its own modules and its declared dependencies", () => {
     // `@actana/shared` is private and stays private (ADR 0025 D4), so an import
     // of it here would make the one package this effort exists to publish
     // unresolvable outside this repository. `@actana/core` is the *server* and
@@ -101,6 +121,21 @@ describe("package boundaries", () => {
     // what the test-only aliases in `vitest.config.ts` are for.
     const offences = offendingImports(shippedSources());
     expect(offences).toEqual([]);
+  });
+
+  it("declares every dependency it allows itself to import", () => {
+    // The allowlist above and `package.json` are two statements of the same
+    // fact, and the failure when they drift is nasty in a way a missing import
+    // is not: the code imports something the manifest never declared, every test
+    // passes because the workspace hoisted it from a sibling, and the break
+    // surfaces as `ERR_MODULE_NOT_FOUND` in a stranger's install of the
+    // published tarball. Pinning them together is the only place that is caught
+    // before publication.
+    const manifest = JSON.parse(
+      readFileSync(path.resolve(SRC, "..", "package.json"), "utf8"),
+    ) as { dependencies?: Record<string, string> };
+    const declared = Object.keys(manifest.dependencies ?? {}).sort();
+    expect(declared).toEqual([...ALLOWED_DEPENDENCIES].sort());
   });
 
   it("sweeps subdirectories and every quote style — the guardrail on the guardrail", () => {

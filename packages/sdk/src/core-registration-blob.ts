@@ -95,8 +95,12 @@ export function coreConnectionFromBlob(blob: CoreRegistrationBlob): CoreConnecti
  * else is returned unchanged rather than guessed at — a caller that handed this
  * a URL with no WebSocket scheme knows something about its Core that this
  * function does not.
+ *
+ * Exported because a `CoreClient` built from a bare `url` rather than a blob
+ * needs the same answer for `project.files.*` (#167), and two implementations of
+ * this mapping is one more than can be kept in step.
  */
-function httpsBaseUrlFor(url: string): string {
+export function httpsBaseUrlFor(url: string): string {
   if (url.startsWith("wss://")) return `https://${url.slice("wss://".length)}`.replace(/\/+$/, "");
   if (url.startsWith("ws://")) return `http://${url.slice("ws://".length)}`.replace(/\/+$/, "");
   return url;

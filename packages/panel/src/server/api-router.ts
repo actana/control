@@ -25,6 +25,7 @@ import * as healthController from "./controllers/health.controller";
 import * as aiRuntimeModelsController from "./controllers/ai-runtime-models.controller";
 import * as authController from "./controllers/auth.controller";
 import * as coresController from "./controllers/cores.controller";
+import * as coreFilesController from "./controllers/core-files.controller";
 import * as updateCheckController from "./controllers/update-check.controller";
 
 const HARNESS_HOOK_PATH = /^\/api\/hooks\/([a-z0-9-]+)$/;
@@ -36,6 +37,12 @@ const PROJECT_TASKS_PATH = /^\/api\/projects\/([^/]+)\/tasks$/;
 const PROJECT_USER_TERMINALS_PATH = /^\/api\/projects\/([^/]+)\/user-terminals$/;
 const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
+// A Project's files on a Core, addressed by both ids because the Panel holds no
+// row for a Core-owned Project (ADR 0005) and therefore cannot look one up from
+// the other. `files/list` is matched before `files` so the leaf is never read as
+// a path — the same order, and the same reason, as on the Core (#216).
+const CORE_PROJECT_FILES_LIST_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files\/list$/;
+const CORE_PROJECT_FILES_PATH = /^\/api\/cores\/([^/]+)\/projects\/([^/]+)\/files$/;
 // Literal path — checked before TASK_PATH so the id patterns never see it.
 const TASK_SWEEP_DISCONNECTED_PATH = "/api/tasks/sweep-disconnected";
 const TASK_PATH = /^\/api\/tasks\/([^/]+)$/;
@@ -208,7 +215,22 @@ async function dispatch(
     if (method === "GET") return coresController.list();
     if (method === "POST") return coresController.add(request);
   }
-  let m = pathname.match(CORE_PATH);
+  // A Project's files, on the Core that owns them (#129 F6/F11, #169). The
+  // Panel is a dumb pipe here: these three lines resolve a Core and forward a
+  // stream, and every decision about what a path means is the Core's.
+  let m = pathname.match(CORE_PROJECT_FILES_LIST_PATH);
+  if (m) {
+    if (method === "GET") return coreFilesController.list(decode(m[1]), decode(m[2]), url);
+  }
+  m = pathname.match(CORE_PROJECT_FILES_PATH);
+  if (m) {
+    const coreId = decode(m[1]);
+    const projectId = decode(m[2]);
+    if (method === "GET") return coreFilesController.read(coreId, projectId, url);
+    if (method === "PUT") return coreFilesController.write(coreId, projectId, url, request);
+  }
+
+  m = pathname.match(CORE_PATH);
   if (m) {
     const id = decode(m[1]);
     // PATCH is the alias, and only the alias: a Core's endpoint and credentials

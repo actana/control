@@ -338,11 +338,18 @@ function Shell() {
     : projectId
     ? [
         ...groupCrumb,
-        { label: "Project", node: <ProjectPicker projectId={projectId} /> },
+        // The switcher is scoped to the Core that owns this shell, so it gets
+        // the same `?coreId=` the rest of the shell reads its data with.
+        {
+          label: "Project",
+          node: <ProjectPicker projectId={projectId} coreId={routeCoreId ?? null} />,
+        },
       ]
       : activePanel === "usage"
         ? [{ label: "Usage" }]
-      : [...groupCrumb, { label: "Project", node: <ProjectPicker /> }];
+      // Outside a Project there is no Project to switch away from, so no
+      // switcher — the root path used to render an empty one (issue 231).
+      : groupCrumb;
 
   const closePanel = () => setActivePanel(null);
 

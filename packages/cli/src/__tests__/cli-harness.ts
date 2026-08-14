@@ -23,6 +23,19 @@ import type {
 } from "../session-attach-channel.ts";
 import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
 import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
+import { projectFilesErrorFrom } from "../project-files-gateway.ts";
+import type {
+  OpenProjectFilesFn,
+  ProjectFileTransfers,
+  ProjectFilesGateway,
+} from "../project-files-gateway.ts";
+import type {
+  CoreFileDownload,
+  CoreFileEntry,
+  CoreFileListOptions,
+  CoreFileProgress,
+  CoreFileSource,
+} from "@actana/sdk/core-files.ts";
 import type {
   CoreLinkDirListing,
   CoreLinkEvent,
@@ -68,6 +81,8 @@ export type RunOptions = {
   connect?: CoreConnectFn;
   /** What the `session` noun's verbs get back, or a throw. */
   sessions?: OpenSessionGateway;
+  /** What `project cp` and `project files` get back, or a throw. */
+  files?: OpenProjectFilesFn;
   /**
    * Called with each stdout line as it is written, rather than at the end.
    *
@@ -204,6 +219,11 @@ export function makeCliFixture(): CliFixture {
           opts.sessions ??
           (async () => {
             throw new Error("this test did not expect to open a session gateway");
+          }),
+        openFiles:
+          opts.files ??
+          (async () => {
+            throw new Error("this test did not expect to open a file gateway");
           }),
         now: () => opts.now ?? Date.UTC(2026, 7, 12),
         // Terminal bytes are swept for credentials alongside the line sinks, so
@@ -344,6 +364,183 @@ export function fakeCore(opts: FakeCoreOptions = {}): FakeCore {
   };
 
   return state;
+}
+
+/** What a {@link fakeProjectFiles} was asked to transfer, and what it answered. */
+export type FakeProjectFiles = {
+  /** What `deps.openFiles` hands the verb under test. */
+  open: OpenProjectFilesFn;
+  /** Every Project name or id a verb asked to resolve, in order. */
+  resolved: string[];
+  /** Every listing, with the options it carried. */
+  lists: CoreFileListOptions[];
+  /**
+   * Every upload, **with its body drained to a buffer**.
+   *
+   * Draining rather than counting is what makes the round-trip suites possible:
+   * a `cp ./dir project:path` produces a real tar here, and a test can unpack it
+   * with `local-tar.ts` and assert on the modes that came out. The Core is
+   * faked; the archive is not.
+   */
+  uploads: Array<{
+    path: string;
+    kind: "file" | "tar";
+    mode: number | null;
+    mtime: number | null;
+    contentLength: number | null;
+    body: Buffer;
+  }>;
+  /** Every download, by the path it asked for. */
+  downloads: string[];
+  /** True once the verb hung up. A gateway left open is a defect worth failing on. */
+  closed: boolean;
+};
+
+export type FakeProjectFilesOptions = {
+  /** The Project every resolution answers with. */
+  project?: { projectId: string; name: string; path: string };
+  /** What `list` streams. */
+  entries?: CoreFileEntry[];
+  /** Refuse to resolve the Project — a bad name, or a Core that has none. */
+  refuseProject?: Error;
+  /**
+   * What an upload reports back, given what it was handed.
+   *
+   * The default reports nothing, because the *Core* is what decides whether an
+   * entry was an overwrite and a fake that guessed would be asserting on its own
+   * opinion. A suite about F5 supplies the `overwritten` lines it means to test.
+   */
+  progressFor?: (upload: FakeProjectFiles["uploads"][number]) => CoreFileProgress[];
+  /** Throw instead of streaming progress — the F8 conflict, a refusal, a stream error. */
+  uploadFails?: Error;
+  /**
+   * Stream the progress `progressFor` supplies, **then** throw.
+   *
+   * The part-way failure the Core models with `CoreFileStreamError`: entries
+   * really landed, and then the transfer died. Distinct from `uploadFails`,
+   * which dies before anything crosses — the difference is the whole point of
+   * the test, because what is at stake is what the CLI does with the entries it
+   * already knows about.
+   */
+  uploadFailsAfterProgress?: Error;
+  /** What a download answers with, given the path. */
+  downloadWith?: (path: string) => CoreFileDownload;
+  /** Throw instead of answering a download. */
+  downloadFails?: Error;
+  /** Throw instead of streaming a listing. */
+  listFails?: Error;
+};
+
+/**
+ * A Project's file surface that never opens a socket.
+ *
+ * The counterpart to {@link fakeCore} for the two verbs that do not use the
+ * core link for their bytes. What the `cp` and `files` suites are about — the
+ * direction parse, the progress rule, the overwrite naming, the `--json` shapes,
+ * the exit codes — is none of it a fact about HTTPS, and
+ * `project-files-live.test.ts` is where a real Core answers instead.
+ */
+export function fakeProjectFiles(opts: FakeProjectFilesOptions = {}): FakeProjectFiles {
+  const project = opts.project ?? { projectId: "p-api", name: "api", path: "/srv/api" };
+  const state: FakeProjectFiles = {
+    open: async () => gateway,
+    resolved: [],
+    lists: [],
+    uploads: [],
+    downloads: [],
+    closed: false,
+  };
+
+  const transfers: ProjectFileTransfers = {
+    projectId: project.projectId,
+    name: project.name,
+    path: project.path,
+    list: (listOpts = {}) => {
+      state.lists.push(listOpts);
+      return {
+        async *[Symbol.asyncIterator]() {
+          if (opts.listFails) throw projectFilesErrorFrom(opts.listFails);
+          for (const entry of opts.entries ?? []) yield entry;
+        },
+      };
+    },
+    upload: (uploadOpts) => ({
+      async *[Symbol.asyncIterator]() {
+        // Drained first and always, exactly as a real transfer does: a body the
+        // caller never read is a file handle nobody closed, and a `cp` whose
+        // upload was abandoned half-way is a different test.
+        const upload = {
+          path: uploadOpts.path,
+          kind: uploadOpts.kind ?? ("file" as const),
+          mode: uploadOpts.mode ?? null,
+          mtime: uploadOpts.mtime ?? null,
+          contentLength: uploadOpts.contentLength ?? null,
+          body: await drain(uploadOpts.body),
+        };
+        state.uploads.push(upload);
+        if (opts.uploadFails) throw projectFilesErrorFrom(opts.uploadFails);
+        for (const line of opts.progressFor?.(upload) ?? []) yield line;
+        if (opts.uploadFailsAfterProgress) throw projectFilesErrorFrom(opts.uploadFailsAfterProgress);
+      },
+    }),
+    download: async (downloadOpts) => {
+      state.downloads.push(downloadOpts.path);
+      if (opts.downloadFails) throw projectFilesErrorFrom(opts.downloadFails);
+      if (!opts.downloadWith) throw new Error("this test did not say what a download answers with");
+      return opts.downloadWith(downloadOpts.path);
+    },
+  };
+
+  const gateway: ProjectFilesGateway = {
+    project: async (wanted) => {
+      state.resolved.push(wanted);
+      if (opts.refuseProject) throw projectFilesErrorFrom(opts.refuseProject);
+      return transfers;
+    },
+    close: () => {
+      state.closed = true;
+    },
+  };
+
+  return state;
+}
+
+/** A `CoreFileSource` as one buffer — both shapes the SDK accepts. */
+async function drain(body: CoreFileSource): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  if (typeof (body as ReadableStream<Uint8Array>).getReader === "function") {
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      if (next.value) chunks.push(Buffer.from(next.value));
+    }
+    return Buffer.concat(chunks);
+  }
+  for await (const chunk of body as AsyncIterable<Uint8Array | string>) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
+}
+
+/** Bytes as the `ReadableStream` a download hands back. */
+export function streamOf(bytes: Uint8Array | AsyncIterable<Uint8Array>): ReadableStream<Uint8Array> {
+  if (bytes instanceof Uint8Array) {
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    });
+  }
+  const iterator = bytes[Symbol.asyncIterator]();
+  return new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      const next = await iterator.next();
+      if (next.done) controller.close();
+      else controller.enqueue(next.value);
+    },
+  });
 }
 
 /** A project row with the columns a CLI renders and defaults for the rest. */

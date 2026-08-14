@@ -1,11 +1,17 @@
 import type { Plugin } from "vite";
-import type { IncomingMessage, ServerResponse } from "node:http";
+import { serveNodeRequest } from "./node-http-bridge";
 import { HTTP_INTERNAL_SERVER_ERROR } from "../shared/http-status";
 
-const LOOPBACK_HOST_FALLBACK = "127.0.0.1";
 const TOKEN_QUERY_REDACT_URL = /([?&])token=[^&#]+/gi;
 const TOKEN_QUERY_REDACT_MESSAGE = /([?&])token=[^&#\s"']+/gi;
 const TOKEN_REDACTED_REPLACEMENT = "$1token=<redacted>";
+
+// The Node ↔ Web translation both this middleware and `bin/panel.mjs` run lives
+// in `node-http-bridge.ts` (#225). It was written twice before and the two
+// copies disagreed twice: once about buffering the request body (#169) and once
+// about surviving a failing answer. Re-exported here so the suites that pin the
+// dev server's half keep naming it where they always did.
+export { nodeRequestToFetch } from "./node-http-bridge";
 
 /**
  * Vite plugin that mounts the MissionControl `/api/*` Web-fetch handler
@@ -22,10 +28,10 @@ export function missionControlApi(): Plugin {
           const { handleApiRequest } = await server.ssrLoadModule(
             "/src/server/api-router.ts"
           );
-          const request = await nodeRequestToFetch(req);
-          const response: Response | null = await (handleApiRequest as any)(request);
-          if (!response) return next();
-          await writeFetchResponse(response, res);
+          const served = await serveNodeRequest(req, res, (request) =>
+            (handleApiRequest as any)(request),
+          );
+          if (!served) return next();
         } catch (err: any) {
           // Never echo err.message — a throw that wrapped a URL can carry a
           // credential in its query. Generic body + redacted server log.
@@ -39,6 +45,11 @@ export function missionControlApi(): Plugin {
           );
           // eslint-disable-next-line no-console
           console.error(`[mc-api] ${req.method} ${safeUrl} failed: ${safeMessage}`);
+          // A streamed answer that died mid-flight has already sent its status
+          // line, and `writeResponseToNode` has already ended that socket the
+          // only honest way it could. Writing a second answer on top would
+          // throw ERR_HTTP_HEADERS_SENT out of the error handler itself.
+          if (res.headersSent || res.writableEnded || res.destroyed) return;
           res.statusCode = HTTP_INTERNAL_SERVER_ERROR;
           res.setHeader("content-type", "application/json");
           res.end(JSON.stringify({ error: "internal error" }));
@@ -54,11 +65,10 @@ export function missionControlApi(): Plugin {
           const { documentAuthRedirect } = await server.ssrLoadModule(
             "/src/server/panel-auth.ts",
           );
-          const redirect: Response | null = await (documentAuthRedirect as any)(
-            await nodeRequestToFetch(req),
+          const served = await serveNodeRequest(req, res, (request) =>
+            (documentAuthRedirect as any)(request),
           );
-          if (!redirect) return next();
-          await writeFetchResponse(redirect, res);
+          if (!served) return next();
         } catch {
           next();
         }
@@ -79,72 +89,4 @@ export function missionControlApi(): Plugin {
       }
     },
   };
-}
-
-async function nodeRequestToFetch(req: IncomingMessage): Promise<Request> {
-  const host = req.headers.host || LOOPBACK_HOST_FALLBACK;
-  const url = `http://${host}${req.url ?? "/"}`;
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (Array.isArray(v)) {
-      for (const vv of v) headers.append(k, vv);
-    } else if (typeof v === "string") {
-      headers.set(k, v);
-    }
-  }
-  const method = (req.method || "GET").toUpperCase();
-  const init: RequestInit = { method, headers };
-  if (method !== "GET" && method !== "HEAD") {
-    const buf = await readBody(req);
-    if (buf.byteLength > 0) {
-      init.body = buf as BodyInit;
-    }
-  }
-  return new Request(url, init);
-}
-
-async function readBody(req: IncomingMessage): Promise<Uint8Array> {
-  const chunks: Buffer[] = [];
-  for await (const chunk of req) chunks.push(chunk as Buffer);
-  return new Uint8Array(Buffer.concat(chunks));
-}
-
-async function writeFetchResponse(response: Response, res: ServerResponse) {
-  res.statusCode = response.status;
-  response.headers.forEach((value, key) => {
-    if (key.toLowerCase() !== "set-cookie") res.setHeader(key, value);
-  });
-  const setCookies = getSetCookieHeaders(response.headers);
-  if (setCookies.length) res.setHeader("set-cookie", setCookies);
-
-  if (!response.body) {
-    res.end();
-    return;
-  }
-
-  const reader = response.body.getReader();
-  const flush = (chunk: Uint8Array) =>
-    new Promise<void>((resolve) => {
-      const ok = res.write(chunk);
-      if (ok) resolve();
-      else res.once("drain", () => resolve());
-    });
-
-  res.on("close", () => reader.cancel().catch(() => undefined));
-
-  // eslint-disable-next-line no-constant-condition
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    if (value) await flush(value);
-  }
-  res.end();
-}
-
-function getSetCookieHeaders(headers: Headers): string[] {
-  const withGetSetCookie = headers as Headers & { getSetCookie?: () => string[] };
-  const values = withGetSetCookie.getSetCookie?.();
-  if (values?.length) return values;
-  const value = headers.get("set-cookie");
-  return value ? value.split(/,(?=\s*[^;,]+=)/) : [];
 }

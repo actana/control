@@ -28,5 +28,15 @@
     }
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  // The listing contract (#218) is registered in both packages' suites and its
+  // body lives in the SDK's test tree, which is written for the SDK's
+  // toolchain: ESM, `Bundler` resolution, and relative imports carrying their
+  // `.ts` extension so plain `node` can load them. Type-checking it from here
+  // would mean turning on `allowImportingTsExtensions` for the whole Core and
+  // pulling the SDK's client and test rig into this program to serve one
+  // import. It is checked where it is written — `@actana/sdk`'s own `tsc`
+  // covers `src/__tests__` — and it is *run* here, which is the point of it.
+  // vitest resolves it through the alias in `vitest.config.ts` and does not
+  // consult this file.
+  "exclude": ["node_modules", "dist", "src/__tests__/core-files-list-contract.test.ts"]
 }

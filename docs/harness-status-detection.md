@@ -147,9 +147,13 @@ which is a narrower question than whether they were installed:
 | `claude-code` | yes | yes | `UserPromptSubmit` fires |
 | `codex` | yes | no | won't run new hooks until `/hooks` review |
 | `cursor-cli` | yes | no | `beforeSubmitPrompt` doesn't fire in cursor-agent |
-| `opencode` | no | no | no writer in the registry |
+| `opencode` | yes | yes | plugin; `chat.message` and `session.status` fire |
 
 Only the third column exempts the terminal-input fallback below.
+
+Three of the four families take a table of shell commands. OpenCode takes a
+JavaScript plugin instead, and its writer is `harness-hooks-opencode.ts` — see
+[OpenCode](#opencode) below.
 
 Each managed entry runs:
 
@@ -245,12 +249,60 @@ prompt in the PTY's output.
 
 `shell` has no hook surface and relies on explicit status updates.
 
-OpenCode has no hook writer in the registry today, because its extension point
-is a plugin rather than a JSON hooks file. Its Sessions reach `running` through
-the terminal-input fallback (which stays armed for them, because the Core
-answers `hooksReportTurnStart: false`) and settle on PTY exit — but nothing
-reports the turn's *end*, so the card claims `running` through an idle CLI, and
-nothing feeds the title generator. Tracked as issue #101.
+### OpenCode
+
+OpenCode's extension point is a plugin, not a JSON hooks file, which is why it
+went without status reporting through issues 84 and 101 and into
+[#230](https://github.com/actana/control/issues/230): a Session showed `ready`
+from spawn through a whole turn, every `--wait` timed out "unreported", and the
+SDK's wait-for-idle did the same.
+
+`packages/core/src/harness-hooks-opencode.ts` writes that plugin at spawn time
+to `<workspace>/.opencode/plugins/actana-control.js`, where opencode
+auto-discovers it with no config entry needed. It is a plain ES module using
+only `process.env` and `fetch`, so it needs no dependency and no build step, and
+it follows the same three rules as the JSON writers: tagged
+`@actana-control-managed` so the next spawn replaces exactly what the last one
+wrote and never an operator's own plugin, carrying no secret (the URL, token and
+task id are read from the PTY's environment), and fail-soft in every direction —
+no environment means it does nothing, every POST swallows its own errors, and
+nothing it does is awaited by the harness.
+
+What it maps, and where each name came from — all of it read out of opencode
+1.18.18 itself, because the shipped binary and the published SDK types disagree:
+
+| OpenCode signal | Posted as | Effect |
+| --- | --- | --- |
+| `chat.message` hook | `UserPromptSubmit` (+ prompt text) | `running`; captures the session id; names an unnamed Session |
+| `session.created` (no `parentID`) | `SessionStart` | captures the session id, no status change |
+| `session.status` → `busy` | `UserPromptSubmit` | `running` |
+| `session.status` → `idle` | `Stop` | `finished` |
+| `session.idle` | `Stop` | `finished` |
+| `permission.asked` / `permission.updated` | `PermissionRequest` | `needs-input` |
+| `permission.replied` | `PermissionReplied` | back to `running` |
+
+Three details are load-bearing and none of them is guessable from the docs:
+
+- **`permission.asked` is the event the binary emits.** The `@opencode-ai/sdk`
+  type union calls it `permission.updated`, and that string does not appear in
+  the 1.18.18 binary at all. The plugin listens for both.
+- **Posts are queued, not fired in parallel.** A `Stop` that overtook the
+  `SessionStart` carrying the session id would be discarded by the Core as
+  belonging to a session it has never heard of — #230 again with a new cause.
+  Nothing awaits the queue, so a hook still never holds up a turn.
+- **A child session is a subagent.** `session.created` carries `parentID`, so
+  the plugin knows a child by name rather than guessing from ordering, and a
+  subagent's `idle` never settles the Session's card.
+
+`permission.replied` is also why opencode needs no unmatched `PostToolUse`
+subscription: Claude Code fires nothing when a permission is *granted* and has
+to be healed by "some tool ran", while opencode says so directly.
+
+One side effect to know about: the first time opencode sees a plugin in a
+workspace it installs `@opencode-ai/plugin` into `<workspace>/.opencode/
+node_modules` and writes a `package.json` beside it. That is opencode's
+behaviour, not the Core's, and it happens even though this plugin imports
+nothing.
 
 ## What about a custom MCP?
 

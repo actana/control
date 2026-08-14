@@ -6,6 +6,11 @@
 // writer per harness family, and every per-harness difference stays inside this
 // Core process — the Panel learns only whether hooks went in (issue 84).
 //
+// Three of the four families take a table of shell commands, and their writers
+// are a few lines each. OpenCode's takes a JavaScript plugin instead, so its
+// writer lives next door in `harness-hooks-opencode.ts` (issue 230); the row it
+// occupies in `HOOK_FAMILIES` is the same shape as the others'.
+//
 // Three rules the writers share:
 //
 //  - An operator's own hooks are preserved. Ours are tagged `_acManaged: true`
@@ -30,6 +35,12 @@ import {
 } from "@actana/shared/json-settings-file";
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 import { ASK_USER_QUESTION_TOOL } from "@actana/shared/harness-questions";
+import {
+  HOOK_TASK_ID_ENV,
+  HOOK_TOKEN_ENV,
+  HOOK_URL_ENV,
+} from "./harness-hook-env";
+import { installOpencodeHooks } from "./harness-hooks-opencode";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
 const MANAGED_FLAG = "_acManaged";
@@ -44,9 +55,7 @@ const MANAGED_FLAG = "_acManaged";
 const LEGACY_MANAGED_FLAG = "_mcManaged";
 
 /** Env var names the hook command reads. Set on the PTY by the spawn path. */
-export const HOOK_URL_ENV = "AC_HOOK_URL";
-export const HOOK_TOKEN_ENV = "AC_HOOK_TOKEN";
-export const HOOK_TASK_ID_ENV = "AC_HOOK_TASK_ID";
+export { HOOK_URL_ENV, HOOK_TOKEN_ENV, HOOK_TASK_ID_ENV } from "./harness-hook-env";
 
 /**
  * The shell command a managed hook entry runs: POST the payload the harness
@@ -211,11 +220,6 @@ type HookFamily = {
  * surface we install — it is not an error, it is a Session whose status comes
  * from the PTY-exit settle and the Panel's terminal-input fallback instead.
  * Keep this open: adding a family is adding a row.
- *
- * OpenCode is the one family still absent, and it is absent because its
- * extension point is a plugin rather than a JSON hooks file — a different
- * shape of work from these three. Tracked as #101; until then its Sessions
- * reach `running` through the Panel's fallback and settle on PTY exit.
  */
 const HOOK_FAMILIES: Record<string, HookFamily> = {
   "claude-code": { install: installClaudeHooks, reportsTurnStart: true },
@@ -227,6 +231,13 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
   // `beforeSubmitPrompt` still does not fire in cursor-agent. The turn's end is
   // reported; its start is not.
   "cursor-cli": { install: installCursorHooks, reportsTurnStart: false },
+  // OpenCode's extension point is a plugin rather than a JSON hooks file,
+  // which is why it went without status reporting through #84 and #101 and
+  // into #230. `harness-hooks-opencode.ts` writes that plugin. It reports a
+  // turn's start honestly — `chat.message` fires on the user's message and
+  // `session.status` goes `busy` — which is the one thing that earns a family
+  // the right to stand the Panel's fallback down.
+  opencode: { install: installOpencodeHooks, reportsTurnStart: true },
 };
 
 /** Does this Core know how to install hooks for `harness`? */

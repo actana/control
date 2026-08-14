@@ -351,11 +351,17 @@ export async function startPanelService({
   dataDir,
   port,
   secretsKey,
+  /**
+   * Extra environment for this Panel — `NODE_OPTIONS` in particular, which is
+   * how the file-drop leg gives the service a memory limit small enough that
+   * pushing a gigabyte through it means something (#169).
+   */
+  extra = {},
   timeoutMs = 60_000,
   log,
 }) {
   const child = spawn(process.execPath, [bin], {
-    env: panelServiceEnv({ dataDir, port, serverEntry, secretsKey }),
+    env: panelServiceEnv({ dataDir, port, serverEntry, secretsKey, extra }),
     stdio: ["ignore", "pipe", "pipe"],
   });
   const observer = { logLines: [] };
@@ -395,6 +401,10 @@ export async function startPanelService({
     origin,
     port,
     dataDir,
+    // The OS process, so a leg can watch what this service actually costs.
+    // Measuring the Panel's memory from inside the Panel would need the Panel's
+    // cooperation; measuring it from here needs nothing at all (#169).
+    pid: child.pid,
     client: new PanelHttpClient(origin),
     logLines: () => [...observer.logLines],
     stop,

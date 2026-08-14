@@ -6,11 +6,15 @@
 // and the fact that they are three rather than two. The distinction is the
 // whole of `exit-codes.ts`'s argument, and until now nothing asserted it at the
 // root — the reserved nouns exited `2` and `core shell` exited `3` for the same
-// underlying fact, which the review of #201 caught. #162 built `core shell` and
-// #160/#161 built the nouns, so what is reserved here is verbs inside a built
-// noun: `project cp` and `project files`. `session attach` was the third until
-// #163 built it, and it is the counter-example below — the thing a reservation
-// is supposed to stop being.
+// underlying fact, which the review of #201 caught.
+//
+// **Nothing in this build is reserved any more.** #160/#161 built the nouns,
+// #162 built `core shell`, #163 built `session attach`, and #168 built the last
+// two — `project cp` and `project files`. So what this suite asserts has turned
+// over: not "a reservation answers 3", but "every name in the tree either works
+// or is a typo, and the two are still told apart". The mechanism stays, because
+// #210 and #211 are the next things that will want it, and because a script
+// that already branches on 3 must keep meaning the same thing by it.
 
 import { describe, it, expect, afterEach } from "vitest";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
@@ -28,72 +32,52 @@ afterEach(() => {
 });
 
 /**
- * The reservations this build carries, and the ticket each names.
+ * Every name in the tree, noun and verb, run with no arguments.
  *
- * No *noun* is reserved any more: `session` left the list when #160 built it
- * and `project`, `harness` and `events` left when #161 did, which is the shape
- * a reservation is supposed to end in. `session attach` left it the same way
- * when #163 built it. What is still reserved is a verb waiting on phase 3 — and
- * the distinction the exit code draws is the same one either way, so these are
- * what assert it.
+ * The sweep that replaced the reservation table. A verb here may well answer
+ * `EXIT_USAGE` — most of them need arguments — and that is fine: what none of
+ * them may do is answer `EXIT_UNIMPLEMENTED`, because that is the code for "not
+ * on this train" and there is nothing left on the list.
  */
-const RESERVED = [
-  [["project", "cp"], "#168"],
-  [["project", "files"], "#168"],
+const EVERY_NAME = [
+  ["core", "ls"],
+  ["core", "status"],
+  ["core", "shell"],
+  ["project", "ls"],
+  ["project", "add"],
+  ["project", "browse"],
+  ["project", "cp"],
+  ["project", "files"],
+  ["harness", "ls"],
+  ["events", "tail"],
+  ["session", "ls"],
+  ["session", "attach"],
 ] as const;
 
 /** The nouns that are built, so the help below cannot go quiet about them. */
 const BUILT = ["core", "project", "harness", "events", "session"] as const;
 
-describe("a reservation is `not built yet`, not `you typed it wrong`", () => {
-  it.each(RESERVED)("exits EXIT_UNIMPLEMENTED for `actana %s`, naming its ticket", async (argv, ticket) => {
-    const run = await cli().run([...argv]);
-    // 3, not 2. A script written against a later train hits one of these long
-    // before it hits anything else, so this is the case the distinction was
-    // really written for — and it is the one that had it backwards.
-    expect(run.code).toBe(EXIT_UNIMPLEMENTED);
-    expect(run.err.join("\n")).toContain("not built yet");
-    expect(run.err.join("\n")).toContain(ticket);
-  });
-
-  it("is the answer for a name that is reserved, and not for one that is built", async () => {
-    // `core shell` was the reserved *verb* and shared this code until #162
-    // built it; `session attach` was the last one and #163 built it. Now they
-    // are commands like any other, and a build that answered `3` for either
-    // would be telling a script to come back on a later train for something
-    // already shipped.
-    const reserved = await cli().run(["project", "cp"]);
-    expect(reserved.code).toBe(EXIT_UNIMPLEMENTED);
-    for (const built of [["core", "shell"], ["session", "attach"]]) {
-      const run = await cli().run(built);
-      expect(run.code, built.join(" ")).not.toBe(EXIT_UNIMPLEMENTED);
-    }
-  });
-
-  it("answers the same for every reserved verb, and not for a built one beside it", async () => {
-    // One fact about this build, one exit code — and it has to stay a *fact
-    // about the build* rather than about a file. `project cp` and `project ls`
-    // sit in the same module and differ only in whether they are built, which
-    // is the difference the code is supposed to carry.
-    const cp = await cli().run(["project", "cp"]);
-    const files = await cli().run(["project", "files"]);
-    expect(cp.code).toBe(files.code);
-    const built = await cli().run(["project", "ls"]);
-    expect(built.code).not.toBe(cp.code);
-  });
-
-  it("dials nothing to say it — a reservation is answered before a Core is", async () => {
-    // The fixture throws on `connect`, so a reserved verb that reached the wire
-    // would fail here rather than pass. "Not built yet" is a fact about this
-    // build and needs no Core's opinion, which is also why it is the one answer
-    // that works with no Core registered at all.
-    for (const [argv] of RESERVED) {
+describe("nothing is reserved any more, and a typo is still a typo", () => {
+  it("answers `not built yet` for no name in the tree", async () => {
+    // The list emptied one ticket at a time and #168 took the last two off it.
+    // A name here that still answered 3 would be a build advertising a train
+    // that has already arrived.
+    for (const argv of EVERY_NAME) {
       const run = await cli().run([...argv]);
-      expect(run.code, argv.join(" ")).toBe(EXIT_UNIMPLEMENTED);
+      expect(run.code, argv.join(" ")).not.toBe(EXIT_UNIMPLEMENTED);
+      expect(run.err.join("\n"), argv.join(" ")).not.toContain("not built yet");
     }
   });
 
-  it("still separates a reservation from a typo", async () => {
+  it("keeps the three codes three, so a script that branches on them still can", () => {
+    // The mechanism outlives the last reservation on purpose: `project rm`
+    // (#210) and `--model` (#211) are the next names that will need it, and a
+    // code re-used in the meantime would silently change what a script reading
+    // `3` is being told.
+    expect(new Set([EXIT_OK, EXIT_USAGE, EXIT_UNIMPLEMENTED]).size).toBe(3);
+  });
+
+  it("still separates a name that does not exist from one that does", async () => {
     // The distinction this must not collapse: `sessoin` has no ticket number
     // and no later train that fixes it, and a script that retries on 3 must not
     // retry on it.
@@ -101,6 +85,15 @@ describe("a reservation is `not built yet`, not `you typed it wrong`", () => {
     expect(typo.code).toBe(EXIT_USAGE);
     expect(typo.err.join("\n")).toContain('unknown noun "sessoin"');
     expect(typo.err.join("\n")).not.toContain("not built yet");
+  });
+
+  it("keeps `cp` a typo at the root: the noun grammar holds (D8, F12)", async () => {
+    // #168 built `project cp` and deliberately did not build `actana cp`. The
+    // shorter name has to stay an unknown noun, or the grammar has a hole in it
+    // that nobody documented.
+    const run = await cli().run(["cp", "./a", "api:b"]);
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain('unknown noun "cp"');
   });
 
   it("keeps `daemon` a usage error — it is the wrong package, not a later train", async () => {
@@ -130,14 +123,13 @@ describe("the root itself", () => {
     expect(run.out.join("\n")).not.toContain("Reserved, landing later");
   });
 
-  it("keeps each reserved verb's ticket in the help of the noun that owns it", async () => {
-    // The reservations that are left are verbs, and a reserved verb nobody can
-    // find in `--help` is a reservation only the source knows about.
-    for (const [argv, ticket] of RESERVED) {
-      const run = await cli().run([argv[0], "--help"]);
-      const help = run.out.join("\n");
-      expect(help, `${argv.join(" ")} is not in \`actana ${argv[0]} --help\``).toContain(argv[1]);
-      expect(help, `${argv.join(" ")} does not name ${ticket}`).toContain(ticket);
+  it("advertises no reserved verb either, now that there is none", async () => {
+    // The counterpart to the noun assertion above: a "Reserved, landing in
+    // phase 3" heading over verbs this build ships is the same lie one line
+    // further down the tree.
+    for (const noun of BUILT) {
+      const run = await cli().run([noun, "--help"]);
+      expect(run.out.join("\n"), `${noun} --help`).not.toContain("Reserved, landing");
     }
   });
 

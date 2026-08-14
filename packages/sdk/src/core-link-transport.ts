@@ -347,6 +347,12 @@ export class CoreLinkTransport {
           ...(msg.multiConnection !== undefined
             ? { multiConnection: msg.multiConnection as CoreLinkReadyFrame["multiConnection"] }
             : {}),
+          // Carried, not interpreted — `readFilesCapability` upstairs decides
+          // what an unrecognised shape means (#165 F9). The `!== undefined`
+          // test rather than a truthiness one is what keeps "absent" and
+          // "present but junk" distinguishable at the layer that can tell the
+          // difference.
+          ...(msg.files !== undefined ? { files: msg.files as CoreLinkReadyFrame["files"] } : {}),
         };
         this.guard(() => this.handlers.onReady?.(this.ready!));
         return;

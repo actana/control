@@ -13,6 +13,12 @@ export const HTTP_FORBIDDEN = 403;
 export const HTTP_NOT_FOUND = 404;
 export const HTTP_CONFLICT = 409;
 export const HTTP_TOO_MANY_REQUESTS = 429;
+/**
+ * The caller hung up before we answered — nginx's convention, and never
+ * delivered to anyone. It exists so a deliberate cancellation is not logged as
+ * an internal error by a router that cannot tell the two apart (#225).
+ */
+export const HTTP_CLIENT_CLOSED_REQUEST = 499;
 
 export const HTTP_INTERNAL_SERVER_ERROR = 500;
 export const HTTP_BAD_GATEWAY = 502;

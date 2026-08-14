@@ -12,6 +12,11 @@ export const HARNESS_HOOK_EVENTS = {
   // SessionEnd hook, which also fires on /clear while the process lives on.
   sessionProcessExited: "MissionControlSessionEnded",
   permissionRequest: "PermissionRequest",
+  // The operator answered a permission prompt and the turn carries on. Only
+  // OpenCode reports this today: its plugin sees `permission.replied`, where
+  // Claude Code fires nothing at all when a permission is GRANTED and has to
+  // be healed by the next `PostToolUse` instead.
+  permissionReplied: "PermissionReplied",
   questionRequest: "QuestionRequest",
   notification: "Notification",
   preToolUse: "PreToolUse",
@@ -34,8 +39,13 @@ export type HarnessHookPayload = {
 
 export function mapHookEventToStatus(payload: HarnessHookPayload): TaskStatus | null {
   switch (payload.hook_event_name || "") {
+    // `permissionReplied` is here because an answered permission is the turn
+    // resuming. If the answer was a denial the harness ends the turn instead,
+    // and the settle that follows is what moves the card — this event never
+    // has the last word.
     case HARNESS_HOOK_EVENTS.userPromptSubmit:
     case HARNESS_HOOK_EVENTS.cursorBeforeSubmitPrompt:
+    case HARNESS_HOOK_EVENTS.permissionReplied:
       return "running";
     case HARNESS_HOOK_EVENTS.stop:
     case HARNESS_HOOK_EVENTS.cursorStop:

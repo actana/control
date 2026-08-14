@@ -24,7 +24,6 @@
 import http from "node:http";
 import fs from "node:fs";
 import path from "node:path";
-import { Readable } from "node:stream";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_PORT = 7420;
@@ -54,6 +53,18 @@ if (!handler || typeof handler.fetch !== "function") {
   console.error(`[panel] server entry exports no fetch handler: ${entry}`);
   process.exit(1);
 }
+// The Node ↔ Web bridge comes off the bundle rather than being written again
+// here (#225). This file and the Vite dev middleware used to translate a
+// request and its answer independently, and the two copies disagreed twice:
+// about buffering an upload (#169), and about what to do when the answer's
+// body fails half-written — where this one piped with no `error` listener on
+// the source, so a Core that destroyed an interrupted stream took the whole
+// Panel process down with an unhandled `'error'` event.
+const serveNodeRequest = mod.serveNodeRequest;
+if (typeof serveNodeRequest !== "function") {
+  console.error(`[panel] server entry exports no serveNodeRequest bridge: ${entry}`);
+  process.exit(1);
+}
 
 const staticRoot = path.resolve(path.dirname(entry), "..", "client");
 const mimeTypes = new Map([
@@ -71,23 +82,6 @@ const mimeTypes = new Map([
   [".woff", "font/woff"],
   [".woff2", "font/woff2"],
 ]);
-
-function toWebRequest(req) {
-  const url = `http://${req.headers.host ?? `${host}:${port}`}${req.url}`;
-  const headers = new Headers();
-  for (const [k, v] of Object.entries(req.headers)) {
-    if (Array.isArray(v)) for (const x of v) headers.append(k, x);
-    else if (v != null) headers.set(k, String(v));
-  }
-  const method = req.method || "GET";
-  const hasBody = method !== "GET" && method !== "HEAD";
-  return new Request(url, {
-    method,
-    headers,
-    body: hasBody ? Readable.toWeb(req) : undefined,
-    duplex: "half",
-  });
-}
 
 /**
  * Static assets are public by design: they are the same bundle for every
@@ -134,27 +128,17 @@ const server = http.createServer(async (req, res) => {
   try {
     if (sendStaticFile(req, res)) return;
 
-    const webRes = await handler.fetch(toWebRequest(req));
-    res.statusCode = webRes.status;
-    // Node lowercases nothing for us: append set-cookie separately so multiple
-    // cookies survive (Headers.forEach folds them into one comma-joined value).
-    for (const cookie of webRes.headers.getSetCookie?.() ?? []) {
-      res.appendHeader("set-cookie", cookie);
-    }
-    webRes.headers.forEach((value, key) => {
-      const name = key.toLowerCase();
-      if (name === "content-encoding" || name === "set-cookie") return;
-      res.setHeader(key, value);
+    await serveNodeRequest(req, res, (request) => handler.fetch(request), {
+      hostFallback: `${host}:${port}`,
     });
-    if (webRes.body) {
-      Readable.fromWeb(webRes.body).pipe(res);
-    } else {
-      res.end();
-    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[panel] request error url=${req.url ?? ""}: ${message}`);
-    if (!res.headersSent) res.statusCode = 500;
+    // A streamed answer that failed half-written has already spent its status
+    // line, and the bridge has already ended that socket the only honest way
+    // left. A second answer written on top would throw out of this handler.
+    if (res.headersSent || res.writableEnded || res.destroyed) return;
+    res.statusCode = 500;
     res.end("Internal Server Error");
   }
 });
