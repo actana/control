@@ -4,13 +4,17 @@ import { describe, expect, it } from "vitest";
 import {
   BLOCKING_DIALOGS,
   DEFAULT_PROMPT_DELIVERY_PROFILE,
+  HARNESS_READINESS,
   HarnessPromptDelivery,
   chooseDialogOption,
+  composerOnScreen,
   dialogsForHarness,
   highlightIsOn,
   lastScreenClearIndex,
   matchBlockingDialog,
+  promptEchoed,
   readDialogOptions,
+  readinessFor,
   redrawSignature,
   stripAnsi,
   submitPauseMs,
@@ -185,6 +189,35 @@ const REAL_TRUST_DIALOG = readFileSync(
  */
 const REAL_COMPOSER = readFileSync(
   path.resolve(__dirname, "fixtures/claude-code-2.1.228-composer.txt"),
+  "utf8",
+);
+
+/**
+ * OpenCode 1.18.18's boot, up to the point where issue 229's prompt was lost —
+ * captured byte-for-byte from a live PTY (only the project path substituted).
+ *
+ * Every chunk in it arrives inside the first 1.5 s, and the thing that makes it
+ * worth keeping is what is *not* in it: after the capability probes and two
+ * four-kilobyte frames, everything painted is whitespace. There is no composer,
+ * no wordmark, no text of any kind — and then the harness says nothing at all
+ * for the next four and a half seconds while the opencode server behind the
+ * TUI starts. The quiet gap elapses in the middle of that hole.
+ */
+const OPENCODE_BOOT = readFileSync(
+  path.resolve(__dirname, "fixtures/opencode-1.18.18-boot.txt"),
+  "utf8",
+);
+
+/**
+ * What that same session paints when it finally has a composer, ~4.4 s later:
+ * the wordmark, the model footer, and `Ask anything... "<suggestion>"`.
+ *
+ * Typing before this frame is what issue 229 is: replayed live, text written at
+ * 1.85 s never appeared, and the same text written after this frame echoed into
+ * the composer and ran a turn.
+ */
+const OPENCODE_COMPOSER = readFileSync(
+  path.resolve(__dirname, "fixtures/opencode-1.18.18-composer.txt"),
   "utf8",
 );
 
@@ -751,5 +784,170 @@ describe("HarnessPromptDelivery", () => {
     h.clock.advance(PROFILE.quietGapMs + 1);
     h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["ship it", "\r"]);
+  });
+});
+
+// ─── readiness (issue 229) ───────────────────────────────────────────
+
+describe("HARNESS_READINESS", () => {
+  it("asks nothing extra of the harnesses that were never affected", () => {
+    // Issue 229 was opencode's alone — a cursor-cli start prompt was verified
+    // working on the same build the bug was filed against. A readiness rule
+    // that reached those three would be a fix trading one lost prompt for
+    // three, so the table is the ONLY thing that turns any of this on.
+    for (const harness of ["claude-code", "codex", "cursor-cli", "invented-tomorrow"]) {
+      expect(readinessFor(harness)).toEqual({
+        composer: [],
+        confirmEcho: false,
+        maxPromptWrites: 1,
+      });
+      // No markers means no gate: any screen at all counts as ready.
+      expect(composerOnScreen("", readinessFor(harness))).toBe(true);
+    }
+    expect(Object.keys(HARNESS_READINESS)).toEqual(["opencode"]);
+  });
+
+  it("recognises opencode's composer, and only once it is really there", () => {
+    const readiness = readinessFor("opencode");
+    // The frames the prompt was lost into carry no composer — they are
+    // whitespace and escape sequences, four seconds before the real screen.
+    expect(composerOnScreen(OPENCODE_BOOT, readiness)).toBe(false);
+    expect(composerOnScreen(OPENCODE_COMPOSER, readiness)).toBe(true);
+  });
+});
+
+describe("promptEchoed", () => {
+  it("finds the prompt however the composer wrapped and decorated it", () => {
+    // OpenCode draws the composer inside a box, so the echo comes back with
+    // borders and line breaks through it. Comparing the raw strings would
+    // report a swallowed prompt on a prompt that landed perfectly.
+    const wrapped = `${ESC}[2J${ESC}[H┃ refactor the auth ┃\n┃ module today      ┃\n`;
+    expect(promptEchoed(wrapped, "refactor the auth module today")).toBe(true);
+  });
+
+  it("says nothing landed when the composer is still empty", () => {
+    expect(promptEchoed(OPENCODE_COMPOSER, "say hello")).toBe(false);
+  });
+
+  it("counts a paste placeholder as the prompt having landed", () => {
+    // A harness that renders `[Pasted text #1 +40 lines]` took the write and
+    // deliberately does not echo it. Re-typing into that doubles the prompt.
+    const pasted = "┃ [Pasted text #1 +40 lines] ┃\n";
+    expect(promptEchoed(pasted, "Refactor the authentication module. ".repeat(40))).toBe(true);
+  });
+
+  it("does not re-type forever on a prompt with nothing to look for", () => {
+    expect(promptEchoed("", "   ")).toBe(true);
+  });
+});
+
+describe("delivering to opencode (issue 229)", () => {
+  /**
+   * The live boot, replayed at its captured timings:
+   *
+   *   1426 ms  capability probes — the first chunk with any content in it
+   *   1493 ms  two four-kilobyte frames of pure whitespace
+   *   1843 ms  the quiet gap elapses. THIS is where the prompt was typed.
+   *   5915 ms  the composer, after 4.4 s of complete silence
+   *
+   * Verified against the real harness, not reasoned about: text written at
+   * 1.85 s never reached the composer and no turn started, while the same text
+   * written after the 5.9 s frame echoed and ran.
+   */
+  function bootOpencode(prompt: string): Fixture {
+    const h = startDelivery(prompt, { harness: "opencode" });
+    h.clock.advance(1_426);
+    h.delivery.onOutput(OPENCODE_BOOT);
+    return h;
+  }
+
+  it("does not type into the hole where the prompt used to be lost", () => {
+    const h = bootOpencode("say hello");
+    // Four and a half seconds of the harness saying nothing — thirteen times
+    // the quiet gap, and far past the 1–1.4 s the Core used to report
+    // `delivered` at.
+    h.clock.advance(4_422);
+    expect(h.writes).toEqual([]);
+    expect(h.events).toContainEqual({ phase: "waiting-for-composer", waitedMs: 1_776 });
+    // It says so once, not once per idle tick.
+    expect(h.events.filter((e) => e.phase === "waiting-for-composer")).toHaveLength(1);
+  });
+
+  it("types as soon as the composer is really on screen", () => {
+    const h = bootOpencode("say hello");
+    h.clock.advance(4_422);
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.events).toContainEqual({ phase: "settled", waitedMs: 6_198 });
+  });
+
+  it("holds the carriage return until the composer shows the prompt back", () => {
+    const h = bootOpencode("say hello");
+    h.clock.advance(4_422);
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+
+    // The composer echoes it, exactly as the live session did.
+    h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("re-types rather than submitting into a composer the text never reached", () => {
+    const h = bootOpencode("say hello");
+    h.clock.advance(4_422);
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+
+    // The write was swallowed: the harness re-paints its idle composer with
+    // nothing in it. Submitting here is what made a Session look stillborn —
+    // a `\r` into an empty composer, and a `delivered` line in the log.
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+
+    // Going back to `settling` re-imposes the whole gate, so the second write
+    // waits for a fresh paint rather than firing straight back at a TUI that
+    // is demonstrably not listening.
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello", "say hello"]);
+
+    h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual(["say hello", "say hello", "\r"]);
+  });
+
+  it("delivers at the backstop when the composer never appears", () => {
+    // The marker is a transcription of one version's screen. If opencode
+    // rewords it — or an operator runs it in another language — delivery must
+    // degrade to late, never to lost.
+    const h = bootOpencode("say hello");
+    // Up to the backstop and one millisecond past it — the boot replay has
+    // already spent 1 426 ms of the ceiling.
+    h.clock.advance(PROFILE.maxWaitMs - 1_426 + 1);
+    expect(h.writes).toEqual(["say hello"]);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + 1);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("stops re-typing rather than filling the composer with copies", () => {
+    const h = bootOpencode("say hello");
+    h.clock.advance(4_422);
+    // A composer that takes the text and never shows it would otherwise be a
+    // loop. Three writes is the budget, and the backstop closes it out.
+    for (let i = 0; i < 12; i += 1) {
+      h.delivery.onOutput(OPENCODE_COMPOSER);
+      h.clock.advance(PROFILE.quietGapMs + submitPauseMs("say hello", PROFILE) + 1);
+    }
+    h.clock.advance(PROFILE.maxWaitMs);
+    expect(h.writes.filter((w) => w === "say hello")).toHaveLength(3);
+    expect(h.writes.at(-1)).toBe("\r");
   });
 });
