@@ -268,7 +268,9 @@ export function useSessionFinishNotifications() {
 
       const goToProject = () => {
         requestSessionNotificationOpen(notification);
-        const search = isRemote ? { coreId: finish.coreId } : undefined;
+        // Narrows on `finish.coreId` rather than the equivalent `isRemote`, so
+        // the `string | null` loses its `null` for the search param's `string`.
+        const search = finish.coreId ? { coreId: finish.coreId } : undefined;
         void router.navigate({
           to: "/projects/$id",
           params: { id: finish.projectId },

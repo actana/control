@@ -2534,7 +2534,7 @@ function ProjectPage() {
         groups={groups}
         // Editing browses the folders of the Core that owns this project —
         // the dialog has no other way to know whose disk to walk.
-        initialCoreId={coreId}
+        initialCoreId={coreId ?? undefined}
         projectCoreId={coreId}
         onCreateGroup={createGroupForSelection}
         onClose={() => setShowEdit(false)}
