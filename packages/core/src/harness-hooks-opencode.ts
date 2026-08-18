@@ -37,7 +37,12 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { HOOK_TASK_ID_ENV, HOOK_TOKEN_ENV, HOOK_URL_ENV } from "./harness-hook-env";
+import {
+  HOOK_MISS_LOG_ENV,
+  HOOK_TASK_ID_ENV,
+  HOOK_TOKEN_ENV,
+  HOOK_URL_ENV,
+} from "./harness-hook-env";
 
 /** The comment that marks the file as this Core's to replace. */
 export const OPENCODE_PLUGIN_MARKER = "@actana-control-managed";
@@ -62,8 +67,10 @@ export function opencodePluginSource(slug: string): string {
 const HOOK_URL = process.env.${HOOK_URL_ENV};
 const HOOK_TOKEN = process.env.${HOOK_TOKEN_ENV};
 const HOOK_TASK_ID = process.env.${HOOK_TASK_ID_ENV};
+const MISS_LOG = process.env.${HOOK_MISS_LOG_ENV};
 const ENDPOINT = ${JSON.stringify(`/api/hooks/${slug}`)};
 const TIMEOUT_MS = 3000;
+const ATTEMPTS = 2;
 
 export const ActanaControl = async () => {
   // No environment means no Core listening for this session — a plugin file
@@ -82,6 +89,20 @@ export const ActanaControl = async () => {
   // Nothing awaits the chain — a hook must never hold up a turn.
   let queue = Promise.resolve();
 
+  // A hook nobody acked is a Session that may wedge on "running", so record
+  // it where the Core drains it into its log — the same tab-separated line the
+  // shell families' hook command writes. Best-effort in every direction: no
+  // path, no filesystem, or a failed write all mean the plugin simply does
+  // nothing, exactly as before.
+  const recordMiss = async (event, reason) => {
+    if (!MISS_LOG) return;
+    try {
+      const fs = await import("node:fs");
+      const at = new Date().toISOString().replace(/\\.\\d+Z$/, "Z");
+      fs.appendFileSync(MISS_LOG, at + "\\t" + HOOK_TASK_ID + "\\t" + event + "\\t" + reason + "\\n");
+    } catch {}
+  };
+
   const send = async (event, body) => {
     const url =
       HOOK_URL +
@@ -90,7 +111,7 @@ export const ActanaControl = async () => {
       encodeURIComponent(HOOK_TASK_ID) +
       "&hookEvent=" +
       encodeURIComponent(event);
-    await fetch(url, {
+    const res = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -99,12 +120,32 @@ export const ActanaControl = async () => {
       body: JSON.stringify({ hook_event_name: event, ...body }),
       signal: AbortSignal.timeout(TIMEOUT_MS),
     });
+    // The ack, checked. An unread 401 or 500 is a dropped hook wearing a 200's
+    // clothes, and it is what left a lost status invisible by construction.
+    if (!res.ok) throw new Error("http-" + res.status);
+    return res;
+  };
+
+  const deliver = async (event, body) => {
+    let lastReason = "unknown";
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt += 1) {
+      try {
+        await send(event, body);
+        return;
+      } catch (err) {
+        // A refused task (404) is settled, not transient — retrying it just
+        // spends another round trip to be told the same thing.
+        lastReason = String((err && err.message) || err).replace(/\\s+/g, " ");
+        if (lastReason === "http-404" || lastReason === "http-401") break;
+      }
+    }
+    await recordMiss(event, lastReason);
   };
 
   const post = (event, sessionID, extra) => {
     if (!sessionID || children.has(sessionID)) return;
     queue = queue.then(
-      () => send(event, { session_id: sessionID, ...extra }).catch(() => {}),
+      () => deliver(event, { session_id: sessionID, ...extra }).catch(() => {}),
       () => {},
     );
   };

@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";
 import {
   countArchivedTasks,
+  queryActiveTasks,
   queryArchivedTasks,
   queryProjects,
   queryTask,
@@ -149,6 +150,30 @@ export const coreQueryStore: CoreQueryPort = {
     }
   },
 };
+
+/**
+ * Every task this Core's database still claims is working — `running` or
+ * `needs-input` (issue 243).
+ *
+ * Deliberately NOT a method on {@link CoreQueryPort}: that port is the surface
+ * the core-link server answers Panel frames from, and no frame asks this. The
+ * one caller is the Core's own boot sweep, in this process, so the read is a
+ * plain exported function against the same connection rather than a widening
+ * of a wire contract.
+ *
+ * Degrades to `[]` on an unavailable DB, like every read here — a Core that
+ * cannot read its rows sweeps nothing rather than crashing its own boot.
+ */
+export function listActiveTasks(): CoreLinkTaskSnapshot[] {
+  const conn = ensureConnection();
+  if (!conn) return [];
+  try {
+    return queryActiveTasks(conn as unknown as CoreQuerySqlite);
+  } catch (err) {
+    log.warn("core-query.list-active-tasks-failed", { error: String(err) });
+    return [];
+  }
+}
 
 /** Close the connection. Called on Core shutdown. */
 export function disposeCoreQueryStore(): void {

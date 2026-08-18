@@ -26,6 +26,7 @@ import {
 } from "@actana/shared/pty-spawn-policy";
 import { type PtyHookEnv } from "./pty-hook-env";
 import {
+  HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
@@ -159,6 +160,13 @@ const ptys = new Map<string, Pty>();
 const RING_LIMIT_BYTES = 1_000_000;
 
 /**
+ * How often a talking PTY reports that it is talking. The consumer only asks
+ * "was there anything in the last quarter of an hour", so a five-second floor
+ * loses nothing and keeps a chatty harness from calling out per chunk.
+ */
+const OUTPUT_ACTIVITY_THROTTLE_MS = 5_000;
+
+/**
  * Dependencies the PTY core needs from its host process.
  */
 export type PtyCoreDeps = {
@@ -188,6 +196,14 @@ export type PtyCoreDeps = {
     taskId: string;
     signal: "interrupted" | "hooks-need-review";
   }) => void;
+  /**
+   * This Session's harness is still talking (issue 243). Not a status and not
+   * a signal — just the fact that bytes arrived, which is what tells a turn
+   * that is genuinely running from one that ended without saying so. Throttled
+   * to at most one call per {@link OUTPUT_ACTIVITY_THROTTLE_MS} per PTY, so a
+   * harness redrawing its spinner does not cost a callback per chunk.
+   */
+  onSessionOutputActivity?: (info: { taskId: string }) => void;
 };
 
 /** Event emitted by the Core for a PTY — `data` (output) or `exit`. */
@@ -560,6 +576,10 @@ export class PtyCore {
           env[HOOK_URL_ENV] = hookEnv.apiUrl;
           env[HOOK_TOKEN_ENV] = hookEnv.token;
           env[HOOK_TASK_ID_ENV] = opts.taskId;
+          // Where this Session's hooks record a POST the Core never acked
+          // (issue 243). Absent, the command writes to /dev/null and the hook
+          // is as fail-soft as it always was — just as invisible when it drops.
+          if (hookEnv.missLogPath) env[HOOK_MISS_LOG_ENV] = hookEnv.missLogPath;
         }
       }
     }
@@ -659,10 +679,20 @@ export class PtyCore {
     // reports once. Re-armed as soon as it is no longer being shown.
     let interruptReported = false;
     let hookReviewReported = false;
+    // Last time this PTY's output was reported as activity (issue 243).
+    let activityReportedAt = 0;
     const watchOutput = plan.mode === "agent" && !opts.shell && !opts.shellSession;
     proc.onData((data: string) => {
       releaseSpawnHold();
       if (watchOutput) {
+        if (p.taskId && Date.now() - activityReportedAt > OUTPUT_ACTIVITY_THROTTLE_MS) {
+          activityReportedAt = Date.now();
+          try {
+            this.deps.onSessionOutputActivity?.({ taskId: p.taskId });
+          } catch (err) {
+            log.warn("pty.output-activity.failed", { error: String(err) });
+          }
+        }
         const interrupted = hasClaudeInterruptPrompt(data);
         if (interrupted && !interruptReported) {
           interruptReported = true;
