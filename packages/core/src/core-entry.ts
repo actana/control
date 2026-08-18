@@ -87,6 +87,7 @@ import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
+import { CoreSessionBackstop } from "./core-session-backstop";
 import { generateCertMaterial } from "./core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
@@ -202,11 +203,19 @@ async function startCore(): Promise<void> {
   // recorded at the top of harness-hook-receiver.ts. A receiver that cannot
   // start is not fatal: hooks go uninstalled, the Panel is told so, and its
   // terminal-input fallback carries the `running` signal instead.
+  // Assigned once the PTY core exists (it probes live PTYs); every producer of
+  // "this Session is still talking" reaches it through this binding.
+  let sessionBackstop: CoreSessionBackstop | null = null;
+
   let hookReceiver: HarnessHookReceiver | null = null;
   try {
-    hookReceiver = await startHarnessHookReceiver((taskId, payload) =>
-      harnessStatus.receiveHook(taskId, payload),
-    );
+    hookReceiver = await startHarnessHookReceiver((taskId, payload, eventNameFallback) => {
+      // A hook that landed is this Session talking, whatever it said — that is
+      // what keeps the quiet-Session backstop off a turn that is really
+      // running (issue 243).
+      sessionBackstop?.noteActivity(taskId);
+      return harnessStatus.receiveHook(taskId, payload, eventNameFallback);
+    });
   } catch (err) {
     console.error(`[core-entry] hook-receiver.start-failed: ${err}`);
   }
@@ -234,8 +243,15 @@ async function startCore(): Promise<void> {
     // and the hook receiver's, for the same reason: killing it would silently
     // strand every running Session's status.
     getProtectedPorts: () => [port, hookReceiver?.port],
-    onSessionExit: ({ taskId, exitCode }) => harnessStatus.sessionExited(taskId, exitCode),
+    onSessionExit: ({ taskId, exitCode }) => {
+      harnessStatus.sessionExited(taskId, exitCode);
+      sessionBackstop?.forget(taskId);
+    },
     onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
+    // A harness that is working redraws its spinner into the PTY about once a
+    // second. Silence there, and no hooks either, is what the backstop below
+    // reads as "this turn ended and nobody said so" (issue 243).
+    onSessionOutputActivity: ({ taskId }) => sessionBackstop?.noteActivity(taskId),
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
@@ -248,6 +264,19 @@ async function startCore(): Promise<void> {
   // Core's PTY core currently has a running PTY for it. Wired here so the
   // mutation store has no import-time dependency on `PtyCore`.
   setLivePtyProbe((taskId) => core.findByTask(taskId).ptyId);
+
+  // The unconditional half of issue 243. `armDeferredFinish` only ever fires
+  // for a Session whose hook ARRIVED; when the terminal `Stop` is the POST
+  // that dropped, nothing is armed at all. This one arms nothing: it asks the
+  // database once a minute which rows still claim to be working, and settles
+  // the ones that have gone quiet — no hook, no output — for long enough that
+  // the turn is provably over.
+  sessionBackstop = new CoreSessionBackstop({
+    listActiveTasks,
+    writer: taskWriter,
+    hasLivePty: (taskId) => Boolean(core.findByTask(taskId).ptyId),
+  });
+  sessionBackstop.start();
 
   // Issue 11: this Core probes its own PATH for every managed Harness and
   // publishes the resulting map as (a) a live snapshot readable via the
@@ -502,6 +531,7 @@ async function startCore(): Promise<void> {
     server.close();
     hookReceiver?.close();
     hookDelivery.stop();
+    sessionBackstop?.stop();
     availabilityStore.stop();
     updateNotice?.stop();
     disposeEventLogStore();

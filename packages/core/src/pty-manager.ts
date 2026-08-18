@@ -160,6 +160,13 @@ const ptys = new Map<string, Pty>();
 const RING_LIMIT_BYTES = 1_000_000;
 
 /**
+ * How often a talking PTY reports that it is talking. The consumer only asks
+ * "was there anything in the last quarter of an hour", so a five-second floor
+ * loses nothing and keeps a chatty harness from calling out per chunk.
+ */
+const OUTPUT_ACTIVITY_THROTTLE_MS = 5_000;
+
+/**
  * Dependencies the PTY core needs from its host process.
  */
 export type PtyCoreDeps = {
@@ -189,6 +196,14 @@ export type PtyCoreDeps = {
     taskId: string;
     signal: "interrupted" | "hooks-need-review";
   }) => void;
+  /**
+   * This Session's harness is still talking (issue 243). Not a status and not
+   * a signal — just the fact that bytes arrived, which is what tells a turn
+   * that is genuinely running from one that ended without saying so. Throttled
+   * to at most one call per {@link OUTPUT_ACTIVITY_THROTTLE_MS} per PTY, so a
+   * harness redrawing its spinner does not cost a callback per chunk.
+   */
+  onSessionOutputActivity?: (info: { taskId: string }) => void;
 };
 
 /** Event emitted by the Core for a PTY — `data` (output) or `exit`. */
@@ -664,10 +679,20 @@ export class PtyCore {
     // reports once. Re-armed as soon as it is no longer being shown.
     let interruptReported = false;
     let hookReviewReported = false;
+    // Last time this PTY's output was reported as activity (issue 243).
+    let activityReportedAt = 0;
     const watchOutput = plan.mode === "agent" && !opts.shell && !opts.shellSession;
     proc.onData((data: string) => {
       releaseSpawnHold();
       if (watchOutput) {
+        if (p.taskId && Date.now() - activityReportedAt > OUTPUT_ACTIVITY_THROTTLE_MS) {
+          activityReportedAt = Date.now();
+          try {
+            this.deps.onSessionOutputActivity?.({ taskId: p.taskId });
+          } catch (err) {
+            log.warn("pty.output-activity.failed", { error: String(err) });
+          }
+        }
         const interrupted = hasClaudeInterruptPrompt(data);
         if (interrupted && !interruptReported) {
           interruptReported = true;
