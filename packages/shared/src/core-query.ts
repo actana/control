@@ -173,6 +173,41 @@ function listTasksWhereArchived(
 }
 
 /**
+ * Every task on this Core whose status still claims a live harness process —
+ * `running` or `needs-input` (issue 243).
+ *
+ * The Core's boot sweep is the only caller, and the query is shaped for it in
+ * two ways the listing helpers are not:
+ *
+ *  - **Archived rows are included.** The other listings answer a browse, where
+ *    an archived row is out of scope by definition. This one answers "what
+ *    does this database still claim is running?", and an archived Session that
+ *    claims to be working is exactly as wrong as an active one — it is the same
+ *    stale row, one tab further away from the operator who could notice it.
+ *  - **No project filter.** A process that did not survive the Core's restart
+ *    did not survive it for one Project only.
+ *
+ * Returns an empty array when the table is absent, like every helper here.
+ */
+export function queryActiveTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[] {
+  let rows: TaskRow[];
+  try {
+    rows = sqlite
+      .prepare(
+        `SELECT id, project_id, title, title_manually_set, claude_session_id, agent, status,
+                pinned, archived, icon, updated_at
+         FROM tasks
+         WHERE status IN ('running', 'needs-input')
+         ORDER BY updated_at DESC`,
+      )
+      .all() as TaskRow[];
+  } catch {
+    return [];
+  }
+  return rows.map(taskRowToSnapshot);
+}
+
+/**
  * How many archived tasks this Core holds, optionally scoped to one project.
  *
  * The Panel needs this number continuously — it gates the Archived tab, labels

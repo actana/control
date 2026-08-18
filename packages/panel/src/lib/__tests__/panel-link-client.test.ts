@@ -685,3 +685,131 @@ describe("panel link · watching", () => {
     link.close();
   });
 });
+
+describe("panel link · a tab's panes on one Session", () => {
+  // The service keys drive interest per tab and the browser opens panes, so
+  // this is the seam where the two are reconciled (issue 186). One tab may hold
+  // two panes on one Session — a split view, the same Session opened twice —
+  // and what the service is told has to be the *tab's* standing, once.
+
+  it("announces a Session once however many panes this tab opens on it", () => {
+    const link = client();
+    const socket = live();
+
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_1");
+
+    // Not a saving of bytes. A second `watch` re-asserts interest the service
+    // already holds, and re-asserting moves this tab to the tail of that
+    // Session's queue: the keyboard leaves the pane the operator is looking at,
+    // with no gesture of theirs to explain it.
+    expect(socket.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+    link.close();
+  });
+
+  it("announces each Session in its own right", () => {
+    const link = client();
+    const socket = live();
+
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_2");
+
+    expect(socket.drives("core_a")).toEqual([
+      { taskId: "task_1", want: "watch" },
+      { taskId: "task_2", want: "watch" },
+    ]);
+    link.close();
+  });
+
+  it("still asks for the keyboard in a pane on a Session it already watches", () => {
+    const link = client();
+    const socket = live();
+
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_1", { take: true });
+
+    // `take` is the operator's gesture, not a pane arriving. Deduping it would
+    // be a button that does nothing in the one case it exists for.
+    expect(socket.drives("core_a")).toEqual([
+      { taskId: "task_1", want: "watch" },
+      { taskId: "task_1", want: "take" },
+    ]);
+    link.close();
+  });
+
+  it("gives a Session back only when the last pane on it closes", () => {
+    const link = client();
+    const socket = live();
+
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_1");
+
+    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(false);
+    // The tab still has the Session on screen. A `drop` here would have the
+    // service hand the drive to another tab while this one keeps a writable
+    // pane and keeps typing — two writers, and nothing on screen to say so.
+    expect(socket.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+
+    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(true);
+    expect(socket.drives("core_a")).toEqual([
+      { taskId: "task_1", want: "watch" },
+      { taskId: "task_1", want: "drop" },
+    ]);
+    link.close();
+  });
+
+  it("counts panes, not gestures: a take does not keep the Session held", () => {
+    const link = client();
+    const socket = live();
+
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_1", { take: true });
+
+    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(true);
+    expect(socket.drives("core_a").at(-1)).toEqual({ taskId: "task_1", want: "drop" });
+    link.close();
+  });
+
+  it("says nothing for a Session this tab has no pane on", () => {
+    const link = client();
+    const socket = live();
+
+    expect(link.releaseSessionDrive("core_a", "task_1")).toBe(false);
+
+    expect(socket.drives("core_a")).toEqual([]);
+    link.close();
+  });
+
+  it("re-announces a twice-held Session once on a reconnect", () => {
+    const link = client();
+    const first = live();
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_1");
+
+    first.drop();
+    vi.advanceTimersByTime(20);
+    const second = live();
+
+    // What the new socket is owed is the tab's interest, which is one Session
+    // whatever it is showing it in. Re-announcing it per pane on every flap is
+    // the duplicate `watch` again, with a reconnect for a trigger.
+    expect(second.drives("core_a")).toEqual([{ taskId: "task_1", want: "watch" }]);
+    link.close();
+  });
+
+  it("re-announces nothing once every pane on the Session has gone", () => {
+    const link = client();
+    const first = live();
+    link.driveSession("core_a", "task_1");
+    link.driveSession("core_a", "task_1");
+    link.releaseSessionDrive("core_a", "task_1");
+    link.releaseSessionDrive("core_a", "task_1");
+
+    first.drop();
+    vi.advanceTimersByTime(20);
+    const second = live();
+
+    expect(second.drives("core_a")).toEqual([]);
+    link.close();
+  });
+});

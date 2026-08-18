@@ -15,3 +15,12 @@
 export const HOOK_URL_ENV = "AC_HOOK_URL";
 export const HOOK_TOKEN_ENV = "AC_HOOK_TOKEN";
 export const HOOK_TASK_ID_ENV = "AC_HOOK_TASK_ID";
+/**
+ * Where a hook records a POST this Core never acked (issue 243). Unset — a
+ * Core that wired no miss log, an operator running the workspace by hand —
+ * means the record is written to `/dev/null` by the command's own default, so
+ * the hook stays fail-soft either way. It is a path, not a secret, but it
+ * still travels in the environment rather than in the file: the file must stay
+ * valid across a restart that puts the Core's data dir somewhere else.
+ */
+export const HOOK_MISS_LOG_ENV = "AC_HOOK_MISS_LOG";
