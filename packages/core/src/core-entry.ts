@@ -84,6 +84,7 @@ import { CoreTaskWriter } from "./core-task-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
+import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { generateCertMaterial } from "./core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
@@ -200,11 +201,25 @@ async function startCore(): Promise<void> {
     console.error(`[core-entry] hook-receiver.start-failed: ${err}`);
   }
 
+  // The other end of the same conversation (issue 243). A hook that never got
+  // an ack records one line in this file; this folds those lines into the
+  // Core's log with a running total, starting with whatever was recorded while
+  // this process was not running — a restart is exactly when hooks are
+  // refused, and those are the drops nobody could otherwise hear about.
+  const hookDelivery = new HookDeliveryMonitor({ missLogPath: hookMissLogPath(userDataDir) });
+  hookDelivery.start();
+
   const deps: PtyCoreDeps = {
     userDataDir,
     appPath,
     getHookEnv: (): PtyHookEnv | null =>
-      hookReceiver ? { apiUrl: hookReceiver.url, token: hookReceiver.token } : null,
+      hookReceiver
+        ? {
+            apiUrl: hookReceiver.url,
+            token: hookReceiver.token,
+            missLogPath: hookMissLogPath(userDataDir),
+          }
+        : null,
     // Protect the core-link WS port so killLaunchProcesses never touches it —
     // and the hook receiver's, for the same reason: killing it would silently
     // strand every running Session's status.
@@ -476,6 +491,7 @@ async function startCore(): Promise<void> {
     core.killAll();
     server.close();
     hookReceiver?.close();
+    hookDelivery.stop();
     availabilityStore.stop();
     updateNotice?.stop();
     disposeEventLogStore();

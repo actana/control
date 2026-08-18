@@ -26,6 +26,7 @@ import {
 } from "@actana/shared/pty-spawn-policy";
 import { type PtyHookEnv } from "./pty-hook-env";
 import {
+  HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
@@ -560,6 +561,10 @@ export class PtyCore {
           env[HOOK_URL_ENV] = hookEnv.apiUrl;
           env[HOOK_TOKEN_ENV] = hookEnv.token;
           env[HOOK_TASK_ID_ENV] = opts.taskId;
+          // Where this Session's hooks record a POST the Core never acked
+          // (issue 243). Absent, the command writes to /dev/null and the hook
+          // is as fail-soft as it always was — just as invisible when it drops.
+          if (hookEnv.missLogPath) env[HOOK_MISS_LOG_ENV] = hookEnv.missLogPath;
         }
       }
     }

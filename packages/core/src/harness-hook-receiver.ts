@@ -1,8 +1,8 @@
 // The Core's own hook receiver — where a harness running on this machine
 // reports what it is doing.
 //
-// Three decisions this file makes, recorded because the ticket left them open
-// (issue 84):
+// Four decisions this file makes, recorded because the tickets left them open
+// (issue 84, and (d) from issue 243):
 //
 // (a) **Transport: loopback HTTP, not a unix socket.** Every vendor's hook
 //     config takes a shell command and every vendor's documentation assumes
@@ -27,6 +27,13 @@
 //     as protected against its own port-kill path — and a guessable target.
 //     The chosen port is published to `getProtectedPorts` for the same reason
 //     the core-link port is.
+//
+// (d) **Every accepted hook is acked with a delivery number** (issue 243). The
+//     receiver counts what it has taken since boot and answers with that count,
+//     so the ack a hook command checks is a fact rather than an empty 200, and
+//     the Core's own log carries a monotonic sequence a reader can find a gap
+//     in. The client half — the retry, and the record of what never got an ack
+//     — is `harness-hooks.ts`'s command text and `harness-hook-delivery.ts`.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
@@ -57,6 +64,8 @@ export type HarnessHookReceiver = {
   readonly url: string;
   readonly token: string;
   readonly port: number;
+  /** How many hooks this receiver has accepted since boot (issue 243). */
+  acceptedCount(): number;
   close(): void;
 };
 
@@ -118,6 +127,10 @@ export async function startHarnessHookReceiver(
   handler: HookReceiverHandler,
 ): Promise<HarnessHookReceiver> {
   const token = randomBytes(32).toString("hex");
+  // The delivery number this receiver acks with. Per boot, monotonic, and
+  // deliberately not per task: what it answers is "this Core is taking hooks,
+  // and this is the nth", which is the fact a lost POST cannot fake.
+  let accepted = 0;
 
   const server: Server = createServer((req, res) => {
     void (async () => {
@@ -170,9 +183,16 @@ export async function startHarnessHookReceiver(
         // The URL's event name is the fallback for a payload that carries
         // none — the hook writer knows which event it installed each entry
         // for, so a harness that omits it from the body is still routable.
-        const result = handler(taskId, payload, url.searchParams.get("hookEvent") ?? "");
-        res.writeHead(result.ok ? 200 : 404, { "content-type": "application/json" });
-        res.end(JSON.stringify(result.body));
+        const eventName = url.searchParams.get("hookEvent") ?? "";
+        const result = handler(taskId, payload, eventName);
+        if (!result.ok) {
+          res.writeHead(404, { "content-type": "application/json" });
+          res.end(JSON.stringify(result.body));
+          return;
+        }
+        accepted += 1;
+        res.writeHead(200, { "content-type": "application/json" });
+        res.end(JSON.stringify({ ...result.body, ack: accepted }));
       } catch (err) {
         log.warn("hook-receiver.handler-failed", { error: String(err) });
         res.writeHead(500, { "content-type": "application/json" });
@@ -199,6 +219,7 @@ export async function startHarnessHookReceiver(
     url: `http://${LOCAL_HOOK_API_HOST}:${port}`,
     token,
     port,
+    acceptedCount: () => accepted,
     close: () => {
       try {
         server.close();

@@ -11,7 +11,7 @@
 // writer lives next door in `harness-hooks-opencode.ts` (issue 230); the row it
 // occupies in `HOOK_FAMILIES` is the same shape as the others'.
 //
-// Three rules the writers share:
+// Four rules the writers share:
 //
 //  - An operator's own hooks are preserved. Ours are tagged `_acManaged: true`
 //    so the next spawn replaces exactly what a previous spawn wrote and nothing
@@ -23,6 +23,9 @@
 //  - It is fail-soft (`|| true`). A hook that blocks or fails must never take
 //    the operator's session down with it; a missed hook costs a stale card,
 //    which the PTY-exit settle and the terminal-input fallback still catch.
+//  - Fail-soft is not the same as silent (issue 243). The command checks the
+//    Core's ack, retries a transient refusal, and records the ones it could
+//    not deliver — see `hookCommand` below.
 //
 // The registry is open by construction: a harness with no entry simply gets no
 // hooks, which is what tells the Panel to keep its terminal-input fallback
@@ -36,6 +39,7 @@ import {
 import { hookEndpointSlug } from "@actana/shared/mission-control-hook-env";
 import { ASK_USER_QUESTION_TOOL } from "@actana/shared/harness-questions";
 import {
+  HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
@@ -55,12 +59,18 @@ const MANAGED_FLAG = "_acManaged";
 const LEGACY_MANAGED_FLAG = "_mcManaged";
 
 /** Env var names the hook command reads. Set on the PTY by the spawn path. */
-export { HOOK_URL_ENV, HOOK_TOKEN_ENV, HOOK_TASK_ID_ENV } from "./harness-hook-env";
+export {
+  HOOK_URL_ENV,
+  HOOK_TOKEN_ENV,
+  HOOK_TASK_ID_ENV,
+  HOOK_MISS_LOG_ENV,
+} from "./harness-hook-env";
 
 /**
  * The shell command a managed hook entry runs: POST the payload the harness
  * pipes on stdin to this Core's loopback receiver, tagged with the task it
- * belongs to. Short timeout and `|| true` — see the fail-soft rule above.
+ * belongs to. Short timeout and a `|| true` at the end — see the fail-soft
+ * rule above.
  *
  * The event name rides the URL as well as the body. The writer knows which
  * event each entry is for, and naming it costs one query parameter: a payload
@@ -69,15 +79,48 @@ export { HOOK_URL_ENV, HOOK_TOKEN_ENV, HOOK_TASK_ID_ENV } from "./harness-hook-e
  * `ignored`, and every request identifies itself in a log or a `curl -v`
  * instead of being one of several indistinguishable opaque bodies. The body
  * still wins when it carries a name — the harness knows better than we do.
+ *
+ * The tail of the command is issue 243's ack, and every piece of it is there
+ * for a failure that really happened — a Session wedged on `running` because
+ * its terminal `Stop` was the POST that dropped:
+ *
+ *  - `-f` makes a non-2xx answer a failure. Without it curl exits 0 on a 401,
+ *    a 404 and a 500 alike, so "the Core took it" was never a fact this
+ *    command could act on.
+ *  - `--retry 2 --retry-delay 1` retries what curl calls a transient error —
+ *    a timeout above all, which is exactly what a Core busy serving PTY
+ *    fan-out and SQLite writes hands a `-m 3` POST. Three attempts bound the
+ *    worst case at about eleven seconds, well inside a harness's own hook
+ *    timeout, and only on the path where the Session's status is already
+ *    broken. `--retry-connrefused` is deliberately NOT here: it would raise
+ *    the curl version this command needs, and a refused connection means the
+ *    Core is down, which a second attempt a second later does not fix.
+ *  - The `printf` records what could not be delivered — one tab-separated
+ *    line per lost hook, drained into the Core's log by
+ *    `harness-hook-delivery.ts`. The path defaults to `/dev/null`, so a
+ *    workspace opened by hand (or by a Core that wired no miss log) writes
+ *    nowhere rather than failing.
+ *  - `|| true` still ends the chain, and still means the same thing: when the
+ *    POST succeeds the chain short-circuits, when it fails the record is
+ *    written, and when the record cannot be written the command still exits 0.
+ *    A hook may never fail an operator's turn.
+ *
+ * `-o /dev/null` is new too, and not cosmetic: Claude Code reads a hook's
+ * stdout as control JSON, so the receiver's answer had no business being
+ * printed there.
  */
 export function hookCommand(slug: string, event: string): string {
   return (
-    `sh -c 'curl -sS -m 3 -X POST ` +
+    `sh -c 'curl -sS -f -m 3 --retry 2 --retry-delay 1 -o /dev/null -X POST ` +
     `-H "Authorization: Bearer $${HOOK_TOKEN_ENV}" ` +
     `-H "Content-Type: application/json" ` +
     `--data-binary @- ` +
     `"$${HOOK_URL_ENV}/api/hooks/${slug}` +
-    `?taskId=$${HOOK_TASK_ID_ENV}&hookEvent=${encodeURIComponent(event)}" || true'`
+    `?taskId=$${HOOK_TASK_ID_ENV}&hookEvent=${encodeURIComponent(event)}"; ` +
+    `s=$?; [ "$s" = 0 ] || ` +
+    `printf "%s\\t%s\\t%s\\t%s\\n" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" ` +
+    `"$${HOOK_TASK_ID_ENV}" "${event}" "$s" ` +
+    `>> "$\{${HOOK_MISS_LOG_ENV}:-/dev/null}" || true'`
   );
 }
 
