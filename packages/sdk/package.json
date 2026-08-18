@@ -4,13 +4,7 @@
   "description": "Actana Control SDK — the Core client and the core-link wire protocol it speaks: frame schema, protocol version, codec, transport.",
   "license": "MIT",
   "type": "module",
-  "keywords": [
-    "actana",
-    "core-link",
-    "sdk",
-    "agent",
-    "terminal"
-  ],
+  "keywords": ["actana", "core-link", "sdk", "agent", "terminal"],
   "homepage": "https://github.com/actana/control/tree/main/packages/sdk#readme",
   "bugs": "https://github.com/actana/control/issues",
   "repository": {
@@ -21,9 +15,7 @@
   "engines": {
     "node": ">=22"
   },
-  "files": [
-    "dist"
-  ],
+  "files": ["dist"],
   "exports": {
     "./*": "./src/*.ts"
   },
