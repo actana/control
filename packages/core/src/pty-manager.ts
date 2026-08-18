@@ -254,12 +254,22 @@ function appendBuffer(p: Pty, data: string): number {
   return seq;
 }
 
+// The C0 bytes that are whitespace in the source text: tab, line feed,
+// vertical tab, form feed, carriage return. They cannot be written through
+// verbatim — a bare CR/LF submits the prompt early — but they *separate* the
+// words either side of them, so a run of them collapses to one space instead
+// of vanishing (issue #193). Dropping them outright welded the last word of a
+// line onto the first word of the next: "review the diff\nthen open a PR"
+// arrived as "review the diffthen open a PR".
+const WHITESPACE_CONTROL_RUN = /[\t\n\v\f\r]+/g;
+
 // A programmatic starting prompt (Ship / Sync / Create-PR) is written to the
-// agent's stdin like the user typing. Drop C0/DEL control bytes so a caller
-// can't drive TUI keybindings; the submit CR is added separately.
-function sanitizeInitialInput(text: string | undefined): string | undefined {
+// agent's stdin like the user typing. Whitespace control bytes become a single
+// space; every other C0/DEL byte is dropped with nothing in its place, so a
+// caller can't drive TUI keybindings. The submit CR is added separately.
+export function sanitizeInitialInput(text: string | undefined): string | undefined {
   if (!text) return undefined;
-  const clean = Array.from(text)
+  const clean = Array.from(text.replace(WHITESPACE_CONTROL_RUN, " "))
     .filter((ch) => {
       const code = ch.charCodeAt(0);
       return code >= 32 && code !== 127;
