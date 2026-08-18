@@ -1,6 +1,6 @@
 {
   "name": "@actana/shared",
-  "version": "0.3.2",
+  "version": "0.3.3",
   "description": "Actana Control shared internals — mutation/query contracts, registration-blob codec, event log. The core-link frames live in @actana/sdk.",
   "license": "MIT",
   "private": true,
