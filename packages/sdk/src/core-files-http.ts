@@ -57,32 +57,17 @@
 // is built lazily, on the first request that needs one.
 import { Agent, fetch as undiciFetch } from "undici";
 
+import type { CoreFilesErrorCode } from "./core-files-error-codes.ts";
 import type { CoreLinkTlsMaterial } from "./core-link-socket.ts";
 
-/** The refusal codes the Core's file routes answer with (`docs/external-api.md`). */
-export type CoreFilesErrorCode =
-  | "unauthorized"
-  | "not-found"
-  | "project-not-found"
-  | "method-not-allowed"
-  | "bad-request"
-  | "absolute-path"
-  | "dot-dot-segment"
-  | "outside-project-root"
-  | "malformed-path"
-  | "transfer-in-progress"
-  | "insufficient-storage"
-  | "corrupt-archive"
-  | "absolute-entry-path"
-  | "dot-dot-entry-path"
-  | "root-entry-path"
-  | "entry-outside-root"
-  | "unsupported-entry-type"
-  | "hardlink-outside-root"
-  | "symlink-outside-root"
-  | "directory-in-the-way"
-  | "write-failed"
-  | "read-failed";
+// The refusal vocabulary is defined once, in `core-files-error-codes.ts`, and
+// the Core imports the same module (#224). It is re-exported here because this
+// specifier is where it has always been published from: `@actana/sdk/
+// core-files-http` exporting `CoreFilesErrorCode` is a shape consumers already
+// import, and a re-export keeps that true without being a second definition —
+// an alias cannot disagree with what it aliases, which is the whole property
+// the ticket was about.
+export type { CoreFilesErrorCode } from "./core-files-error-codes.ts";
 
 /** Base class for everything `project.files.*` throws, so one `catch` can name it. */
 export class CoreFilesError extends Error {
@@ -110,7 +95,32 @@ export class CoreFilesUnavailableError extends CoreFilesError {
   }
 }
 
-/** A refusal with a status line: the Core answered, and said no. */
+/**
+ * A refusal with a status line: the Core answered, and said no.
+ *
+ * ## `CoreFilesErrorCode | string` is the type, and it stays that way
+ *
+ * Stated here rather than left to be inferred, because it looks like a loose
+ * type somebody forgot to tighten and it is the opposite (#224). A client is
+ * routinely older than the Core it dials: this package is published, an
+ * operator upgrades a Core, and the next release of that Core may answer a
+ * refusal code this build of the SDK has never heard of. Typing `code` as the
+ * closed union would make the honest handling of that — reading the code the
+ * Core actually sent — a cast at every call site, and would invite a client to
+ * `switch` exhaustively over a vocabulary it does not own the far end of.
+ *
+ * So the union is autocomplete and documentation, and `| string` is the truth
+ * about the wire. Narrowing this later is a **decision** — it means declaring
+ * that a client may refuse to name what its Core told it — and not a cleanup
+ * for a passing reader to do.
+ *
+ * Note what this therefore does *not* buy, so the guarantee is not overstated:
+ * one definition (see `core-files-error-codes.ts`) removes the drift where the
+ * SDK lists fewer codes than the Core sends. It cannot remove the widening's
+ * own blind spot, because that is not drift — it is the wire being older or
+ * newer than the reader, which is a fact about deployments rather than about
+ * this repository.
+ */
 export class CoreFilesRequestError extends CoreFilesError {
   readonly status: number;
   readonly code: CoreFilesErrorCode | string;
