@@ -24,9 +24,11 @@ rather than a job. A GitHub runner is destroyed rather than restarted, and a
 LaunchAgent is by definition tied to a login session, so "does the Core come
 back after a reboot?" and "does it come back after a logout?" can only be
 answered on a real Mac. Gatekeeper is the same kind of question: the tarball
-ships unsigned and un-notarized (out of scope — see
-[#55](https://github.com/actana/control/issues/55)), and whether macOS lets an
-operator run it is not something a headless runner experiences.
+ships unsigned and un-notarized, deliberately and for a reason that is written
+down — see [Integrity is published checksums, not
+signatures](ci-cd.md#integrity-is-published-checksums-not-signatures) — and
+whether macOS lets an operator run it is not something a headless runner
+experiences.
 
 The `tarball-macos` leg does the part a runner *can* do: it builds the
 `mac-arm64` tarball on an Apple-silicon runner and boots it through its own
