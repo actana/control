@@ -140,10 +140,22 @@ export function takeSessionDrive(coreId: string | null | undefined, taskId: stri
   getPanelBridge()?.driveSession(coreId, taskId, { take: true });
 }
 
-/** This tab's pane on a Session has gone. */
+/**
+ * One of this tab's panes on a Session has gone.
+ *
+ * The local answer is reset only when it was the **last** pane (issue 186).
+ * This entry is keyed by Session and shared by every pane rendering it, and the
+ * drive it holds is the tab's standing, not the pane's — so clearing it because
+ * one of two panes closed would tell the surviving pane that nobody arbitrates
+ * a Session this tab is still watching. `none` reads as writable, which is the
+ * silent half of a dual write: a pane typing on a drive it no longer holds,
+ * with no read-only state on screen to say so.
+ */
 export function releaseSessionDrive(coreId: string | null | undefined, taskId: string): void {
   if (!coreId) return;
-  getPanelBridge()?.releaseSessionDrive(coreId, taskId);
+  // The pane count lives in the link client, which is the one thing that also
+  // has to re-announce this tab's interest on a reconnect. Asked, not mirrored.
+  if (getPanelBridge()?.releaseSessionDrive(coreId, taskId) !== true) return;
   const k = key(coreId, taskId);
   const current = entries.get(k);
   if (!current) return;

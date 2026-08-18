@@ -372,6 +372,12 @@ export class PanelLinkRouter {
    * @internal — a tab wants (or gives back) the keyboard for one Session, among
    * this Panel's own tabs. Never the Session lock; see the module comment.
    *
+   * One frame per tab per Session, whatever that tab has on screen: the browser
+   * counts its own panes and sends the first pane's `watch` and the last pane's
+   * `drop` (issue 186). Panes have no name here and are not meant to — what this
+   * router arbitrates is tabs, and a `drop` is therefore read as "that tab is
+   * done with this Session", not "one of its panes closed".
+   *
    * Gated on `multiConnection` like everything else in issue 147: against a
    * Core that evicts every client but one, two tabs both writing is what the
    * Panel does today, and the promise for such a Core is today's behaviour

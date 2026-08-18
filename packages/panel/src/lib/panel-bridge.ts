@@ -135,10 +135,18 @@ export type PanelBridge = {
    * Panel does. `take` is the operator asking for the keyboard here, which moves
    * it off whichever tab of this Panel had it — a Panel-local handover that
    * costs nobody their Session and crosses no wire.
+   *
+   * Counted over this tab's panes, so a second pane on the same Session says
+   * nothing on the wire (issue 186). `take` is exempt: it is a gesture, not a
+   * pane.
    */
   driveSession(coreId: string, taskId: string, opts?: { take?: boolean }): void;
-  /** This tab's pane on a Session has gone. */
-  releaseSessionDrive(coreId: string, taskId: string): void;
+  /**
+   * One of this tab's panes on a Session has gone. Returns whether it was the
+   * last one — whether the tab gave the Session back, or still has it on screen
+   * in another pane (issue 186).
+   */
+  releaseSessionDrive(coreId: string, taskId: string): boolean;
   /** The Session lock as the service's link to that Core sees it, pushed on change. */
   onSessionLock(
     cb: (msg: { coreId: string; taskId: string; lock: PanelSessionLock }) => void,
