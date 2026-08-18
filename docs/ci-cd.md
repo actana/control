@@ -232,8 +232,12 @@ the digest claim is about the container images only.
 container images are unsigned: no Apple notarization, no Windows Authenticode —
 there is no Windows artifact to sign — and no detached GPG or Sigstore signature
 over a tarball or an image manifest. `release.yml` carries no signing secret at
-all; the only credentials on the release path are `github.token` for the assets
-and the Docker Hub PAT for the mirror.
+all — its one signing-adjacent capability, `id-token: write` on the `npm` job,
+is keyless OIDC rather than a key. Three credentials sit on the release path
+and none of them signs anything: `github.token` for the Release assets, the
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` PAT for the images, and `NPM_TOKEN`
+for the packages. The last two are each mandatory, gated by their own `resolve`
+step that fails the release before anything is built when they are unset.
 
 Integrity is **the published checksums**, and both paths that put a Core on a
 machine verify them. `install.sh` fetches `SHA256SUMS` *before* the tarball, and
