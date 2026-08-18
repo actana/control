@@ -227,21 +227,27 @@ rather than a checksum file that quietly covers part of one.
 
 ## Where ADR 0023 and the workflows disagree
 
-This file describes what the workflows do today. Two places where the ADR says
-something else, and the workflows are the ones that are right:
+This file describes what the workflows do today. One place where the ADR and
+the workflows genuinely disagree, and one where D3's headline number looks like
+a disagreement and is not:
 
-**D3 says four manifests. It is six.** ADR 0023 D3 still reads "all four
-manifests — root, `packages/core`, `packages/panel`, `packages/shared`".
-`packages/sdk` was added as the fifth by
-[#152](https://github.com/actana/control/issues/152) when the core-link frames
-moved out of `packages/shared`, and `packages/cli` as the sixth by
-[#157](https://github.com/actana/control/issues/157). Both `promote.yml`'s cut
-and `ci.yml`'s `Train rules` carry the six-entry list and annotate it "as
-amended by #152 and #157"; [`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train)
-already says six.
-The ADR text was never amended — `Train rules` tells you to amend D3 when a new
-package is added, and twice nobody did. **Read the count off
-`${#MANIFESTS[@]}` in `ci.yml`, never off D3.**
+**D3's opening sentence says four manifests. The set is six — and D3 says so
+itself, a few lines further down.** The clause opens "all four manifests —
+root, `packages/core`, `packages/panel`, `packages/shared`", and that sentence
+has never been rewritten. What sits directly under it has: D3 is amended twice,
+by [#152](https://github.com/actana/control/issues/152), which added
+`packages/sdk` as the fifth when the core-link frames moved out of
+`packages/shared`, and by [#157](https://github.com/actana/control/issues/157),
+which added `packages/cli` as the sixth. Both `promote.yml`'s cut and `ci.yml`'s
+`Train rules` carry the six-entry list and annotate it "as amended by #152 and
+#157", and [`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train)
+already says six. So the number is stale, not uncorrected — and stale by
+design: D3 asks you to read its count as "derived rather than declared", says
+the next package "does not need to amend this clause to stay correct" because
+`Train rules` asserts the list covers every workspace package, and calls the
+written number documentation against the assertion in `ci.yml` as the
+mechanism. **Read the count off `${#MANIFESTS[@]}` in `ci.yml`, never off D3's
+first sentence** — which is what D3 asks for too.
 
 **D3 says "a workflow does it" — and there is no workflow you can dispatch to
 cut a train.** The only sanctioned cut is `promote.yml`'s `next-train` job,
