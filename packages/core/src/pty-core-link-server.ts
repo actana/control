@@ -443,6 +443,14 @@ const WS_CLOSING = 2;
 const WS_CLOSED = 3;
 
 /**
+ * What one send did. The `reason` is carried rather than re-derived by the
+ * caller so the log line names the actual refusal — a closed socket and a send
+ * that threw are different facts, and a line that reports the first for the
+ * second is the kind of log that sends the next reader down the wrong path.
+ */
+type SendOutcome = { ok: true } | { ok: false; reason: string };
+
+/**
  * The event-log kind each project mutation op appends. Typed on the op union
  * rather than written as a ternary chain so a new op cannot ship without
  * deciding what a reconnecting Panel replays for it — the compiler asks.
@@ -979,13 +987,11 @@ export class PtyCoreLinkServer {
    * any such line is why this class of loss was invisible (issue 244).
    */
   private deliverEvent(conn: ActiveConnection, event: CoreLinkEvent): boolean {
-    const accepted = this.sendResult(conn.ws, { type: "event", event }, (err) =>
+    const result = this.sendResult(conn.ws, { type: "event", event }, (err) =>
       this.rewindEventCursor(conn, event.eventId, err.message),
     );
-    if (!accepted) {
-      this.warnEventUndelivered(conn, event.eventId, `socket readyState ${conn.ws.readyState}`);
-    }
-    return accepted;
+    if (!result.ok) this.warnEventUndelivered(conn, event.eventId, result.reason);
+    return result.ok;
   }
 
   /**
@@ -1801,8 +1807,10 @@ export class PtyCoreLinkServer {
     ws: WebSocketLike,
     frame: CoreLinkServerFrame,
     onDeliveryError?: (err: Error) => void,
-  ): boolean {
-    if (ws.readyState === WS_CLOSING || ws.readyState === WS_CLOSED) return false;
+  ): SendOutcome {
+    if (ws.readyState === WS_CLOSING || ws.readyState === WS_CLOSED) {
+      return { ok: false, reason: `socket readyState ${ws.readyState}` };
+    }
     const data = serializeCoreLinkFrame(frame);
     try {
       // The callback goes on only when a caller asked for it. Supplying one
@@ -1817,11 +1825,11 @@ export class PtyCoreLinkServer {
       } else {
         ws.send(data);
       }
-    } catch {
+    } catch (err) {
       /* connection closed mid-send — the close handler will clean up */
-      return false;
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
     }
-    return true;
+    return { ok: true };
   }
 
   /**
