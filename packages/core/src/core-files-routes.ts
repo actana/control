@@ -35,6 +35,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as path from "node:path";
+import type { CoreFilesErrorCode } from "@actana/sdk/core-files-error-codes";
 import { confineToProjectRoot, confineWriteTarget, freeSpaceBytes } from "./files-confinement";
 import { listTree, type FileListingOptions } from "./files-listing";
 import { packDirectory, TarError, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "./files-tar";
@@ -93,30 +94,24 @@ export type CoreHttpRoutes = {
   handleContinue(req: IncomingMessage, res: ServerResponse): boolean;
 };
 
-/** Machine-readable refusal codes. The Panel forwards them; it reads none of them. */
-export type CoreFilesErrorCode =
-  | "unauthorized"
-  | "not-found"
-  | "project-not-found"
-  | "method-not-allowed"
-  | "bad-request"
-  | "absolute-path"
-  | "dot-dot-segment"
-  | "outside-project-root"
-  | "malformed-path"
-  | "transfer-in-progress"
-  | "insufficient-storage"
-  | "corrupt-archive"
-  | "absolute-entry-path"
-  | "dot-dot-entry-path"
-  | "root-entry-path"
-  | "entry-outside-root"
-  | "unsupported-entry-type"
-  | "hardlink-outside-root"
-  | "symlink-outside-root"
-  | "directory-in-the-way"
-  | "write-failed"
-  | "read-failed";
+// The refusal vocabulary has one definition and it is not here (#224).
+//
+// It lives in `@actana/sdk/core-files-error-codes`, and the Core — which is the
+// *server* answering these codes — imports it from the *client* package. That
+// arrow is deliberate and it is ADR 0025 D2's, widened by #224 from the
+// core-link frames to this module: what the Core depends on is the protocol,
+// not the client, and the module it reaches for imports nothing at all. The
+// alternative is the mirror this file used to hold, and D3 says why that is not
+// an option — a hand-copied contract does not fail, it disagrees at runtime
+// between two processes that each believe they are correct.
+//
+// `import type` erases, so the Core's esbuild bundle gains no runtime edge into
+// the SDK from this line.
+//
+// Re-exported because this module already exported the type and a consumer may
+// be naming it from here. A re-export is not a second copy: it cannot disagree
+// with what it aliases.
+export type { CoreFilesErrorCode } from "@actana/sdk/core-files-error-codes";
 
 type Refusal = { status: number; code: CoreFilesErrorCode; message: string };
 

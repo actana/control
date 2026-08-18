@@ -43,9 +43,12 @@ import {
   CoreFilesStreamError,
   CoreFilesUnavailableError,
   refusalFrom,
-  type CoreFilesErrorCode,
   type CoreFilesFetch,
 } from "./core-files-http.ts";
+// From its owner rather than through the transport's re-export (#224): the
+// re-export exists so published specifiers do not move, and in-tree code that
+// wants the vocabulary should point a reader at the file that defines it.
+import type { CoreFilesErrorCode } from "./core-files-error-codes.ts";
 
 /**
  * Whether this Core's file surface may be used at all, and — when it may not —
