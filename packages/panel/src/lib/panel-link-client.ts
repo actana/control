@@ -1,9 +1,11 @@
 import {
+  PANEL_LINK_CLIENT_PARAM,
   PANEL_LINK_PATH,
   PANEL_LINK_PROTOCOL_VERSION,
   PANEL_LINK_VERSION_PARAM,
   decodeServerFrame,
   encodePanelLinkFrame,
+  readPanelLinkClientId,
 } from "~/shared/panel-link";
 import type {
   CoreLinkEvent,
@@ -44,6 +46,14 @@ export type PanelLinkOptions = {
   createSocket?: (url: string) => PanelLinkSocketLike;
   /** Absolute or relative panel-link URL. Default: derived from the page origin. */
   url?: string;
+  /**
+   * This tab's panel-link client id (issue 242). Default: the id this tab
+   * carries across its own reload — see {@link claimTabClientId}.
+   *
+   * Injectable for tests, which need two "tabs" in one process and cannot get
+   * two `sessionStorage`s.
+   */
+  clientId?: string;
   reconnectInitialMs?: number;
   reconnectMaxMs?: number;
   requestTimeoutMs?: number;
@@ -99,6 +109,17 @@ type Watch = {
 export class PanelLinkClient {
   private readonly createSocket: (url: string) => PanelLinkSocketLike;
   private readonly url: string;
+  /**
+   * What this tab calls itself on every socket it opens, including the one it
+   * opens after a reload (issue 242).
+   *
+   * The service keys the **Session drive** by this, so a returning tab finds its
+   * own entry rather than queueing behind the socket it just replaced. It is
+   * deliberately not a *user* identity and not a Core client id: it names one
+   * browser tab, it never reaches a Core, and the only thing it decides is which
+   * of one Operator's own tabs holds a keyboard.
+   */
+  private readonly clientId: string;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
   private readonly requestTimeoutMs: number;
@@ -160,6 +181,7 @@ export class PanelLinkClient {
   constructor(opts: PanelLinkOptions = {}) {
     this.createSocket = opts.createSocket ?? defaultCreateSocket;
     this.url = opts.url ?? defaultUrl();
+    this.clientId = opts.clientId ?? claimTabClientId();
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -455,11 +477,24 @@ export class PanelLinkClient {
 
   // ─── transport ────────────────────────────────────────────────────────────
 
+  /**
+   * The URL for one dial: the configured link plus this tab's client id.
+   *
+   * Appended here rather than folded into {@link defaultUrl} so an injected url
+   * — a test's, a deployment's — carries the id too. A socket that dialled
+   * without it would be a stranger to the service, and the tab would silently
+   * lose its drive on the next reconnect with nothing to show why.
+   */
+  private dialUrl(): string {
+    const separator = this.url.includes("?") ? "&" : "?";
+    return `${this.url}${separator}${PANEL_LINK_CLIENT_PARAM}=${encodeURIComponent(this.clientId)}`;
+  }
+
   private connect(): void {
     if (this.closed) return;
     let socket: PanelLinkSocketLike;
     try {
-      socket = this.createSocket(this.url);
+      socket = this.createSocket(this.dialUrl());
     } catch {
       this.scheduleReconnect();
       return;
@@ -681,6 +716,106 @@ export class PanelLinkClient {
       }
     }
   }
+}
+
+/**
+ * Where this tab's client id is parked while the page is being replaced.
+ *
+ * `sessionStorage`, because it is the only web storage scoped to exactly what
+ * this id names: one tab. It survives a reload and a same-tab navigation, and it
+ * dies with the tab — a closed tab has no drive to reclaim, and `localStorage`
+ * would make every tab in the browser one tab.
+ */
+const TAB_CLIENT_ID_KEY = "actana.panel-link.tab";
+
+/**
+ * This tab's client id: minted once, parked as the page goes away, and claimed
+ * back by the page that replaces it (issue 242).
+ *
+ * **Claimed, not merely read** — the key is removed the instant it is taken, and
+ * written back only on `pagehide`. That is what makes the id unforgeably
+ * per-tab: a browser's "Duplicate tab" copies `sessionStorage` wholesale, and a
+ * copy taken while the key is absent — which is every moment a page is actually
+ * running — carries no id, so the duplicate mints its own. Two live tabs
+ * therefore cannot present the same string, which matters because they would
+ * then reap each other's sockets on every reconnect and neither would settle.
+ * That is ADR 0024 D9's argument against a durable Core client id, applied to
+ * the layer above: an id per live tab makes the collision unrepresentable rather
+ * than something to detect.
+ *
+ * `pageshow` re-claims it after a back/forward-cache restore, where the page
+ * comes back with its JavaScript state — and so its id — intact, but the key it
+ * parked on the way out still sitting there for a duplicate to copy.
+ *
+ * A tab that crashes without running `pagehide` loses its id and mints a fresh
+ * one on the way back. That is the pre-242 behaviour, which is the right thing
+ * to fall back to: it costs a keyboard that first-come will hand back, never a
+ * wrong answer.
+ */
+function claimTabClientId(): string {
+  const store = tabStore();
+  let id: string | null = null;
+  if (store) {
+    try {
+      id = readPanelLinkClientId(store.getItem(TAB_CLIENT_ID_KEY));
+      store.removeItem(TAB_CLIENT_ID_KEY);
+    } catch {
+      // Storage disabled or full. The mint below is the whole fallback.
+      id = null;
+    }
+  }
+  const clientId = id ?? mintTabClientId();
+  if (store && typeof window !== "undefined") {
+    const park = () => {
+      try {
+        store.setItem(TAB_CLIENT_ID_KEY, clientId);
+      } catch {
+        // Nothing to do: the next page mints its own.
+      }
+    };
+    const reclaim = () => {
+      try {
+        store.removeItem(TAB_CLIENT_ID_KEY);
+      } catch {
+        // See above.
+      }
+    };
+    // `pagehide` rather than `unload`: it is the one that fires for a page going
+    // into the back/forward cache as well as one being torn down, and `unload`
+    // disables that cache outright.
+    window.addEventListener("pagehide", park);
+    window.addEventListener("pageshow", reclaim);
+  }
+  return clientId;
+}
+
+/** `sessionStorage`, or null where there is none (SSR, or a locked-down browser). */
+function tabStore(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : (window.sessionStorage ?? null);
+  } catch {
+    // Reading the property itself throws when storage is blocked by policy.
+    return null;
+  }
+}
+
+/**
+ * Mint a fresh tab client id.
+ *
+ * Random rather than derived from anything about the page, for the reason ADR
+ * 0024 D9 gives for the Core client id: every input that would make it stable
+ * across tabs — the origin, the operator, the deployment — is shared by all of
+ * them, which is the one shape that must not happen. Unguessability buys nothing
+ * and is not claimed: nothing verifies this string, and the authority it moves
+ * is a keyboard between two tabs the same person already has open.
+ *
+ * The `tab-` prefix matches the id the service mints for a socket that presented
+ * none, so the two read alike wherever they are logged.
+ */
+function mintTabClientId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return `tab-${random}`;
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function defaultUrl(): string {
