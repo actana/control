@@ -226,6 +226,67 @@ guarantee](#the-digest-guarantee-where-it-starts-and-where-it-stops). The Core
 tarballs are not: they are built by the release, from the promoted commit, and
 the digest claim is about the container images only.
 
+### Integrity is published checksums, not signatures
+
+**Nothing a release ships is code-signed.** The three Core tarballs and both
+container images are unsigned: no Apple notarization, no Windows Authenticode —
+there is no Windows artifact to sign — and no detached GPG or Sigstore signature
+over a tarball or an image manifest. `release.yml` carries no signing secret at
+all — its one signing-adjacent capability, `id-token: write` on the `npm` job,
+is keyless OIDC rather than a key. Three credentials sit on the release path
+and none of them signs anything: `github.token` for the Release assets, the
+`DOCKERHUB_USERNAME` / `DOCKERHUB_TOKEN` PAT for the images, and `NPM_TOKEN`
+for the packages. The last two are each mandatory, gated by their own `resolve`
+step that fails the release before anything is built when they are unset.
+
+Integrity is **the published checksums**, and both paths that put a Core on a
+machine verify them. `install.sh` fetches `SHA256SUMS` *before* the tarball, and
+`actana update` does the same for an in-place upgrade
+([`actana-update.ts`](../packages/core/src/actana-update.ts)); each compares the
+SHA-256 it computed against the release's own line and refuses to install on a
+mismatch. What that proves is bounded, and both call sites say so in a comment:
+the tarball is the one the release's checksum file describes. The checksums came
+over the same channel as the bytes, so this catches corruption and truncation —
+not a release channel someone else controls. That is the gap a signature would
+close, and it is open.
+
+One release surface is attested, and it is not a counter-example: the npm
+packages are published with `--provenance`, so `@actana/sdk` and `@actana/cli`
+carry a SLSA provenance attestation that the release reads back off the registry
+before it succeeds ([npm](#npm)). Provenance attests *where a package was
+built*. It is not a signature over a released binary, and it covers neither the
+tarballs nor the images.
+
+**Why unsigned is safe for the way this ships.** The distribution path is
+`curl | bash`, and `curl` — like `wget` — does not set the
+`com.apple.quarantine` extended attribute. Nothing arriving by that path is ever
+quarantined, so **Gatekeeper never intervenes**, and there is no dialog for
+notarization to buy off. This is a claim about the *transport*, not about the
+bytes: revisit it the moment a browser-download distribution is added, because a
+browser does set the attribute. That case is already the operator's, not the
+installer's — [`../INSTALL.md`](../INSTALL.md) documents `xattr -dr
+com.apple.quarantine` as the escape hatch for a tarball fetched in Safari or
+Chrome.
+
+**The corollary, which already cost one review cycle: do not add `xattr -dr
+com.apple.quarantine` to `actana setup`.** It is a recursive attribute strip run
+on every install to undo a state the install path cannot produce. On the paths
+`actana setup` actually runs on there is nothing to clear, so it buys nothing;
+on any other path it silently clears quarantine on files that legitimately carry
+it, turning a Gatekeeper decision into something the installer made on the
+operator's behalf without saying so. The strip stays where it is, in `INSTALL.md`,
+run by hand by the person who knows they used a browser.
+
+This is the current posture, not a permanent refusal.
+[ADR 0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) voided the
+Panel's desktop signing story and deferred the question to Harness distribution
+planning; this section is that answer, and
+[#24](https://github.com/actana/control/issues/24) — sign the release, publish
+an SBOM and provenance — is where it changes. Until that lands, treat every
+statement above as load-bearing rather than incidental: `install.sh`'s checksum
+comment points here, and the macOS prerelease checklist's Gatekeeper box assumes
+it.
+
 ## The tag ladder
 
 Five published tag classes, each answering exactly one question ([ADR
