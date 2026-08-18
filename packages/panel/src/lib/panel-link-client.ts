@@ -168,15 +168,30 @@ export class PanelLinkClient {
     }) => void
   >();
   /**
-   * The Sessions this tab has a pane open on, as `coreId` → `taskId`s.
+   * The Sessions this tab has a pane open on, as `coreId` → `taskId` → **how
+   * many panes** (issue 186).
    *
    * Held for the same reason the PTY claims above are: the service gives a
    * tab's drives back when its socket dies, so a reconnect that re-sent only
    * the subscriptions would come back with every pane on this tab following a
-   * Session nobody drives. The set is the tab's, and it is re-announced on
-   * every open.
+   * Session nobody drives. The interest is the tab's, and it is re-announced on
+   * every open — once per Session, not once per pane.
+   *
+   * **A count rather than a set, because a tab is not a pane.** The service
+   * keys interest per tab — one client id, one entry, whatever that tab has on
+   * screen (issue 242) — while the browser opens and closes panes, and a tab
+   * may well hold two panes on one Session. With a set, the two granularities
+   * disagreed in both directions: the second pane's `watch` re-announced
+   * interest the tab already held, and the first pane to close dropped it out
+   * from under the one still open. This is the seam where pane events are
+   * aggregated into the tab-level fact the service is told, so exactly one
+   * `watch` goes out for the first pane and exactly one `drop` for the last.
+   *
+   * It counts *panes*, not gestures: {@link driveSession} with `take` is the
+   * operator moving their keyboard to a pane that is already on screen and
+   * already counted, so it announces without counting.
    */
-  private readonly drivenSessions = new Map<string, Set<string>>();
+  private readonly drivenSessions = new Map<string, Map<string, number>>();
 
   constructor(opts: PanelLinkOptions = {}) {
     this.createSocket = opts.createSocket ?? defaultCreateSocket;
@@ -320,23 +335,60 @@ export class PanelLinkClient {
    * `take: true` is the operator asking for the keyboard here, which moves it
    * off whichever tab of this Panel had it. Without it a pane takes the drive
    * only if no other tab is driving that Session.
+   *
+   * **Reference-counted over this tab's panes** (issue 186), exactly as
+   * {@link watch} is over a Core's subscribers. A second pane on a Session this
+   * tab has already announced sends nothing: the service holds the tab's
+   * interest already, and re-announcing it would move this tab to the back of
+   * that Session's queue — the keyboard leaving the pane the operator is
+   * looking at, with no gesture of theirs to explain it.
+   *
+   * `take` is the exception and announces every time, because it is not a pane
+   * arriving: it is the operator asking for the keyboard *here*, and it has to
+   * reach the service whether or not this tab is already watching — that is the
+   * whole of the gesture when another tab holds the drive.
    */
   driveSession(coreId: string, taskId: string, opts: { take?: boolean } = {}): void {
+    const take = opts.take === true;
+    if (take) {
+      this.write({ t: "drive", coreId, taskId, want: "take" });
+      return;
+    }
     let driven = this.drivenSessions.get(coreId);
     if (!driven) {
-      driven = new Set();
+      driven = new Map();
       this.drivenSessions.set(coreId, driven);
     }
-    driven.add(taskId);
-    this.write({ t: "drive", coreId, taskId, want: opts.take === true ? "take" : "watch" });
+    const panes = driven.get(taskId) ?? 0;
+    driven.set(taskId, panes + 1);
+    // Only the first pane announces. The rest are this tab's own business.
+    if (panes > 0) return;
+    this.write({ t: "drive", coreId, taskId, want: "watch" });
   }
 
-  /** This tab's pane on a Session is gone; it drives nothing there. Idempotent. */
-  releaseSessionDrive(coreId: string, taskId: string): void {
+  /**
+   * One of this tab's panes on a Session has gone. Idempotent.
+   *
+   * Returns whether that was the **last** pane — whether the tab actually gave
+   * the Session back (issue 186). Until it is, this tab still has the Session
+   * on screen and still holds its interest, and a caller that reset its own
+   * copy of the answer on the first pane to close would have the surviving pane
+   * believing nobody arbitrates a Session the service still has this tab
+   * driving. The one place the pane count is kept is here; callers ask it
+   * rather than keeping a second one that can disagree.
+   */
+  releaseSessionDrive(coreId: string, taskId: string): boolean {
     const driven = this.drivenSessions.get(coreId);
-    if (!driven?.delete(taskId)) return;
+    const panes = driven?.get(taskId) ?? 0;
+    if (!driven || panes === 0) return false;
+    if (panes > 1) {
+      driven.set(taskId, panes - 1);
+      return false;
+    }
+    driven.delete(taskId);
     if (driven.size === 0) this.drivenSessions.delete(coreId);
     this.write({ t: "drive", coreId, taskId, want: "drop" });
+    return true;
   }
 
   /**
@@ -623,7 +675,7 @@ export class PanelLinkClient {
    */
   private resendSessionDrives(): void {
     for (const [coreId, taskIds] of this.drivenSessions) {
-      for (const taskId of taskIds) {
+      for (const taskId of taskIds.keys()) {
         this.rawSend(encodePanelLinkFrame({ t: "drive", coreId, taskId, want: "watch" }));
       }
     }
