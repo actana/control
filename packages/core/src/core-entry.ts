@@ -72,6 +72,7 @@ import {
   configureCoreQueryStore,
   disposeCoreQueryStore,
   coreQueryStore,
+  listActiveTasks,
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
@@ -85,6 +86,7 @@ import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
+import { sweepStrandedSessions } from "./core-session-sweep";
 import { generateCertMaterial } from "./core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
@@ -182,6 +184,14 @@ async function startCore(): Promise<void> {
     queryPort: coreQueryStore,
     eventLog: { appendEvent, readEventTail, getLastEventId },
   });
+  // Boot reconciliation (issue 243). This Core's PTYs did not survive whatever
+  // ended the last process, so every row still claiming `running` /
+  // `needs-input` is an orphan of that run — no exit callback fired for any of
+  // them. Swept here: after the writer exists (each settle appends the event a
+  // Panel re-renders from) and before the PTY core, the hook receiver or the
+  // core-link server can produce a Session of THIS run that would be in scope.
+  sweepStrandedSessions({ listActiveTasks, writer: taskWriter });
+
   const titleGenerator = new CoreTitleGenerator({ writer: taskWriter });
   const harnessStatus = new CoreHarnessStatus({
     writer: taskWriter,

@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from "vitest";
 import Database from "better-sqlite3";
 import {
   countArchivedTasks,
+  queryActiveTasks,
   queryArchivedTasks,
   queryProjects,
   queryTasks,
@@ -285,6 +286,43 @@ describe("queryArchivedTasks", () => {
 
   it("returns empty when the tasks table does not exist", () => {
     expect(queryArchivedTasks(asQuery(new Database(":memory:")))).toEqual([]);
+  });
+});
+
+describe("queryActiveTasks (the Core's boot sweep read, issue 243)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+  });
+
+  it("returns only the rows that still claim a live harness process", () => {
+    insertTask(db, { taskId: "t-running", projectId: "p1", status: "running" });
+    insertTask(db, { taskId: "t-waiting", projectId: "p1", status: "needs-input" });
+    insertTask(db, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    insertTask(db, { taskId: "t-done", projectId: "p1", status: "finished" });
+    insertTask(db, { taskId: "t-gone", projectId: "p1", status: "disconnected" });
+
+    expect(queryActiveTasks(asQuery(db)).map((t) => t.taskId).sort()).toEqual([
+      "t-running",
+      "t-waiting",
+    ]);
+  });
+
+  it("includes archived rows — an archived Session claiming to work is just as wrong", () => {
+    insertTask(db, { taskId: "t-archived", projectId: "p1", status: "running", archived: true });
+    expect(queryActiveTasks(asQuery(db)).map((t) => t.taskId)).toEqual(["t-archived"]);
+  });
+
+  it("spans every project: a dead process did not die for one Project only", () => {
+    insertTask(db, { taskId: "t-a", projectId: "p1", status: "running" });
+    insertTask(db, { taskId: "t-b", projectId: "p2", status: "needs-input" });
+    expect(queryActiveTasks(asQuery(db))).toHaveLength(2);
+  });
+
+  it("returns empty when the tasks table does not exist", () => {
+    const empty = new Database(":memory:");
+    expect(queryActiveTasks(asQuery(empty))).toEqual([]);
+    empty.close();
   });
 });
 
