@@ -35,6 +35,30 @@
 // The id is not authority and nothing verifies it, exactly as D9 says of its
 // own: it decides which of one Operator's tabs holds a keyboard, and the
 // gesture it arbitrates is unconditional for any tab that asks for it outright.
+//
+// **A tab is not a pane, and the aggregating happens in the browser** (issue
+// 186). One tab may hold two panes on one Session, so pane-level opens and
+// closes cannot be interest-level ones: the second pane's `watch` re-asserted
+// interest the tab already held and sent it to the back of this queue with no
+// operator gesture behind it, and the first pane to close released the whole
+// tab's interest while the other pane kept a writable surface — the register
+// handing the Session to some other tab while this one went on typing into it.
+// Both are gone, and they are gone at the seam that knows what a pane is: the
+// panel-link client counts this tab's panes per Session and announces the first
+// and releases the last, so one `watch` and one `drop` reach here per tab per
+// Session. Nothing in this file could have done it — panes have no name on the
+// wire, and inventing one would put the browser's layout in the service.
+//
+// That leaves the ordering question #242 parked here — whether re-asserting
+// interest a tab already holds should keep its place in the queue — answered
+// deliberately rather than by omission: **it still goes to the tail**, and this
+// ticket removed the re-assertions nobody asked for instead of making
+// re-assertion free. The one that remains is a reconnect re-announcing this
+// tab's interest, and tail is the rule #242 settled for exactly that case: two
+// tabs on one Session, a flap can move the keyboard, the tab holding it says so
+// on screen, and taking it back is one click. Making a re-assert
+// position-preserving would quietly become a grace period holding a keyboard
+// for a tab that may never come back.
 
 /**
  * The tab identity this register arbitrates between: a panel-link client id,
@@ -91,9 +115,13 @@ export class SessionDriveRegister {
    * — the sole watcher of a Session stays its driver across its own reload,
    * which is the whole of issue 242 — but it does move that tab to the tail
    * behind any other tab still watching. That is the first-come rule applied
-   * evenly, and the same end state a reload reaches today; whether re-asserting
-   * existing interest should preserve its position is issue 186's question, and
-   * this ticket deliberately leaves it there.
+   * evenly, and the same end state a reload reaches today.
+   *
+   * It stays that way (issue 186). What a re-assert costs is a place in the
+   * queue, and the fix for a cost nobody asked for is to stop asking: a tab's
+   * panes are counted in the browser and only the first announces, so the
+   * re-asserts left are the ones a reconnect owes this register — where tail is
+   * the rule #242 chose on purpose. See the module comment.
    */
   want(
     taskId: string,
@@ -110,8 +138,15 @@ export class SessionDriveRegister {
   }
 
   /**
-   * This tab has stopped watching this Session — its pane closed, or its whole
-   * socket went away. The drive falls to the next tab still watching.
+   * This tab has stopped watching this Session — its **last** pane on it closed,
+   * or its whole socket went away. The drive falls to the next tab still
+   * watching.
+   *
+   * Last, not any: a tab with a second pane still open has not stopped watching
+   * anything, and a `drop` on its behalf would hand the Session on while it
+   * still had it on screen and writable (issue 186). Which pane was the last one
+   * is a question only the browser can answer, and it does — see the module
+   * comment.
    */
   release(taskId: string, clientId: DriveClientId): DriveChange {
     const watchers = this.interest.get(taskId);
