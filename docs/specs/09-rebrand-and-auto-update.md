@@ -7,7 +7,7 @@ package metadata, Electron builder config, main-process constants, all
 user-facing strings under `src/`, and the top-level docs. In the same
 cutover, disable the auto-update path (periodic check, background download,
 update dialog) without deleting `electron/update-manager.ts` — the module
-stays in place as a stub so re-enabling against `control.actano.ai` is a
+stays in place as a stub so re-enabling against `control.actana.ai` is a
 diff, not a rebuild. Hard forward-only: no dual naming, no compatibility
 shims, no data-dir migration.
 
@@ -23,7 +23,7 @@ Root file: `/Users/mehdiroshanfekr/Projects/opensource/mission-control-updated/p
 | `build.productName` | `"MissionControl"` | `"Actana Control"` |
 | `build.mac.extendInfo.NSMicrophoneUsageDescription` | `"Mission Control uses the microphone…"` | remove entirely — mic entitlement/whisper are being deleted per ADR 0007 (spec 01 Whisper removal) |
 | `build.mac.extendInfo.NSScreenCaptureUsageDescription` | `"Mission Control captures a screen region…"` | remove entirely — screenshot capture is being deleted per ADR 0007 |
-| `build.publish[0].url` | `"https://agentsystem.dev/downloads/mission-control/auto-update"` | replace the entire `build.publish` array with `"publish": null` (disables generic-provider publishing entirely). Do not point at `control.actano.ai` yet — see Open Questions. |
+| `build.publish[0].url` | `"https://agentsystem.dev/downloads/mission-control/auto-update"` | replace the entire `build.publish` array with `"publish": null` (disables generic-provider publishing entirely). Do not point at `control.actana.ai` yet — see Open Questions. |
 | `build.win.artifactName` | `"${productName}-${version}-Setup.${ext}"` | keep — resolves via `productName`; will produce `Actana Control-<ver>-Setup.exe` after productName change |
 
 No `author` or `publisher` field is currently set — leave absent (or add
@@ -179,7 +179,7 @@ every entry point.
 1. Prepend a top-of-file comment block:
    ```
    // Auto-update is DISABLED for the initial Actana Control cutover.
-   // Re-enable when control.actano.ai (spelling TBC — see docs/specs/09) is
+   // Re-enable when control.actana.ai (spelling TBC — see docs/specs/09) is
    // live and the generic-provider artifacts (latest-mac.yml, latest.yml,
    // latest-linux.yml, *.blockmap, *.zip) are being served. Re-enabling is:
    //   1. Restore `build.publish` in package.json with the new URL.
