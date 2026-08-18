@@ -38,5 +38,13 @@
   // covers `src/__tests__` — and it is *run* here, which is the point of it.
   // vitest resolves it through the alias in `vitest.config.ts` and does not
   // consult this file.
-  "exclude": ["node_modules", "dist", "src/__tests__/core-files-list-contract.test.ts"]
+  //
+  // The refusal-code contract (#224) is registered the same way and excluded for
+  // the same reason.
+  "exclude": [
+    "node_modules",
+    "dist",
+    "src/__tests__/core-files-list-contract.test.ts",
+    "src/__tests__/core-files-error-codes.test.ts"
+  ]
 }
