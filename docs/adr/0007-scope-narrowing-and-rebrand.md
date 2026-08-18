@@ -18,12 +18,12 @@ The motivations are (1) *result parity* — see ADR 0006 on skills; the same pri
 
 ## Consequences
 
-- Nine removal specs land as separate PRs (Whisper, Pet + multiplayer, Screenshot, Recall/Memory, Bundled skills, IDE-adjacent, Convenience, plus cross-core notifications add and the rebrand). See `docs/specs/`.
+- Nine removal specs land as separate PRs (Whisper, Pet + multiplayer, Screenshot, Recall/Memory, Bundled skills, IDE-adjacent, Convenience, plus cross-core notifications add and the rebrand).
 - The rebrand spec (09) is expanded to cover the npm scope (`@agentsystemlabs` → `@qcentic`), package name (`mission-control` → `actana-control`), update host (`agentsystem.dev` → `control.actana.ai`), and agent bridge dep (`@agentsystemlabs/mission-control-agent` → `@qcentic/actana-control-agent`).
 - The `MC_*` env-var prefix used between the Panel and the agent bridge is a wire contract; because we now own both sides, renaming it to `AC_*` lands together with the package rename as a single break. Confirmed 2026-07-30. Detailed in spec 09.
 - One consolidated forward-only migration drops every table and `app_settings` field belonging to a removed feature. No feature flags. See ADR 0006 for skill-install specifics.
 - `package.json` (`name`, `productName`, `build.appId`, `build.publish`), the window title, deep-link scheme, and all user-facing strings switch to Actana Control. `README.md`, `PRODUCT.md`, `SPEC.md`, `CHANGELOG.md`, and `CONTEXT.md` are updated; `docs/upstream/*` is updated to reflect that many upstream-divergence axes now become NON-EXISTENT (Panel-side) because the entire feature area is gone.
-- `electron/update-manager.ts` is disabled: no periodic checks, no update dialog. The module remains as a stub with a TODO pointing at the `control.actano.ai` follow-up so re-enabling later is a small change rather than a rebuild.
+- `electron/update-manager.ts` is disabled: no periodic checks, no update dialog. The module remains as a stub with a TODO pointing at the `control.actana.ai` follow-up so re-enabling later is a small change rather than a rebuild.
 - macOS entitlements lose the microphone usage description (came with Whisper). Any other capability that was declared for a removed feature is stripped in the same pass.
 - The harness registry stays extensible for new harnesses (`opencode`, `pi`, `hermes`) even though the current skill-install table shape goes away — see the domain model.
 - Legacy references to *Mission Control* survive only in `docs/upstream/` porting notes (where they are the correct historical name).

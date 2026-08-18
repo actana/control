@@ -141,6 +141,12 @@ directory and "nobody asked" for anything else.
 
 Refusals carry a machine-readable `code` beside the prose:
 
+<!-- refusal-codes: start — the `Code` column of the tables between these
+     markers is pinned to `CORE_FILES_ERROR_CODES` in `@actana/sdk` by
+     `files-error-code-contract.ts`, which runs in both the SDK's and the
+     Core's suites. Adding a refusal code goes red here until this table
+     names it. Move a marker and you switch the check off. -->
+
 | Status | Code | Means |
 | --- | --- | --- |
 | 400 | `absolute-path`, `dot-dot-segment`, `outside-project-root`, `malformed-path` | the path does not name anything inside that Project a write can land on. A 400 and not a 403: this is an accident guard, not a permission model ([ADR 0027](adr/0027-the-filesystem-is-the-model.md) D5). `malformed-path` also answers a single-file `PUT` whose path resolves to the Project root itself — see below |
@@ -152,6 +158,34 @@ Refusals carry a machine-readable `code` beside the prose:
 | 409 | `directory-in-the-way` | a **file** write landed on a path holding a non-empty directory. Overwrite-by-default replaces files; it does not delete trees |
 | — | `root-entry-path` | a tar entry that is not a directory resolved to the unpack root itself. Reported as an NDJSON `error` line, since a tar `PUT` has already answered `200` by the time an entry is read — see below |
 | 507 | `insufficient-storage` | the declared body length does not fit on the Project's filesystem. There is no size cap — only a fit check |
+
+**The rest of the vocabulary has no status line to arrive on.** A tar `PUT` and
+a listing both spend their `200` on the first entry, long before either is
+finished, so a failure met part-way can only be said in the body: it comes back
+as the NDJSON `error` line that ends the progress stream. `root-entry-path` is
+one of these and is listed above rather than here, because it is the one an
+ordinary `tar -cf - .` produces by accident and a reader looking up a refusal
+will look for it beside the others.
+
+| Code | Means |
+| --- | --- |
+| `corrupt-archive` | the bytes stopped being a tar: a header checksum that does not match, a stream that ended mid-record, a numeric field that is negative |
+| `absolute-entry-path` | an entry named `/etc/passwd`. An unpack is always relative to the Project, and an absolute name is refused rather than reinterpreted |
+| `dot-dot-entry-path` | an entry whose name carries a `..` segment |
+| `entry-outside-root` | an entry whose destination resolved outside the Project — including through a symlink an **earlier entry of the same archive** created. Every entry is resolved through the symlinks that exist at the moment it is written, which is why this is checked after resolution and not on the string |
+| `unsupported-entry-type` | a device node, a fifo, or any ustar type this surface does not create. A file transfer moves files, directories and links |
+| `hardlink-outside-root` | a hard link whose target resolves outside the Project |
+| `symlink-outside-root` | a symlink whose target resolves outside the Project. The link is refused; a symlink *pointing* out of a Project is still listed and still transferred as a link, since it is a fact about the Project rather than a way out of it |
+| `directory-in-the-way` | the same refusal as the 409 above, met mid-archive instead of on a single-file `PUT` |
+| `read-failed` | a **listing** stopped part-way for a reason no single path can be blamed for — the directory read itself failing, a mount going away underneath the walk. Distinct from a `skipped` line, which costs one path and lets the walk continue |
+| `write-failed` | the write failed for a reason no entry can be blamed for — the disk filled mid-transfer, the filesystem returned an error. It is also the `500` this surface answers when a request fails in a way it cannot name |
+
+<!-- refusal-codes: end -->
+
+An `error` line **replaces** the `done` line and the transfer stops there.
+Entries already written stay written: this is a stream, not a transaction, so a
+client that cares which of them landed reads the `entry` lines it was sent
+rather than assuming all or nothing.
 
 A client that sends `Expect: 100-continue` is refused before it uploads a byte,
 which is what makes the 409 immediate for a large transfer rather than merely

@@ -323,7 +323,8 @@ main() {
   # What this proves: the tarball is the one the release's own checksum file
   # describes. Both came over the same channel, so it catches corruption and
   # truncation, not a release channel someone else controls — the project
-  # publishes no signatures (spec: "No code signing").
+  # publishes no signatures. Why that is safe, and what would change it:
+  # docs/ci-cd.md, "Integrity is published checksums, not signatures".
   say "Checksum verified against the release's $SHASUMS_ASSET."
 
   tar -xzf "$tarball" -C "$work_dir" || die "could not unpack $asset"
