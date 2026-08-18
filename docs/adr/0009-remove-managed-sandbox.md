@@ -16,7 +16,7 @@ The detached-core Harness is the strict superset. It owns the Session (PTY, even
 
 ## Consequences
 
-- Removal spec 10 (`docs/specs/10-remove-sandbox.md`) lands as a single PR alongside the other scope-narrowing specs. Total removal count rises from nine to ten.
+- Removal spec 10 lands as a single PR alongside the other scope-narrowing specs. Total removal count rises from nine to ten.
 - The `sandboxes` table and every `scopeId` / `sandboxId` column dropped in one forward-only migration. No data-migration path — existing sandbox-scoped projects are gone with their sandbox (fresh-fork, no users to preserve).
 - `@agentsystemlabs/mission-control-agent` npm dependency is removed. Rebrand spec 09's "publish `@qcentic/actana-control-agent` before rebrand can land" prerequisite is **dissolved** — the package no longer needs to exist because nothing in Actana Control installs an agent on a VM anymore. Spec 09 is updated to strike the agent-bridge rename from its checklist.
 - Electron IPC surface shrinks by ~48 channels (`sandbox:*`, `remoteVm:*`, `remotePty:*`, `remoteFs:*`, `remoteGit:*`). Preload contract, `electron-contract.ts` shared types, and `ipc-channels.ts` all shrink correspondingly.
