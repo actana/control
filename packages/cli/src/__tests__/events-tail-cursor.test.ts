@@ -137,13 +137,48 @@ describe("actana events tail, across a Core restart", () => {
     log.push("session:finished");
 
     const firstRun: string[] = [];
-    const first = fixture.run(["events", "tail", "--json", "--limit", "2"], {
+    const notices: string[] = [];
+    const first = fixture.run(["events", "tail", "--json", "--limit", "2", "--verbose"], {
       connect: connectCore,
       onOut: (line) => firstRun.push(line),
+      onErr: (line) => notices.push(line),
     });
-    await waitFor(() => log.tailReads >= 1, "the first tail never subscribed");
+
+    // Wait for the tip hunt to have *finished*, not merely to have started.
+    //
+    // This is the flake in #208, and it is a race rather than a slow runner:
+    // one `subscribe` is not where a first run settles. With three events
+    // already in the log the Core answers the first one with a full tail and an
+    // `eventsReplayed` that is only a receipt, so the run asks again from #3 and
+    // waits for a second marker to close an *empty* tail (`event-tip.ts`). The
+    // old wait here was `log.tailReads >= 1` — satisfied by the *first* of those
+    // reads. The two events below then had a window, one round trip wide, in
+    // which to land before the second `readEventTail` ran: appended inside it
+    // they are history, counted by the tip tracker and deliberately never
+    // printed, so `--limit 2` is never reached and the run follows a Core that
+    // has nothing left to say. That is a hang, not an overrun — which is why CI
+    // saw 61.7s against a 60s budget three times over, and why the file passes
+    // in 1.2s whenever the race is won.
+    //
+    // The notice below is the run stating that it has found the end of the log
+    // and switched printing on — the condition these two pushes actually need,
+    // published on stderr by the command itself, and the same signal the
+    // history-longer-than-a-tail test waits for. Reaching it takes a round trip
+    // more under load and none of the assertions less.
+    const endOfLog = (): string | undefined =>
+      notices.find((line) => line.includes("the Core's log ends at #"));
+    await waitFor(() => endOfLog() !== undefined, "the first tail never found the end of the log");
+    // #3, and stated: the run walked the whole history and stopped at its end.
+    // A tip settled anywhere else is the failure the pushes below were racing —
+    // now an assertion about the cursor rather than a timeout with no evidence.
+    expect(
+      endOfLog(),
+      "the first tail settled somewhere other than the end of the history",
+    ).toContain("the Core's log ends at #3;");
     // Nothing from the tail above may be printed: with no stored cursor, a tail
     // starts at the end of the log the way `tail -f` does.
+    expect(firstRun, "history was printed while the end of the log was being found").toEqual([]);
+
     log.push("task:question");
     log.push("pty:exit");
 
