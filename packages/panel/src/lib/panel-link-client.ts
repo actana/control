@@ -1,9 +1,11 @@
 import {
+  PANEL_LINK_CLIENT_PARAM,
   PANEL_LINK_PATH,
   PANEL_LINK_PROTOCOL_VERSION,
   PANEL_LINK_VERSION_PARAM,
   decodeServerFrame,
   encodePanelLinkFrame,
+  readPanelLinkClientId,
 } from "~/shared/panel-link";
 import type {
   CoreLinkEvent,
@@ -44,6 +46,14 @@ export type PanelLinkOptions = {
   createSocket?: (url: string) => PanelLinkSocketLike;
   /** Absolute or relative panel-link URL. Default: derived from the page origin. */
   url?: string;
+  /**
+   * This tab's panel-link client id (issue 242). Default: the id this tab
+   * carries across its own reload — see {@link claimTabClientId}.
+   *
+   * Injectable for tests, which need two "tabs" in one process and cannot get
+   * two `sessionStorage`s.
+   */
+  clientId?: string;
   reconnectInitialMs?: number;
   reconnectMaxMs?: number;
   requestTimeoutMs?: number;
@@ -99,6 +109,17 @@ type Watch = {
 export class PanelLinkClient {
   private readonly createSocket: (url: string) => PanelLinkSocketLike;
   private readonly url: string;
+  /**
+   * What this tab calls itself on every socket it opens, including the one it
+   * opens after a reload (issue 242).
+   *
+   * The service keys the **Session drive** by this, so a returning tab finds its
+   * own entry rather than queueing behind the socket it just replaced. It is
+   * deliberately not a *user* identity and not a Core client id: it names one
+   * browser tab, it never reaches a Core, and the only thing it decides is which
+   * of one Operator's own tabs holds a keyboard.
+   */
+  private readonly clientId: string;
   private readonly reconnectInitialMs: number;
   private readonly reconnectMaxMs: number;
   private readonly requestTimeoutMs: number;
@@ -147,19 +168,35 @@ export class PanelLinkClient {
     }) => void
   >();
   /**
-   * The Sessions this tab has a pane open on, as `coreId` → `taskId`s.
+   * The Sessions this tab has a pane open on, as `coreId` → `taskId` → **how
+   * many panes** (issue 186).
    *
    * Held for the same reason the PTY claims above are: the service gives a
    * tab's drives back when its socket dies, so a reconnect that re-sent only
    * the subscriptions would come back with every pane on this tab following a
-   * Session nobody drives. The set is the tab's, and it is re-announced on
-   * every open.
+   * Session nobody drives. The interest is the tab's, and it is re-announced on
+   * every open — once per Session, not once per pane.
+   *
+   * **A count rather than a set, because a tab is not a pane.** The service
+   * keys interest per tab — one client id, one entry, whatever that tab has on
+   * screen (issue 242) — while the browser opens and closes panes, and a tab
+   * may well hold two panes on one Session. With a set, the two granularities
+   * disagreed in both directions: the second pane's `watch` re-announced
+   * interest the tab already held, and the first pane to close dropped it out
+   * from under the one still open. This is the seam where pane events are
+   * aggregated into the tab-level fact the service is told, so exactly one
+   * `watch` goes out for the first pane and exactly one `drop` for the last.
+   *
+   * It counts *panes*, not gestures: {@link driveSession} with `take` is the
+   * operator moving their keyboard to a pane that is already on screen and
+   * already counted, so it announces without counting.
    */
-  private readonly drivenSessions = new Map<string, Set<string>>();
+  private readonly drivenSessions = new Map<string, Map<string, number>>();
 
   constructor(opts: PanelLinkOptions = {}) {
     this.createSocket = opts.createSocket ?? defaultCreateSocket;
     this.url = opts.url ?? defaultUrl();
+    this.clientId = opts.clientId ?? claimTabClientId();
     this.reconnectInitialMs = opts.reconnectInitialMs ?? DEFAULT_RECONNECT_INITIAL_MS;
     this.reconnectMaxMs = opts.reconnectMaxMs ?? DEFAULT_RECONNECT_MAX_MS;
     this.requestTimeoutMs = opts.requestTimeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
@@ -298,23 +335,60 @@ export class PanelLinkClient {
    * `take: true` is the operator asking for the keyboard here, which moves it
    * off whichever tab of this Panel had it. Without it a pane takes the drive
    * only if no other tab is driving that Session.
+   *
+   * **Reference-counted over this tab's panes** (issue 186), exactly as
+   * {@link watch} is over a Core's subscribers. A second pane on a Session this
+   * tab has already announced sends nothing: the service holds the tab's
+   * interest already, and re-announcing it would move this tab to the back of
+   * that Session's queue — the keyboard leaving the pane the operator is
+   * looking at, with no gesture of theirs to explain it.
+   *
+   * `take` is the exception and announces every time, because it is not a pane
+   * arriving: it is the operator asking for the keyboard *here*, and it has to
+   * reach the service whether or not this tab is already watching — that is the
+   * whole of the gesture when another tab holds the drive.
    */
   driveSession(coreId: string, taskId: string, opts: { take?: boolean } = {}): void {
+    const take = opts.take === true;
+    if (take) {
+      this.write({ t: "drive", coreId, taskId, want: "take" });
+      return;
+    }
     let driven = this.drivenSessions.get(coreId);
     if (!driven) {
-      driven = new Set();
+      driven = new Map();
       this.drivenSessions.set(coreId, driven);
     }
-    driven.add(taskId);
-    this.write({ t: "drive", coreId, taskId, want: opts.take === true ? "take" : "watch" });
+    const panes = driven.get(taskId) ?? 0;
+    driven.set(taskId, panes + 1);
+    // Only the first pane announces. The rest are this tab's own business.
+    if (panes > 0) return;
+    this.write({ t: "drive", coreId, taskId, want: "watch" });
   }
 
-  /** This tab's pane on a Session is gone; it drives nothing there. Idempotent. */
-  releaseSessionDrive(coreId: string, taskId: string): void {
+  /**
+   * One of this tab's panes on a Session has gone. Idempotent.
+   *
+   * Returns whether that was the **last** pane — whether the tab actually gave
+   * the Session back (issue 186). Until it is, this tab still has the Session
+   * on screen and still holds its interest, and a caller that reset its own
+   * copy of the answer on the first pane to close would have the surviving pane
+   * believing nobody arbitrates a Session the service still has this tab
+   * driving. The one place the pane count is kept is here; callers ask it
+   * rather than keeping a second one that can disagree.
+   */
+  releaseSessionDrive(coreId: string, taskId: string): boolean {
     const driven = this.drivenSessions.get(coreId);
-    if (!driven?.delete(taskId)) return;
+    const panes = driven?.get(taskId) ?? 0;
+    if (!driven || panes === 0) return false;
+    if (panes > 1) {
+      driven.set(taskId, panes - 1);
+      return false;
+    }
+    driven.delete(taskId);
     if (driven.size === 0) this.drivenSessions.delete(coreId);
     this.write({ t: "drive", coreId, taskId, want: "drop" });
+    return true;
   }
 
   /**
@@ -455,11 +529,24 @@ export class PanelLinkClient {
 
   // ─── transport ────────────────────────────────────────────────────────────
 
+  /**
+   * The URL for one dial: the configured link plus this tab's client id.
+   *
+   * Appended here rather than folded into {@link defaultUrl} so an injected url
+   * — a test's, a deployment's — carries the id too. A socket that dialled
+   * without it would be a stranger to the service, and the tab would silently
+   * lose its drive on the next reconnect with nothing to show why.
+   */
+  private dialUrl(): string {
+    const separator = this.url.includes("?") ? "&" : "?";
+    return `${this.url}${separator}${PANEL_LINK_CLIENT_PARAM}=${encodeURIComponent(this.clientId)}`;
+  }
+
   private connect(): void {
     if (this.closed) return;
     let socket: PanelLinkSocketLike;
     try {
-      socket = this.createSocket(this.url);
+      socket = this.createSocket(this.dialUrl());
     } catch {
       this.scheduleReconnect();
       return;
@@ -588,7 +675,7 @@ export class PanelLinkClient {
    */
   private resendSessionDrives(): void {
     for (const [coreId, taskIds] of this.drivenSessions) {
-      for (const taskId of taskIds) {
+      for (const taskId of taskIds.keys()) {
         this.rawSend(encodePanelLinkFrame({ t: "drive", coreId, taskId, want: "watch" }));
       }
     }
@@ -681,6 +768,106 @@ export class PanelLinkClient {
       }
     }
   }
+}
+
+/**
+ * Where this tab's client id is parked while the page is being replaced.
+ *
+ * `sessionStorage`, because it is the only web storage scoped to exactly what
+ * this id names: one tab. It survives a reload and a same-tab navigation, and it
+ * dies with the tab — a closed tab has no drive to reclaim, and `localStorage`
+ * would make every tab in the browser one tab.
+ */
+const TAB_CLIENT_ID_KEY = "actana.panel-link.tab";
+
+/**
+ * This tab's client id: minted once, parked as the page goes away, and claimed
+ * back by the page that replaces it (issue 242).
+ *
+ * **Claimed, not merely read** — the key is removed the instant it is taken, and
+ * written back only on `pagehide`. That is what makes the id unforgeably
+ * per-tab: a browser's "Duplicate tab" copies `sessionStorage` wholesale, and a
+ * copy taken while the key is absent — which is every moment a page is actually
+ * running — carries no id, so the duplicate mints its own. Two live tabs
+ * therefore cannot present the same string, which matters because they would
+ * then reap each other's sockets on every reconnect and neither would settle.
+ * That is ADR 0024 D9's argument against a durable Core client id, applied to
+ * the layer above: an id per live tab makes the collision unrepresentable rather
+ * than something to detect.
+ *
+ * `pageshow` re-claims it after a back/forward-cache restore, where the page
+ * comes back with its JavaScript state — and so its id — intact, but the key it
+ * parked on the way out still sitting there for a duplicate to copy.
+ *
+ * A tab that crashes without running `pagehide` loses its id and mints a fresh
+ * one on the way back. That is the pre-242 behaviour, which is the right thing
+ * to fall back to: it costs a keyboard that first-come will hand back, never a
+ * wrong answer.
+ */
+function claimTabClientId(): string {
+  const store = tabStore();
+  let id: string | null = null;
+  if (store) {
+    try {
+      id = readPanelLinkClientId(store.getItem(TAB_CLIENT_ID_KEY));
+      store.removeItem(TAB_CLIENT_ID_KEY);
+    } catch {
+      // Storage disabled or full. The mint below is the whole fallback.
+      id = null;
+    }
+  }
+  const clientId = id ?? mintTabClientId();
+  if (store && typeof window !== "undefined") {
+    const park = () => {
+      try {
+        store.setItem(TAB_CLIENT_ID_KEY, clientId);
+      } catch {
+        // Nothing to do: the next page mints its own.
+      }
+    };
+    const reclaim = () => {
+      try {
+        store.removeItem(TAB_CLIENT_ID_KEY);
+      } catch {
+        // See above.
+      }
+    };
+    // `pagehide` rather than `unload`: it is the one that fires for a page going
+    // into the back/forward cache as well as one being torn down, and `unload`
+    // disables that cache outright.
+    window.addEventListener("pagehide", park);
+    window.addEventListener("pageshow", reclaim);
+  }
+  return clientId;
+}
+
+/** `sessionStorage`, or null where there is none (SSR, or a locked-down browser). */
+function tabStore(): Storage | null {
+  try {
+    return typeof window === "undefined" ? null : (window.sessionStorage ?? null);
+  } catch {
+    // Reading the property itself throws when storage is blocked by policy.
+    return null;
+  }
+}
+
+/**
+ * Mint a fresh tab client id.
+ *
+ * Random rather than derived from anything about the page, for the reason ADR
+ * 0024 D9 gives for the Core client id: every input that would make it stable
+ * across tabs — the origin, the operator, the deployment — is shared by all of
+ * them, which is the one shape that must not happen. Unguessability buys nothing
+ * and is not claimed: nothing verifies this string, and the authority it moves
+ * is a keyboard between two tabs the same person already has open.
+ *
+ * The `tab-` prefix matches the id the service mints for a socket that presented
+ * none, so the two read alike wherever they are logged.
+ */
+function mintTabClientId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return `tab-${random}`;
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function defaultUrl(): string {

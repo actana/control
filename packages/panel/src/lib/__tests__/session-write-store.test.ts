@@ -22,6 +22,10 @@ type Handlers = {
 function fakeBridge() {
   const handlers: Handlers = {};
   const drives: Array<{ taskId: string; take: boolean }> = [];
+  // The pane count the real link client keeps, and the answer the store asks it
+  // for (issue 186). A fake that said "last pane" to every release would pass a
+  // test the product fails, so this one counts.
+  const panes = new Map<string, number>();
   const bridge = {
     onSessionLock: (cb: NonNullable<Handlers["lock"]>) => {
       handlers.lock = cb;
@@ -33,9 +37,17 @@ function fakeBridge() {
     },
     driveSession: (_coreId: string, taskId: string, opts?: { take?: boolean }) => {
       drives.push({ taskId, take: opts?.take === true });
+      if (opts?.take !== true) panes.set(taskId, (panes.get(taskId) ?? 0) + 1);
     },
     releaseSessionDrive: (_coreId: string, taskId: string) => {
       drives.push({ taskId, take: false });
+      const open = panes.get(taskId) ?? 0;
+      if (open > 1) {
+        panes.set(taskId, open - 1);
+        return false;
+      }
+      panes.delete(taskId);
+      return true;
     },
   } as unknown as PanelBridge;
   __setPanelBridgeForTests(bridge);
@@ -156,6 +168,37 @@ describe("the drive gestures", () => {
       { taskId: TASK, take: false },
       { taskId: TASK, take: true },
     ]);
+  });
+
+  it("keeps the tab's answer while a second pane on the Session is still open", () => {
+    const { handlers } = fakeBridge();
+
+    // Two panes in this tab, one Session — a split view, or the same Session
+    // opened twice. The drive is the *tab's*, so both panes read one answer.
+    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, TASK);
+    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: true, reason: "watch" });
+
+    releaseSessionDrive(CORE, TASK);
+
+    // The tab still has the Session on screen and the service still has it
+    // driving. Reading `none` here is what let the surviving pane keep a
+    // writable surface after the drive had gone somewhere else — issue 186's
+    // silent dual write, seen from the browser.
+    expect(readSessionWriteState(CORE, TASK).drive).toBe("driving");
+    expect(readSessionWriteState(CORE, TASK).access.writable).toBe(true);
+  });
+
+  it("clears the tab's answer when the last pane on the Session closes", () => {
+    const { handlers } = fakeBridge();
+
+    watchSessionDrive(CORE, TASK);
+    watchSessionDrive(CORE, TASK);
+    handlers.drive?.({ coreId: CORE, taskId: TASK, driving: true, reason: "watch" });
+    releaseSessionDrive(CORE, TASK);
+    releaseSessionDrive(CORE, TASK);
+
+    expect(readSessionWriteState(CORE, TASK).drive).toBe("none");
   });
 
   it("does nothing for a pane with no Core to address", () => {

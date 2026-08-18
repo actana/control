@@ -3,6 +3,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
@@ -57,7 +58,21 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
   });
 
   it("never blocks the operator's session when the receiver is down", () => {
+    // The chain still ends in `|| true`: a delivered hook short-circuits it, a
+    // dropped one records itself first, and a record that cannot be written
+    // falls through to it. Either way the command exits 0 (issue 243).
     expect(hookCommand("claude", "Stop")).toContain("|| true");
+  });
+
+  it("checks the Core's ack instead of swallowing every answer (issue 243)", () => {
+    const command = hookCommand("claude", "Stop");
+    // `-f` is what makes a 401/404/500 a failure rather than a silent success,
+    // and the retry is for the timeout a busy Core hands a `-m 3` POST.
+    expect(command).toContain("-f");
+    expect(command).toContain("--retry 2");
+    // The drop lands in a file the Core drains into its log — the trace this
+    // path had none of.
+    expect(command).toContain(`$\{${HOOK_MISS_LOG_ENV}:-/dev/null}`);
   });
 
   it("matches PreToolUse to AskUserQuestion but leaves PostToolUse open", () => {

@@ -60,6 +60,50 @@ export const PANEL_LINK_PROTOCOL_VERSION = 1;
 export const PANEL_LINK_VERSION_PARAM = "v";
 
 /**
+ * Upgrade query parameter carrying the browser tab's **panel-link client id**
+ * (issue 242) — what a tab calls itself across its own reload, so the service
+ * can tell a returning tab from a new one.
+ *
+ * On the query rather than in a frame, and for the same reason the version is:
+ * the service has to know it at `attach`, before the tab has sent anything, or
+ * the reload it is meant to absorb has already been arbitrated as a stranger.
+ * It rides the upgrade the operator's session cookie already gates, so it adds
+ * no surface — and it authenticates nothing, exactly as the core link's own
+ * client id does not (ADR 0024 D9/D10). It is a string a tab made up, and the
+ * only thing presenting somebody else's could move is a keyboard between two
+ * tabs of one Operator's own browser, which either tab may move outright.
+ *
+ * Absent it, a socket is its own client — which is precisely the behaviour every
+ * tab had before this ticket, so a tab left open across a Panel upgrade is not
+ * broken by its absence.
+ */
+export const PANEL_LINK_CLIENT_PARAM = "c";
+
+/**
+ * The longest client id the service will take off an upgrade.
+ *
+ * Generous next to the UUID the Panel mints and small enough that a malformed
+ * or hostile query cannot make the router's map an interesting place to put
+ * data. The id is only ever compared for equality, never parsed.
+ */
+export const PANEL_LINK_CLIENT_ID_MAX_LENGTH = 128;
+
+/**
+ * The client id an upgrade presented, or null for "this socket is its own
+ * client".
+ *
+ * Rejects rather than repairs: an id the service trimmed or truncated would no
+ * longer equal the one the tab believes it holds, so it would reclaim nothing
+ * and the tab would have no way to find that out. Null is the honest answer,
+ * and it lands on the pre-242 behaviour rather than on a wrong one.
+ */
+export function readPanelLinkClientId(raw: string | null | undefined): string | null {
+  if (typeof raw !== "string") return null;
+  if (!raw || raw.length > PANEL_LINK_CLIENT_ID_MAX_LENGTH) return null;
+  return /^[A-Za-z0-9._:-]+$/.test(raw) ? raw : null;
+}
+
+/**
  * Frames the Core pushes without being asked, forwarded verbatim under the
  * `coreId` envelope: PTY output, PTY exit, domain events, end-of-replay.
  */

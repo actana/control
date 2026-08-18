@@ -3,6 +3,12 @@ import { isValidTcpPort } from "./tcp-port";
 export type PtyHookEnv = {
   apiUrl: string;
   token: string;
+  /**
+   * Where a hook records a POST the Core never acked (issue 243). Optional: a
+   * host that wires no miss log still installs working hooks, and the command
+   * they run falls back to `/dev/null` rather than failing.
+   */
+  missLogPath?: string;
 };
 
 /** Hostname a Core uses to reach its own loopback Actana Control API. */

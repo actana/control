@@ -398,7 +398,16 @@ export interface WebSocketServerLike {
 
 export interface WebSocketLike {
   readonly readyState: number;
-  send(data: string): void;
+  /**
+   * Send one frame. The optional callback is Node `ws`'s delivery callback: it
+   * is invoked with an `Error` when the frame could not be handed to the
+   * socket, and with nothing when it was. Supplying it is what turns a failed
+   * send from an `error` event on the socket — which this server logs and
+   * shrugs at — into a fact the caller can act on. Transports that cannot
+   * report delivery simply never call it; see {@link PtyCoreLinkServer.sendResult}
+   * for what is inferred without it.
+   */
+  send(data: string, cb?: (err?: Error) => void): void;
   close(): void;
   on(event: "message", cb: (data: unknown) => void): void;
   on(event: "close", cb: () => void): void;
@@ -414,6 +423,32 @@ export interface WebSocketLike {
 
 const DEFAULT_LIVE_EVENT_POLL_MS = 500;
 const EVENT_TAIL_LIMIT = 1_000;
+
+/**
+ * `WebSocket.CLOSING` and `WebSocket.CLOSED`. Written out rather than imported
+ * from `ws` because {@link WebSocketLike} is transport-agnostic — the injected
+ * sockets the tests drive are not `ws` instances, and this module must not need
+ * `ws` loaded to decide whether a socket can still be written to.
+ *
+ * The test is "not closing or closed" rather than "is `OPEN`" deliberately.
+ * These two are the states a write is *known* to be lost in, and they are the
+ * ones this Core reaches: a server-side `ws` is already `OPEN` when the
+ * `connection` handler gets it, so the only direction it travels is towards
+ * closed. Demanding `OPEN` would additionally refuse `CONNECTING`, which on
+ * this side of a socket means a transport that reports its state on a delay
+ * rather than a socket that cannot take bytes — a distinction worth keeping,
+ * since refusing there would silently swallow the first frame of a connection.
+ */
+const WS_CLOSING = 2;
+const WS_CLOSED = 3;
+
+/**
+ * What one send did. The `reason` is carried rather than re-derived by the
+ * caller so the log line names the actual refusal — a closed socket and a send
+ * that threw are different facts, and a line that reports the first for the
+ * second is the kind of log that sends the next reader down the wrong path.
+ */
+type SendOutcome = { ok: true } | { ok: false; reason: string };
 
 /**
  * The event-log kind each project mutation op appends. Typed on the op union
@@ -796,6 +831,12 @@ export class PtyCoreLinkServer {
    * append stays outside the loop, fires once, and a connection being skipped
    * (or there being no subscribers at all) never costs the log a row.
    *
+   * Delivery here goes through the same guard the event push uses (issue 244) —
+   * `send` refuses a socket that is closing or closed rather than writing into
+   * it — but nothing is gated on the result, because PTY loss is the recoverable
+   * kind: every chunk carries a `seq` and the replay window re-delivers it. The
+   * event log has neither, which is why only that path stops on a refusal.
+   *
    * The auth skip mirrors `pushLiveEvents`: with an `authVerifier` configured,
    * a connection that has not proved identity gets nothing pushed at it. PTY
    * output is strictly more sensitive than the event timeline, and a socket
@@ -906,8 +947,23 @@ export class PtyCoreLinkServer {
 
   /**
    * Push any events appended after the connection's lastSentEventId. Runs on
-   * the poll loop once the connection has subscribed. Also advances the
-   * connection cursor so the next tick only sees newer events.
+   * the poll loop once the connection has subscribed.
+   *
+   * The cursor advances **behind** the send, never in front of it (issue 244).
+   * That ordering is the whole ticket: the client's own cursor is driven by the
+   * events it *receives*, so a cursor moved past a frame the socket refused
+   * opens a hole that nothing closes. The next `subscribe` asks for everything
+   * after a *later* event the client did get, `readEventTail` obliges, and the
+   * skipped one is gone — no error at the client, no counter, no log line. A
+   * `session:finished` lost this way is a notification the operator simply
+   * never receives, and no re-hydration carries it.
+   *
+   * So a refused frame stops the loop with the cursor still below it, and the
+   * next tick starts again from the same event. If the socket is merely
+   * closing, every retry is refused for free by the `readyState` check until
+   * the connection goes, and the reconnect replay carries the backlog off the
+   * client's real cursor. Delivery is at-least-once and in order; it is never
+   * at-most-once.
    */
   private pushLiveEvents(conn: ActiveConnection): void {
     if (!conn.subscribed || !this.eventLog) return;
@@ -919,9 +975,49 @@ export class PtyCoreLinkServer {
     const after = conn.lastSentEventId;
     const tail = this.eventLog.readEventTail(after, EVENT_TAIL_LIMIT);
     for (const event of tail) {
-      this.send(conn.ws, { type: "event", event });
+      if (!this.deliverEvent(conn, event)) return;
       conn.lastSentEventId = event.eventId;
     }
+  }
+
+  /**
+   * Put one `event` frame on a connection and say whether the socket took it.
+   * Shared by the live push and the `subscribe` replay so both move a cursor on
+   * the same evidence. A refusal is logged *naming the event* — the absence of
+   * any such line is why this class of loss was invisible (issue 244).
+   */
+  private deliverEvent(conn: ActiveConnection, event: CoreLinkEvent): boolean {
+    const result = this.sendResult(conn.ws, { type: "event", event }, (err) =>
+      this.rewindEventCursor(conn, event.eventId, err.message),
+    );
+    if (!result.ok) this.warnEventUndelivered(conn, event.eventId, result.reason);
+    return result.ok;
+  }
+
+  /**
+   * A frame the socket accepted synchronously turned out not to have been
+   * delivered. Put the cursor back below it so the next tick re-sends from
+   * there.
+   *
+   * Rewinding can re-deliver an event that *did* land — anything sent after
+   * this one in the same tick. That is the deliberate side of the trade: a
+   * duplicate is a Panel applying a fact it already holds, while a skip is a
+   * fact it never learns and cannot ask for. The guard keeps the cursor
+   * monotonically *backwards* here, so two failures in one tick settle on the
+   * earliest hole rather than fighting over it.
+   */
+  private rewindEventCursor(conn: ActiveConnection, eventId: number, reason: string): void {
+    if (conn.lastSentEventId < eventId) return;
+    conn.lastSentEventId = eventId - 1;
+    this.warnEventUndelivered(conn, eventId, reason);
+  }
+
+  private warnEventUndelivered(conn: ActiveConnection, eventId: number, reason: string): void {
+    log.warn("core-link.event.undelivered", {
+      eventId,
+      clientId: conn.clientId,
+      reason,
+    });
   }
 
   private async onMessage(conn: ActiveConnection, raw: unknown): Promise<void> {
@@ -1594,7 +1690,12 @@ export class PtyCoreLinkServer {
       : [];
     this.send(ws, { type: "subscribeAck", reqId: frame.reqId, fromEventId });
     for (const event of tail) {
-      this.send(ws, { type: "event", event });
+      // Same discipline as the live push (issue 244): the replay cursor stops
+      // at the last event the socket actually took. `eventsReplayed` then tells
+      // the client that same number, so its cursor and this one agree on where
+      // the stream got to instead of both jumping to the end of a tail that was
+      // only partly written.
+      if (!this.deliverEvent(conn, event)) break;
       lastSent = event.eventId;
     }
     conn.lastSentEventId = lastSent;
@@ -1667,12 +1768,68 @@ export class PtyCoreLinkServer {
     return this.sessionLocks.heldCount();
   }
 
+  /**
+   * Send one frame, fire and forget. For everything whose loss is bounded — a
+   * reply to a request the client will notice never came, a PTY chunk the
+   * `seq`/replay window can re-deliver. Anything that advances durable state on
+   * the strength of the send having landed must use {@link sendResult} instead.
+   */
   private send(ws: WebSocketLike, frame: CoreLinkServerFrame): void {
-    try {
-      ws.send(serializeCoreLinkFrame(frame));
-    } catch {
-      /* connection closed mid-send — the close handler will clean up */
+    this.sendResult(ws, frame);
+  }
+
+  /**
+   * Send one frame and report whether the socket accepted it (issue 244).
+   *
+   * The `try/catch` this replaced looked like it covered a failed send and did
+   * not: Node's `ws` does **not** throw on a `CLOSING`/`CLOSED` socket. With no
+   * callback supplied it emits an `error` event, which this server logs as
+   * `core-link.connection.error` and carries on from — so a caller that read
+   * "no exception" as "delivered" was reading a signal that is never sent.
+   *
+   * Two signals replace it, because one alone is not enough:
+   *
+   * - `readyState` is the synchronous half, and the half that matters here. A
+   *   socket that is already closing or closed is the reported failure — the
+   *   poll loop's 500 ms window is ample for a remote link to go unwritable
+   *   between the tail read and the send — and it is knowable *before* writing.
+   * - the delivery callback is the asynchronous half, for a socket that is
+   *   `OPEN` at the instant of the call and fails after it. It cannot gate this
+   *   return value (it fires a tick later at the earliest), so callers that
+   *   care pass `onDeliveryError` and undo whatever the optimistic return let
+   *   them do.
+   *
+   * A transport that ignores the callback (every injected fake, and the browser
+   * `WebSocket`) degrades to the `readyState` check alone, which is strictly
+   * more than the old `try/catch` reported.
+   */
+  private sendResult(
+    ws: WebSocketLike,
+    frame: CoreLinkServerFrame,
+    onDeliveryError?: (err: Error) => void,
+  ): SendOutcome {
+    if (ws.readyState === WS_CLOSING || ws.readyState === WS_CLOSED) {
+      return { ok: false, reason: `socket readyState ${ws.readyState}` };
     }
+    const data = serializeCoreLinkFrame(frame);
+    try {
+      // The callback goes on only when a caller asked for it. Supplying one
+      // unconditionally would be a quiet loss of observability everywhere else:
+      // `ws` reports a failed send *either* to the callback *or* as an `error`
+      // event, and that event is what puts `core-link.connection.error` in the
+      // log for every fire-and-forget frame.
+      if (onDeliveryError) {
+        ws.send(data, (err) => {
+          if (err) onDeliveryError(err);
+        });
+      } else {
+        ws.send(data);
+      }
+    } catch (err) {
+      /* connection closed mid-send — the close handler will clean up */
+      return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+    }
+    return { ok: true };
   }
 
   /**
@@ -1971,7 +2128,10 @@ function adaptWs(ws: WebSocket): WebSocketLike {
     get readyState() {
       return ws.readyState;
     },
-    send: (data: string) => ws.send(data),
+    // Forward the delivery callback when the caller wants one: `ws` reports a
+    // send it could not make through that callback and, without it, only
+    // through an `error` event on the socket (issue 244).
+    send: (data: string, cb?: (err?: Error) => void) => (cb ? ws.send(data, cb) : ws.send(data)),
     close: () => ws.close(),
     ping: () => {
       try {

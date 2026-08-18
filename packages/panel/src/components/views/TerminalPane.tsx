@@ -562,6 +562,13 @@ export function TerminalPane({
   // claim on the **Session lock**: this never leaves the Panel, and the lock is
   // an explicit gesture on the core-link (D6). First-come, so the second tab to
   // open the same Session follows the first rather than fighting it.
+  //
+  // Per pane on purpose, and counted per tab underneath (issue 186): a second
+  // pane of this tab on the same Session announces nothing — the tab's interest
+  // is already held, and re-asserting it would move the keyboard off whichever
+  // pane the operator was typing in — and this cleanup gives the Session back
+  // only when it is the last pane to go. What the mount/unmount pair says here
+  // is what this pane holds; what the tab holds is the sum of them.
   useEffect(() => {
     const coreId = descriptor.coreId;
     if (!coreId) return;

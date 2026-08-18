@@ -20,6 +20,9 @@ about everything else on a Core — as an Event replayed off its cursor.
 | Status/title writes + events | `packages/core/src/core-task-writer.ts` |
 | Title generation | `packages/core/src/core-title-generator.ts` |
 | PTY exit settle | `packages/core/src/pty-manager.ts` → `onSessionExit` |
+| Hook delivery misses | `packages/core/src/harness-hook-delivery.ts` |
+| Quiet-Session backstop | `packages/core/src/core-session-backstop.ts` |
+| Boot sweep | `packages/core/src/core-session-sweep.ts` |
 
 The Panel keeps a hook endpoint (`POST /api/hooks/<slug>`) for its own remaining
 local task rows, running the same shared pipeline. A Core-owned Session never
@@ -66,7 +69,8 @@ next turn's `Stop` for the whole TTL.
 
 Backstops, so a `SubagentStop` that never arrives (lost POST, killed process) —
 or a healed `running` that no `Stop` will ever follow — cannot hold a task on
-`running` forever:
+`running` forever. The first three are armed **by a hook that arrived**; the
+fourth is armed by nothing, which is the point (issue 243):
 
 - Tracked entries expire after 2 hours (kept long on purpose — a short TTL would
   prematurely finish sessions whose subagents legitimately run long).
@@ -80,6 +84,28 @@ or a healed `running` that no `Stop` will ever follow — cannot hold a task on
 - Tracking is dropped outright when a new session id is captured, on
   `SessionStart` with `source: "clear"` (same session id, but `/clear` kills
   background work), and when the PTY process exits.
+- **The quiet-Session backstop** (`core-session-backstop.ts`) sweeps the
+  database once a minute and settles any row still claiming `running` that has
+  gone quiet. Nothing arms it, so it covers the case the three above cannot: a
+  turn whose terminal `Stop` was the POST that dropped, where nothing was held,
+  nothing was healed and no subagent was ever tracked.
+
+Elapsed time is not what "quiet" means, and it could not be — a turn may run for
+hours. A working harness never stops talking: every tool call fires the
+unmatched `PostToolUse`, and its TUI redraws a spinner and elapsed-time counter
+into the PTY about once a second. So **hooks and PTY output both count as
+activity** (output throttled to one report per five seconds per PTY), a row's
+own `updated_at` is the floor for a Session the process has not heard from yet,
+and **fifteen minutes with neither** is read as a turn that ended without anyone
+being told. A live PTY makes that settle a `finished`; no live PTY makes it a
+`disconnected`, because a process that went away did not finish. `needs-input`
+is never swept — a Session waiting on a human may wait silently forever.
+
+The trade is knowingly paid: a harness that works in total silence for longer
+than the window gets a card that reads `finished` while it is still going.
+Nothing is killed, and the next `UserPromptSubmit` puts the row back on
+`running`. Before it, a lost `Stop` wedged the Session until a human edited the
+row by hand — while the Panel said the opposite.
 
 `Notification` is also intentionally narrowed to `permission_prompt`. Claude Code
 sends idle input reminders through the same hook event, so treating all
@@ -169,6 +195,44 @@ The harness pipes the hook payload (`hook_event_name`, `session_id`, `cwd`,
 `transcript_path`, …) on stdin; the command forwards it as the request body.
 `|| true` is load-bearing: a hook must never block or fail an operator's session.
 
+### Delivery, and what happens when there is none
+
+Fail-soft is not the same as silent, and until issue 243 this path was both. A
+`-m 3` POST against a Core whose event loop is also serving PTY fan-out, SQLite
+writes and file transfers is reachable under load, and `|| true` swallowed a
+timeout, a connection refused, a 401 and a 500 identically. Nothing on either
+side recorded the attempt, so a lost hook left no trace anywhere — and a lost
+terminal `Stop` wedged its Session on `running` with nothing to say why.
+
+Both ends now account for it:
+
+- The command adds `-f`, so a non-2xx answer is a failure rather than a silent
+  success, and `--retry 2 --retry-delay 1`, which retries what curl calls a
+  transient error — the timeout, above all. Three attempts bound the worst case
+  at about eleven seconds, well inside a harness's own hook timeout, and only on
+  the path where the Session's status is already wrong. `--retry-connrefused` is
+  deliberately absent: it would raise the curl version the command needs, and a
+  refused connection means the Core is down.
+- What still could not be delivered is appended to `$AC_HOOK_MISS_LOG`
+  (`<user-data-dir>/hook-misses.log`) as one tab-separated
+  `<iso8601> <taskId> <event> <curl exit>` line. Unset, the record goes to
+  `/dev/null` — a workspace opened by hand writes nowhere rather than failing.
+- The receiver counts the hooks it accepts and answers with that delivery
+  number, so an ack is a fact rather than an empty 200.
+- `HookDeliveryMonitor` drains the miss log into the Core's log with a running
+  total, starting at boot: a hook refused during a restart is exactly the drop
+  nobody would otherwise hear about.
+- OpenCode's plugin does the same in its own idiom — it checks `res.ok`, retries
+  once, and writes the same line.
+
+`-o /dev/null` rides along and is not cosmetic: Claude Code reads a hook's
+stdout as control JSON, so the receiver's answer had no business being printed
+there.
+
+The command still ends in `|| true`, and still means it: a delivered hook
+short-circuits the chain, a dropped one records itself first, and a record that
+cannot be written falls through to it.
+
 ## How a status change reaches the card
 
 1. The receiver hands the payload to `CoreHarnessStatus`.
@@ -200,8 +264,20 @@ Sessions whose process is gone:
   The Panel's own exit patch no longer fires for a Core-owned row: it was
   unconditional, so it would overwrite an `interrupted` Session with `finished`
   and raise a spurious `session:finished` besides.
-- **Boot sweep** — the Core's DB bootstrap stamps `disconnected` on rows left
-  `running` / `needs-input`, since no PTY of the previous run survived it.
+- **Boot sweep** — `core-session-sweep.ts` runs once per Core boot, before the
+  PTY core, the hook receiver or the core-link server can produce a Session of
+  this run. At that moment no PTY of this process exists, so every row still
+  claiming `running` / `needs-input` is an orphan of the previous one: a Core's
+  PTYs die with it, silently, with no exit callback and no `pty:exit`. Each is
+  written to `disconnected` through `CoreTaskWriter`, so the settle appends the
+  `task:updated` event a connected Panel re-renders from — a sweep nobody is
+  told about leaves the operator looking at the same wrong card.
+
+  `disconnected` rather than `finished` or `terminated`: it is the status the
+  Panel already uses for a process that went away without reporting, and it
+  claims nothing about how the work ended. The Panel has had this sweep for its
+  own rows all along; what it never had was scope over Core-owned ones, which is
+  every Session on a remote Core (issue 243).
 
 ## Terminal-input fallback
 

@@ -5,10 +5,12 @@ import { requireOperatorSession } from "../panel-auth";
 import { coreLinkManager } from "../services/core-link-manager";
 import { PanelLinkRouter, type PanelLinkSession } from "./router";
 import {
+  PANEL_LINK_CLIENT_PARAM,
   PANEL_LINK_PATH,
   PANEL_LINK_PROTOCOL_VERSION,
   PANEL_LINK_VERSION_PARAM,
   encodePanelLinkFrame,
+  readPanelLinkClientId,
 } from "~/shared/panel-link";
 
 /**
@@ -40,8 +42,9 @@ export function attachPanelLink(server: Server): PanelLinkRouter {
       socket.destroy();
       return;
     }
+    const clientId = readClientId(request);
     wss.handleUpgrade(request, socket as Duplex, head, (ws) => {
-      bindPanelLinkSocket(router, ws);
+      bindPanelLinkSocket(router, ws, clientId);
     });
   });
 
@@ -72,6 +75,27 @@ function rejectUpgrade(request: IncomingMessage): string | null {
   const auth = requireOperatorSession(asWebRequest(request));
   if (!auth.ok) return httpRefusal(401, "unauthorized");
   return null;
+}
+
+/**
+ * The tab's panel-link client id off the upgrade query, or null (issue 242).
+ *
+ * Read at the upgrade rather than off a frame because the router needs it at
+ * `attach`, before the tab has said anything — a reload arbitrated as a stranger
+ * has already cost the operator their keyboard by the time a first frame lands.
+ * Unlike the version, a missing or malformed id is not a refusal: it means "this
+ * socket is its own client", which is what every tab was before this ticket.
+ */
+function readClientId(request: IncomingMessage): string | null {
+  try {
+    return readPanelLinkClientId(
+      new URL(request.url ?? "/", "http://panel.invalid").searchParams.get(
+        PANEL_LINK_CLIENT_PARAM,
+      ),
+    );
+  } catch {
+    return null;
+  }
 }
 
 function readVersion(request: IncomingMessage): number | null {
@@ -156,19 +180,23 @@ export interface PanelLinkServerSocket {
 export function bindPanelLinkSocket(
   router: PanelLinkRouter,
   ws: PanelLinkServerSocket,
+  clientId?: string | null,
 ): PanelLinkSession {
-  const session = router.attach({
-    send: (frame) => {
-      if (ws.readyState !== ws.OPEN) return;
-      try {
-        ws.send(encodePanelLinkFrame(frame));
-      } catch {
-        // The close handler detaches; a failed write is not worth a throw that
-        // would take down the fan-out loop for every other tab.
-      }
+  const session = router.attach(
+    {
+      send: (frame) => {
+        if (ws.readyState !== ws.OPEN) return;
+        try {
+          ws.send(encodePanelLinkFrame(frame));
+        } catch {
+          // The close handler detaches; a failed write is not worth a throw that
+          // would take down the fan-out loop for every other tab.
+        }
+      },
+      close: () => ws.close(),
     },
-    close: () => ws.close(),
-  });
+    clientId,
+  );
 
   /**
    * Advanced by anything arriving from this tab — an RPC, or the pong that

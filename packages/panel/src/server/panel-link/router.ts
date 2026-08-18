@@ -129,12 +129,27 @@ type CoreState = {
    * Survives the link, unlike the lock register: the tabs holding these panes
    * are still open and still on screen, and a Core going away for ten seconds
    * is no reason to re-arbitrate a keyboard the operator has already placed.
+   *
+   * Keyed by client id rather than by the session object, so it survives a
+   * browser reload too (issue 242) — see the register's own comment.
    */
-  drives: SessionDriveRegister<PanelLinkSession>;
+  drives: SessionDriveRegister;
 };
 
 export class PanelLinkRouter {
   private readonly sessions = new Set<PanelLinkSession>();
+  /**
+   * The live socket each panel-link client id currently resolves to (issue 242).
+   *
+   * The drive register names client ids; this is what turns one back into
+   * something to send a frame on. It is also where a reload is absorbed: the
+   * successor takes the id over here, in one assignment, and every drive entry
+   * naming that id is pointing at the new socket from that instant — there is
+   * no list to rewrite and so no window in which the Session is held by a tab
+   * that has gone, which is the same atomicity argument
+   * `SessionLockTable.transferAll` makes one layer down (ADR 0024 D9).
+   */
+  private readonly sessionsByClientId = new Map<string, PanelLinkSession>();
   private readonly cores = new Map<string, CoreState>();
   private readonly eventBufferSize: number;
   private readonly unsubscribes: Array<() => void> = [];
@@ -181,24 +196,65 @@ export class PanelLinkRouter {
     else if (status.state === "connected") this.gated.delete(status.coreId);
   }
 
-  /** Take over a freshly upgraded socket. One call per browser tab. */
-  attach(socket: PanelLinkSocket): PanelLinkSession {
-    const session = new PanelLinkSession(this, socket);
+  /**
+   * Take over a freshly upgraded socket. One call per browser tab.
+   *
+   * `clientId` is what that tab calls itself across its own reload (issue 242).
+   * A tab that presents the id of a session still attached here is that
+   * session's successor — the reload case — and the two lines below are the
+   * whole of the handover, in the order that makes it safe:
+   *
+   * 1. The successor takes the id over. Every drive entry naming that id now
+   *    resolves to this socket, at once, with no instant in between during
+   *    which the Session reads as driven by nobody.
+   * 2. Only then is the predecessor retired. Retiring it first would run its
+   *    `releaseDrives` while it still owned the id, handing the drive to
+   *    another tab (or to nobody) a moment before the returning tab asked for
+   *    it back — the exact shape of the bug this keying removes. Run in this
+   *    order, that same `releaseDrives` finds an id that is not its own and
+   *    gives back nothing.
+   *
+   * A missing or malformed id is minted here instead, per socket. That is not a
+   * degraded mode but the honest one: a tab that cannot name itself across a
+   * reload has nothing to reclaim, and it gets exactly the behaviour every tab
+   * had before this ticket.
+   */
+  attach(socket: PanelLinkSocket, clientId?: string | null): PanelLinkSession {
+    const id = clientId ?? mintPanelLinkClientId();
+    const session = new PanelLinkSession(this, socket, id);
     this.sessions.add(session);
+    const predecessor = this.sessionsByClientId.get(id) ?? null;
+    this.sessionsByClientId.set(id, session);
+    if (predecessor) predecessor.retire();
     // What the service already knows about the fleet, so the tab paints live
     // status without waiting for something to change.
     for (const status of this.source.statuses()) socket.send({ t: "dial", status });
     return session;
   }
 
-  /** @internal — called by a session when its socket goes away. */
+  /**
+   * @internal — called by a session when its socket goes away.
+   *
+   * The id is given up only by the session that still holds it: a predecessor
+   * being retired has already handed it to its successor, and deleting the
+   * entry here would leave the live tab's drives resolving to nothing.
+   */
   forget(session: PanelLinkSession): void {
     this.sessions.delete(session);
+    if (this.sessionsByClientId.get(session.clientId) === session) {
+      this.sessionsByClientId.delete(session.clientId);
+    }
+  }
+
+  /** @internal — the live socket a drive-register client id resolves to, if any. */
+  private sessionFor(clientId: string): PanelLinkSession | null {
+    return this.sessionsByClientId.get(clientId) ?? null;
   }
 
   /** Drop every session and stop watching the links. */
   dispose(): void {
     for (const session of [...this.sessions]) session.detach();
+    this.sessionsByClientId.clear();
     for (const state of this.cores.values()) {
       for (const off of state.unsubscribes) off();
     }
@@ -291,7 +347,7 @@ export class PanelLinkRouter {
       locks: new SessionLockRegister(
         () => this.source.client(coreId)?.canSendMultiConnectionFrames() === true,
       ),
-      drives: new SessionDriveRegister<PanelLinkSession>(),
+      drives: new SessionDriveRegister(),
     };
     state.locks.onChange(({ taskId, lock }) => {
       for (const session of this.sessions) {
@@ -309,12 +365,18 @@ export class PanelLinkRouter {
 
   /** @internal — a tab's answer for one Session's drive, as it should be told it. */
   driveFor(coreId: string, taskId: string, session: PanelLinkSession): boolean {
-    return this.stateFor(coreId).drives.driverOf(taskId) === session;
+    return this.stateFor(coreId).drives.driverOf(taskId) === session.clientId;
   }
 
   /**
    * @internal — a tab wants (or gives back) the keyboard for one Session, among
    * this Panel's own tabs. Never the Session lock; see the module comment.
+   *
+   * One frame per tab per Session, whatever that tab has on screen: the browser
+   * counts its own panes and sends the first pane's `watch` and the last pane's
+   * `drop` (issue 186). Panes have no name here and are not meant to — what this
+   * router arbitrates is tabs, and a `drop` is therefore read as "that tab is
+   * done with this Session", not "one of its panes closed".
    *
    * Gated on `multiConnection` like everything else in issue 147: against a
    * Core that evicts every client but one, two tabs both writing is what the
@@ -344,15 +406,16 @@ export class PanelLinkRouter {
     }
     const change =
       want === "drop"
-        ? state.drives.release(taskId, session)
-        : state.drives.want(taskId, session, { take: want === "take" });
+        ? state.drives.release(taskId, session.clientId)
+        : state.drives.want(taskId, session.clientId, { take: want === "take" });
     // The loser of an intra-Panel handover is told, and told in its own
     // vocabulary: `handover`, never a takeover. Nothing was taken from this
     // operator — they moved their own keyboard between their own tabs, and this
     // tab keeps rendering every byte of the Session either way.
     for (const loser of change.lost) {
-      if (loser === session) continue;
-      loser.send({ t: "drive", coreId, taskId, driving: false, reason: "handover" });
+      const tab = this.sessionFor(loser);
+      if (!tab || tab === session) continue;
+      tab.send({ t: "drive", coreId, taskId, driving: false, reason: "handover" });
     }
     // The winner is never told a story. `handover` is the *loser's* word, for
     // the one case worth a sentence — the keyboard left an open pane. A tab
@@ -360,13 +423,29 @@ export class PanelLinkRouter {
     // anybody, and telling it "you took this in another tab" would be a
     // sentence about something that did not happen.
     for (const winner of change.gained) {
-      winner.send({ t: "drive", coreId, taskId, driving: true, reason: "watch" });
+      const tab = this.sessionFor(winner);
+      // The asker is answered once, below, out of the register itself.
+      if (!tab || tab === session) continue;
+      tab.send({ t: "drive", coreId, taskId, driving: true, reason: "watch" });
     }
     // The asking tab always gets an answer, even when nothing moved: it asked a
     // question ("may I drive this?") and a pane with no answer would have to
     // guess, which is the read-only-discovered-by-a-keystroke failure again.
-    if (want !== "drop" && !change.gained.includes(session)) {
-      session.send({ t: "drive", coreId, taskId, driving: false, reason: "watch" });
+    //
+    // And the answer is read back out of the register rather than inferred from
+    // what moved, which is the second half of issue 242. A tab that re-announces
+    // a Session it is *already* driving moves nothing — the register is keyed by
+    // its client id and already names it — so a `gained` list is empty in
+    // exactly the case the returning tab most needs a `true`. Asking who drives
+    // cannot be wrong in that case, or in any other.
+    if (want !== "drop") {
+      session.send({
+        t: "drive",
+        coreId,
+        taskId,
+        driving: state.drives.driverOf(taskId) === session.clientId,
+        reason: "watch",
+      });
     }
   }
 
@@ -374,18 +453,31 @@ export class PanelLinkRouter {
    * @internal — a tab's socket went away; it drives nothing any more, and every
    * Session it was driving falls to the next tab still watching.
    *
-   * A tab that comes *back* — a reload, a dropped network — re-announces its
-   * panes and joins the back of the queue, so on a Panel with two tabs open on
-   * one Session a flap can move the keyboard to the other one. That is the
-   * first-come rule applied evenly rather than a special case: the tab that has
-   * it says so on screen, taking it back is one click, and the alternative is a
-   * grace period holding a keyboard for a tab that may never return.
+   * A tab that comes *back* — a reload, a dropped network — is not one of those
+   * (issue 242). It presents the same client id, the register is keyed by that
+   * id, and the entry it re-announces against is its own: a tab that was alone
+   * on a Session keeps driving it, with no gap and nothing to queue behind. What
+   * survives from the old rule is what it was actually for — where two tabs are
+   * open on one Session, a flap can still move the keyboard to the other one,
+   * because the returning tab re-enters the queue at the tail rather than in
+   * front of a tab that has been watching all along. That is the first-come rule
+   * applied evenly rather than a special case: the tab that has it says so on
+   * screen, taking it back is one click, and the alternative is a grace period
+   * holding a keyboard for a tab that may never return.
    */
   releaseDrives(session: PanelLinkSession): void {
+    // A session whose client id has already moved on to a successor holds
+    // nothing to give back (issue 242). The register names ids, not sockets, and
+    // that id now names the tab that has just reloaded — so releasing here would
+    // take the keyboard off the live tab on behalf of the corpse it replaced,
+    // which is the failure this keying exists to remove. The successor took the
+    // id over before this predecessor was retired, precisely so that this check
+    // is the one that runs; see {@link attach}.
+    if (this.sessionsByClientId.get(session.clientId) !== session) return;
     for (const [coreId, state] of this.cores) {
-      for (const change of state.drives.releaseAll(session)) {
+      for (const change of state.drives.releaseAll(session.clientId)) {
         for (const winner of change.gained) {
-          winner.send({
+          this.sessionFor(winner)?.send({
             t: "drive",
             coreId,
             taskId: change.taskId,
@@ -527,7 +619,42 @@ export class PanelLinkSession {
   constructor(
     private readonly router: PanelLinkRouter,
     private readonly socket: PanelLinkSocket,
+    /**
+     * What the browser tab on the other end calls itself across its own reload
+     * (issue 242). The **Session drive** register is keyed by this and not by
+     * `this`, which is what makes a reload a reconnect rather than a stranger
+     * joining the queue behind its own ghost.
+     *
+     * Readonly for the reason the core link's is (ADR 0024 D9): an id that moved
+     * between sockets would reclaim nothing and leave the predecessor holding
+     * the keyboard for the full heartbeat timeout — the exact failure it exists
+     * to remove.
+     */
+    readonly clientId: string,
   ) {}
+
+  /**
+   * A successor has taken this tab's client id over; this socket is the ghost it
+   * replaced (issue 242). Detach as an ordinary close would — the PTY claims go
+   * back, because the successor asks for its own — and close the socket rather
+   * than leaving it to the panel-link heartbeat 45 seconds from now.
+   *
+   * The drives are the one thing not given back, and {@link detach} does not
+   * have to be told: the register names client ids, the id already names the
+   * successor, so `releaseDrives` finds nothing of this session's to release.
+   * The same property makes the ordinary close path safe to leave alone, which
+   * is why the transfer is an assignment in {@link PanelLinkRouter.attach} and
+   * not a sweep here.
+   */
+  retire(): void {
+    this.detach();
+    try {
+      this.socket.close();
+    } catch {
+      // Already gone. A half-open socket that refuses is still reaped by the
+      // panel link's own heartbeat sweep; nothing here depends on it closing.
+    }
+  }
 
   /** Handle a frame straight off the wire, in whatever shape the socket gave it. */
   receiveRaw(raw: unknown): Promise<void> | void {
@@ -691,4 +818,20 @@ export class PanelLinkSession {
     this.router.releaseDrives(this);
     this.router.forget(this);
   }
+}
+
+/**
+ * A client id for a socket that presented none — a tab built before this
+ * ticket, or a test attaching directly.
+ *
+ * Per socket, and random rather than derived from anything about the request:
+ * two such sockets must never collide, because a collision is two live tabs
+ * reaping each other, and the same argument ADR 0024 D9 makes about a durable
+ * Core client id applies to a shared one here. A tab that cannot name itself
+ * gets one connection's worth of identity, which is exactly what it had before.
+ */
+function mintPanelLinkClientId(): string {
+  const random = globalThis.crypto?.randomUUID?.();
+  if (random) return `tab-${random}`;
+  return `tab-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
