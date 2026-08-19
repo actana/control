@@ -99,6 +99,29 @@ OpenCode, which has no such flag, launches unchanged. **There is no longer a way
 to start a non-auto session from the Panel UI** — override per session in the
 terminal.
 
+Actana now ships one agent skill of its own, and installs it. `actana-sessions`
+teaches a coding agent how to drive Cores and Sessions with the `actana` CLI —
+how to start a Session with a prompt, wait for it, collect a report out of it and
+stop it, and how to provision several at once. It is generic: no project runbook,
+no default Harness, no preference order, and nothing about any repository.
+
+It goes into the global skills directory of every Harness that is already on the
+machine — `~/.claude/skills/actana-sessions/` for Claude Code and
+`~/.agents/skills/actana-sessions/` for Codex, Cursor CLI and OpenCode — and only
+into a directory the Harness itself created. Installing the Core installs it on
+the Core's machine; installing `@actana/cli` installs it the first time you run
+any `actana` command, since this package still has no npm install hook.
+`actana harness skills` does it on demand and prints what it wrote. A copy you
+have made your own — by deleting its `x-actana-managed: true` line — is left
+alone from then on; a copy that still carries that line is replaced, edits
+included.
+
+**This one is provisional.** [ADR 0006](docs/adr/0006-no-bundled-skills.md) said
+the product installs no skills, and it is amended by
+[ADR 0031](docs/adr/0031-the-product-ships-one-skill.md), which is **proposed and
+not yet accepted**. The code is here so the decision can be judged against
+something real; the decision itself lands at the beta gate.
+
 Core tarballs are published as `actana-core-<version>-<target>.tar.gz`. This is
 the first published release of the Core tarball; no earlier asset name was ever
 released, so no download URL changes.

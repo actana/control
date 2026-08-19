@@ -59,6 +59,30 @@ Every noun and verb in the tree is built. A name this CLI does not know is a
 typo and says so; a name reserved for a later train would exit with a distinct
 code and a ticket number instead, which is how the two are told apart.
 
+## The skill this CLI installs
+
+`actana` ships one agent skill of its own — `actana-sessions`, which teaches a
+coding agent how to drive Cores and Sessions with these verbs — and writes it
+into the global skills directory of every Harness already on this machine:
+`~/.claude/skills/actana-sessions/` for Claude Code, `~/.agents/skills/actana-sessions/`
+for Codex, Cursor CLI and OpenCode.
+
+```sh
+actana harness skills          # write or repair it, and say what happened
+actana harness skills --json   # the same, per Harness, machine-readable
+```
+
+It also happens quietly in front of every other `actana` command, because this
+package deliberately has no npm install hook — so the skill is there one command
+after `npm i -g @actana/cli` rather than at install time. Both paths write only
+into a directory the Harness itself created: a Harness you do not use here costs
+you no directory.
+
+A copy is replaced when it differs from the shipped one, edits included. To keep
+your own version, delete the `x-actana-managed: true` line from its frontmatter —
+that file is then yours and is never written again, and `harness skills` reports
+it as `skipped` so you can see why it stopped updating.
+
 ## Copying files, in either direction
 
 One side carries the Project and the other is on this machine — the `scp` shape.

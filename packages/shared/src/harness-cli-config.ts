@@ -29,6 +29,56 @@ export type HarnessCliInstallCommand =
       linux?: string;
     };
 
+/**
+ * How one Harness takes a globally-installed agent skill (ADR 0031 D4).
+ *
+ * A *descriptor* rather than a path string, and deliberately so. The four
+ * families' extension points are not one shape — three of them take a JSON
+ * settings file for hooks and OpenCode takes a JavaScript plugin, which is the
+ * whole reason `harness-hooks-opencode.ts` exists next door — so a field that
+ * was a directory today would be a redesign the first time a vendor's answer to
+ * "how do I ship you a skill" is a manifest entry or a plugin. `kind` is what
+ * keeps that from being a redesign: a harness whose extension point is not a
+ * directory of skill folders gets a new `kind` and its own writer, and every
+ * reader here already has to switch on it.
+ *
+ * That the four vendors have in fact converged on `SKILL.md` is a fact read off
+ * their current documentation in August 2026, recorded in {@link source} per
+ * entry, and not a shape this type assumes.
+ */
+export type HarnessSkillTarget = {
+  /**
+   * The only kind that exists today: a directory holding one directory per
+   * skill, each with a `SKILL.md` inside it.
+   */
+  kind: "skill-dir";
+  /**
+   * Home-relative directories whose existence is evidence this Harness has run
+   * as this operator, `/`-separated. Any one of them is enough.
+   *
+   * Not the same thing as {@link skillDir}, and the gap is ADR 0031 D4: the
+   * installer starts no process (#129 D9) so it cannot ask a vendor's CLI
+   * whether it is installed, and the directory it writes *into* is in several
+   * cases a cross-vendor one that proves nothing about any particular harness.
+   * `~/.agents/skills` existing says somebody uses some agent; `~/.codex`
+   * existing says Codex has run here.
+   */
+  homeMarkers: readonly string[];
+  /**
+   * Home-relative directory a global skill goes in, `/`-separated. One
+   * sub-directory per skill underneath it.
+   *
+   * Two harnesses sharing one value is expected rather than a mistake — see
+   * ADR 0031 D4 on why the fan-out writes the covering set of directories
+   * rather than one per vendor. The installer deduplicates by resolved path.
+   */
+  skillDir: string;
+  /** The vendor page this was read off. Not a guess, and not from this repo. */
+  source: string;
+  /** ISO date it was last read. A vendor that moves the directory moves it silently. */
+  verifiedOn: string;
+};
+
 export type HarnessCliPathSuffixes =
   | readonly string[]
   | {
@@ -56,6 +106,19 @@ export type HarnessCliConfig = {
   installCommand: HarnessCliInstallCommand;
   /** Extra directories under the user home dir to prepend on PATH when they exist. */
   homePathSuffixes?: HarnessCliPathSuffixes;
+  /**
+   * Where a globally-installed agent skill goes for this Harness, and how to
+   * tell the Harness is on this machine at all (ADR 0031 D4).
+   *
+   * Required, not optional, and that is the point: `HARNESS_CLI_CONFIG` is
+   * declared `as const satisfies Record<Harness, HarnessCliConfig>`, so a new
+   * member of `HARNESSES` that nobody has found a skill directory for is a
+   * compile error here rather than a Harness that silently never gets the
+   * product's own skill. Nothing about this repository recorded a global skill
+   * directory for any Harness before #265; every value below was read off the
+   * vendor's current documentation and carries the URL and the date.
+   */
+  skillTarget: HarnessSkillTarget;
   /**
    * This CLI's own spelling of "do not stop to ask me" — the flag that turns a
    * launch into an unattended one (issue 177 finding 2).
@@ -95,6 +158,16 @@ export const HARNESS_CLI_CONFIG = {
       win32: "irm https://claude.ai/install.ps1 | iex",
     },
     autoModeFlag: "--dangerously-skip-permissions",
+    // Claude Code reads exactly one global skills root and it is its own — it
+    // does not read `~/.agents/skills`, which is why the fan-out cannot be one
+    // directory (ADR 0031 D4).
+    skillTarget: {
+      kind: "skill-dir",
+      homeMarkers: [".claude"],
+      skillDir: ".claude/skills",
+      source: "https://code.claude.com/docs/en/skills — \"Where skills live\": Personal, `~/.claude/skills/<skill-name>/SKILL.md`",
+      verifiedOn: "2026-08-19",
+    },
   }),
   codex: withResolveAs({
     agent: "codex",
@@ -110,6 +183,18 @@ export const HARNESS_CLI_CONFIG = {
     },
     installCommand: "npm install -g @openai/codex@latest",
     autoModeFlag: "--yolo",
+    // Codex's USER scope is `$HOME/.agents/skills` and nothing else — it is
+    // the one harness of the four whose global skills root is NOT under its own
+    // dot-directory, so `~/.codex` is the presence marker and `~/.agents/skills`
+    // is the target. Community write-ups still say `~/.codex/skills`; OpenAI's
+    // own page does not, and the page is what this row records.
+    skillTarget: {
+      kind: "skill-dir",
+      homeMarkers: [".codex"],
+      skillDir: ".agents/skills",
+      source: "https://developers.openai.com/codex/skills — skill locations table, USER scope: `$HOME/.agents/skills`",
+      verifiedOn: "2026-08-19",
+    },
   }),
   "cursor-cli": withResolveAs({
     agent: "cursor-cli",
@@ -128,6 +213,17 @@ export const HARNESS_CLI_CONFIG = {
       win32: "irm 'https://cursor.com/install?win32=true' | iex",
     },
     autoModeFlag: "--force",
+    // Cursor reads `~/.cursor/skills` AND `~/.agents/skills` (and Claude's and
+    // Codex's roots besides). `.agents/skills` is chosen so this Harness costs
+    // the operator's home no directory that Codex has not already cost it —
+    // ADR 0031 D4's covering set.
+    skillTarget: {
+      kind: "skill-dir",
+      homeMarkers: [".cursor"],
+      skillDir: ".agents/skills",
+      source: "https://cursor.com/help/customization/skills — \"Skills are automatically loaded from .agents/skills/, .cursor/skills/, ~/.agents/skills/ (global), and ~/.cursor/skills/ (global)\"",
+      verifiedOn: "2026-08-19",
+    },
   }),
   opencode: withResolveAs({
     agent: "opencode",
@@ -151,6 +247,21 @@ export const HARNESS_CLI_CONFIG = {
       win32: "npm i -g opencode-ai@latest",
     },
     homePathSuffixes: [".opencode/bin"],
+    // OpenCode's first-listed global root is `~/.config/opencode/skills`, which
+    // moves when `XDG_CONFIG_HOME` is set — a second thing to get right for no
+    // coverage this row does not already have, because OpenCode also reads
+    // `~/.agents/skills` and that path is home-relative under every
+    // configuration. Two markers because the two ways OpenCode arrives leave
+    // different traces: the install script leaves `~/.opencode/bin` (which is
+    // why `homePathSuffixes` above already knows it), and running it leaves the
+    // config directory.
+    skillTarget: {
+      kind: "skill-dir",
+      homeMarkers: [".opencode", ".config/opencode"],
+      skillDir: ".agents/skills",
+      source: "https://opencode.ai/docs/skills — global paths: `~/.config/opencode/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md`",
+      verifiedOn: "2026-08-19",
+    },
   }),
 } as const satisfies Record<Harness, HarnessCliConfig>;
 
@@ -301,6 +412,24 @@ export const HARNESS_SPAWN_COMMANDS = Object.fromEntries(
 export const HARNESS_AUTO_MODE_FLAGS = Object.fromEntries(
   MANAGED_HARNESSES.map((agent) => [agent, HARNESS_CLI_CONFIG[agent].autoModeFlag ?? null]),
 ) as Readonly<Record<Harness, string | null>>;
+
+/**
+ * Every Harness's skill target, in `HARNESSES` order, flattened for a writer.
+ *
+ * Derived rather than typed out for {@link HARNESS_AUTO_MODE_FLAGS}'s reason: a
+ * new Harness cannot arrive with this table half-filled, because the table is
+ * the config. The array carries the harness id on each row, so the installer —
+ * which is a byte-identical twin of a file in a package that may not import
+ * this one — takes plain data and knows nothing about `Harness`.
+ *
+ * The CLI's hand-declared copy is `packages/cli/src/harness-skill-targets.ts`,
+ * and `orchestration-skill-fanout.test.ts` fails when the two disagree or when
+ * either is missing a member of `HARNESSES` (ADR 0031 D8).
+ */
+export const HARNESS_SKILL_TARGETS = MANAGED_HARNESSES.map((agent) => ({
+  harness: agent as string,
+  ...HARNESS_CLI_CONFIG[agent].skillTarget,
+}));
 
 /** The flag that puts `agent` in auto mode, or null where it has none. */
 export function autoModeFlagForHarness(agent: Harness): string | null {
