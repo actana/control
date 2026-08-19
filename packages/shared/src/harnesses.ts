@@ -1,5 +1,5 @@
 import type { Harness } from "./domain";
-import { HARNESS_CLI_CONFIG } from "./harness-cli-config";
+import { HARNESS_AUTO_MODE_FLAGS, HARNESS_CLI_CONFIG } from "./harness-cli-config";
 
 export type HarnessRegistryEntry = {
   label: string;
@@ -10,6 +10,12 @@ export type HarnessRegistryEntry = {
   uiVisible: boolean;
   disabled?: boolean;
   supportsSkipPermissions: boolean;
+  /**
+   * Read from {@link HARNESS_AUTO_MODE_FLAGS}, never typed out here.
+   *
+   * Issue 177 finding 2 was one table disagreeing with another about which
+   * flag a harness spells auto mode with; the fix is that there is one table.
+   */
   skipPermissionsFlag?: string;
   startCommand: (opts?: { skipPermissions?: boolean }) => string;
   titleInvocation?: (input: string) => { cmd: string; args: string[] };
@@ -24,7 +30,7 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
     command: HARNESS_CLI_CONFIG["claude-code"].command,
     uiVisible: true,
     supportsSkipPermissions: true,
-    skipPermissionsFlag: "--dangerously-skip-permissions",
+    skipPermissionsFlag: HARNESS_AUTO_MODE_FLAGS["claude-code"] ?? undefined,
     startCommand: () => "claude",
     titleInvocation: (input) => ({ cmd: "claude", args: ["-p", input] }),
   },
@@ -36,7 +42,7 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
     command: HARNESS_CLI_CONFIG.codex.command,
     uiVisible: true,
     supportsSkipPermissions: true,
-    skipPermissionsFlag: "--yolo",
+    skipPermissionsFlag: HARNESS_AUTO_MODE_FLAGS["codex"] ?? undefined,
     startCommand: (opts) =>
       opts?.skipPermissions
         ? "codex --enable hooks --yolo"
@@ -51,7 +57,7 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
     command: HARNESS_CLI_CONFIG["cursor-cli"].command,
     uiVisible: true,
     supportsSkipPermissions: true,
-    skipPermissionsFlag: "--force",
+    skipPermissionsFlag: HARNESS_AUTO_MODE_FLAGS["cursor-cli"] ?? undefined,
     startCommand: (opts) => (opts?.skipPermissions ? "cursor-agent --force" : "cursor-agent"),
     titleInvocation: (input) => ({ cmd: "cursor-agent", args: ["-p", input] }),
   },
@@ -72,8 +78,27 @@ export const UI_HARNESSES = Object.entries(HARNESS_REGISTRY)
   .filter(([, meta]) => meta.uiVisible)
   .map(([id]) => id as Harness);
 
+/**
+ * Does this Harness have an auto mode at all?
+ *
+ * Answered by whether the vendor ships a flag for it, which is the only thing
+ * the question can mean. Reading the registry's own boolean instead would let
+ * a `true` sit next to a missing flag — the launch builder would put nothing
+ * in the command, the spawn descriptor would still declare the intent, and the
+ * mismatch would be the one issue 177 finding 2 describes.
+ */
 export const harnessSupportsSkipPermissions = (agent: Harness) =>
-  HARNESS_REGISTRY[agent].supportsSkipPermissions;
+  HARNESS_AUTO_MODE_FLAGS[agent] !== null;
+
+/**
+ * The flag this Harness spells auto mode with, or null where it has none.
+ *
+ * The registry's re-export of {@link HARNESS_AUTO_MODE_FLAGS}, for callers
+ * already holding a registry entry. Same cell, same table — see issue 177
+ * finding 2 for what the alternative cost.
+ */
+export const harnessSkipPermissionsFlag = (agent: Harness): string | null =>
+  HARNESS_AUTO_MODE_FLAGS[agent];
 
 /**
  * Does a session launched for this Harness carry its skip-permissions flag?
