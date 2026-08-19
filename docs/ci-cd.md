@@ -969,7 +969,8 @@ Normally you do not: `promote.yml` cuts the next one automatically after every
 promotion, so a train is always open and work can always be proposed (D25). The
 guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
 the next release is a patch, or a major, delete the branch and re-cut it before
-anything merges into it.
+anything merges into it — by hand, because there is no cut workflow to
+dispatch. *Re-cutting a train, by hand* below is what to run instead.
 
 The cut creates `beta/x.y.z` from `main` and writes that version into every
 manifest in its first commit (D3, amended by #152 and #157). Do not hand-edit
@@ -979,6 +980,56 @@ on the train asserts every one of them equals the branch's version.
 
 A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
 still has an image to promote, because **the cut itself publishes one** (D7).
+
+#### Re-cutting a train, by hand
+
+**There is no dispatchable cut workflow.** The cut exists only as
+`promote.yml`'s `next-train` job, which runs as a consequence of a promotion
+and takes no version input, so a re-cut is hand work until one exists. That is
+the single exception to "do not hand-edit those files" above, and the way to
+survive it is to write exactly what `next-train` writes and nothing else:
+
+```bash
+git push origin --delete beta/<guessed>        # before anything merges into it
+git fetch origin --prune
+git switch -c beta/x.y.z origin/main
+
+# The six manifests, one line changed in each. Edited in place on purpose:
+# `jq` and most editors reserialise the whole file, and a cut whose diff is
+# not six lines is a cut a reviewer cannot check at a glance.
+node -e 'const fs=require("node:fs"), v=process.argv[1];
+  for (const f of process.argv.slice(2)) fs.writeFileSync(f,
+    fs.readFileSync(f,"utf8").replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${v}"`));
+' x.y.z package.json packages/{cli,core,panel,sdk,shared}/package.json
+
+git commit -a -F cut-message.txt               # Conventional Commits, see below
+git push --no-verify origin beta/x.y.z         # --no-verify: see below
+```
+
+Three things this has to get right, because nothing checks any of them until
+far too late:
+
+- **`--no-verify` on that push, or the hooks off for the cut.**
+  `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
+  branch against the naming convention alone, without the `beta/x.y.z`
+  exemption that [`ci.yml`](../.github/workflows/ci.yml) carries at line 167
+  for exactly this branch class (D1). So the hook refuses the push and hints
+  `git branch -m`, which is the wrong thing to do to a train — the branch name
+  *is* the version. You only meet this if you took `CONTRIBUTING.md`'s advice
+  and ran `git config core.hooksPath .husky`, which you should have. Tracked
+  as #269; when the hook learns the class, drop the `--no-verify`.
+- **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
+  those six manifests and six lines.
+- **Every body line of the message is at most 132 characters.** `commitlint`
+  lints every commit in a pull request, not just its title — but no pull
+  request puts a cut commit in front of it until the promotion gate, when the
+  only remedy left is deleting the train and starting over. Measure before
+  committing, and again before promoting:
+
+```bash
+awk 'length($0) > 132 { print FILENAME " line " FNR ": " length($0) }' cut-message.txt
+git log origin/main..beta/x.y.z --pretty=%B | awk 'length($0) > 132 { print FNR ": " length($0) }'
+```
 
 ### Working the train, and the freeze window
 
@@ -1014,6 +1065,14 @@ The macOS pre-release checklist is worked at the same time, against the
 assertion that is the same commit, and it is available earlier.
 
 ### Promotion
+
+**Before dispatching, delete every other `beta/*` branch on origin.**
+`promote.yml`'s *Resolve* job globs `refs/heads/beta/*` and subtracts the train
+being promoted: one branch surviving that subtraction *is* the hotfix condition
+(D23), so a train that was merely abandoned is rebased onto the new `main` and
+force-pushed, its images republished and the next train not cut — see
+[§Hotfix trains](#hotfix-trains) — while two survivors refuse the dispatch
+outright.
 
 Open a pull request from `beta/x.y.z` into `main`, let it go green, get it
 approved — then dispatch:
@@ -1209,7 +1268,8 @@ invariant already holds (D25).
 
 **If the rebase conflicts**, the workflow fails loudly and does not try to
 resolve anything. The fallback is: abandon the surviving train, re-cut it from
-`main`, and cherry-pick its squash commits. `main`, the tag and the release are
+`main` — by hand, per *Re-cutting a train, by hand* — and cherry-pick its
+squash commits. `main`, the tag and the release are
 unaffected and correct — only that train needs the work.
 
 ### Backports and the supported lines
