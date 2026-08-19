@@ -43,6 +43,7 @@ import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
   HARNESS_INSTALL_FAILED_EVENT_KIND,
+  EXEC_OUTPUT_TOO_LARGE_ERROR_CODE,
   SESSION_LOCKED_ERROR_CODE,
   SESSION_LOCK_CHANGED_EVENT_KIND,
   parseCoreLinkRequestFrame,
@@ -202,6 +203,53 @@ export interface CoreDirectoryPort {
   create(parent: string, name: string): Promise<string>;
 }
 
+/**
+ * What running one command can end as.
+ *
+ * Three outcomes, not two, and the split is the point:
+ *
+ *   - `ok` — the command ran. A non-zero `exitCode` is still `ok`, because a
+ *     command that failed is an *answer*: the caller asked what happened and
+ *     this is what happened.
+ *   - `output-too-large` — it ran, said more than one answer may carry, and
+ *     **nothing is returned**. Its own outcome rather than a thrown error so
+ *     the server can put a machine-readable code on the refusal: "your command
+ *     produced too much" and "your command could not be run" have different
+ *     fixes, and a caller should not have to read prose to tell them apart.
+ *   - a rejection — it never ran. A cwd this Core refuses, an executable it
+ *     cannot find. The thrown message is written for the operator and travels
+ *     verbatim as the `error` frame's message.
+ */
+export type CoreExecPortResult =
+  | {
+      outcome: "ok";
+      /** The command's own status. Null exactly when `signal` is set. */
+      exitCode: number | null;
+      signal: string | null;
+      stdout: string;
+      stderr: string;
+    }
+  | { outcome: "output-too-large"; message: string };
+
+/**
+ * Running one command on this machine, non-interactively (issue 266).
+ *
+ * Behind a port for the same reason {@link CoreDirectoryPort} is: this class
+ * routes frames, and a test that had to spawn a real process to check that
+ * routing would be testing `node:child_process`. The real implementation is
+ * `core-exec.ts`, and it is the only thing in the Core that this frame reaches.
+ *
+ * When omitted, `exec` answers with an `error` saying this Core does not run
+ * commands — a PTY-only Core stays a valid Core.
+ */
+export interface CoreExecPort {
+  run(input: {
+    command: string;
+    args: string[];
+    cwd?: string | null;
+  }): Promise<CoreExecPortResult>;
+}
+
 export interface CoreMutationPort {
   /**
    * Create / rename / archive a project. Returns the resulting snapshot on
@@ -322,6 +370,12 @@ export type PtyCoreLinkServerOptions = {
    * saying browsing is unavailable on this Core.
    */
   directoryPort?: CoreDirectoryPort;
+  /**
+   * Runs one command on this machine for the `exec` frame (issue 266). When
+   * omitted, `exec` answers with an `error` frame saying so. See
+   * {@link CoreExecPort}.
+   */
+  execPort?: CoreExecPort;
   /**
    * The protocol version advertised in the `ready` frame. Defaults to this
    * build's {@link CORE_LINK_PROTOCOL_VERSION} and exists only so a test can
@@ -514,6 +568,7 @@ export class PtyCoreLinkServer {
   private readonly availabilityPort: HarnessAvailabilityPort | null;
   private readonly installPort: HarnessInstallPort | null;
   private readonly directoryPort: CoreDirectoryPort | null;
+  private readonly execPort: CoreExecPort | null;
   private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
@@ -573,6 +628,7 @@ export class PtyCoreLinkServer {
     this.availabilityPort = opts.availabilityPort ?? null;
     this.installPort = opts.installPort ?? null;
     this.directoryPort = opts.directoryPort ?? null;
+    this.execPort = opts.execPort ?? null;
     this.promptPort = opts.promptPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
     this.announceMultiConnection = opts.announceMultiConnection ?? true;
@@ -1062,6 +1118,16 @@ export class PtyCoreLinkServer {
       type: "error",
       reqId,
       message: "Folder browsing is unavailable on this Core",
+    });
+    return null;
+  }
+
+  private requireExecPort(ws: WebSocketLike, reqId: string): CoreExecPort | null {
+    if (this.execPort) return this.execPort;
+    this.send(ws, {
+      type: "error",
+      reqId,
+      message: "This Core does not run commands",
     });
     return null;
   }
@@ -1587,6 +1653,42 @@ export class PtyCoreLinkServer {
         if (!port) return;
         const created = await port.create(frame.parent, frame.name);
         this.send(ws, { type: "dirCreateResult", reqId: frame.reqId, path: created });
+        return;
+      }
+      // ─── One command, non-interactively (issue 266) ───
+      // Not a PTY and deliberately not built on one: the caller wants stdout
+      // and stderr apart and an exit status it can branch on, and a terminal
+      // can give it neither. A refused cwd, a missing executable and output
+      // past the bound all reach the caller as the port's own thrown message
+      // (see the `error` frame this handler's caller turns a throw into);
+      // `exec-output-too-large` additionally carries a code, because "your
+      // command produced too much" and "your command failed" are different
+      // answers and only one of them is an error frame at all.
+      case "exec": {
+        const port = this.requireExecPort(ws, frame.reqId);
+        if (!port) return;
+        const result = await port.run({
+          command: frame.command,
+          args: frame.args,
+          cwd: frame.cwd,
+        });
+        if (result.outcome === "output-too-large") {
+          this.send(ws, {
+            type: "error",
+            reqId: frame.reqId,
+            code: EXEC_OUTPUT_TOO_LARGE_ERROR_CODE,
+            message: result.message,
+          });
+          return;
+        }
+        this.send(ws, {
+          type: "execResult",
+          reqId: frame.reqId,
+          exitCode: result.exitCode,
+          signal: result.signal,
+          stdout: result.stdout,
+          stderr: result.stderr,
+        });
         return;
       }
     }

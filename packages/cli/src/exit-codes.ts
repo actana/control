@@ -41,3 +41,27 @@ export const EXIT_USAGE = 2;
  * (ADR 0022) and no later build makes that command appear.
  */
 export const EXIT_UNIMPLEMENTED = 3;
+
+/**
+ * The link to the Core went away while a command was running on it, and this
+ * CLI has no result (issue 266, `core exec`).
+ *
+ * **Never the command's own status, and never `0`.** The command keeps running
+ * on the Core — that is what a non-interactive spawn does — so the honest
+ * answer is *I do not know what happened*, and a script that read a
+ * plausible-looking status would act on an outcome nobody has. Note the
+ * asymmetry with `core shell`, which treats a dropped link as an ordinary
+ * ending ({@link EXIT_FAILURE}) because a human is watching; nobody is watching
+ * an exec.
+ *
+ * 125, following the one convention that already means exactly this: `docker
+ * run` and `git bisect run` both reserve it for *the runner failed, not your
+ * command*. The reservation is a convention rather than a proof — a command
+ * can exit 125 like it can exit anything else in 0–255, and no POSIX exit
+ * status is unreachable by a child process. What IS unambiguous is the
+ * structured channel: `--json` reports `outcome: "link-lost"` with a null
+ * exitCode, distinct from `outcome: "exited"` with an exitCode of 125, and a
+ * script that must tell the two apart with certainty reads that rather than
+ * `$?`. The sentence on stderr says which happened either way.
+ */
+export const EXIT_LINK_LOST = 125;
