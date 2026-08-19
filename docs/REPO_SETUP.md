@@ -458,7 +458,7 @@ step 9 something is published that cannot be unpublished.
 | 4 | This effort is merged to `main` by the old process — one pull request, the whole of #107 | — | yes |
 | 5 | `Train rules` watched green on that merge | — | n/a |
 | 6 | `beta.json`, `release.json`, `main.json`, `tag-release-cut.json` applied, in that order | §3a–§3e | by hand |
-| 7 | The two binding checks pass | §3 *Verify it actually binds* | n/a |
+| 7 | The binding checks pass | §3 *Verify it actually binds* | n/a |
 | 8 | `beta/0.1.0` cut | #115 | yes |
 | 9 | The first promotion is dispatched and approved | `ci-cd.md` | **no** |
 
@@ -643,11 +643,54 @@ goes stale in a way nobody notices until someone pushes to a dead line.
 
 - [ ] `docs/rulesets/preflight-app-id.sh docs/rulesets/main.json` — exits 0
 - [ ] `apply docs/rulesets/main.json 20390421`
+- [ ] **Re-apply after any change to [`rulesets/main.json`](rulesets/main.json).**
+      Nothing applies it for you (`REPO_SETUP.md` §3, *Before you apply
+      anything*), and nothing tells you it has drifted: a payload edited in a
+      pull request and never applied leaves the file and the repository
+      disagreeing silently, which is the state the drift note below records.
+- [ ] **Confirm the new context reports before you require it.** `Promotion
+      gate` must have been watched running — green on an ordinary pull request
+      and red on a promotion gate — at least once before this `apply`. It has
+      no `if:` and cannot be skipped, so once it is in the list a name that
+      does not report is the Pending-forever failure this section opens with.
 
 The pre-flight is repeated here rather than left to *Before you apply anything*
 because this is the destructive `PUT`: the payload is the whole ruleset
 afterwards, including its bypass actor list, and 20390421 is the ruleset the
 promotion cannot work without.
+
+> **20390421 has drifted from this payload, and the payload is the source of
+> truth** ([`rulesets/README.md`](rulesets/README.md), §3 above). Read live on
+> **2026-08-19**, `GET /repos/actana/control/rulesets/20390421` disagrees with
+> [`rulesets/main.json`](rulesets/main.json) in five places. None of them is a
+> decision to revisit — every one is a step 6 that was never completed, and
+> until it is, the checked-in payload describes a repository that does not
+> exist:
+>
+> | Parameter | `main.json` | Live 20390421 | |
+> | --- | --- | --- | --- |
+> | `required_approving_review_count` | `1` | `0` | #16, settled below |
+> | `dismiss_stale_reviews_on_push` | `true` | `false` | the human half of D16 |
+> | `required_review_thread_resolution` | `true` | `false` | |
+> | `strict_required_status_checks_policy` | `true` | `false` | |
+> | required check `Train rules` | present | **absent** | D1 is unenforced |
+>
+> Two of these deserve to be read rather than skimmed. **`Train rules` is not
+> required on `main` today**, so "only a train may target `main`" (D1) is
+> currently enforced by nothing — the check runs on every pull request and
+> reports, and no ruleset waits for it. And **dismiss-stale is off**, which is
+> the human-side guard behind D16: an approval is a statement about a specific
+> tree, and a further merge into the train makes it a statement about
+> something the approver never saw.
+>
+> Be equally clear about what closing this drift would *not* have done: **none
+> of it would have stopped #259.** That pull request carried an approval, and
+> `Train rules` passes on a healthy gate — it went green on #259. This is
+> necessary hygiene beside the guard, not the guard (#264, candidate B).
+>
+> The `apply` at the head of this section closes all five, together with the
+> `Promotion gate` context. Re-run the pre-flight first: it is still a
+> destructive full-body `PUT`.
 
 What changes from the ruleset that is live today:
 
@@ -655,6 +698,17 @@ What changes from the ruleset that is live today:
   ticket. GitHub rulesets cannot restrict which branch a pull request comes
   *from*; the check is the mechanism (D1). Without it, "only a train may target
   `main`" is a sentence in an ADR.
+- **`Promotion gate` is added to the required checks** (#264). The other half
+  of the same limitation: a ruleset cannot say "this pull request is a gate,
+  not a merge", so that too is a check. It refuses any pull request whose base
+  is `main` and whose head is `beta/*`, permanently and by construction, and
+  **its red is the healthy state** — it is what disables GitHub's merge button
+  on a promotion gate. `promote.yml` never reads it (it reads the pull
+  request's existence and head SHA), and the App bypasses required checks on
+  this ruleset anyway, so the fast-forward at `promote.yml:457` is untouched.
+  Adding it is the whole reason 20390421 has to be re-applied; without the
+  context in the live ruleset the check runs, goes red, and the button stays
+  enabled beside it.
 - **"Require branches to be up to date" goes on** (`strict_required_status_checks_policy: true`,
   currently `false`). Free here, where the only pull request into `main` is the
   promotion, and it is a fast-forward by construction.
@@ -666,9 +720,10 @@ What changes from the ruleset that is live today:
   promotion.
 - **Conversation resolution is required.**
 
-The existing required checks are kept exactly as named, all sixteen contexts
+The existing required checks are kept exactly as named, all seventeen contexts
 listed in [`main.json`](rulesets/main.json) — nothing is dropped or renamed,
-including the slow legs, and `Train rules` is the only addition.
+including the slow legs, and `Train rules` and `Promotion gate` are the only
+additions.
 
 > **On the two image checks.** Tickets and ADRs call these `Panel image` and
 > `Core image`, and those are the job names — but `panel-image` and
@@ -761,8 +816,8 @@ edited — a deliberate act, not a cutover step.
 
 ### Verify it actually binds
 
-Two checks, both of which must be done **after** applying and **before** the
-first promotion. Neither can be done from a branch, and neither is satisfied by
+Checks that must all be done **after** applying and **before** the first
+promotion. None of them can be done from a branch, and none is satisfied by
 reading the settings page back — the settings page is what you already know.
 
 - [ ] **A pull request into `main` from a non-`beta/*` head is actually
@@ -780,6 +835,19 @@ reading the settings page back — the settings page is what you already know.
 - [ ] **A promotion pull request (head `beta/*`) passes `Conventions`.** The
       branch-name allowlist has to be live first, so this can only be confirmed
       against a real train — the first one is #115.
+- [ ] **The merge button on a promotion pull request is disabled** (#264). On
+      the next real gate — head `beta/x.y.z`, base `main` — `Promotion gate`
+      must be **red**, its annotation must name ADR 0023 D5 and D16 and the
+      `promote.yml` dispatch, and the merge button must be *disabled* rather
+      than merely accompanied by a warning. Red is the healthy state here;
+      that check going green on a gate is the failure. Do not create a gate
+      pull request to test this — the next promotion is the test, and
+      `promote.yml` closes it by fast-forwarding, exactly as before.
+- [ ] **The same promotion still promotes.** `promote.yml` reads the gate's
+      existence and head SHA and never its check state, and the App bypasses
+      required checks on 20390421 — so a permanently red gate must not change
+      anything about the run. If a promotion ever fails *because* of this
+      check, that is a defect in this section, not a tightening.
 
 ### What this means for an agent session
 

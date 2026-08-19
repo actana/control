@@ -31,7 +31,9 @@ pull request it gates, and publishes a `pr-` image a reviewer can run; on a
 push to a train it publishes the image a promotion will re-point. The repo
 conventions — PR title, commit messages, branch name — are the `Conventions`
 job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and the branch
-model itself is the `Train rules` job beside it.
+model itself is the `Train rules` job beside it. A third, `Promotion gate`,
+refuses one thing only: a pull request from a train into `main`, which is a
+gate and must never be merged by hand (#264).
 
 `promote.yml` is the fifth entry point, and the only thing in the repository
 that writes to `main`. It is described under [Cutting a
@@ -115,7 +117,9 @@ Five things follow from that, and each is enforced rather than asked for:
   digest assertion unimplementable.
 - **The promotion pull request is a gate, not a merge.** Its checks and its
   approval are the point; `promote.yml` performs the advance. Do not press
-  GitHub's merge button on it.
+  GitHub's merge button on it — and since #264 you cannot: the `Promotion
+  gate` check is red on every such pull request by construction, which is what
+  disables the button. Red is the healthy state for a gate.
 
 Every package manifest — root, `packages/cli`, `packages/core`, `packages/panel`,
 `packages/sdk`, `packages/shared` — carries the train's version, written by the
@@ -1074,8 +1078,8 @@ force-pushed, its images republished and the next train not cut — see
 [§Hotfix trains](#hotfix-trains) — while two survivors refuse the dispatch
 outright.
 
-Open a pull request from `beta/x.y.z` into `main`, let it go green, get it
-approved — then dispatch:
+Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
+it approved — then dispatch:
 
 ```bash
 gh workflow run promote.yml --repo actana/control -f train=beta/0.1.0
@@ -1086,6 +1090,17 @@ squash would produce a `main` commit whose SHA differs from the tested one,
 which is exactly what the digest assertion cannot survive. GitHub closes the
 pull request as merged on its own once its commits are reachable from `main`,
 which the fast-forward makes true.
+
+**`Promotion gate` is red on that pull request, and red is the healthy state**
+(#264). Since one gate was squash-merged by hand and the release it carried
+was abandoned, the button is not merely wrong — a required check refuses it.
+The job runs on every pull request, exits successfully with a `::notice`
+everywhere else, and on a `beta/* → main` pull request fails with the reason on
+screen: D5, D16, and the dispatch above. So a promotion gate carries one
+permanently red required check by design, and the *only* thing to do about it
+is dispatch `promote.yml`. Nothing in the promotion reads it: `promote.yml`
+reads that the pull request exists and takes its head SHA, and the App bypasses
+required checks on the `main` ruleset, so the fast-forward is unaffected.
 
 Its image checks do not rebuild anything, either. `Panel image` and `Core
 image` are required on every pull request, and on a promotion they would

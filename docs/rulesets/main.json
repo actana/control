@@ -38,6 +38,7 @@
         "required_status_checks": [
           { "context": "Conventions", "integration_id": 15368 },
           { "context": "Train rules", "integration_id": 15368 },
+          { "context": "Promotion gate", "integration_id": 15368 },
           { "context": "Typecheck", "integration_id": 15368 },
           { "context": "Unit Tests", "integration_id": 15368 },
           { "context": "Lint", "integration_id": 15368 },
