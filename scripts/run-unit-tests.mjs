@@ -25,6 +25,7 @@ import {
   sandboxPath,
   stageCommand,
   stagePrefix,
+  staleSandboxes,
   summaryLine,
 } from "./lib/unit-tests.mjs";
 
@@ -77,6 +78,21 @@ if (native.exitCode !== 0) {
 }
 
 // -- The temp sandbox ---------------------------------------------------------
+
+// A sandbox is removed on exit and on the three signals a process can trap.
+// SIGKILL, a runner OOM and a cancelled CI job are not among them, and this
+// prefix is deliberately outside the `mc-*`/`actana-*` globs the leak check
+// greps for — so a survivor is drift under a name nothing would ever flag.
+// One readdir at startup closes it. Live runs' sandboxes are left alone.
+const stale = staleSandboxes(realTmp);
+for (const name of stale) {
+  try {
+    fs.rmSync(path.join(realTmp, name), { recursive: true, force: true, maxRetries: 3 });
+  } catch (error) {
+    console.error(`  could not remove the stale sandbox ${name}: ${error.message}`);
+  }
+}
+if (stale.length) console.log(`  swept     ${stale.length} sandbox(es) left by runs that were killed`);
 
 const tmpBefore = leakedEntries(realTmp);
 const sandbox = sandboxPath(realTmp, process.pid);
@@ -131,6 +147,10 @@ for (const stage of STAGES) {
 
 const stranded = leakedEntries(sandbox);
 const tmpAfter = leakedEntries(realTmp);
+// Read again, not reused from preflight: the realistic way a job dies of disk
+// is to start with 40 GiB and exhaust it during the Panel suite. A single
+// preflight reading reports that run as healthy and never says `DISK:`.
+const diskAfter = diskHeadroom(realTmp);
 const leftovers = leftoverReport({ before: tmpBefore, after: tmpAfter, stranded });
 
 console.log("Temp directories");
@@ -140,13 +160,19 @@ for (const [prefix, count] of leftovers.byPrefix.slice(0, 12)) {
 }
 for (const name of leftovers.escaped) console.log(`  ESCAPED: ${path.join(realTmp, name)}`);
 
+console.log("");
+console.log("Disk, after the run");
+console.log(`  temp      ${diskAfter.message}`);
+
 removeSandbox();
 
 // -- The report ---------------------------------------------------------------
 
-console.log(renderReport(results, { leftovers, disk }));
-if (onGitHub) for (const annotation of renderAnnotations(results, { leftovers, disk })) console.log(annotation);
-writeJobSummary(renderJobSummary(results, { leftovers, disk }));
+console.log(renderReport(results, { leftovers, disk, diskAfter }));
+if (onGitHub) {
+  for (const annotation of renderAnnotations(results, { leftovers, disk, diskAfter })) console.log(annotation);
+}
+writeJobSummary(renderJobSummary(results, { leftovers, disk, diskAfter }));
 
 // A leaked directory is a failure of the job, not of a package: it is reported
 // on its own rather than blamed on whichever stage happened to run last.

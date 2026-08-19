@@ -128,7 +128,7 @@ export function failedStages(results) {
  * would leave "did `panel` run at all?" unanswerable, which is the question
  * that started the ticket.
  */
-export function renderReport(results, { leftovers = null, disk = null } = {}) {
+export function renderReport(results, { leftovers = null, disk = null, diskAfter = null } = {}) {
   const rule = "-".repeat(72);
   const lines = ["", rule, "Unit Tests — every stage, and what it did", rule];
   for (const result of results) {
@@ -148,10 +148,10 @@ export function renderReport(results, { leftovers = null, disk = null } = {}) {
     );
   }
 
-  if (disk?.exhausted) {
+  const verdict = diskVerdict(disk, diskAfter);
+  if (verdict.lines.length) {
     lines.push("");
-    lines.push("DISK: this machine was out of space during the run — see the preflight above.");
-    lines.push("      Treat the failures above as unexplained until the run is repeated with headroom.");
+    lines.push(...verdict.lines);
   }
   if (leftovers?.escaped?.length) {
     lines.push("");
@@ -169,12 +169,20 @@ export function renderReport(results, { leftovers = null, disk = null } = {}) {
  * and against the pull request; the job summary renders as a table on the run
  * page. Both are cheap, so both.
  */
-export function renderAnnotations(results, { leftovers = null, disk = null } = {}) {
+export function renderAnnotations(results, { leftovers = null, disk = null, diskAfter = null } = {}) {
   const lines = [];
-  if (disk?.exhausted) {
+  const verdict = diskVerdict(disk, diskAfter);
+  if (verdict.exhausted) {
+    const culprit = diskAfter?.exhausted ? diskAfter : disk;
     lines.push(
-      `::error title=Unit Tests — out of disk::${disk.message}. ` +
+      `::error title=Unit Tests — out of disk::${culprit.message}. ` +
         "A run that dies of disk is not a run that tells you about your code.",
+    );
+  } else if (verdict.drained) {
+    lines.push(
+      `::error title=Unit Tests — the run drained the disk::` +
+        `${formatBytes(verdict.droppedBytes)} of free space went during this run. ` +
+        "Suspect a runaway write or leaked temp directories before suspecting the code.",
     );
   }
   for (const failure of failedStages(results)) {
@@ -191,7 +199,7 @@ export function renderAnnotations(results, { leftovers = null, disk = null } = {
 }
 
 /** The `$GITHUB_STEP_SUMMARY` table — the same facts, rendered for the run page. */
-export function renderJobSummary(results, { leftovers = null, disk = null } = {}) {
+export function renderJobSummary(results, { leftovers = null, disk = null, diskAfter = null } = {}) {
   const lines = ["## Unit Tests", ""];
   const failed = failedStages(results);
   lines.push(
@@ -215,9 +223,16 @@ export function renderJobSummary(results, { leftovers = null, disk = null } = {}
       "see [#257](https://github.com/actana/control/issues/257).",
   );
   if (disk) {
-    lines.push("", "### Machine", "", `- ${disk.message}`);
-    if (disk.exhausted) {
+    const verdict = diskVerdict(disk, diskAfter);
+    lines.push("", "### Machine", "", `- before: ${disk.message}`);
+    if (diskAfter) lines.push(`- after:  ${diskAfter.message}`);
+    if (verdict.exhausted) {
       lines.push("- **This run ran out of disk.** The failures above may be the machine, not the code.");
+    } else if (verdict.drained) {
+      lines.push(
+        `- **This run consumed ${formatBytes(verdict.droppedBytes)} of free space** — far more than a ` +
+          "test run should. Suspect the machine before the code.",
+      );
     }
   }
   if (leftovers) {
@@ -284,6 +299,70 @@ export function diskHeadroom(target, { statfs = fs.statfsSync } = {}) {
     (Number.isFinite(freeInodes) ? `, ${formatCount(freeInodes)} inodes free` : "") +
     (exhausted ? " — BELOW the floor this job needs" : tight ? " — tight, but proceeding" : "");
   return { target, freeBytes, freeInodes, ok: !exhausted, exhausted, tight, unknown: false, message };
+}
+
+/**
+ * How much disk a unit test run may plausibly eat before the drop is the story.
+ *
+ * The suites write into a sandbox that is removed at the end, so a full run's
+ * net footprint is megabytes. A multi-gigabyte fall over one `pnpm test` is
+ * something pathological — a runaway log, a core dump, or the ~10k stale temp
+ * directories #257 §4 is about — and it is worth naming even when the
+ * filesystem never quite reached the floor.
+ */
+export const SUSPICIOUS_DROP_BYTES = 8 * 1024 * 1024 * 1024;
+export const SUSPICIOUS_DROP_INODES = 200_000;
+
+/**
+ * The disk verdict for a whole run, from the reading before and the one after.
+ *
+ * The preflight reading alone cannot answer the question #257 §4 actually
+ * asks — *was this red run the machine or the code?* — because the realistic
+ * failure is a job that starts with 40 GiB and exhausts it during the Panel
+ * suite. That run passes preflight, prints a healthy figure at the top, and
+ * then fails for reasons no line in the report connects to disk.
+ *
+ * `after` is optional: with only a preflight reading this degrades to exactly
+ * the old behaviour rather than inventing a verdict it cannot support.
+ */
+export function diskVerdict(before, after = null) {
+  const exhausted = Boolean(before?.exhausted) || Boolean(after?.exhausted);
+  const usable = before && after && !before.unknown && !after.unknown;
+  const droppedBytes = usable ? before.freeBytes - after.freeBytes : 0;
+  const droppedInodes =
+    usable && Number.isFinite(before.freeInodes) && Number.isFinite(after.freeInodes)
+      ? before.freeInodes - after.freeInodes
+      : 0;
+  const drained = droppedBytes > SUSPICIOUS_DROP_BYTES || droppedInodes > SUSPICIOUS_DROP_INODES;
+
+  const lines = [];
+  if (exhausted) {
+    const culprit = after?.exhausted ? after : before;
+    lines.push(
+      after?.exhausted && !before?.exhausted
+        ? `DISK: this run EXHAUSTED the disk while it ran — ${culprit.message}.`
+        : `DISK: this machine was out of space during the run — ${culprit.message}.`,
+    );
+    lines.push("      Treat the failures above as unexplained until the run is repeated with headroom.");
+  } else if (drained) {
+    const parts = [];
+    if (droppedBytes > SUSPICIOUS_DROP_BYTES) parts.push(`${formatBytes(droppedBytes)} of free space`);
+    if (droppedInodes > SUSPICIOUS_DROP_INODES) parts.push(`${formatCount(droppedInodes)} inodes`);
+    lines.push(`DISK: this run consumed ${parts.join(" and ")} — far more than a test run should.`);
+    lines.push(`      ${after.message}`);
+    lines.push("      Suspect a runaway write or leaked temp directories before suspecting the code.");
+  }
+
+  return {
+    exhausted,
+    drained,
+    ok: !exhausted && !drained,
+    droppedBytes,
+    droppedInodes,
+    before: before ?? null,
+    after: after ?? null,
+    lines,
+  };
 }
 
 export function formatBytes(bytes) {
@@ -369,6 +448,57 @@ export function countByPrefix(names) {
     counts.set(prefix, (counts.get(prefix) ?? 0) + 1);
   }
   return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+}
+
+/**
+ * The pid encoded in one of our sandbox directory names, or null if the name
+ * is not one of ours at all.
+ */
+export function sandboxPid(name) {
+  if (!name.startsWith(SANDBOX_PREFIX)) return null;
+  const rest = name.slice(SANDBOX_PREFIX.length);
+  return /^[0-9]+$/.test(rest) ? Number(rest) : null;
+}
+
+/** Is a pid still running? `EPERM` means yes, owned by somebody else. */
+export function isProcessAlive(pid, { kill = process.kill.bind(process) } = {}) {
+  try {
+    kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error.code === "EPERM";
+  }
+}
+
+/**
+ * Sandboxes from earlier runs that no live process owns.
+ *
+ * The sandbox is removed on `exit` and on `SIGINT`/`SIGTERM`/`SIGHUP`, but
+ * `SIGKILL`, a runner OOM and a cancelled CI job cannot be trapped — and the
+ * prefix is deliberately outside the `mc-*`/`actana-*` globs the leak check
+ * greps for, so a sandbox that survives one of those is drift under a name
+ * nothing will ever flag. Sweeping at startup closes that hole in one readdir.
+ *
+ * A sandbox whose pid is still alive belongs to a *concurrent* run and is left
+ * strictly alone: deleting a live run's `TMPDIR` would be a far worse bug than
+ * the leak this cleans up.
+ */
+export function staleSandboxes(
+  root,
+  { readdir = fs.readdirSync, alive = isProcessAlive, self = process.pid } = {},
+) {
+  let entries;
+  try {
+    entries = readdir(root);
+  } catch {
+    return [];
+  }
+  return entries
+    .filter((name) => {
+      const pid = sandboxPid(name);
+      return pid !== null && pid !== self && !alive(pid);
+    })
+    .sort();
 }
 
 /** Where the sandbox lives, given the real temp root. */

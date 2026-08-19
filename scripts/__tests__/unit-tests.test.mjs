@@ -21,7 +21,12 @@ import {
   exitCodeFor,
   failedStages,
   isLeakedName,
+  SUSPICIOUS_DROP_BYTES,
+  diskVerdict,
+  isProcessAlive,
   leftoverReport,
+  sandboxPid,
+  staleSandboxes,
   renderAnnotations,
   renderJobSummary,
   renderReport,
@@ -206,6 +211,124 @@ describe("the report a reviewer reads", () => {
     expect(renderReport(mixed, { disk })).toContain("DISK:");
     expect(renderAnnotations(mixed, { disk })[0]).toContain("out of disk");
     expect(failedStages(mixed)).toHaveLength(2);
+  });
+});
+
+describe("the disk verdict, over a whole run", () => {
+  const gib = 1024 * 1024 * 1024;
+  const reading = (freeBytes, extra = {}) => ({
+    target: "/tmp",
+    freeBytes,
+    freeInodes: 1_000_000,
+    exhausted: false,
+    unknown: false,
+    message: `/tmp: ${freeBytes / gib} GiB free`,
+    ...extra,
+  });
+
+  it("says nothing when the run started and ended with room", () => {
+    const verdict = diskVerdict(reading(40 * gib), reading(39 * gib));
+    expect(verdict.ok).toBe(true);
+    expect(verdict.lines).toEqual([]);
+  });
+
+  it("says DISK when a run that started healthy exhausted the disk while running", () => {
+    // The realistic incident: 40 GiB at preflight, nothing left by the time
+    // the Panel suite is done. The preflight reading alone calls this healthy.
+    const before = reading(40 * gib);
+    const after = reading(0.2 * gib, { exhausted: true, message: "/tmp: 205 MiB free — BELOW the floor" });
+    const verdict = diskVerdict(before, after);
+
+    expect(verdict.exhausted).toBe(true);
+    expect(verdict.lines.join("\n")).toContain("EXHAUSTED the disk while it ran");
+    expect(renderReport([], { disk: before, diskAfter: after })).toContain("DISK:");
+    expect(renderAnnotations([], { disk: before, diskAfter: after })[0]).toContain("out of disk");
+    expect(renderJobSummary([], { disk: before, diskAfter: after })).toContain("ran out of disk");
+  });
+
+  it("says DISK when the run ate more space than a test run plausibly could", () => {
+    // Never crossed the floor, so no reading is `exhausted` — but a unit test
+    // run whose net footprint is megabytes did not legitimately spend 20 GiB.
+    const before = reading(60 * gib);
+    const after = reading(40 * gib);
+    const verdict = diskVerdict(before, after);
+
+    expect(verdict.exhausted).toBe(false);
+    expect(verdict.drained).toBe(true);
+    expect(verdict.droppedBytes).toBeGreaterThan(SUSPICIOUS_DROP_BYTES);
+    expect(renderReport([], { disk: before, diskAfter: after })).toContain("DISK:");
+    expect(renderAnnotations([], { disk: before, diskAfter: after })[0]).toContain("drained the disk");
+  });
+
+  it("does not cry drain over a run that used an ordinary amount of space", () => {
+    expect(diskVerdict(reading(40 * gib), reading(39.5 * gib)).drained).toBe(false);
+  });
+
+  it("degrades to the preflight reading alone rather than inventing a verdict", () => {
+    const before = reading(0.2 * gib, { exhausted: true, message: "/tmp: 205 MiB free — BELOW the floor" });
+    const verdict = diskVerdict(before, null);
+    expect(verdict.exhausted).toBe(true);
+    expect(verdict.drained).toBe(false);
+    expect(renderReport([], { disk: before })).toContain("DISK:");
+  });
+
+  it("stays quiet when a reading could not be taken at all", () => {
+    const unknown = { target: "/tmp", ok: true, exhausted: false, unknown: true, message: "unknown" };
+    expect(diskVerdict(unknown, unknown).ok).toBe(true);
+  });
+});
+
+describe("sweeping sandboxes a killed run left behind", () => {
+  it("recognises its own sandbox names and nothing else", () => {
+    expect(sandboxPid("act-testrun-4321")).toBe(4321);
+    expect(sandboxPid("mc-core-db-AbCd12")).toBeNull();
+    expect(sandboxPid("act-testrun-not-a-pid")).toBeNull();
+  });
+
+  it("collects sandboxes whose owning process is gone", () => {
+    const stale = staleSandboxes("/tmp", {
+      readdir: () => ["act-testrun-11", "act-testrun-22", "mc-something", "unrelated"],
+      alive: () => false,
+      self: 99,
+    });
+    expect(stale).toEqual(["act-testrun-11", "act-testrun-22"]);
+  });
+
+  it("never touches a concurrent run's sandbox — that would be the worse bug", () => {
+    const stale = staleSandboxes("/tmp", {
+      readdir: () => ["act-testrun-11", "act-testrun-22"],
+      alive: (pid) => pid === 22,
+      self: 99,
+    });
+    expect(stale).toEqual(["act-testrun-11"]);
+  });
+
+  it("never removes the sandbox of the run doing the sweeping", () => {
+    const stale = staleSandboxes("/tmp", {
+      readdir: () => ["act-testrun-99"],
+      alive: () => false,
+      self: 99,
+    });
+    expect(stale).toEqual([]);
+  });
+
+  it("treats a directory it cannot read as nothing to sweep", () => {
+    expect(
+      staleSandboxes("/nope", {
+        readdir: () => {
+          throw new Error("ENOENT");
+        },
+      }),
+    ).toEqual([]);
+  });
+
+  it("counts a process it may not signal as alive, not as stale", () => {
+    const alive = isProcessAlive(1, {
+      kill: () => {
+        throw Object.assign(new Error("operation not permitted"), { code: "EPERM" });
+      },
+    });
+    expect(alive).toBe(true);
   });
 });
 
