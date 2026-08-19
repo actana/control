@@ -464,6 +464,11 @@ jobs:
       # anything matching `mc-*`/`actana-*` still standing here came from a
       # hardcoded path that ignored it — or from a step other than the tests.
       # `if: always()` so a red test run still gets the disk verdict.
+      #
+      # ASSUMPTION: an ephemeral runner, where `/tmp` starts empty — this is an
+      # absolute check, not the before/after diff `run-unit-tests.mjs` does.
+      # On a self-hosted runner one pre-existing `mc-*` would make this step
+      # permanently red; swap it for a diff against a pre-suite listing there.
       - name: No temp directories survived the job
         if: always()
         run: |
