@@ -126,6 +126,10 @@ export function fakeStartedSession(overrides: Partial<StartedSession> = {}): Sta
     ptyId: "pty_1",
     harness: "claude-code",
     command: "claude",
+    // Claude Code is the one harness that reports a turn's start, so the
+    // default fake is the quiet case — a test asking about the caveat has to
+    // say `reportsTurnStart: false` and mean it.
+    reportsTurnStart: true,
     projectId: "proj_1",
     project: "web",
     wait: async () => ({ status: "finished", exited: false }),

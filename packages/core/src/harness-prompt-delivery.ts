@@ -244,27 +244,78 @@ export type BlockingDialogMatch = {
  * The dialogs the Core knows how to get past.
  *
  * Both entries are the same shape and the same danger: the highlighted default
- * is the destructive one. Claude Code's folder-trust prompt defaults to
+ * is the destructive one, so nothing here is answered by pressing Enter. Claude Code's folder-trust prompt defaults to
  * declining and *exiting*, and its bypass-permissions warning — the screen a
  * session launched with `--dangerously-skip-permissions` lands on — does the
  * same. Auto mode on its own survives, because nothing types into it; a prompt
  * on its own survives, because there is no dialog in the way. The two together
  * were what died, and this table is why they no longer do.
  *
- * Both are scoped to `claude-code`, because both are transcriptions of *that*
- * harness's screens: the wording, the option labels and the fact that the
- * highlighted default exits were all read off Claude Code and nothing else.
- * Applying them to a harness nobody has observed would mean pressing a digit
- * into a menu on the strength of another vendor's layout, which is the guess
- * D5 exists to refuse. A harness with no entry here still gets the quiet gap,
- * the separate carriage return and the length-scaled pause; what it does not
- * get is Claude Code's answers to questions it was never asked.
+ * The bypass-permissions entry is scoped to `claude-code`, because it is a
+ * transcription of *that* harness's screen: the wording, the option labels and
+ * the fact that the highlighted default exits were all read off Claude Code
+ * and nothing else. Applying it to a harness nobody has observed would mean
+ * pressing a digit into a menu on the strength of another vendor's layout,
+ * which is the guess D5 exists to refuse. A harness with no entry here still
+ * gets the quiet gap, the separate carriage return and the length-scaled
+ * pause; what it does not get is Claude Code's answers to questions it was
+ * never asked.
+ *
+ * Folder-trust now covers `cursor-cli` as well (issue 177 finding 3), and the
+ * reason it can is that **nothing about Claude Code's menu is carried across
+ * with it**. What the entry supplies is three things that are true of any
+ * folder-trust prompt in any wording: that the word "trust" and a workspace
+ * noun and a question mark together mean one is up, that an option meaning
+ * "go ahead" is the one to take, and that an option meaning "no" is the one to
+ * never take. Everything harness-specific — how many options there are, what
+ * they are called, and *which digit* the affirmative one carries — is read off
+ * the screen in front of it by {@link readDialogOptions}, and if it cannot be
+ * read then {@link chooseDialogOption} returns null and D5 applies unchanged:
+ * nothing is typed, delivery is abandoned, and the Session is reported
+ * `needs-input` rather than left looking like a hang. The issue is explicit
+ * about the failure mode to avoid here — *"the key sent is `1`, correct for
+ * Claude's option order and arbitrary for anyone else's"* — and a key this
+ * module never hard-codes is a key it cannot get arbitrarily wrong.
+ *
+ * **What that buys cursor-cli, exactly.** Its trust screen has since been
+ * observed and is committed as
+ * `__tests__/fixtures/cursor-agent-2026.08.11-folder-trust.txt`. The nouns
+ * catch it — `workspace`, `directory`, question mark — so the dialog is
+ * *recognised*. It is not *answered*, and cannot be: cursor-agent's menu is
+ * letter-keyed (`[a] Trust this workspace` / `[q] Quit`), `OPTION_LINE`
+ * below requires a digit, so {@link readDialogOptions} returns an empty list
+ * and {@link chooseDialogOption} returns null. Every cursor-cli delivery that
+ * meets this screen abandons. That is the whole of the win and it is still a
+ * real one — before it, the prompt and a carriage return went into the trust
+ * dialog and the delivery reported success. Teaching the reader letter keys is
+ * issue 273; until it lands, "recognised" is the honest word for this row.
+ *
+ * **What recognition is not: a net under harnesses this table has never
+ * heard of.** An *unrecognised* dialog does not abandon. `onQuiet` finds no
+ * dialog, emits `settled`, and calls `writePrompt` — the prompt is typed into
+ * whatever is on screen, which is precisely what cursor-agent's trust screen
+ * got before it had a row here. The `needs-input` outcome exists **only
+ * because a pattern here matched**. Anyone adding a fifth harness should read that as: matching is
+ * the whole job; nothing downstream catches a dialog this table missed. What
+ * a wording-independent pattern buys is a match that cannot produce a *wrong
+ * keystroke*, not a match that is optional.
  */
 export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   {
     id: "folder-trust",
-    harnesses: ["claude-code"],
-    match: [/\btrust\b/i, /\b(folder|directory|files)\b/i, /\?/],
+    harnesses: ["claude-code", "cursor-cli"],
+    // `workspace|project|repo` join the nouns because they are what a vendor
+    // other than Anthropic is as likely to call the same thing. Widening the
+    // *nouns* rather than dropping the `trust` anchor keeps the pairing that
+    // makes this a dialog rather than prose: a paragraph containing the word
+    // "trust" still does not match without a question mark and a workspace
+    // noun, and even a full match answers nothing unless the menu below it
+    // offers exactly one "yes" and at least one "no".
+    match: [
+      /\btrust\b/i,
+      /\b(folder|directory|files|workspace|project|repo(?:sitory)?)\b/i,
+      /\?/,
+    ],
     affirmative: /\b(yes|proceed|trust|allow)\b/i,
     refuse: /\b(no|exit|quit|cancel|deny)\b/i,
   },

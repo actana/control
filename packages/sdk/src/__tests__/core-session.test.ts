@@ -244,6 +244,43 @@ describe("CoreSession.start", () => {
     );
   });
 
+  // ─── The turn-start signal (issue 177 finding 4) ──────────────────────
+  //
+  // The Core already answered this on `spawned` and the SDK threw it away, so
+  // an automation had no way to learn that its cursor-cli Session would sit at
+  // its pre-turn status for the whole of a turn that was genuinely running.
+
+  it("carries the Core's turn-start answer onto the Session", async () => {
+    rig = startRig({
+      spawn: (async () => ({ ptyId: "pty-1", hooksReportTurnStart: true })) as PtyCore["spawn"],
+    });
+    session = await startSession(rig);
+
+    expect(session.reportsTurnStart).toBe(true);
+  });
+
+  it("reports no turn-start when the Core says a harness does not report one", async () => {
+    // cursor-cli's answer today: the Core writes `.cursor/hooks.json` and
+    // cursor-agent never fires `beforeSubmitPrompt`.
+    rig = startRig({
+      spawn: (async () => ({ ptyId: "pty-1", hooksReportTurnStart: false })) as PtyCore["spawn"],
+    });
+    session = await startSession(rig, { harness: "cursor-cli" });
+
+    expect(session.reportsTurnStart).toBe(false);
+  });
+
+  it("reads a Core that answers nothing at all as no turn-start", async () => {
+    // The safe direction on an older Core: a redundant caveat, never a Session
+    // that silently looks idle for its whole life.
+    rig = startRig({
+      spawn: (async () => ({ ptyId: "pty-1" })) as unknown as PtyCore["spawn"],
+    });
+    session = await startSession(rig);
+
+    expect(session.reportsTurnStart).toBe(false);
+  });
+
   it("starts a Session with no prompt when none was given", async () => {
     rig = startRig();
     session = await startSession(rig, { prompt: undefined });

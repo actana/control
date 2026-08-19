@@ -1085,8 +1085,33 @@ export class CoreClient {
 
   // ─── Typed frame methods ───────────────────────────────────────────────────
 
-  spawn(opts: CoreLinkPtySpawnOptions): Promise<{ ptyId: string }> {
-    return this.rpc({ type: "spawn", reqId: "", opts }) as Promise<{ ptyId: string }>;
+  /**
+   * Start a PTY on the Core and hand back its id and one fact about it.
+   *
+   * `hooksReportTurnStart` is the Core's answer for *this* Session: will a
+   * lifecycle hook announce the START of a turn, or only its end (issue 84,
+   * issue 177 finding 4)? It is narrower than "hooks were installed" —
+   * cursor-agent takes the hooks file and never fires `beforeSubmitPrompt`,
+   * and Codex will not run newly-installed hooks until the operator reviews
+   * them — so a Session can report a turn's end and never its start, which
+   * looks exactly like an idle Session to anything watching status.
+   *
+   * A Core too old to answer omits the field, and absent reads as `false`: a
+   * client that says "no turn-start signal here" about a Core that would have
+   * given one is a redundant sentence, and the other way round is a Session
+   * that silently looks idle for its whole life.
+   */
+  async spawn(
+    opts: CoreLinkPtySpawnOptions,
+  ): Promise<{ ptyId: string; hooksReportTurnStart: boolean }> {
+    const answer = (await this.rpc({ type: "spawn", reqId: "", opts })) as {
+      ptyId: string;
+      hooksReportTurnStart?: boolean;
+    };
+    return {
+      ptyId: answer.ptyId,
+      hooksReportTurnStart: answer.hooksReportTurnStart === true,
+    };
   }
 
   write(ptyId: string, data: string): Promise<boolean> {
@@ -1373,7 +1398,15 @@ export type CoreExecResult = {
 export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
   switch (msg.type) {
     case "spawned":
-      return { ptyId: msg.ptyId };
+      // `hooksReportTurnStart` comes through here rather than being dropped
+      // (issue 177 finding 4): it is the Core's only statement that this
+      // Session will report a turn's *start*, and a client that never sees it
+      // cannot tell a running cursor-cli Session from an idle one. Absent on
+      // an older Core, which reads as false.
+      return {
+        ptyId: msg.ptyId,
+        hooksReportTurnStart: msg.hooksReportTurnStart === true,
+      };
     case "spawnError":
       throw new Error(msg.message);
     case "writeResult":

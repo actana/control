@@ -56,6 +56,19 @@ export type HarnessCliConfig = {
   installCommand: HarnessCliInstallCommand;
   /** Extra directories under the user home dir to prepend on PATH when they exist. */
   homePathSuffixes?: HarnessCliPathSuffixes;
+  /**
+   * This CLI's own spelling of "do not stop to ask me" — the flag that turns a
+   * launch into an unattended one (issue 177 finding 2).
+   *
+   * Absent means the vendor ships no such flag, which is a different fact from
+   * "we have not filled this in": OpenCode has none, so a caller asking for
+   * auto mode there is asking for something that does not exist rather than
+   * something that was dropped. Every other consumer of this idea — the spawn
+   * policy's allow-list, the Panel's launch builder, the SDK's default command
+   * — reads it from here, because four transcriptions of one vendor fact is
+   * four chances to disagree about it.
+   */
+  autoModeFlag?: string;
 };
 
 export const MANAGED_HARNESSES = HARNESSES;
@@ -81,6 +94,7 @@ export const HARNESS_CLI_CONFIG = {
       default: "curl -fsSL https://claude.ai/install.sh | bash",
       win32: "irm https://claude.ai/install.ps1 | iex",
     },
+    autoModeFlag: "--dangerously-skip-permissions",
   }),
   codex: withResolveAs({
     agent: "codex",
@@ -95,6 +109,7 @@ export const HARNESS_CLI_CONFIG = {
       darwin: ["npm install -g @openai/codex@latest", "brew upgrade codex"],
     },
     installCommand: "npm install -g @openai/codex@latest",
+    autoModeFlag: "--yolo",
   }),
   "cursor-cli": withResolveAs({
     agent: "cursor-cli",
@@ -112,6 +127,7 @@ export const HARNESS_CLI_CONFIG = {
       default: "curl https://cursor.com/install -fsS | bash",
       win32: "irm 'https://cursor.com/install?win32=true' | iex",
     },
+    autoModeFlag: "--force",
   }),
   opencode: withResolveAs({
     agent: "opencode",
@@ -272,6 +288,46 @@ export function resolveHarnessCliUpdateCommands(
 export const HARNESS_SPAWN_COMMANDS = Object.fromEntries(
   MANAGED_HARNESSES.map((agent) => [agent, HARNESS_CLI_CONFIG[agent].command]),
 ) as Readonly<Record<Harness, string>>;
+
+/**
+ * Each harness's auto-mode flag, or `null` where the vendor ships none.
+ *
+ * The one home for {@link HarnessCliConfig.autoModeFlag}, derived rather than
+ * re-typed so a new harness cannot arrive with the table half-filled. `null` is
+ * load-bearing everywhere this is read: it means "this CLI has no unattended
+ * mode", not "nobody has looked it up yet", and it is why OpenCode is neither
+ * given a flag nor refused a launch.
+ */
+export const HARNESS_AUTO_MODE_FLAGS = Object.fromEntries(
+  MANAGED_HARNESSES.map((agent) => [agent, HARNESS_CLI_CONFIG[agent].autoModeFlag ?? null]),
+) as Readonly<Record<Harness, string | null>>;
+
+/** The flag that puts `agent` in auto mode, or null where it has none. */
+export function autoModeFlagForHarness(agent: Harness): string | null {
+  return HARNESS_AUTO_MODE_FLAGS[agent];
+}
+
+/**
+ * Throw when a registry's auto-mode flags have drifted from this table.
+ *
+ * The sibling of {@link assertSpawnCommandsSync}, for the second half of a
+ * launch command. Issue 177 finding 1 was the binary half of exactly this drift
+ * — a table that agreed with the Core about three harnesses out of four — and
+ * the flag half is worse, because it fails silently rather than at spawn.
+ */
+export function assertAutoModeFlagsSync(
+  autoModeFlags: Record<Harness, string | null | undefined>,
+): void {
+  for (const agent of MANAGED_HARNESSES) {
+    const expected = HARNESS_AUTO_MODE_FLAGS[agent];
+    const actual = autoModeFlags[agent] ?? null;
+    if (actual !== expected) {
+      throw new Error(
+        `Auto-mode flag drift for ${agent}: registry=${actual}, config=${expected}`,
+      );
+    }
+  }
+}
 
 export function assertHarnessCliRegistrySync(registry: Record<Harness, { command: string }>): void {
   for (const agent of MANAGED_HARNESSES) {

@@ -296,6 +296,30 @@ The narrower question matters: Cursor and Codex both take our hooks file and
 report a turn's *end*, so "hooks were installed" would suppress the fallback and
 leave their Sessions on `ready` for the whole first turn.
 
+### The CLI has no equivalent, and says so
+
+`hooksReportTurnStart` reaches every client, not just the Panel: the SDK carries
+it off the `spawned` frame onto `CoreSession.reportsTurnStart`, and the `actana`
+CLI reports it on `session start` / `session resume` as both a stderr note and a
+`--json` field.
+
+It is a statement rather than a fallback, and that is deliberate. The Panel can
+watch the keystrokes going into its pane because it owns the pane; `actana
+session start` hands the prompt to the Core and hangs up (#129 D6), so there are
+no keystrokes here to watch, and a client that wrote `running` on its own would
+be reporting a status the Core never decided. What it can do is stop a quiet
+`session ls` from reading as a dead harness:
+
+```
+$ actana session start web "refactor the picker" --harness cursor-cli
+Started cursor-cli in web — session task_x, pty pty_x.
+Note: cursor-cli does not report the start of a turn, so this session will not
+show as running until it stops. `--wait` and `session logs` are unaffected.
+```
+
+Both named affordances do still work, because turn *end* is reported: `--wait`
+is `CoreSession.waitForIdle`, and `session logs` reads the Core's replay ring.
+
 ## Title generation
 
 Runs on the Core, for Core-owned rows. Task metadata is Core-owned, the harness

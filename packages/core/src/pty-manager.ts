@@ -146,7 +146,7 @@ export function hasCodexHookReviewPrompt(text: string): boolean {
 function reportOutputSignal(
   deps: PtyCoreDeps,
   taskId: string,
-  signal: "interrupted" | "hooks-need-review",
+  signal: "interrupted" | "hooks-need-review" | "dialog-unanswered",
 ): void {
   if (!taskId) return;
   try {
@@ -191,10 +191,21 @@ export type PtyCoreDeps = {
    * newly-installed hooks until the operator reviews them with `/hooks` — the
    * one moment its hooks provably cannot report. Both are read off the PTY
    * stream; each fires once per occurrence, not once per chunk.
+   *
+   * `dialog-unanswered` is the third and comes from prompt delivery rather
+   * than from a pattern in the bytes (issue 177 finding 3): the Core gave up
+   * on delivering the starting prompt because a dialog was in its way that it
+   * could not answer. ADR 0026 D5 is deliberate that it types nothing in that
+   * case — a session parked on a visible dialog is one keystroke from an
+   * operator being fine, and one that answered wrongly is gone — but until now
+   * the giving-up was a log line on the Core and nothing else. The Session sat
+   * at its pre-turn status, and to every client that is indistinguishable from
+   * a hang. It is not a hang: it is a harness waiting on a human, which is
+   * what `needs-input` means.
    */
   onSessionOutputSignal?: (info: {
     taskId: string;
-    signal: "interrupted" | "hooks-need-review";
+    signal: "interrupted" | "hooks-need-review" | "dialog-unanswered";
   }) => void;
   /**
    * This Session's harness is still talking (issue 243). Not a status and not
@@ -667,6 +678,15 @@ export class PtyCore {
               }
             },
             onEvent: ({ phase, ...detail }) => {
+              // Delivery gave up with something still on screen. Say so as a
+              // status and not only in the log (issue 177 finding 3): every
+              // client reads the Session's status, and none of them reads this
+              // process's log. `needs-input` is what it is — a harness waiting
+              // on a human — and it is a settled status, so an SDK
+              // `waitForIdle` stops waiting instead of waiting forever.
+              if (phase === "abandoned" && p.taskId) {
+                reportOutputSignal(this.deps, p.taskId, "dialog-unanswered");
+              }
               // A dialog's label is harness output, so it goes through the same
               // cleaner every other borrowed string in this file does.
               const safe = Object.fromEntries(
