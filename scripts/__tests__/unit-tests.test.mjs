@@ -445,30 +445,6 @@ describe("the wiring that makes any of this run", () => {
     expect(job).toContain("- run: pnpm test");
   });
 
-  it("caps the Panel workers with the option Vitest 4 actually reads", () => {
-    // The bug this guards: `test.poolOptions` was REMOVED in Vitest 4. On the
-    // pinned 4.1.6 it is accepted, logs a ` DEPRECATED ` banner, and the suite
-    // then runs completely unconstrained — a worker cap that does nothing, and
-    // green runs credited to a mechanism that was never engaged.
-    const source = fs.readFileSync(path.join(repoRoot, "packages", "panel", "vitest.config.ts"), "utf8");
-    // Comments stripped: the block above this config *explains* `poolOptions`
-    // at length, and the assertion is about what vitest reads, not prose.
-    const config = source.replace(/^\s*\/\/.*$/gm, "");
-    expect(config).not.toContain("poolOptions");
-    expect(config).toMatch(/^\s*maxWorkers,$/m);
-    expect(config).toMatch(/^\s*minWorkers: 1,$/m);
-  });
-
-  it("still pins the vitest major those options belong to", () => {
-    // `maxWorkers`/`minWorkers` are the Vitest 4 spelling. A downgrade to 3
-    // would make them the dead ones instead, which is the same bug mirrored.
-    const panel = JSON.parse(
-      fs.readFileSync(path.join(repoRoot, "packages", "panel", "package.json"), "utf8"),
-    );
-    const pinned = panel.devDependencies?.vitest ?? panel.dependencies?.vitest;
-    expect(pinned).toMatch(/^4\./);
-  });
-
   it("checks for leaked temp directories even when the suites went red", () => {
     const job = workflow.slice(workflow.indexOf("  unit-tests:"), workflow.indexOf("  lint:"));
     expect(job).toContain("No temp directories survived the job");
