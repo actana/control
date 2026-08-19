@@ -1066,6 +1066,14 @@ assertion that is the same commit, and it is available earlier.
 
 ### Promotion
 
+**Before dispatching, delete every other `beta/*` branch on origin.**
+`promote.yml`'s *Resolve* job globs `refs/heads/beta/*` and subtracts the train
+being promoted: one branch surviving that subtraction *is* the hotfix condition
+(D23), so a train that was merely abandoned is rebased onto the new `main` and
+force-pushed, its images republished and the next train not cut — see
+[§Hotfix trains](#hotfix-trains) — while two survivors refuse the dispatch
+outright.
+
 Open a pull request from `beta/x.y.z` into `main`, let it go green, get it
 approved — then dispatch:
 
