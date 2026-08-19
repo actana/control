@@ -121,3 +121,60 @@ for the same reason: a harness waiting on a human is what `needs-input` means.
 Nothing about the decision changed, only whether anybody is told. `needs-input`
 is a settled status, so an SDK `waitForIdle` on an abandoned Session now returns
 instead of waiting for a report that was never going to come.
+
+## Amendment — issue 232 (2026-08-19)
+
+**D3a's readiness table now covers `cursor-cli` and `claude-code`, and this
+record's claim that they were unaffected was wrong.** D3a ends by saying that
+`claude-code`, `codex` and `cursor-cli` have no entry "and are therefore
+unchanged, which matters because a cursor-cli start prompt was verified working
+on the very build #229 was filed against". One working start is not a rate.
+[Issue 232](https://github.com/actana/control/issues/232) timed three cursor-cli
+Sessions back to back on one Core — settles at 3.1 s, 1.6 s and 2.5 s — and the
+1.6 s one lost its prompt: Cursor Agent on its idle screen, the Session parked
+in `ready`, `--wait` timing out unreported. The field evidence attached to the
+issue puts claude-code at the same rate, 8–10 losses in about 25 `session
+start` runs across three Cores, with the identical signature and the identical
+proof that nothing but timing was wrong — the same bytes re-sent into the same
+Session land immediately and run the turn.
+
+**Nothing about D3a's design changed; two rows were added to its table.** The
+readiness table is still per-harness with an empty default, still populated only
+from screens somebody has looked at, and still degrades to D8 rather than to a
+lost prompt when a marker stops matching. The markers are the composers' own
+placeholders: `Plan, search, build` for cursor-agent, `Try "` for claude-code.
+
+**Why no constant was ever the alternative.** claude-code 2.1.235 was captured
+live on the machine this was written on, with `script --log-timing`: the
+answered trust dialog repaints at 5 051 ms and the composer arrives at 5 623 ms,
+so D3's 350 ms quiet gap expires at 5 401 ms — 222 ms early — while the dialog
+that preceded both was on screen in 435 ms. A gap wide enough for the hole is a
+tax on every fast boot, and the observed spread across harnesses (opencode 3.4–
+6.9 s, cursor-cli 1.6–3.1 s) is wider than any single number can straddle. The
+fixtures are committed as
+`packages/core/src/__tests__/fixtures/claude-code-2.1.235-{trust-ack,composer}.txt`
+and the suite replays them at their measured timings.
+
+**A marker was rejected on a measurement, which is the discipline worth
+recording.** claude-code's `⏵⏵ … (shift+tab to cycle)` footer sits on the
+composer screen and reads like an obvious marker. In the same capture it
+arrived at 15 635 ms — ten seconds behind the composer and past D8's 15 s
+backstop — so gating on it would have delayed every prompt it was meant to
+protect. A marker has to be timed against the composer it stands for, not just
+found on the same screen.
+
+**`codex` still has no entry, and that is a gap rather than a clearance.**
+Nothing in issue 232's sample exercised it and no codex screen has been read, so
+it keeps D3, D6 and D8 unchanged — which is precisely the path claude-code and
+cursor-cli were on while they were losing prompts. The honest reading of this
+amendment is that codex is *unverified*, not that it is safe, and a codex row is
+owed as soon as somebody captures its composer.
+
+**This is also why the mitigation belongs here and not in a client.** The
+workaround in use while this was open — start the Session, wait ~12 s, ask the
+Core whether it is `running` or `ready`, re-send the prompt if it is still
+`ready` — works, and takes about 24 s to recover. It is D6a implemented one
+layer too far out: only the Core sees the harness's screen, which is this
+record's founding argument. With `confirmEcho` on both harnesses, a write that
+left no echo returns to `settling` and is typed again inside the same delivery,
+and the client has nothing to poll for.

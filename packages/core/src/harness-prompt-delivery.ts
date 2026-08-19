@@ -59,6 +59,17 @@
 //      than submitting into a composer the text never reached. Both are
 //      per-harness and off by default: see `HARNESS_READINESS`.
 //
+//      Issue 232 found the same failure on two more harnesses, at the same
+//      rate — roughly one start in three — and neither of them was quiet in
+//      the hole for anything like opencode's four seconds. cursor-cli lost the
+//      prompt on the run that settled at 1.6 s and kept it on the runs that
+//      settled at 2.5 s and 3.1 s; claude-code 2.1.235, captured live, paints
+//      its answered dialog at 5 051 ms and its composer at 5 623 ms, so the
+//      350 ms gap expires 222 ms early. A margin that small is the point:
+//      there is no quiet window and no fixed pause that is both long enough
+//      for the slow boot and not a tax on the fast one, which is why the
+//      answer is a readiness signal and never a bigger number.
+//
 // Everything here is driven by injected timers so the sequence is testable
 // without sleeping: see `harness-prompt-delivery.test.ts`.
 
@@ -478,18 +489,68 @@ const NO_READINESS: HarnessReadiness = {
 /**
  * Per-harness readiness, keyed the same way the dialog table is.
  *
- * OpenCode is the only entry and issue 229 is why. Its TUI opens the alternate
- * screen and paints its wordmark while the opencode server behind it is still
- * starting; the composer — and the input reader that goes with it — arrives
- * later, and the gap between the two is longer than any quiet gap worth
- * measuring. `Ask anything` is the composer's own placeholder, read out of
- * opencode 1.18.18: the TUI renders `Ask anything... "<suggestion>"` and the
- * localised string table carries `Ask anything, {{slash}} for commands, …`.
- * Only the prefix is common to both, so only the prefix is matched.
+ * Three entries now, and each one is a transcription of a *named* build's
+ * composer row. Issue 229 put opencode here; issue 232 adds `cursor-cli` and
+ * `claude-code`, because the same failure was measured on both.
  *
- * If a future opencode reworded that placeholder the marker stops matching and
- * delivery degrades to the backstop — the prompt goes out at `maxWaitMs`, late
- * but not lost — which is the direction this module is always wrong in.
+ * **opencode** (issue 229). Its TUI opens the alternate screen and paints its
+ * wordmark while the opencode server behind it is still starting; the composer
+ * — and the input reader that goes with it — arrives later, and the gap
+ * between the two is longer than any quiet gap worth measuring. `Ask anything`
+ * is the composer's own placeholder, read out of opencode 1.18.18: the TUI
+ * renders `Ask anything... "<suggestion>"` and the localised string table
+ * carries `Ask anything, {{slash}} for commands, …`. Only the prefix is common
+ * to both, so only the prefix is matched.
+ *
+ * **cursor-cli** (issue 232). Three back-to-back Sessions on one Core settled
+ * at 3.1 s, 1.6 s and 2.5 s; the 1.6 s one had its prompt swallowed and the
+ * Session sat in `ready` with Cursor Agent on its idle screen. Nothing about
+ * that is fixable by a longer pause — the two runs that worked and the run
+ * that did not took the *same* code path and differed only in how fast the TUI
+ * booted. `Plan, search, build` is cursor-agent's idle composer placeholder,
+ * quoted in the issue's own account of the failed run.
+ *
+ * That marker is the one row in this table with no byte fixture behind it, and
+ * the reason is recorded rather than glossed: cursor-agent 2026.08.11-e8db854
+ * was installed on the machine this was written on and stops at its sign-in
+ * screen, so the authenticated composer could not be captured here. The trust
+ * dialog above has the same provenance for the same reason (issue 177). What
+ * makes shipping the marker anyway the right call is the direction the failure
+ * points: a marker that does not match costs `maxWaitMs` and a late prompt,
+ * while the behaviour it replaces costs a lost one about one start in three.
+ *
+ * **claude-code** (issue 232, from the field evidence attached to it). Roughly
+ * 25 `session start` runs across three Cores lost the start prompt 8–10 times
+ * — the same one-in-three, with the same signature: a Session that stays
+ * `ready`, an idle screen with the text nowhere on it, `--wait` timing out,
+ * and the identical bytes landing instantly when re-sent. That harness was
+ * *not* off this path; it was on it, and it was already known to leave a hole
+ * (see the 497 ms silence in `onQuiet`'s note). Captured again while writing
+ * this, on claude-code 2.1.235 (`__tests__/fixtures/claude-code-2.1.235-*`):
+ * the answered dialog repaints at 5 051 ms and the composer arrives at
+ * 5 623 ms, so the 350 ms quiet gap elapses at 5 401 ms — 222 ms before there
+ * is anything to type into. `paintedSinceKeystroke` does not close that,
+ * because the 5 051 ms frame *is* a paint with content in it.
+ *
+ * `Try "` is claude-code's composer placeholder and it lands in the same chunk
+ * as the composer, on both builds in the fixture directory — 2.1.228 in bypass
+ * mode and 2.1.235 in auto mode. The obvious alternative was rejected on a
+ * measurement rather than on taste: the `⏵⏵ … (shift+tab to cycle)` footer
+ * arrived at 15 635 ms in the same capture, ten seconds behind the composer
+ * and past the 15 s backstop, so a marker on it would delay every claude-code
+ * prompt it was supposed to protect.
+ *
+ * **codex has no entry and that is not a claim that it is safe.** It is
+ * unverified: nothing in issue 232's sample exercised it, and this table is
+ * for screens somebody has looked at. Until one is, codex keeps the pre-229
+ * behaviour — settle, type, submit — which is exactly the path claude-code and
+ * cursor-cli were on when they lost prompts. Treat a codex row as owed, not as
+ * unnecessary.
+ *
+ * If a future build of any of these reworded its placeholder the marker stops
+ * matching and delivery degrades to the backstop — the prompt goes out at
+ * `maxWaitMs`, late but not lost — which is the direction this module is
+ * always wrong in.
  */
 export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   opencode: {
@@ -497,7 +558,18 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     confirmEcho: true,
     maxPromptWrites: 3,
   },
+  "cursor-cli": {
+    composer: [/plan,\s*search,\s*build/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+  "claude-code": {
+    composer: [/\btry\s+"/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
 };
+
 
 export function readinessFor(harness: string): HarnessReadiness {
   return HARNESS_READINESS[harness as Harness] ?? NO_READINESS;
