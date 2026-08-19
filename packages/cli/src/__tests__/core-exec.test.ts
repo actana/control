@@ -103,8 +103,8 @@ describe("actana core exec — the two streams", () => {
     const run = await cli().run(["core", "exec", "--", "build"], {
       connect: coreThatRuns({ stdout: "out-line\n", stderr: "err-line\n" }).connect,
     });
-    expect(run.out).toEqual(["out-line"]);
-    expect(run.err).toEqual(["err-line"]);
+    expect(run.out.join("")).toBe("out-line\n");
+    expect(run.err.join("")).toBe("err-line\n");
   });
 
   it("does not invent a trailing blank line for output that ended with a newline", async () => {
@@ -112,7 +112,30 @@ describe("actana core exec — the two streams", () => {
     const run = await cli().run(["core", "exec", "--", "echo", "hi"], {
       connect: coreThatRuns({ stdout: "hi\n" }).connect,
     });
-    expect(run.out).toEqual(["hi"]);
+    expect(run.out.join("")).toBe("hi\n");
+  });
+
+  it("does not invent a trailing newline for output that ended without one", async () => {
+    await withRegisteredCore();
+    // The other direction, and the one a line sink gets wrong: `printf hello`
+    // emits no newline, so neither may this. A verb whose argument is that the
+    // bytes come back unpainted cannot be the thing that adds one.
+    const run = await cli().run(["core", "exec", "--", "printf", "hello"], {
+      connect: coreThatRuns({ stdout: "hello" }).connect,
+    });
+    expect(run.out.join("")).toBe("hello");
+  });
+
+  it("is byte-for-byte on both streams, blank lines and all", async () => {
+    await withRegisteredCore();
+    // Interior structure survives too: a blank line in the middle is the
+    // command's, and so is the absence of one at the end.
+    const bytes = "one\n\nthree";
+    const run = await cli().run(["core", "exec", "--", "emit"], {
+      connect: coreThatRuns({ stdout: bytes, stderr: bytes }).connect,
+    });
+    expect(run.out.join("")).toBe(bytes);
+    expect(run.err.join("")).toBe(bytes);
   });
 
   it("prints nothing at all for a command that said nothing", async () => {
@@ -133,6 +156,22 @@ describe("actana core exec — the two streams", () => {
       connect: coreThatRuns({ stdout: "\u001b[31mred" }).connect,
     });
     expect(run.out.join("")).toBe("\u001b[31mred");
+  });
+});
+
+describe("actana core exec — the two deadlines", () => {
+  it("dials with the CLI's default deadline, not the command's 16-minute bound", async () => {
+    await withRegisteredCore();
+    // `connectCore` spends one `timeoutMs` on both halves — the handshake and
+    // the request — so passing the command's bound to `openCore` would give a
+    // Core that accepts the socket and never finishes the core-link handshake
+    // sixteen silent minutes to do it in. This is the verb built for unattended
+    // scripts; the long bound belongs to the request alone, which applies it
+    // itself. `events tail` leaves the dial at the default for the same reason.
+    const core = coreThatRuns({ exitCode: 0 });
+    const run = await cli().run(["core", "exec", "--", "true"], { connect: core.connect });
+    expect(run.code).toBe(EXIT_OK);
+    expect(core.connectOptions).toEqual([{}]);
   });
 });
 
@@ -180,7 +219,12 @@ describe("actana core exec --json", () => {
       },
     });
     expect(run.code).toBe(EXIT_FAILURE);
-    expect(JSON.parse(run.out.join("\n"))).toEqual({ outcome: "unreachable" });
+    // Every outcome carries `error`, so a consumer reading `.error` off the one
+    // document never gets `undefined` on one of the four.
+    const doc = JSON.parse(run.out.join("\n")) as Record<string, unknown>;
+    expect(doc.outcome).toBe("unreachable");
+    expect(String(doc.error)).toContain("connection refused");
+    expect(run.err.join("\n")).toContain("connection refused");
   });
 });
 

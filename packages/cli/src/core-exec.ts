@@ -27,7 +27,10 @@
 //   2. **stdout and stderr are separate and clean.** No PTY was involved, so a
 //      program that colours its output when it sees a terminal did not see one.
 //      That is the whole reason this is not `core shell -c`: a PTY merges the
-//      two streams by construction and paints with cursor moves.
+//      two streams by construction and paints with cursor moves. Both paths are
+//      byte-faithful: `--json` carries each stream as a string, and without it
+//      they go out through `deps.outBytes`/`deps.errBytes` exactly as written —
+//      no newline appended to a command that ended without one.
 //   3. **A dropped link is not an exit code.** The command keeps running on the
 //      Core — that is what a non-interactive spawn does — and this CLI has no
 //      result. It exits {@link EXIT_LINK_LOST} and says the command's fate is
@@ -52,6 +55,10 @@ import type { CoreLinkResponseFrame } from "@actana/sdk/core-link-frames.ts";
 
 /**
  * How long this CLI waits for a command to finish.
+ *
+ * The **request** deadline only. Dialling the Core keeps the CLI-wide default,
+ * because a handshake that has not completed is not a command that is taking a
+ * while — see the call to `openCore` below.
  *
  * Longer than the Core's own 15-minute bound on a child, and deliberately: the
  * Core stopping a runaway command is an *answer* — it comes back as a result
@@ -93,11 +100,25 @@ export async function runCoreExec(
   // Core selection is `openCore`'s, which is `resolveCore`'s: `--core`, then
   // ACTANA_CORE_BLOB, then the `current` pointer. Identical to every other
   // verb because it is literally the same function.
-  const opened = await openCore(deps, args, paths, "actana core exec", {
-    timeoutMs: EXEC_TIMEOUT_MS,
-  });
+  //
+  // **No `timeoutMs` here, deliberately.** `openCore` passes one value to
+  // `connectCore`, which spends it on *both* halves — `connectTimeoutMs` and
+  // `requestTimeoutMs` alike — so raising it for the sake of a long command
+  // would also give the handshake sixteen minutes to complete. A Core that
+  // accepts the socket and then never finishes the core-link handshake would
+  // leave this verb sitting silently for that whole time: nothing on stdout,
+  // nothing on stderr, no `--json` document, where every other verb gives up
+  // after 30 s. This is the one verb built for unattended scripts, which is
+  // exactly where a silent hang costs the most. The 16-minute bound belongs to
+  // the *request* and is applied to it directly below; `events tail`, the only
+  // other verb that passes options here, leaves the dial at the default for
+  // the same reason.
+  const opened = await openCore(deps, args, paths, "actana core exec");
   if (!opened.ok) {
-    if (args.json) deps.out(formatJson({ outcome: "unreachable" }));
+    // The same shape as the other three outcomes: `openCore` already said this
+    // on stderr, and the document repeats it so a consumer reading `.error` is
+    // never handed `undefined` on one outcome out of four.
+    if (args.json) deps.out(formatJson({ outcome: "unreachable", error: opened.error }));
     return opened.code;
   }
   const { client, endpoint } = opened.core;
@@ -166,10 +187,12 @@ export async function runCoreExec(
   }
 
   // Without `--json`, the command's own streams *are* this process's streams,
-  // written through untouched. `deps.out`/`deps.err` are line sinks, so the
-  // trailing newline a program ends with must not become a blank line.
-  writeStream(deps.out, stdout);
-  writeStream(deps.err, stderr);
+  // written through untouched — bytes, not lines. `deps.out`/`deps.err` would
+  // end every write with a newline the command may never have emitted, and a
+  // verb whose whole argument is that the output comes back unpainted cannot
+  // be the thing that adds a byte to it.
+  if (stdout) deps.outBytes(stdout);
+  if (stderr) deps.errBytes(stderr);
   if (signal) deps.verbose(`remote command killed by ${signal}`);
   return status;
 }
@@ -190,13 +213,6 @@ function statusFor(exitCode: number | null, signal: string | null): number {
   if (exitCode === null) return EXIT_FAILURE;
   if (!Number.isInteger(exitCode) || exitCode < 0 || exitCode > 255) return EXIT_FAILURE;
   return exitCode;
-}
-
-/** Write a captured stream out line by line, without inventing a trailing one. */
-function writeStream(sink: (line: string) => void, text: string): void {
-  if (!text) return;
-  const body = text.endsWith("\n") ? text.slice(0, -1) : text;
-  for (const line of body.split("\n")) sink(line);
 }
 
 /** The Core said no. One document under `--json`, one sentence on stderr always. */

@@ -110,7 +110,7 @@ describe("actana core exec, against a Core in this process", () => {
       ["core", "exec", "--", "sh", "-c", "if [ -t 1 ]; then echo TTY; else echo PIPE; fi"],
       withCore(),
     );
-    expect(isatty.out).toEqual(["PIPE"]);
+    expect(isatty.out.join("")).toBe("PIPE\n");
 
     // And the consequence, on the command the criterion names. `--color=auto`
     // is the honest test: it asks `ls` to colour *if it sees a terminal*, and
@@ -167,8 +167,20 @@ describe("actana core exec, against a Core in this process", () => {
     // command's own streams are written through as this process's own.
     const plain = await fixture!.run(["core", "exec", "--", "sh", "-c", emit], withCore());
     expect(plain.code, plain.err.join("\n")).toBe(EXIT_OK);
-    expect(plain.out.join("\n")).toBe(bytes.slice(0, -1));
+    // Byte for byte here too, trailing newline included: without `--json` the
+    // command's streams go out through the byte sinks, so nothing is added and
+    // nothing is taken off.
+    expect(plain.out.join("")).toBe(bytes);
     expect(plain.all).toContain("\u001b");
+
+    // And the byte a line sink would have invented: a command that ended
+    // without a newline gets none added on the way out.
+    const bare = await fixture!.run(
+      ["core", "exec", "--", "printf", "%s", "no-newline"],
+      withCore(),
+    );
+    expect(bare.code, bare.err.join("\n")).toBe(EXIT_OK);
+    expect(bare.out.join("")).toBe("no-newline");
   }, 30_000);
 
   it("honours --cwd, and it is the Core's directory rather than this process's", async () => {

@@ -148,7 +148,18 @@ export type OpenedCore = {
   endpoint: string;
 };
 
-export type OpenCoreResult = { ok: true; core: OpenedCore } | { ok: false; code: number };
+export type OpenCoreResult =
+  | { ok: true; core: OpenedCore }
+  /**
+   * The failure, with the sentence that was already written to stderr.
+   *
+   * Returned as well as printed so a verb whose `--json` contract is *one
+   * document per outcome* can carry it in that document. {@link openCore} still
+   * never writes it to stdout — see the policy on that function; what changes
+   * here is only that the caller is no longer left with a bare exit code and no
+   * words to put in a payload it owes its consumer.
+   */
+  | { ok: false; code: number; error: string };
 
 /**
  * Resolve the Core this command means, dial it, and report a failure once.
@@ -161,6 +172,13 @@ export type OpenCoreResult = { ok: true; core: OpenedCore } | { ok: false; code:
  * consumer that got `{"error": …}` on the stream it parses as data would have
  * to learn to tell one from the other on every read. The exit code is the
  * channel for "this did not happen"; stderr carries the sentence.
+ *
+ * The sentence is also *returned*, and that is not a hole in the policy: this
+ * function still writes nothing to stdout. `actana core exec --json` promises
+ * one document per outcome — `unreachable` among them — and a document missing
+ * the `error` field its three siblings carry is a shape a consumer has to
+ * special-case. Which stream the words end up on stays the caller's decision,
+ * as it always was.
  */
 export async function openCore(
   deps: ActanaCliDeps,
@@ -172,8 +190,9 @@ export async function openCore(
   const resolved =
     opts.resolved ?? resolveCore({ paths, env: deps.env, home: deps.home, coreFlag: args.core });
   if (!resolved.ok) {
-    deps.err(`${label}: ${resolved.error}`);
-    return { ok: false, code: EXIT_FAILURE };
+    const sentence = `${label}: ${resolved.error}`;
+    deps.err(sentence);
+    return { ok: false, code: EXIT_FAILURE, error: sentence };
   }
 
   // Only the connect half goes on: `resolved` is this function's own argument
@@ -189,8 +208,9 @@ export async function openCore(
     const client = await deps.connect(blob, connectOpts);
     return { ok: true, core: { client, name, endpoint: blob.endpoint } };
   } catch (err) {
-    deps.err(`${label}: ${blob.endpoint} — ${errorText(err)}`);
-    return { ok: false, code: EXIT_FAILURE };
+    const sentence = `${label}: ${blob.endpoint} — ${errorText(err)}`;
+    deps.err(sentence);
+    return { ok: false, code: EXIT_FAILURE, error: sentence };
   }
 }
 

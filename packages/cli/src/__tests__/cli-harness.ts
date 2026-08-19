@@ -197,6 +197,17 @@ export function makeCliFixture(): CliFixture {
           err.push(line);
           opts.onErr?.(line);
         },
+        // The byte sinks land in the same two arrays as the line sinks, so
+        // `all` still sees every byte either stream emitted and the "never logs
+        // a blob" sweep keeps covering the one verb that writes raw.
+        outBytes: (chunk) => {
+          out.push(chunk);
+          opts.onOut?.(chunk);
+        },
+        errBytes: (chunk) => {
+          err.push(chunk);
+          opts.onErr?.(chunk);
+        },
         verbose: verboseOn
           ? (line) => {
               err.push(`actana: ${line}`);
