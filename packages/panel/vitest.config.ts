@@ -11,22 +11,36 @@ import path from "node:path";
 // (`src/server/panel-link/**` boots a real Core in-process and pairs it over a
 // websocket) end up bidding for CPU against every jsdom render in the suite.
 //
-// Measured on a ten-core developer machine, on the branch this was written:
+// This MUST be the top-level `maxWorkers`. `test.poolOptions` was *removed* in
+// Vitest 4 and this repo pins 4.1.6: the old shape is accepted, logs a
+// ` DEPRECATED ` banner, and then runs completely unconstrained. Measured on a
+// clean 4.1.6 project, six files each sleeping 1.5s:
 //
-//   default (10 workers)   4 files failed, 9 tests failed, 43.7s
-//   --maxWorkers=4         0 failed, 1441 passed,          30.9s
+//   no limit                                  1.84s   6 files at once
+//   poolOptions: { threads: { maxThreads } }  1.71s   6 at once — IGNORED
+//   maxWorkers: 1, minWorkers: 1             10.03s   serialised
 //
-// The constrained run is not only green, it is *faster* — past four workers
-// these suites were spending more time contending than testing. So the fix is
-// a ceiling and not a raised timeout: #257 is explicit that a blanket
-// `testTimeout` would paper over the failures rather than explain them, and
-// nothing here needed more time once it stopped queueing for a core.
+// Re-measured on the real Panel suite, ten-core developer machine under load,
+// unconstrained forced with `VITEST_MAX_WORKERS=10`:
+//
+//   unconstrained   4 runs, 4 red   3-4 files, 3-9 tests   tests 132.7s / 49.9s wall
+//   maxWorkers=4    5 runs, 3 red*  1-2 files, 0-4 tests   tests  55.0s / 56.5s wall
+//
+//   * two of the five were fully green, 142 files / 1441 tests.
+//
+// So the cap is a large, real improvement and it is now actually engaged — the
+// aggregate in-test time more than halves, which is the contention going away.
+// It is NOT a fix: this suite still goes red under load, so #257 §3's "0 failed
+// on three consecutive runs" is not met and is being carved out to its own
+// ticket rather than reported as delivered. Wall clock is a wash — the earlier
+// claim that the constrained run was *faster* was taken with the CLI flag on an
+// idle machine and did not survive re-measurement.
 //
 // The ceiling only bites above four. A CI runner with two or four cores keeps
 // exactly the parallelism it already had — the Panel suite was green there —
-// so this costs nothing in CI and fixes the machines where it was red.
+// so this costs nothing in CI.
 const cpus = os.availableParallelism?.() ?? os.cpus().length;
-const maxThreads = Math.max(2, Math.min(4, cpus));
+const maxWorkers = Math.max(2, Math.min(4, cpus));
 
 export default defineConfig({
   test: {
@@ -34,9 +48,11 @@ export default defineConfig({
     // `.tsx` too: a component whose whole point is what it renders is best
     // tested by rendering it.
     include: ["src/**/*.test.ts", "src/**/*.test.tsx"],
-    poolOptions: {
-      threads: { maxThreads, minThreads: 1 },
-    },
+    // Top-level and pool-agnostic: `test.poolOptions` was *removed* in Vitest 4
+    // — the pinned 4.1.6 accepts it, logs a ` DEPRECATED ` banner and then runs
+    // completely unconstrained. See the measurement above.
+    maxWorkers,
+    minWorkers: 1,
   },
   resolve: {
     alias: {
