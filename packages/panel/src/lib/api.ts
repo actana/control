@@ -348,31 +348,12 @@ export const api = {
     pruneStoredSessionFinishNotifications({ type: "task", taskId: id });
   },
 
-  listUserTerminals: (projectId: string) =>
-    req<{ terminals: UserTerminal[] }>(`/api/projects/${projectId}/user-terminals`),
-  createUserTerminal: (
-    projectId: string,
-    body: {
-      id?: string;
-      name?: string;
-      cwd?: string | null;
-      startCommand?: string | null;
-    },
-  ) =>
-    req<{ terminal: UserTerminal }>(`/api/projects/${projectId}/user-terminals`, {
-      method: "POST",
-      body: JSON.stringify(body),
-    }),
-  renameUserTerminal: (id: string, name: string) =>
-    req<{ terminal: UserTerminal }>(`/api/user-terminals/${id}`, {
-      method: "PATCH",
-      body: JSON.stringify({ name }),
-    }),
-  deleteUserTerminal: (id: string) =>
-    req<void>(`/api/user-terminals/${id}`, { method: "DELETE" }),
-
-  // Project-less "home" terminals (the dashboard terminals). Returned shaped as
-  // UserTerminal (sentinel projectId) so the same terminal store/panel render them.
+  // The Panel's only terminal rows (issue 266). Every terminal the Panel opens
+  // is a VM Shell Session on a Core and persists here, whichever route opened
+  // it; the four `/api/projects/:id/user-terminals` + `/api/user-terminals/:id`
+  // calls that used to sit above went with the project-root path. Returned
+  // shaped as UserTerminal (sentinel projectId) so the same terminal
+  // store/panel render them.
   listHomeTerminals: () =>
     req<{ terminals: UserTerminal[] }>("/api/home/user-terminals"),
   createHomeTerminal: (body: {

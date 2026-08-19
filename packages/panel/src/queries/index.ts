@@ -31,8 +31,6 @@ export const queryKeys = {
   settings: ["settings"] as const,
   hookToken: ["hook-token"] as const,
   keybindings: ["keybindings"] as const,
-  userTerminals: (projectId: string) =>
-    ["projects", projectId, "user-terminals"] as const,
   usage: (days: number) => ["usage", days] as const,
   claudeUsageLimits: ["claude-usage-limits"] as const,
   providerUsage: (idsKey: string) => ["provider-usage", idsKey] as const,
@@ -235,12 +233,6 @@ export const hookTokenQueryOptions = () =>
     staleTime: Infinity,
   });
 
-export const userTerminalsQueryOptions = (projectId: string) =>
-  queryOptions({
-    queryKey: queryKeys.userTerminals(projectId),
-    queryFn: async () => (await api.listUserTerminals(projectId)).terminals,
-  });
-
 export const DEFAULT_USAGE_DAYS = 30;
 const USAGE_STALE_MS = 30_000;
 
@@ -387,8 +379,6 @@ export const useTask = (projectId: string, taskId: string) =>
   });
 export const useSettings = () => useQuery(settingsQueryOptions());
 export const useHookToken = () => useQuery(hookTokenQueryOptions());
-export const useUserTerminalsQuery = (projectId: string) =>
-  useQuery(userTerminalsQueryOptions(projectId));
 export const useUsage = (days: number = DEFAULT_USAGE_DAYS) =>
   useQuery(usageQueryOptions(days));
 export const useClaudeUsageLimits = (enabled: boolean) =>

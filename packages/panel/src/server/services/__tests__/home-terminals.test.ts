@@ -30,10 +30,9 @@ describe("home-terminals service", () => {
     expect(listHomeTerminals().map((t) => t.id)).toEqual([a.id, b.id]);
   });
 
-  it("shapes rows as UserTerminal with the home sentinel projectId and no startCommand", () => {
+  it("shapes rows as UserTerminal with the home sentinel projectId", () => {
     const t = createHomeTerminal({ name: "scratch" });
     expect(t.projectId).toBe(HOME_TERMINAL_PROJECT_ID);
-    expect(t.startCommand).toBeNull();
     expect(t.name).toBe("scratch");
   });
 

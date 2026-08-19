@@ -334,19 +334,9 @@ export function ensureSchema(sqlite: Database.Database): void {
     );
     CREATE INDEX IF NOT EXISTS terminal_logs_task_idx ON terminal_logs(task_id);
 
-    CREATE TABLE IF NOT EXISTS user_terminals (
-      id TEXT PRIMARY KEY,
-      project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-      name TEXT NOT NULL,
-      cwd TEXT,
-      position INTEGER NOT NULL DEFAULT 0,
-      created_at INTEGER NOT NULL,
-      updated_at INTEGER NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS user_terminals_project_idx ON user_terminals(project_id);
-
-    -- Project-less "home" terminals (dashboard). Separate table so user_terminals
-    -- never needs a destructive rebuild to relax its NOT NULL project_id FK.
+    -- The Panel's only terminal table (issue 266). It arrived as the
+    -- project-less "home" half beside user_terminals; the project-root half is
+    -- gone and dropLegacyUserTerminals below removes what is left of it.
     CREATE TABLE IF NOT EXISTS home_terminals (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
@@ -546,6 +536,30 @@ export function ensureSchema(sqlite: Database.Database): void {
   // than dark/light (which lives in localStorage as mc:theme) collapsed to a
   // fixed default. Stays in the tree for one release, then removed.
   dropLegacyThemeSettings(sqlite);
+
+  // Actana Control removed the project-root terminal (issue 266). The Panel
+  // offers one terminal control, it opens a VM Shell Session on the Core, and
+  // every row it makes lands in home_terminals — so user_terminals has no
+  // writer, no reader and no route left. **Dropped, not orphaned**: a terminal
+  // is ephemeral, there is nothing in those rows worth migrating, and a table
+  // nothing can ever read again is a question every future reader of this
+  // schema has to answer for themselves. Runs last so the worktree / sandbox /
+  // convenience sweeps above still find the columns they expect on a DB old
+  // enough to have them. Stays in the tree for one release, then removed.
+  dropLegacyUserTerminals(sqlite);
+}
+
+/**
+ * Drop the `user_terminals` table and its index (issue 266).
+ *
+ * Idempotent and safe on a fresh DB, which never had the table: `ensureSchema`
+ * stopped creating it in the same change.
+ */
+export function dropLegacyUserTerminals(sqlite: Database.Database): void {
+  sqlite.exec(`
+    DROP INDEX IF EXISTS user_terminals_project_idx;
+    DROP TABLE IF EXISTS user_terminals;
+  `);
 }
 
 export function dropLegacyThemeSettings(sqlite: Database.Database): void {

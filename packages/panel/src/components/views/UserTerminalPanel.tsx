@@ -3,7 +3,7 @@ import { Btn } from "~/components/ui/Btn";
 import { CardFrame } from "~/components/ui/CardFrame";
 import { EmptyState } from "~/components/ui/EmptyState";
 import { Icon } from "~/components/ui/Icon";
-import { HotkeyTooltip, Tooltip } from "~/components/ui/Tooltip";
+import { HotkeyTooltip } from "~/components/ui/Tooltip";
 import { useResizablePanel } from "~/lib/use-resizable-panel";
 import { useUserTerminals } from "~/lib/user-terminal-store";
 import { UserTerminalPane } from "./UserTerminalPane";
@@ -32,9 +32,24 @@ function readStoredWeights(): PaneWeights {
 }
 
 /**
- * @param coreId The Core the current route is on. New shells (and VM Shell
- * Sessions) open there; without one there is no machine to open a shell on and
- * the affordances stay hidden.
+ * The terminal panel, and the one control that fills it (issue 266).
+ *
+ * There used to be two: a `+ New` in the toolbar and a `New terminal` in the
+ * empty state, both opening a shell confined to the project root, plus a third
+ * `New VM shell` beside the second. Two of those three answered a question
+ * nobody asks — *you are in a Core, so a terminal means a shell in that Core;
+ * there is nothing else it could sensibly mean.* So each location keeps exactly
+ * one button, it is called **New Terminal**, and it opens a VM Shell Session.
+ *
+ * That does not make a VM shell automatic. CONTEXT.md requires an explicit open
+ * gesture and forbids auto-spawning; a button click is that gesture, and making
+ * it the only button does not change which gesture it is. The warm pool that
+ * *did* pre-spawn a PTY on project navigation went with the removed path and is
+ * deliberately not reintroduced under a new name.
+ *
+ * @param coreId The Core the current route is on. The shell opens there;
+ * without one there is no machine to open a shell on and the control is
+ * disabled.
  */
 export function UserTerminalPanel({ coreId }: { coreId?: string }) {
   const {
@@ -45,7 +60,6 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
     sessions,
     focusedId,
     focusTerminal,
-    createTerminal,
     createVmShellTerminal,
     killTerminal,
     hiddenIds,
@@ -316,17 +330,17 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
           )}
         </div>
         <div style={{ display: "flex", gap: 6, alignItems: "center", flex: "0 0 auto" }}>
-          <HotkeyTooltip action="terminal.newTab" label="New terminal">
+          <HotkeyTooltip action="terminal.newTab" label="New Terminal">
             <Btn
               variant="ghost"
               size="sm"
               icon="plus"
               disabled={!active || !coreId}
               onClick={() => {
-                if (active) void createTerminal({ coreId });
+                if (active && coreId) void createVmShellTerminal(coreId);
               }}
             >
-              New
+              New Terminal
             </Btn>
           </HotkeyTooltip>
           <HotkeyTooltip
@@ -386,27 +400,24 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
                 title={sessions.length === 0 ? "No terminals yet" : "All terminals hidden"}
                 subtitle={
                   sessions.length === 0
-                    ? homeActive
-                      ? "Open a terminal at your home directory on the active scope (local machine or remote VM)."
-                      : "Open a terminal to run commands in this project."
+                    ? "Open a shell on this Core's machine."
                     : "Click a tab above to bring a terminal back into view."
                 }
                 action={
                   <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <HotkeyTooltip action="terminal.newTab">
+                    <HotkeyTooltip action="terminal.newTab" label="New Terminal">
                       <Btn
                         variant="ghost"
                         size="sm"
                         icon="plus"
                         disabled={!coreId}
-                        onClick={() => void createTerminal({ coreId })}
+                        onClick={() => {
+                          if (coreId) void createVmShellTerminal(coreId);
+                        }}
                       >
-                        New terminal
+                        New Terminal
                       </Btn>
                     </HotkeyTooltip>
-                    {coreId && (
-                      <VmShellButton onOpen={() => void createVmShellTerminal(coreId)} />
-                    )}
                   </div>
                 }
               />
@@ -468,20 +479,6 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
         </div>
       </div>
     </CardFrame>
-  );
-}
-
-/**
- * The one way to open a VM Shell Session: an explicit click, never a side
- * effect of navigating somewhere. Rendered wherever a Core is in scope.
- */
-function VmShellButton({ onOpen }: { onOpen: () => void }) {
-  return (
-    <Tooltip content="Open a free-form shell on the Core's machine — the SSH-equivalent escape hatch. Never auto-spawned; requires an authenticated panel session.">
-      <Btn variant="ghost" size="sm" icon="terminal" onClick={onOpen}>
-        New VM shell
-      </Btn>
-    </Tooltip>
   );
 }
 

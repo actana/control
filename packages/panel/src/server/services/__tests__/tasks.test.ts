@@ -9,7 +9,7 @@ process.env.AC_USER_DATA_DIR = tmpRoot;
 const { createProject } = await import("../projects");
 const { createTask, listTasksForProject } = await import("../tasks");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, userTerminals } = await import("~/db/schema");
+const { projects, tasks } = await import("~/db/schema");
 
 function makeProject() {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-task-project-"));
@@ -19,7 +19,6 @@ function makeProject() {
 describe("tasks service", () => {
   beforeEach(() => {
     const db = getDb();
-    db.delete(userTerminals).run();
     db.delete(tasks).run();
     db.delete(projects).run();
   });
