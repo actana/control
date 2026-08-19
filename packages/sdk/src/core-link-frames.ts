@@ -477,12 +477,27 @@ export type CoreLinkDirListing = {
 export const SESSION_LOCKED_ERROR_CODE = "session-locked";
 
 /**
- * Machine-readable `error` codes. Open by construction (a plain string union
- * with one member today) so a later refusal can name itself without every
- * client having to learn the whole set: an unrecognised code reads as a plain
- * error, which is what a client that ignores the field already does.
+ * The `code` on an `error` frame refusing an {@link CoreLinkRequestFrame}
+ * `exec` because the command produced more output than one answer may carry
+ * (issue 266).
+ *
+ * A named refusal rather than a truncated `execResult`, and the distinction is
+ * the whole point: a stdout that looks complete and is not ships broken and
+ * looks fine. A caller that gets this code knows it asked the wrong question —
+ * the command ran, its output is gone, and the fix is to redirect to a file on
+ * the Core rather than to retry.
  */
-export type CoreLinkErrorCode = typeof SESSION_LOCKED_ERROR_CODE;
+export const EXEC_OUTPUT_TOO_LARGE_ERROR_CODE = "exec-output-too-large";
+
+/**
+ * Machine-readable `error` codes. Open by construction (a plain string union)
+ * so a later refusal can name itself without every client having to learn the
+ * whole set: an unrecognised code reads as a plain error, which is what a
+ * client that ignores the field already does.
+ */
+export type CoreLinkErrorCode =
+  | typeof SESSION_LOCKED_ERROR_CODE
+  | typeof EXEC_OUTPUT_TOO_LARGE_ERROR_CODE;
 
 /**
  * Who lost a Session to a `forceTakeover`.
@@ -780,7 +795,30 @@ export type CoreLinkRequestFrame =
   // `path` omitted or null means "start at the Core's home directory" —
   // the Panel cannot compute that itself for a machine it has never seen.
   | { type: "dirList"; reqId: string; path?: string | null }
-  | { type: "dirCreate"; reqId: string; parent: string; name: string };
+  | { type: "dirCreate"; reqId: string; parent: string; name: string }
+  // ─── Run one command on the Core, non-interactively (issue 266) ───
+  // The PTY vocabulary above cannot express this and never could: a PTY is one
+  // byte stream by construction, so there is no frame here that returns stdout
+  // and stderr apart, and no exit status distinguishable from what the shell
+  // printed. That is why this pair exists and why the protocol version moves
+  // for it — see {@link CORE_LINK_PROTOCOL_VERSION}.
+  //
+  // `command` and `args` are an argv, never a shell string: the Core spawns
+  // the executable directly with no shell in between, so nothing here has
+  // quoting or globbing semantics. A caller that wants a shell asks for one by
+  // name (`sh`, `-c`, `…`), which is a decision it has made rather than one
+  // this frame made for it.
+  //
+  // `cwd` omitted means the Core's own home directory. A cwd the Core refuses
+  // comes back as an `error` frame carrying the Core's own message — one place
+  // validates a path, and it is the machine that owns the disk.
+  | {
+      type: "exec";
+      reqId: string;
+      command: string;
+      args: string[];
+      cwd?: string | null;
+    };
 
 // ─── Server → Client (Core → Panel) ──────────────────────────────────────
 
@@ -996,6 +1034,32 @@ export type CoreLinkResponseFrame =
   // ─── Directory browsing (web-panel issue 06) ───
   | { type: "dirListResult"; reqId: string; listing: CoreLinkDirListing }
   | { type: "dirCreateResult"; reqId: string; path: string }
+  /**
+   * One finished command (issue 266).
+   *
+   * **Buffered, and separated.** Both streams are captured whole and handed
+   * back apart, which is what makes them parseable and what a PTY cannot do.
+   * Neither carries terminal escape sequences, because no terminal was
+   * involved: the child is spawned with pipes, so a program that colours its
+   * output when it sees a TTY does not see one here.
+   *
+   * `exitCode` is the command's real status, propagated rather than
+   * interpreted. It is null exactly when the command was killed by a signal,
+   * in which case `signal` names it — the two are never both null and never
+   * both set. A client turns that pair into its own exit status; nothing here
+   * assumes the POSIX `128 + n` convention on the client's behalf.
+   *
+   * Output that exceeds the Core's bound does NOT arrive here truncated. It
+   * arrives as an `error` carrying {@link EXEC_OUTPUT_TOO_LARGE_ERROR_CODE}.
+   */
+  | {
+      type: "execResult";
+      reqId: string;
+      exitCode: number | null;
+      signal: string | null;
+      stdout: string;
+      stderr: string;
+    }
   /**
    * `code` is optional and additive (issue 144): it exists so a client can act
    * on *why* a request failed without matching on prose. Absent on every error
@@ -1296,10 +1360,42 @@ export type CoreLinkServerFrame =
  * exactly as it does today, and a newer Panel against a Core that omits it
  * reads the absence and withholds the affordance rather than calling a route
  * that would 404. Neither is "needs update", which is the whole point of D11 —
- * and it is why `CORE_LINK_PROTOCOL_VERSION` staying at 0.15.0 is a decision
- * rather than an oversight.
+ * and it is why `CORE_LINK_PROTOCOL_VERSION` staying at 0.15.0 through all six
+ * of those was a decision rather than an oversight.
+ *
+ * **Issue 266 moves it to 0.16.0, and that is a decision too.** `actana core
+ * exec` adds the `exec` request frame and its `execResult`, and it is the
+ * first addition since 0.15.0 that the narrow additive exception does not
+ * cover. The two options, weighed the way the six above were:
+ *
+ *   - *Announce a capability on `ready` and leave the version alone.* The
+ *     exception is only available where the capability's absence yields
+ *     today's behaviour **exactly**. It does here in the strict sense — a Core
+ *     with no `exec` frame behaves precisely as it does today, and the CLI
+ *     could refuse cleanly. But absence would not be a *supported state* the
+ *     way `multiConnection` and `files` absence is. Those describe a Core that
+ *     is fully usable without them, and no verb exists whose whole purpose is
+ *     the missing surface. `actana core exec` against a Core that cannot exec
+ *     is not a withheld affordance; it is the command not working. ADR 0005's
+ *     answer to that is *one chore on that machine*, said once and early —
+ *     never a per-verb refusal the operator meets later.
+ *   - *Move the minor.* The Panel and its Cores are version-locked, a
+ *     mismatched Core renders as "needs update" with the command to run, and
+ *     `core status` already reports both versions and exits non-zero on a
+ *     mismatch. Every client learns the same fact in the same place, and the
+ *     CLI's own connect gate (`core-connection.ts`) refuses before a frame
+ *     goes out rather than after an `error` comes back.
+ *
+ * The second is what ADR 0024 D11 means by an addition that is not the
+ * additive case, so the minor moves and no capability is announced for `exec`.
+ * A Core on 0.15.0 still answers every frame it always did; a client on 0.16.0
+ * tells its operator to update one of the two, in one sentence, before the
+ * first `exec` rather than after it.
+ *
+ * Patch stays 0 — see {@link coreLinkProtocolCompatible}, which compares
+ * major.minor only.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.15.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.16.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
@@ -1395,6 +1491,7 @@ const REQUEST_FRAME_TYPES: ReadonlySet<string> = new Set<CoreLinkRequestFrame["t
   "harnessInstall",
   "dirList",
   "dirCreate",
+  "exec",
 ]);
 
 /** Parse and validate a raw WS message into a known request frame, or null. */

@@ -1313,7 +1313,55 @@ export class CoreClient {
       CoreLinkHarnessAvailabilityMap
     >;
   }
+
+  /**
+   * Run one command on the Core and wait for it to finish (issue 266).
+   *
+   * Non-interactive, no PTY: `stdout` and `stderr` come back whole and apart,
+   * free of terminal escape sequences, and the command's own exit status comes
+   * back as a number rather than as something printed. `command` + `args` is an
+   * argv the Core spawns directly — no shell, so no quoting or globbing
+   * semantics live here.
+   *
+   * `timeoutMs` is worth passing: this is the one request whose duration is the
+   * *command's*, and the client's default is sized for a Core answering a
+   * question, not for a build.
+   *
+   * Rejects with a {@link CoreLinkRequestError} when the Core refuses — a cwd it
+   * will not accept, an executable it cannot find, or output past its bound
+   * (`exec-output-too-large`). A command that ran and failed is not a rejection:
+   * that resolves, carrying its non-zero `exitCode`.
+   */
+  exec(
+    input: { command: string; args?: string[]; cwd?: string | null },
+    timeoutMs?: number,
+  ): Promise<CoreExecResult> {
+    return this.rpc(
+      {
+        type: "exec",
+        reqId: "",
+        command: input.command,
+        args: input.args ?? [],
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      },
+      timeoutMs,
+    ) as Promise<CoreExecResult>;
+  }
 }
+
+/**
+ * What {@link CoreClient.exec} resolves to: one finished command.
+ *
+ * `exitCode` is null exactly when `signal` names the signal that killed the
+ * command. Turning that pair into a process exit status is the caller's
+ * decision — the SDK does not assume the POSIX `128 + n` convention for it.
+ */
+export type CoreExecResult = {
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+};
 
 /**
  * Turn a response frame into the value the typed methods promise, or throw the
@@ -1355,6 +1403,16 @@ export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return msg.sessions;
     case "agentsAvailabilityListResult":
       return msg.availability;
+    // All four fields (issue 266). A caller cannot derive any of them, and the
+    // two status fields are a pair: `exitCode` is null exactly when `signal`
+    // is set.
+    case "execResult":
+      return {
+        exitCode: msg.exitCode,
+        signal: msg.signal,
+        stdout: msg.stdout,
+        stderr: msg.stderr,
+      };
     case "ptySubscribeAck":
     case "ptyUnsubscribeAck":
       return { ptyId: msg.ptyId, subscribed: msg.subscribed };

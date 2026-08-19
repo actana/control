@@ -60,6 +60,7 @@ import {
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import { createDirectory, listDirectory } from "./directory-browse";
+import { runCoreExec } from "./core-exec";
 import { configureProjectRootsDb } from "./project-roots";
 import {
   configureEventLogStore,
@@ -358,6 +359,14 @@ async function startCore(): Promise<void> {
     directoryPort: {
       list: (requestedPath) => listDirectory(requestedPath),
       create: (parent, name) => createDirectory(parent, name),
+    },
+    // Issue 266: `actana core exec` runs one command here, non-interactively.
+    // It grants nothing `core shell` does not already grant — same blob, same
+    // link, same class of process — and it is more auditable, because it
+    // arrives through this Core's own authentication instead of through a
+    // `docker exec` on the host that this Core never sees.
+    execPort: {
+      run: (input) => runCoreExec(input),
     },
   };
 

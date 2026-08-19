@@ -24,7 +24,28 @@ actana core add laptop ~/blob.txt   # register a Core from its blob, or stdin
 actana core ls --json               # what this machine knows
 actana core use laptop              # point `current` at one
 actana core status                  # reach it, and report what it says
+actana core shell                   # an interactive shell on that machine
+actana core exec -- df -h /         # one command on it, no terminal
 ```
+
+`core exec` is the non-interactive half of `core shell`, and the reason it
+exists is that a script cannot use a terminal. It returns the command's real
+exit code, hands stdout and stderr back separately and free of terminal escape
+sequences, takes `--cwd <dir>` on the *Core's* machine, and writes one JSON
+document under `--json`. Output is buffered with a stated bound; a command that
+exceeds it fails by name rather than coming back quietly truncated.
+
+```sh
+actana core exec --cwd /srv/app -- git pull
+actana core exec --json -- systemctl is-active actana
+```
+
+A maintenance script reaches a Core this way instead of with `docker exec`, so
+the same script works unchanged against a remote Core: the command runs over the
+core link, through the Core's own authentication, and nothing about it needs the
+Core to be a container on this machine. A dropped link mid-command exits `125`
+and says the command's fate is unknown — never `0`, and never the command's own
+status.
 
 ```sh
 actana project ls                   # the Projects that Core owns

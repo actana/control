@@ -36,6 +36,10 @@ const code = await runActanaCli({
   home: homedir(),
   out: (line) => process.stdout.write(`${line}\n`),
   err: (line) => process.stderr.write(`${line}\n`),
+  // The same two streams without the newline: what `core exec` relays a remote
+  // command's own output through, so `printf hello` arrives as `hello`.
+  outBytes: (chunk) => process.stdout.write(chunk),
+  errBytes: (chunk) => process.stderr.write(chunk),
   // Verbose goes to stderr so it cannot corrupt the stdout a `--json` consumer
   // is parsing, and it is a no-op rather than a filtered sink when the flag is
   // off — a disabled sink that still formats its argument is a disabled sink

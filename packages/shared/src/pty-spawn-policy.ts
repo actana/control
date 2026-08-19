@@ -71,6 +71,13 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
  * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`
  * before calling {@link resolveSpawnPlan}, so the plan's `cwd` is the real
  * home path on the Core machine.
+ *
+ * **Not every process a Core runs comes through here.** `actana core exec`
+ * (issue 266) starts a plain child with pipes and no terminal, so it is not a
+ * spawn mode in this union and no plan below describes it; its own cwd check
+ * lives in `packages/core/src/core-exec.ts`. It grants nothing this mode does
+ * not — same blob, same link, same free-form command on the Core's machine —
+ * so nothing here needed relaxing for it.
  */
 export type ShellSessionSpawnRequest = {
   taskId: string;

@@ -140,29 +140,18 @@ export const terminalLogs = sqliteTable(
   })
 );
 
-export const userTerminals = sqliteTable(
-  "user_terminals",
-  {
-    id: text("id").primaryKey(),
-    projectId: text("project_id")
-      .notNull()
-      .references(() => projects.id, { onDelete: "cascade" }),
-    name: text("name").notNull(),
-    cwd: text("cwd"),
-    position: integer("position").notNull().default(0),
-    createdAt: integer("created_at").notNull(),
-    updatedAt: integer("updated_at").notNull(),
-  },
-  (t) => ({
-    projectIdx: index("user_terminals_project_idx").on(t.projectId),
-  })
-);
-
-// Project-less "home" terminals shown on the dashboard. Deliberately a separate
-// table (not a nullable project_id on user_terminals) so the FK-heavy
-// user_terminals table never needs a destructive rebuild — this is purely
-// additive. Rows are surfaced to the renderer shaped as UserTerminal (with a
-// sentinel projectId) so the existing terminal store/panel/pane can render them.
+// The Panel's only terminal table (issue 266). It was introduced as the
+// project-less "home" half beside `user_terminals`, deliberately separate so
+// the FK-heavy project table never needed a destructive rebuild — and it is
+// what is left now that the project-root terminal path is gone: every terminal
+// the Panel opens is a VM Shell Session on a Core and persists here. Rows are
+// surfaced to the renderer shaped as UserTerminal (with a sentinel projectId)
+// so the existing terminal store/panel/pane can render them.
+//
+// `user_terminals` itself is **dropped**, not orphaned: `ensureSchema` no
+// longer creates it and `dropLegacyUserTerminals` removes it from a DB that
+// already has one (packages/shared/src/schema-bootstrap.ts). A terminal is
+// ephemeral, so there was nothing in those rows to migrate.
 export const homeTerminals = sqliteTable(
   "home_terminals",
   {
@@ -275,15 +264,17 @@ export type NewProject = typeof projects.$inferInsert;
 export type ProjectPresentation = typeof projectPresentation.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
 export type NewTask = typeof tasks.$inferInsert;
-// User terminals live in the DB, but ship-skill install spawns need a
-// one-shot command that runs in the shell without being persisted. `startCommand` is that runtime-only hint: the server never writes
-// it (see createUserTerminal — rows with a startCommand short-circuit before
-// INSERT and are returned ephemeral), and the renderer forwards it to
-// the PTY spawn frame as the initial shell command.
-export type UserTerminal = typeof userTerminals.$inferSelect & {
-  startCommand?: string | null;
-};
-export type NewUserTerminal = typeof userTerminals.$inferInsert;
+/**
+ * A terminal as the renderer sees one.
+ *
+ * A `home_terminals` row plus the sentinel `projectId` the store, panel and
+ * pane already key on ({@link HOME_TERMINAL_PROJECT_ID}). It used to be
+ * `user_terminals.$inferSelect` widened with a runtime-only `startCommand`
+ * hint for launch/ephemeral shells; both the table and that hint went with the
+ * project-root path (issue 266), so this is now stated directly rather than
+ * inferred from a table that no longer exists.
+ */
+export type UserTerminal = HomeTerminal & { projectId: string };
 export type HomeTerminal = typeof homeTerminals.$inferSelect;
 export type NewHomeTerminal = typeof homeTerminals.$inferInsert;
 export type EventLogRow = typeof eventLog.$inferSelect;

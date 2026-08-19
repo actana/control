@@ -68,11 +68,12 @@ const PROTECTED_ROUTES: ReadonlyArray<{ method: string; pathname: string }> = [
   { method: "POST", pathname: "/api/projects/abc/git/push" },
   { method: "POST", pathname: "/api/projects/abc/git/checkout" },
   { method: "POST", pathname: "/api/projects/abc/git/create-pr" },
-  // User terminals
-  { method: "GET", pathname: "/api/projects/abc/user-terminals" },
-  { method: "POST", pathname: "/api/projects/abc/user-terminals" },
-  { method: "PATCH", pathname: "/api/user-terminals/xyz" },
-  { method: "DELETE", pathname: "/api/user-terminals/xyz" },
+  // Terminals. Every terminal is a home-terminal row since issue 266; the
+  // project-scoped routes that used to be listed here are gone.
+  { method: "GET", pathname: "/api/home/user-terminals" },
+  { method: "POST", pathname: "/api/home/user-terminals" },
+  { method: "PATCH", pathname: "/api/home/user-terminals/xyz" },
+  { method: "DELETE", pathname: "/api/home/user-terminals/xyz" },
   // Groups
   { method: "GET", pathname: "/api/groups" },
   { method: "POST", pathname: "/api/groups" },

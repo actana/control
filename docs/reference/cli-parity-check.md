@@ -366,7 +366,10 @@ table because the shipped transport does not need one: the frame union in
 mirror [#164][164] names and [ADR 0025][adr0025] D3 uses as its worked example of
 what a hand-copied schema costs. Its drift was visible and deliberate:
 
-- `PROTOCOL_VERSION = "0.15.0"` as a hand-typed constant (line 7).
+- `PROTOCOL_VERSION = "0.15.0"` as a hand-typed constant (line 7). That is the
+  number the mirror was pinned at when it was deleted, kept here as the record
+  of what it held; the SDK has since moved to `0.16.0` and this line did not
+  follow it, which is the cost D3 is about.
 - A comment at line 3 naming the pre-rebrand `mission-control-updated` repo.
 - `claudeSessionId` on `Task` (line 49), a Claude-specific field on a
   harness-agnostic type.
@@ -377,7 +380,7 @@ proves it is in this PR's description; the short form:
 
 - `packages/sdk/src/core-link-frames.ts` is the only file in the repository that
   declares core-link frame types, and it holds
-  `CORE_LINK_PROTOCOL_VERSION = "0.15.0"` at line 1257.
+  `CORE_LINK_PROTOCOL_VERSION = "0.16.0"` at line 1398.
 - The only other `*_PROTOCOL_VERSION` declarations are
   `PANEL_LINK_PROTOCOL_VERSION` (`packages/panel/src/shared/panel-link.ts:57`
   and its copy in `scripts/lib/panel-e2e.mjs:30`), which is the Panel↔browser

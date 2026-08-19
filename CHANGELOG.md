@@ -54,14 +54,34 @@ half of one behind.
 A project's folder is fixed when the project is created on a Core, and the Edit
 dialog now says so rather than accepting a new path and discarding it on save.
 
-The core-link protocol moves to 0.15.0 so a Session's manually-set-title flag
+The core-link protocol moves to 0.16.0 so a Session's manually-set-title flag
 and harness session id can cross the wire, so archived Sessions on a Core can be
 listed and restored, so a project's remembered session settings can cross, so a
 Session that lives on a Core can be deleted at all, so a missing Harness can be
-installed from the session picker, and so a project's icon and colour can be
-changed after it is created. The Panel and its Cores are version-locked, so
-every Core needs updating alongside the Panel — an older one renders as "needs
-update" rather than degrading.
+installed from the session picker, so a project's icon and colour can be changed
+after it is created, and so `actana core exec` can run a command on a Core at
+all. The Panel and its Cores are version-locked, so every Core needs updating
+alongside the Panel — an older one renders as "needs update" rather than
+degrading. That applies to every Core in the fleet, including one that is
+otherwise working: a Core left on the previous protocol is grounded until it is
+updated, and the Panel says so rather than half-working.
+
+`actana core exec` runs one command on a Core and comes back. It is the verb the
+`core` noun was missing: `actana core shell` hands a person a terminal, and a
+maintenance script needs neither a terminal nor a person. The command's own exit
+code becomes the CLI's, stdout and stderr stay apart, and no PTY is involved, so
+nothing colours itself on the way back — which is what makes the output safe to
+pipe into another program. `--json` returns one document on stdout for every
+outcome, the failures included. Until now the only way to run something on a
+Core was `docker exec`, which works solely because a Core happens to be a local
+container and bypasses the Core's own authentication; this crosses the
+authenticated link and works against a remote Core unchanged.
+
+The New Terminal control in a project's terminal panel now opens a shell on the
+Core's machine. It used to offer two controls that looked alike, one of which
+opened a shell in the project folder, and navigating to a project quietly
+started a terminal process before anybody asked for one. That pre-spawn is gone:
+a terminal starts when you open one and not before.
 
 Deleting a Session on a Core used to fail. The task-mutation frame carried no
 delete operation, so every delete fell through to the Panel's own endpoint,

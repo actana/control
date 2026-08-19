@@ -51,6 +51,7 @@ import { WebSocketServer } from "ws";
 import {
   PtyCoreLinkServer,
   type CoreDirectoryPort,
+  type CoreExecPort,
   type CoreMutationPort,
   type CoreQueryPort,
   type EventLogPort,
@@ -221,6 +222,7 @@ export type InProcessCoreOptions = {
   queryPort?: CoreQueryPort;
   mutationPort?: CoreMutationPort;
   directoryPort?: CoreDirectoryPort;
+  execPort?: CoreExecPort;
   availabilityPort?: HarnessAvailabilityPort;
   installPort?: HarnessInstallPort;
   liveEventPollMs?: number;
@@ -274,6 +276,7 @@ export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promi
     ...(opts.queryPort === undefined ? {} : { queryPort: opts.queryPort }),
     ...(opts.mutationPort === undefined ? {} : { mutationPort: opts.mutationPort }),
     ...(opts.directoryPort === undefined ? {} : { directoryPort: opts.directoryPort }),
+    ...(opts.execPort === undefined ? {} : { execPort: opts.execPort }),
     ...(opts.availabilityPort === undefined ? {} : { availabilityPort: opts.availabilityPort }),
     ...(opts.installPort === undefined ? {} : { installPort: opts.installPort }),
     ...(opts.liveEventPollMs === undefined ? {} : { liveEventPollMs: opts.liveEventPollMs }),

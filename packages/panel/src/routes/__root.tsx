@@ -252,7 +252,7 @@ function Shell() {
   const userTerminals = useUserTerminals();
   const {
     togglePanel,
-    createTerminal,
+    createVmShellTerminal,
     cyclePrev,
     cycleNext,
     panelOpen: userTerminalPanelOpen,
@@ -410,6 +410,22 @@ function Shell() {
   useHotkey("group.prev", () => cycleActiveGroup(-1));
 
   useHotkey("terminal.toggle", () => togglePanel());
+  // `terminal.newTab` (⌘T by default) opens the same thing the panel's one
+  // "New Terminal" button opens: a VM Shell Session on the Core this route is
+  // on (issue 266). It was advertised in two `HotkeyTooltip`s and bound to a
+  // hard-coded, non-rebindable listener next to ⌘[ / ⌘] — so the tooltip named
+  // an action the keybindings editor could not actually rebind. It is a real
+  // action now.
+  //
+  // Capture, like the shortcuts it moved out of: a focused xterm textarea
+  // swallows this on bubble.
+  useHotkey(
+    "terminal.newTab",
+    () => {
+      if (routeCoreId) void createVmShellTerminal(routeCoreId);
+    },
+    { capture: true },
+  );
   useHotkey(
     "terminal.expandToggle",
     () => {
@@ -448,17 +464,14 @@ function Shell() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
-  // Cmd/Ctrl + [ / ] / T are non-rebindable terminal-focused shortcuts.
+  // Cmd/Ctrl + [ / ] are non-rebindable terminal-focused shortcuts.
   // Capture phase: a focused xterm textarea swallows these on bubble.
+  // ⌘T used to be in here too; it is `terminal.newTab` above now, so the
+  // tooltip that advertises it and the keybindings editor that lists it both
+  // describe something real (issue 266).
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey)) return;
-      if ((e.key === "t" || e.key === "T") && !e.shiftKey && !e.altKey) {
-        e.preventDefault();
-        e.stopPropagation();
-        void createTerminal();
-        return;
-      }
       if (e.key === "[" && !e.shiftKey && !e.altKey) {
         e.preventDefault();
         e.stopPropagation();
@@ -538,7 +551,7 @@ function Shell() {
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onBlur);
     };
-  }, [activeGroup, createTerminal, cycleNext, cyclePrev, groups, projects, router]);
+  }, [activeGroup, cycleNext, cyclePrev, groups, projects, router]);
 
   return (
     <>
