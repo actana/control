@@ -59,6 +59,17 @@
 //      than submitting into a composer the text never reached. Both are
 //      per-harness and off by default: see `HARNESS_READINESS`.
 //
+//      Issue 232 found the same failure on two more harnesses, at the same
+//      rate — roughly one start in three — and neither of them was quiet in
+//      the hole for anything like opencode's four seconds. cursor-cli lost the
+//      prompt on the run that settled at 1.6 s and kept it on the runs that
+//      settled at 2.5 s and 3.1 s; claude-code 2.1.235, captured live, paints
+//      its answered dialog at 5 051 ms and its composer at 5 623 ms, so the
+//      350 ms gap expires 222 ms early. A margin that small is the point:
+//      there is no quiet window and no fixed pause that is both long enough
+//      for the slow boot and not a tax on the fast one, which is why the
+//      answer is a readiness signal and never a bigger number.
+//
 // Everything here is driven by injected timers so the sequence is testable
 // without sleeping: see `harness-prompt-delivery.test.ts`.
 
@@ -244,27 +255,78 @@ export type BlockingDialogMatch = {
  * The dialogs the Core knows how to get past.
  *
  * Both entries are the same shape and the same danger: the highlighted default
- * is the destructive one. Claude Code's folder-trust prompt defaults to
+ * is the destructive one, so nothing here is answered by pressing Enter. Claude Code's folder-trust prompt defaults to
  * declining and *exiting*, and its bypass-permissions warning — the screen a
  * session launched with `--dangerously-skip-permissions` lands on — does the
  * same. Auto mode on its own survives, because nothing types into it; a prompt
  * on its own survives, because there is no dialog in the way. The two together
  * were what died, and this table is why they no longer do.
  *
- * Both are scoped to `claude-code`, because both are transcriptions of *that*
- * harness's screens: the wording, the option labels and the fact that the
- * highlighted default exits were all read off Claude Code and nothing else.
- * Applying them to a harness nobody has observed would mean pressing a digit
- * into a menu on the strength of another vendor's layout, which is the guess
- * D5 exists to refuse. A harness with no entry here still gets the quiet gap,
- * the separate carriage return and the length-scaled pause; what it does not
- * get is Claude Code's answers to questions it was never asked.
+ * The bypass-permissions entry is scoped to `claude-code`, because it is a
+ * transcription of *that* harness's screen: the wording, the option labels and
+ * the fact that the highlighted default exits were all read off Claude Code
+ * and nothing else. Applying it to a harness nobody has observed would mean
+ * pressing a digit into a menu on the strength of another vendor's layout,
+ * which is the guess D5 exists to refuse. A harness with no entry here still
+ * gets the quiet gap, the separate carriage return and the length-scaled
+ * pause; what it does not get is Claude Code's answers to questions it was
+ * never asked.
+ *
+ * Folder-trust now covers `cursor-cli` as well (issue 177 finding 3), and the
+ * reason it can is that **nothing about Claude Code's menu is carried across
+ * with it**. What the entry supplies is three things that are true of any
+ * folder-trust prompt in any wording: that the word "trust" and a workspace
+ * noun and a question mark together mean one is up, that an option meaning
+ * "go ahead" is the one to take, and that an option meaning "no" is the one to
+ * never take. Everything harness-specific — how many options there are, what
+ * they are called, and *which digit* the affirmative one carries — is read off
+ * the screen in front of it by {@link readDialogOptions}, and if it cannot be
+ * read then {@link chooseDialogOption} returns null and D5 applies unchanged:
+ * nothing is typed, delivery is abandoned, and the Session is reported
+ * `needs-input` rather than left looking like a hang. The issue is explicit
+ * about the failure mode to avoid here — *"the key sent is `1`, correct for
+ * Claude's option order and arbitrary for anyone else's"* — and a key this
+ * module never hard-codes is a key it cannot get arbitrarily wrong.
+ *
+ * **What that buys cursor-cli, exactly.** Its trust screen has since been
+ * observed and is committed as
+ * `__tests__/fixtures/cursor-agent-2026.08.11-folder-trust.txt`. The nouns
+ * catch it — `workspace`, `directory`, question mark — so the dialog is
+ * *recognised*. It is not *answered*, and cannot be: cursor-agent's menu is
+ * letter-keyed (`[a] Trust this workspace` / `[q] Quit`), `OPTION_LINE`
+ * below requires a digit, so {@link readDialogOptions} returns an empty list
+ * and {@link chooseDialogOption} returns null. Every cursor-cli delivery that
+ * meets this screen abandons. That is the whole of the win and it is still a
+ * real one — before it, the prompt and a carriage return went into the trust
+ * dialog and the delivery reported success. Teaching the reader letter keys is
+ * issue 273; until it lands, "recognised" is the honest word for this row.
+ *
+ * **What recognition is not: a net under harnesses this table has never
+ * heard of.** An *unrecognised* dialog does not abandon. `onQuiet` finds no
+ * dialog, emits `settled`, and calls `writePrompt` — the prompt is typed into
+ * whatever is on screen, which is precisely what cursor-agent's trust screen
+ * got before it had a row here. The `needs-input` outcome exists **only
+ * because a pattern here matched**. Anyone adding a fifth harness should read that as: matching is
+ * the whole job; nothing downstream catches a dialog this table missed. What
+ * a wording-independent pattern buys is a match that cannot produce a *wrong
+ * keystroke*, not a match that is optional.
  */
 export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   {
     id: "folder-trust",
-    harnesses: ["claude-code"],
-    match: [/\btrust\b/i, /\b(folder|directory|files)\b/i, /\?/],
+    harnesses: ["claude-code", "cursor-cli"],
+    // `workspace|project|repo` join the nouns because they are what a vendor
+    // other than Anthropic is as likely to call the same thing. Widening the
+    // *nouns* rather than dropping the `trust` anchor keeps the pairing that
+    // makes this a dialog rather than prose: a paragraph containing the word
+    // "trust" still does not match without a question mark and a workspace
+    // noun, and even a full match answers nothing unless the menu below it
+    // offers exactly one "yes" and at least one "no".
+    match: [
+      /\btrust\b/i,
+      /\b(folder|directory|files|workspace|project|repo(?:sitory)?)\b/i,
+      /\?/,
+    ],
     affirmative: /\b(yes|proceed|trust|allow)\b/i,
     refuse: /\b(no|exit|quit|cancel|deny)\b/i,
   },
@@ -391,9 +453,13 @@ export function highlightIsOn(
  * The same table shape as {@link BLOCKING_DIALOGS} and for the same reason
  * (ADR 0026 D7): every field here is a transcription of a *named* harness's
  * screen, so a harness with no entry gets none of it. The default is the
- * behaviour every harness had before issue 229 — settle, type, submit — which
- * is what keeps `claude-code`, `codex` and `cursor-cli` byte-for-byte
- * unchanged by a fix that was only ever about opencode.
+ * behaviour every harness had before issue 229 — settle, type, submit — and an
+ * entry is the only thing that changes it. Issue 229 added opencode alone, on
+ * the reading that the other three were unaffected; issue 232 measured the
+ * same lost prompt on `cursor-cli` and `claude-code` and disproved it for two
+ * of them, so both have rows below. `codex` is the only harness left on the
+ * default, and it is there unverified rather than cleared — see the table's
+ * own note before adding to it.
  */
 export type HarnessReadiness = {
   /**
@@ -427,22 +493,92 @@ const NO_READINESS: HarnessReadiness = {
 /**
  * Per-harness readiness, keyed the same way the dialog table is.
  *
- * OpenCode is the only entry and issue 229 is why. Its TUI opens the alternate
- * screen and paints its wordmark while the opencode server behind it is still
- * starting; the composer — and the input reader that goes with it — arrives
- * later, and the gap between the two is longer than any quiet gap worth
- * measuring. `Ask anything` is the composer's own placeholder, read out of
- * opencode 1.18.18: the TUI renders `Ask anything... "<suggestion>"` and the
- * localised string table carries `Ask anything, {{slash}} for commands, …`.
- * Only the prefix is common to both, so only the prefix is matched.
+ * Three entries now, and each one is a transcription of a *named* build's
+ * composer row. Issue 229 put opencode here; issue 232 adds `cursor-cli` and
+ * `claude-code`, because the same failure was measured on both.
  *
- * If a future opencode reworded that placeholder the marker stops matching and
- * delivery degrades to the backstop — the prompt goes out at `maxWaitMs`, late
- * but not lost — which is the direction this module is always wrong in.
+ * **opencode** (issue 229). Its TUI opens the alternate screen and paints its
+ * wordmark while the opencode server behind it is still starting; the composer
+ * — and the input reader that goes with it — arrives later, and the gap
+ * between the two is longer than any quiet gap worth measuring. `Ask anything`
+ * is the composer's own placeholder, read out of opencode 1.18.18: the TUI
+ * renders `Ask anything... "<suggestion>"` and the localised string table
+ * carries `Ask anything, {{slash}} for commands, …`. Only the prefix is common
+ * to both, so only the prefix is matched.
+ *
+ * **cursor-cli** (issue 232). Three back-to-back Sessions on one Core settled
+ * at 3.1 s, 1.6 s and 2.5 s; the 1.6 s one had its prompt swallowed and the
+ * Session sat in `ready` with Cursor Agent on its idle screen. Nothing about
+ * that is fixable by a longer pause — the two runs that worked and the run
+ * that did not took the *same* code path and differed only in how fast the TUI
+ * booted. `Plan, search, build` is cursor-agent's idle composer placeholder,
+ * quoted in the issue's own account of the failed run.
+ *
+ * That marker was the one row in this table with no fixture behind it, and it
+ * no longer is. The screen is now on record from a signed-in install of the
+ * same build, 2026.08.11-e8db854: the idle composer reads `→ Plan, search,
+ * build anything` and the pattern above matches it on 5 of 5 cold boots. It is
+ * committed as `__tests__/fixtures/cursor-agent-2026.08.11-e8db854-composer.txt`
+ * and the marker is asserted against that file rather than against a literal.
+ *
+ * The provenance is still worth stating exactly, because it is not a capture
+ * taken on this branch's machine: cursor-agent is installed here at that same
+ * build but stops at its sign-in screen without credentials, so the text is the
+ * one quoted off a live signed-in install in the review of PR #275 — the same
+ * route the trust screen above arrived by (issue 177, PR #272). It is the screen
+ * as text, so it carries no escape sequences and nothing frames it; what it
+ * settles, it settles, and the placeholder is the whole of what this row needs.
+ *
+ * **claude-code** (issue 232, from the field evidence attached to it). Roughly
+ * 25 `session start` runs across three Cores lost the start prompt 8–10 times
+ * — the same one-in-three, with the same signature: a Session that stays
+ * `ready`, an idle screen with the text nowhere on it, `--wait` timing out,
+ * and the identical bytes landing instantly when re-sent. That harness was
+ * *not* off this path; it was on it, and it was already known to leave a hole
+ * (see the 497 ms silence in `onQuiet`'s note). Captured again while writing
+ * this, on claude-code 2.1.235 (`__tests__/fixtures/claude-code-2.1.235-*`):
+ * the answered dialog repaints at 5 051 ms and the composer arrives at
+ * 5 623 ms, so the 350 ms quiet gap elapses at 5 401 ms — 222 ms before there
+ * is anything to type into. `paintedSinceKeystroke` does not close that,
+ * because the 5 051 ms frame *is* a paint with content in it.
+ *
+ * `Try "` is claude-code's composer placeholder and it lands in the same chunk
+ * as the composer, on both builds in the fixture directory — 2.1.228 in bypass
+ * mode and 2.1.235 in auto mode. The obvious alternative was rejected on a
+ * measurement rather than on taste: the `⏵⏵ … (shift+tab to cycle)` footer was
+ * observed at 15 635 ms in one capture — ten seconds behind that run's composer
+ * and past the 15 s backstop. It is not always that late; on another 2.1.235
+ * capture it arrived in the same frame as the composer. The variance is the
+ * argument, not the one number: a marker that is *sometimes* ten seconds late
+ * cannot be gated on, because the run it is late on is the run that a readiness
+ * signal exists to protect, and that is the run it would delay.
+ *
+ * **codex has no entry and that is not a claim that it is safe.** It is
+ * unverified: nothing in issue 232's sample exercised it, and this table is
+ * for screens somebody has looked at. Until one is, codex keeps the pre-229
+ * behaviour — settle, type, submit — which is exactly the path claude-code and
+ * cursor-cli were on when they lost prompts. Treat a codex row as owed, not as
+ * unnecessary; it is tracked as issue 277, which lists the capture and the
+ * timing that would settle it either way.
+ *
+ * If a future build of any of these reworded its placeholder the marker stops
+ * matching and delivery degrades to the backstop — the prompt goes out at
+ * `maxWaitMs`, late but not lost — which is the direction this module is
+ * always wrong in.
  */
 export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   opencode: {
     composer: [/ask anything/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+  "cursor-cli": {
+    composer: [/plan,\s*search,\s*build/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+  "claude-code": {
+    composer: [/\btry\s+"/i],
     confirmEcho: true,
     maxPromptWrites: 3,
   },
@@ -790,8 +926,11 @@ export class HarnessPromptDelivery {
   /**
    * Is there enough evidence to justify the carriage return?
    *
-   * `true` for every harness with no `confirmEcho` entry, so this is a no-op
-   * for the three families that were never affected. Past the backstop and
+   * `true` for every harness with no `confirmEcho` entry, which today is
+   * `codex` alone — and it is there because nobody has read its screen, not
+   * because it was shown to be unaffected. The other three all set the flag:
+   * opencode from issue 229, `cursor-cli` and `claude-code` from the swallowed
+   * writes issue 232 measured on them. Past the backstop and
    * past the retype budget it is also `true`: leaving a prompt typed-but-
    * unsent is its own failure (D8), and an unjustified `\r` into an empty
    * composer costs nothing — unlike the one into a menu that D4a guards.

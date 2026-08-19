@@ -6,6 +6,7 @@
 //   actana core rm <name>           forget one
 //   actana core status [--json]     reach the selected Core and report it back
 //   actana core shell               an interactive shell on the Core (#162)
+//   actana core exec -- <cmd>       one command on the Core, no terminal (#266)
 //
 // **`add` reads a file or stdin, and there is no third way.** It does not shell
 // into a container to fetch the credential for it (#129 D9, and the ticket's
@@ -17,6 +18,12 @@
 // need one; and it turns "paste this once" into a privilege the CLI holds
 // forever. `packages/cli` imports nothing that can start a process, and
 // `src/__tests__/no-local-escape.test.ts` is what keeps that true.
+//
+// **`exec` is the same argument one verb further along (#266).** A maintenance
+// script that needs to run something on a Core used to have to reach for
+// `docker exec` too. It runs on the *Core*, over the core link, authenticated
+// — so it works against a remote Core, and this package still starts no
+// process. `core-exec.ts` has the reasoning in full.
 
 import {
   clearCurrentCore,
@@ -34,6 +41,7 @@ import {
 import { decodeRegistrationBlobText } from "./registration-blob-file.ts";
 import { resolveCore } from "./core-resolution.ts";
 import { runCoreShell } from "./core-shell.ts";
+import { runCoreExec } from "./core-exec.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -52,11 +60,25 @@ Usage
   actana core rm <name>           forget a Core
   actana core status              reach the selected Core and report what it says
   actana core shell               open an interactive shell on the Core
+  actana core exec -- <cmd>       run one command on the Core, no terminal
 
 Flags
   --core <name>   which Core \`status\` (and every later noun) talks to
-  --json          machine-readable output — \`ls\` and \`status\`
+  --cwd <dir>     a directory on the **Core's** machine — \`exec\`
+  --json          machine-readable output — \`ls\`, \`status\` and \`exec\`
   --verbose       explain the steps. Never prints a blob.
+
+Running one command
+  \`exec\` is the non-interactive half of \`shell\`: no terminal, stdout and
+  stderr kept apart and free of escape sequences, and the command's own exit
+  code as this process's. Everything after \`--\` is the command.
+
+    actana core exec -- df -h /
+    actana core exec --cwd /srv/app -- git pull
+    actana core exec --json -- systemctl is-active actana
+
+  A dropped link exits 125 and says so: the command keeps running on the Core
+  and its outcome is unknown. That is never the command's own status.
 
 Registering a Core
   \`actana setup\` prints one blob per Core. Save it, or pipe it:
@@ -99,9 +121,11 @@ export async function runCoreCommand(
       return coreStatus(deps, args, paths);
     case "shell":
       return runCoreShell(deps, args, paths);
+    case "exec":
+      return runCoreExec(deps, args, paths, rest);
     default:
       deps.err(`actana core: unknown verb "${verb}".`);
-      deps.err("Verbs: add, ls, use, rm, status, shell. `actana core --help` lists them.");
+      deps.err("Verbs: add, ls, use, rm, status, shell, exec. `actana core --help` lists them.");
       return EXIT_USAGE;
   }
 }

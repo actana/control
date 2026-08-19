@@ -11,18 +11,20 @@ import {
 import { api } from "./api";
 import { getCorePtyBridge } from "./panel-bridge";
 import { prefetchTerminalModules } from "./prefetch-terminal-modules";
-import {
-  discardUserTerminalWarmSlot,
-  prepareUserTerminalWarmSlot,
-  replenishUserTerminalWarmSlot,
-  takeUserTerminalWarmSlot,
-} from "./user-terminal-warm-pool";
 import { terminalSurfaceCache } from "./terminal-surface-cache";
 import type { UserTerminal } from "~/db/schema";
 import { HOME_TERMINAL_PROJECT_ID } from "~/shared/home-terminal";
 import { scopeKeyForProject, type ScopedProject } from "./scoped-project";
 import { readJson, writeJson } from "./local-storage-json";
 
+// Every terminal this store opens is a VM Shell Session (issue 266). The
+// project-root creator — `createTerminal`, `api.createUserTerminal`, the
+// `user_terminals` table behind it and the warm pool that pre-spawned a PTY on
+// project navigation — is gone, so there is exactly one way in here and it is
+// {@link Ctx.createVmShellTerminal}. Rows persist in `home_terminals`
+// whichever scope the panel is showing, which is why every persistence call
+// below routes to the home endpoints unconditionally.
+//
 // Scope-key namespace for project-less "home" terminals (the dashboard
 // terminals). Sessions/focus/hidden/panel state live in the same per-scope
 // records as project terminals, so they persist across navigation just like
@@ -36,10 +38,6 @@ const HOME_SCOPE_KEY = `${HOME_SCOPE_PREFIX}local`;
 // can't drift apart.
 const HIDDEN_IDS_STORAGE_KEY = "mc.userTerminalHiddenIds";
 const PANEL_OPEN_STORAGE_KEY = "mc.userTerminalPanelOpen";
-function isHomeScopeKey(key: string): boolean {
-  return key.startsWith(HOME_SCOPE_PREFIX);
-}
-
 type Session = {
   terminal: UserTerminal;
   ptyId: string | null;
@@ -56,7 +54,7 @@ type Session = {
    * home-terminal row for its lifecycle, but spawns with `shellSession: true`
    * (no project-root requirement) and renders with a distinct "VM shell"
    * surface. Lost on cold reload — by design it is never auto-spawned; the
-   * operator re-opens it with the explicit "New VM shell" gesture. Within a
+   * operator re-opens it with the explicit "New Terminal" gesture. Within a
    * renderer session it survives Panel reconnect via the core-link's PTY
    * replay (the ptyId is tracked here and reattached on WS reconnect).
    */
@@ -79,23 +77,17 @@ type Ctx = {
   runningProjectIds: Set<string>;
   focusedId: string | null;
   focusTerminal: (id: string) => void;
-  createTerminal: (opts?: {
-    name?: string;
-    startCommand?: string | null;
-    project?: ScopedProject;
-    cwd?: string | null;
-    focusOnCreate?: boolean;
-    /** The Core to open the shell on. */
-    coreId?: string;
-  }) => Promise<UserTerminal | null>;
   /**
    * Open a VM Shell Session (issue 06) — a free-form interactive shell on the
-   * Core's machine, distinct from agent workspaces and dashboard home
-   * terminals. Reuses the home-terminal row for its lifecycle but spawns with
+   * Core's machine. Since issue 266 this is the store's **only** creator: the
+   * project-root path it used to sit beside is gone, and "New Terminal" in
+   * either place the Panel offers one lands here.
+   *
+   * Reuses the home-terminal row for its lifecycle but spawns with
    * `shellSession: true` (no project-root requirement) and renders with a
-   * distinct "VM shell" surface. Only available in the project-less dashboard
-   * (home) scope — a VM shell is on the Core, not a project. NEVER
-   * auto-spawned: this is the explicit open gesture the operator invokes.
+   * distinct "VM shell" surface. Available in whichever scope is current — a VM
+   * shell is on the Core, and every route that shows this panel is on one.
+   * NEVER auto-spawned: this is the explicit open gesture the operator invokes.
    */
   createVmShellTerminal: (coreId?: string) => Promise<UserTerminal | null>;
   /** Permanently close every user terminal for a project (kills PTYs). */
@@ -195,47 +187,16 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
     setPanelOpenByProject((prev) => ({ ...prev, [scopeKey]: !(prev[scopeKey] ?? true) }));
   }, [scopeKey]);
 
-  // Read through a ref from callbacks that must not re-create on every Core
-  // switch (createTerminal is in a dozen dep arrays).
-  const projectCoreIdRef = useRef<string | null>(null);
-  projectCoreIdRef.current = projectCoreId;
-
   const setProject = useCallback((next: ScopedProject | null, coreId?: string | null) => {
     setProjectState((prev) => (prev?.id === next?.id ? prev : next));
     setProjectCoreId(coreId ?? null);
   }, []);
 
-  // Lazy-load each project's persisted terminals the first time we see it.
-  // Existing buckets are left alone so live PTYs survive project switches.
-  useEffect(() => {
-    const id = project?.id;
-    const key = project ? scopeKeyForProject(project) : null;
-    if (!id || !key) return;
-    if (loadedProjectsRef.current.has(key)) return;
-    loadedProjectsRef.current.add(key);
-
-    let cancelled = false;
-    void (async () => {
-      try {
-        const { terminals } = await api.listUserTerminals(id);
-        if (cancelled) return;
-        setSessionsByProject((prev) => {
-          if (prev[key]) return prev; // a createTerminal call beat us to it
-          return { ...prev, [key]: terminals.map((t) => ({ terminal: t, ptyId: null })) };
-        });
-        setFocusedByProject((prev) => {
-          if (prev[key] !== undefined) return prev;
-          return { ...prev, [key]: terminals[0]?.id ?? null };
-        });
-      } catch {
-        loadedProjectsRef.current.delete(key);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [project]);
-
+  // There is no per-project terminal list to lazy-load any more: the
+  // `user_terminals` table and its routes went with the project-root path
+  // (issue 266). A project scope's bucket is whatever this app run opened in
+  // it, and the only persisted list left is the home one below.
+  //
   // Lazy-load persisted home terminals the first time the home bucket is
   // active. Mirrors the per-project loader; home sessions then survive
   // navigation in the same sessionsByProject bucket.
@@ -251,7 +212,7 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
         const { terminals } = await api.listHomeTerminals();
         if (cancelled) return;
         setSessionsByProject((prev) => {
-          if (prev[key]) return prev; // a createTerminal call beat us to it
+          if (prev[key]) return prev; // a create call beat us to it
           return { ...prev, [key]: terminals.map((t) => ({ terminal: t, ptyId: null })) };
         });
         setFocusedByProject((prev) => {
@@ -267,28 +228,19 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
     };
   }, [homeActive]);
 
-  // The Core is in the key: switching Cores must tear the warm shell down, not
-  // hand a shell on the old machine to the new one.
-  const warmPrepareKey =
-    project?.path && projectCoreId
-      ? `${scopeKeyForProject(project)}:${projectCoreId}:${project.path}`
-      : null;
-  // Read `project` through a ref so a project-query refetch that returns a new
-  // reference with identical data doesn't change the effect deps and churn the
-  // warm slot (kill + respawn the shell PTY). `warmPrepareKey` already encodes
-  // everything that should trigger teardown/re-prepare.
-  const warmInputRef = useRef({ project, projectCoreId });
-  warmInputRef.current = { project, projectCoreId };
+  // Navigating to a project pre-fetches the terminal JS chunks and **nothing
+  // else** (issue 266). What used to be here also called
+  // `prepareUserTerminalWarmSlot`, which spawned a real PTY on the Core in
+  // anticipation of a click on a button that no longer exists — so it spawned
+  // shells nothing could ever claim. That module is deleted and is deliberately
+  // not reintroduced for VM shells: CONTEXT.md requires an explicit open
+  // gesture, and a pre-spawn on navigation is the opposite of one. Downloading
+  // a JS chunk starts no process on any machine.
+  const canOpenShell = !!projectCoreId && !!project;
   useEffect(() => {
-    const { project, projectCoreId } = warmInputRef.current;
-    if (!project?.path || !warmPrepareKey) return;
+    if (!canOpenShell) return;
     void prefetchTerminalModules();
-    void prepareUserTerminalWarmSlot({ project, coreId: projectCoreId, cwd: project.path });
-    return () => {
-      void discardUserTerminalWarmSlot();
-    };
-    // Depend only on warmPrepareKey (the stable logical key); inputs come from the ref.
-  }, [warmPrepareKey]);
+  }, [canOpenShell]);
 
   const sessions = scopeKey ? (sessionsByProject[scopeKey] ?? []) : [];
   const runningProjectIds = useMemo(() => {
@@ -343,93 +295,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
     setFocusedByProject((prev) => (prev[projectId] === id ? prev : { ...prev, [projectId]: id }));
   }, []);
 
-  const createTerminal = useCallback(
-    async (opts?: {
-      name?: string;
-      startCommand?: string | null;
-      project?: ScopedProject;
-      cwd?: string | null;
-      focusOnCreate?: boolean;
-      coreId?: string;
-    }) => {
-      const targetProject = opts?.project ?? project;
-      const focusOnCreate = opts?.focusOnCreate ?? true;
-      // Home mode: no project context → create a project-less home terminal. The
-      // cwd is resolved at spawn time per-runtime (host/remote home dir), so we
-      // persist no host path here. Home terminals are never launch/ephemeral, so
-      // startCommand and the warm-slot fast path don't apply.
-      if (!targetProject && homeActive) {
-        const key = HOME_SCOPE_KEY;
-        const { terminal } = await api.createHomeTerminal({
-          name: opts?.name,
-        });
-        updateSessions(key, (prev) => [...prev, { terminal, ptyId: null, coreId: opts?.coreId }]);
-        if (focusOnCreate) setFocusFor(key, terminal.id);
-        setPanelOpenByProject((prev) => ({ ...prev, [key]: true }));
-        return terminal;
-      }
-      if (!targetProject) return null;
-      const projectId = targetProject.id;
-      const key = scopeKeyForProject(targetProject);
-      const cwd = opts?.cwd ?? targetProject.path;
-      const startCommand = opts?.startCommand ?? null;
-      const coreId = opts?.coreId ?? projectCoreIdRef.current;
-      const canUseWarmSlot = !startCommand && !!cwd && !!coreId;
-
-      if (canUseWarmSlot) {
-        const warmSlot = takeUserTerminalWarmSlot(coreId, cwd);
-        if (warmSlot) {
-          const draftTerminal: UserTerminal = {
-            ...warmSlot.draftTerminal,
-            name: opts?.name?.trim() || warmSlot.draftTerminal.name,
-          };
-          updateSessions(key, (prev) => [...prev, { terminal: draftTerminal, ptyId: warmSlot.ptyId }]);
-          if (focusOnCreate) setFocusFor(key, draftTerminal.id);
-          setPanelOpenByProject((prev) => ({ ...prev, [key]: true }));
-
-          void (async () => {
-            try {
-              const { terminal } = await api.createUserTerminal(projectId, {
-                id: warmSlot.clientTerminalId,
-                cwd,
-                name: opts?.name,
-              });
-              updateSessions(key, (prev) =>
-                prev.map((s) =>
-                  s.terminal.id === warmSlot.clientTerminalId
-                    ? { terminal, ptyId: warmSlot.ptyId }
-                    : s,
-                ),
-              );
-              replenishUserTerminalWarmSlot({ project: targetProject, coreId, cwd });
-            } catch {
-              await getCorePtyBridge(coreId)?.kill(warmSlot.ptyId).catch(() => undefined);
-              updateSessions(key, (prev) =>
-                prev.filter((s) => s.terminal.id !== warmSlot.clientTerminalId),
-              );
-              replenishUserTerminalWarmSlot({ project: targetProject, coreId, cwd });
-            }
-          })();
-          return draftTerminal;
-        }
-      }
-
-      const { terminal } = await api.createUserTerminal(projectId, {
-        cwd,
-        name: opts?.name,
-        startCommand,
-      });
-      updateSessions(key, (prev) => [...prev, { terminal, ptyId: null, coreId: opts?.coreId }]);
-      if (focusOnCreate) setFocusFor(key, terminal.id);
-      setPanelOpenByProject((prev) => ({ ...prev, [key]: true }));
-      if (!startCommand && cwd) {
-        replenishUserTerminalWarmSlot({ project: targetProject, coreId, cwd });
-      }
-      return terminal;
-    },
-    [project, homeActive, updateSessions, setFocusFor]
-  );
-
   const createVmShellTerminal = useCallback(
     async (coreId?: string): Promise<UserTerminal | null> => {
       // A VM Shell Session lives on the Core itself, not in a project — so it
@@ -437,7 +302,8 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       // for persistence/lifecycle but is flagged `shellSession` in-memory so
       // the pane spawns it with `shellSession: true` (skipping project-root
       // validation) and renders the distinct "VM shell" surface. Never
-      // auto-spawned — this is the explicit gesture.
+      // auto-spawned — this is the explicit gesture, and since issue 266 it is
+      // the only one: both "New Terminal" controls call exactly this.
       if (!coreId || !scopeKey) return null;
       const key = scopeKey;
       const { terminal } = await api.createHomeTerminal({
@@ -514,8 +380,10 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
         await getCorePtyBridge(killedCoreId)?.kill(killedPtyId).catch(() => undefined);
       }
       try {
-        if (isHomeScopeKey(ownerProjectId)) await api.deleteHomeTerminal(id);
-        else await api.deleteUserTerminal(id);
+        // One endpoint, not a home-vs-project branch: every row this store
+        // creates is a `home_terminals` row, whichever scope key it is bucketed
+        // under (issue 266).
+        await api.deleteHomeTerminal(id);
       } catch {
         /* swallow */
       }
@@ -547,12 +415,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   const renameTerminal = useCallback(async (id: string, name: string) => {
     const trimmed = name.trim();
     if (!trimmed) return;
-    // Resolve home-vs-project from the latest snapshot synchronously (not inside
-    // the setState updater, which can run lazily) so the persistence call routes
-    // to the right endpoint. Home terminals live under any `__home__:<scope>` key.
-    const isHome = Object.entries(sessionsByProjectRef.current).some(
-      ([key, list]) => isHomeScopeKey(key) && list.some((s) => s.terminal.id === id)
-    );
     setSessionsByProject((prev) => {
       const next = { ...prev };
       for (const [pid, list] of Object.entries(prev)) {
@@ -564,8 +426,8 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       return next;
     });
     try {
-      if (isHome) await api.renameHomeTerminal(id, trimmed);
-      else await api.renameUserTerminal(id, trimmed);
+      // As in killTerminal: one row kind, so one endpoint (issue 266).
+      await api.renameHomeTerminal(id, trimmed);
     } catch {
       /* swallow */
     }
@@ -653,7 +515,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       runningProjectIds,
       focusedId,
       focusTerminal,
-      createTerminal,
       createVmShellTerminal,
       closeForProject,
       killTerminal,
@@ -677,7 +538,6 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       runningProjectIds,
       focusedId,
       focusTerminal,
-      createTerminal,
       createVmShellTerminal,
       closeForProject,
       killTerminal,

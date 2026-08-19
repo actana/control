@@ -14,6 +14,7 @@
 // spawn with the Core's own message on it — not a command trimmed here on a
 // guess about a machine this process is not on.
 
+import { harnessAutoModeFlag } from "@actana/sdk/core-session.ts";
 import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
 
 /**
@@ -34,26 +35,39 @@ import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
  *                                    `ses`
  *
  * `dangerouslySkipPermissions` appends that harness's spelling of "do not stop
- * to ask me", which the Core accepts **only** on a spawn that also set the
- * matching option — the CLI sends both or neither (see `session-gateway.ts`).
- * OpenCode has no such flag and gets none, which is not an omission: a flag
- * invented here would be rejected by the allow-list rather than honoured.
+ * to ask me", and it is **read from {@link harnessAutoModeFlag} rather than
+ * spelled again here** (issue 177 finding 2). It used to be a fourth switch
+ * over the same four harnesses, which is one more transcription of a vendor
+ * fact than can be kept in step — and the direction it drifts in is the silent
+ * one: a wrong flag is a rejected spawn, a *missing* flag used to be an
+ * interactive harness a caller thought was unattended.
+ *
+ * The Core now checks the gesture both ways: the flag is accepted only on a
+ * spawn that set the option, and since issue 177 the option is refused on a
+ * command that lacks the flag. The CLI sends both or neither (see
+ * `session-gateway.ts`). OpenCode has no such flag and gets none, which is not
+ * an omission — it is the one harness whose auto-mode cell is genuinely empty,
+ * and the Core reads it the same way.
  */
 export function harnessResumeCommand(
   harness: CoreLinkPtySpawnHarness,
   sessionId: string,
   opts: { dangerouslySkipPermissions?: boolean } = {},
 ): string {
-  const skip = opts.dangerouslySkipPermissions === true;
+  // One table for the flag, whatever the shape of the command it hangs off.
+  // `null` here is both "auto mode was not asked for" and "this harness has
+  // none" — two different facts with the same consequence for the command.
+  const autoMode =
+    opts.dangerouslySkipPermissions === true ? harnessAutoModeFlag(harness) : null;
   switch (harness) {
     case "claude-code":
-      return join(["claude", "--resume", sessionId], skip ? "--dangerously-skip-permissions" : null);
+      return join(["claude", "--resume", sessionId], autoMode);
     case "codex":
-      return join(["codex", "resume", sessionId, "--enable", "hooks"], skip ? "--yolo" : null);
+      return join(["codex", "resume", sessionId, "--enable", "hooks"], autoMode);
     case "cursor-cli":
-      return join(["cursor-agent", "--resume", sessionId], skip ? "--force" : null);
+      return join(["cursor-agent", "--resume", sessionId], autoMode);
     case "opencode":
-      return join(["opencode", "--session", sessionId], null);
+      return join(["opencode", "--session", sessionId], autoMode);
   }
 }
 

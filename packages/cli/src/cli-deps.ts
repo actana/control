@@ -25,6 +25,25 @@ export type ActanaCliDeps = {
   /** Where errors and diagnostics go. */
   err: (line: string) => void;
   /**
+   * The same two streams, as bytes: written exactly as given, with nothing
+   * appended.
+   *
+   * A second pair rather than a widening of {@link out} and {@link err},
+   * because almost every verb of this CLI emits *lines* — a line sink is the
+   * shape that keeps them from each having to remember a trailing newline, and
+   * it is the shape the `--json` document is written through. One verb is
+   * different: `actana core exec` relays a remote command's own streams, and
+   * its whole argument is that the bytes come back exactly as the command
+   * wrote them. A line sink cannot say that. `printf hello` produced no
+   * newline, and a relay that adds one has reported a byte the command did not
+   * emit.
+   *
+   * Both halves land in the same place the line sinks do, so the "never logs a
+   * blob" sweep reads them too.
+   */
+  outBytes: (chunk: string) => void;
+  errBytes: (chunk: string) => void;
+  /**
    * Where `--verbose` goes, when it is on.
    *
    * A separate sink rather than a boolean on {@link out} because verbose output

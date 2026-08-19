@@ -299,6 +299,98 @@ describe("resolveSpawnPlan — agent allow-list", () => {
     }
   });
 
+  // ─── The other direction (issue 177 finding 2) ──────────────────────────
+  //
+  // The check used to run one way only: a flag without the option was
+  // rejected, an option without the flag passed. So a caller that set
+  // `dangerouslySkipPermissions` and built its command string from a
+  // Claude-shaped template got a spawn the Core accepted and an *interactive*
+  // harness — and nothing anywhere said auto mode had been asked for and not
+  // delivered. cursor-cli is where it bit, because cursor-cli is the harness
+  // whose flag nobody had transcribed; the defect is per-harness and so is the
+  // coverage below.
+
+  it("rejects auto mode asked for without the harness's flag, for every harness that has one", () => {
+    const cases: Array<{ agent: string; command: string }> = [
+      { agent: "claude-code", command: "claude" },
+      {
+        agent: "claude-code",
+        command: "claude --resume 00000000-0000-4000-8000-000000000000",
+      },
+      { agent: "codex", command: "codex --enable hooks" },
+      // The subcommand form too: `resume <id>` is stripped before the flags
+      // are checked, so a resumed Codex must not slip through on its shape.
+      {
+        agent: "codex",
+        command: "codex resume 019d7a0f-432a-7fa1-a821-b7841f983967 --enable hooks",
+      },
+      // The exact spawn from the issue's reproduction, minus the flag the
+      // client never added.
+      { agent: "cursor-cli", command: "cursor-agent" },
+      {
+        agent: "cursor-cli",
+        command: "cursor-agent --resume 00000000-0000-4000-8000-000000000000",
+      },
+    ];
+
+    for (const { agent, command } of cases) {
+      expectRejected(
+        spawnReq({ agent, command, dangerouslySkipPermissions: true }),
+        depsFor(),
+        "auto-mode-flag-missing",
+      );
+    }
+  });
+
+  it("names the missing flag in the message, because adding it is the caller's next move", () => {
+    let thrown: unknown;
+    try {
+      resolveSpawnPlan(
+        spawnReq({
+          agent: "cursor-cli",
+          command: "cursor-agent",
+          dangerouslySkipPermissions: true,
+        }),
+        depsFor(),
+      );
+    } catch (err) {
+      thrown = err;
+    }
+    expect(String(thrown)).toContain("--force");
+  });
+
+  it("still launches OpenCode with the option set — it has no flag to be missing", () => {
+    // Not an exemption written into the check: `HARNESS_AUTO_MODE_FLAGS` holds
+    // null for opencode, and null means "this CLI ships no unattended mode".
+    // Refusing the launch would break a harness over a flag no version of it
+    // has ever had.
+    const plan = resolveSpawnPlan(
+      spawnReq({
+        agent: "opencode",
+        command: "opencode",
+        dangerouslySkipPermissions: true,
+      }),
+      depsFor(),
+    );
+    if (plan.mode !== "agent") throw new Error("wrong mode");
+    expect(plan.binary).toBe("/usr/local/bin/opencode");
+    expect(plan.argv).toEqual([]);
+  });
+
+  it("leaves a plain launch with no option and no flag alone", () => {
+    // The negative control on the negative control: closing one direction must
+    // not make "no auto mode anywhere" into an error.
+    for (const { agent, command } of [
+      { agent: "claude-code", command: "claude" },
+      { agent: "codex", command: "codex --enable hooks" },
+      { agent: "cursor-cli", command: "cursor-agent" },
+      { agent: "opencode", command: "opencode" },
+    ]) {
+      const plan = resolveSpawnPlan(spawnReq({ agent, command }), depsFor());
+      expect(plan.mode).toBe("agent");
+    }
+  });
+
   it("rejects unexpected positional args after allowed agent flags", () => {
     expectRejected(
       spawnReq({ agent: "codex", command: "codex --enable hooks exec bad" }),

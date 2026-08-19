@@ -11,7 +11,6 @@ import * as projectsController from "./controllers/projects.controller";
 import * as projectPresentationController from "./controllers/project-presentation.controller";
 import * as tasksController from "./controllers/tasks.controller";
 import * as groupsController from "./controllers/groups.controller";
-import * as userTerminalsController from "./controllers/user-terminals.controller";
 import * as homeTerminalsController from "./controllers/home-terminals.controller";
 import * as settingsController from "./controllers/settings.controller";
 import * as keybindingsController from "./controllers/keybindings.controller";
@@ -34,7 +33,6 @@ const PROJECT_PATH_STATUS_PATH = /^\/api\/projects\/([^/]+)\/path-status$/;
 const PROJECT_IMAGE_PATH = /^\/api\/projects\/([^/]+)\/image$/;
 const PROJECT_PRESENTATION_PATH = /^\/api\/project-presentation\/([^/]+)$/;
 const PROJECT_TASKS_PATH = /^\/api\/projects\/([^/]+)\/tasks$/;
-const PROJECT_USER_TERMINALS_PATH = /^\/api\/projects\/([^/]+)\/user-terminals$/;
 const GROUP_PATH = /^\/api\/groups\/([^/]+)$/;
 const CORE_PATH = /^\/api\/cores\/([^/]+)$/;
 // A Project's files on a Core, addressed by both ids because the Panel holds no
@@ -50,7 +48,6 @@ const TASK_STATUS_PATH = /^\/api\/tasks\/([^/]+)\/status$/;
 const TASK_QUESTION_PATH = /^\/api\/tasks\/([^/]+)\/question$/;
 const TASK_ARCHIVE_PATH = /^\/api\/tasks\/([^/]+)\/archive$/;
 const TASK_RESTORE_PATH = /^\/api\/tasks\/([^/]+)\/restore$/;
-const USER_TERMINAL_PATH = /^\/api\/user-terminals\/([^/]+)$/;
 const HOME_USER_TERMINAL_PATH = /^\/api\/home\/user-terminals\/([^/]+)$/;
 const REQUEST_ID_HEADER = "x-request-id";
 const CORRELATION_ID_HEADER = "x-correlation-id";
@@ -289,13 +286,6 @@ async function dispatch(
     if (method === "GET") return tasksController.listForProject(id, request);
     if (method === "POST") return tasksController.create(id, request);
   }
-  m = pathname.match(PROJECT_USER_TERMINALS_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "GET") return userTerminalsController.listForProject(id, request);
-    if (method === "POST") return userTerminalsController.create(id, request);
-  }
-
   // Groups
   if (pathname === "/api/groups") {
     if (method === "GET") return groupsController.list(request);
@@ -332,15 +322,9 @@ async function dispatch(
   m = pathname.match(TASK_RESTORE_PATH);
   if (m && method === "POST") return tasksController.restore(decode(m[1]), request);
 
-  // User terminals
-  m = pathname.match(USER_TERMINAL_PATH);
-  if (m) {
-    const id = decode(m[1]);
-    if (method === "PATCH") return userTerminalsController.rename(id, request);
-    if (method === "DELETE") return userTerminalsController.remove(id, request);
-  }
-
-  // Home terminals (project-less dashboard terminals)
+  // Terminals. Every terminal is a `home_terminals` row and reaches the Core as
+  // a VM Shell Session (issue 266); the `/api/projects/:id/user-terminals` and
+  // `/api/user-terminals/:id` routes went with the project-root path.
   if (pathname === "/api/home/user-terminals") {
     if (method === "GET") return homeTerminalsController.listAll(request);
     if (method === "POST") return homeTerminalsController.create(request);

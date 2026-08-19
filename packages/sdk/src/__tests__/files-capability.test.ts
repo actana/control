@@ -65,9 +65,12 @@ describe("readFilesCapability", () => {
 
 describe("the protocol version does not move for it", () => {
   // The reason is in the test name so that whoever reads this failing after
-  // bumping the version gets the reason rather than the number.
-  it("stays 0.15.0 because `files` is announced as a ready capability, so no Core becomes needs-update for it (#165 F9, ADR 0024 D11)", () => {
-    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.15.0");
+  // bumping the version gets the reason rather than the number. `files` did
+  // not move it and does not: it is a ready capability whose absence yields
+  // today's behaviour exactly. What moved it to 0.16.0 is the `exec` frame
+  // (#266), which is a frame and therefore not that case.
+  it("is 0.16.0 for the `exec` frame (#266) and not for `files`, which is a ready capability no Core becomes needs-update for (#165 F9, ADR 0024 D11)", () => {
+    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.16.0");
   });
 
   it("serializes the ready frame with the capability when a Core announces it", () => {

@@ -60,6 +60,7 @@ import {
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import { createDirectory, listDirectory } from "./directory-browse";
+import { runCoreExec } from "./core-exec";
 import { configureProjectRootsDb } from "./project-roots";
 import {
   configureEventLogStore,
@@ -109,6 +110,8 @@ import { startUpdateNotice } from "./core-update-notice";
 import log from "./log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
 import { HarnessAvailabilityStore } from "./harness-availability-store";
+import { HarnessSkillWatcher } from "./harness-skill-watcher";
+import { ensureOrchestrationSkill } from "./orchestration-skill";
 import { HarnessInstallService } from "./harness-install-service";
 import { nodeActanaSystem } from "./actana-system";
 
@@ -286,7 +289,27 @@ async function startCore(): Promise<void> {
   // so the Panel's per-Core availability store is oblivious to which Core
   // answered. Started after `configureEventLogStore` has run — the first
   // probe emits an event.
-  const availabilityStore = new HarnessAvailabilityStore({ appendEvent });
+  // ADR 0031 D6/D7: the product's own orchestration skill goes into this
+  // machine's Harness skill directories — this machine, because a remote Core's
+  // Harnesses are nowhere near the laptop that drives it. Once at boot, and
+  // again whenever a Harness this Core had not seen becomes available.
+  //
+  // The watcher is wired by teeing the store's own append rather than by
+  // re-reading the log, which is what makes ADR 0031 D7's replay guard cheap to
+  // hold: it sees each event once, in order, as it is produced. The guard is
+  // there anyway, because "this is only ever fed live events" is a property of
+  // this one call site and not of the class.
+  ensureOrchestrationSkill(os.homedir());
+  const skillWatcher = new HarnessSkillWatcher({
+    ensure: () => ensureOrchestrationSkill(os.homedir()),
+  });
+  const availabilityStore = new HarnessAvailabilityStore({
+    appendEvent: (kind, payload, opts) => {
+      const eventId = appendEvent(kind, payload, opts);
+      skillWatcher.observe(kind, payload, eventId);
+      return eventId;
+    },
+  });
   availabilityStore.start();
 
   // Installer issue 05: `actana harnesses install` puts a new CLI on PATH while
@@ -358,6 +381,14 @@ async function startCore(): Promise<void> {
     directoryPort: {
       list: (requestedPath) => listDirectory(requestedPath),
       create: (parent, name) => createDirectory(parent, name),
+    },
+    // Issue 266: `actana core exec` runs one command here, non-interactively.
+    // It grants nothing `core shell` does not already grant — same blob, same
+    // link, same class of process — and it is more auditable, because it
+    // arrives through this Core's own authentication instead of through a
+    // `docker exec` on the host that this Core never sees.
+    execPort: {
+      run: (input) => runCoreExec(input),
     },
   };
 

@@ -1,6 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { HARNESS_SPAWN_COMMANDS } from "./harness-cli-config";
+import { HARNESS_AUTO_MODE_FLAGS, HARNESS_SPAWN_COMMANDS } from "./harness-cli-config";
 import { isAiModelId } from "./ai-runtime-defaults";
 import type { Harness } from "./domain";
 import { buildCmdScriptCommand, isWindowsCommandScript } from "./windows-cmd";
@@ -71,6 +71,13 @@ export type ShellSpawnRequest = BaseSpawnRequest & {
  * ({@link PtyCore.spawn}) replaces it with its own `os.homedir()`
  * before calling {@link resolveSpawnPlan}, so the plan's `cwd` is the real
  * home path on the Core machine.
+ *
+ * **Not every process a Core runs comes through here.** `actana core exec`
+ * (issue 266) starts a plain child with pipes and no terminal, so it is not a
+ * spawn mode in this union and no plan below describes it; its own cwd check
+ * lives in `packages/core/src/core-exec.ts`. It grants nothing this mode does
+ * not — same blob, same link, same free-form command on the Core's machine —
+ * so nothing here needed relaxing for it.
  */
 export type ShellSessionSpawnRequest = {
   taskId: string;
@@ -169,43 +176,84 @@ export type SpawnPolicyErrorCode =
   | "shell-with-agent"
   | "shell-meta-in-args"
   | "agent-arg-not-allowed"
+  | "auto-mode-flag-missing"
   | "empty-command";
 
 const SHELL_META = /[`$();&|<>"'\\\n\r\t*?{}[\]~#!]/;
 
 type HarnessArgRule = {
   value: false | { allowed?: readonly string[] };
+  /**
+   * This flag IS the harness's auto-mode flag, so it travels with the
+   * `dangerouslySkipPermissions` spawn option — in **both** directions. See
+   * {@link validateHarnessArgv}.
+   */
   requiresDangerouslySkipPermissions?: boolean;
   /** When set, string arg values must start with this prefix (OpenCode session ids). */
   valuePrefix?: string;
 };
 
-const HARNESS_ARG_RULES: Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>> = {
+/**
+ * Everything a harness may be launched with **except** its auto-mode flag.
+ *
+ * That one flag is not written here on purpose (issue 177 finding 2). It used
+ * to be, once per harness, which made this table the fourth transcription of a
+ * vendor fact the registry already held — and the id/binary coincidence that
+ * hid finding 1 for so long was the same shape of mistake one column over.
+ * {@link withAutoModeFlags} splices it in from
+ * {@link HARNESS_AUTO_MODE_FLAGS}, so a harness whose flag changes changes it
+ * in one place and a harness that has none (OpenCode) grows no entry at all.
+ */
+const HARNESS_ARG_RULES_BASE: Readonly<
+  Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>
+> = {
   "claude-code": {
     "--bare": { value: false },
     "--session-id": { value: {} },
     "--resume": { value: {} },
     "--model": { value: {} },
-    "--dangerously-skip-permissions": {
-      value: false,
-      requiresDangerouslySkipPermissions: true,
-    },
   },
   codex: {
     "--model": { value: {} },
     "--enable": { value: { allowed: ["hooks"] } },
-    "--yolo": { value: false, requiresDangerouslySkipPermissions: true },
   },
   "cursor-cli": {
     "--resume": { value: {} },
     "--model": { value: {} },
-    "--force": { value: false, requiresDangerouslySkipPermissions: true },
   },
   opencode: {
     "--model": { value: {} },
     "--session": { value: {}, valuePrefix: "ses" },
   },
 };
+
+function withAutoModeFlags(
+  base: Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>,
+): Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>> {
+  return Object.fromEntries(
+    Object.entries(base).map(([agent, rules]) => {
+      const flag = HARNESS_AUTO_MODE_FLAGS[agent as HarnessSpawn];
+      if (flag === null) return [agent, rules];
+      return [
+        agent,
+        { ...rules, [flag]: { value: false, requiresDangerouslySkipPermissions: true } },
+      ];
+    }),
+  ) as Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>;
+}
+
+const HARNESS_ARG_RULES = withAutoModeFlags(HARNESS_ARG_RULES_BASE);
+
+/**
+ * The flag that puts `agent` into auto mode, or null where the vendor ships
+ * none.
+ *
+ * Re-exported from the harness registry so a caller building a spawn command
+ * and the policy validating it are reading the same cell of the same table.
+ */
+export function autoModeFlagForSpawn(agent: HarnessSpawn): string | null {
+  return HARNESS_AUTO_MODE_FLAGS[agent];
+}
 
 function windowsCmdExe(deps: SpawnPolicyDeps): string {
   const root = deps.windowsSystemRoot?.() ?? process.env.SystemRoot ?? process.env.WINDIR ?? "C:\\Windows";
@@ -280,12 +328,43 @@ function validateCodexArgv(
   validateHarnessArgv("codex", argv, opts);
 }
 
+/**
+ * Check one harness's argv against its allow-list, in **both** directions of
+ * the auto-mode gesture.
+ *
+ * The option (`dangerouslySkipPermissions`) and the flag (`--force`, `--yolo`,
+ * `--dangerously-skip-permissions`) are two halves of one request, and until
+ * issue 177 only one half was checked: a flag with no option was rejected, an
+ * option with no flag passed. That asymmetry is what made finding 2 invisible.
+ * A caller that set the option and built its command string from a
+ * Claude-shaped template got a Core that accepted the spawn, launched an
+ * *interactive* cursor-agent, and reported nothing unusual — the session then
+ * parked on a permission prompt that the caller, believing itself unattended,
+ * was not watching for. A rejected spawn says so in one line at the point of
+ * the mistake.
+ *
+ * The one harness this cannot be asked of is OpenCode, which ships no such
+ * flag: {@link HARNESS_AUTO_MODE_FLAGS} holds `null` for it, and asking for
+ * auto mode there is asking for something that does not exist rather than
+ * something that was dropped on the way. Refusing that launch would break the
+ * harness over a flag no version of it has ever had, so the option is allowed
+ * to be a no-op there and *only* there — which is a fact of the table, not a
+ * special case in this function.
+ *
+ * `argv` here is the flags only. `validateCodexArgv` strips the `resume <id>`
+ * subcommand before calling in, and the auto-mode flag is a flag either way, so
+ * a resumed Codex session is checked exactly like a fresh one.
+ */
 function validateHarnessArgv(
   agent: HarnessSpawn,
   argv: string[],
   opts: { dangerouslySkipPermissions: boolean },
 ): void {
   const rules = HARNESS_ARG_RULES[agent];
+  // Collected as the loop consumes argv rather than scanned for afterwards: a
+  // flag token and a flag-shaped *value* are different things, and only the
+  // loop knows which is which.
+  let sawAutoModeFlag = false;
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!;
     const rule = rules[arg];
@@ -295,11 +374,14 @@ function validateHarnessArgv(
         `pty:spawn rejected unsupported ${agent} argument`,
       );
     }
-    if (rule.requiresDangerouslySkipPermissions && !opts.dangerouslySkipPermissions) {
-      throw new SpawnPolicyError(
-        "agent-arg-not-allowed",
-        `pty:spawn rejected unsupported ${agent} argument`,
-      );
+    if (rule.requiresDangerouslySkipPermissions) {
+      if (!opts.dangerouslySkipPermissions) {
+        throw new SpawnPolicyError(
+          "agent-arg-not-allowed",
+          `pty:spawn rejected unsupported ${agent} argument`,
+        );
+      }
+      sawAutoModeFlag = true;
     }
     if (rule.value === false) continue;
 
@@ -317,6 +399,18 @@ function validateHarnessArgv(
       );
     }
     i += 1;
+  }
+
+  // The other direction, and the reason this function exists in the shape it
+  // does. The message names the flag because the caller's next move is to add
+  // it, and a code that only said "not allowed" would send them looking at the
+  // args they *did* send.
+  const autoModeFlag = HARNESS_AUTO_MODE_FLAGS[agent];
+  if (opts.dangerouslySkipPermissions && autoModeFlag !== null && !sawAutoModeFlag) {
+    throw new SpawnPolicyError(
+      "auto-mode-flag-missing",
+      `pty:spawn asked for ${agent} auto mode without ${autoModeFlag} in the command`,
+    );
   }
 }
 

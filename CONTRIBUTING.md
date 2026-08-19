@@ -282,7 +282,8 @@ over a branch of `wip` commits fails the `Conventions` job.
 
 Subjects may open with a ticket id (`E10 — black-box Panel service e2e`); the
 lint does not force a lowercase first letter. Subject limit is 120 characters,
-body lines 100.
+body lines 132 — measure them before you commit, because a single unwrapped
+body line is the most common way a commit here goes red.
 
 Footers (`Refs #39`, `Co-authored-by:`, `BREAKING CHANGE:`) go last, separated
 from the body by a blank line. Only those known tokens start a footer, so a

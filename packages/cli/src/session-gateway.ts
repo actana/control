@@ -147,6 +147,23 @@ export type StartedSession = {
   harness: CoreLinkPtySpawnHarness;
   /** The command the Core was asked to run, after defaulting. */
   command: string;
+  /**
+   * Will anything move this Session to `running` when a turn begins?
+   *
+   * The Core's answer for this Session, off the spawn (issue 84, issue 177
+   * finding 4) — not a property of the harness family, because it depends on
+   * which hooks actually landed on that machine and on whether the vendor
+   * fires them. `false` for `cursor-cli` today: the Core writes
+   * `.cursor/hooks.json` and cursor-agent never fires `beforeSubmitPrompt`.
+   *
+   * The CLI's job with it is to say so. `--wait` still works — turn *end* is
+   * reported, which is what `waitForIdle` waits for — but everything between
+   * the prompt and the stop is invisible, so a `session ls` run against a
+   * working cursor Session shows the status it had before the turn began. An
+   * operator told that is reading a quiet table correctly; one who is not has
+   * no way to tell it from a harness that never started.
+   */
+  reportsTurnStart: boolean;
   projectId: string;
   /** The Project's name, when the start resolved one. */
   project: string | null;
@@ -463,6 +480,7 @@ function wrap(session: CoreSession, projectId: string, project: string | null): 
     ptyId: session.ptyId,
     harness: session.harness,
     command: session.command,
+    reportsTurnStart: session.reportsTurnStart,
     projectId,
     project,
     wait: async (opts) => {

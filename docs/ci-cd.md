@@ -31,7 +31,9 @@ pull request it gates, and publishes a `pr-` image a reviewer can run; on a
 push to a train it publishes the image a promotion will re-point. The repo
 conventions — PR title, commit messages, branch name — are the `Conventions`
 job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and the branch
-model itself is the `Train rules` job beside it.
+model itself is the `Train rules` job beside it. A third, `Promotion gate`,
+refuses one thing only: a pull request from a train into `main`, which is a
+gate and must never be merged by hand (#264).
 
 `promote.yml` is the fifth entry point, and the only thing in the repository
 that writes to `main`. It is described under [Cutting a
@@ -115,7 +117,9 @@ Five things follow from that, and each is enforced rather than asked for:
   digest assertion unimplementable.
 - **The promotion pull request is a gate, not a merge.** Its checks and its
   approval are the point; `promote.yml` performs the advance. Do not press
-  GitHub's merge button on it.
+  GitHub's merge button on it — and since #264 you cannot: the `Promotion
+  gate` check is red on every such pull request by construction, which is what
+  disables the button. Red is the healthy state for a gate.
 
 Every package manifest — root, `packages/cli`, `packages/core`, `packages/panel`,
 `packages/sdk`, `packages/shared` — carries the train's version, written by the
@@ -969,7 +973,8 @@ Normally you do not: `promote.yml` cuts the next one automatically after every
 promotion, so a train is always open and work can always be proposed (D25). The
 guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
 the next release is a patch, or a major, delete the branch and re-cut it before
-anything merges into it.
+anything merges into it — by hand, because there is no cut workflow to
+dispatch. *Re-cutting a train, by hand* below is what to run instead.
 
 The cut creates `beta/x.y.z` from `main` and writes that version into every
 manifest in its first commit (D3, amended by #152 and #157). Do not hand-edit
@@ -979,6 +984,56 @@ on the train asserts every one of them equals the branch's version.
 
 A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
 still has an image to promote, because **the cut itself publishes one** (D7).
+
+#### Re-cutting a train, by hand
+
+**There is no dispatchable cut workflow.** The cut exists only as
+`promote.yml`'s `next-train` job, which runs as a consequence of a promotion
+and takes no version input, so a re-cut is hand work until one exists. That is
+the single exception to "do not hand-edit those files" above, and the way to
+survive it is to write exactly what `next-train` writes and nothing else:
+
+```bash
+git push origin --delete beta/<guessed>        # before anything merges into it
+git fetch origin --prune
+git switch -c beta/x.y.z origin/main
+
+# The six manifests, one line changed in each. Edited in place on purpose:
+# `jq` and most editors reserialise the whole file, and a cut whose diff is
+# not six lines is a cut a reviewer cannot check at a glance.
+node -e 'const fs=require("node:fs"), v=process.argv[1];
+  for (const f of process.argv.slice(2)) fs.writeFileSync(f,
+    fs.readFileSync(f,"utf8").replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${v}"`));
+' x.y.z package.json packages/{cli,core,panel,sdk,shared}/package.json
+
+git commit -a -F cut-message.txt               # Conventional Commits, see below
+git push --no-verify origin beta/x.y.z         # --no-verify: see below
+```
+
+Three things this has to get right, because nothing checks any of them until
+far too late:
+
+- **`--no-verify` on that push, or the hooks off for the cut.**
+  `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
+  branch against the naming convention alone, without the `beta/x.y.z`
+  exemption that [`ci.yml`](../.github/workflows/ci.yml) carries at line 167
+  for exactly this branch class (D1). So the hook refuses the push and hints
+  `git branch -m`, which is the wrong thing to do to a train — the branch name
+  *is* the version. You only meet this if you took `CONTRIBUTING.md`'s advice
+  and ran `git config core.hooksPath .husky`, which you should have. Tracked
+  as #269; when the hook learns the class, drop the `--no-verify`.
+- **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
+  those six manifests and six lines.
+- **Every body line of the message is at most 132 characters.** `commitlint`
+  lints every commit in a pull request, not just its title — but no pull
+  request puts a cut commit in front of it until the promotion gate, when the
+  only remedy left is deleting the train and starting over. Measure before
+  committing, and again before promoting:
+
+```bash
+awk 'length($0) > 132 { print FILENAME " line " FNR ": " length($0) }' cut-message.txt
+git log origin/main..beta/x.y.z --pretty=%B | awk 'length($0) > 132 { print FNR ": " length($0) }'
+```
 
 ### Working the train, and the freeze window
 
@@ -1015,8 +1070,16 @@ assertion that is the same commit, and it is available earlier.
 
 ### Promotion
 
-Open a pull request from `beta/x.y.z` into `main`, let it go green, get it
-approved — then dispatch:
+**Before dispatching, delete every other `beta/*` branch on origin.**
+`promote.yml`'s *Resolve* job globs `refs/heads/beta/*` and subtracts the train
+being promoted: one branch surviving that subtraction *is* the hotfix condition
+(D23), so a train that was merely abandoned is rebased onto the new `main` and
+force-pushed, its images republished and the next train not cut — see
+[§Hotfix trains](#hotfix-trains) — while two survivors refuse the dispatch
+outright.
+
+Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
+it approved — then dispatch:
 
 ```bash
 gh workflow run promote.yml --repo actana/control -f train=beta/0.1.0
@@ -1027,6 +1090,17 @@ squash would produce a `main` commit whose SHA differs from the tested one,
 which is exactly what the digest assertion cannot survive. GitHub closes the
 pull request as merged on its own once its commits are reachable from `main`,
 which the fast-forward makes true.
+
+**`Promotion gate` is red on that pull request, and red is the healthy state**
+(#264). Since one gate was squash-merged by hand and the release it carried
+was abandoned, the button is not merely wrong — a required check refuses it.
+The job runs on every pull request, exits successfully with a `::notice`
+everywhere else, and on a `beta/* → main` pull request fails with the reason on
+screen: D5, D16, and the dispatch above. So a promotion gate carries one
+permanently red required check by design, and the *only* thing to do about it
+is dispatch `promote.yml`. Nothing in the promotion reads it: `promote.yml`
+reads that the pull request exists and takes its head SHA, and the App bypasses
+required checks on the `main` ruleset, so the fast-forward is unaffected.
 
 Its image checks do not rebuild anything, either. `Panel image` and `Core
 image` are required on every pull request, and on a promotion they would
@@ -1209,7 +1283,8 @@ invariant already holds (D25).
 
 **If the rebase conflicts**, the workflow fails loudly and does not try to
 resolve anything. The fallback is: abandon the surviving train, re-cut it from
-`main`, and cherry-pick its squash commits. `main`, the tag and the release are
+`main` — by hand, per *Re-cutting a train, by hand* — and cherry-pick its
+squash commits. `main`, the tag and the release are
 unaffected and correct — only that train needs the work.
 
 ### Backports and the supported lines

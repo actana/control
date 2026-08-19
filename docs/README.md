@@ -86,6 +86,7 @@ routing around it.
 | [0028](adr/0028-file-bytes-cross-https-not-the-core-link.md) | File bytes cross HTTPS, not the core link |
 | [0029](adr/0029-a-folder-crosses-as-one-streamed-tar.md) | A folder crosses as one streamed tar |
 | [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials |
+| [0031](adr/0031-the-product-ships-one-skill.md) | The product ships one skill, and installs it into the operator's home — **PROPOSED**, amends 0006 |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

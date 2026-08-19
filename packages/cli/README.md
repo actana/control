@@ -24,7 +24,28 @@ actana core add laptop ~/blob.txt   # register a Core from its blob, or stdin
 actana core ls --json               # what this machine knows
 actana core use laptop              # point `current` at one
 actana core status                  # reach it, and report what it says
+actana core shell                   # an interactive shell on that machine
+actana core exec -- df -h /         # one command on it, no terminal
 ```
+
+`core exec` is the non-interactive half of `core shell`, and the reason it
+exists is that a script cannot use a terminal. It returns the command's real
+exit code, hands stdout and stderr back separately and free of terminal escape
+sequences, takes `--cwd <dir>` on the *Core's* machine, and writes one JSON
+document under `--json`. Output is buffered with a stated bound; a command that
+exceeds it fails by name rather than coming back quietly truncated.
+
+```sh
+actana core exec --cwd /srv/app -- git pull
+actana core exec --json -- systemctl is-active actana
+```
+
+A maintenance script reaches a Core this way instead of with `docker exec`, so
+the same script works unchanged against a remote Core: the command runs over the
+core link, through the Core's own authentication, and nothing about it needs the
+Core to be a container on this machine. A dropped link mid-command exits `125`
+and says the command's fate is unknown — never `0`, and never the command's own
+status.
 
 ```sh
 actana project ls                   # the Projects that Core owns
@@ -37,6 +58,30 @@ actana events tail                  # follow what happens
 Every noun and verb in the tree is built. A name this CLI does not know is a
 typo and says so; a name reserved for a later train would exit with a distinct
 code and a ticket number instead, which is how the two are told apart.
+
+## The skill this CLI installs
+
+`actana` ships one agent skill of its own — `actana-sessions`, which teaches a
+coding agent how to drive Cores and Sessions with these verbs — and writes it
+into the global skills directory of every Harness already on this machine:
+`~/.claude/skills/actana-sessions/` for Claude Code, `~/.agents/skills/actana-sessions/`
+for Codex, Cursor CLI and OpenCode.
+
+```sh
+actana harness skills          # write or repair it, and say what happened
+actana harness skills --json   # the same, per Harness, machine-readable
+```
+
+It also happens quietly in front of every other `actana` command, because this
+package deliberately has no npm install hook — so the skill is there one command
+after `npm i -g @actana/cli` rather than at install time. Both paths write only
+into a directory the Harness itself created: a Harness you do not use here costs
+you no directory.
+
+A copy is replaced when it differs from the shipped one, edits included. To keep
+your own version, delete the `x-actana-managed: true` line from its frontmatter —
+that file is then yours and is never written again, and `harness skills` reports
+it as `skipped` so you can see why it stopped updating.
 
 ## Copying files, in either direction
 

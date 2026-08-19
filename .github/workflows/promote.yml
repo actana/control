@@ -196,7 +196,7 @@ jobs:
             --json number,headRefOid,url --limit 10)"
           count="$(jq 'length' <<<"$pr_json")"
           if [[ "$count" == "0" ]]; then
-            echo "::error title=No open promotion pull request::There is no open pull request from \`$TRAIN\` into \`main\`. That pull request is the gate — its checks and its approval are what promotion consumes, and its head SHA is what the beta digest is verified against (ADR 0023 D5, D16). Open it and let it go green. If this train has already promoted, re-run the publish with \`gh workflow run release.yml -f tag=v$version\` instead."
+            echo "::error title=No open promotion pull request::There is no open pull request from \`$TRAIN\` into \`main\`. That pull request is the gate — its checks and its approval are what promotion consumes, and its head SHA is what the beta digest is verified against (ADR 0023 D5, D16). Open it, let its checks settle and get it approved — \`Promotion gate\` is red on it by design and stays red, because that is the check that makes GitHub's merge button fatal on a gate (#264); promotion does not read it. If this train has already promoted, re-run the publish with \`gh workflow run release.yml -f tag=v$version\` instead."
             exit 1
           fi
           if [[ "$count" != "1" ]]; then

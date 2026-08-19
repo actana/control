@@ -99,8 +99,18 @@ export class CoreHarnessStatus {
    * until the operator reviews them with `/hooks`. That is precisely the
    * moment the hooks cannot report, so the Session would sit on `running`
    * while it is in fact waiting on a human. `needs-input` says so.
+   *
+   * `dialog-unanswered` — prompt delivery gave up because a dialog was in the
+   * way that the Core could not read (ADR 0026 D5, issue 177 finding 3). The
+   * same shape as the one above and the same answer: a harness parked on a
+   * question nothing is going to answer for it is waiting on a human, and
+   * saying `needs-input` is the difference between a client showing a dialog
+   * to attend to and a client showing a Session that appears to have hung.
    */
-  outputSignal(taskId: string, signal: "interrupted" | "hooks-need-review"): void {
+  outputSignal(
+    taskId: string,
+    signal: "interrupted" | "hooks-need-review" | "dialog-unanswered",
+  ): void {
     if (!taskId) return;
     this.receiveHook(taskId, {
       hook_event_name:

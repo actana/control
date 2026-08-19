@@ -6,8 +6,8 @@ import { HOME_TERMINAL_PROJECT_ID } from "~/shared/home-terminal";
 
 /**
  * Shape a `home_terminals` row as a `UserTerminal` so the renderer can render it
- * with the existing terminal components. projectId is a sentinel;
- * startCommand are always null for home terminals (they are never launch/ephemeral).
+ * with the existing terminal components. `projectId` is a sentinel — no real
+ * project row has this id and nothing ever looks it up as one.
  */
 export function toUserTerminal(row: HomeTerminal): UserTerminal {
   return {
@@ -15,7 +15,6 @@ export function toUserTerminal(row: HomeTerminal): UserTerminal {
     projectId: HOME_TERMINAL_PROJECT_ID,
     name: row.name,
     cwd: row.cwd,
-    startCommand: null,
     position: row.position,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,

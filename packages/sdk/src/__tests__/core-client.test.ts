@@ -151,7 +151,9 @@ describe("CoreClient", () => {
       c.replay("pty-1", 3),
     ]);
 
-    expect(spawned).toEqual({ ptyId: "pty-1" });
+    // `hooksReportTurnStart` rides on every spawn answer now (issue 177
+    // finding 4); this rig's Core omits it, and absent reads as false.
+    expect(spawned).toEqual({ ptyId: "pty-1", hooksReportTurnStart: false });
     expect(found).toEqual({ ptyId: "pty-1" });
     expect(replayed).toEqual({ data: "scrollback", nextSeq: 7, from: undefined });
     // Three questions, three distinct ids, and the Core answered each with the

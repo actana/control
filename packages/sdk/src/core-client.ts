@@ -1085,8 +1085,33 @@ export class CoreClient {
 
   // ─── Typed frame methods ───────────────────────────────────────────────────
 
-  spawn(opts: CoreLinkPtySpawnOptions): Promise<{ ptyId: string }> {
-    return this.rpc({ type: "spawn", reqId: "", opts }) as Promise<{ ptyId: string }>;
+  /**
+   * Start a PTY on the Core and hand back its id and one fact about it.
+   *
+   * `hooksReportTurnStart` is the Core's answer for *this* Session: will a
+   * lifecycle hook announce the START of a turn, or only its end (issue 84,
+   * issue 177 finding 4)? It is narrower than "hooks were installed" —
+   * cursor-agent takes the hooks file and never fires `beforeSubmitPrompt`,
+   * and Codex will not run newly-installed hooks until the operator reviews
+   * them — so a Session can report a turn's end and never its start, which
+   * looks exactly like an idle Session to anything watching status.
+   *
+   * A Core too old to answer omits the field, and absent reads as `false`: a
+   * client that says "no turn-start signal here" about a Core that would have
+   * given one is a redundant sentence, and the other way round is a Session
+   * that silently looks idle for its whole life.
+   */
+  async spawn(
+    opts: CoreLinkPtySpawnOptions,
+  ): Promise<{ ptyId: string; hooksReportTurnStart: boolean }> {
+    const answer = (await this.rpc({ type: "spawn", reqId: "", opts })) as {
+      ptyId: string;
+      hooksReportTurnStart?: boolean;
+    };
+    return {
+      ptyId: answer.ptyId,
+      hooksReportTurnStart: answer.hooksReportTurnStart === true,
+    };
   }
 
   write(ptyId: string, data: string): Promise<boolean> {
@@ -1313,7 +1338,55 @@ export class CoreClient {
       CoreLinkHarnessAvailabilityMap
     >;
   }
+
+  /**
+   * Run one command on the Core and wait for it to finish (issue 266).
+   *
+   * Non-interactive, no PTY: `stdout` and `stderr` come back whole and apart,
+   * free of terminal escape sequences, and the command's own exit status comes
+   * back as a number rather than as something printed. `command` + `args` is an
+   * argv the Core spawns directly — no shell, so no quoting or globbing
+   * semantics live here.
+   *
+   * `timeoutMs` is worth passing: this is the one request whose duration is the
+   * *command's*, and the client's default is sized for a Core answering a
+   * question, not for a build.
+   *
+   * Rejects with a {@link CoreLinkRequestError} when the Core refuses — a cwd it
+   * will not accept, an executable it cannot find, or output past its bound
+   * (`exec-output-too-large`). A command that ran and failed is not a rejection:
+   * that resolves, carrying its non-zero `exitCode`.
+   */
+  exec(
+    input: { command: string; args?: string[]; cwd?: string | null },
+    timeoutMs?: number,
+  ): Promise<CoreExecResult> {
+    return this.rpc(
+      {
+        type: "exec",
+        reqId: "",
+        command: input.command,
+        args: input.args ?? [],
+        ...(input.cwd === undefined ? {} : { cwd: input.cwd }),
+      },
+      timeoutMs,
+    ) as Promise<CoreExecResult>;
+  }
 }
+
+/**
+ * What {@link CoreClient.exec} resolves to: one finished command.
+ *
+ * `exitCode` is null exactly when `signal` names the signal that killed the
+ * command. Turning that pair into a process exit status is the caller's
+ * decision — the SDK does not assume the POSIX `128 + n` convention for it.
+ */
+export type CoreExecResult = {
+  exitCode: number | null;
+  signal: string | null;
+  stdout: string;
+  stderr: string;
+};
 
 /**
  * Turn a response frame into the value the typed methods promise, or throw the
@@ -1325,7 +1398,15 @@ export class CoreClient {
 export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
   switch (msg.type) {
     case "spawned":
-      return { ptyId: msg.ptyId };
+      // `hooksReportTurnStart` comes through here rather than being dropped
+      // (issue 177 finding 4): it is the Core's only statement that this
+      // Session will report a turn's *start*, and a client that never sees it
+      // cannot tell a running cursor-cli Session from an idle one. Absent on
+      // an older Core, which reads as false.
+      return {
+        ptyId: msg.ptyId,
+        hooksReportTurnStart: msg.hooksReportTurnStart === true,
+      };
     case "spawnError":
       throw new Error(msg.message);
     case "writeResult":
@@ -1355,6 +1436,16 @@ export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       return msg.sessions;
     case "agentsAvailabilityListResult":
       return msg.availability;
+    // All four fields (issue 266). A caller cannot derive any of them, and the
+    // two status fields are a pair: `exitCode` is null exactly when `signal`
+    // is set.
+    case "execResult":
+      return {
+        exitCode: msg.exitCode,
+        signal: msg.signal,
+        stdout: msg.stdout,
+        stderr: msg.stderr,
+      };
     case "ptySubscribeAck":
     case "ptyUnsubscribeAck":
       return { ptyId: msg.ptyId, subscribed: msg.subscribed };

@@ -162,6 +162,26 @@ const READY_SCREEN =
   `│ > Try "refactor the auth module"     │\n` +
   `╰──────────────────────────────────────╯\n`;
 
+/**
+ * The composer with the prompt in it — what the harness paints back a beat
+ * after the write lands.
+ *
+ * Issue 232 put `claude-code` in {@link HARNESS_READINESS} with `confirmEcho`
+ * set, so its carriage return is now owed evidence that the text arrived. That
+ * turns "write, then the harness says nothing, then `\r`" from the healthy
+ * path into a description of the swallowed-prompt failure itself — which is
+ * the whole bug. So every case below that goes on to assert a `\r` paints this
+ * first, because a real harness does.
+ */
+function echoed(prompt: string): string {
+  return (
+    `${ESC}[2J${ESC}[H` +
+    `╭──────────────────────────────────────╮\n` +
+    `│ > ${prompt}\n` +
+    `╰──────────────────────────────────────╯\n`
+  );
+}
+
 /** The dialog a session hits when the menu is prose rather than a numbered list. */
 const UNREADABLE_TRUST = "Do you trust the files in this folder?\n\n  Yes / No\n";
 
@@ -189,6 +209,101 @@ const REAL_TRUST_DIALOG = readFileSync(
  */
 const REAL_COMPOSER = readFileSync(
   path.resolve(__dirname, "fixtures/claude-code-2.1.228-composer.txt"),
+  "utf8",
+);
+
+/**
+ * The two chunks that bracket the hole issue 232 reports for claude-code, off
+ * one live PTY capture of `claude` 2.1.235 taken while writing this fix (the
+ * account name and project path are substituted; the transcript-saving warning
+ * row is there because the capture was taken from inside another session).
+ *
+ * The timings are the point and they are not reconstructed — they come from
+ * `script --log-timing` on that same run:
+ *
+ *   435 ms  the folder-trust dialog
+ *  5051 ms  {@link CC_TRUST_ACK} — the dialog acknowledging the digit. Content,
+ *           so a paint; no composer, so nothing is listening yet.
+ *  5623 ms  {@link CC_COMPOSER} — the composer, 572 ms later.
+ * 15635 ms  the `⏵⏵ … (shift+tab to cycle)` footer, ten seconds after that.
+ *
+ * The 350 ms quiet gap expires at 5401 ms. Everything this fix is about lives
+ * in the 222 ms between there and 5623 ms, and no larger constant closes it
+ * without taxing the boots that were already fine — the same run's dialog
+ * appeared in 435 ms.
+ */
+const CC_TRUST_ACK = readFileSync(
+  path.resolve(__dirname, "fixtures/claude-code-2.1.235-trust-ack.txt"),
+  "utf8",
+);
+
+const CC_COMPOSER = readFileSync(
+  path.resolve(__dirname, "fixtures/claude-code-2.1.235-composer.txt"),
+  "utf8",
+);
+
+/**
+ * cursor-agent's boot banner and its idle composer.
+ *
+ * **Provenance, and the two halves of it differ.** The composer is the real
+ * screen: cursor-agent 2026.08.11-e8db854 — the same build as the trust fixture
+ * — prints `→ Plan, search, build anything` when it is signed in and idle, and
+ * {@link HARNESS_READINESS}'s marker matches it on 5 of 5 cold boots. That text
+ * is committed as `fixtures/cursor-agent-2026.08.11-e8db854-composer.txt` and
+ * read from there, so the marker is asserted against the screen rather than
+ * against a literal written next to it.
+ *
+ * It is not a capture taken on this branch's machine, and the trust fixture
+ * below arrived the same way (issue 177, PR #272): cursor-agent is installed
+ * here at that build but stops at its sign-in screen without credentials, so
+ * the text is the one quoted off a live signed-in install in the review of
+ * PR #275. Being text rather than bytes, it carries no escape sequences — the
+ * screen-clear below is this test's own scaffolding for "the TUI repainted",
+ * not part of the capture.
+ *
+ * The boot banner is still synthesised from issue 232's description; nothing
+ * asserts its bytes, only that no composer marker is anywhere on it.
+ */
+const CURSOR_BOOT =
+  `${ESC}[2J${ESC}[H` +
+  `  Cursor Agent 2026.08.11-e8db854\n` +
+  `  /home/operator/projects/api\n` +
+  `  Connecting…\n`;
+
+const CURSOR_IDLE_COMPOSER =
+  `${ESC}[2J${ESC}[H` +
+  readFileSync(
+    path.resolve(__dirname, "fixtures/cursor-agent-2026.08.11-e8db854-composer.txt"),
+    "utf8",
+  );
+
+/**
+ * cursor-agent 2026.08.11-e8db854's Workspace Trust screen, in a fresh
+ * untrusted directory.
+ *
+ * **Provenance:** this is not a capture taken on this branch's machine —
+ * cursor-agent is not installed there. It is the screen pasted into the
+ * review of PR #272 by a reviewer who does have it installed and who took it
+ * off a live PTY; the two lines ending `…` are elided in that paste, and it
+ * carries no escape sequences because it arrived as text rather than as
+ * bytes. It is committed anyway, because the one thing it settles it settles
+ * conclusively and no amount of wording-independence in {@link
+ * BLOCKING_DIALOGS} could have settled it: **the menu is letter-keyed.**
+ *
+ * `[a] Trust this workspace` / `[q] Quit` is a menu {@link readDialogOptions}
+ * cannot read, because `OPTION_LINE` requires a digit followed by `.` or `)`.
+ * So the entry that gives cursor-cli `folder-trust` makes the dialog
+ * *recognised* — which is what routes it to the abandon path and a
+ * `needs-input` Session instead of a prompt typed into a trust dialog — and it
+ * does not make it *answerable*. Reading letter keys is issue #273.
+ *
+ * The synthesised numbered menu in the test above this one proves the digit
+ * path works and is worth keeping; what it cannot do is stand in for this,
+ * because it encodes an assumption about cursor-agent that this screen
+ * contradicts.
+ */
+const CURSOR_TRUST_DIALOG = readFileSync(
+  path.resolve(__dirname, "fixtures/cursor-agent-2026.08.11-folder-trust.txt"),
   "utf8",
 );
 
@@ -465,17 +580,107 @@ describe("chooseDialogOption", () => {
 });
 
 describe("dialogsForHarness", () => {
-  it("keeps Claude Code's dialogs to Claude Code", () => {
-    // Both specs are transcriptions of Claude Code's own screens. Applying
-    // them to a harness nobody has observed would mean pressing a digit into
-    // another vendor's layout on the strength of the word "trust".
+  it("keeps Claude Code's bypass-permissions screen to Claude Code", () => {
+    // That spec is a transcription of Claude Code's own warning screen, down
+    // to the phrase `Bypass Permissions mode`. Applying it to a harness nobody
+    // has observed would mean pressing a digit into another vendor's layout.
     expect(dialogsForHarness("claude-code").map((d) => d.id)).toEqual([
       "folder-trust",
       "bypass-permissions",
     ]);
     expect(dialogsForHarness("codex")).toEqual([]);
-    expect(dialogsForHarness("cursor-cli")).toEqual([]);
     expect(dialogsForHarness("opencode")).toEqual([]);
+  });
+
+  it("gives cursor-cli the folder-trust spec, and only that one (issue 177)", () => {
+    // Finding 3: cursor-agent's trust prompt was never answered because the
+    // matcher was scoped to a harness it is not. The entry it gets carries no
+    // Claude-specific wording and, crucially, no Claude-specific *key* — the
+    // digit comes off the menu on screen.
+    expect(dialogsForHarness("cursor-cli").map((d) => d.id)).toEqual(["folder-trust"]);
+  });
+});
+
+describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
+  const specs = dialogsForHarness("cursor-cli");
+
+  it("recognises a trust prompt worded differently from Claude Code's", () => {
+    // Not a transcription of a screen anybody has observed — the point of the
+    // assertion is that the matcher does not depend on one. `workspace` is a
+    // noun Claude Code never uses, and the option order is reversed relative
+    // to Claude's so a hard-coded `1` would be wrong here.
+    const screen = [
+      "Do you trust the files in this workspace?",
+      "",
+      "  1. No, exit",
+      "❯ 2. Yes, I trust this workspace",
+      "",
+    ].join("\n");
+
+    const match = matchBlockingDialog(screen, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    // The digit is read, not assumed. This is the exact failure the issue
+    // warned a careless partial match would introduce.
+    expect(match?.answer?.number).toBe(2);
+    expect(match?.answer?.label).toContain("Yes");
+  });
+
+  it("answers nothing when the menu cannot be read", () => {
+    // D5 unchanged: something is in the way and there is no confident way
+    // past it, so `answer` is null and the caller must type nothing. That
+    // path now ends in a `needs-input` Session rather than in silence.
+    const screen = "Do you trust the files in this workspace?\n\n  [y/N]\n";
+    const match = matchBlockingDialog(screen, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    expect(match?.answer).toBeNull();
+  });
+
+  it("does not fire on prose that merely contains the word trust", () => {
+    const screen = "I do not trust this test to be meaningful without a menu.\n";
+    expect(matchBlockingDialog(screen, specs)).toBeNull();
+  });
+
+  it("recognises the real trust screen and answers nothing on it", () => {
+    // The fixture, not a synthesis. `matchBlockingDialog` fires — the widened
+    // nouns catch `workspace` and `directory` — and `readDialogOptions` comes
+    // back empty, because the menu offers `[a]` and `[q]` rather than `1.` and
+    // `2.`. That combination is the whole of what this entry buys cursor-cli
+    // today: the dialog is seen, so delivery abandons and the Session reports
+    // `needs-input`; the dialog is not answered, and cannot be until
+    // `readDialogOptions` learns letter keys (issue #273).
+    const match = matchBlockingDialog(CURSOR_TRUST_DIALOG, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    expect(readDialogOptions(CURSOR_TRUST_DIALOG)).toEqual([]);
+    expect(match?.answer).toBeNull();
+  });
+
+  it("replays the real screen into an abandoned delivery, writing nothing", () => {
+    // What the entry is actually worth, end to end, on bytes rather than on a
+    // description of them. Before this PR the same screen produced `settled` →
+    // `delivered` and typed the prompt and a carriage return into the trust
+    // dialog while reporting success; a `needs-input` Session is the honest
+    // outcome and this is the test that holds the line at it.
+    const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
+    h.delivery.onOutput(CURSOR_TRUST_DIALOG);
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "folder-trust" });
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+  });
+
+  it("does not hand cursor-cli Claude Code's bypass-permissions screen", () => {
+    const screen = [
+      "Bypass Permissions mode",
+      "Do you want to proceed?",
+      "  1. No, exit",
+      "  2. Yes, I accept",
+    ].join("\n");
+    // Nothing in the cursor-cli spec list matches it — that screen is Claude
+    // Code's and stays Claude Code's.
+    expect(matchBlockingDialog(screen, specs)?.spec.id).not.toBe("bypass-permissions");
   });
 });
 
@@ -555,6 +760,10 @@ describe("HarnessPromptDelivery", () => {
     }
     expect(h.writes).toEqual([]);
 
+    // Eight seconds of `loading …` is a harness that is painting *and* has no
+    // composer yet, and after issue 232 either one on its own is enough to
+    // hold. The composer is what ends the wait.
+    h.delivery.onOutput(READY_SCREEN);
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes[0]).toBe("ship it");
   });
@@ -578,6 +787,7 @@ describe("HarnessPromptDelivery", () => {
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["ship it"]);
 
+    h.delivery.onOutput(echoed("ship it"));
     h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["ship it", "\r"]);
   });
@@ -690,6 +900,7 @@ describe("HarnessPromptDelivery", () => {
 
     h.delivery.onOutput(READY_SCREEN);
     h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(echoed("ship it"));
     h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["2", "2", "ship it", "\r"]);
     expect(h.delivery.currentPhase).toBe("delivered");
@@ -710,6 +921,7 @@ describe("HarnessPromptDelivery", () => {
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["ship it"]);
 
+    h.delivery.onOutput(echoed("ship it"));
     h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["ship it", "\r"]);
     expect(h.delivery.currentPhase).toBe("delivered");
@@ -730,6 +942,7 @@ describe("HarnessPromptDelivery", () => {
     expect(h.writes).toEqual(["ship it"]);
     expect(h.writes).not.toContain("2");
 
+    h.delivery.onOutput(echoed("ship it"));
     h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["ship it", "\r"]);
   });
@@ -790,12 +1003,13 @@ describe("HarnessPromptDelivery", () => {
 // ─── readiness (issue 229) ───────────────────────────────────────────
 
 describe("HARNESS_READINESS", () => {
-  it("asks nothing extra of the harnesses that were never affected", () => {
-    // Issue 229 was opencode's alone — a cursor-cli start prompt was verified
-    // working on the same build the bug was filed against. A readiness rule
-    // that reached those three would be a fix trading one lost prompt for
-    // three, so the table is the ONLY thing that turns any of this on.
-    for (const harness of ["claude-code", "codex", "cursor-cli", "invented-tomorrow"]) {
+  it("gates only the harnesses whose composer somebody has actually read", () => {
+    // The table is still the ONLY thing that turns any of this on, and the
+    // default is still the pre-229 path. What changed in issue 232 is which
+    // harnesses have a row, not the rule for getting one: a screen has to have
+    // been looked at. codex has not been, so it keeps the untouched path — and
+    // that is a gap, not a clearance. See the table's own note.
+    for (const harness of ["codex", "invented-tomorrow"]) {
       expect(readinessFor(harness)).toEqual({
         composer: [],
         confirmEcho: false,
@@ -804,7 +1018,11 @@ describe("HARNESS_READINESS", () => {
       // No markers means no gate: any screen at all counts as ready.
       expect(composerOnScreen("", readinessFor(harness))).toBe(true);
     }
-    expect(Object.keys(HARNESS_READINESS)).toEqual(["opencode"]);
+    expect(Object.keys(HARNESS_READINESS).sort()).toEqual([
+      "claude-code",
+      "cursor-cli",
+      "opencode",
+    ]);
   });
 
   it("recognises opencode's composer, and only once it is really there", () => {
@@ -813,6 +1031,38 @@ describe("HARNESS_READINESS", () => {
     // whitespace and escape sequences, four seconds before the real screen.
     expect(composerOnScreen(OPENCODE_BOOT, readiness)).toBe(false);
     expect(composerOnScreen(OPENCODE_COMPOSER, readiness)).toBe(true);
+  });
+
+  it("recognises claude-code's composer on both captured builds", () => {
+    // 2.1.228 in bypass mode and 2.1.235 in auto mode: two builds, two
+    // permission modes, one placeholder. That is what makes `Try "` worth
+    // gating on rather than a string one capture happened to contain.
+    const readiness = readinessFor("claude-code");
+    expect(composerOnScreen(REAL_COMPOSER, readiness)).toBe(true);
+    expect(composerOnScreen(CC_COMPOSER, readiness)).toBe(true);
+    // Neither of the screens that precede it counts, and the second one is the
+    // whole bug: it is a paint, with content, 572 ms before there is anywhere
+    // to type.
+    expect(composerOnScreen(REAL_TRUST_DIALOG, readiness)).toBe(false);
+    expect(composerOnScreen(CC_TRUST_ACK, readiness)).toBe(false);
+  });
+
+  it("does not gate claude-code on the footer that paints ten seconds late", () => {
+    // `⏵⏵ … (shift+tab to cycle)` is on the composer screen and looks like a
+    // fine marker until it is timed: in the same capture it arrived at
+    // 15 635 ms, ten seconds behind the composer and past the 15 s backstop.
+    // Gating on it would have delayed every prompt it was meant to protect.
+    const readiness = readinessFor("claude-code");
+    expect(composerOnScreen("⏵⏵ auto mode on (shift+tab to cycle)", readiness)).toBe(false);
+  });
+
+  it("recognises cursor-agent's idle composer and not its trust screen", () => {
+    const readiness = readinessFor("cursor-cli");
+    expect(composerOnScreen(CURSOR_IDLE_COMPOSER, readiness)).toBe(true);
+    expect(composerOnScreen(CURSOR_BOOT, readiness)).toBe(false);
+    // The trust screen is handled a step earlier, by the dialog table; this
+    // asserts the two do not overlap into each other.
+    expect(composerOnScreen(CURSOR_TRUST_DIALOG, readiness)).toBe(false);
   });
 });
 
@@ -949,5 +1199,162 @@ describe("delivering to opencode (issue 229)", () => {
     h.clock.advance(PROFILE.maxWaitMs);
     expect(h.writes.filter((w) => w === "say hello")).toHaveLength(3);
     expect(h.writes.at(-1)).toBe("\r");
+  });
+});
+
+// ─── the same race, two more harnesses (issue 232) ───────────────────
+
+describe("delivering to claude-code (issue 232)", () => {
+  /**
+   * The live capture, replayed at its measured timings. See {@link CC_TRUST_ACK}.
+   *
+   * The dialog itself is skipped deliberately: answering it is issue 191's
+   * sequence and is covered above, and replaying it here would put the
+   * assertions about *this* bug behind five unrelated ones. What matters is the
+   * state the harness is in at 5051 ms — a screen that has just painted, with
+   * no composer on it — and that is what this sets up.
+   */
+  function bootClaudeCode(prompt: string): Fixture {
+    const h = startDelivery(prompt, { harness: "claude-code" });
+    h.clock.advance(5_051);
+    h.delivery.onOutput(CC_TRUST_ACK);
+    return h;
+  }
+
+  it("types nothing into the 572 ms hole the capture measured", () => {
+    const h = bootClaudeCode("say hello");
+    // Straight to 5623 ms — the instant the composer really arrived. Before
+    // this fix the quiet gap fired at 5401 ms and the prompt went out here,
+    // into a harness with no input reader attached, and was never seen again.
+    h.clock.advance(572);
+    expect(h.writes).toEqual([]);
+    expect(h.events).toContainEqual({ phase: "waiting-for-composer", waitedMs: 5_401 });
+    // Once per settling round, not once per idle tick.
+    expect(h.events.filter((e) => e.phase === "waiting-for-composer")).toHaveLength(1);
+  });
+
+  it("types as soon as the composer is really on screen", () => {
+    const h = bootClaudeCode("say hello");
+    h.clock.advance(572);
+    h.delivery.onOutput(CC_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.events).toContainEqual({ phase: "settled", waitedMs: 5_973 });
+  });
+
+  it("re-types rather than submitting into a composer that swallowed the write", () => {
+    const h = bootClaudeCode("say hello");
+    h.clock.advance(572);
+    h.delivery.onOutput(CC_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+
+    // The field signature, exactly: the harness repaints its idle composer with
+    // the text nowhere on it. A `\r` here is the Core reporting a delivery that
+    // did not happen, and it is what left a Session in `ready` for 46 minutes.
+    h.delivery.onOutput(CC_COMPOSER);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.writes).not.toContain("\r");
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.delivery.currentPhase).toBe("settling");
+  });
+
+  it("submits once the composer shows the prompt back", () => {
+    const h = bootClaudeCode("say hello");
+    h.clock.advance(572);
+    h.delivery.onOutput(CC_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(echoed("say hello"));
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("delivers late rather than never if the placeholder is ever reworded", () => {
+    // The failure this fix is allowed to have. A build whose composer says
+    // something else stops matching, and the backstop — not the marker — is
+    // what guarantees the prompt still goes out.
+    const h = bootClaudeCode("say hello");
+    h.clock.advance(PROFILE.maxWaitMs);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+});
+
+describe("delivering to cursor-cli (issue 232)", () => {
+  /**
+   * The three back-to-back Sessions in the issue settled at 3.1 s, 1.6 s and
+   * 2.5 s, and only the 1.6 s one lost its prompt. So the boot is parameterised
+   * by how long the TUI takes to paint its composer, and the same delivery is
+   * driven through a fast boot and a slow one: the distinction the old code
+   * could not draw is exactly that one.
+   */
+  function bootCursor(prompt: string, composerAtMs: number): Fixture {
+    const h = startDelivery(prompt, { harness: "cursor-cli" });
+    h.clock.advance(1_250);
+    h.delivery.onOutput(CURSOR_BOOT);
+    h.clock.advance(composerAtMs - 1_250);
+    h.delivery.onOutput(CURSOR_IDLE_COMPOSER);
+    return h;
+  }
+
+  it("types nothing at the 1.6 s settle that swallowed the prompt", () => {
+    const h = startDelivery("say hello", { harness: "cursor-cli" });
+    h.clock.advance(1_250);
+    h.delivery.onOutput(CURSOR_BOOT);
+    // 1600 ms: the settle the issue timed on the run that failed. The screen is
+    // genuinely quiet and genuinely not ready, and telling those apart is the
+    // whole of this fix — no quiet window can, because the run that settled at
+    // 2.5 s went down the identical path and worked.
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.clock.time).toBe(1_601);
+    expect(h.writes).toEqual([]);
+    expect(h.events).toContainEqual({ phase: "waiting-for-composer", waitedMs: 1_600 });
+  });
+
+  it("delivers on a slow boot and on a fast one, with no timing in the answer", () => {
+    // 4 s is well past every settle in the issue's sample; 1.4 s is faster than
+    // the run that failed. Both deliver, and neither waits on a constant.
+    for (const composerAt of [1_400, 4_000]) {
+      const h = bootCursor("say hello", composerAt);
+      h.clock.advance(PROFILE.quietGapMs + 1);
+      expect(h.writes).toEqual(["say hello"]);
+      expect(h.events).toContainEqual({
+        phase: "settled",
+        waitedMs: composerAt + PROFILE.quietGapMs,
+      });
+
+      h.delivery.onOutput(echoed("say hello"));
+      h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs + 1);
+      expect(h.writes).toEqual(["say hello", "\r"]);
+    }
+  });
+
+  it("holds through a TUI that boots far slower than any pause would allow", () => {
+    // Ten seconds of nothing after the banner: two thirds of the backstop, and
+    // twenty-eight times the quiet gap. Not one byte goes out.
+    const h = startDelivery("say hello", { harness: "cursor-cli" });
+    h.clock.advance(1_250);
+    h.delivery.onOutput(CURSOR_BOOT);
+    h.clock.advance(10_000);
+    expect(h.writes).toEqual([]);
+
+    h.delivery.onOutput(CURSOR_IDLE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+  });
+
+  it("still abandons on the trust screen instead of typing into it (issue 177)", () => {
+    // Readiness is checked *after* the dialog table, so nothing here weakens
+    // what #272 bought: cursor-agent's letter-keyed menu is unreadable, the
+    // answer is null, and delivery abandons rather than typing the prompt into
+    // the dialog and reporting success.
+    const h = startDelivery("say hello", { harness: "cursor-cli" });
+    h.delivery.onOutput(CURSOR_TRUST_DIALOG);
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
   });
 });

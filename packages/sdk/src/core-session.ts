@@ -82,19 +82,43 @@ export const HARNESS_LAUNCH_COMMANDS: Readonly<Record<CoreLinkPtySpawnHarness, s
 
 /**
  * Each harness's spelling of "do not stop to ask me", appended to the default
- * command when {@link CoreSessionOptions.dangerouslySkipPermissions} is set.
+ * command when {@link CoreSessionStartOptions.dangerouslySkipPermissions} is
+ * set.
  *
  * The option and the flag are two halves of one gesture and the Core checks
- * both: the flag is allow-listed only for a spawn that also set the option, so
- * setting one without the other is a rejected spawn rather than a quiet
- * downgrade. OpenCode has no such flag, and gets none.
+ * both **directions** of it (issue 177 finding 2): a flag with no option is a
+ * rejected spawn, and since that issue an option with no flag is one too. It
+ * used to be neither — the Core accepted the mismatch, launched an interactive
+ * harness, and let a caller that believed itself unattended sit on a permission
+ * prompt nobody was watching. So this table is not a convenience: it is the
+ * only thing standing between `dangerouslySkipPermissions: true` and a refused
+ * spawn, for every caller that does not pass its own `command`.
+ *
+ * OpenCode has no such flag, and `null` says so. That is a fact about the
+ * vendor's CLI rather than a gap here, and the Core reads it the same way — it
+ * is the one harness where the option is allowed to arrive with no flag behind
+ * it, because there is no flag to send.
+ *
+ * Exported because it is the answer to "what does auto mode look like for this
+ * harness", and a caller building its own command needs the same cell of the
+ * same table. Two transcriptions of a vendor fact is one more than can be kept
+ * in step; finding 1 of the same issue was that mistake in the binary column.
  */
-const HARNESS_SKIP_PERMISSION_FLAGS: Readonly<Record<CoreLinkPtySpawnHarness, string | null>> = {
+export const HARNESS_SKIP_PERMISSION_FLAGS: Readonly<
+  Record<CoreLinkPtySpawnHarness, string | null>
+> = {
   "claude-code": "--dangerously-skip-permissions",
   codex: "--yolo",
   "cursor-cli": "--force",
   opencode: null,
 };
+
+/** The flag that puts `harness` in auto mode, or null where it ships none. */
+export function harnessAutoModeFlag(
+  harness: CoreLinkPtySpawnHarness,
+): string | null {
+  return HARNESS_SKIP_PERMISSION_FLAGS[harness];
+}
 
 /**
  * The statuses that mean the harness has stopped and is waiting on a human.
@@ -255,6 +279,31 @@ export class CoreSession {
   readonly harness: CoreLinkPtySpawnHarness;
   /** The command the Core was asked to start, after defaulting. */
   readonly command: string;
+  /**
+   * Will anything move this Session to `running` when a turn begins (issue 84,
+   * issue 177 finding 4)?
+   *
+   * The Core's answer for this Session and not a property of the harness
+   * family: it depends on which hooks actually landed on that machine and on
+   * whether the vendor fires them. `false` today for `cursor-cli` — the Core
+   * writes `.cursor/hooks.json` and cursor-agent never fires
+   * `beforeSubmitPrompt` — and for `codex` until an operator reviews the newly
+   * installed hooks with `/hooks`. Both still report a turn's *end*.
+   *
+   * What that means for a caller: {@link waitForIdle} is unaffected, because it
+   * waits for a settled status and turn *end* is reported. What is missing is
+   * everything in between. A Session with `reportsTurnStart === false` will sit
+   * at its pre-turn status for the whole of a turn that is genuinely running,
+   * which is indistinguishable from a Session that never started — so a caller
+   * that shows progress, or that treats "not running" as "stuck", has to read
+   * this and say so rather than infer activity from a status that will not
+   * move. The Panel's answer is a terminal-input fallback; the `actana` CLI's
+   * is to print the asymmetry.
+   *
+   * `false` on a Core too old to answer, which is the safe direction: a
+   * redundant caveat, never a silently statusless Session.
+   */
+  readonly reportsTurnStart: boolean;
 
   private readonly client: CoreClient;
   private readonly terminal: TerminalScreen;
@@ -290,6 +339,7 @@ export class CoreSession {
     ptyId: string;
     harness: CoreLinkPtySpawnHarness;
     command: string;
+    reportsTurnStart: boolean;
     terminal: TerminalScreen;
   }) {
     this.client = opts.client;
@@ -297,6 +347,7 @@ export class CoreSession {
     this.ptyId = opts.ptyId;
     this.harness = opts.harness;
     this.command = opts.command;
+    this.reportsTurnStart = opts.reportsTurnStart;
     this.terminal = opts.terminal;
   }
 
@@ -330,7 +381,9 @@ export class CoreSession {
     }
     const cols = opts.cols ?? DEFAULT_COLS;
     const rows = opts.rows ?? DEFAULT_ROWS;
-    const command = opts.command ?? defaultLaunchCommand(opts.harness, opts.dangerouslySkipPermissions === true);
+    const command =
+      opts.command ??
+      harnessLaunchCommand(opts.harness, opts.dangerouslySkipPermissions === true);
 
     // The event log first: a subscribe sent after the spawn could miss the
     // status change of a harness that answered before this side asked.
@@ -384,7 +437,7 @@ export class CoreSession {
       session.onCoreEvent(event);
     });
 
-    let spawned: { ptyId: string };
+    let spawned: { ptyId: string; hooksReportTurnStart: boolean };
     try {
       spawned = await client.spawn({
         taskId,
@@ -419,6 +472,7 @@ export class CoreSession {
       ptyId: spawned.ptyId,
       harness: opts.harness,
       command,
+      reportsTurnStart: spawned.hooksReportTurnStart,
       terminal,
     });
     session.unsubscribes.push(stopData, stopExit, stopEvents);
@@ -749,8 +803,24 @@ export class CoreSession {
   }
 }
 
-/** The launch command for a harness nobody named one for. */
-function defaultLaunchCommand(
+/**
+ * The launch command a Session gets when its caller named none — the whole of
+ * it, auto-mode flag included.
+ *
+ * Exported because it is the one answer to "what will `start` actually run",
+ * and issue 177 is what happens when that question has two answers. Both
+ * halves of the command come out of the same tables the Core validates against
+ * ({@link HARNESS_LAUNCH_COMMANDS} for the binary, which is `cursor-agent` and
+ * not `cursor-cli`; {@link HARNESS_SKIP_PERMISSION_FLAGS} for the flag), so a
+ * test can put this straight through the Core's `resolveSpawnPlan` and find
+ * out rather than reason about it.
+ *
+ * `skipPermissions` is the caller's request, not a promise about the result:
+ * OpenCode has no such flag and so gets none, which the Core accepts, and
+ * every other harness gets the one it spells auto mode with, which the Core
+ * now *requires* whenever the option is set.
+ */
+export function harnessLaunchCommand(
   harness: CoreLinkPtySpawnHarness,
   skipPermissions: boolean,
 ): string {
