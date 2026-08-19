@@ -10,8 +10,10 @@
 //     acceptance criterion, and nothing short of a real child proves it.
 //   - **stdout and stderr are separate, and free of terminal escape
 //     sequences.** This is the property the whole verb exists for and the one a
-//     PTY cannot have. Asserted below on `ls --color=always`, which is the
-//     command that *would* paint if anything on either end were a terminal.
+//     PTY cannot have. Asserted below by asking the command itself whether it
+//     has a terminal, and then by `ls --color=auto` declining to paint. Its
+//     other half — that the clean output is the *spawn* and not a scrubber in
+//     this CLI — is a separate test, on bytes the command is told to emit.
 //   - **a cwd is refused by the Core, in the Core's own words.**
 //
 // So everything here is real except the machine: `packages/core`'s actual
@@ -112,9 +114,9 @@ describe("actana core exec, against a Core in this process", () => {
 
     // And the consequence, on the command the criterion names. `--color=auto`
     // is the honest test: it asks `ls` to colour *if it sees a terminal*, and
-    // it does not see one. (`--color=always` is not a TTY question at all — it
-    // says colour regardless, and it is asserted below precisely to show this
-    // CLI is not stripping anything.)
+    // it does not see one. (What it cannot rule out on its own is a filter in
+    // this CLI producing the same clean output; the test below rules that out
+    // on bytes of its own choosing, without asking any tool for an opinion.)
     const auto = await fixture!.run(
       ["core", "exec", "--json", "--cwd", dir, "--", "ls", "--color=auto"],
       withCore(),
@@ -130,24 +132,43 @@ describe("actana core exec, against a Core in this process", () => {
 
   it("passes bytes through rather than filtering them — the clean output above is the spawn, not a scrubber", async () => {
     await liveCore();
-    const dir = scratch();
-    // A directory, because that is what default LS_COLORS actually paints — a
-    // plain file comes back uncoloured even under `--color=always`, and the
-    // assertion below would then be vacuously true.
-    fs.mkdirSync(path.join(dir, "a-dir"));
 
-    // `--color=always` overrides the TTY question entirely. If those escapes
-    // came back stripped, the assertion above would be measuring a filter in
-    // this CLI rather than the absence of a terminal — and a filter is a thing
-    // that can be wrong about somebody's actual output.
+    // The bytes are chosen *here* rather than left to a tool's opinion about
+    // whether anything is worth colouring. This test used to run
+    // `ls --color=always` and assert an escape came back, which is a claim
+    // about the machine it runs on rather than about this CLI: GNU `ls`
+    // disables colour outright when `TERM` is unset, whatever the flag says, so
+    // on a CI runner it returned a bare `a-dir\n` and the assertion failed
+    // with nothing wrong in the code under test. A `printf` of explicit octal
+    // escapes emits the same bytes on every machine, terminal or not, and
+    // `\0ddd` under `%b` is the one spelling POSIX pins down.
+    //
+    // ESC is the byte a scrubber strips first. BEL, BS and DEL are here too
+    // because a filter written for "colour" tends to take the rest of C0 with
+    // it, and each of those is a byte somebody's program really does emit.
+    const bytes = "before\u001b[31mred\u001b[0m\u0007\u0008\u007fafter\n";
+    const emit = String.raw`printf "%b" "before\0033[31mred\0033[0m\0007\0010\0177after\n"`;
+
     const forced = await fixture!.run(
-      ["core", "exec", "--json", "--cwd", dir, "--", "ls", "--color=always"],
+      ["core", "exec", "--json", "--", "sh", "-c", `${emit}; ${emit} >&2`],
       withCore(),
     );
     const doc = JSON.parse(forced.out.join("\n")) as Record<string, unknown>;
-    // BSD `ls` rejects the long flag; there the question does not arise and the
-    // non-zero status is the answer.
-    if (doc.exitCode === 0) expect(String(doc.stdout)).toContain("\u001b");
+    expect(doc.exitCode, forced.err.join("\n")).toBe(0);
+    // Byte for byte, on both streams — not "contains an escape" but "is exactly
+    // what the command wrote". If these bytes came back stripped or rewritten,
+    // the clean output asserted above would be measuring a filter in this CLI
+    // rather than the absence of a terminal, and a filter is a thing that can
+    // be wrong about somebody's actual output.
+    expect(doc.stdout).toBe(bytes);
+    expect(doc.stderr).toBe(bytes);
+
+    // And on the stream an operator without `--json` actually reads, where the
+    // command's own streams are written through as this process's own.
+    const plain = await fixture!.run(["core", "exec", "--", "sh", "-c", emit], withCore());
+    expect(plain.code, plain.err.join("\n")).toBe(EXIT_OK);
+    expect(plain.out.join("\n")).toBe(bytes.slice(0, -1));
+    expect(plain.all).toContain("\u001b");
   }, 30_000);
 
   it("honours --cwd, and it is the Core's directory rather than this process's", async () => {
