@@ -32,6 +32,7 @@ import { runHarnessCommand } from "./harness-command.ts";
 import { runEventsCommand } from "./events-command.ts";
 import { runSessionCommand } from "./session-command.ts";
 import { CORE_BLOB_ENV } from "./core-resolution.ts";
+import { ensureOrchestrationSkillQuietly } from "./orchestration-skill.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import manifest from "../package.json" with { type: "json" };
@@ -72,7 +73,7 @@ Usage
 Nouns
   core      register, select and inspect the Cores this machine can reach
   project   the Projects a Core owns: ls, add, browse, files, cp
-  harness   the coding agents a Core can run: ls, install
+  harness   the coding agents a Core can run: ls, install, skills
   events    follow a Core's event log: tail
   session   start, ls, logs, resume, kill and send to Sessions on one
 
@@ -118,6 +119,27 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
     // help and exiting 0 is what `--help` would have done, and there is nothing
     // for a script to have got wrong.
     return EXIT_OK;
+  }
+
+  // ADR 0031 D6: there is no npm lifecycle hook to install the product's own
+  // skill from — this package has no `postinstall`, `preinstall` or `prepare`
+  // and gains none — so "installed with the CLI" is delivered here instead, in
+  // front of the first verb the operator runs. It is a no-op when the copies are
+  // current, it writes nothing on a machine where no Harness has a directory of
+  // its own, and it cannot fail: nothing it does reaches the exit code or either
+  // output stream. `actana harness skills` is the same work with a report.
+  //
+  // After the `--version` and no-noun branches on purpose. Those two answer a
+  // question about this binary and touch nothing; a `--version` that wrote files
+  // into a home directory would be a surprise, and it is not what "followed by
+  // any actana command" means.
+  //
+  // `actana harness skills` is the one verb it does not run in front of: that
+  // verb does the same work and reports it, and an ensure that had already
+  // repaired the copy would leave the explicit path with nothing to say but
+  // "current" — a repair verb that can never report a repair.
+  if (!(noun === "harness" && args.positionals[1] === "skills")) {
+    ensureOrchestrationSkillQuietly(deps.home);
   }
 
   const paths = registryPaths(deps.env, deps.home);

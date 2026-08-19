@@ -2,6 +2,15 @@
 //
 //   actana harness ls [--json]      what this Core has on its PATH, and what it lacks
 //   actana harness install <id>     install one, and report what actually happened
+//   actana harness skills [--json]  put this product's own skill where they read it
+//
+// **`skills` is the odd one out and is local.** `ls` and `install` are questions
+// about a Core; `skills` writes files into *this* machine's home directory and
+// dials nothing, because the machine a Harness reads a global skill from is the
+// machine the Harness runs on, and for the CLI's own copy that is here. It is a
+// verb of this noun rather than a fifth noun because `actana --help`'s noun list
+// is short on purpose and "the coding agents a Core can run" is the closest
+// existing shelf. ADR 0031 is the whole argument for it existing at all.
 //
 // **`install` reports a real exit status, and the definition of success is the
 // Core's, not the vendor installer's.** A vendor script that exits 0 while
@@ -30,6 +39,8 @@
 // the Core says no it names the Harness and links the issue.
 
 import { formatJson, formatTable } from "./cli-output.ts";
+import { ensureOrchestrationSkill } from "./orchestration-skill.ts";
+import { ORCHESTRATION_SKILL_NAME } from "./orchestration-skill-payload.ts";
 import { errorText, openCore, type CoreLinkClient } from "./core-connection.ts";
 import { trackEventTip } from "./event-tip.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
@@ -80,6 +91,7 @@ export const HARNESS_HELP = `actana harness — the coding agents a Core can run
 Usage
   actana harness ls               what the selected Core has, and what it lacks
   actana harness install <id>     install one on the Core, and wait for the verdict
+  actana harness skills           install or repair this product's skill, here
 
 Flags
   --core <name>   which Core to talk to
@@ -93,7 +105,18 @@ What install waits for
   an installer that exits 0 and leaves nothing behind is a failed install.
 
   Harness installation is currently failing on some paths — ${CANARY_ISSUE}.
-  A failure here names the Harness and links the issue rather than guessing.`;
+  A failure here names the Harness and links the issue rather than guessing.
+
+What skills does
+  Writes the \`actana-sessions\` skill — how to drive Cores and Sessions with this
+  CLI — into the global skills directory of every Harness present on THIS machine,
+  and repairs a copy that was deleted or changed. It talks to no Core, it starts
+  no process, and running it twice changes nothing the second time. Every other
+  \`actana\` command does the same thing quietly before it runs, so this verb is
+  the repair path and the one that tells you what it did.
+
+  A copy you have made your own — by deleting its \`x-actana-managed: true\` line
+  — is reported as skipped and is never written again.`;
 
 /** Dispatch a `harness` verb. `args.positionals` still has `harness` at [0]. */
 export async function runHarnessCommand(
@@ -114,9 +137,11 @@ export async function runHarnessCommand(
       return harnessLs(deps, args, paths);
     case "install":
       return harnessInstall(deps, args, paths, rest);
+    case "skills":
+      return harnessSkills(deps, args, rest);
     default:
       deps.err(`actana harness: unknown verb "${verb}".`);
-      deps.err("Verbs: ls, install. `actana harness --help` lists them.");
+      deps.err("Verbs: ls, install, skills. `actana harness --help` lists them.");
       return EXIT_USAGE;
   }
 }
@@ -168,6 +193,53 @@ function harnessRows(availability: CoreLinkHarnessAvailabilityMap): Array<
   return Object.entries(availability)
     .map(([id, entry]) => ({ id, ...entry }))
     .sort((a, b) => a.id.localeCompare(b.id));
+}
+
+/**
+ * `actana harness skills [--json]` — write the product's skill, here, now.
+ *
+ * The explicit, idempotent path ADR 0031 D6 asks for. It exits 0 when nothing
+ * is broken, and that includes a machine with no Harnesses on it at all: "you
+ * do not use any of the agents I know how to write to" is an answer, not a
+ * failure. The only non-zero exit is a copy that a Harness is here for and that
+ * could not be written — a permissions problem or a full disk, which is a real
+ * fault a script should notice.
+ *
+ * A `skipped` row is likewise a success and is reported loudly rather than
+ * counted as one: the operator took ownership of that file on purpose, and the
+ * point of printing it is that a later "why is my skill not updating?" has an
+ * answer on screen instead of in a code path.
+ */
+function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): number {
+  if (rest.length > 0) {
+    deps.err(`actana harness skills: unexpected argument "${rest[0]}".`);
+    deps.err("It takes no arguments — it writes to this machine, not to a Core.");
+    return EXIT_USAGE;
+  }
+
+  const entries = ensureOrchestrationSkill(deps.home);
+  const failed = entries.filter((entry) => entry.outcome === "failed");
+
+  if (args.json) {
+    deps.out(formatJson({ skill: ORCHESTRATION_SKILL_NAME, harnesses: entries }));
+    return failed.length > 0 ? EXIT_FAILURE : EXIT_OK;
+  }
+
+  const table = formatTable(
+    ["HARNESS", "RESULT", "PATH"],
+    entries.map((entry) => [entry.harness, entry.outcome, entry.path]),
+  );
+  for (const line of table) deps.out(line);
+
+  for (const entry of entries) {
+    if (entry.detail && entry.outcome !== "absent") deps.err(`  ${entry.harness}: ${entry.detail}`);
+  }
+  if (entries.every((entry) => entry.outcome === "absent")) {
+    deps.err("No Harness of the four this build knows has a directory in this home —");
+    deps.err("nothing was written. Install one and run this again, or just run any");
+    deps.err("`actana` command: it does this quietly before it runs.");
+  }
+  return failed.length > 0 ? EXIT_FAILURE : EXIT_OK;
 }
 
 /**
