@@ -60,3 +60,47 @@ The fix is not a fourth number. It is that **the Core watches the harness and re
 - **A prompt that a harness swallowed is now re-typed rather than reported delivered** (D3a, D6a), and the two new log lines say which is happening: `pty.prompt-delivery.waiting-for-composer` while the Core holds, `pty.prompt-delivery.prompt-swallowed` when a write left no echo. A Session that used to start empty and silent now starts late and correct.
 - **The opencode boot is in the suite as bytes, not as a description.** `packages/core/src/__tests__/fixtures/opencode-1.18.18-{boot,composer}.txt` are a live PTY capture, and the delivery test replays them at their captured timings — the 4.4 s hole included. Its boot was measured at between 3.4 s and 6.9 s across runs on one machine, which is the clearest possible argument that no constant was ever going to answer this.
 - **A prompt can now be deliberately not delivered** (D5, D8). That is a new outcome with a new failure mode: a Session that starts, shows a dialog, and sits there. It is the intended trade, it is logged, and it leaves a running harness rather than an exited one.
+
+## Amendment — issue 177 (2026-08-19)
+
+Two changes, both within this record rather than against it.
+
+**D7's folder-trust entry now also covers `cursor-cli`.** D7's argument for
+scoping was that a dialog spec is a transcription of a named harness's screen,
+and applying one vendor's transcription to another means pressing a digit into a
+layout nobody has looked at. That argument holds for the bypass-permissions
+entry, which is scoped to `claude-code` still: `Bypass Permissions mode` is
+Claude Code's phrase and the screen behind it is Claude Code's screen.
+
+It does not hold for folder-trust, because that entry contains no transcription
+to carry across. What it asserts is that "trust" plus a workspace noun plus a
+question mark means a trust prompt is up, that an option meaning yes is the one
+to take, and that an option meaning no is the one to refuse. The number of
+options, their labels and **which digit the affirmative one carries** are read
+off the screen in front of it by `readDialogOptions` — this module has never
+hard-coded a key, which is precisely what [issue
+177](https://github.com/actana/control/issues/177) warns a careless partial
+match would do. The nouns were widened (`workspace`, `project`, `repo`) for the
+same reason: they make the entry less dependent on one vendor's wording, not
+more. D5 is unchanged and is what makes the widening safe — a screen whose menu
+does not parse yields no answer, and no answer means no keystroke.
+
+The honest caveat: cursor-agent's trust screen has not been observed by anyone
+who wrote the entry. If it does not match, the outcome is what it is today —
+unrecognised — with the change below making that visible.
+
+**Abandoned delivery now moves the Session to `needs-input`.** D5 and D8 are
+deliberate that the Core types nothing into a dialog it cannot read and gives
+up with the dialog still on screen. The last Consequence above named the cost of
+that — *"a Session that starts, shows a dialog, and sits there"* — and until now
+the giving-up was a `pty.prompt-delivery.abandoned` log line on the Core and
+nothing else. No client reads that log, so every client saw a Session at its
+pre-turn status and no way to tell it from a hang.
+
+The Core now reports it as an output signal (`dialog-unanswered`,
+`pty-manager.ts` → `CoreHarnessStatus.outputSignal`), which maps to
+`needs-input` — the same route Codex's `hooks-need-review` already takes, and
+for the same reason: a harness waiting on a human is what `needs-input` means.
+Nothing about the decision changed, only whether anybody is told. `needs-input`
+is a settled status, so an SDK `waitForIdle` on an abandoned Session now returns
+instead of waiting for a report that was never going to come.

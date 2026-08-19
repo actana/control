@@ -196,6 +196,20 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(rowStatus()).toBe("terminated");
   });
 
+  it("reports a Session parked on a dialog nobody answered as needs-input", async () => {
+    // Issue 177 finding 3. Prompt delivery abandons rather than guessing (ADR
+    // 0026 D5), and until now that decision was a log line on the Core: the
+    // row stayed where it was and every client saw a Session that looked hung.
+    // It is not hung — it is waiting on a human, which `needs-input` is the
+    // word for, and which is a settled status so an SDK `waitForIdle` stops.
+    const status = new CoreHarnessStatus({ writer });
+    await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+    expect(rowStatus()).toBe("running");
+
+    status.outputSignal(TASK_ID, "dialog-unanswered");
+    expect(rowStatus()).toBe("needs-input");
+  });
+
   it("names an unnamed Session on the Core's own row, unpinned for a later rename", async () => {
     await postHook({
       hook_event_name: "UserPromptSubmit",

@@ -465,17 +465,76 @@ describe("chooseDialogOption", () => {
 });
 
 describe("dialogsForHarness", () => {
-  it("keeps Claude Code's dialogs to Claude Code", () => {
-    // Both specs are transcriptions of Claude Code's own screens. Applying
-    // them to a harness nobody has observed would mean pressing a digit into
-    // another vendor's layout on the strength of the word "trust".
+  it("keeps Claude Code's bypass-permissions screen to Claude Code", () => {
+    // That spec is a transcription of Claude Code's own warning screen, down
+    // to the phrase `Bypass Permissions mode`. Applying it to a harness nobody
+    // has observed would mean pressing a digit into another vendor's layout.
     expect(dialogsForHarness("claude-code").map((d) => d.id)).toEqual([
       "folder-trust",
       "bypass-permissions",
     ]);
     expect(dialogsForHarness("codex")).toEqual([]);
-    expect(dialogsForHarness("cursor-cli")).toEqual([]);
     expect(dialogsForHarness("opencode")).toEqual([]);
+  });
+
+  it("gives cursor-cli the folder-trust spec, and only that one (issue 177)", () => {
+    // Finding 3: cursor-agent's trust prompt was never answered because the
+    // matcher was scoped to a harness it is not. The entry it gets carries no
+    // Claude-specific wording and, crucially, no Claude-specific *key* — the
+    // digit comes off the menu on screen.
+    expect(dialogsForHarness("cursor-cli").map((d) => d.id)).toEqual(["folder-trust"]);
+  });
+});
+
+describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
+  const specs = dialogsForHarness("cursor-cli");
+
+  it("recognises a trust prompt worded differently from Claude Code's", () => {
+    // Not a transcription of a screen anybody has observed — the point of the
+    // assertion is that the matcher does not depend on one. `workspace` is a
+    // noun Claude Code never uses, and the option order is reversed relative
+    // to Claude's so a hard-coded `1` would be wrong here.
+    const screen = [
+      "Do you trust the files in this workspace?",
+      "",
+      "  1. No, exit",
+      "❯ 2. Yes, I trust this workspace",
+      "",
+    ].join("\n");
+
+    const match = matchBlockingDialog(screen, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    // The digit is read, not assumed. This is the exact failure the issue
+    // warned a careless partial match would introduce.
+    expect(match?.answer?.number).toBe(2);
+    expect(match?.answer?.label).toContain("Yes");
+  });
+
+  it("answers nothing when the menu cannot be read", () => {
+    // D5 unchanged: something is in the way and there is no confident way
+    // past it, so `answer` is null and the caller must type nothing. That
+    // path now ends in a `needs-input` Session rather than in silence.
+    const screen = "Do you trust the files in this workspace?\n\n  [y/N]\n";
+    const match = matchBlockingDialog(screen, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    expect(match?.answer).toBeNull();
+  });
+
+  it("does not fire on prose that merely contains the word trust", () => {
+    const screen = "I do not trust this test to be meaningful without a menu.\n";
+    expect(matchBlockingDialog(screen, specs)).toBeNull();
+  });
+
+  it("does not hand cursor-cli Claude Code's bypass-permissions screen", () => {
+    const screen = [
+      "Bypass Permissions mode",
+      "Do you want to proceed?",
+      "  1. No, exit",
+      "  2. Yes, I accept",
+    ].join("\n");
+    // Nothing in the cursor-cli spec list matches it — that screen is Claude
+    // Code's and stays Claude Code's.
+    expect(matchBlockingDialog(screen, specs)?.spec.id).not.toBe("bypass-permissions");
   });
 });
 

@@ -244,27 +244,62 @@ export type BlockingDialogMatch = {
  * The dialogs the Core knows how to get past.
  *
  * Both entries are the same shape and the same danger: the highlighted default
- * is the destructive one. Claude Code's folder-trust prompt defaults to
+ * is the destructive one, so nothing here is answered by pressing Enter. Claude Code's folder-trust prompt defaults to
  * declining and *exiting*, and its bypass-permissions warning — the screen a
  * session launched with `--dangerously-skip-permissions` lands on — does the
  * same. Auto mode on its own survives, because nothing types into it; a prompt
  * on its own survives, because there is no dialog in the way. The two together
  * were what died, and this table is why they no longer do.
  *
- * Both are scoped to `claude-code`, because both are transcriptions of *that*
- * harness's screens: the wording, the option labels and the fact that the
- * highlighted default exits were all read off Claude Code and nothing else.
- * Applying them to a harness nobody has observed would mean pressing a digit
- * into a menu on the strength of another vendor's layout, which is the guess
- * D5 exists to refuse. A harness with no entry here still gets the quiet gap,
- * the separate carriage return and the length-scaled pause; what it does not
- * get is Claude Code's answers to questions it was never asked.
+ * The bypass-permissions entry is scoped to `claude-code`, because it is a
+ * transcription of *that* harness's screen: the wording, the option labels and
+ * the fact that the highlighted default exits were all read off Claude Code
+ * and nothing else. Applying it to a harness nobody has observed would mean
+ * pressing a digit into a menu on the strength of another vendor's layout,
+ * which is the guess D5 exists to refuse. A harness with no entry here still
+ * gets the quiet gap, the separate carriage return and the length-scaled
+ * pause; what it does not get is Claude Code's answers to questions it was
+ * never asked.
+ *
+ * Folder-trust now covers `cursor-cli` as well (issue 177 finding 3), and the
+ * reason it can is that **nothing about Claude Code's menu is carried across
+ * with it**. What the entry supplies is three things that are true of any
+ * folder-trust prompt in any wording: that the word "trust" and a workspace
+ * noun and a question mark together mean one is up, that an option meaning
+ * "go ahead" is the one to take, and that an option meaning "no" is the one to
+ * never take. Everything harness-specific — how many options there are, what
+ * they are called, and *which digit* the affirmative one carries — is read off
+ * the screen in front of it by {@link readDialogOptions}, and if it cannot be
+ * read then {@link chooseDialogOption} returns null and D5 applies unchanged:
+ * nothing is typed, delivery is abandoned, and the Session is reported
+ * `needs-input` rather than left looking like a hang. The issue is explicit
+ * about the failure mode to avoid here — *"the key sent is `1`, correct for
+ * Claude's option order and arbitrary for anyone else's"* — and a key this
+ * module never hard-codes is a key it cannot get arbitrarily wrong.
+ *
+ * **What is not verified:** cursor-agent's trust screen has not been observed
+ * by anyone who wrote this entry, and the patterns below are deliberately
+ * wording-independent *because* of that rather than in spite of it. If they do
+ * not match, the outcome is exactly today's — the dialog is not recognised —
+ * with the abandon path above now making it visible. What they cannot produce
+ * is a wrong keystroke.
  */
 export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   {
     id: "folder-trust",
-    harnesses: ["claude-code"],
-    match: [/\btrust\b/i, /\b(folder|directory|files)\b/i, /\?/],
+    harnesses: ["claude-code", "cursor-cli"],
+    // `workspace|project|repo` join the nouns because they are what a vendor
+    // other than Anthropic is as likely to call the same thing. Widening the
+    // *nouns* rather than dropping the `trust` anchor keeps the pairing that
+    // makes this a dialog rather than prose: a paragraph containing the word
+    // "trust" still does not match without a question mark and a workspace
+    // noun, and even a full match answers nothing unless the menu below it
+    // offers exactly one "yes" and at least one "no".
+    match: [
+      /\btrust\b/i,
+      /\b(folder|directory|files|workspace|project|repo(?:sitory)?)\b/i,
+      /\?/,
+    ],
     affirmative: /\b(yes|proceed|trust|allow)\b/i,
     refuse: /\b(no|exit|quit|cancel|deny)\b/i,
   },
