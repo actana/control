@@ -95,11 +95,18 @@ inside the file survives being renamed, moved and copied; a path does not. The
 file is the unit precisely because there is no envelope, so the tag goes in the
 file.
 
-Every vendor whose loader is named in D4 documents that unrecognised frontmatter
-keys are ignored, and the marker is read as a substring of the file's first
-bytes rather than through a YAML parser — so a vendor that starts rejecting
-unknown keys costs the operator a warning, not the installer its ability to
-recognise its own writes.
+**No vendor page cited in D4's table says what its loader does with a
+frontmatter key it does not recognise**, and this record does not claim they
+ignore it — every other vendor fact in this change carries a URL and a read date
+on `HARNESS_CLI_CONFIG` and is asserted by a test, and this one would carry
+neither. What makes the marker safe to ship is narrower, and it does not depend
+on the answer: the installer reads the marker as a substring of the file's first
+bytes rather than through a YAML parser, so *recognising our own writes* is a
+property of our own reader and cannot be taken away by a loader getting
+stricter. That is the whole of what the substring match buys. What it does not
+buy is the vendor's behaviour: a loader that rejects unknown keys costs the
+operator a warning at best and a skill that vendor stops loading at worst, and
+that is a visible failure to revisit here, not one the marker prevents.
 
 **D2 — The result-bias objection is answered by what the skill is about, and the
 answer is narrower than "skills are fine now".** 0006 was written when the
@@ -157,6 +164,16 @@ own home directory does not exist is a harness the operator does not use here,
 and the product creates neither the directory nor the skill inside it.
 **Creating `~/.claude` on a machine that has never run Claude Code would be a
 larger act than anything 0006 refused.**
+
+**This is deliberately not the same question `harness ls` answers, and the two
+can disagree.** Availability is a PATH fact — a binary the probe resolved — and
+presence here is a directory fact. A harness that has been installed but never
+run is `available` and `absent` at the same time, because several of these
+vendors create their home directory on first run rather than at install time.
+D4 keeps the directory test anyway: the alternative is writing into a namespace
+its owner has not created, which is the act this clause exists to refuse. The
+consequence of the two signals disagreeing is D7's, and it is written down
+there rather than left to be discovered.
 
 The per-harness targets are recorded on `HARNESS_CLI_CONFIG`
 (`packages/shared/src/harness-cli-config.ts`) beside `homePathSuffixes`, typed
@@ -231,6 +248,40 @@ another terminal is served **by the first probe that observes it**, which
 `SIGHUP` (`core-entry.ts:296`) and the ADR 0021 install path both force sooner.
 No clause here promises seconds.
 
+**The trigger and the test are different signals, and that gap is accepted
+here rather than closed.** This subscriber fires on availability, which D4 says
+plainly is a PATH fact; the installer then decides from `homeMarkers`, which is
+a directory fact. For a harness that creates its home directory on first run,
+the two are not simultaneous: the probe flips it to `available`, the watcher
+calls the ensure, the installer reports `absent` for that target and writes
+nothing — and since the availability map does not change again, this subscriber
+is not called again either. The criterion "served by the first probe that
+observes the harness" is met to the letter and missed in purpose, for exactly
+one window: from the moment the binary lands to the moment its home directory
+exists.
+
+It is accepted rather than closed because the two candidate fixes both cost
+more than the window does. Creating the directory ourselves is the act D4
+refuses. Re-checking on every 60 s probe tick means a `readdir` fan-out over
+four home markers, forever, on every Core, to catch a state that resolves the
+first time the operator runs the harness — and it would have to be driven by
+its own timer, because the store appends an event only when the map *changes*
+(`harness-availability-store.ts`), so there is no later tick on this
+subscriber's own wire to hang it from. Neither is worth it for a gap that
+closes on its own.
+
+**The recovery paths, named, because an accepted gap with no recovery is a
+bug.** On the machine the CLI is installed on there is nothing to do: the
+pre-dispatch ensure in `actana-cli.ts` runs before every `actana <noun>`, so
+the next command after the harness's first run repairs it, and `actana harness
+skills` is the explicit form. On a Core's machine there is no pre-dispatch
+ensure, so the automatic repair is **the next Core boot** — `core-entry.ts:302`
+runs the same ensure unconditionally — which an upgrade, a reboot or a
+deliberate `actana core exec -- actana restart` all reach. What the operator
+sees in the meantime is a harness that runs Sessions normally and does not know
+the orchestration skill, which is the state every machine was in before this
+record.
+
 **D8 — "Authored once" is a mechanism, not a convention.** The skill has to be
 written to disk by two different programs, on two different machines: the CLI
 writes to the machine the CLI is on, and the Core writes to the Core's machine,
@@ -247,10 +298,16 @@ into `dist/`**: the Core ships as an esbuild bundle, and an asset read from disk
 at runtime is a file that is not in the bundle — the same reason the OpenCode
 plugin is a template literal (`harness-hooks-opencode.ts:12-14`). The installer
 module itself, and the CLI's copy of the target table, are duplicated
-deliberately, and **a test in each package fails when a copy drifts from its
-source**, naming the file. That is the arrangement ADR 0025 D3 permits and
-`registration-blob-file.ts:11-18` already lives under: the copies are checked by
-CI rather than by memory.
+deliberately, and **one test in one package fails when any copy drifts from its
+source**, naming the file: `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts`
+asserts the installer copies are byte-identical, the two target tables agree
+row for row, and both embedded payloads are the authored `SKILL.md`. It lives in
+`packages/shared` and reaches into `packages/cli` by relative path, because the
+dependency rule runs one way: shared may read the CLI's source as text, the CLI
+may not import shared at all. So there is exactly one such test rather than one
+per package, and every comment that points at it says so. That is the
+arrangement ADR 0025 D3 permits and `registration-blob-file.ts:11-18` already
+lives under: the copies are checked by CI rather than by memory.
 
 **D9 — The skill is generic, and carries nothing about this repository or any
 other.** No ticket workflow, no release train, no review flow, no project ids,
@@ -303,6 +360,15 @@ project runbooks yet; revisit when a second project actually needs one.
   about the operator's own work — and this record carves out exactly one class:
   a skill whose entire subject is driving the product's own CLI. A second skill
   is not authorised by this record; it argues against D2 on its own.
+- **Ratifying this record includes writing the amendment note into 0006 itself,
+  and that is part of the ratification rather than a follow-up.** This
+  repository puts the note in the amended record — `docs/adr/0025-…:17` carries
+  *"Amended 2026-08-18 by #224"* — so whoever moves this record to ACCEPTED adds
+  one line in that form to `docs/adr/0006-no-bundled-skills.md`, pointing here.
+  0006 is deliberately untouched while this record is PROPOSED: until it is
+  ratified 0006 stands unqualified, and a forward pointer to a proposal would
+  say otherwise. The note is named here so it is somebody's job at ratification
+  rather than nobody's afterwards.
 - **`docs/specs/05-remove-bundled-skills.md:210` has been honoured.** *"Any
   future feature that would require Panel-installed skills has to relitigate ADR
   0006 first"* — this is that relitigation, and its verdict is the beta gate's.

@@ -75,7 +75,9 @@ of its own. A timeout is this side giving up, not a verdict about the Session:
 the Session is still running on the Core and can still be listed, read and
 stopped.
 
-While a Session is alive you can also look at it directly:
+While a Session is alive — which is what the `live` field on its
+`actana session ls --json` row tells you, and the only thing that does — you can
+also look at it directly:
 
 ```bash
 actana session logs <id>          # the transcript, rendered, while the harness is running
@@ -134,15 +136,40 @@ The shape that works:
    each focusing on three different things", the three things are theirs to
    name — do not invent a split and do not start work on a guess.
 2. **Check `harness ls` once**, and use only `available` ids.
-3. **Start each Session without `--wait`**, keeping the printed id and what you
-   asked it for. Starting them all first is what makes them concurrent; a
-   `--wait` in this loop makes them a queue.
+3. **Start each Session in its own backgrounded `--wait --json` call, and wait
+   for all of them together.** N concurrent Sessions are N `session start
+   --wait --json` calls running side by side — that is what makes them
+   concurrent, not the absence of `--wait`. Run them one after another and you
+   have a queue; run them in the background and you have N settled `screen`
+   fields, which is the only thing this CLI hands back that is guaranteed to
+   still exist when you read it.
+
+   ```bash
+   actana session start "$project" "$prompt_a" --wait --json --wait-timeout 900 > a.json &
+   actana session start "$project" "$prompt_b" --wait --json --wait-timeout 900 > b.json &
+   actana session start "$project" "$prompt_c" --wait --json --wait-timeout 900 > c.json &
+   wait
+   ```
+
+   Each file holds one complete object: `taskId`, `status`, `exited` and the
+   `screen` as it settled. Take every report out of those, not out of a later
+   `logs` call.
 4. **Give each one the sentinel instruction** in its prompt.
-5. **Then collect.** Poll `actana session ls --json` for status, or follow
-   `actana events tail --json` and watch for each id to finish. When a Session
-   reaches a terminal status, read `actana session logs <id>` — while it is
-   still alive — extract the last complete sentinel pair, and only then
-   `actana session kill <id>`.
+5. **If you polled instead, check `live` before you read anything.** Starting
+   without `--wait` and polling `actana session ls --json` — or following
+   `actana events tail --json` — is a legitimate shape when you want to watch
+   progress, but a terminal status is not permission to read a transcript.
+   Every `session ls --json` row carries a **`live`** field beside its status
+   (it is the `LIVE` column in the table). `live: true` means the harness
+   process is still up and its replay ring still holds the transcript;
+   `live: false` means the harness has exited and took the transcript with it,
+   whatever the status says. So: read `actana session logs <id>` only while
+   that row says `live: true`, extract the last complete sentinel pair, and
+   only then `actana session kill <id>`. A row that reached a terminal status
+   with `live: false` before you got to it is a result you did not collect —
+   report it as that, and use `--wait --json` for the next run rather than
+   trying to recover it. This is the whole reason step 3 is written the way it
+   is: polling races the process, and `--wait --json` does not.
 6. **Report per Session, by id**, including the ones that produced no parseable
    report. A Session that finished without a report is a fact, not a gap to
    fill in.
@@ -165,7 +192,8 @@ number that was asked for; if no number was asked for, ask.
   Session's terminal status rather than on it looking busy.
 - **`session logs` says the Session has no harness running** — the Harness has
   exited and its transcript is gone with it. Nothing recovers it. That is what
-  `--wait --json` exists to prevent, next time.
+  `--wait --json` exists to prevent, next time. The same fact is visible before
+  you read: the Session's row in `actana session ls --json` says `live: false`.
 - **A prompt seems not to have arrived** — do not retype it and do not send a
   bare carriage return. Delivery is the Core's job; a lost prompt is a bug to
   report with the Session's id, not a thing to work around from here.

@@ -163,6 +163,22 @@ describe("the skill is generic and self-contained (ADR 0031 D9)", () => {
     expect(skill.toLowerCase()).toContain("collect first, kill second");
   });
 
+  it("collects concurrent Sessions without racing the replay ring", () => {
+    // The document's own mechanism section says a Harness that exited took its
+    // transcript with it. The several-Sessions recipe is the one place that
+    // could quietly contradict it, so the two ways out of that race are the
+    // assertion: `--wait --json` run side by side, and `live` named as the
+    // thing to check before reading `logs` when polling instead.
+    const recipe = skill.slice(skill.indexOf("## Several Sessions at once"));
+    expect(recipe, "the several-Sessions recipe is gone or was renamed").not.toBe("");
+    expect(recipe).toContain("--wait --json");
+    expect(
+      recipe.includes("live"),
+      "the recipe polls for status without naming the `live` field that says whether the " +
+        "transcript still exists",
+    ).toBe(true);
+  });
+
   it("has the frontmatter every vendor's loader requires", () => {
     const frontmatter = skill.split("---")[1] ?? "";
     expect(frontmatter).toMatch(/^\s*name: actana-sessions$/m);

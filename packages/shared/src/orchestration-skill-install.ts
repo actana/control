@@ -11,9 +11,14 @@
 // (ADR 0025 D2 as amended by #224). Neither list moves for a skill payload,
 // which is neither protocol nor client.
 //
-// So the copies are kept honest by a test rather than by memory:
-// `orchestration-skill-sync.test.ts` in each package reads both files and fails
-// on the first differing byte. Edit one, run the tests, copy it across. That is
+// So the copies are kept honest by a test rather than by memory. There is one
+// such test and it lives in one package:
+// `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` reads both
+// files and fails on the first differing byte. It reaches into the CLI by
+// relative path because the dependency rule runs one way — shared may read the
+// CLI's source as text, the CLI may not import shared at all — so there is no
+// second copy of this assertion in `packages/cli` and there cannot be one that
+// covers both. Edit one file, run the `shared` suite, copy it across. That is
 // the same arrangement ADR 0025 D3 permits and `registration-blob-file.ts`
 // already lives under.
 //
