@@ -1003,12 +1003,21 @@ node -e 'const fs=require("node:fs"), v=process.argv[1];
 ' x.y.z package.json packages/{cli,core,panel,sdk,shared}/package.json
 
 git commit -a -F cut-message.txt               # Conventional Commits, see below
-git push origin beta/x.y.z
+git push --no-verify origin beta/x.y.z         # --no-verify: see below
 ```
 
-Two things this has to get right, because nothing checks either one until far
-too late:
+Three things this has to get right, because nothing checks any of them until
+far too late:
 
+- **`--no-verify` on that push, or the hooks off for the cut.**
+  `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
+  branch against the naming convention alone, without the `beta/x.y.z`
+  exemption that [`ci.yml`](../.github/workflows/ci.yml) carries at line 167
+  for exactly this branch class (D1). So the hook refuses the push and hints
+  `git branch -m`, which is the wrong thing to do to a train — the branch name
+  *is* the version. You only meet this if you took `CONTRIBUTING.md`'s advice
+  and ran `git config core.hooksPath .husky`, which you should have. Tracked
+  as #269; when the hook learns the class, drop the `--no-verify`.
 - **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
   those six manifests and six lines.
 - **Every body line of the message is at most 132 characters.** `commitlint`
