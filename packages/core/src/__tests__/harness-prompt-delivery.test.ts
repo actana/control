@@ -245,19 +245,24 @@ const CC_COMPOSER = readFileSync(
 /**
  * cursor-agent's boot banner and its idle composer.
  *
- * **Provenance, stated plainly because it is weaker than every other screen in
- * this file:** these two are written from issue 232's description, not
- * captured. cursor-agent 2026.08.11-e8db854 — the same build as the trust
- * fixture — was installed on this machine to capture them and stops at its
- * sign-in screen without credentials, so the authenticated composer was out of
- * reach here. What the issue supplies is the placeholder itself: the failed run
- * left "Cursor Agent sitting on its idle Plan-search-build-anything screen".
+ * **Provenance, and the two halves of it differ.** The composer is the real
+ * screen: cursor-agent 2026.08.11-e8db854 — the same build as the trust fixture
+ * — prints `→ Plan, search, build anything` when it is signed in and idle, and
+ * {@link HARNESS_READINESS}'s marker matches it on 5 of 5 cold boots. That text
+ * is committed as `fixtures/cursor-agent-2026.08.11-e8db854-composer.txt` and
+ * read from there, so the marker is asserted against the screen rather than
+ * against a literal written next to it.
  *
- * So these hold the *marker* to the account of the bug, and the delivery
- * sequence around it to the module's own rules — which is why the assertions
- * below lean on timing and on writes, not on byte-level fidelity. If the real
- * screen words it differently the marker stops matching and the backstop
- * delivers late; that is the failure this is allowed to have.
+ * It is not a capture taken on this branch's machine, and the trust fixture
+ * below arrived the same way (issue 177, PR #272): cursor-agent is installed
+ * here at that build but stops at its sign-in screen without credentials, so
+ * the text is the one quoted off a live signed-in install in the review of
+ * PR #275. Being text rather than bytes, it carries no escape sequences — the
+ * screen-clear below is this test's own scaffolding for "the TUI repainted",
+ * not part of the capture.
+ *
+ * The boot banner is still synthesised from issue 232's description; nothing
+ * asserts its bytes, only that no composer marker is anywhere on it.
  */
 const CURSOR_BOOT =
   `${ESC}[2J${ESC}[H` +
@@ -267,10 +272,10 @@ const CURSOR_BOOT =
 
 const CURSOR_IDLE_COMPOSER =
   `${ESC}[2J${ESC}[H` +
-  `╭────────────────────────────────────────────────╮\n` +
-  `│ > Plan, search, build anything                 │\n` +
-  `╰────────────────────────────────────────────────╯\n` +
-  `  ⏎ send · ⇧⏎ newline · / commands\n`;
+  readFileSync(
+    path.resolve(__dirname, "fixtures/cursor-agent-2026.08.11-e8db854-composer.txt"),
+    "utf8",
+  );
 
 /**
  * cursor-agent 2026.08.11-e8db854's Workspace Trust screen, in a fresh
@@ -1060,7 +1065,6 @@ describe("HARNESS_READINESS", () => {
     expect(composerOnScreen(CURSOR_TRUST_DIALOG, readiness)).toBe(false);
   });
 });
-
 
 describe("promptEchoed", () => {
   it("finds the prompt however the composer wrapped and decorated it", () => {

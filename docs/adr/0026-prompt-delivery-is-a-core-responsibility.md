@@ -143,6 +143,11 @@ readiness table is still per-harness with an empty default, still populated only
 from screens somebody has looked at, and still degrades to D8 rather than to a
 lost prompt when a marker stops matching. The markers are the composers' own
 placeholders: `Plan, search, build` for cursor-agent, `Try "` for claude-code.
+Both rows have a screen behind them: claude-code's is a live PTY capture taken
+here, and cursor-agent's idle composer (`→ Plan, search, build anything`) is the
+screen quoted off a signed-in install of build 2026.08.11-e8db854 in the review
+of PR #275, since cursor-agent stops at sign-in on the machine this was written
+on. Both are committed under `packages/core/src/__tests__/fixtures/`.
 
 **Why no constant was ever the alternative.** claude-code 2.1.235 was captured
 live on the machine this was written on, with `script --log-timing`: the
@@ -157,18 +162,23 @@ and the suite replays them at their measured timings.
 
 **A marker was rejected on a measurement, which is the discipline worth
 recording.** claude-code's `⏵⏵ … (shift+tab to cycle)` footer sits on the
-composer screen and reads like an obvious marker. In the same capture it
-arrived at 15 635 ms — ten seconds behind the composer and past D8's 15 s
-backstop — so gating on it would have delayed every prompt it was meant to
-protect. A marker has to be timed against the composer it stands for, not just
-found on the same screen.
+composer screen and reads like an obvious marker. It was observed at 15 635 ms
+in one capture — ten seconds behind that run's composer and past D8's 15 s
+backstop. It does not always land there: on a second 2.1.235 capture, taken on
+the reviewer's machine for PR #275, the footer arrived in the same frame as the
+composer. The rejection stands on the variance rather than on the one number. A
+marker that is *sometimes* ten seconds late cannot be gated on, because the run
+it is late on is exactly the run that gets delayed. A marker has to be timed
+against the composer it stands for, not just found on the same screen.
 
 **`codex` still has no entry, and that is a gap rather than a clearance.**
 Nothing in issue 232's sample exercised it and no codex screen has been read, so
 it keeps D3, D6 and D8 unchanged — which is precisely the path claude-code and
 cursor-cli were on while they were losing prompts. The honest reading of this
 amendment is that codex is *unverified*, not that it is safe, and a codex row is
-owed as soon as somebody captures its composer.
+owed as soon as somebody captures its composer. That is filed as
+[issue 277](https://github.com/actana/control/issues/277), so the gap has an
+address rather than a note in three files.
 
 **This is also why the mitigation belongs here and not in a client.** The
 workaround in use while this was open — start the Session, wait ~12 s, ask the

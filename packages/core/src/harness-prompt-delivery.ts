@@ -453,9 +453,13 @@ export function highlightIsOn(
  * The same table shape as {@link BLOCKING_DIALOGS} and for the same reason
  * (ADR 0026 D7): every field here is a transcription of a *named* harness's
  * screen, so a harness with no entry gets none of it. The default is the
- * behaviour every harness had before issue 229 — settle, type, submit — which
- * is what keeps `claude-code`, `codex` and `cursor-cli` byte-for-byte
- * unchanged by a fix that was only ever about opencode.
+ * behaviour every harness had before issue 229 — settle, type, submit — and an
+ * entry is the only thing that changes it. Issue 229 added opencode alone, on
+ * the reading that the other three were unaffected; issue 232 measured the
+ * same lost prompt on `cursor-cli` and `claude-code` and disproved it for two
+ * of them, so both have rows below. `codex` is the only harness left on the
+ * default, and it is there unverified rather than cleared — see the table's
+ * own note before adding to it.
  */
 export type HarnessReadiness = {
   /**
@@ -510,14 +514,20 @@ const NO_READINESS: HarnessReadiness = {
  * booted. `Plan, search, build` is cursor-agent's idle composer placeholder,
  * quoted in the issue's own account of the failed run.
  *
- * That marker is the one row in this table with no byte fixture behind it, and
- * the reason is recorded rather than glossed: cursor-agent 2026.08.11-e8db854
- * was installed on the machine this was written on and stops at its sign-in
- * screen, so the authenticated composer could not be captured here. The trust
- * dialog above has the same provenance for the same reason (issue 177). What
- * makes shipping the marker anyway the right call is the direction the failure
- * points: a marker that does not match costs `maxWaitMs` and a late prompt,
- * while the behaviour it replaces costs a lost one about one start in three.
+ * That marker was the one row in this table with no fixture behind it, and it
+ * no longer is. The screen is now on record from a signed-in install of the
+ * same build, 2026.08.11-e8db854: the idle composer reads `→ Plan, search,
+ * build anything` and the pattern above matches it on 5 of 5 cold boots. It is
+ * committed as `__tests__/fixtures/cursor-agent-2026.08.11-e8db854-composer.txt`
+ * and the marker is asserted against that file rather than against a literal.
+ *
+ * The provenance is still worth stating exactly, because it is not a capture
+ * taken on this branch's machine: cursor-agent is installed here at that same
+ * build but stops at its sign-in screen without credentials, so the text is the
+ * one quoted off a live signed-in install in the review of PR #275 — the same
+ * route the trust screen above arrived by (issue 177, PR #272). It is the screen
+ * as text, so it carries no escape sequences and nothing frames it; what it
+ * settles, it settles, and the placeholder is the whole of what this row needs.
  *
  * **claude-code** (issue 232, from the field evidence attached to it). Roughly
  * 25 `session start` runs across three Cores lost the start prompt 8–10 times
@@ -535,17 +545,21 @@ const NO_READINESS: HarnessReadiness = {
  * `Try "` is claude-code's composer placeholder and it lands in the same chunk
  * as the composer, on both builds in the fixture directory — 2.1.228 in bypass
  * mode and 2.1.235 in auto mode. The obvious alternative was rejected on a
- * measurement rather than on taste: the `⏵⏵ … (shift+tab to cycle)` footer
- * arrived at 15 635 ms in the same capture, ten seconds behind the composer
- * and past the 15 s backstop, so a marker on it would delay every claude-code
- * prompt it was supposed to protect.
+ * measurement rather than on taste: the `⏵⏵ … (shift+tab to cycle)` footer was
+ * observed at 15 635 ms in one capture — ten seconds behind that run's composer
+ * and past the 15 s backstop. It is not always that late; on another 2.1.235
+ * capture it arrived in the same frame as the composer. The variance is the
+ * argument, not the one number: a marker that is *sometimes* ten seconds late
+ * cannot be gated on, because the run it is late on is the run that a readiness
+ * signal exists to protect, and that is the run it would delay.
  *
  * **codex has no entry and that is not a claim that it is safe.** It is
  * unverified: nothing in issue 232's sample exercised it, and this table is
  * for screens somebody has looked at. Until one is, codex keeps the pre-229
  * behaviour — settle, type, submit — which is exactly the path claude-code and
  * cursor-cli were on when they lost prompts. Treat a codex row as owed, not as
- * unnecessary.
+ * unnecessary; it is tracked as issue 277, which lists the capture and the
+ * timing that would settle it either way.
  *
  * If a future build of any of these reworded its placeholder the marker stops
  * matching and delivery degrades to the backstop — the prompt goes out at
@@ -569,7 +583,6 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
     maxPromptWrites: 3,
   },
 };
-
 
 export function readinessFor(harness: string): HarnessReadiness {
   return HARNESS_READINESS[harness as Harness] ?? NO_READINESS;
@@ -913,8 +926,11 @@ export class HarnessPromptDelivery {
   /**
    * Is there enough evidence to justify the carriage return?
    *
-   * `true` for every harness with no `confirmEcho` entry, so this is a no-op
-   * for the three families that were never affected. Past the backstop and
+   * `true` for every harness with no `confirmEcho` entry, which today is
+   * `codex` alone — and it is there because nobody has read its screen, not
+   * because it was shown to be unaffected. The other three all set the flag:
+   * opencode from issue 229, `cursor-cli` and `claude-code` from the swallowed
+   * writes issue 232 measured on them. Past the backstop and
    * past the retype budget it is also `true`: leaving a prompt typed-but-
    * unsent is its own failure (D8), and an unjustified `\r` into an empty
    * composer costs nothing — unlike the one into a menu that D4a guards.
