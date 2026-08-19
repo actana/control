@@ -423,6 +423,59 @@ jobs:
           fi
           echo "✅ Branch model satisfied."
 
+  # The merge button on a promotion gate, made fatal (#264, ADR 0023 D5, D16).
+  #
+  # A `beta/x.y.z → main` pull request is a gate: checks and an approval
+  # accumulate on it and `promote.yml` performs the advance. GitHub offers a
+  # merge button on it anyway, and the repository's only enabled merge method
+  # is `squash` — the one that rewrites the SHA. #259 was squash-merged on
+  # 2026-08-18, the tested SHA stopped existing, the D16 digest assertion
+  # became unsatisfiable, and `v0.3.1` was abandoned with nothing red anywhere.
+  #
+  # Four documents and `promote.yml:191-193` already said the button must not
+  # be pressed; the person who pressed it had read one of them seven minutes
+  # earlier. This job is the difference between a rule and a mechanism: it goes
+  # red on exactly that pull request, permanently, and red is the healthy
+  # state for a gate. Its context is required by `docs/rulesets/main.json`,
+  # which is what turns the red into a disabled button.
+  #
+  # It does not break promotion, and this is the part worth being sure of:
+  # `promote.yml` never reads the gate pull request's check state. It asserts
+  # the pull request exists and is unique (`promote.yml:196-207`), reads its
+  # `headRefOid`, re-checks ancestry (`:444`) and pushes the SHA (`:457`) as
+  # the App, which is a bypass actor on 20390421 — so required checks do not
+  # apply to that push. A permanently red gate is invisible to the promotion
+  # path.
+  #
+  # **No `if:` on this job, deliberately** (ADR 0023 D33). A required check
+  # whose job is skipped stays Pending forever and blocks the pull request
+  # permanently, including the pull request that would remove the requirement.
+  # `Conventions` and `Train rules` carry `if: github.event_name ==
+  # 'pull_request'` and are safe because a push has no pull request to block —
+  # but this is the check that exists *because* a gate was waved through, so it
+  # takes the stricter form rather than the merely-sufficient one: every
+  # not-applicable case is an early `exit 0` inside the script, on every event.
+  #
+  # The decision is `scripts/promotion-gate.sh` rather than an inline heredoc so
+  # that both of its branches are executed by
+  # `scripts/__tests__/promotion-gate.test.mjs`, against the real script, rather
+  # than asserted by grepping this file.
+  promotion-gate:
+    name: Promotion gate
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Refuse a hand merge of the promotion gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.ref }}
+          HEAD: ${{ github.event.pull_request.head.ref }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: scripts/promotion-gate.sh
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-24.04
