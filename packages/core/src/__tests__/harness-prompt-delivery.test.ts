@@ -193,6 +193,36 @@ const REAL_COMPOSER = readFileSync(
 );
 
 /**
+ * cursor-agent 2026.08.11-e8db854's Workspace Trust screen, in a fresh
+ * untrusted directory.
+ *
+ * **Provenance:** this is not a capture taken on this branch's machine —
+ * cursor-agent is not installed there. It is the screen pasted into the
+ * review of PR #272 by a reviewer who does have it installed and who took it
+ * off a live PTY; the two lines ending `…` are elided in that paste, and it
+ * carries no escape sequences because it arrived as text rather than as
+ * bytes. It is committed anyway, because the one thing it settles it settles
+ * conclusively and no amount of wording-independence in {@link
+ * BLOCKING_DIALOGS} could have settled it: **the menu is letter-keyed.**
+ *
+ * `[a] Trust this workspace` / `[q] Quit` is a menu {@link readDialogOptions}
+ * cannot read, because `OPTION_LINE` requires a digit followed by `.` or `)`.
+ * So the entry that gives cursor-cli `folder-trust` makes the dialog
+ * *recognised* — which is what routes it to the abandon path and a
+ * `needs-input` Session instead of a prompt typed into a trust dialog — and it
+ * does not make it *answerable*. Reading letter keys is issue #273.
+ *
+ * The synthesised numbered menu in the test above this one proves the digit
+ * path works and is worth keeping; what it cannot do is stand in for this,
+ * because it encodes an assumption about cursor-agent that this screen
+ * contradicts.
+ */
+const CURSOR_TRUST_DIALOG = readFileSync(
+  path.resolve(__dirname, "fixtures/cursor-agent-2026.08.11-folder-trust.txt"),
+  "utf8",
+);
+
+/**
  * OpenCode 1.18.18's boot, up to the point where issue 229's prompt was lost —
  * captured byte-for-byte from a live PTY (only the project path substituted).
  *
@@ -523,6 +553,37 @@ describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
   it("does not fire on prose that merely contains the word trust", () => {
     const screen = "I do not trust this test to be meaningful without a menu.\n";
     expect(matchBlockingDialog(screen, specs)).toBeNull();
+  });
+
+  it("recognises the real trust screen and answers nothing on it", () => {
+    // The fixture, not a synthesis. `matchBlockingDialog` fires — the widened
+    // nouns catch `workspace` and `directory` — and `readDialogOptions` comes
+    // back empty, because the menu offers `[a]` and `[q]` rather than `1.` and
+    // `2.`. That combination is the whole of what this entry buys cursor-cli
+    // today: the dialog is seen, so delivery abandons and the Session reports
+    // `needs-input`; the dialog is not answered, and cannot be until
+    // `readDialogOptions` learns letter keys (issue #273).
+    const match = matchBlockingDialog(CURSOR_TRUST_DIALOG, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    expect(readDialogOptions(CURSOR_TRUST_DIALOG)).toEqual([]);
+    expect(match?.answer).toBeNull();
+  });
+
+  it("replays the real screen into an abandoned delivery, writing nothing", () => {
+    // What the entry is actually worth, end to end, on bytes rather than on a
+    // description of them. Before this PR the same screen produced `settled` →
+    // `delivered` and typed the prompt and a carriage return into the trust
+    // dialog while reporting success; a `needs-input` Session is the honest
+    // outcome and this is the test that holds the line at it.
+    const h = startDelivery("refactor the picker", { harness: "cursor-cli" });
+    h.delivery.onOutput(CURSOR_TRUST_DIALOG);
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "folder-trust" });
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
   });
 
   it("does not hand cursor-cli Claude Code's bypass-permissions screen", () => {

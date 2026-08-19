@@ -85,9 +85,26 @@ same reason: they make the entry less dependent on one vendor's wording, not
 more. D5 is unchanged and is what makes the widening safe — a screen whose menu
 does not parse yields no answer, and no answer means no keystroke.
 
-The honest caveat: cursor-agent's trust screen has not been observed by anyone
-who wrote the entry. If it does not match, the outcome is what it is today —
-unrecognised — with the change below making that visible.
+**What the entry achieves, precisely: recognition, not an answer.**
+cursor-agent's trust screen has since been observed on a machine that has the
+harness installed, and is committed as bytes at
+`packages/core/src/__tests__/fixtures/cursor-agent-2026.08.11-folder-trust.txt`.
+The nouns catch it. The menu is **letter-keyed** — `[a] Trust this workspace` /
+`[q] Quit` — and `readDialogOptions` reads digits, so it returns an empty list,
+`chooseDialogOption` returns null, and a cursor-cli delivery that meets this
+screen always abandons. The row makes the dialog *recognised*; answering it
+needs a menu reader this module does not have, which is
+[issue 273](https://github.com/actana/control/issues/273). The win is real and
+it is the change below: before the row, the prompt and a carriage return were
+typed into the trust dialog and the delivery reported `delivered`.
+
+**Recognition is not a net under a harness the table has never heard of, and
+this record previously said it was.** An *unrecognised* dialog does not abandon:
+`onQuiet` finds no dialog, emits `settled`, calls `writePrompt`, and the prompt
+goes into whatever is on screen. The `needs-input` outcome exists **only because
+a pattern matched**. D7 stands on the matching, not on a downstream backstop —
+whoever adds the fifth harness must not read this amendment as "matching is
+optional, the net catches it either way."
 
 **Abandoned delivery now moves the Session to `needs-input`.** D5 and D8 are
 deliberate that the Core types nothing into a dialog it cannot read and gives

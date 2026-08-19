@@ -277,12 +277,28 @@ export type BlockingDialogMatch = {
  * Claude's option order and arbitrary for anyone else's"* — and a key this
  * module never hard-codes is a key it cannot get arbitrarily wrong.
  *
- * **What is not verified:** cursor-agent's trust screen has not been observed
- * by anyone who wrote this entry, and the patterns below are deliberately
- * wording-independent *because* of that rather than in spite of it. If they do
- * not match, the outcome is exactly today's — the dialog is not recognised —
- * with the abandon path above now making it visible. What they cannot produce
- * is a wrong keystroke.
+ * **What that buys cursor-cli, exactly.** Its trust screen has since been
+ * observed and is committed as
+ * `__tests__/fixtures/cursor-agent-2026.08.11-folder-trust.txt`. The nouns
+ * catch it — `workspace`, `directory`, question mark — so the dialog is
+ * *recognised*. It is not *answered*, and cannot be: cursor-agent's menu is
+ * letter-keyed (`[a] Trust this workspace` / `[q] Quit`), `OPTION_LINE`
+ * below requires a digit, so {@link readDialogOptions} returns an empty list
+ * and {@link chooseDialogOption} returns null. Every cursor-cli delivery that
+ * meets this screen abandons. That is the whole of the win and it is still a
+ * real one — before it, the prompt and a carriage return went into the trust
+ * dialog and the delivery reported success. Teaching the reader letter keys is
+ * issue 273; until it lands, "recognised" is the honest word for this row.
+ *
+ * **What recognition is not: a net under harnesses this table has never
+ * heard of.** An *unrecognised* dialog does not abandon. `onQuiet` finds no
+ * dialog, emits `settled`, and calls `writePrompt` — the prompt is typed into
+ * whatever is on screen, which is precisely what cursor-agent's trust screen
+ * got before it had a row here. The `needs-input` outcome exists **only
+ * because a pattern here matched**. Anyone adding a fifth harness should read that as: matching is
+ * the whole job; nothing downstream catches a dialog this table missed. What
+ * a wording-independent pattern buys is a match that cannot produce a *wrong
+ * keystroke*, not a match that is optional.
  */
 export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   {
