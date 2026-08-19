@@ -179,6 +179,60 @@ describe("actana session start", () => {
     expect(run.err.join("\n")).toContain("Started claude-code in web");
   });
 
+  // ─── The turn-start asymmetry (issue 177 finding 4) ────────────────────
+  //
+  // Over the CLI a cursor-cli Session is statusless from prompt to stop:
+  // cursor-agent takes the Core's `.cursor/hooks.json` and never fires
+  // `beforeSubmitPrompt`, so nothing moves the row to `running`. The Panel
+  // compensates by watching the keystrokes going into its pane; `start` hands
+  // the prompt over and hangs up, so it has no keystrokes to watch. What it
+  // can do is say so, which is the half of the acceptance criterion a CLI can
+  // honestly meet.
+
+  it("says plainly when nothing will report the start of a turn", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--harness", "cursor-cli"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({ harness: "cursor-cli", reportsTurnStart: false }),
+      }),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    const err = run.err.join("\n");
+    expect(err).toContain("does not report the start of a turn");
+    expect(err).toContain("cursor-cli");
+    // Named so an operator does not read the caveat as "this session is
+    // broken" — the two things that still work are the two they would reach
+    // for next.
+    expect(err).toContain("--wait");
+    expect(err).toContain("session logs");
+    // Still just the id on stdout: a caveat is not output a script captures.
+    expect(run.out).toEqual(["task_1"]);
+  });
+
+  it("says nothing about turn starts for a harness that reports them", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go"], {
+      sessions: fakeSessionGateway({
+        start: async () => fakeStartedSession({ reportsTurnStart: true }),
+      }),
+    });
+    expect(run.err.join("\n")).not.toContain("does not report the start of a turn");
+  });
+
+  it("carries the answer as a --json field, not only as prose", async () => {
+    // A script deciding whether a quiet status means "still working" or "never
+    // started" cannot parse a sentence off stderr.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--json"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({ harness: "cursor-cli", reportsTurnStart: false }),
+      }),
+    });
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({ reportsTurnStart: false });
+  });
+
   it("hands the prompt over as typed, and never a carriage return with it", async () => {
     await withRegisteredCore();
     let seen: Record<string, unknown> | null = null;

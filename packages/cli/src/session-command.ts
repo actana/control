@@ -274,6 +274,11 @@ async function reportStartedSession(
     const where = session.project ?? session.projectId;
     deps.err(`Started ${session.harness} in ${where} — session ${session.taskId}, pty ${session.ptyId}.`);
     deps.verbose(`command: ${session.command}`);
+    // Issue 177 finding 4, said out loud rather than left to be discovered.
+    // Not `verbose`: an operator who has to know this is precisely one who has
+    // not passed `-v`, and the line they would otherwise read is a `session
+    // ls` that has not moved.
+    if (!session.reportsTurnStart) deps.err(noTurnStartLine(session.harness));
 
     if (!args.wait) {
       // The one-shot default (#129 D6). The id is the whole of stdout, so it can
@@ -663,6 +668,27 @@ async function readText(
   return { text: words.join(" ") };
 }
 
+/**
+ * What a caller is told when nothing will report this Session's turn starting.
+ *
+ * The Panel answers the same gap with a terminal-input fallback — it watches
+ * the keystrokes going into the pane and calls an Enter the start of a turn.
+ * A CLI has no equivalent: `start` hands the prompt to the Core and hangs up
+ * (#129 D6), so there is no keystroke stream here to watch and inventing a
+ * `running` this side never observed would be a status the Core did not say.
+ *
+ * So the asymmetry is printed instead. The sentence names what still works,
+ * because the failure this prevents is an operator reading a stalled `session
+ * ls` as a stalled harness and killing a Session that was working.
+ */
+function noTurnStartLine(harness: string): string {
+  return (
+    `Note: ${harness} does not report the start of a turn, so this session ` +
+    `will not show as running until it stops. \`--wait\` and \`session logs\` ` +
+    `are unaffected.`
+  );
+}
+
 /** The identity fields `start` and `resume` report, in both output modes. */
 function startedFields(session: StartedSession): Record<string, unknown> {
   return {
@@ -670,6 +696,10 @@ function startedFields(session: StartedSession): Record<string, unknown> {
     ptyId: session.ptyId,
     harness: session.harness,
     command: session.command,
+    // In `--json` too, and unconditionally: a script deciding whether a quiet
+    // status means "still working" or "never started" needs the answer as a
+    // field, not as a sentence on stderr it would have to parse.
+    reportsTurnStart: session.reportsTurnStart,
     projectId: session.projectId,
     project: session.project,
   };
