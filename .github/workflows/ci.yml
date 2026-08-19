@@ -506,7 +506,35 @@ jobs:
           version: 11.1.2
           cache: true
       - run: pnpm install --frozen-lockfile
+      # `pnpm test` is `scripts/run-unit-tests.mjs`: it runs the root suite and
+      # all five packages, every one of them, and aggregates the exit codes at
+      # the end instead of stopping at the first red. It names the failing
+      # packages in an annotation and in the job summary, so a reviewer sees
+      # which package failed without opening this log (#257).
       - run: pnpm test
+      # The second opinion on the temp leak, at job scope rather than run
+      # scope: the runner sandboxes its own `TMPDIR` and removes it, so
+      # anything matching `mc-*`/`actana-*` still standing here came from a
+      # hardcoded path that ignored it — or from a step other than the tests.
+      # `if: always()` so a red test run still gets the disk verdict.
+      #
+      # ASSUMPTION: an ephemeral runner, where `/tmp` starts empty — this is an
+      # absolute check, not the before/after diff `run-unit-tests.mjs` does.
+      # On a self-hosted runner one pre-existing `mc-*` would make this step
+      # permanently red; swap it for a diff against a pre-suite listing there.
+      - name: No temp directories survived the job
+        if: always()
+        run: |
+          leftovers="$(ls -d /tmp/mc-* /tmp/actana-* 2>/dev/null || true)"
+          echo "Disk after the suites:"
+          df -h /tmp | tail -1
+          df -i /tmp | tail -1
+          if [[ -n "$leftovers" ]]; then
+            echo "::error title=Unit Tests — temp directories leaked::The test job left directories behind; they accumulate on the runner until it runs out of disk."
+            echo "$leftovers"
+            exit 1
+          fi
+          echo "No mc-*/actana-* directories were left behind."
 
   lint:
     name: Lint
