@@ -524,6 +524,61 @@ describe("token", () => {
   });
 });
 
+// ─── pair (#283) ────────────────────────────────────────────────────────────
+//
+// `actana-pair.test.ts` is where the three verbs are exercised. What is here is
+// the other question, and it is the one #288 exists over: does the verb an
+// operator reads about in `actana --help` actually answer on this binary, on
+// the machine that has the Core. The suite reaches it the long way round —
+// through `runActanaCli`, after a real `setup` — so a `pair` wired into the
+// help and not into the dispatch would fail here.
+
+describe("pair", () => {
+  it("reaches the Core-side pairing verbs through the real dispatch", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+    err.length = 0;
+
+    expect(await runActanaCli(deps(["pair", "new", "--label", "laptop"], fakeSystem()))).toBe(0);
+    expect(out.join("\n")).toMatch(/^Pairing code\s+[A-Z2-9]{4}-[A-Z2-9]{4}$/m);
+    expect(out.join("\n")).toMatch(/^CA fingerprint\s+[0-9A-F]{2}(:[0-9A-F]{2}){31}$/m);
+  });
+
+  it("writes the session beside the material, where the daemon reads it", async () => {
+    await setup(fakeSystem());
+    await runActanaCli(deps(["pair", "new", "--label", "laptop"], fakeSystem()));
+    const pairingFile = path.join(layoutForHome().configDir, "pairing.json");
+    expect(fs.existsSync(pairingFile)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(pairingFile, "utf8")).sessions).toHaveLength(1);
+  });
+
+  it("lists what it minted, without the code", async () => {
+    await setup(fakeSystem());
+    await runActanaCli(deps(["pair", "new", "--label", "laptop"], fakeSystem()));
+    const code = out.join("\n").match(/Pairing code\s+(\S+)/)![1]!;
+    out.length = 0;
+
+    expect(await runActanaCli(deps(["pair", "ls"], fakeSystem()))).toBe(0);
+    expect(out.join("\n")).toContain("laptop");
+    expect(out.join("\n")).not.toContain(code);
+  });
+
+  it("says which machine it is for, in the top-level help and its own", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem()));
+    expect(out.join("\n")).toMatch(/^\s+pair\b/m);
+    expect(out.join("\n")).toMatch(/actana core pair.*client end/);
+    out.length = 0;
+
+    await runActanaCli(deps(["pair", "--help"], fakeSystem()));
+    expect(out.join("\n")).toMatch(/You are on the Core/);
+  });
+
+  it("fails clearly when nothing is installed", async () => {
+    expect(await runActanaCli(deps(["pair", "ls"], fakeSystem()))).toBe(1);
+    expect(err.join("\n")).toContain("actana setup");
+  });
+});
+
 describe("token regenerate", () => {
   it("issues credentials the old pairing token's no longer match", async () => {
     await setup(fakeSystem());
