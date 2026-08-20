@@ -51,6 +51,7 @@ import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
 import { pairingAuditor, type PairingAuditEvent } from "./core-pairing-audit";
 import { PairingRateLimiter } from "./core-pairing-rate-limit";
+import { pairingBearerSubject } from "./core-pairing-revocation";
 
 /** Everything this module answers lives under here. */
 export const CORE_PAIRING_ROUTE_PREFIX = "/v1/pair/";
@@ -350,7 +351,7 @@ export function createCorePairingRequestHandler(opts: CorePairingRoutesOptions):
         // certificate serial because that is what identifies *this pairing* —
         // a label is whatever the operator typed, possibly twice.
         iss: `core:${opts.material.coreId}`,
-        sub: `pair:${issued.serial}`,
+        sub: pairingBearerSubject(issued.serial),
         aud: opts.material.coreUuid,
         jti: randomUUID(),
       },

@@ -62,6 +62,11 @@ import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "./core-pairing-wiring";
 import type { CorePairingRoutesOptions } from "./core-pairing-routes";
 import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
+import {
+  PairingRevocations,
+  startPairingRevocationSweep,
+  type PairingRevocationSweep,
+} from "./core-pairing-revocation";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
 import { configureProjectRootsDb } from "./project-roots";
@@ -348,6 +353,10 @@ async function startCore(): Promise<void> {
   // what keeps a loopback Core's TLS posture and route list exactly as they
   // were.
   let pairing: CorePairingRoutesOptions | null = null;
+  // Set beside `pairing`, and for the same reason: a Core with no persisted
+  // material has no pairing store, so there is nothing on this machine that
+  // could have been revoked.
+  let revocations: PairingRevocations | null = null;
 
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
@@ -460,6 +469,7 @@ async function startCore(): Promise<void> {
       // operator's `actana pair new` and this daemon can both see — all three
       // are the persisted material, and a daemon started without one has
       // nowhere for a session to live.
+      const pairingStore = new PairingStore(pairingStorePath(materialFile));
       pairing = {
         material: {
           caCert: material.caCert,
@@ -468,10 +478,18 @@ async function startCore(): Promise<void> {
           coreId: material.coreId,
           coreUuid: material.coreUuid,
         },
-        sessions: new PairingStore(pairingStorePath(materialFile)),
+        sessions: pairingStore,
         endpoint: `wss://${publicHost}:${port}`,
         bearerDays,
       };
+      // The other half of `actana pair revoke` (#283). That command runs in the
+      // CLI and can only stamp a row; this is the process that makes the stamp
+      // mean something — refusing the certificate at the gate, refusing the
+      // bearer at the `auth` frame, and closing the link a revoked client
+      // already has open. Built here, next to the store it reads, and armed
+      // below once there is a server for it to close connections on.
+      revocations = new PairingRevocations(pairingStore);
+      serverOpts.revocation = revocations;
 
       serverOpts.tls = {
         caCert: material.caCert,
@@ -624,6 +642,18 @@ async function startCore(): Promise<void> {
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 
+  // Armed after the server exists, because what it does when it finds a fresh
+  // revocation is close that client's connections. Its first read runs here and
+  // is deliberately not dispatched — see `startPairingRevocationSweep` — so a
+  // Core that boots with revocations already on file refuses them from its
+  // first request rather than from one second in.
+  const revocationSweep: PairingRevocationSweep | null = revocations
+    ? startPairingRevocationSweep({
+        revocations,
+        onRevoked: (certSerials) => server.closeRevoked(certSerials),
+      })
+    : null;
+
   // Alert-only, once a day, into this daemon's log — never a frame the Panel
   // raises and never an update this process applies (ADR 0010).
   //
@@ -653,6 +683,7 @@ async function startCore(): Promise<void> {
     sessionBackstop?.stop();
     availabilityStore.stop();
     updateNotice?.stop();
+    revocationSweep?.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();
