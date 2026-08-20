@@ -7,10 +7,11 @@
 // That is what lets both callers claim the same property:
 //
 //   **a failed fetch is a no-op.** `update` says "the Core is still running the
-//   version it was"; `install` says "nothing was installed". Neither is a
-//   promise about careful error handling — it is a fact about which directories
-//   this function is allowed to write to, and `install`'s wrong-checksum test
-//   is what holds it.
+//   version it was"; `install` says "nothing was installed". Each caller hands
+//   in its own sentence (`noChange`), because only the caller knows which of
+//   those two is true. Neither is a promise about careful error handling — it is
+//   a fact about which directories this function is allowed to write to, and
+//   `install`'s wrong-checksum test is what holds it.
 //
 // The CLI is now a second front door onto this work. `install.sh` is the first
 // and it stays exactly as it is: a bare machine has no Node and the tarball
@@ -43,6 +44,17 @@ export type FetchReleaseOptions = {
   arch: string;
   /** Progress for the operator. */
   out: (line: string) => void;
+  /**
+   * How *this* caller says a failed fetch changed nothing, and what to retry.
+   *
+   * Supplied rather than written here because the two callers have different
+   * facts to state: `update` has a Core it left running, `install` has no Core
+   * at all — and telling somebody's first `actana install` that "the Core is
+   * still running the version it was. Retry the update" describes a machine
+   * they do not have. The property being reported is the same one either way,
+   * and it is this module's: nothing outside `workDir` has been written yet.
+   */
+  noChange: string;
 };
 
 /**
@@ -95,9 +107,8 @@ export async function fetchVerifiedRelease(
       `checksum mismatch for ${asset} — refusing to install it.\n` +
         `  expected ${expected}\n` +
         `  actual   ${actual}\n` +
-        "Nothing was changed; the Core is still running the version it was. Retry the " +
-        "update, and if it keeps failing the release assets or the connection to them " +
-        "cannot be trusted.",
+        `${opts.noChange}, and if it keeps failing the release assets or the connection ` +
+        "to them cannot be trusted.",
     );
   }
   // What this proves: the tarball is the one the release's own checksum file

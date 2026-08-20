@@ -250,11 +250,21 @@ RUN mkdir -p /home/core/.local/bin \
 # There is deliberately no `npm install` in this image — an image whose
 # contents depend on what is on the registry at build time is not reproducible
 # from this repository (ADR 0032 D7).
+#
+# **ACTANA_ROOT is what makes that true of `daemon` as well.** The `daemon` verb
+# has to find `app/core-entry.cjs`, and it looks in ACTANA_ROOT first and then at
+# the managed install's `current` symlink. The tarball's own `bin/actana` exports
+# ACTANA_ROOT for itself, so CMD works — but an `npm i -g @actana/cli` inside the
+# container lands its shim first on PATH with neither answer available, and the
+# next start would say "no Core is installed here" instead of booting a daemon.
+# Setting it in the image is what leaves the collision with no outcome to decide:
+# whichever `actana` runs, it is the same program and it finds the same tree.
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
     ACTANA_CONTAINER=1 \
     AC_CORE_REMOTE=1 \
     AC_CORE_LINK_HOST=0.0.0.0 \
+    ACTANA_ROOT=/opt/actana \
     AC_APP_PATH=/opt/actana/app \
     AC_USER_DATA_DIR=/home/core/.local/share/actana/data \
     AC_CORE_MATERIAL_FILE=/home/core/.config/actana/material.json \

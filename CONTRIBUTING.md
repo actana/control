@@ -50,10 +50,10 @@ control/
 │   │       ├── actana-cli.ts       noun dispatch
 │   │       ├── blob-registry.ts    ~/.config/actana/cores/<name>.txt, mode 0600
 │   │       └── core-command.ts     the `core` noun
-│   ├── core/               Standalone Node daemon — the Core
+│   ├── core/               Standalone Node daemon — the Core, and nothing else
 │   │   └── src/
 │   │       ├── core-entry.ts           daemon entry
-│   │       ├── actana-cli.ts           the `actana` CLI (setup, status, token)
+│   │       ├── core-first-run.ts       mints this Core's identity on an empty volume
 │   │       ├── pty-manager.ts          PTY lifecycle
 │   │       └── pty-core-link-server.ts core-link WebSocket server
 │   ├── panel/              The Panel — service + browser UI

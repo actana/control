@@ -8,11 +8,14 @@
 // One entry for one program (#288). It is compiled twice, and the two bundles
 // are what the two doors onto `actana` load:
 //
-//   dist/actana-cli.mjs   ESM — what `bin/actana.mjs` loads, and what
-//                         `npm i -g @actana/cli` puts on an operator's PATH.
-//   dist/actana-cli.cjs   CJS — staged into the Core tarball as
-//                         `app/actana-cli.cjs`, which `bin/actana` in the
-//                         tarball execs on the bundled Node.
+//   dist/actana-cli.mjs          ESM — what `bin/actana.mjs` loads, and what
+//                                `npm i -g @actana/cli` puts on an operator's
+//                                PATH.
+//   dist-tarball/actana-cli.cjs  CJS — staged into the Core tarball as
+//                                `app/actana-cli.cjs`, which `bin/actana` in
+//                                the tarball execs on the bundled Node. It is
+//                                emitted outside `dist/` so the npm package
+//                                does not publish a second copy of itself.
 //
 // Same source, same verbs, same help: which of the two answers `actana` on a
 // machine that has both is no longer a question with consequences.

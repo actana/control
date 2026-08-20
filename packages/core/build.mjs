@@ -33,4 +33,4 @@ await build({
 // not any more: `packages/cli` owns the whole `actana` command and emits both
 // the published ESM bundle and the tarball's CJS one (#288 D1). This package is
 // the daemon and nothing else, and `scripts/build-core-tarball.mjs` stages the
-// CLI from `packages/cli/dist`.
+// CLI from `packages/cli/dist-tarball`.

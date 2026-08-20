@@ -68,7 +68,15 @@ export async function runActanaInstall(opts: InstallOptions): Promise<SetupResul
   const version = await resolveReleaseVersion(opts.fetcher, opts.channel, opts.requestedVersion);
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-install-work-"));
   try {
-    const { root, manifest } = await fetchVerifiedRelease(opts, version, target, workDir);
+    const { root, manifest } = await fetchVerifiedRelease(
+      // There is no Core here yet, so nothing can be "still running the version
+      // it was" — the honest promise on a failed first install is that the
+      // machine is exactly as it was found.
+      { ...opts, noChange: "Nothing was installed. Retry the install" },
+      version,
+      target,
+      workDir,
+    );
     // Only now does anything outside `workDir` get written. Everything above
     // this line is reversible by deleting one temporary directory, which the
     // `finally` does whether this succeeded or threw.

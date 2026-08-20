@@ -137,7 +137,17 @@ describe("actana install (#288 D8)", () => {
     });
 
     expect(code).toBe(1);
-    expect(err.join("\n")).toContain("checksum mismatch");
+    const said = err.join("\n");
+    expect(said).toContain("checksum mismatch");
+
+    // And it says so in this verb's own terms. The sentence used to be written
+    // into `actana-fetch-release.ts` for `update`, so a first-time `install`
+    // that failed here was told "the Core is still running the version it was.
+    // Retry the update" — an account of a machine the operator does not have.
+    // The caller supplies it now (#294 review), and this is the assertion that
+    // keeps `update`'s wording from drifting back over `install`'s.
+    expect(said).toContain("Nothing was installed. Retry the install");
+    expect(said).not.toContain("still running the version it was");
 
     // The claim in full: not "it printed an error", but "nothing exists".
     const installed = layout();

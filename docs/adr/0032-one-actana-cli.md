@@ -154,7 +154,9 @@ landed.
 
 `deploy/core.Dockerfile` continues to extract the tarball into `/opt/actana`.
 What changed is that `app/actana-cli.cjs` is now the unified bundle, staged from
-`packages/cli/dist` rather than `packages/core/dist`. There is no `npm install`
+`packages/cli/dist-tarball` rather than `packages/core/dist`. The CJS bundle is
+emitted outside `dist/` on purpose, so the npm package does not publish a second
+copy of the program it already ships as ESM. There is no `npm install`
 at image build time: that would tie image builds to a published version, and an
 image whose contents depend on what is on the registry at build time is not
 reproducible from this repository.
@@ -164,6 +166,15 @@ Once the two are the same program the `NPM_CONFIG_PREFIX` and `PATH` ordering
 package puts the same program there. That is what "there is nothing to shadow"
 means: not that the collision is prevented, but that its outcome no longer
 differs.
+
+One verb needed a second line to make that true of it. `daemon` resolves
+`<install root>/app/core-entry.cjs` (D4), and the tarball's `bin/actana` is what
+exports `ACTANA_ROOT` — so an `npm i -g @actana/cli` inside the container, whose
+shim lands first on `PATH`, had neither `ACTANA_ROOT` nor a managed install's
+`current` symlink to resolve, and the container's `CMD ["actana","daemon"]` would
+have answered *"no Core is installed here"* on the next start. The image now sets
+`ACTANA_ROOT=/opt/actana` beside `AC_APP_PATH`, which is a fact about where this
+image put the tree and is true whichever `actana` reads it.
 
 ### D8 — The CLI can install a Core
 
@@ -191,10 +202,39 @@ A selection the operator already made is kept — the local Core is registered a
 named, and `core use` is one command away — following the same "no clobber, no
 silent win" rule as D10. A CLI with no local Core behaves exactly as before.
 
+**In a container the daemon does it, because nothing else can.** The image is
+the install (ADR 0016 D13): `setup` and `install` are refused there, so the one
+program that ever runs on that machine with the material in hand is the daemon
+itself. On every boot it writes its own blob into the same registry, under the
+name its `ACTANA_LABEL` gives, and points `current` at it under the same
+no-clobber rule — `packages/core/src/core-self-register.ts`, reaching the
+registry through `@actana/shared/local-core-wiring`, which is why the on-disk
+half of the registry moved into the package both halves may import. Every boot
+rather than the boot that mints, because a volume older than this has material
+and a blob but no registry entry, and a Core that only wired itself once would
+never repair one.
+
+Of the two ways to close this, the other was for the CLI to resolve a local Core
+out of `AC_CORE_MATERIAL_FILE` / `registration-blob.txt` when it finds itself in
+container mode. It was rejected: it would give the client half a second,
+container-only way to find a credential — a path `core ls`, `core use` and the
+`current` pointer all have to agree with — where this way produces an ordinary
+registry entry that every existing verb already understands, and leaves one
+implementation of "which Cores does this machine know about".
+
+**The endpoint in that entry is `wss://127.0.0.1:<port>`, not the public host.**
+`ACTANA_PUBLIC_HOST` is the address *other* machines dial and inside the
+container it may not route at all; the CLI doing the dialling here shares a
+network namespace with the daemon. `core-cert-material.ts` puts `127.0.0.1` in
+every server cert's SAN, on the mint path and the re-issue path both, so the
+loopback dial verifies.
+
 The `actana-sessions` skill gains the corresponding rule, and a test holds the
 skill's verb surface against the dispatch. **That is what finally makes the
 skill honest on the machine the Core itself installs it on**, which is the whole
-complaint this record opens with.
+complaint this record opens with — and `scripts/smoke-core-image.mjs` now proves
+it on the built image, asserting that `core ls` lists this Core as selected and
+that `session ls` reaches it, instead of accepting the empty-registry sentence.
 
 ### D10 — One owner for the launcher path
 

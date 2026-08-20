@@ -3,7 +3,8 @@
 // ADR 0031 D8. The skill is authored once at
 // `.agents/skills/actana-sessions/SKILL.md`, following the `release` skill's
 // harness-neutral precedent, and this script writes it into `packages/shared`
-// (which the Core imports) and `packages/cli` (which may not import shared).
+// (which the Core imports) and `packages/cli`, which embeds its own copy so the
+// published bundle carries the payload rather than resolving it (ADR 0031 D8).
 //
 // **Embedded as a string, not copied into `dist/`.** The Core ships as an
 // esbuild bundle and the CLI ships as one too, so a `.md` asset read from disk

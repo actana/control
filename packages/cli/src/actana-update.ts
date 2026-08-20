@@ -115,7 +115,15 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   let root: string;
   let manifest: CoreManifest;
   try {
-    ({ root, manifest } = await fetchVerifiedRelease(opts, version, target, workDir));
+    ({ root, manifest } = await fetchVerifiedRelease(
+      {
+        ...opts,
+        noChange: "Nothing was changed; the Core is still running the version it was. Retry the update",
+      },
+      version,
+      target,
+      workDir,
+    ));
 
     // Everything above this line was reversible. From here the install changes.
     //

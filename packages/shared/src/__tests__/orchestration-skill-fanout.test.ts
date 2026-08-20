@@ -5,9 +5,13 @@
 //     `HARNESS_CLI_CONFIG` (`as const satisfies Record<Harness, …>`); this is
 //     the belt to that pair of braces, and it is the assertion that survives
 //     somebody widening the type.
-//  2. **No drift between the copies** (D8). The CLI cannot import this package,
-//     so the installer module and the fan-out table exist twice. This test is
-//     the mechanism that makes "authored once" true rather than intended.
+//  2. **No drift between the copies** (D8). The installer module and the fan-out
+//     table exist twice because the payload is embedded in two bundles, one per
+//     program that writes the skill. The import rule that used to force that is
+//     superseded (ADR 0032 D5 — the CLI may import this package now, and D8's own
+//     note keeps the arrangement anyway); the copies are unchanged, so this test
+//     is still the mechanism that makes "authored once" true rather than
+//     intended.
 //  3. **The skill is what the record says it is** (D9) — generic, self-contained,
 //     and carrying the whole sentinel rule.
 
@@ -90,7 +94,7 @@ describe("the installer exists twice and is one file (ADR 0031 D8)", () => {
     expect(
       theirs === mine,
       "packages/cli/src/orchestration-skill-install.ts has drifted from the shared copy — " +
-        "edit one and copy it across; the two packages cannot import each other (ADR 0025 D2/D4)",
+        "edit one and copy it across; the payload is embedded in both bundles (ADR 0031 D8)",
     ).toBe(true);
   });
 });
