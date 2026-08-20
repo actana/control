@@ -103,9 +103,18 @@ class FakeTaskStore implements CoreMutationPort {
       updatedAt: existing.updatedAt + 1,
     };
     this.tasks.set(next.taskId, next);
-    this.eventLog.appendEvent("task:updated", JSON.stringify({ taskId: next.taskId }), {
-      taskId: next.taskId,
-    });
+    // The **patched** status rides in the payload, as `core-task-writer.ts`
+    // appends it: it is what tells a waiter that this event reported a turn
+    // rather than a rename, and a fake that dropped it would let a wait pass
+    // here and hang against a Core.
+    this.eventLog.appendEvent(
+      "task:updated",
+      JSON.stringify({
+        taskId: next.taskId,
+        ...(mutation.status === undefined ? {} : { status: mutation.status }),
+      }),
+      { taskId: next.taskId },
+    );
     if (next.status === "finished" && previousStatus !== "finished") {
       this.eventLog.appendEvent("session:finished", JSON.stringify({ id: next.taskId }), {
         taskId: next.taskId,
@@ -126,6 +135,26 @@ class FakeTaskStore implements CoreMutationPort {
   /** What the Core's hook pipeline does when a harness reports its lifecycle. */
   setStatus(taskId: string, status: string): void {
     this.mutateTask({ op: "update", taskId, status });
+  }
+
+  /** A row change that is not a turn — what the title generator does (issue 84). */
+  rename(taskId: string, title: string): void {
+    this.mutateTask({ op: "update", taskId, title });
+  }
+
+  /**
+   * A status change the event does not name: the row moves and the event says
+   * only that it moved.
+   *
+   * The shape a Core too old to name the patched status sends (#289 A), and the
+   * one route by which a status still reaches a client through a read rather
+   * than through the event that announced it.
+   */
+  setStatusSilently(taskId: string, status: string): void {
+    const existing = this.tasks.get(taskId);
+    if (!existing) return;
+    this.tasks.set(taskId, { ...existing, status, updatedAt: existing.updatedAt + 1 });
+    this.eventLog.appendEvent("task:updated", JSON.stringify({ taskId }), { taskId });
   }
 }
 
@@ -154,6 +183,12 @@ function startRig(
   if (opts.spawn) ptyCore.spawn = opts.spawn;
   const eventLog = new FakeEventLog();
   const tasks = new FakeTaskStore(eventLog);
+  // The Core stamps a delivery with the Task behind the PTY (#289 A), and the
+  // shared fake answers `null` — every Session in this suite runs on `pty-1`,
+  // so the newest row is the one it belongs to.
+  ptyCore.taskIdForPty = vi.fn((ptyId: string) =>
+    ptyId === "pty-1" ? ([...tasks.tasks.keys()].at(-1) ?? null) : null,
+  ) as unknown as typeof ptyCore.taskIdForPty;
   const wss = new FakeSocketServer();
   const server = new PtyCoreLinkServer(ptyCore, {
     port: 0,
@@ -613,11 +648,12 @@ describe("waiting on the Core's report", () => {
   });
 
   it("asks again when the status read fails, because the event will not come twice", async () => {
-    // `needs-input`, `interrupted` and `terminated` reach this layer as a bare
-    // `task:updated` — the event says a row moved and nothing more, so the
-    // status is read back off the Core, and that event is appended once. A read
-    // swallowed on the transition that mattered leaves `waitForIdle()` waiting
-    // for a report already made, and by design it has no deadline to end on.
+    // Against a Core that does not name the status it patched, a transition
+    // reaches this layer as a bare `task:updated` — the event says a row moved
+    // and nothing more, so the status is read back off the Core, and that event
+    // is appended once. A read swallowed on the transition that mattered leaves
+    // `waitForIdle()` waiting for a report already made, and by design it has no
+    // deadline to end on.
     rig = startRig();
     session = await startSession(rig);
     const r = rig;
@@ -632,7 +668,7 @@ describe("waiting on the Core's report", () => {
     });
     const idle = session.waitForIdle();
 
-    r.tasks.setStatus(session.taskId, "needs-input");
+    r.tasks.setStatusSilently(session.taskId, "needs-input");
 
     await expect(idle).resolves.toEqual({ status: "needs-input", exited: false });
     expect(failed).toBe(1);
@@ -647,7 +683,7 @@ describe("waiting on the Core's report", () => {
     const r = rig;
     vi.spyOn(r.client, "sessionsList").mockRejectedValue(new Error("link dropped"));
 
-    r.tasks.setStatus(session.taskId, "needs-input");
+    r.tasks.setStatusSilently(session.taskId, "needs-input");
 
     const attempts = () => vi.mocked(r.client.sessionsList).mock.calls.length;
     await vi.waitFor(() => expect(attempts()).toBe(1 + STATUS_READ_RETRIES), { timeout: 3000 });
@@ -662,6 +698,231 @@ describe("waiting on the Core's report", () => {
     session = await startSession(rig);
 
     expect(rig.client.isSubscribedToEvents()).toBe(true);
+  });
+});
+
+describe("attaching to a Session that is already running (#289)", () => {
+  /** A Session on the Core, started by somebody else, still on `pty-1`. */
+  async function runningSession(status = "running"): Promise<string> {
+    const r = rig!;
+    await r.client.connect();
+    const created = await r.client.tasksMutate({
+      op: "create",
+      projectId: PROJECT_ID,
+      title: "somebody else's session",
+      agent: "claude-code",
+    });
+    r.tasks.setStatus(created!.taskId, status);
+    return created!.taskId;
+  }
+
+  it("joins a running PTY, paints its scrollback, and names none of the spawn's answers", async () => {
+    rig = startRig();
+    const taskId = await runningSession();
+
+    session = await CoreSession.attach(rig.client, { taskId });
+
+    expect(session.taskId).toBe(taskId);
+    expect(session.ptyId).toBe("pty-1");
+    // The Core's replay ring, so the transcript starts where the conversation
+    // does rather than where this process happened to arrive.
+    expect(session.screen()).toContain("scrollback");
+    // An attach did not spawn, so the three answers a spawn gives are null
+    // rather than plausible. `reportsTurnStart` above all: `false` would read
+    // as "this harness does not report turn starts", which was never asked.
+    expect(session.harness).toBeNull();
+    expect(session.command).toBeNull();
+    expect(session.reportsTurnStart).toBeNull();
+  });
+
+  it("refuses to attach to a Session with no harness running, rather than hanging", async () => {
+    // The failure this replaces is the worst one available: a wait against a
+    // Session nothing is running for has nothing that will ever report a turn,
+    // so it would sit until the caller's deadline and then blame the Core.
+    rig = startRig();
+    const taskId = await runningSession();
+    rig.ptyCore.findByTask = vi.fn(() => ({ ptyId: null })) as unknown as typeof rig.ptyCore.findByTask;
+
+    await expect(CoreSession.attach(rig.client, { taskId })).rejects.toThrow(
+      /has no harness running/,
+    );
+  });
+
+  it("answers a bare wait from the status the Session is already in", async () => {
+    // `actana session wait` with nothing delivered asks "tell me when this
+    // Session is not working". A Session parked on a question is not working,
+    // and saying so at once is the truthful answer — there is no turn in flight
+    // that this could be mistaken for.
+    rig = startRig();
+    const taskId = await runningSession("needs-input");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+
+    await expect(session.waitForIdle()).resolves.toEqual({
+      status: "needs-input",
+      exited: false,
+    });
+  });
+
+  it("does not answer a delivered wait with the status the Session was already in", async () => {
+    // **The `settledNow` landmine, pinned.** This is the failure the delivery
+    // stamp exists to prevent: a Session sitting at `finished`, a write, and a
+    // wait that would otherwise return before the harness had read a character
+    // — reporting the previous turn's answer as this turn's.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    expect(session.status()).toBe("finished");
+
+    const { ok, deliveryEventId } = await session.deliver("carry on");
+    expect(ok).toBe(true);
+    expect(deliveryEventId).toBeGreaterThan(0);
+
+    let settled: unknown = null;
+    void session.waitForTurnEnd({ afterEventId: deliveryEventId }).then((idle) => {
+      settled = idle;
+    });
+    await new Promise((done) => setTimeout(done, 50));
+
+    // The pre-existing status is still `finished` and the wait has not moved.
+    expect(settled).toBeNull();
+    expect(session.status()).toBe("finished");
+
+    // Now the turn this write started ends. The status it lands on is the one
+    // it was already at — which is the ordinary case on a harness that never
+    // moved the row to `running` — and it still ends the wait, because what
+    // the wait is counting is *events after the delivery*, not value changes.
+    r.tasks.setStatus(taskId, "finished");
+
+    await vi.waitFor(() => expect(settled).toEqual({ status: "finished", exited: false }));
+  });
+
+  it("awaits a follow-up turn on a harness that never reports a turn's start", async () => {
+    // `codex` and `cursor-cli` are `reportsTurnStart: false` in `HOOK_FAMILIES`,
+    // so their Sessions never move to `running` and there is no transition to
+    // poll on. The wait is keyed on the turn's *end*, which they do report, and
+    // **no wait path consults `reportsTurnStart`** — the whole point of (A).
+    rig = startRig();
+    const r = rig;
+    await r.client.connect();
+    const created = await r.client.tasksMutate({
+      op: "create",
+      projectId: PROJECT_ID,
+      title: "a codex session",
+      agent: "codex",
+    });
+    const taskId = created!.taskId;
+    // Its first turn ended here, and nothing will move it again until the next
+    // one ends: `ready` → `finished`, and then `finished` → `finished`.
+    r.tasks.setStatus(taskId, "finished");
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const { deliveryEventId } = await session.deliver("and now the tests\r");
+    const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
+
+    r.tasks.setStatus(taskId, "finished");
+
+    await expect(idle).resolves.toEqual({ status: "finished", exited: false });
+  });
+
+  it("resolves on any of the five settled statuses, not on a finish alone", async () => {
+    // A turn that ended on a permission prompt, an escape, a dead harness or a
+    // Core that restarted underneath it *ended*. `session:finished` is appended
+    // for exactly one of the five, so a wait keyed on it waits forever on the
+    // four a caller most needs to hear about.
+    for (const status of ["finished", "needs-input", "interrupted", "terminated", "disconnected"]) {
+      rig = startRig();
+      const r = rig;
+      const taskId = await runningSession();
+      session = await CoreSession.attach(r.client, { taskId });
+      const { deliveryEventId } = await session.deliver("go on");
+      const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
+
+      r.tasks.setStatus(taskId, status);
+
+      await expect(idle).resolves.toEqual({ status, exited: false });
+      session.dispose();
+      session = null;
+      r.client.close();
+      r.close();
+      rig = null;
+    }
+  });
+
+  it("does not read a rename as the end of a turn", async () => {
+    // A `task:updated` that patched no status is not a report about a turn. The
+    // title generator renames a Session while it works (issue 84), and a waiter
+    // that took the row's status from that event would call the rename the end
+    // of the turn — with the row still carrying the status it had before.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const { deliveryEventId } = await session.deliver("carry on");
+    let settled: unknown = null;
+    void session.waitForTurnEnd({ afterEventId: deliveryEventId }).then((idle) => {
+      settled = idle;
+    });
+
+    r.tasks.rename(taskId, "a better title");
+    await new Promise((done) => setTimeout(done, 50));
+
+    expect(settled).toBeNull();
+  });
+
+  it("resolves a delivered wait when the harness's process exits", async () => {
+    // A harness that died is not going to report anything else, cursor or no
+    // cursor. The alternative is a wait that outlives the process it is about.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const { deliveryEventId } = await session.deliver("carry on");
+    const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
+
+    r.ptyCore.emitEvent({ type: "exit", ptyId: "pty-1", exitCode: 3 });
+
+    await expect(idle).resolves.toMatchObject({ exited: true, exitCode: 3 });
+  });
+
+  it("gives up on the caller's deadline and says what it was still doing", async () => {
+    // The honest degradation (#289 D): a harness that reports nothing runs the
+    // deadline out, and what is reported is that this side gave up — never a
+    // status the Core did not send, and never a turn inferred from the bytes.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+    const { deliveryEventId } = await session.deliver("carry on");
+
+    await expect(
+      session.waitForTurnEnd({ afterEventId: deliveryEventId, timeoutMs: 30 }),
+    ).rejects.toThrow(/still finished/);
+  });
+});
+
+describe("no wait is keyed on a turn's start (#289 A)", () => {
+  it("mentions reportsTurnStart nowhere in the waiting half of the session layer", () => {
+    // `reportsTurnStart` survives as reported information — the `spawned` frame,
+    // `session start --json`, the Panel's terminal-input fallback — and gates
+    // nothing about waiting. Half the harness families answer `false`, so a wait
+    // that consulted it would work on half of them and be a coin flip for every
+    // family added after it.
+    const source = readFileSync(new URL("../core-session.ts", import.meta.url), "utf8");
+    const waiting = source
+      .slice(source.indexOf("  waitForIdle("), source.indexOf("  // ─── Lifecycle"))
+      // Comments out: the prose there *says* no wait consults the field, and a
+      // check that could not tell that sentence from a call is a check that
+      // punishes writing it down.
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+
+    expect(waiting.length).toBeGreaterThan(200);
+    expect(waiting).not.toContain("reportsTurnStart");
   });
 });
 
