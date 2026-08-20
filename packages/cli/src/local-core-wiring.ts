@@ -47,10 +47,11 @@ const FALLBACK_NAME = "local";
  * A registry name for this machine's own Core, derived from its label.
  *
  * The label is free text — a hostname, or whatever `--label` said — and a
- * registry name is a path segment. Anything the name rules refuse is stripped
- * rather than rejected: refusing to wire a Core because its operator called it
- * `web 01` would be a worse answer than calling it `web01`, and the label the
- * Panel shows is unaffected either way.
+ * registry name is a path segment. Anything the name rules refuse is replaced
+ * rather than rejected: a run of unusable characters becomes a single `-`, so
+ * a Core its operator called `web 01` is registered as `web-01`. Refusing to
+ * wire it at all would be a worse answer, and the label the Panel shows is
+ * unaffected either way.
  */
 export function localCoreName(label: string): string {
   const cleaned = label

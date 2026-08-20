@@ -40,6 +40,21 @@
 // them: an exemption there would be a door from the machine half straight onto
 // the client's path.
 //
+// **The sweep stops at this package's boundary, and since #288 that boundary
+// has a door in it.** These tests read import specifiers in `packages/cli/src`
+// and nothing else, so a subprocess reached *through* a package this one may
+// now import is invisible to them. There is one such route today and it is
+// legitimate: `actana-cli-entry.ts` imports
+// `@actana/shared/harness-availability-store`, which runs the Core's own PATH
+// probe and reaches `spawnSync` through `shell-env.ts` and
+// `harness-cli-version.ts`. `status` and `setup` need that probe to be the
+// Core's rather than a second, subtly different one (CONTEXT.md: "CLI
+// availability is Core-published state"). Before #288 `packages/cli` could not
+// import `@actana/shared` at all, so the route is new — and a *client* noun
+// that grew one would be a breach this file cannot see. If that ever needs
+// enforcing, the sweep has to follow `@actana/shared` specifiers into
+// `packages/shared/src` rather than stopping at the name.
+//
 // The one client verb that will legitimately want a subprocess is `core shell`
 // (#162), and it is the exception that proves the rule: it hands the operator a
 // terminal on the *Core*, over the core link, rather than running anything
