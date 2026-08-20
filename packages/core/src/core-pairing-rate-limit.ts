@@ -21,6 +21,12 @@
 // is a backstop against a distributed spray, not a limit an operator pairing a
 // handful of laptops should ever meet.
 //
+// The peer map is bounded, and the bound is a claim about the branch an
+// attacker drives rather than about the happy path: once the global window is
+// saturated every request is refused, so a bound enforced only where a request
+// is *allowed* is a bound that stops holding exactly when it is needed. See
+// {@link PairingRateLimiter.check}.
+//
 // No timers, no background sweep: a window is decided by comparing timestamps
 // when a request arrives. A Core that is not being paired with does no work
 // here at all.
@@ -61,6 +67,12 @@ export const DEFAULT_GLOBAL_WINDOW: RateLimitWindow = { limit: 60, windowMs: 60_
  */
 export const MAX_TRACKED_PEERS = 4096;
 
+/** Peers evicted in one pass, so the scan is amortised. See {@link MAX_TRACKED_PEERS}. */
+export const EVICTION_BATCH = 512;
+
+/** What an eviction pass trims down to — the cap, less one batch. */
+export const EVICTION_TARGET_PEERS = MAX_TRACKED_PEERS - EVICTION_BATCH;
+
 export type PairingRateLimiterOptions = {
   peer?: RateLimitWindow;
   global?: RateLimitWindow;
@@ -96,18 +108,41 @@ export class PairingRateLimiter {
    * The peer window is checked first so that a refusal names the limit the
    * caller actually hit — an operator who has mistyped a code eleven times
    * should be told it was them, not the Core.
+   *
+   * **A refusal never puts a peer in the map.** That is the memory bound, and
+   * it is stated here rather than left to {@link evictIfCrowded} because the
+   * eviction pass alone was not enough: it used to run on the allow path only,
+   * and once the global window is saturated the allow path is never taken
+   * again. Every request from a fresh address then added a permanent entry to
+   * a map nothing was pruning — one packet per entry, on this Core's only
+   * pre-auth surface, which is the exact attack this module's header claims to
+   * prevent. Saturating the global window costs six addresses at the default
+   * limits, so it was cheap to drive.
+   *
+   * So the two refusal branches below write nothing a fresh caller can grow,
+   * and the eviction pass runs on the way out of *every* branch. Either one
+   * would hold the bound today; together the invariant does not depend on
+   * which branch a future edit adds a `set` to.
    */
   check(peer: string): RateLimitVerdict {
     const now = this.now();
     const peerHits = within(this.peers.get(peer) ?? [], now, this.peerWindow.windowMs);
     if (peerHits.length >= this.peerWindow.limit) {
-      this.peers.set(peer, peerHits);
+      // Only ever a rewrite of the pruned window for a caller already tracked.
+      // `has` rather than a bare `set`, because a limit of zero would otherwise
+      // land an unseen caller here and insert an empty array for them.
+      if (this.peers.has(peer)) this.peers.set(peer, peerHits);
+      this.evictIfCrowded();
       return { ok: false, scope: "peer", retryAfterMs: retryAfter(peerHits, now, this.peerWindow) };
     }
     const globalHits = within(this.globalHits, now, this.globalWindow.windowMs);
     if (globalHits.length >= this.globalWindow.limit) {
       this.globalHits = globalHits;
-      this.peers.set(peer, peerHits);
+      // Nothing is recorded against the caller here, and nothing should be: a
+      // globally-refused attempt was not charged to their window either, which
+      // is the same rule the peer branch already followed — a refusal is not
+      // counted against the caller a second time.
+      this.evictIfCrowded();
       return { ok: false, scope: "global", retryAfterMs: retryAfter(globalHits, now, this.globalWindow) };
     }
     this.peers.set(peer, [...peerHits, now]);
@@ -134,19 +169,27 @@ export class PairingRateLimiter {
    * the entry is rewritten on every hit, and the ordering this relies on is
    * only "roughly oldest first", which is all an eviction policy for a
    * memory guard needs to be).
+   *
+   * It evicts down to {@link EVICTION_TARGET_PEERS} rather than to the cap, and
+   * the gap between the two is what stops this being quadratic. Trimming to
+   * exactly the cap leaves the map one insert over it again immediately, so the
+   * scan below ran on *every* subsequent insert — 50,000 addresses took ~53s in
+   * the review that found it. Leaving headroom means one scan per
+   * {@link EVICTION_BATCH} inserts, and the cap is still never exceeded by more
+   * than the single entry that triggered the pass.
    */
   private evictIfCrowded(): void {
     if (this.peers.size <= MAX_TRACKED_PEERS) return;
     const cutoff = this.now() - this.peerWindow.windowMs;
     for (const [peer, hits] of this.peers) {
       if (hits.length === 0 || hits[hits.length - 1]! <= cutoff) this.peers.delete(peer);
-      if (this.peers.size <= MAX_TRACKED_PEERS) return;
+      if (this.peers.size <= EVICTION_TARGET_PEERS) return;
     }
     // Everything tracked is still inside its window: drop from the front, which
     // is the least recently *first* seen, rather than growing without bound.
     for (const peer of this.peers.keys()) {
       this.peers.delete(peer);
-      if (this.peers.size <= MAX_TRACKED_PEERS) return;
+      if (this.peers.size <= EVICTION_TARGET_PEERS) return;
     }
   }
 }
