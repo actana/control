@@ -48,11 +48,7 @@ import {
   rejectUnauthorizedAtHandshake,
   type PreAuthPathPredicate,
 } from "./core-preauth-gate";
-import {
-  certSerialFromBearerSubject,
-  normaliseCertSerial,
-  type PairingRevocations,
-} from "./core-pairing-revocation";
+import { certSerialFromBearerSubject, type PairingRevocations } from "./core-pairing-revocation";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
@@ -309,6 +305,16 @@ export type PtyCoreLinkServerOptions = {
      * certificate (#282). See {@link PtyCoreLinkServerOptions.isPreAuthPath}.
      */
     isPreAuthPath?: PreAuthPathPredicate;
+    /**
+     * Is this certificate serial one `actana pair revoke` took back (#283)?
+     *
+     * Declared here and not only on the default factory, because a custom
+     * transport is the seam {@link PtyCoreLinkServerOptions.revocation}
+     * explicitly anticipates — and one that had no typed way to receive this
+     * would silently lose both TLS-layer refusals, leaving revocation resting
+     * on the registration check in `onConnection` alone.
+     */
+    isRevokedSerial?: (serial: string) => boolean;
   }) => WebSocketServerLike;
   /**
    * The per-Core event log. When provided, PTY lifecycle events are
@@ -1984,7 +1990,7 @@ export class PtyCoreLinkServer {
   }
 
   /**
-   * Close every link a just-revoked pairing is holding open (#283).
+   * Close every link a revoked pairing is holding open (#283).
    *
    * This is the half of revocation the gates cannot do. A Panel that paired
    * yesterday and has been connected ever since never presents its certificate
@@ -1993,17 +1999,24 @@ export class PtyCoreLinkServer {
    * which for a healthy client is never. `core-entry.ts`'s sweep is what calls
    * this, within a second of the operator's `actana pair revoke`.
    *
+   * **It takes no list and asks the authority instead.** Being handed the
+   * newly-named serials would miss the change that matters most: when the
+   * pairing store cannot be read, `PairingRevocations` revokes *every* pairing
+   * at once and there are no serials to hand over. Re-asking per connection
+   * makes both cases one code path, and makes this method's answer always the
+   * same answer the gates would give the same client at the door.
+   *
    * The listeners come off before the close, for the reason {@link close}
    * gives: a close handshake still delivers whatever is already in flight, and
    * a frame from a revoked client must not be dispatched on the way out.
    */
-  closeRevoked(certSerials: string[]): number {
-    const wanted = new Set(certSerials.map(normaliseCertSerial));
+  closeRevoked(): number {
+    const revocation = this.revocation;
+    if (!revocation) return 0;
     let closed = 0;
     for (const [ws, conn] of [...this.connections]) {
-      const bySerial = conn.certSerial !== null && wanted.has(normaliseCertSerial(conn.certSerial));
-      const subjectSerial = certSerialFromBearerSubject(conn.bearerSubject ?? undefined);
-      const byBearer = subjectSerial !== null && wanted.has(normaliseCertSerial(subjectSerial));
+      const bySerial = revocation.isRevoked(conn.certSerial);
+      const byBearer = revocation.isBearerSubjectRevoked(conn.bearerSubject ?? undefined);
       if (!bySerial && !byBearer) continue;
       try {
         ws.removeAllListeners();

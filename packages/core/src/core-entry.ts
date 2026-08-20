@@ -648,10 +648,7 @@ async function startCore(): Promise<void> {
   // Core that boots with revocations already on file refuses them from its
   // first request rather than from one second in.
   const revocationSweep: PairingRevocationSweep | null = revocations
-    ? startPairingRevocationSweep({
-        revocations,
-        onRevoked: (certSerials) => server.closeRevoked(certSerials),
-      })
+    ? startPairingRevocationSweep({ revocations, onRevoked: () => server.closeRevoked() })
     : null;
 
   // Alert-only, once a day, into this daemon's log — never a frame the Panel

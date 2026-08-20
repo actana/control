@@ -36,9 +36,18 @@ import type { PairedClient } from "@actana/shared/pairing-store";
 /** How often the daemon re-reads the store looking for fresh revocations. */
 export const REVOCATION_SWEEP_MS = 1_000;
 
-/** The paired-client rows this module reads. `PairingStore` satisfies it. */
+/**
+ * The paired-client rows this module reads. `PairingStore` satisfies it.
+ *
+ * `readStrict` rather than `listClients`, and the difference is the whole of
+ * {@link PairingRevocations.refresh}'s guarantee. `PairingStore.read` swallows
+ * every failure and answers with an empty store, which makes "this Core has
+ * revoked nobody" and "this Core cannot tell you who it revoked" the same
+ * answer — and the second one must never be served as the first.
+ */
 export interface RevokedClientsPort {
-  listClients(): PairedClient[];
+  /** Every row on file, or throw saying why the file could not be read. */
+  readStrict(): { clients: PairedClient[] };
 }
 
 /**
@@ -77,6 +86,13 @@ export function normaliseCertSerial(serial: string): string {
   return serial.replace(/[^0-9a-fA-F]/g, "").toUpperCase().replace(/^0+(?=.)/, "");
 }
 
+/** What one {@link PairingRevocations.refresh} found. */
+export type RevocationRefresh =
+  /** The store was read. `revoked` is what was newly revoked since last time. */
+  | { ok: true; revoked: string[] }
+  /** The store could not be read, so every pairing is treated as revoked. */
+  | { ok: false; error: string };
+
 /**
  * This Core's revoked serials, re-read from the store on demand.
  *
@@ -85,32 +101,56 @@ export function normaliseCertSerial(serial: string): string {
  * only change when {@link refresh} says so. The sweep is what calls `refresh`,
  * so "how stale can this be" has exactly one answer and it is the sweep
  * interval.
+ *
+ * **When the store cannot be read, everything is revoked.** Not "nothing is",
+ * and not "whatever we happened to know last time": those are both the reading
+ * that hands a revoked client its access straight back, and boot — where there
+ * is no last time — is exactly when the question is asked. See
+ * {@link failClosed}.
  */
 export class PairingRevocations {
   private revoked = new Set<string>();
+  /**
+   * True while the last read failed. Every pairing-issued credential is
+   * revoked for as long as it is set.
+   *
+   * Cleared by the next successful read, so the state is a fact about the
+   * store as it is now rather than a latch an operator has to reset. An
+   * operator recovers by making the file readable again — `actana pair new`
+   * refuses to rewrite an unreadable one precisely so that recovery cannot be
+   * "delete the record of who was revoked".
+   */
+  private failClosed = false;
 
   constructor(private readonly clients: RevokedClientsPort) {}
 
   /**
-   * Re-read the store. Returns the serials revoked **since the last read**, in
-   * their stored spelling, so a caller can act on the new ones without acting
-   * on every one it has already handled.
+   * Re-read the store.
    *
-   * A store that cannot be read leaves the set exactly as it was and returns
-   * nothing. Failing that way round is deliberate: an unreadable pairing file
-   * must never be read as "nobody is revoked", which is the one interpretation
-   * that hands a revoked client its access back.
+   * On success, reports the serials revoked **since the last read**, in their
+   * stored spelling, so a caller can act on the new ones without acting on
+   * every one it has already handled.
+   *
+   * On failure, reports why and switches this Core to refusing every
+   * pairing-issued credential. That is the fail-closed direction, and it is
+   * chosen knowing what it costs: a Core whose `pairing.json` is corrupt stops
+   * serving every client it ever paired. The alternative costs more — a
+   * half-written file, a hand-edit, or a row this build does not recognise
+   * would silently un-revoke every certificate an operator has taken back.
    */
-  refresh(): string[] {
+  refresh(): RevocationRefresh {
     let rows: PairedClient[];
     try {
-      rows = this.clients.listClients();
+      rows = this.clients.readStrict().clients;
     } catch (err) {
-      log.warn("core-pairing.revocation.unreadable", {
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return [];
+      const error = err instanceof Error ? err.message : String(err);
+      if (!this.failClosed) {
+        log.error("core-pairing.revocation.unreadable", { error, effect: "every pairing refused" });
+      }
+      this.failClosed = true;
+      return { ok: false, error };
     }
+    this.failClosed = false;
     const fresh: string[] = [];
     for (const row of rows) {
       if (row.revokedAt === null) continue;
@@ -119,18 +159,40 @@ export class PairingRevocations {
       this.revoked.add(key);
       fresh.push(row.certSerial);
     }
-    return fresh;
+    return { ok: true, revoked: fresh };
   }
 
-  /** Is this certificate serial revoked? `null` — no peer certificate — is not. */
+  /** Is this Core currently refusing every pairing because it cannot read the store? */
+  isFailClosed(): boolean {
+    return this.failClosed;
+  }
+
+  /**
+   * Is this certificate serial revoked?
+   *
+   * `null` — no peer certificate at all — is not, even while failing closed.
+   * "No certificate" and "a revoked certificate" are different facts and
+   * different gates answer them: `clientCertGate` refuses an uncertificated
+   * caller everywhere but the pairing endpoint, and that endpoint is the one an
+   * operator needs reachable to recover. Answering `true` here would close the
+   * only door out of a corrupt store.
+   */
   isRevoked(certSerial: string | null | undefined): boolean {
     if (!certSerial) return false;
+    if (this.failClosed) return true;
     return this.revoked.has(normaliseCertSerial(certSerial));
   }
 
-  /** Is the pairing this bearer speaks for revoked? A bearer with no
-   *  `pair:` subject is one this Core minted before pairing existed, and it is
-   *  governed by its own expiry rather than by a list it is not on. */
+  /**
+   * Is the pairing this bearer speaks for revoked?
+   *
+   * A bearer with no `pair:` subject is one this Core minted before pairing
+   * existed — the hand-carried registration blob — and it is governed by its
+   * own expiry rather than by a list it is not on. That holds while failing
+   * closed too, and deliberately: such a bearer is not a pairing, so there is
+   * no row about it that could have gone unread, and it is the credential the
+   * operator's own Panel is holding while they go and fix the file.
+   */
   isBearerSubjectRevoked(sub: string | undefined): boolean {
     return this.isRevoked(certSerialFromBearerSubject(sub));
   }
@@ -140,26 +202,42 @@ export class PairingRevocations {
 export type PairingRevocationSweep = { stop(): void };
 
 /**
- * Poll the store and hand every newly revoked serial to `onRevoked`.
+ * Poll the store and call `onRevoked` whenever what is revoked has changed.
  *
- * The first read happens immediately and its results are **not** dispatched:
- * at boot, every revocation already on file was made against a link that does
- * not exist any more, and reporting them would ask the server to close
- * connections that were never opened. What the first read does is seed the set,
- * so that `isRevoked` is right from the first request rather than from one
- * second in.
+ * `onRevoked` takes no arguments and that is deliberate: the caller re-asks
+ * this object about every connection it holds rather than being handed a list.
+ * A list would carry only the *newly named* serials, and the change that most
+ * needs acting on carries no serials at all — switching to fail-closed revokes
+ * every pairing at once, including ones whose rows were never read.
+ *
+ * The first read happens immediately and does **not** call back: at boot, every
+ * revocation already on file was made against a link that does not exist any
+ * more, and reporting them would ask the server to close connections that were
+ * never opened. What the first read does is seed the set — or, if the store is
+ * unreadable, put this Core into fail-closed before it serves its first
+ * request, which is the moment the guarantee has to hold.
  */
 export function startPairingRevocationSweep(opts: {
   revocations: PairingRevocations;
-  onRevoked: (certSerials: string[]) => void;
+  onRevoked: () => void;
   intervalMs?: number;
 }): PairingRevocationSweep {
   opts.revocations.refresh();
+  let wasFailClosed = opts.revocations.isFailClosed();
   const timer = setInterval(() => {
-    const fresh = opts.revocations.refresh();
-    if (fresh.length === 0) return;
-    log.info("pairing.revoked", { certSerials: fresh });
-    opts.onRevoked(fresh);
+    const result = opts.revocations.refresh();
+    const nowFailClosed = !result.ok;
+    // Two things count as a change, and the second is the one a list could not
+    // express: fresh serials, or crossing into fail-closed. Crossing back out
+    // does not — nothing became revoked by the store becoming readable again.
+    const enteredFailClosed = nowFailClosed && !wasFailClosed;
+    wasFailClosed = nowFailClosed;
+    if (result.ok && result.revoked.length > 0) {
+      log.info("pairing.revoked", { certSerials: result.revoked });
+    } else if (!enteredFailClosed) {
+      return;
+    }
+    opts.onRevoked();
   }, opts.intervalMs ?? REVOCATION_SWEEP_MS);
   // Never the reason this process stays alive: a Core with nothing else to do
   // should exit, and a one-second timer would keep it running forever.
