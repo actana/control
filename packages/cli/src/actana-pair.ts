@@ -548,10 +548,16 @@ function valueFlag(
 /**
  * The longest TTL this Core will mint, and it is not an arbitrary number.
  *
- * The store prunes a session a day after it settles, so a TTL past that would
- * let a *live* session be pruned out from under the client holding its code —
- * a code that stops working with no expiry anybody can see. Tying the ceiling
- * to the retention window is what keeps the two from drifting apart.
+ * A pairing code is a pre-auth secret guarding CSR signing — #280 fixes its
+ * default life at five minutes for exactly that reason — and the ceiling is
+ * where "one-time code" stops describing the thing on the operator's screen. A
+ * day is that point.
+ *
+ * It is spelled as the store's retention window rather than as a number of its
+ * own so this file carries one day-long horizon instead of two. That is the
+ * whole of the relationship: `prune` measures from `consumedAt ?? expiresAt`,
+ * which is in the future for the entire life of a pending session, so a live
+ * session is never a pruning candidate whatever its TTL.
  */
 export const MAX_PAIRING_TTL_MS = PAIRING_SESSION_RETENTION_MS;
 
@@ -577,20 +583,40 @@ export function parseDuration(input: string): number | { error: string } {
   return ms;
 }
 
-/** `300000` -> `5 minutes`. Used by the help text and the ceiling's refusal. */
+/**
+ * `300000` -> `5 minutes`, `5400000` -> `1 hour 30 minutes`.
+ *
+ * Two units and a floor, never a rounded one. Rounding to the largest unit that
+ * fits made `--ttl 90m` print "in 2 hours" and `--ttl 90s` print "in 2 minutes"
+ * — and the relative half is the half a human reads down a phone line, which is
+ * the only reason it is printed beside an exact absolute time at all. A code
+ * described as living longer than it does is a code the person at the other end
+ * stops hurrying for.
+ *
+ * The second unit is dropped when it is zero, so the ordinary cases are the
+ * short strings they were: "5 minutes", "30 seconds", "24 hours". Used by the
+ * expiry lines, the help text's default and the ceiling's refusal alike.
+ */
 export function describeDuration(ms: number): string {
   const units: Array<[number, string]> = [
     [60 * 60 * 1000, "hour"],
     [60 * 1000, "minute"],
     [1000, "second"],
   ];
-  for (const [size, name] of units) {
-    if (ms >= size) {
-      const count = Math.round(ms / size);
-      return `${count} ${name}${count === 1 ? "" : "s"}`;
-    }
+  for (let i = 0; i < units.length; i++) {
+    const [size, name] = units[i]!;
+    if (ms < size) continue;
+    const whole = Math.floor(ms / size);
+    const next = units[i + 1];
+    const remainder = ms - whole * size;
+    const tail = next && remainder >= next[0] ? ` ${countOf(Math.floor(remainder / next[0]), next[1])}` : "";
+    return `${countOf(whole, name)}${tail}`;
   }
   return `${ms} ms`;
+}
+
+function countOf(count: number, unit: string): string {
+  return `${count} ${unit}${count === 1 ? "" : "s"}`;
 }
 
 /**

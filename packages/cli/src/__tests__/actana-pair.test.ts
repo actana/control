@@ -35,7 +35,12 @@ import {
   pairingStorePath,
   type PairedClient,
 } from "@actana/shared/pairing-store";
-import { runPairCommand, parseDuration, MAX_PAIRING_TTL_MS } from "../actana-pair.ts";
+import {
+  describeDuration,
+  MAX_PAIRING_TTL_MS,
+  parseDuration,
+  runPairCommand,
+} from "../actana-pair.ts";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import { stubClientHalf, stubMachineHalf } from "./machine-fixture.ts";
 
@@ -115,9 +120,12 @@ describe("actana pair new", () => {
   it("prints a well-formed code from the unambiguous alphabet", () => {
     expect(run(["new", "--label", "laptop"])).toBe(0);
     const code = field("Pairing code");
-    expect(code).toMatch(/^[A-Z2-9]{4}-[A-Z2-9]{4}$/);
-    // The five characters a human transcribes wrong are not in it (#280/#281).
-    expect(code.replace("-", "").split("").every((ch) => PAIRING_CODE_ALPHABET.includes(ch))).toBe(true);
+    // Built from the alphabet rather than written out, so the assertion cannot
+    // drift from it: a hand-typed `[A-Z2-9]` would admit `O`, `I` and `L`, which
+    // are three of the five characters #281 drops precisely because a human
+    // transcribes them wrong.
+    expect(code).toMatch(new RegExp(`^[${PAIRING_CODE_ALPHABET}]{4}-[${PAIRING_CODE_ALPHABET}]{4}$`));
+    for (const excluded of ["0", "O", "1", "I", "L"]) expect(code).not.toContain(excluded);
     expect(normalisePairingCode(code)).toBe(code);
   });
 
@@ -477,6 +485,35 @@ describe("actana pair --help", () => {
   it("rejects an unknown verb", () => {
     expect(run(["frobnicate"])).toBe(2);
     expect(err.join("\n")).toMatch(/unknown verb "frobnicate"/);
+  });
+});
+
+describe("the relative half of an expiry", () => {
+  it("floors and carries a second unit rather than rounding to the largest", () => {
+    // Rounding made `--ttl 90m` print "in 2 hours" and `--ttl 90s` print "in 2
+    // minutes". The relative half is the half read out down a phone line, and a
+    // code described as living longer than it does is one nobody hurries for.
+    run(["new", "--ttl", "90m"]);
+    expect(field("Expires")).toBe("2026-08-20T13:30:00Z (in 1 hour 30 minutes)");
+    run(["new", "--ttl", "90s"]);
+    expect(field("Expires")).toBe("2026-08-20T12:01:30Z (in 1 minute 30 seconds)");
+  });
+
+  it("drops the second unit when it is zero, so the ordinary cases stay short", () => {
+    expect(describeDuration(5 * 60_000)).toBe("5 minutes");
+    expect(describeDuration(30_000)).toBe("30 seconds");
+    expect(describeDuration(60_000)).toBe("1 minute");
+    expect(describeDuration(MAX_PAIRING_TTL_MS)).toBe("24 hours");
+  });
+
+  it("never overstates how long a code has left", () => {
+    for (const ms of [1_000, 59_000, 61_000, 89_000, 3_599_000, 5_400_000, 86_399_000]) {
+      const spoken = describeDuration(ms);
+      const hours = Number(/(\d+) hours?/.exec(spoken)?.[1] ?? 0);
+      const minutes = Number(/(\d+) minutes?/.exec(spoken)?.[1] ?? 0);
+      const seconds = Number(/(\d+) seconds?/.exec(spoken)?.[1] ?? 0);
+      expect(hours * 3_600_000 + minutes * 60_000 + seconds * 1_000).toBeLessThanOrEqual(ms);
+    }
   });
 });
 
