@@ -226,3 +226,48 @@ describe("the code digest", () => {
     expect(pairingCodeMatches("", "")).toBe(false);
   });
 });
+
+// ─── Cancelling a pending code (#283) ───────────────────────────────────────
+//
+// `actana pair revoke` pointed at a session, rather than at a paired client.
+// The property is not that the row changed — it is that the endpoint's own
+// gate now refuses the code, which is the only thing that stops a redemption.
+
+describe("cancelling a pending session", () => {
+  it("stops the code being redeemed", () => {
+    const pending = createPairingSession({ id: "ps_9", label: "laptop", codeHash: "h", now: NOW });
+    store.createSession(pending, NOW);
+    expect(store.consume("ps_9", NOW).ok).toBe(true);
+
+    const again = createPairingSession({ id: "ps_10", label: "laptop", codeHash: "h", now: NOW });
+    store.createSession(again, NOW);
+    expect(store.cancelSession("ps_10", NOW)?.revokedAt).toBe(NOW);
+    expect(store.consume("ps_10", NOW)).toEqual({ ok: false, reason: "revoked" });
+  });
+
+  it("survives the round trip through disk", () => {
+    store.createSession(createPairingSession({ id: "ps_11", label: "l", codeHash: "h", now: NOW }), NOW);
+    store.cancelSession("ps_11", NOW);
+    expect(new PairingStore(path.join(dir, "pairing.json")).getSession("ps_11")?.revokedAt).toBe(NOW);
+  });
+
+  it("reports a session that was already redeemed rather than pretending to undo it", () => {
+    store.createSession(createPairingSession({ id: "ps_12", label: "l", codeHash: "h", now: NOW }), NOW);
+    store.consume("ps_12", NOW);
+    const after = store.cancelSession("ps_12", NOW + 1);
+    // There is a certificate in the world for this one. The thing to take back
+    // is the client, and the caller is told so by what comes back unchanged.
+    expect(after?.consumedAt).toBe(NOW);
+    expect(after?.revokedAt).toBe(null);
+  });
+
+  it("answers null for a session this Core does not have", () => {
+    expect(store.cancelSession("ps_nope", NOW)).toBe(null);
+  });
+
+  it("is idempotent — a second cancel changes nothing", () => {
+    store.createSession(createPairingSession({ id: "ps_13", label: "l", codeHash: "h", now: NOW }), NOW);
+    store.cancelSession("ps_13", NOW);
+    expect(store.cancelSession("ps_13", NOW + 5_000)?.revokedAt).toBe(NOW);
+  });
+});

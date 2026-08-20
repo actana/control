@@ -32,7 +32,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PairingRefusal, PairingSession } from "./pairing-session";
-import { canRedeem, recordWrongAttempt } from "./pairing-session";
+import { canRedeem, isConsumed, isRevoked, recordWrongAttempt } from "./pairing-session";
 
 /** The filename, beside `material.json` in the same directory. */
 export const PAIRING_STORE_FILENAME = "pairing.json";
@@ -208,6 +208,34 @@ export class PairingStore {
     records.sessions[index] = consumed;
     this.write(records);
     return { ok: true, session: consumed };
+  }
+
+  /**
+   * Cancel a pending session before anybody redeems it — `actana pair revoke`
+   * pointed at a session rather than at a paired client (#283).
+   *
+   * Returns the cancelled row, the row unchanged when it was already cancelled,
+   * or `null` when there is no such session. A session that has already been
+   * *redeemed* is returned unchanged too and reports itself through
+   * `consumedAt`: there is a certificate in the world for it, so the thing to
+   * take back is the client, not the code, and the caller says so rather than
+   * pretending a cancel undid an issuance.
+   *
+   * The stamp is what stops the redemption: `canRedeem` checks `revokedAt`
+   * first, so the endpoint's next look at this session refuses it with the same
+   * body every other refusal gets — a client that had the code cannot tell a
+   * cancelled session from one that never existed.
+   */
+  cancelSession(id: string, now: number): PairingSession | null {
+    const records = this.read();
+    const index = records.sessions.findIndex((session) => session.id === id);
+    if (index === -1) return null;
+    const session = records.sessions[index]!;
+    if (isRevoked(session) || isConsumed(session)) return session;
+    const cancelled: PairingSession = { ...session, revokedAt: now };
+    records.sessions[index] = cancelled;
+    this.write(records);
+    return cancelled;
   }
 
   /** Record an issued client identity. What `pair ls` and `pair revoke` read. */

@@ -66,6 +66,18 @@ export type PairingSession = {
   /** Wall-clock ms of the successful redemption, or `null` while pending. A
    *  timestamp rather than a boolean because the audit log wants to say when. */
   consumedAt: number | null;
+  /**
+   * Wall-clock ms of `actana pair revoke` cancelling this session before it was
+   * redeemed, or `null` while it stands (#283).
+   *
+   * Its own field rather than a `consumedAt` stamp, and the difference is not
+   * cosmetic: a cancelled session was never redeemed, so nobody holds a
+   * certificate for it, and an operator reading `actana pair ls` or the audit
+   * log after the fact has to be able to tell "somebody used this code" from "I
+   * took it back". Optional on the type because sessions written before this
+   * field existed are still valid sessions — see {@link isRevoked}.
+   */
+  revokedAt?: number | null;
   /** Inert (#280): the identity that created the session, once there is one. */
   created_by: string | null;
   /** Inert (#280): the tenant the session belongs to, once there are tenants. */
@@ -103,6 +115,7 @@ export function createPairingSession(input: NewPairingSession): PairingSession {
     attempts: 0,
     attemptCap: input.attemptCap ?? PAIRING_ATTEMPT_CAP,
     consumedAt: null,
+    revokedAt: null,
     created_by: null,
     tenant_id: null,
     auth_method: null,
@@ -131,8 +144,20 @@ export function isConsumed(session: PairingSession): boolean {
   return session.consumedAt !== null;
 }
 
+/**
+ * Has the operator taken this session back with `actana pair revoke` (#283)?
+ *
+ * `?? null` rather than `!== null`, because the field is optional: a session
+ * persisted before it existed has no `revokedAt` at all, and `undefined !==
+ * null` would read every one of them as revoked — which would kill every
+ * pending session on a Core the moment it upgraded.
+ */
+export function isRevoked(session: PairingSession): boolean {
+  return (session.revokedAt ?? null) !== null;
+}
+
 /** Why a session would refuse a redemption. Ordered by how it is checked. */
-export type PairingRefusal = "expired" | "attempts-exhausted" | "already-consumed";
+export type PairingRefusal = "expired" | "attempts-exhausted" | "already-consumed" | "revoked";
 
 export type PairingRedeemability =
   | { ok: true }
@@ -146,6 +171,10 @@ export type PairingRedeemability =
  * The caller still has to check the code itself; this is only the state gate.
  */
 export function canRedeem(session: PairingSession, now: number): PairingRedeemability {
+  // Revocation is checked first because it is the operator's own decision, and
+  // it is the answer the audit log should carry when several of these are true
+  // at once — a session revoked and then left to expire was revoked.
+  if (isRevoked(session)) return { ok: false, reason: "revoked" };
   if (isConsumed(session)) return { ok: false, reason: "already-consumed" };
   if (isDead(session)) return { ok: false, reason: "attempts-exhausted" };
   if (isExpired(session, now)) return { ok: false, reason: "expired" };
