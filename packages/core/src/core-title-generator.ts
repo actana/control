@@ -13,7 +13,7 @@
 // while the CLI is still thinking is never overwritten. The flag is on the
 // row, not in memory, so that protection survives a Panel reload.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import {
   fallbackTitle,
   isTitleGenerationPrompt,

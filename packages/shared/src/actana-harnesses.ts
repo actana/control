@@ -22,16 +22,16 @@
 // operator whose Core installed fine has a working Core, and losing that
 // over a third party's bad day would be absurd.
 
-import { HARNESS_REGISTRY, UI_HARNESSES } from "@actana/shared/harnesses";
+import { HARNESS_REGISTRY, UI_HARNESSES } from "./harnesses";
 import {
   HARNESS_CLI_CONFIG,
   harnessHomePathSuffixes,
   resolveHarnessCliInstallCommand,
   type HarnessCliConfig,
-} from "@actana/shared/harness-cli-config";
-import type { Harness } from "@actana/shared/domain";
+} from "./harness-cli-config";
+import type { Harness } from "./domain";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
-import type { ActanaSystem } from "./actana-system";
+import type { ActanaSystem } from "./actana-system-port";
 import { ensureOperatorLoginPathOnDisk } from "./operator-login-path";
 
 /** What became of one agent during an offer round. */

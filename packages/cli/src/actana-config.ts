@@ -11,7 +11,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import log from "./log";
+import log from "@actana/shared/log";
 
 /** The filename inside the config dir. */
 export const ACTANA_CONFIG_FILENAME = "actana.json";

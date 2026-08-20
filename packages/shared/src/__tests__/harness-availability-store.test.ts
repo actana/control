@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { HarnessAvailabilityStore } from "../harness-availability-store";
 import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core-link-frames";
 import { UI_HARNESSES } from "@actana/shared/harnesses";
+import { offerableHarnessIds } from "@actana/shared/actana-harnesses";
 import type { Harness } from "@actana/shared/domain";
 
 type AppendEventFn = (
@@ -120,6 +121,21 @@ describe("HarnessAvailabilityStore", () => {
       reason: "boom",
     });
     expect(store.snapshot()[UI_HARNESSES[1]]?.status).toBe("available");
+  });
+
+  // Moved here from `actana-harnesses.test.ts` when the offer round became
+  // `@actana/shared`'s (#288 D1): the assertion is about this store's probe
+  // covering the offer set, and this is the only package that has both.
+  it("probes every Harness the offer round can install", () => {
+    // The offer round reads an availability map and skips anything with no
+    // entry in it. If the two sets ever drift, an agent becomes silently
+    // uninstallable — no offer, no message, no way to ask for it.
+    const store = new HarnessAvailabilityStore({ appendEvent: () => 0 });
+    store.runProbe();
+    const probed = store.snapshot();
+    for (const agent of offerableHarnessIds()) {
+      expect(probed).toHaveProperty(agent);
+    }
   });
 });
 

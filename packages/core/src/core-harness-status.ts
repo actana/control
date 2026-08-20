@@ -12,7 +12,7 @@
 // Panel runs for its own rows, so the Stop-downgrade, the recent-finish heal
 // and the drain backstop behave identically on both sides.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import {
   handleHarnessHookEvent,
   hookResultResponse,

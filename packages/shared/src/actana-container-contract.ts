@@ -1,4 +1,12 @@
-// Container mode — the same `actana` binary reading a different world.
+// The container contract — the three operator variables, and how a Core reads
+// which world it is in.
+//
+// Split out of `actana-container.ts` (#288 D2's rule: both halves use it, so it
+// belongs to neither). The Core daemon reads this at boot to resolve its own
+// endpoint and to pick the remedy its once-a-day update line names; the
+// `actana` CLI reads it before every verb, and adds the refusal table — the
+// half that is only about verbs an operator types — in
+// `packages/cli/src/actana-container.ts`.
 //
 // In the Core image the image *is* the install (ADR 0016 D13): there is no
 // versioned tree, no `current` symlink, no unit file, no lingering and no
@@ -122,72 +130,22 @@ export function readContainerContract(
 }
 
 /**
- * The verbs the image owns, and what the operator runs on the host instead.
+ * What an operator runs to bring a containerised Core up to date.
  *
- * `logs` is here for the same reason as the other six: there is no journal and
- * no unit in the image, so `journalctl --user -u actana-core.service` has
- * nothing to read. `docker logs` reads the daemon's stdout, which is where the
- * container's Core writes.
+ * The same two commands the reference deployment's `deploy/docker-compose.yml`
+ * is driven with, and the same string `containerRefusal("update")` prints — so
+ * a container operator is told one thing whether they were refused or read the
+ * availability line in `actana status`.
  */
-const DOCKER_EQUIVALENT: Record<string, { why: string; run: string }> = {
-  setup: {
-    why: "this image is the install — there is no tree to lay down and no unit to write",
-    run:
-      `set ${CONTAINER_PUBLIC_HOST_ENV} (and optionally ${CONTAINER_PORT_ENV}, ` +
-      `${CONTAINER_LABEL_ENV}) in your compose file, then:\n  docker compose up -d`,
-  },
-  start: { why: "the container runtime starts this Core", run: "docker compose up -d" },
-  stop: { why: "the container runtime stops this Core", run: "docker compose stop" },
-  restart: { why: "the container runtime restarts this Core", run: "docker compose restart" },
-  update: {
-    why: "a new Core is a new image, not a tree swapped under a running daemon",
-    run: "docker compose pull && docker compose up -d",
-  },
-  uninstall: {
-    why: "removing this Core means removing its container",
-    run:
-      "docker compose down\nAdd `-v` to also delete this Core's sessions and its pairing " +
-      "credentials — that, and only that, unpairs it.",
-  },
-  logs: {
-    why: "the daemon writes to stdout, and there is no journal in the image to read",
-    run: "docker compose logs -f",
-  },
-};
-
-/**
- * The refusal for a verb the image owns, or null when the verb works here.
- *
- * A refusal always names the replacement: "not available" on its own leaves an
- * operator with a Core they cannot restart and no idea what to type.
- */
-export function containerRefusal(verb: string): string | null {
-  const equivalent = DOCKER_EQUIVALENT[verb];
-  if (!equivalent) return null;
-  return (
-    `\`actana ${verb}\` does not run in a container — ${equivalent.why}.\n` +
-    `Run this on the host instead:\n  ${equivalent.run}`
-  );
-}
+export const DOCKER_COMPOSE_UPDATE = "docker compose pull && docker compose up -d";
 
 /**
  * What an operator runs to bring this Core up to date.
- *
- * In a container that is the two commands the reference deployment's
- * `deploy/docker-compose.yml` is driven with — the same string
- * {@link containerRefusal} prints when someone types `actana update` there, so
- * a container operator is told one thing whether they were refused or read the
- * availability line in `actana status`.
  *
  * This is the whole branch, in one place: `actana status` and the daemon's
  * once-a-day log line both name a remedy, and two copies of the conditional
  * would be two places for the container case to be forgotten.
  */
 export function coreUpdateCommand(container: boolean): string {
-  return container ? DOCKER_EQUIVALENT.update.run : "actana update";
-}
-
-/** The verbs {@link containerRefusal} answers, in the order help lists them. */
-export function refusedContainerVerbs(): string[] {
-  return Object.keys(DOCKER_EQUIVALENT);
+  return container ? DOCKER_COMPOSE_UPDATE : "actana update";
 }

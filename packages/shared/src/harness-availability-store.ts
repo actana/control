@@ -22,12 +22,12 @@
 
 import * as os from "node:os";
 import log from "./log";
-import { HARNESS_REGISTRY, UI_HARNESSES } from "@actana/shared/harnesses";
+import { HARNESS_REGISTRY, UI_HARNESSES } from "./harnesses";
 import {
   HARNESS_CLI_CONFIG_BY_COMMAND,
   resolveHarnessCliUpdateCommands,
-} from "@actana/shared/harness-cli-config";
-import type { Harness } from "@actana/shared/domain";
+} from "./harness-cli-config";
+import type { Harness } from "./domain";
 import {
   HARNESSES_AVAILABILITY_EVENT_KIND,
   type CoreLinkHarnessAvailability,

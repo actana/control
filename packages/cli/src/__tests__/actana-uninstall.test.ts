@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { actanaConfigPath, writeActanaConfig } from "../actana-config";
 import { installDirFor, resolveActanaLayout, type ActanaLayout } from "../actana-layout";
 import type { ActanaServiceManager } from "../actana-service";
-import { materialFilePath } from "../core-material-store";
+import { materialFilePath } from "@actana/shared/core-material-store";
 import { pointSymlink } from "../actana-tree";
 import { runActanaUninstall } from "../actana-uninstall";
 import { writeTarballTree } from "./release-fixture";

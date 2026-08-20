@@ -4,7 +4,7 @@ export type {
   HarnessCliVersionRequirement,
   HarnessCliVersionScheme,
   ManagedHarness,
-} from "@actana/shared/harness-cli-config";
+} from "./harness-cli-config";
 
 export {
   HARNESS_CLI_CONFIG,
@@ -15,4 +15,4 @@ export {
   resolveHarnessCliUpdateCommands,
   spawnCommandForHarness,
   HARNESS_SPAWN_COMMANDS,
-} from "@actana/shared/harness-cli-config";
+} from "./harness-cli-config";

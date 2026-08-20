@@ -18,7 +18,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ActanaLayout } from "./actana-layout";
+import type { ActanaLayout } from "./actana-layout.ts";
 import {
   chooseLaunchdDomain,
   LAUNCH_AGENT_LABEL,
@@ -26,15 +26,15 @@ import {
   parseLaunchctlPrint,
   renderActanaPlist,
   serviceTarget,
-} from "./actana-launchd";
+} from "./actana-launchd.ts";
 import {
   LEGACY_UNIT_NAME,
   parseLingerEnabled,
   renderActanaUnit,
   systemdStateFromShow,
   UNIT_NAME,
-} from "./actana-systemd";
-import type { ActanaSystem, CommandResult } from "./actana-system";
+} from "./actana-systemd.ts";
+import type { ActanaSystem, CommandResult } from "./actana-system.ts";
 
 /** What the machine's init system says about the Core's auto-start unit. */
 export type ActanaServiceState = {

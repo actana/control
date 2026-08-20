@@ -37,7 +37,7 @@
 // so a Reader would render an editable terminal until the operator typed into
 // it, and the loser of a force takeover would learn of it on its next keystroke.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
 import type { WebSocketServer, WebSocket } from "ws";
 import {

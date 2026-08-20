@@ -10,7 +10,7 @@ import {
   formatRegistrationBlobNotice,
   loadOrMintMaterial,
 } from "../core-first-run";
-import { persistMaterialToFile, type PersistedMaterial } from "../core-material-store";
+import { persistMaterialToFile, type PersistedMaterial } from "@actana/shared/core-material-store";
 import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 

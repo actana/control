@@ -17,7 +17,7 @@
 // event-log writer.
 
 import Database from "better-sqlite3";
-import log from "./log";
+import log from "@actana/shared/log";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import {

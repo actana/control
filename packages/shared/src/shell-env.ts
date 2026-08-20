@@ -2,7 +2,13 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
-import { harnessHomePathSuffixes } from "@actana/shared/harness-cli-config";
+import { harnessHomePathSuffixes } from "./harness-cli-config";
+import { resolveShell, shellBasename } from "./login-shell";
+
+// Re-exported so this stays the one module the Core's spawn path reads a shell
+// name off; the definitions live in `@actana/shared/login-shell` because
+// `operator-login-path.ts` reads the same two on the CLI's side of #288 D1.
+export { resolveShell, shellBasename };
 
 const SHELL_ENV_START = "__MISSION_CONTROL_ENV_START__";
 const SHELL_ENV_END = "__MISSION_CONTROL_ENV_END__";
@@ -40,38 +46,6 @@ export function setCanonicalPathEnv(
   }
   env[key] = value;
   return env;
-}
-
-function userShellFromDirectoryService(): string | null {
-  if (os.platform() !== "darwin") return null;
-  try {
-    const username = os.userInfo().username;
-    const result = spawnSync("/usr/bin/dscl", [".", "-read", `/Users/${username}`, "UserShell"], {
-      encoding: "utf8",
-      timeout: 1000,
-    });
-    const match = result.stdout.match(/UserShell:\s*(\S+)/);
-    return match?.[1] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-export function resolveShell(): string {
-  const envShell = process.env.SHELL;
-  if (envShell && fs.existsSync(envShell)) return envShell;
-
-  const infoShell = (os.userInfo() as { shell?: string }).shell;
-  if (infoShell && fs.existsSync(infoShell)) return infoShell;
-
-  const dsclShell = userShellFromDirectoryService();
-  if (dsclShell && fs.existsSync(dsclShell)) return dsclShell;
-
-  if (os.platform() === "win32") return "powershell.exe";
-  for (const candidate of ["/bin/zsh", "/bin/bash", "/bin/sh"]) {
-    if (fs.existsSync(candidate)) return candidate;
-  }
-  return "/bin/sh";
 }
 
 function existingPathEntries(
@@ -359,15 +333,6 @@ export function resolveCommandOnPath(
   platform: NodeJS.Platform = os.platform()
 ): string | null {
   return resolveAllCommandsOnPath(command, env, platform)[0] ?? null;
-}
-
-/**
- * A shell path reduced to the lowercased name callers switch on, extension and
- * all: `/usr/bin/zsh` → `zsh`, `pwsh.exe` → `pwsh.exe`. Shared with
- * `operator-login-path.ts`, which picks a login profile off the same name.
- */
-export function shellBasename(shell: string): string {
-  return path.basename(shell).toLowerCase();
 }
 
 function isPowerShell(shell: string): boolean {

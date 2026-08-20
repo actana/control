@@ -31,14 +31,17 @@ import {
   persistMaterial,
   reissueServerCert,
   type PersistedMaterial,
-} from "./core-material-store";
-import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses";
-import { endpointFor, readActanaConfig, writeActanaConfig } from "./actana-config";
-import { installDirFor, type ActanaLayout } from "./actana-layout";
-import { installTree, missingTreeFile, pointSymlink, realpathOrNull } from "./actana-tree";
-import type { ActanaServiceManager } from "./actana-service";
-import type { CoreManifest } from "./actana-manifest";
-import type { ActanaSystem } from "./actana-system";
+} from "@actana/shared/core-material-store";
+import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses.ts";
+import { endpointFor, readActanaConfig, writeActanaConfig } from "./actana-config.ts";
+import { installDirFor, type ActanaLayout } from "./actana-layout.ts";
+import { installTree, missingTreeFile, pointSymlink, realpathOrNull } from "./actana-tree.ts";
+import { claimLauncher, type LauncherClaim } from "./actana-launcher.ts";
+import { wireLocalCore, type LocalCoreWiring } from "./local-core-wiring.ts";
+import type { RegistryPaths } from "./blob-registry.ts";
+import type { ActanaServiceManager } from "./actana-service.ts";
+import type { CoreManifest } from "./actana-manifest.ts";
+import type { ActanaSystem } from "./actana-system.ts";
 import type { Harness } from "@actana/shared/domain";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 
@@ -50,6 +53,16 @@ const LISTEN_TIMEOUT_MS = 30_000;
 
 export type SetupOptions = {
   layout: ActanaLayout;
+  /**
+   * Where this machine's client half keeps its Cores (#288 D9).
+   *
+   * Setup writes the blob it mints into it, so the Core it just installed is
+   * one this machine's `actana core ls` already knows about — no token
+   * hand-carried from one half of this command into the other.
+   */
+  registry: RegistryPaths;
+  /** The `PATH` this run was given, for deciding who owns the launcher. */
+  env: NodeJS.ProcessEnv;
   /** The extracted tarball tree setup is running from. */
   sourceRoot: string;
   /** That tree's `core-manifest.json`. */
@@ -85,6 +98,8 @@ export type MaterialOutcome = "minted" | "reused" | "reissued";
 export type SetupResult = {
   /** The pairing token — base64 of the Registration blob. */
   blob: string;
+  /** The version that is now installed — the tree's, not this CLI's (#288 D10). */
+  version: string;
   installDir: string;
   /** The unit / plist that was written. */
   servicePath: string;
@@ -108,6 +123,10 @@ export type SetupResult = {
   listening: boolean;
   /** What became of each managed Harness during the offer round. */
   agents: HarnessInstallOutcome[];
+  /** Whether `<binDir>/actana` was linked, or left to whoever owns it (#288 D10). */
+  launcher: LauncherClaim;
+  /** How this Core was registered with this machine's own CLI (#288 D9). */
+  wiring: LocalCoreWiring;
 };
 
 /**
@@ -214,7 +233,11 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
 
   if (replacingTree) installTree(source, installDir);
   pointSymlink(layout.currentLink, installDir);
-  pointSymlink(layout.binLink, path.join(layout.currentLink, "bin", "actana"));
+  // Not an unconditional symlink any more: `<binDir>/actana` may already be
+  // somebody else's, and in the Core image it is the very directory
+  // `NPM_CONFIG_PREFIX` puts npm's global shims in (#288 D10).
+  const launcher = claimLauncher(layout, opts.env);
+  if (launcher.note) opts.out(launcher.note);
   fs.mkdirSync(layout.dataDir, { recursive: true });
 
   const { material, outcome } = await resolveMaterial(opts);
@@ -277,15 +300,23 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     material.bearerSecret as BearerSecret,
   );
 
+  const blob = encodeRegistrationBlob({
+    endpoint: endpointFor(config),
+    label: opts.label,
+    caCert: material.caCert,
+    clientCert: material.clientCert,
+    clientKey: material.clientKey,
+    bearer,
+  });
+
+  // #288 D9. The blob never reaches an output sink on the way here: it goes
+  // from `encodeRegistrationBlob` into a 0600 file in the registry, and what
+  // setup prints about it is a name and whether it is selected.
+  const wiring = wireLocalCore(opts.registry, opts.label, blob);
+
   return {
-    blob: encodeRegistrationBlob({
-      endpoint: endpointFor(config),
-      label: opts.label,
-      caCert: material.caCert,
-      clientCert: material.clientCert,
-      clientKey: material.clientKey,
-      bearer,
-    }),
+    blob,
+    version: manifest.version,
     installDir,
     servicePath: service.filePath,
     serviceName: service.name,
@@ -294,5 +325,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     materialOutcome: outcome,
     listening,
     agents,
+    launcher,
+    wiring,
   };
 }

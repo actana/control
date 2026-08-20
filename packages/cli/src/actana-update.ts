@@ -26,29 +26,28 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { writeActanaConfig, type ActanaConfig } from "./actana-config";
-import { installDirFor, type ActanaLayout } from "./actana-layout";
-import { readCoreManifest, type CoreManifest } from "./actana-manifest";
+import { writeActanaConfig, type ActanaConfig } from "./actana-config.ts";
+import { installDirFor, type ActanaLayout } from "./actana-layout.ts";
+import type { CoreManifest } from "./actana-manifest.ts";
 import {
-  SHASUMS_ASSET,
-  assetUrl,
-  parseShasums,
-  releaseAssetName,
   releaseTargetFor,
   resolveReleaseVersion,
-  sha256OfFile,
   type ReleaseChannel,
   type ReleaseFetcher,
-} from "./actana-release";
-import type { ActanaServiceManager } from "./actana-service";
-import type { ActanaSystem } from "./actana-system";
-import { installTree, missingTreeFile, pointSymlink, realpathOrNull } from "./actana-tree";
+} from "./actana-release.ts";
+import { fetchVerifiedRelease } from "./actana-fetch-release.ts";
+import type { ActanaServiceManager } from "./actana-service.ts";
+import type { ActanaSystem } from "./actana-system.ts";
+import { installTree, missingTreeFile, pointSymlink, realpathOrNull } from "./actana-tree.ts";
+import { claimLauncher } from "./actana-launcher.ts";
 
 /** How long an update waits for the restarted daemon's port before saying so. */
 const LISTEN_TIMEOUT_MS = 30_000;
 
 export type UpdateOptions = {
   layout: ActanaLayout;
+  /** The `PATH` this run was given, for deciding who owns the launcher. */
+  env: NodeJS.ProcessEnv;
   /** What `actana setup` recorded — the version being replaced, and the port. */
   config: ActanaConfig;
   /** This machine's init system, for the restart onto the new tree. */
@@ -75,98 +74,6 @@ export type UpdateResult = {
   /** Whether the daemon's port answered after the restart; null when nothing changed. */
   listening: boolean | null;
 };
-
-/**
- * Download the release and return the verified, unpacked tree inside `workDir`.
- *
- * Checksums are fetched first: `SHA256SUMS` names every asset in the release,
- * so it answers both "does this release exist" and "does it have a build for
- * me" before a tarball is downloaded. Failing on the digest before unpacking is
- * what keeps a tampered or truncated archive from ever being written anywhere
- * the daemon could run it from.
- */
-async function verifyAndUnpack(
-  opts: UpdateOptions,
-  version: string,
-  target: string,
-  workDir: string,
-): Promise<{ root: string; manifest: CoreManifest }> {
-  const asset = releaseAssetName(version, target);
-  const sumsUrl = assetUrl(opts.channel, version, SHASUMS_ASSET);
-
-  let sumsText: string;
-  try {
-    sumsText = await opts.fetcher.fetchText(sumsUrl);
-  } catch (err) {
-    throw new Error(
-      `could not fetch ${sumsUrl}: ${message(err)}. Either there is no release v${version}, ` +
-        "or this machine cannot reach the release channel.",
-    );
-  }
-
-  const expected = parseShasums(sumsText).get(asset);
-  if (!expected) {
-    throw new Error(
-      `release v${version} has no build for ${target} — its ${SHASUMS_ASSET} does not list ${asset}.`,
-    );
-  }
-
-  opts.out(`Downloading ${asset}…`);
-  const tarball = path.join(workDir, asset);
-  const downloadUrl = assetUrl(opts.channel, version, asset);
-  try {
-    await opts.fetcher.download(downloadUrl, tarball);
-  } catch (err) {
-    throw new Error(`could not download ${downloadUrl}: ${message(err)}`);
-  }
-
-  const actual = sha256OfFile(tarball);
-  if (actual !== expected) {
-    throw new Error(
-      `checksum mismatch for ${asset} — refusing to install it.\n` +
-        `  expected ${expected}\n` +
-        `  actual   ${actual}\n` +
-        "Nothing was changed; the Core is still running the version it was. Retry the " +
-        "update, and if it keeps failing the release assets or the connection to them " +
-        "cannot be trusted.",
-    );
-  }
-  // What this proves: the tarball is the one the release's own checksum file
-  // describes. Both came over the same channel, so it catches corruption and
-  // truncation, not a release channel someone else controls — the project
-  // publishes no signatures (spec: "No code signing").
-  opts.out(`Checksum verified against the release's ${SHASUMS_ASSET}.`);
-
-  const extracted = opts.system.run("tar", ["-xzf", tarball, "-C", workDir]);
-  if (extracted.status !== 0) {
-    throw new Error(`could not unpack ${asset}: ${(extracted.stderr || extracted.stdout).trim()}`);
-  }
-
-  const root = path.join(workDir, `actana-core-${version}-${target}`);
-  if (!fs.existsSync(root)) {
-    throw new Error(`${asset} does not contain actana-core-${version}-${target} — the release asset looks wrong.`);
-  }
-  const missing = missingTreeFile(root);
-  if (missing) {
-    throw new Error(`${asset} is not a complete Core build: no ${missing}.`);
-  }
-
-  const manifest = readCoreManifest(root);
-  if (!manifest) throw new Error(`${asset} has no readable core-manifest.json.`);
-  if (manifest.version !== version) {
-    throw new Error(
-      `${asset} was published as v${version} but its manifest says ${manifest.version} — ` +
-        "refusing to install a release that does not describe itself.",
-    );
-  }
-  if (manifest.platform !== opts.platform || manifest.arch !== opts.arch) {
-    throw new Error(
-      `${asset} is a ${manifest.target} build (${manifest.platform}/${manifest.arch}) but this ` +
-        `machine is ${opts.platform}/${opts.arch}.`,
-    );
-  }
-  return { root, manifest };
-}
 
 /** Fetch, verify, and swap in a release, then restart the daemon onto it. */
 export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult> {
@@ -208,7 +115,7 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   let root: string;
   let manifest: CoreManifest;
   try {
-    ({ root, manifest } = await verifyAndUnpack(opts, version, target, workDir));
+    ({ root, manifest } = await fetchVerifiedRelease(opts, version, target, workDir));
 
     // Everything above this line was reversible. From here the install changes.
     //
@@ -227,7 +134,12 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
 
   // The atomic swap: after this rename the machine is running the new version.
   pointSymlink(layout.currentLink, installDir);
-  pointSymlink(layout.binLink, path.join(layout.currentLink, "bin", "actana"));
+  // Same ownership rule setup follows (#288 D10): the launcher is repointed
+  // when it is this install's, and left alone when it is somebody else's.
+  // An update is if anything the more important of the two — an operator who
+  // updates a Core has not asked for their `PATH` to be rearranged.
+  const launcher = claimLauncher(layout, opts.env);
+  if (launcher.note) opts.out(launcher.note);
   writeActanaConfig(layout.configDir, { ...config, version: manifest.version, installDir });
 
   opts.out(`Restarting ${service.name} on ${manifest.version}…`);
@@ -247,8 +159,4 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
     installDir,
     listening: await opts.system.waitForPort(config.port, LISTEN_TIMEOUT_MS),
   };
-}
-
-function message(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
 }

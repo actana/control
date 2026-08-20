@@ -20,9 +20,9 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { ActanaLayout } from "./actana-layout";
-import type { ActanaServiceManager } from "./actana-service";
-import { lstatOrNull, realpathOrNull } from "./actana-tree";
+import type { ActanaLayout } from "./actana-layout.ts";
+import type { ActanaServiceManager } from "./actana-service.ts";
+import { lstatOrNull, realpathOrNull } from "./actana-tree.ts";
 
 export type UninstallOptions = {
   layout: ActanaLayout;

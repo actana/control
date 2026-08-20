@@ -9,7 +9,7 @@ import { refusedContainerVerbs } from "../actana-container";
 import { installDirFor, resolveActanaLayout } from "../actana-layout";
 import { releaseAssetName, releaseChannel } from "../actana-release";
 import type { ActanaSystem, CommandResult } from "../actana-system";
-import { materialFilePath } from "../core-material-store";
+import { materialFilePath } from "@actana/shared/core-material-store";
 import { fixtureFetcher, writeRelease } from "./release-fixture";
 
 const MANIFEST = {

@@ -14,7 +14,7 @@
 // Type-only, so nothing is imported at runtime and the two modules stay
 // acyclic: the state shape belongs to the service-manager contract, and this
 // file is one of the two implementations that produce it.
-import type { ActanaServiceState } from "./actana-service";
+import type { ActanaServiceState } from "./actana-service.ts";
 
 /** The systemd user unit `actana setup` installs on Linux. */
 export const UNIT_NAME = "actana-core.service";

@@ -30,7 +30,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import log from "./log";
+import log from "@actana/shared/log";
 
 /** How often the Core folds new misses into its log. */
 const DRAIN_INTERVAL_MS = 60_000;

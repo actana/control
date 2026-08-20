@@ -10,36 +10,13 @@
 import * as net from "node:net";
 import * as readline from "node:readline";
 import { spawnSync, spawn } from "node:child_process";
+import type { ActanaSystem, CommandResult } from "@actana/shared/actana-system-port";
 
-/** The outcome of a captured command run. */
-export type CommandResult = {
-  /** Exit status. 127 stands in for "could not be started at all". */
-  status: number;
-  stdout: string;
-  stderr: string;
-};
-
-export type ActanaSystem = {
-  /**
-   * Run a command and capture its output. Never throws: a missing binary
-   * comes back as a non-zero status, because "systemd is not on this machine"
-   * is a case the CLI reports rather than crashes on.
-   */
-  run(command: string, args: string[]): CommandResult;
-  /** Run a command with the operator's terminal attached; returns its exit code. */
-  passthrough(command: string, args: string[]): Promise<number>;
-  /** Resolve true once something accepts a TCP connection on the port. */
-  waitForPort(port: number, timeoutMs: number): Promise<boolean>;
-  /** Ask a yes/no question on the terminal. Only called on a TTY. */
-  confirm(question: string, defaultYes: boolean): Promise<boolean>;
-  /**
-   * Signal a process. False when there is no such process, or it is not ours.
-   *
-   * Used to nudge a running daemon into re-probing agent availability; a false
-   * here is a slower refresh, never an error.
-   */
-  signal(pid: number, signal: NodeJS.Signals): boolean;
-};
+// Re-exported so this stays the one module the CLI names a system port off.
+// The *type* lives in `@actana/shared` because the daemon's Harness-install
+// service takes one too (#288 D1) — the implementation below, and the
+// `node:child_process` import it needs, stay here on the operator's side.
+export type { ActanaSystem, CommandResult };
 
 /** How often {@link ActanaSystem.waitForPort} retries. */
 const PORT_POLL_MS = 250;

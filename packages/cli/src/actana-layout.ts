@@ -10,8 +10,16 @@
 // the filesystem, so the whole layout is unit-testable against a fake home.
 
 import * as path from "node:path";
-import { LAUNCH_AGENT_FILENAME } from "./actana-launchd";
-import { UNIT_NAME } from "./actana-systemd";
+import { LAUNCH_AGENT_FILENAME } from "./actana-launchd.ts";
+import { UNIT_NAME } from "./actana-systemd.ts";
+
+// Re-exported so `actana-layout.ts` stays the one module that answers "where
+// does actana put things". The two state paths themselves live in
+// `@actana/shared` because the daemon writes both of them (#288 D2).
+export {
+  updateCheckCachePath,
+  updateNoticeStatePath,
+} from "@actana/shared/actana-state-paths";
 
 /** Everywhere `actana` reads or writes on the operator's machine. */
 export type ActanaLayout = {
@@ -123,34 +131,6 @@ export function installDirFor(layout: ActanaLayout, version: string): string {
     throw new Error(`unusable version string: ${JSON.stringify(version)}`);
   }
   return path.join(layout.versionsDir, version);
-}
-
-/**
- * Where the update check remembers what the release channel last answered.
- *
- * Under the data dir rather than the install tree: `actana update` replaces
- * `versions/<v>` wholesale, and a cache that vanished on every update would
- * ask GitHub again on the first `status` after one — exactly when an operator
- * is most likely to run it in a loop.
- *
- * Takes the data dir rather than the whole layout because container mode
- * resolves it from `AC_USER_DATA_DIR` (the image bakes it) instead of from the
- * install root.
- */
-export function updateCheckCachePath(dataDir: string): string {
-  return path.join(dataDir, "update-check.json");
-}
-
-/**
- * Where the daemon remembers which release it last announced in its log.
- *
- * Beside the cache above, and separate from it: that file is the release
- * channel's answer, shared with the CLI; this one is the daemon's own record of
- * what it has already said, so a Core its host restarts hourly does not repeat
- * the same line hourly.
- */
-export function updateNoticeStatePath(dataDir: string): string {
-  return path.join(dataDir, "update-notice.json");
 }
 
 /**

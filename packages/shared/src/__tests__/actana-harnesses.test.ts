@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import { HarnessAvailabilityStore } from "../harness-availability-store";
 import { MANAGED_BLOCK_BEGIN } from "../operator-login-path";
 import { cleanupTempHomes, makeTempHome, readHomeFile } from "./temp-home";
 import {
@@ -13,7 +12,7 @@ import {
   supportedHarnessIdsSentence,
   type HarnessOfferOptions,
 } from "../actana-harnesses";
-import type { ActanaSystem, CommandResult } from "../actana-system";
+import type { ActanaSystem, CommandResult } from "../actana-system-port";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 
 const ALL_MISSING: CoreLinkHarnessAvailabilityMap = {
@@ -95,18 +94,6 @@ describe("agent ids", () => {
   it("rejects anything else", () => {
     expect(resolveHarnessId("gemini")).toBeNull();
     expect(resolveHarnessId("")).toBeNull();
-  });
-
-  it("offers only agents the Core's own probe reports on", () => {
-    // The offer round reads an availability map and skips anything with no
-    // entry in it. If the two sets ever drift, an agent becomes silently
-    // uninstallable — no offer, no message, no way to ask for it.
-    const store = new HarnessAvailabilityStore({ appendEvent: () => 0 });
-    store.runProbe();
-    const probed = store.snapshot();
-    for (const agent of offerableHarnessIds()) {
-      expect(probed).toHaveProperty(agent);
-    }
   });
 
   it("round-trips an agent through its --with-<harness> flag name", () => {

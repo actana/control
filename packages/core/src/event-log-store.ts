@@ -14,7 +14,7 @@
 // the plain-Node Core process, so better-sqlite3 uses its standard binding.
 
 import Database from "better-sqlite3";
-import log from "./log";
+import log from "@actana/shared/log";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";

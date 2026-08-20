@@ -13,8 +13,8 @@
 
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
-import { coreUpdateCommand } from "./actana-container";
-import type { ActanaServiceState } from "./actana-service";
+import { coreUpdateCommand } from "./actana-container.ts";
+import type { ActanaServiceState } from "./actana-service.ts";
 
 /**
  * What stands in for the unit's rows in a container (ADR 0016 D16).

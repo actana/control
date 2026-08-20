@@ -1,6 +1,6 @@
 import * as os from "node:os";
-import type { HarnessCliVersionRequirement } from "@actana/shared/harness-cli-config";
-import { pathLookupCandidates } from "@actana/shared/harness-cli-config";
+import type { HarnessCliVersionRequirement } from "./harness-cli-config";
+import { pathLookupCandidates } from "./harness-cli-config";
 import {
   checkHarnessCliVersionCached,
   type HarnessVersionCheck,

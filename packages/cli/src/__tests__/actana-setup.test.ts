@@ -7,7 +7,7 @@ import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { readActanaConfig } from "../actana-config";
 import { resolveActanaLayout, type ActanaLayout } from "../actana-layout";
-import { loadMaterial, persistMaterial } from "../core-material-store";
+import { loadMaterial, persistMaterial } from "@actana/shared/core-material-store";
 import { createServiceManager } from "../actana-service";
 import { runActanaSetup, choosePublicHost, type SetupOptions } from "../actana-setup";
 import type { ActanaSystem, CommandResult } from "../actana-system";

@@ -15,7 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes } from "node:crypto";
 import { generateCertMaterial, issueServerCert } from "./core-cert-material";
-import log from "./log";
+import log from "@actana/shared/log";
 
 /**
  * The persisted Core material — everything the daemon needs to restart

@@ -1,4 +1,4 @@
-// The Core's logger.
+// The logger the Core daemon and the `actana` CLI both write through.
 //
 // The Core is a plain Node daemon (ADR 0010 — no Electron anywhere in the
 // path), so this is console with a tag. Whoever supervises the process —

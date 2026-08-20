@@ -20,13 +20,14 @@
 
 import { createHash } from "node:crypto";
 import * as fs from "node:fs";
-import { Readable } from "node:stream";
-import { pipeline } from "node:stream/promises";
 import {
   latestReleaseUrl,
   parseLatestTag,
   type ReleaseChannel,
 } from "@actana/shared/actana-release-channel";
+import type { ReleaseFetcher } from "@actana/shared/actana-release-fetch";
+
+export { nodeReleaseFetcher, type ReleaseFetcher } from "@actana/shared/actana-release-fetch";
 
 export {
   DEFAULT_API_BASE,
@@ -40,54 +41,6 @@ export {
 
 /** The checksum asset every release carries, named as the release workflow names it. */
 export const SHASUMS_ASSET = "SHA256SUMS";
-
-/** Fetching bytes — the only impure thing in the update path's release half. */
-export type ReleaseFetcher = {
-  /** GET a URL as text. Throws when the request fails or answers non-2xx. */
-  fetchText(url: string): Promise<string>;
-  /** GET a URL into a file. Throws rather than leaving a partial file behind. */
-  download(url: string, destPath: string): Promise<void>;
-};
-
-/**
- * GitHub's API rejects requests without one, and a named agent is what shows
- * up in rate-limit and abuse reports if an update loop ever misbehaves.
- */
-const USER_AGENT = "actana-cli";
-
-/**
- * The real fetcher: `fetch` over the network.
- *
- * A download lands on `<dest>.part` and is renamed into place, so a connection
- * that drops halfway can never leave a file that looks like a complete tarball
- * — the digest would catch it anyway, but a half-file that survives a crash
- * would be a puzzle rather than a retry.
- */
-export function nodeReleaseFetcher(): ReleaseFetcher {
-  const get = async (url: string): Promise<Response> => {
-    const response = await fetch(url, { headers: { "user-agent": USER_AGENT } });
-    if (!response.ok) throw new Error(`HTTP ${response.status} ${response.statusText}`);
-    return response;
-  };
-
-  return {
-    async fetchText(url) {
-      return (await get(url)).text();
-    },
-    async download(url, destPath) {
-      const response = await get(url);
-      if (!response.body) throw new Error("the release server sent an empty response");
-      const partial = `${destPath}.part`;
-      try {
-        await pipeline(Readable.fromWeb(response.body), fs.createWriteStream(partial));
-        fs.renameSync(partial, destPath);
-      } catch (err) {
-        fs.rmSync(partial, { force: true });
-        throw err;
-      }
-    },
-  };
-}
 
 /**
  * The release target for a machine, or null when there is no build for it.

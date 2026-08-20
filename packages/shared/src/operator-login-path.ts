@@ -30,8 +30,8 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { harnessHomePathSuffixes } from "@actana/shared/harness-cli-config";
-import { resolveShell, shellBasename } from "./shell-env";
+import { harnessHomePathSuffixes } from "./harness-cli-config";
+import { resolveShell, shellBasename } from "./login-shell";
 
 /** Opening marker. Everything between this and {@link MANAGED_BLOCK_END} is Actana's. */
 export const MANAGED_BLOCK_BEGIN = "# >>> actana managed PATH >>>";

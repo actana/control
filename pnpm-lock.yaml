@@ -380,6 +380,9 @@ importers:
       '@actana/sdk':
         specifier: workspace:*
         version: link:../sdk
+      selfsigned:
+        specifier: ^5.5.0
+        version: 5.5.0
     devDependencies:
       '@types/better-sqlite3':
         specifier: 7.6.13

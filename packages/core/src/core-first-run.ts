@@ -42,7 +42,7 @@ import {
   checkServerCertHost,
   reissueServerCert,
   type PersistedMaterial,
-} from "./core-material-store";
+} from "@actana/shared/core-material-store";
 
 /** The blob file written beside the material file on first run. */
 export const REGISTRATION_BLOB_FILENAME = "registration-blob.txt";
