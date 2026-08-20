@@ -1237,10 +1237,24 @@ describe("in a container", () => {
     // silently checks nothing.
     expect(REFUSED).toContain("setup");
     expect(REFUSED).toContain("update");
+    // `install` is on it for exactly `setup`'s reason (#288 D8): it is the verb
+    // that puts a Core on this machine, and in the image the machine already
+    // is one.
+    expect(REFUSED).toContain("install");
     // The verbs that must keep working inside the image.
     expect(REFUSED).not.toContain("status");
     expect(REFUSED).not.toContain("token");
     expect(REFUSED).not.toContain("harnesses");
+    // **And every client noun**, which is criterion 3 of #288 bound to the
+    // refusal *table* rather than only to the dispatch order that currently
+    // keeps them out of it. `actana core ls` and `actana session …` have to
+    // work on a container Core with no `npm install`, because the Core
+    // installs a skill onto its own machine that teaches them. A noun that
+    // appeared here would make that skill dishonest again, and it would do it
+    // one table entry at a time.
+    for (const noun of CLIENT_NOUNS) {
+      expect(REFUSED, `\`${noun}\` is a client noun and must never be refused`).not.toContain(noun);
+    }
   });
 
   it.each(REFUSED)("refuses `%s` and names the Docker command that does it", async (verb) => {

@@ -62,12 +62,32 @@ export {
 /**
  * The verbs the image owns, and what the operator runs on the host instead.
  *
- * `logs` is here for the same reason as the other six: there is no journal and
- * no unit in the image, so `journalctl --user -u actana-core.service` has
+ * `logs` is here for the same reason as the other seven: there is no journal
+ * and no unit in the image, so `journalctl --user -u actana-core.service` has
  * nothing to read. `docker logs` reads the daemon's stdout, which is where the
  * container's Core writes.
+ *
+ * **Only the machine-lifecycle verbs are here, never a client noun.** `core`,
+ * `project`, `harness`, `events` and `session` reach a Core over the core link
+ * and work identically on metal, in a container and on a laptop with no Core —
+ * a Session running on this Core drives Cores with them (#288). The dispatch
+ * checks the nouns before it consults this table, and
+ * `actana-machine-cli.test.ts` asserts no noun is a key here, so the claim is
+ * bound to the table as well as to the dispatch order.
  */
 const DOCKER_EQUIVALENT: Record<string, { why: string; run: string }> = {
+  // `install` refuses for exactly `setup`'s reason and had to join the table
+  // with it (#288 D8): it is the verb that *puts a Core on this machine*, and
+  // in the image the machine already is one. Letting it run would download a
+  // release and lay a second tree down beside the image's own Core, with a
+  // unit nothing in the container supervises — the "half-working setup" this
+  // module's header exists to refuse.
+  install: {
+    why: "this image is the install — there is no release to fetch and no tree to lay down",
+    run:
+      `set ${CONTAINER_PUBLIC_HOST_ENV} (and optionally ${CONTAINER_PORT_ENV}, ` +
+      `${CONTAINER_LABEL_ENV}) in your compose file, then:\n  docker compose up -d`,
+  },
   setup: {
     why: "this image is the install — there is no tree to lay down and no unit to write",
     run:

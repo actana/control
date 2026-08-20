@@ -95,6 +95,7 @@ export const CORE_HOME = "/home/core";
  * there without being added here fails in CI rather than going unsmoked.
  */
 export const CORE_REFUSED_VERBS = Object.freeze([
+  "install",
   "setup",
   "start",
   "stop",
