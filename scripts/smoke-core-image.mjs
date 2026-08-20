@@ -439,6 +439,46 @@ for (const verb of CORE_REFUSED_VERBS) {
 }
 log(`${CORE_REFUSED_VERBS.join(", ")} all refuse with a Docker command to run instead`);
 
+// #288, criterion 3 and D7 — the other half, and the half this issue exists
+// for: **a client noun runs inside the image, with no `npm install` and no
+// second binary.**
+//
+// The refusal loop above proves the machine verbs still refuse, which was
+// already true before #288. What was not true is this: the Core installs the
+// `actana-sessions` skill onto its own machine and that skill teaches
+// `actana core ls`, `actana session start` and `actana events tail` — every
+// one of which was `unknown command` to the `actana` on that machine's PATH.
+//
+// It is right today by *dispatch ordering* — `actana-cli.ts` checks
+// `CLIENT_NOUNS` before it consults the container refusal table — and dispatch
+// ordering is exactly the kind of thing a later refactor reorders silently. So
+// it is run, in the image, against the binary the tarball actually staged.
+//
+// `core ls` is the right verb to ask: it needs no Core to reach and no
+// credential, so a healthy answer is unambiguous. Exit 0 with the empty-registry
+// sentence is what a fresh Session sees; a refusal, an `unknown command` or a
+// non-zero status is the regression.
+log("verifying a client noun runs in the image with no npm install …");
+const clientNoun = core.exec(["actana", "core", "ls"], { allowFailure: true });
+const clientSaid = `${clientNoun.stdout ?? ""}${clientNoun.stderr ?? ""}`;
+if (clientNoun.status !== 0) {
+  die(
+    `\`actana core ls\` exited ${clientNoun.status} in the container — a Session on this Core ` +
+      `cannot drive Cores out of the box (#288 criterion 3):\n${clientSaid.trim()}`,
+  );
+}
+if (/unknown command|does not run in a container/.test(clientSaid)) {
+  die(`\`actana core ls\` is not this binary's verb in the container:\n${clientSaid.trim()}`);
+}
+// The same binary answered a machine verb a moment ago, and it is the tarball's
+// — so this is D7's "running it inside the image answers both an operator verb
+// and a client noun", proven on the built image rather than argued.
+const version = core.exec(["actana", "--version"]);
+if (!/^actana \d+\.\d+\.\d+/.test((version.stdout ?? "").trim())) {
+  die(`\`actana --version\` did not answer as the unified CLI:\n${(version.stdout ?? "").trim()}`);
+}
+log("`actana core ls` answers in the image, from the same binary as `actana --version`");
+
 // ─── A Panel pairs with it ───────────────────────────────────────────────────
 
 const panelEntry = path.resolve(

@@ -35,7 +35,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { Server } from "node:net";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
-import { generateCertMaterial } from "@actana/core/core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";

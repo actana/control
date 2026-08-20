@@ -37,7 +37,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
 import { randomBytes, timingSafeEqual } from "node:crypto";
-import log from "./log";
+import log from "@actana/shared/log";
 import { LOCAL_HOOK_API_HOST } from "./pty-hook-env";
 import type { HarnessHookBody } from "@actana/shared/harness-hook-pipeline";
 

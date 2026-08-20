@@ -35,7 +35,7 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
-import { sanitizedProcessEnv } from "./shell-env";
+import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 import type { CoreExecPortResult } from "./pty-core-link-server";
 
 /**

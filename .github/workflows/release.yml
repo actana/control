@@ -404,8 +404,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build the Core bundle
-        run: pnpm --filter @actana/core build
+      # Both bundles, not just the daemon's: the tarball stages
+      # `app/core-entry.cjs` from `packages/core/dist` and `app/actana-cli.cjs`
+      # from `packages/cli/dist-tarball` (#288 D1), and
+      # `scripts/build-core-tarball.mjs` fails without either. One script names
+      # the pair so this step and `pnpm core:tarball` cannot drift apart;
+      # `scripts/__tests__/core-tarball.test.mjs` asserts every caller uses it.
+      - name: Build the Core tarball's bundles
+        run: pnpm build:core-tarball-bundles
 
       - name: Build the tarball
         env:
@@ -482,8 +488,14 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      - name: Build the Core bundle
-        run: pnpm --filter @actana/core build
+      # Both bundles, not just the daemon's: the tarball stages
+      # `app/core-entry.cjs` from `packages/core/dist` and `app/actana-cli.cjs`
+      # from `packages/cli/dist-tarball` (#288 D1), and
+      # `scripts/build-core-tarball.mjs` fails without either. One script names
+      # the pair so this step and `pnpm core:tarball` cannot drift apart;
+      # `scripts/__tests__/core-tarball.test.mjs` asserts every caller uses it.
+      - name: Build the Core tarball's bundles
+        run: pnpm build:core-tarball-bundles
 
       - name: Build the tarball
         env:

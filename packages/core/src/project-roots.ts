@@ -4,7 +4,7 @@
 // the Panel service as well as in the Core daemon; the
 // built-in driver needs no per-ABI native binding in either host.
 import { DatabaseSync } from "node:sqlite";
-import log from "./log";
+import log from "@actana/shared/log";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";

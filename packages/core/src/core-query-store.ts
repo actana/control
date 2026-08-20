@@ -12,7 +12,7 @@
 // bootstrapped yet), `busy_timeout` absorbs brief write contention.
 
 import Database from "better-sqlite3";
-import log from "./log";
+import log from "@actana/shared/log";
 import * as path from "node:path";
 import * as fs from "node:fs";
 import { makeOpenFailedThrottle } from "./log-throttle";

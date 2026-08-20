@@ -908,7 +908,7 @@ describe("core image", () => {
   // copy of the Core's own refusal table. A copy that drifts is a verb that
   // silently stops being smoked — so the copy is checked against the original.
   it("smokes every verb the Core actually refuses in a container", () => {
-    const table = readRepoFile("packages/core/src/actana-container.ts");
+    const table = readRepoFile("packages/cli/src/actana-container.ts");
     const body = table.slice(table.indexOf("const DOCKER_EQUIVALENT"));
     const verbs = [...body.matchAll(/^ {2}(\w+): \{/gm)].map((m) => m[1]);
     expect(verbs.length).toBeGreaterThan(0);

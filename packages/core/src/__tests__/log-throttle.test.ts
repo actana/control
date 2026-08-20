@@ -6,7 +6,7 @@ const { errorMock, warnMock, infoMock } = vi.hoisted(() => ({
   infoMock: vi.fn(),
 }));
 
-vi.mock("../log", () => ({
+vi.mock("@actana/shared/log", () => ({
   default: { error: errorMock, warn: warnMock, info: infoMock },
 }));
 

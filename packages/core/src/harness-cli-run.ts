@@ -2,8 +2,8 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { resolveHarnessCommandOnPath } from "./harness-cli-resolution";
-import { resolveCommandOnPath, sanitizedProcessEnv } from "./shell-env";
+import { resolveHarnessCommandOnPath } from "@actana/shared/harness-cli-resolution";
+import { resolveCommandOnPath, sanitizedProcessEnv } from "@actana/shared/shell-env";
 import { isWindowsCommandScript } from "@actana/shared/windows-cmd";
 
 export type RunCliOptions = {

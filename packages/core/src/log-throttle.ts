@@ -8,7 +8,7 @@
 // `{ count, error }` for the suppressed span, then emits the caller's fields
 // verbatim and starts a new window.
 
-import log from "./log";
+import log from "@actana/shared/log";
 
 type Fields = Record<string, unknown>;
 

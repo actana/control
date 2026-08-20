@@ -8,6 +8,9 @@ node_modules
 .opencode
 .impeccable
 dist
+# `packages/cli/dist-tarball` — the CJS half of the `actana` bundle, staged into
+# the Core tarball. Outside `dist/` so the npm package does not publish it.
+dist-tarball
 dist-electron
 dist-server
 .output

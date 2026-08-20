@@ -239,8 +239,17 @@ RUN mkdir -p /home/core/.local/bin \
 #
 # Everything below is a private image constant and NOT part of that contract.
 # ACTANA_CONTAINER is how container mode is detected — never by sniffing
-# /.dockerenv (D16) — and is what makes `setup`/`start`/`stop`/`restart`/
-# `update`/`uninstall` refuse and name their Docker equivalent.
+# /.dockerenv (D16) — and is what makes `setup`/`install`/`start`/`stop`/
+# `restart`/`update`/`uninstall` refuse and name their Docker equivalent. The
+# client nouns — `core`, `project`, `harness`, `events`, `session` — are never
+# refused here: since #288 the tarball's `actana` is the *whole* command, so a
+# Session running on this Core can drive Cores out of the box and the
+# `actana-sessions` skill the Core installs is honest on the machine it lands
+# on. That is also why NPM_CONFIG_PREFIX's bin coming first on PATH no longer
+# decides anything: `npm i -g @actana/cli` would put the same program there.
+# There is deliberately no `npm install` in this image — an image whose
+# contents depend on what is on the registry at build time is not reproducible
+# from this repository (ADR 0032 D7).
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
     ACTANA_CONTAINER=1 \

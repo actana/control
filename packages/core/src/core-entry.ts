@@ -89,7 +89,7 @@ import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-ho
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { CoreSessionBackstop } from "./core-session-backstop";
-import { generateCertMaterial } from "./core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
   buildRegistrationBlob,
@@ -102,18 +102,21 @@ import {
   CONTAINER_PUBLIC_HOST_ENV,
   coreUpdateCommand,
   inContainer,
-} from "./actana-container";
-import { updateCheckCachePath, updateNoticeStatePath } from "./actana-layout";
-import { readCoreManifest } from "./actana-manifest";
-import { nodeReleaseFetcher } from "./actana-release";
+} from "@actana/shared/actana-container-contract";
+import {
+  updateCheckCachePath,
+  updateNoticeStatePath,
+} from "@actana/shared/actana-state-paths";
+import { readCoreManifest } from "@actana/shared/actana-manifest";
+import { nodeReleaseFetcher } from "@actana/shared/actana-release-fetch";
 import { startUpdateNotice } from "./core-update-notice";
-import log from "./log";
+import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
-import { HarnessAvailabilityStore } from "./harness-availability-store";
+import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
 import { ensureOrchestrationSkill } from "./orchestration-skill";
 import { HarnessInstallService } from "./harness-install-service";
-import { nodeActanaSystem } from "./actana-system";
+import { daemonHarnessSystem } from "./core-harness-system";
 
 const CORE_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 const REGISTRATION_BLOB_SENTINEL = "@@AC_CORE_REGISTRATION_BLOB@@";
@@ -326,7 +329,7 @@ async function startCore(): Promise<void> {
   const harnessInstalls = new HarnessInstallService({
     availability: () => availabilityStore.snapshot(),
     reprobe: () => availabilityStore.runProbe(),
-    system: nodeActanaSystem(),
+    system: daemonHarnessSystem(),
     platform: process.platform,
     homeDir: os.homedir(),
   });

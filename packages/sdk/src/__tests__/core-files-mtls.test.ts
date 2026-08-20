@@ -26,7 +26,7 @@ import * as https from "node:https";
 import * as os from "node:os";
 import * as path from "node:path";
 import { Agent, fetch as undiciFetch } from "undici";
-import { generateCertMaterial } from "@actana/core/core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { CoreClient } from "../core-client";

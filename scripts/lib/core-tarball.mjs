@@ -40,7 +40,7 @@ export const BUNDLED_NODE_VERSION = "24.15.0";
  *      `SHA256SUMS` covering less than the release does.
  *   3. `install.sh`'s `detect_target`, which maps a machine to one of these
  *      names, and refuses by name the platforms that are deliberately absent.
- *   4. `releaseTargetFor` in `packages/core/src/actana-release.ts` — `actana
+ *   4. `releaseTargetFor` in `packages/cli/src/actana-release.ts` — `actana
  *      update` is the second front door and must agree with the installer on
  *      every shape, refusals included.
  *   5. The tests over all four: `scripts/__tests__/core-tarball.test.mjs`,
@@ -70,6 +70,13 @@ export const CORE_RUNTIME_DEPENDENCIES = Object.freeze([
   "node-pty",
   "ws",
   "selfsigned",
+  // `undici` is the CLI's, not the daemon's: since #288 the tarball's
+  // `app/actana-cli.cjs` is the *unified* `actana`, so the client nouns — and
+  // `project cp` / `project files`, which reach a Core's HTTPS routes with an
+  // mTLS `fetch` (ADR 0028) — run from inside the image. The bundle marks it
+  // external, so without this row a container Session's `actana project files`
+  // fails on a module that is not there.
+  "undici",
 ]);
 
 /** Externals in the Core build that deliberately do not ship in the tarball. */

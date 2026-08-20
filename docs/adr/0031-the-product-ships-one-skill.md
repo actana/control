@@ -291,6 +291,19 @@ module — `@actana/cli` may not import `@actana/shared` (ADR 0025 D4, and the
 named modules from `@actana/sdk` (ADR 0025 D2 as amended by #224). Neither list
 moves for this.
 
+> **The premise in that paragraph is superseded by
+> [ADR 0032](0032-one-actana-cli.md) (#288).** `@actana/cli` may now import
+> `@actana/shared`, because the package is *inlined* into the published bundle
+> rather than resolved from it, and an inlined bundle offers no surface to
+> depend on — 0032 D5 carries that argument in full and the rewritten
+> `no-local-escape` test carries it too. **The mechanism below is kept anyway**,
+> and 0032's consequences say why: the payload is still embedded in two
+> packages, because the daemon and the CLI still write the skill from two
+> different processes, and one authored source with a drift test is still the
+> cheapest way to keep those two honest. What changed is that it is a
+> convenience now rather than a workaround. Everything from "So the `SKILL.md`
+> is authored once" onward stands as written.
+
 So the `SKILL.md` is authored once at `.agents/skills/actana-sessions/SKILL.md`,
 following the `release` skill's harness-neutral precedent, and a generator
 embeds it as a string constant in both packages. **Embedded rather than copied

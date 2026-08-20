@@ -18,7 +18,7 @@ import { Server } from "node:net";
 import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
-import { generateCertMaterial } from "../core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { PtyCoreLinkServer } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";

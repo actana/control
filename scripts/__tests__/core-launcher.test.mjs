@@ -49,6 +49,24 @@ describeOnPosix("bin/actana launcher", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
+  /**
+   * The launcher's environment, with the two variables it defaults stripped.
+   *
+   * `bin/actana` writes `AC_APP_PATH=${AC_APP_PATH:-<root>/app}` — the default
+   * is what these tests are about, and it only applies when the variable is
+   * unset. **A developer running this suite inside a container Core has it set**
+   * (the image bakes `AC_APP_PATH=/opt/actana/app`), and inheriting it made the
+   * launcher answer with that machine's path instead of the fixture's. CI never
+   * had it, so the failure only ever appeared on the machines most likely to be
+   * running a Core.
+   */
+  const cleanEnv = () => {
+    const env = { ...process.env };
+    delete env.AC_APP_PATH;
+    delete env.ACTANA_ROOT;
+    return env;
+  };
+
   const parseOutput = (result) => {
     expect(result.error).toBeUndefined();
     expect(result.status, result.stderr).toBe(0);
@@ -64,7 +82,7 @@ describeOnPosix("bin/actana launcher", () => {
   };
 
   it("execs the bundled node on the bundled actana CLI", () => {
-    const out = parseOutput(spawnSync(launcher, [], { encoding: "utf8" }));
+    const out = parseOutput(spawnSync(launcher, [], { encoding: "utf8", env: cleanEnv() }));
 
     expect(out.root).toBe(fs.realpathSync(installRoot));
     expect(out.entry).toBe(path.join(fs.realpathSync(installRoot), "app", "actana-cli.cjs"));
@@ -72,7 +90,7 @@ describeOnPosix("bin/actana launcher", () => {
   });
 
   it("forwards its arguments", () => {
-    const out = parseOutput(spawnSync(launcher, ["status", "--json"], { encoding: "utf8" }));
+    const out = parseOutput(spawnSync(launcher, ["status", "--json"], { encoding: "utf8", env: cleanEnv() }));
     expect(out.args).toBe("status --json");
   });
 
@@ -83,7 +101,7 @@ describeOnPosix("bin/actana launcher", () => {
       spawnSync("actana", [], {
         encoding: "utf8",
         cwd: os.tmpdir(),
-        env: { ...process.env, PATH: `${path.join(installRoot, "bin")}${path.delimiter}/usr/bin:/bin` },
+        env: { ...cleanEnv(), PATH: `${path.join(installRoot, "bin")}${path.delimiter}/usr/bin:/bin` },
       }),
     );
 
@@ -96,7 +114,7 @@ describeOnPosix("bin/actana launcher", () => {
     const link = path.join(linkDir, "actana");
     fs.symlinkSync(launcher, link);
 
-    const out = parseOutput(spawnSync(link, [], { encoding: "utf8" }));
+    const out = parseOutput(spawnSync(link, [], { encoding: "utf8", env: cleanEnv() }));
     expect(out.root).toBe(fs.realpathSync(installRoot));
   });
 
@@ -114,7 +132,7 @@ describeOnPosix("bin/actana launcher", () => {
     const link = path.join(binDir, "actana");
     fs.symlinkSync(path.join(current, "bin", "actana"), link);
 
-    const out = parseOutput(spawnSync(link, [], { encoding: "utf8" }));
+    const out = parseOutput(spawnSync(link, [], { encoding: "utf8", env: cleanEnv() }));
     expect(out.root).toBe(fs.realpathSync(installRoot));
   });
 
@@ -124,7 +142,7 @@ describeOnPosix("bin/actana launcher", () => {
     const link = path.join(linkDir, "actana");
     fs.symlinkSync(path.relative(linkDir, launcher), link);
 
-    const out = parseOutput(spawnSync(link, [], { encoding: "utf8" }));
+    const out = parseOutput(spawnSync(link, [], { encoding: "utf8", env: cleanEnv() }));
     expect(out.root).toBe(fs.realpathSync(installRoot));
   });
 });

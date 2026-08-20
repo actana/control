@@ -1,4 +1,4 @@
-// Core build — bundles the daemon + the `actana` CLI entries with esbuild.
+// Core build — bundles the daemon. Just the daemon, since #288.
 //
 // CJS output on purpose: the source tree is written for CommonJS emit (lazy
 // require() of node-pty with try/catch fallbacks), and plain
@@ -28,11 +28,9 @@ await build({
   outfile: "dist/core-entry.cjs",
 });
 
-// The `actana` CLI. Deliberately a separate bundle from the daemon: it
-// `require`s dist/core-entry.cjs at runtime for the `daemon` verb rather
-// than bundling it, so the tarball ships one copy of the Core, not two.
-await build({
-  ...shared,
-  entryPoints: ["src/actana-cli-entry.ts"],
-  outfile: "dist/actana-cli.cjs",
-});
+// **No second bundle here.** `dist/actana-cli.cjs` used to be emitted from this
+// package too, because the operator CLI lived in `packages/core/src`. It does
+// not any more: `packages/cli` owns the whole `actana` command and emits both
+// the published ESM bundle and the tarball's CJS one (#288 D1). This package is
+// the daemon and nothing else, and `scripts/build-core-tarball.mjs` stages the
+// CLI from `packages/cli/dist`.
