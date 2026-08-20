@@ -17,6 +17,7 @@ import type { CoreProbeFn } from "./core-probe.ts";
 import type { CliTerminal } from "./cli-terminal.ts";
 import type { OpenCoreShellFn } from "./core-shell-channel.ts";
 import type { CoreConnectFn } from "./core-connection.ts";
+import type { CorePairingPort } from "./core-pair.ts";
 import type { OpenSessionGateway } from "./session-gateway.ts";
 import type { OpenProjectFilesFn } from "./project-files-gateway.ts";
 import type { OpenSessionAttachFn } from "./session-attach-channel.ts";
@@ -85,6 +86,16 @@ export type ActanaCliDeps = {
    * that refuses to hand it a client when the Core is on another train.
    */
   connect: CoreConnectFn;
+  /**
+   * How `core pair` reaches a Core it has **no credential for yet** (#285).
+   *
+   * Its own port rather than a verb on {@link connect}, because it is the one
+   * client call made before there is anything to authenticate with: the dial is
+   * unverified by construction, what pins it is a fingerprint a human read out
+   * loud, and what comes back is the credential every other field here already
+   * assumes exists. See `core-pair.ts`.
+   */
+  pairing: CorePairingPort;
   /** How the `session` noun reaches a Core. See `session-gateway.ts`. */
   openSessions: OpenSessionGateway;
   /**

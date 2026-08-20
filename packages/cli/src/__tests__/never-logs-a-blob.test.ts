@@ -17,6 +17,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   fakeAttachment,
+  fakePairing,
   fakeTerminal,
   fakeCore,
   fakeProjectFiles,
@@ -80,6 +81,62 @@ describe("no verb prints a blob, with --verbose on", () => {
     for (const [what, argv] of runs) {
       const run = await cli().run(argv, { probe: healthyProbe() });
       expectNoSecrets(what, run.all);
+    }
+  });
+
+  it("sweeps `core pair`, which is handed a credential rather than reading one (#285)", async () => {
+    // The verb the sweep would miss if it were only ever run against a registry
+    // that already had a blob in it: `core pair` receives one from the SDK and
+    // writes it, so every line it prints — the success, the `--verbose` steps,
+    // the fingerprint prompt and every refusal — has the material in scope.
+    //
+    // The pairing **code** is swept alongside the credential here, because this
+    // is the one verb that is handed one. It is a bearer secret for as long as
+    // its session is open and it must not reach a terminal, a CI log or a shell
+    // history any more than the key does.
+    const code = "CODE-SENTINEL-VVV";
+    const session = "session-1";
+    const argv = (extra: string[] = []) => [
+      "core",
+      "pair",
+      "paired",
+      "core.test:8443",
+      code,
+      "--session",
+      session,
+      "--verbose",
+      ...extra,
+    ];
+    const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+
+    const runs: Array<[string, string[], Parameters<CliFixture["run"]>[1]]> = [
+      // A shape that is refused before anything is dialled.
+      ["core pair (bad code)", argv(["--fingerprint", fingerprint]), { pairing: fakePairing() }],
+      // The interactive confirmation, which prints a fingerprint beside a code
+      // it was given.
+      [
+        "core pair (confirmed)",
+        ["core", "pair", "paired", "core.test:8443", "ABCD-2345", "--session", session, "--verbose"],
+        { pairing: fakePairing({ fingerprint }), machine: { interactive: true } },
+      ],
+      // The success, which has the issued credential in hand.
+      [
+        "core pair (issued)",
+        ["core", "pair", "paired", "core.test:8443", "ABCD-2345", "--session", session, "--verbose", "--fingerprint", fingerprint],
+        { pairing: fakePairing({ fingerprint }) },
+      ],
+      // And a refusal, where a diagnostic would reach for its input.
+      [
+        "core pair (refused)",
+        ["core", "pair", "paired", "core.test:8443", "ABCD-2345", "--session", session, "--verbose", "--fingerprint", fingerprint],
+        { pairing: fakePairing({ fingerprint, fails: "refused" }) },
+      ],
+    ];
+
+    for (const [what, args, opts] of runs) {
+      const run = await cli().run(args, opts);
+      expectNoSecrets(what, run.all);
+      expect(run.all, `${what} printed the pairing code`).not.toContain("SENTINEL-VVV");
     }
   });
 

@@ -1,5 +1,6 @@
 // `actana core` — the Cores this machine can reach (#129 D10).
 //
+//   actana core pair <name> <address> <code>   enroll this machine on a Core
 //   actana core add <name> [file]   register a Core from a blob file, or stdin
 //   actana core ls [--json]         what this machine knows, without dialling
 //   actana core use <name>          point `current` at one of them
@@ -18,6 +19,15 @@
 // need one; and it turns "paste this once" into a privilege the CLI holds
 // forever. `packages/cli` imports nothing that can start a process, and
 // `src/__tests__/no-local-escape.test.ts` is what keeps that true.
+//
+// **`pair` is how a machine comes by a credential now (#280, #285).** The
+// operator types an address and an eight-character code somebody read out to
+// them, the SDK generates a key pair here and gets a certificate signed, and
+// what lands is the same file `add` writes at the same mode — so every verb
+// below is unchanged and cannot tell the two apart. It runs on the *client*;
+// `actana pair new`, which mints the code, runs on the Core. `core-pair.ts`
+// has the reasoning, and `add` stays until #287 removes the paste path
+// everywhere at once.
 //
 // **`exec` is the same argument one verb further along (#266).** A maintenance
 // script that needs to run something on a Core used to have to reach for
@@ -39,6 +49,7 @@ import {
   type RegistryPaths,
 } from "./blob-registry.ts";
 import { decodeRegistrationBlobText } from "./registration-blob-file.ts";
+import { runCorePair } from "./core-pair.ts";
 import { resolveCore } from "./core-resolution.ts";
 import { runCoreShell } from "./core-shell.ts";
 import { runCoreExec } from "./core-exec.ts";
@@ -54,6 +65,8 @@ const STATUS_TIMEOUT_MS = 15_000;
 export const CORE_HELP = `actana core — the Cores this machine can reach
 
 Usage
+  actana core pair <name> <address> <code>
+                                  enroll THIS machine on a Core
   actana core add <name> [file]   register a Core from a blob file, or stdin
   actana core ls                  list the Cores this machine knows
   actana core use <name>          point \`current\` at a Core
@@ -66,7 +79,30 @@ Flags
   --core <name>   which Core \`status\` (and every later noun) talks to
   --cwd <dir>     a directory on the **Core's** machine — \`exec\`
   --json          machine-readable output — \`ls\`, \`status\` and \`exec\`
-  --verbose       explain the steps. Never prints a blob.
+  --verbose       explain the steps. Never prints a blob, a code or a key.
+  --fingerprint <sha256>   the Core's CA fingerprint — \`pair\`
+  --session <id>  the pairing session the code belongs to — \`pair\`
+  --label <name>  what to call this machine on the Core — \`pair\`
+
+Pairing with a Core
+  \`pair\` runs on the machine being paired — **this one**. On the Core, an
+  operator runs \`actana pair new\`, which prints a code, that Core's CA
+  fingerprint and the pairing session. Then, here:
+
+    actana core pair prod core.example:8443 ABCD-2345 \\
+      --session 0f6d… --fingerprint AA:BB:CC:…
+
+  The fingerprint is not optional. Without \`--fingerprint\` this prints the
+  fingerprint the Core presents and asks you to compare it with the one on the
+  Core's terminal; with no terminal to ask on, it refuses. Either way the code
+  is never sent to a certificate authority nobody confirmed.
+
+  The code is one-time, expires, and is spent by a wrong guess. A fresh one is
+  \`actana pair new\` again — it cannot be recovered, only re-minted.
+
+  What lands is the same credential file \`add\` writes, at the same mode, so
+  \`ls\`, \`use\`, \`rm\`, \`status\`, \`shell\` and \`exec\` work against it
+  unchanged.
 
 Running one command
   \`exec\` is the non-interactive half of \`shell\`: no terminal, stdout and
@@ -105,8 +141,11 @@ export async function runCoreCommand(
 
   // Only the verbs with flags of their own take `args`. `add`, `use` and `rm`
   // have none — passing it to them anyway made every verb look like it read the
-  // flag set, which is the one thing a reader checks a dispatch for.
+  // flag set, which is the one thing a reader checks a dispatch for. `pair`
+  // does: `--fingerprint`, `--session` and `--label` are all its.
   switch (verb) {
+    case "pair":
+      return runCorePair(deps, args, paths, rest);
     case "add":
       return coreAdd(deps, paths, rest);
     case "ls":
@@ -125,7 +164,7 @@ export async function runCoreCommand(
       return runCoreExec(deps, args, paths, rest);
     default:
       deps.err(`actana core: unknown verb "${verb}".`);
-      deps.err("Verbs: add, ls, use, rm, status, shell, exec. `actana core --help` lists them.");
+      deps.err("Verbs: pair, add, ls, use, rm, status, shell, exec. `actana core --help` lists them.");
       return EXIT_USAGE;
   }
 }
