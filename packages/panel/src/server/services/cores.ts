@@ -9,12 +9,22 @@ import type { Core } from "~/shared/cores";
  * The Core registry — the Panel's list of Cores it can talk to, plus the
  * sealed credentials it dials them with.
  *
- * Registration is one paste: the operator hands over the registration blob
- * that `core install` printed ("pairing token" in what the UI says), the
- * endpoint and label land in `cores`, and the secret half is sealed into
- * `core_secrets`. There is no other way in; the Panel does not accept a
- * hand-typed endpoint, because a Core without pinned mTLS material is a Core
- * it cannot safely dial.
+ * A registration is one credential: an endpoint, the mTLS material and the
+ * bearer. The endpoint and label land in `cores` and the secret half is sealed
+ * into `core_secrets`. The Panel does not accept a hand-typed endpoint,
+ * because a Core without pinned mTLS material is a Core it cannot safely dial.
+ *
+ * Two doors lead here and they meet at {@link registerCoreFromCredential}:
+ *
+ *   • the pasted registration blob `core install` printed, decoded by
+ *     {@link registerCoreFromRegistrationBlob} — the path #287 removes;
+ *   • a short pairing code redeemed against the Core by
+ *     `services/core-pairing.ts` (#286), which hands back the same
+ *     `CoreRegistrationBlob` shape with a key that never crossed the wire.
+ *
+ * Everything past that function is one path, so a Core added by pairing is
+ * indistinguishable downstream from one added by paste: same registry row,
+ * same sealed secrets, same `core-link-manager.ts` dial.
  */
 
 /** The secret half of a registration. Never leaves the service. */
@@ -42,6 +52,39 @@ export class RegistrationBlobError extends Error {
     this.name = "RegistrationBlobError";
   }
 }
+
+/**
+ * A credential the registry itself won't take — an endpoint already spoken
+ * for, or material with a field missing. Caller-facing for the same reason
+ * {@link RegistrationBlobError} is, and worded without reference to how the
+ * credential arrived, because both doors throw it.
+ */
+export class CoreRegistryError extends Error {
+  readonly expose = true;
+  constructor(message: string) {
+    super(message);
+    this.name = "CoreRegistryError";
+  }
+}
+
+/**
+ * What a registration is made of, whichever door it came through.
+ *
+ * Structurally `CoreRegistrationBlob` from `@actana/sdk` and `RegistrationBlob`
+ * from `@actana/shared` — declared here rather than imported from either so
+ * the registry depends on the *shape* of a credential and not on the codec
+ * #287 deletes.
+ */
+export type CoreCredential = {
+  /** `wss://host:port` — the core-link endpoint the dialer will use. */
+  endpoint: string;
+  /** The name the credential carried, if any. Overridden by an explicit one. */
+  label?: string;
+  caCert: string;
+  clientCert: string;
+  clientKey: string;
+  bearer: string;
+};
 
 type CoreRow = {
   id: string;
@@ -102,12 +145,9 @@ export function getCore(id: string): Core | null {
 }
 
 /**
- * Register a Core from a pasted registration blob.
- *
- * Both rows go in under one transaction: a Core in the registry that the
- * dialer has no credentials for would sit in the fleet showing "unreachable"
- * forever with no way to fix it but a manual delete. Either the Core is
- * registered and dialable, or nothing happened.
+ * Register a Core from a pasted registration blob — the hand-carry path #287
+ * removes. It decodes, checks what the codec does not, and hands the result to
+ * {@link registerCoreFromCredential} like every other door.
  */
 export function registerCoreFromRegistrationBlob(raw: unknown): Core {
   if (typeof raw !== "string" || !raw.trim()) {
@@ -123,15 +163,45 @@ export function registerCoreFromRegistrationBlob(raw: unknown): Core {
       "That isn't a valid pairing token. Copy the whole line `core install` printed and paste it again.",
     );
   }
+  return registerCoreFromCredential(blob);
+}
 
-  const endpoint = blob.endpoint.trim();
+/**
+ * Register a Core from a credential, whichever door produced it.
+ *
+ * Both rows go in under one transaction: a Core in the registry that the
+ * dialer has no credentials for would sit in the fleet showing "unreachable"
+ * forever with no way to fix it but a manual delete. Either the Core is
+ * registered and dialable, or nothing happened.
+ *
+ * `label` is the Panel's alias for the *machine* and is passed explicitly by a
+ * caller that has one — pairing does, because the label it sent the Core names
+ * this Panel rather than the machine, and letting that come back round as the
+ * alias would fill the fleet list with the Panel's own name.
+ */
+export function registerCoreFromCredential(
+  credential: CoreCredential,
+  opts: { label?: string } = {},
+): Core {
+  if (
+    !credential.caCert.trim() ||
+    !credential.clientCert.trim() ||
+    !credential.clientKey.trim() ||
+    !credential.bearer.trim()
+  ) {
+    throw new CoreRegistryError("That credential is missing material the Panel needs to dial the Core.");
+  }
+
+  const endpoint = credential.endpoint.trim();
+  if (!endpoint) throw new CoreRegistryError("That credential names no Core endpoint.");
+
   const id = newCoreId();
   const now = Date.now();
   const secrets: CoreSecrets = {
-    caCert: blob.caCert,
-    clientCert: blob.clientCert,
-    clientKey: blob.clientKey,
-    bearer: blob.bearer,
+    caCert: credential.caCert,
+    clientCert: credential.clientCert,
+    clientKey: credential.clientKey,
+    bearer: credential.bearer,
   };
   // Sealed before the transaction opens: a misconfigured AC_SECRETS_KEY should
   // fail the registration outright, not leave a half-written one to roll back.
@@ -140,12 +210,12 @@ export function registerCoreFromRegistrationBlob(raw: unknown): Core {
   const db = getPanelDb();
   const insert = db.transaction(() => {
     if (db.prepare("SELECT id FROM cores WHERE endpoint = ?").get(endpoint)) {
-      throw new RegistrationBlobError(`A Core at ${endpoint} is already registered.`);
+      throw new CoreRegistryError(`A Core at ${endpoint} is already registered.`);
     }
     db.prepare(
       `INSERT INTO cores (id, operator_id, endpoint, label, last_event_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, 0, ?, ?)`,
-    ).run(id, OPERATOR_ID, endpoint, labelFor(blob.label ?? "", endpoint), now, now);
+    ).run(id, OPERATOR_ID, endpoint, labelFor(opts.label ?? credential.label ?? "", endpoint), now, now);
     db.prepare("INSERT INTO core_secrets (core_id, sealed, updated_at) VALUES (?, ?, ?)").run(
       id,
       sealed,
