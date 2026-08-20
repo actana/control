@@ -1,7 +1,12 @@
 import { describe, it, expect } from "vitest";
 import { X509Certificate, createPublicKey, webcrypto } from "node:crypto";
 import * as x509 from "@peculiar/x509";
-import { generateCertMaterial, generateClientCsr, signClientCsr } from "../core-cert-material";
+import {
+  certFingerprintSha256,
+  generateCertMaterial,
+  generateClientCsr,
+  signClientCsr,
+} from "../core-cert-material";
 
 // Core generates a self-signed CA + server cert + Panel client cert at
 // start (ADR 0002). The Core holds the server cert; the Panel pins the CA
@@ -224,5 +229,41 @@ describe("signing a client CSR against the Core's CA", () => {
     expect(csrPem).toMatch(/-----BEGIN CERTIFICATE REQUEST-----/);
     expect(privateKeyPem).toMatch(/-----BEGIN PRIVATE KEY-----/);
     expect(csrPem).not.toContain("PRIVATE KEY");
+  });
+});
+
+// ─── The CA fingerprint an operator reads out loud (#283) ───────────────────
+//
+// `actana pair new` prints this and the client checks the certificate it is
+// presented against it before it sends the pairing code (#280 step 3). The
+// format is the contract, not a presentation choice: an operator who verifies
+// it against `openssl x509 -fingerprint -sha256` must see the same characters,
+// or the check they just performed proved nothing.
+
+describe("the CA fingerprint", () => {
+  it("is the conventional colon-separated upper-case hex SHA-256", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const fingerprint = certFingerprintSha256(mat.ca.cert);
+    expect(fingerprint).toMatch(/^[0-9A-F]{2}(:[0-9A-F]{2}){31}$/);
+  });
+
+  it("agrees with what every other tool prints for the same certificate", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    // Node computes this over the DER too. Asserting against it is what keeps
+    // the hand-rolled version from quietly hashing the PEM — which would still
+    // look like a fingerprint and would match nothing on the client's side.
+    expect(certFingerprintSha256(mat.ca.cert)).toBe(new X509Certificate(mat.ca.cert).fingerprint256);
+  });
+
+  it("is over the DER, so PEM whitespace cannot move it", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const rewrapped = mat.ca.cert.replace(/\n/g, "\r\n").trimEnd() + "\n\n";
+    expect(certFingerprintSha256(rewrapped)).toBe(certFingerprintSha256(mat.ca.cert));
+  });
+
+  it("distinguishes two CAs", async () => {
+    const one = await generateCertMaterial({ host: "127.0.0.1" });
+    const two = await generateCertMaterial({ host: "127.0.0.1" });
+    expect(certFingerprintSha256(one.ca.cert)).not.toBe(certFingerprintSha256(two.ca.cert));
   });
 });
