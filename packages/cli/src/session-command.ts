@@ -5,6 +5,7 @@
 //   actana session logs <session>            the transcript, rendered
 //   actana session resume <session> [prompt] pick a conversation back up
 //   actana session send <session> <text>     type into a running Session
+//   actana session wait <session>            block until it settles (#289)
 //   actana session kill <session>            stop the harness, whoever started it
 //   actana session attach <session>          take the terminal (#163)
 //
@@ -80,6 +81,7 @@ Usage
   actana session logs <session>             print the transcript, rendered
   actana session resume <session> [prompt]  start a Session that continues one
   actana session send <session> <text>      write text into a running Session
+  actana session wait <session>             block until the Core reports it settled
   actana session kill <session>             stop the harness running for it
   actana session attach <session>           watch a Session live, and type into it
 
@@ -87,6 +89,7 @@ Flags
   --core <name>       which registered Core to talk to
   --json              machine-readable output. Only JSON reaches stdout.
   --wait              start/resume: block until the Core reports it settled
+                      send: block until the turn that text starts has ended
   --wait-timeout <s>  give up waiting after this many seconds, and say so
   --harness <name>    start: ${KNOWN_HARNESSES.join(", ")}
   --cwd <path>        start: a directory on the Core, inside the Project
@@ -119,6 +122,28 @@ Attaching, and who is allowed to type
   back, and so does this process dying: the Core releases a dropped connection's
   locks. Ctrl-] detaches; Ctrl-C goes to the harness.
 
+Awaiting a turn
+  \`wait\` blocks until the Core reports the Session settled — \`finished\`,
+  \`needs-input\`, \`interrupted\`, \`terminated\` or \`disconnected\`, because every
+  one of those is a turn that ended. On a Session that is already settled it says
+  so at once.
+
+  \`send <session> <text> --wait\` writes and then waits for **the turn that write
+  starts**: the Core stamps the delivery in its event log and the wait resolves on
+  the first settling status after that stamp, so it can never answer with the
+  status the Session was already sitting at. With \`--json\` it prints the same
+  object \`start --wait --json\` prints.
+
+  **Sending into a turn that is already running resolves on that turn's end.** A
+  keystroke into a busy harness is not a new turn, so if the Session is mid-turn
+  when the text lands, the wait ends when the *current* turn ends — possibly
+  before the harness has read a character of what you sent. Nothing on this side
+  can tell those apart, and nothing here guesses.
+
+  A harness that reports nothing at all runs out the \`--wait-timeout\` and the
+  message says this side gave up — never a status the Core did not send. Without
+  \`--wait-timeout\` there is no deadline: a turn takes as long as the work takes.
+
 Who delivers the prompt
   The Core does (ADR 0026). It waits for the harness to settle, answers the
   dialog it opened, and writes the prompt. This CLI adds no timing of its own,
@@ -149,6 +174,8 @@ export async function runSessionCommand(
       return sessionResume(deps, args, paths, rest);
     case "send":
       return sessionSend(deps, args, paths, rest);
+    case "wait":
+      return sessionWait(deps, args, paths, rest);
     case "kill":
       return sessionKill(deps, args, paths, rest);
     case "attach": {
@@ -162,7 +189,9 @@ export async function runSessionCommand(
     }
     default:
       deps.err(`actana session: unknown verb "${verb}".`);
-      deps.err("Verbs: start, ls, logs, resume, kill, send, attach. `actana session --help` lists them.");
+      deps.err(
+        "Verbs: start, ls, logs, resume, kill, send, wait, attach. `actana session --help` lists them.",
+      );
       return EXIT_USAGE;
   }
 }
@@ -297,50 +326,125 @@ async function reportStartedSession(
       return EXIT_OK;
     }
 
-    deps.err("Waiting for the Core to report this session settled…");
-    let outcome: SessionOutcome;
-    try {
-      outcome = await session.wait(timeoutMs === null ? {} : { timeoutMs });
-    } catch (err) {
-      // The only thing that reaches here is the deadline the operator asked for.
-      // It is reported as what it is — this side gave up — rather than as a
-      // status, because the Core never said one.
-      const message = messageOf(err);
-      if (args.json) deps.out(formatJson({ ...startedFields(session), waited: true, error: message }));
-      deps.err(`actana session: ${message}`);
-      return EXIT_FAILURE;
-    }
-
-    // Read while the Session is alive: a full-screen harness restores the main
-    // buffer when it quits, and the main buffer is where nothing was printed.
-    const screen = session.screen();
-
-    if (args.json) {
-      deps.out(
-        formatJson({
-          ...startedFields(session),
-          waited: true,
-          status: outcome.status,
-          exited: outcome.exited,
-          ...(outcome.exitCode === undefined ? {} : { exitCode: outcome.exitCode }),
-          // The transcript rides along because a `--json` caller has no second
-          // chance at it: the Core's replay ring lives with the PTY, so a
-          // harness that exited takes its output with it and a later
-          // `session logs` has nothing to answer with.
-          screen,
-        }),
-      );
-    } else {
-      deps.out(session.taskId);
-      deps.err(settledLine(outcome));
-      deps.err(`\`actana session logs ${session.taskId}\` prints the transcript while the harness is running.`);
-    }
-    return settledWell(outcome) ? EXIT_OK : EXIT_FAILURE;
+    return await awaitTurn(deps, args, session, timeoutMs);
   } finally {
     // Listeners on the client, released. The harness on the Core is untouched —
     // that is `session kill`.
     session.dispose();
   }
+}
+
+/**
+ * Wait for a turn to end and print how it ended — the half `start`, `resume`,
+ * `wait` and `send --wait` all share (#289 B).
+ *
+ * Shared on purpose, and it is what makes the promise "one result shape across
+ * the commands" true rather than aspirational: there is one place that decides
+ * what a settled Session prints, so a caller's parser cannot need a branch for
+ * which verb produced the object.
+ */
+async function awaitTurn(
+  deps: ActanaCliDeps,
+  args: ParsedArgs,
+  session: StartedSession,
+  timeoutMs: number | null,
+): Promise<number> {
+  deps.err("Waiting for the Core to report this session settled…");
+  let outcome: SessionOutcome;
+  try {
+    outcome = await session.wait(timeoutMs === null ? {} : { timeoutMs });
+  } catch (err) {
+    // The only thing that reaches here is the deadline the operator asked for.
+    // It is reported as what it is — this side gave up — rather than as a
+    // status, because the Core never said one.
+    const message = messageOf(err);
+    if (args.json) deps.out(formatJson({ ...startedFields(session), waited: true, error: message }));
+    deps.err(`actana session: ${message}`);
+    return EXIT_FAILURE;
+  }
+
+  // Read while the Session is alive: a full-screen harness restores the main
+  // buffer when it quits, and the main buffer is where nothing was printed.
+  const screen = session.screen();
+
+  if (args.json) {
+    deps.out(
+      formatJson({
+        ...startedFields(session),
+        waited: true,
+        status: outcome.status,
+        exited: outcome.exited,
+        ...(outcome.exitCode === undefined ? {} : { exitCode: outcome.exitCode }),
+        // The transcript rides along because a `--json` caller has no second
+        // chance at it: the Core's replay ring lives with the PTY, so a
+        // harness that exited takes its output with it and a later
+        // `session logs` has nothing to answer with.
+        screen,
+      }),
+    );
+  } else {
+    deps.out(session.taskId);
+    deps.err(settledLine(outcome));
+    deps.err(`\`actana session logs ${session.taskId}\` prints the transcript while the harness is running.`);
+  }
+  return settledWell(outcome) ? EXIT_OK : EXIT_FAILURE;
+}
+
+/** {@link awaitTurn}, releasing the attachment's listeners on the way out. */
+async function awaitAttachedTurn(
+  deps: ActanaCliDeps,
+  args: ParsedArgs,
+  session: StartedSession,
+  timeoutMs: number | null,
+): Promise<number> {
+  try {
+    return await awaitTurn(deps, args, session, timeoutMs);
+  } finally {
+    // The listeners this attachment holds, released. The harness on the Core is
+    // untouched — waiting for a Session is not owning it.
+    session.dispose();
+  }
+}
+
+/**
+ * `actana session wait <session>` — block until the Core reports it settled.
+ *
+ * **The primitive, and it ships as one** (#289 B). `send --wait` is this with a
+ * write in front of it, and the reason the verb exists rather than only the flag
+ * is ADR 0026 D1: a client sends text and no timing, so timing gets its own verb
+ * instead of being folded into the one that writes.
+ *
+ * With no text delivered there is no cursor to count from, so this answers from
+ * the Session's current status when it is already settled and otherwise on the
+ * next settling status. That is the question the verb asks — "tell me when this
+ * Session is not working" — and it is not the question `send --wait` asks.
+ */
+async function sessionWait(
+  deps: ActanaCliDeps,
+  args: ParsedArgs,
+  paths: RegistryPaths,
+  rest: string[],
+): Promise<number> {
+  const misused = misusedFlag(args, ["--wait-timeout"]);
+  if (misused) return usage(deps, "wait", misused);
+
+  const [taskId, ...extra] = rest;
+  if (taskId === undefined) {
+    return usage(deps, "wait", "a session id is required — `actana session wait <session>`");
+  }
+  if (extra.length > 0) return usage(deps, "wait", `unexpected argument "${extra[0]}"`);
+
+  // The verb *is* the wait, so `--wait-timeout` needs no `--wait` beside it —
+  // and `--wait` is refused above rather than accepted as a synonym for the
+  // verb's own name.
+  const timeout = waitTimeoutMs(args, true);
+  if (timeout.error) return usage(deps, "wait", timeout.error);
+
+  return withGateway(deps, args, paths, "wait", async (gateway) => {
+    deps.verbose(`attaching to session ${taskId} to wait for it to settle`);
+    const session = await gateway.wait(taskId);
+    return awaitAttachedTurn(deps, args, session, timeout.ms);
+  });
 }
 
 /** `actana session ls [project]` — every Session on the Core, newest first. */
@@ -449,6 +553,12 @@ async function sessionLogs(
  * nothing that decides on its own that Enter is due. Both writes go to one PTY
  * resolved once, so the harness cannot move between them. A *starting* prompt
  * goes through `session start`, where the Core owns the schedule.
+ *
+ * `--wait` adds no timing either (#289): it asks the Core to stamp the delivery
+ * in its event log and then waits for the first settling status *after* that
+ * stamp. The text is the same text, written at the same moment, with the same
+ * nothing appended — what `--wait` changes is when this process hangs up, not
+ * what the harness receives.
  */
 async function sessionSend(
   deps: ActanaCliDeps,
@@ -456,13 +566,15 @@ async function sessionSend(
   paths: RegistryPaths,
   rest: string[],
 ): Promise<number> {
-  const misused = misusedFlag(args, ["--enter"]);
+  const misused = misusedFlag(args, ["--enter", "--wait", "--wait-timeout"]);
   if (misused) return usage(deps, "send", misused);
 
   const [taskId, ...words] = rest;
   if (taskId === undefined) {
     return usage(deps, "send", "a session id is required — `actana session send <session> <text>`");
   }
+  const timeout = waitTimeoutMs(args);
+  if (timeout.error) return usage(deps, "send", timeout.error);
   const read = await readText(deps, words);
   if (read.error) return usage(deps, "send", read.error);
   if (read.text === null && !args.enter) {
@@ -485,6 +597,20 @@ async function sessionSend(
 
   return withGateway(deps, args, paths, "send", async (gateway) => {
     const text = read.text ?? "";
+
+    if (args.wait) {
+      // Send-then-wait with **no gap** (#289 B): one attachment resolves the
+      // PTY, writes through it, and waits from the id the Core stamped that
+      // write with. The alternative — send, then attach, then wait — is the
+      // design the issue's landmine is about: the attach would find a Session
+      // sitting at a settled status and answer with last turn's outcome.
+      const andReturn = args.enter ? " and a carriage return" : "";
+      deps.verbose(`sending ${text.length} characters to session ${taskId}${andReturn}, then waiting`);
+      const session = await gateway.sendAndWait(taskId, text, { enter: args.enter });
+      deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
+      return awaitAttachedTurn(deps, args, session, timeout.ms);
+    }
+
     // One call, one PTY resolution, both writes (#204 review). The command no
     // longer decides anything about the return beyond passing on the flag.
     const delivered = await gateway.send(taskId, text, { enter: args.enter });
@@ -634,9 +760,14 @@ function misusedFlag(args: ParsedArgs, accepted: readonly string[]): string | nu
  * carried out — and a deadline somebody believes they set is worse than no
  * deadline at all. The wait it bounds is the SDK's; nothing here counts time.
  */
-function waitTimeoutMs(args: ParsedArgs): { ms: number | null; error?: string } {
+function waitTimeoutMs(
+  args: ParsedArgs,
+  waiting: boolean = args.wait,
+): { ms: number | null; error?: string } {
   if (args.waitTimeout === null) return { ms: null };
-  if (!args.wait) return { ms: null, error: "--wait-timeout only means something with --wait" };
+  // `waiting` is for the one verb that *is* a wait: `session wait` takes no
+  // `--wait` (the verb says it), so its deadline cannot be gated on the flag.
+  if (!waiting) return { ms: null, error: "--wait-timeout only means something with --wait" };
   const seconds = Number(args.waitTimeout);
   if (!Number.isFinite(seconds) || seconds <= 0) {
     return { ms: null, error: `--wait-timeout wants a number of seconds, not "${args.waitTimeout}"` };

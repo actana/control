@@ -30,10 +30,18 @@ import type {
   CoreLinkSessionSnapshot,
   CoreLinkTaskSnapshot,
 } from "@actana/sdk/core-link-frames.ts";
+import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core-link-frames.ts";
+
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
-import { startInProcessCore, type InProcessCore } from "./in-process-core.ts";
+import {
+  arrayEventLog,
+  startInProcessCore,
+  waitFor,
+  type ArrayEventLog,
+  type InProcessCore,
+} from "./in-process-core.ts";
 
 const PROJECT: CoreLinkProjectSnapshot = {
   projectId: "proj_web",
@@ -84,13 +92,23 @@ function livePtyCore(): {
   core: unknown;
   writes: string[];
   killed: string[];
+  resolutions: string[];
+  /** The same lookup, uncounted — for the query ports, which are not a verb. */
+  ptyFor: (taskId: string) => string | null;
 } {
   const writes: string[] = [];
   const killed: string[] = [];
+  // Every `findByTask` this Core is asked, so a verb that resolves the PTY
+  // twice — and opens a window between the two — is visible rather than
+  // arguable (#289: one resolution for the write and the wait).
+  const resolutions: string[] = [];
   const ptys = new Map<string, string>([["task_live", "pty_live"]]);
   const core = {
     setEmitTarget: () => {},
-    findByTask: (taskId: string) => ({ ptyId: ptys.get(taskId) ?? null }),
+    findByTask: (taskId: string) => {
+      resolutions.push(taskId);
+      return { ptyId: ptys.get(taskId) ?? null };
+    },
     taskIdForPty: (ptyId: string) =>
       [...ptys.entries()].find(([, id]) => id === ptyId)?.[0] ?? null,
     replay: (ptyId: string) =>
@@ -116,7 +134,13 @@ function livePtyCore(): {
     killLaunchProcesses: () => ({ ptyCount: 0, ports: [] }),
     killPtysUnderPath: () => {},
   };
-  return { core, writes, killed };
+  return {
+    core,
+    writes,
+    killed,
+    resolutions,
+    ptyFor: (taskId: string) => ptys.get(taskId) ?? null,
+  };
 }
 
 /** Task and project reads, answered from memory. */
@@ -157,19 +181,44 @@ afterEach(() => {
 });
 
 /** A Core holding one live Session and one that has already stopped. */
-async function coreWithSessions(): Promise<{ writes: string[]; killed: string[] }> {
+async function coreWithSessions(): Promise<{
+  writes: string[];
+  killed: string[];
+  resolutions: string[];
+  eventLog: ArrayEventLog;
+  /** What the harness's own Stop hook does on the Core: patch the row, say so. */
+  endTurn: (taskId: string, status: string) => void;
+}> {
   const pty = livePtyCore();
   const tasks = [
     task(),
     task({ taskId: "task_done", title: "ship the changelog", status: "finished" }),
   ];
-  const { queryPort, mutationPort } = ports(tasks, (taskId) =>
-    (pty.core as { findByTask(id: string): { ptyId: string | null } }).findByTask(taskId).ptyId,
-  );
-  core = await startInProcessCore({ ptyCore: pty.core, queryPort, mutationPort });
+  // The uncounted lookup: `listSessions` resolves every row's PTY, and counting
+  // those would drown the one thing `resolutions` is watching for — a *verb*
+  // that resolves the same Session twice.
+  const { queryPort, mutationPort } = ports(tasks, pty.ptyFor);
+  // The Core's event log, wired because #289's wait is a cursor into it: the
+  // Core stamps a delivery there and the client counts settling statuses from
+  // that id. Without one every write comes back unstamped, which is the
+  // older-Core case and not the one these tests are about.
+  const eventLog = arrayEventLog();
+  core = await startInProcessCore({ ptyCore: pty.core, queryPort, mutationPort, eventLog });
   fixture = makeCliFixture();
   await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
-  return { writes: pty.writes, killed: pty.killed };
+  const endTurn = (taskId: string, status: string): void => {
+    const row = tasks.find((t) => t.taskId === taskId);
+    if (row) row.status = status;
+    // The event the Core's task writer appends, with the status the mutation
+    // patched on it — a report about a turn, and legible as one even when the
+    // status it lands on is the status the row already had.
+    eventLog.appendEvent(
+      "task:updated",
+      JSON.stringify({ taskId, projectId: PROJECT.projectId, status }),
+      { taskId },
+    );
+  };
+  return { writes: pty.writes, killed: pty.killed, resolutions: pty.resolutions, eventLog, endTurn };
 }
 
 /** Every session verb dials the Core for real in this suite. */
@@ -248,6 +297,79 @@ describe("actana session, against a Core in this process", () => {
     const again = await fixture!.run(["session", "kill", "task_live", "--json"], withCore());
     expect(again.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(again.out.join("\n")).error).toContain("no harness running");
+  }, 30_000);
+
+  it("sends and awaits the turn in one PTY resolution, and prints the settled screen", async () => {
+    // The whole of #289, against a Core that answers real frames: the write is
+    // stamped in the event log, the wait counts from that id, and the turn that
+    // ends afterwards is the one reported. The Session here is **already
+    // settled** when the text lands — `task_live` is `running`, and the turn
+    // below ends on `finished` — so nothing about this could be satisfied by
+    // the status the Session was sitting at.
+    const { writes, resolutions, eventLog, endTurn } = await coreWithSessions();
+
+    const run = fixture!.run(
+      ["session", "send", "task_live", "carry on", "--enter", "--wait", "--json"],
+      withCore(),
+    );
+    // The turn ends once the delivery has been stamped — which is the ordering
+    // a harness's Stop hook has: it cannot fire before the text arrives.
+    await waitFor(
+      () => eventLog.events.some((e) => e.kind === SESSION_DELIVERED_EVENT_KIND),
+      "the write was stamped",
+    );
+    endTurn("task_live", "finished");
+
+    const result = await run;
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+
+    // Two writes, verbatim, with the return as its own byte (ADR 0026).
+    expect(writes).toEqual(["carry on", "\r"]);
+    // **One resolution for the write and the wait.** A second `findByTask`
+    // between them is the window this design exists to close.
+    expect(resolutions).toEqual(["task_live"]);
+
+    const stamps = eventLog.events.filter((e) => e.kind === SESSION_DELIVERED_EVENT_KIND);
+    expect(stamps).toHaveLength(2);
+    expect(stamps[0]!.taskId).toBe("task_live");
+
+    const payload = JSON.parse(result.out.join("\n")) as Record<string, unknown>;
+    expect(payload).toMatchObject({
+      taskId: "task_live",
+      ptyId: "pty_live",
+      harness: "claude-code",
+      waited: true,
+      status: "finished",
+      exited: false,
+    });
+    // The transcript rides along, rendered, read while the Session is alive —
+    // and it is the Core's replay ring, so it holds what came before the wait.
+    expect(String(payload.screen)).toContain("done: 3 files changed");
+  }, 30_000);
+
+  it("waits as a verb, and refuses to wait on a Session with no harness running", async () => {
+    const { eventLog, endTurn } = await coreWithSessions();
+
+    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    // Nothing was delivered, so there is no cursor — the wait takes the next
+    // settling status this attachment hears about.
+    await waitFor(() => eventLog.tailReads > 0, "the wait subscribed to the event log");
+    endTurn("task_live", "needs-input");
+
+    const settled = await waiting;
+    expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
+      taskId: "task_live",
+      status: "needs-input",
+      waited: true,
+      // An attach did not spawn, and says so rather than inventing an answer.
+      command: null,
+      reportsTurnStart: null,
+    });
+
+    const stopped = await fixture!.run(["session", "wait", "task_done", "--json"], withCore());
+    expect(stopped.code).toBe(EXIT_FAILURE);
+    expect(JSON.parse(stopped.out.join("\n")).error).toContain("no harness running");
   }, 30_000);
 
   it("says a stopped Session has no transcript rather than printing an empty one", async () => {

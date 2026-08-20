@@ -18,7 +18,11 @@ import {
   sentinelBlobText,
   type CliFixture,
 } from "./cli-harness.ts";
-import { SessionGatewayError, type SessionRow } from "../session-gateway.ts";
+import {
+  SessionGatewayError,
+  type SessionRow,
+  type StartedSession,
+} from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 
 let fixture: CliFixture | null = null;
@@ -449,6 +453,174 @@ describe("actana session logs", () => {
       rendered: true,
       screen: "a screen",
     });
+  });
+});
+
+describe("actana session wait, and send --wait (#289)", () => {
+  /** An attached Session, settling on whatever the test says. */
+  function attached(overrides: Partial<StartedSession> = {}): StartedSession {
+    return fakeStartedSession({
+      // The three answers only a spawn gives. An attach did not spawn.
+      command: null,
+      reportsTurnStart: null,
+      ...overrides,
+    });
+  }
+
+  it("is a verb of its own, and takes --wait-timeout without a --wait beside it", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "wait", "task_1", "--wait-timeout", "90"], {
+      sessions: fakeSessionGateway({
+        wait: async () => attached({ wait: async () => ({ status: "finished", exited: false }) }),
+      }),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    // The id on stdout, as every other verb leaves it, so `$(…)` still works.
+    expect(run.out).toEqual(["task_1"]);
+    expect(run.err.join("\n")).toContain("finished");
+  });
+
+  it("refuses the flags it does not take, `--wait` included", async () => {
+    await withRegisteredCore();
+    for (const flag of ["--wait", "--enter", "--harness", "--raw"]) {
+      const argv = flag === "--harness" ? ["--harness", "codex"] : [flag];
+      const run = await cli().run(["session", "wait", "task_1", ...argv], {
+        sessions: fakeSessionGateway(),
+      });
+      // `--wait` is refused rather than accepted as a synonym for the verb's
+      // own name: a flag that means nothing here would be a flag somebody
+      // believed they set.
+      expect(run.code, `${flag} was not refused`).toBe(EXIT_USAGE);
+      expect(run.err.join("\n")).toContain(`${flag} does not apply here`);
+    }
+  });
+
+  it("needs a session id, and refuses a second argument", async () => {
+    await withRegisteredCore();
+    const bare = await cli().run(["session", "wait"], { sessions: fakeSessionGateway() });
+    expect(bare.code).toBe(EXIT_USAGE);
+    expect(bare.err.join("\n")).toContain("a session id is required");
+
+    const extra = await cli().run(["session", "wait", "task_1", "task_2"], {
+      sessions: fakeSessionGateway(),
+    });
+    expect(extra.code).toBe(EXIT_USAGE);
+    expect(extra.err.join("\n")).toContain('unexpected argument "task_2"');
+  });
+
+  it("says a Session with no harness running has nothing to wait on", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "wait", "task_1"], {
+      sessions: fakeSessionGateway({
+        wait: async () => {
+          throw new SessionGatewayError(
+            "not-running",
+            "session task_1 has no harness running — there is nothing to attach a wait to",
+          );
+        },
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    expect(run.err.join("\n")).toContain("no harness running");
+  });
+
+  it("accepts `send --wait`, which was a usage error", async () => {
+    await withRegisteredCore();
+    const sent: Array<{ text: string; enter: boolean | undefined }> = [];
+    const run = await cli().run(["session", "send", "task_1", "carry", "on", "--wait"], {
+      sessions: fakeSessionGateway({
+        sendAndWait: async (_taskId, text, opts) => {
+          sent.push({ text, enter: opts?.enter });
+          return attached({ wait: async () => ({ status: "needs-input", exited: false }) });
+        },
+      }),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    // One call for the write and the wait — the gateway resolves the PTY once
+    // and there is no window between the delivery and the start of the wait.
+    expect(sent).toEqual([{ text: "carry on", enter: false }]);
+    expect(run.err.join("\n")).toContain("Sent 8 characters");
+    expect(run.err.join("\n")).toContain("needs-input");
+  });
+
+  it("prints the same object `start --wait --json` prints", async () => {
+    await withRegisteredCore();
+    const outcome = { status: "finished", exited: true, exitCode: 0 };
+
+    const started = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+      sessions: fakeSessionGateway({
+        start: async () => fakeStartedSession({ wait: async () => outcome }),
+      }),
+    });
+    const sent = await cli().run(["session", "send", "task_1", "go on", "--wait", "--json"], {
+      sessions: fakeSessionGateway({
+        sendAndWait: async () => attached({ wait: async () => outcome }),
+      }),
+    });
+    const waited = await cli().run(["session", "wait", "task_1", "--json"], {
+      sessions: fakeSessionGateway({ wait: async () => attached({ wait: async () => outcome }) }),
+    });
+
+    expect(started.code, started.err.join("\n")).toBe(EXIT_OK);
+    expect(sent.code, sent.err.join("\n")).toBe(EXIT_OK);
+    expect(waited.code, waited.err.join("\n")).toBe(EXIT_OK);
+
+    const keys = (run: { out: string[] }) =>
+      Object.keys(JSON.parse(run.out.join("\n")) as Record<string, unknown>).sort();
+    // One result shape across the three commands, so a caller's parser does not
+    // fork on which verb produced the document.
+    expect(keys(sent)).toEqual(keys(started));
+    expect(keys(waited)).toEqual(keys(started));
+    expect(keys(started)).toContain("screen");
+    expect(keys(started)).toContain("waited");
+
+    // And the fields an attach cannot answer are `null` rather than invented.
+    const attachedDoc = JSON.parse(sent.out.join("\n")) as Record<string, unknown>;
+    expect(attachedDoc.command).toBeNull();
+    expect(attachedDoc.reportsTurnStart).toBeNull();
+  });
+
+  it("reports a timeout as this side giving up, never as a status", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(
+      ["session", "send", "task_1", "go on", "--wait", "--wait-timeout", "1", "--json"],
+      {
+        sessions: fakeSessionGateway({
+          sendAndWait: async () =>
+            attached({
+              wait: async () => {
+                throw new Error("session task_1 was still running after 1000ms");
+              },
+            }),
+        }),
+      },
+    );
+    // The existing failure code, not a new one: `exit-codes.ts` belongs to #285
+    // and a wait timeout has always been `EXIT_FAILURE` for `start --wait`.
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n")) as Record<string, unknown>;
+    expect(payload.waited).toBe(true);
+    expect(payload.error).toContain("was still running");
+    expect(payload.status).toBeUndefined();
+  });
+
+  it("refuses --wait-timeout on a send that is not waiting", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "send", "task_1", "go", "--wait-timeout", "90"], {
+      sessions: fakeSessionGateway(),
+    });
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain("only means something with --wait");
+  });
+
+  it("states the running-turn limit in the help text", async () => {
+    // #289 C: a keystroke into a busy harness is not a new turn, so a send into
+    // one resolves on *that* turn's end — possibly before the harness has read
+    // the text. It is stated rather than left to be discovered.
+    const help = await cli().run(["session", "--help"]);
+    expect(help.out.join("\n")).toContain("actana session wait <session>");
+    expect(help.out.join("\n")).toContain("resolves on that turn's end");
+    expect(help.out.join("\n")).toContain("this side gave up");
   });
 });
 
