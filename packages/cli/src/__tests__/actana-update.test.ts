@@ -213,9 +213,21 @@ describe("landing a newer release", () => {
   });
 
   it("leaves nothing of the download behind", async () => {
+    // Scoped to *this* invocation, by diffing the temp root either side of it,
+    // rather than asserting the whole of `os.tmpdir()` is free of
+    // `actana-update-work-` directories. The property under test is
+    // per-invocation — `runActanaUpdate` removes its own work dir in a
+    // `finally` — and the global spelling was reading somebody else's
+    // in-flight state: `actana-machine-cli.test.ts` drives `actana update`
+    // from another file in this same package, and once both suites moved here
+    // from `packages/core` the two overlapped and this went red on a
+    // property nothing had broken.
+    const workDirs = () =>
+      fs.readdirSync(os.tmpdir()).filter((name) => name.startsWith("actana-update-work-"));
+
+    const before = new Set(workDirs());
     await update();
-    const strays = fs.readdirSync(os.tmpdir()).filter((n) => n.startsWith("actana-update-work-"));
-    expect(strays).toEqual([]);
+    expect(workDirs().filter((name) => !before.has(name))).toEqual([]);
   });
 });
 
