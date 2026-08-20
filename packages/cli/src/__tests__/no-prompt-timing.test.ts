@@ -36,43 +36,23 @@
 // timer in any other file still fails, a timer in a file that writes to a
 // Session fails even if it is listed, and a row for a file that no longer
 // exists fails rather than quietly widening.
+//
+// **Scoped to the client half since #288**, for the same reason and by the same
+// table as the shell-out ban one file over (`module-halves.ts`). This package
+// now also installs and operates the Core on the machine it runs on, and two of
+// those verbs genuinely wait on a clock: `setup` and `update` poll the daemon's
+// TCP port after `systemctl start`, because "the unit started" and "something
+// is listening" are different facts and an operator who is told the first while
+// the second is false has been told a lie. That is not the decision ADR 0026
+// moved. Nothing on the path from an operator's text to a Harness's stdin is
+// exempt — that path is entirely client-half, `TOUCHES_A_SESSION` bars a listed
+// file from it anyway, and `actana-cli.ts` and `actana-cli-entry.ts` are
+// deliberately left in the swept set.
 
 import { describe, it, expect } from "vitest";
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import path from "node:path";
-
-const SRC = path.resolve(import.meta.dirname, "..");
-
-/** Every shipped module — this package's own source at any depth, tests excluded. */
-function shippedSources(dir: string = SRC): string[] {
-  const files: string[] = [];
-  for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  )) {
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (entry.name === "__tests__" || entry.name === "node_modules") continue;
-      files.push(...shippedSources(full));
-    } else if (entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts")) {
-      files.push(full);
-    }
-  }
-  return files;
-}
-
-/**
- * Source with its comments removed.
- *
- * Every file in this package explains the rule it obeys, and those headers name
- * the very things swept for — `setTimeout`, the 450 ms timer, the carriage
- * return the Core sends. Scanning the prose would make documenting a rule
- * indistinguishable from breaking it.
- */
-function withoutComments(source: string): string {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, "")
-    .replace(/^[^\n"'`]*\/\/[^\n]*$/gm, "");
-}
+import { SRC, clientSources, shippedSources, withoutComments } from "./module-halves.ts";
 
 /** The ways a program schedules something for later. */
 const SCHEDULERS = [
@@ -105,7 +85,7 @@ describe("the CLI schedules nothing (#129 D3, ADR 0026)", () => {
   });
 
   it("contains no timer, anywhere it is not named and argued for", () => {
-    for (const file of shippedSources()) {
+    for (const file of clientSources()) {
       const name = path.relative(SRC, file);
       if (SCHEDULING_ALLOWED[name]) continue;
       const source = withoutComments(readFileSync(file, "utf8"));
@@ -155,7 +135,7 @@ describe("the CLI schedules nothing (#129 D3, ADR 0026)", () => {
     // bearer-expiry line and `session ls`'s age column. A second reader would
     // be the beginning of something measuring elapsed time, which is what a
     // timing decision looks like before it grows a `setTimeout`.
-    const readers = shippedSources().filter((file) =>
+    const readers = clientSources().filter((file) =>
       /\bDate\s*\.\s*now\s*\(/.test(withoutComments(readFileSync(file, "utf8"))),
     );
     expect(readers.map((file) => path.relative(SRC, file))).toEqual(["actana-cli-entry.ts"]);

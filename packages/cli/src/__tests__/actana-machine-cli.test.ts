@@ -4,13 +4,15 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
-import { runActanaCli, EXIT_USAGE, type ActanaCliDeps } from "../actana-cli";
-import { refusedContainerVerbs } from "../actana-container";
-import { installDirFor, resolveActanaLayout } from "../actana-layout";
-import { releaseAssetName, releaseChannel } from "../actana-release";
-import type { ActanaSystem, CommandResult } from "../actana-system";
+import { runActanaCli, CLIENT_NOUNS, EXIT_USAGE } from "../actana-cli.ts";
+import type { ActanaCliDeps } from "../cli-deps.ts";
+import { refusedContainerVerbs } from "../actana-container.ts";
+import { installDirFor, resolveActanaLayout } from "../actana-layout.ts";
+import { releaseAssetName, releaseChannel } from "../actana-release.ts";
+import type { ActanaSystem, CommandResult } from "../actana-system.ts";
+import { fakeSystem as makeFakeSystem, stubClientHalf } from "./machine-fixture.ts";
 import { materialFilePath } from "@actana/shared/core-material-store";
-import { fixtureFetcher, writeRelease } from "./release-fixture";
+import { fixtureFetcher, writeRelease } from "./release-fixture.ts";
 
 const MANIFEST = {
   version: "0.1.0",
@@ -29,58 +31,17 @@ const RUNNING_UNIT = [
 ].join("\n");
 
 function fakeSystem(overrides: Record<string, CommandResult> = {}) {
-  const calls: string[][] = [];
-  const signals: Array<[number, string]> = [];
-  const system: ActanaSystem & {
-    calls: string[][];
-    signals: Array<[number, string]>;
-    /** Answers `confirm` in order; the last answer repeats. */
-    answers: boolean[];
-    /** Exit code for `passthrough` when the command line contains the key. */
-    passthroughFailures: Record<string, number>;
-  } = {
-    calls,
-    signals,
-    answers: [],
-    passthroughFailures: {},
-    run(command, args) {
-      calls.push([command, ...args]);
-      const key = [command, ...args].join(" ");
-      for (const [prefix, result] of Object.entries(overrides)) {
-        if (key.startsWith(prefix)) return result;
-      }
-      // `tar` is faked by nobody: `actana update` unpacks a real tarball built
-      // moments ago, so the archive handling under test is the real one.
-      if (command === "tar") {
-        const result = spawnSync(command, args, { encoding: "utf8" });
-        return {
-          status: result.status ?? 127,
-          stdout: result.stdout ?? "",
-          stderr: result.stderr ?? "",
-        };
-      }
-      return { status: 0, stdout: "", stderr: "" };
-    },
-    async passthrough(command, args) {
-      calls.push([command, ...args]);
-      const line = args.join(" ");
-      for (const [needle, code] of Object.entries(system.passthroughFailures)) {
-        if (line.includes(needle)) return code;
-      }
-      return 0;
-    },
-    async waitForPort() {
-      return true;
-    },
-    async confirm() {
-      return system.answers.length > 1 ? (system.answers.shift() ?? true) : (system.answers[0] ?? true);
-    },
-    signal(pid, sig) {
-      signals.push([pid, sig]);
-      return true;
-    },
-  };
-  return system;
+  // `tar` is faked by nobody: `actana update` unpacks a real tarball built
+  // moments ago, so the archive handling under test is the real one.
+  return makeFakeSystem(overrides, (command, args) => {
+    if (command !== "tar") return null as unknown as CommandResult;
+    const result = spawnSync(command, args, { encoding: "utf8" });
+    return {
+      status: result.status ?? 127,
+      stdout: result.stdout ?? "",
+      stderr: result.stderr ?? "",
+    };
+  });
 }
 
 /** The stand-in release channel `actana update` is pointed at with --base-url. */
@@ -115,6 +76,9 @@ function makeTarballTree(root: string, manifest = MANIFEST): void {
 
 function deps(argv: string[], system: ActanaSystem, over: Partial<ActanaCliDeps> = {}): ActanaCliDeps {
   return {
+    // The client half is filled with fakes that refuse: this suite is about the
+    // machine verbs, and a verb here that dialled a Core would be news.
+    ...stubClientHalf(() => NOW),
     argv,
     env: { HOME: home, PATH: path.join(home, ".local", "bin") },
     home,
@@ -213,24 +177,35 @@ describe("usage", () => {
 // command". Nothing failed but the operator. These two tests close both
 // directions of that gap.
 
-/** The verbs the `Commands:` block of what `--help` actually prints advertises. */
-async function documentedVerbs(): Promise<string[]> {
+/**
+ * The names the help's two command blocks advertise.
+ *
+ * Two blocks since #288, because there is one help text over one program: the
+ * client nouns under *Cores this machine can reach*, and the machine verbs
+ * under *This machine's own Core*. A name that fell out of either heading
+ * would be a name nobody finds, which is the failure these two tests exist for.
+ */
+async function documentedNames(): Promise<string[]> {
   out = [];
   await runActanaCli(deps(["--help"], fakeSystem()));
-  // The block runs from `Commands:` to the blank line before `Setup options:`.
-  const block = out.join("\n").split(/^Commands:$/m)[1]?.split(/\n\s*\n/)[0] ?? "";
-  const verbs = new Set<string>();
-  for (const line of block.split("\n")) {
-    // Two-space indent, then the verb — the continuation row that spells out
-    // `token regenerate` re-names `token`, which the set folds away.
-    const match = /^ {2}(\w+)/.exec(line);
-    if (match) verbs.add(match[1]);
+  const text = out.join("\n");
+  const names = new Set<string>();
+  for (const heading of ["Cores this machine can reach", "This machine's own Core"]) {
+    const block = text.split(new RegExp(`^${heading}$`, "m"))[1]?.split(/\n\s*\n/)[0] ?? "";
+    expect(block.trim(), `the help has no \`${heading}\` block`).not.toBe("");
+    for (const line of block.split("\n")) {
+      // Two-space indent, then the name — the continuation row that spells out
+      // `token regenerate` re-names `token`, which the set folds away.
+      const match = /^ {2}(\w+)/.exec(line);
+      if (match) names.add(match[1]);
+    }
   }
-  return [...verbs];
+  return [...names];
 }
 
 /**
- * The verbs the dispatch `switch` has a case for.
+ * The names the dispatch has a case for: the client nouns, and the machine
+ * verbs the trailing `switch` handles.
  *
  * Read off the source because the switch is the only place that knows: a list
  * exported for the test to compare against would be a third thing to keep in
@@ -238,37 +213,41 @@ async function documentedVerbs(): Promise<string[]> {
  * breaks this loudly rather than quietly passing — a parse that finds nothing
  * asserts that, rather than sliding through on an empty list.
  */
-function dispatchedVerbs(): string[] {
+function dispatchedNames(): string[] {
   const source = fs.readFileSync(path.resolve(__dirname, "../actana-cli.ts"), "utf8");
-  const start = source.indexOf("switch (verb) {");
-  expect(start, "the dispatch switch moved — this guard parses `switch (verb) {`").toBeGreaterThan(
+  // The *last* one: the noun switch inside the client branch comes first, and
+  // its names are `CLIENT_NOUNS`, which is exported and needs no parsing.
+  const start = source.lastIndexOf("switch (head) {");
+  expect(start, "the dispatch switch moved — this guard parses `switch (head) {`").toBeGreaterThan(
     -1,
   );
   const body = source.slice(start, source.indexOf("default:", start));
   const verbs = [...body.matchAll(/case "(\w+)":/g)].map((match) => match[1]);
   expect(verbs).toContain("setup");
-  return verbs;
+  return [...CLIENT_NOUNS, ...verbs];
 }
 
 describe("help and dispatch stay in sync", () => {
-  it("dispatches every verb the help advertises", async () => {
-    const verbs = await documentedVerbs();
-    expect(verbs).toContain("setup");
+  it("dispatches every name the help advertises", async () => {
+    const names = await documentedNames();
+    expect(names).toContain("setup");
+    expect(names).toContain("session");
 
-    for (const verb of verbs) {
+    for (const name of names) {
       err = [];
-      // A flag no verb owns: each one rejects it while parsing, so the verb is
-      // proven to be dispatched without any of them being run for real.
-      await runActanaCli(deps([verb, "--not-a-real-flag"], fakeSystem()));
-      expect(err.join("\n")).not.toContain(`unknown command: ${verb}`);
+      // A flag no command owns: each one rejects it while parsing, so the
+      // command is proven to be dispatched without any of them being run for
+      // real.
+      await runActanaCli(deps([name, "--not-a-real-flag"], fakeSystem()));
+      expect(err.join("\n")).not.toContain(`unknown command "${name}"`);
     }
   });
 
-  it("advertises every verb it dispatches, `daemon` excepted", async () => {
-    const documented = new Set(await documentedVerbs());
+  it("advertises every name it dispatches, `daemon` excepted", async () => {
+    const documented = new Set(await documentedNames());
     // `daemon` is what the unit / LaunchAgent execs, not something an operator
-    // types, so it is the one verb deliberately left out of the help.
-    expect(dispatchedVerbs().filter((verb) => !documented.has(verb))).toEqual(["daemon"]);
+    // types, so it is the one name deliberately left out of the help.
+    expect(dispatchedNames().filter((name) => !documented.has(name))).toEqual(["daemon"]);
   });
 });
 
@@ -1462,7 +1441,7 @@ describe("in a container", () => {
   // between the two pages.
   const containerPage = (): string => {
     const text = out.join("\n");
-    const boundary = text.indexOf("actana — install and operate");
+    const boundary = text.indexOf("actana — drive AI coding agents");
     expect(boundary, "the ordinary USAGE did not follow the container page").toBeGreaterThan(0);
     return text.slice(0, boundary);
   };

@@ -132,6 +132,9 @@ function update(
 ): ReturnType<typeof runActanaUpdate> {
   return runActanaUpdate({
     layout,
+    // #288 D10: an update repoints the launcher only when the launcher is its
+    // own, and it reads `PATH` to find out.
+    env: { HOME: home, PATH: layout.binDir },
     config: readActanaConfig(layout.configDir)!,
     service: fakeService(),
     system: fakeSystem(),

@@ -216,7 +216,7 @@ There is no `mac-x64`, and there never will be
 install is Apple silicon only, and an Intel Mac runs its Core from the
 container image. Both front doors refuse it at detection and name that path —
 `install.sh`'s `detect_target` and `releaseTargetFor` in
-`packages/core/src/actana-release.ts`, which are required to agree on every
+`packages/cli/src/actana-release.ts`, which are required to agree on every
 shape, refusals included.
 
 The Panel and the Core are version-locked at runtime: the core-link
@@ -246,7 +246,7 @@ step that fails the release before anything is built when they are unset.
 Integrity is **the published checksums**, and both paths that put a Core on a
 machine verify them. `install.sh` fetches `SHA256SUMS` *before* the tarball, and
 `actana update` does the same for an in-place upgrade
-([`actana-update.ts`](../packages/core/src/actana-update.ts)); each compares the
+([`actana-update.ts`](../packages/cli/src/actana-update.ts)); each compares the
 SHA-256 it computed against the release's own line and refuses to install on a
 mismatch. What that proves is bounded, and both call sites say so in a comment:
 the tarball is the one the release's checksum file describes. The checksums came

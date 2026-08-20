@@ -6,7 +6,9 @@
 //   bin/actana              launcher — execs the bundled Node on the actana CLI
 //   node/bin/node           pinned Node runtime (downloaded from nodejs.org,
 //                           SHA-256 verified against that release's SHASUMS256.txt)
-//   app/actana-cli.cjs      the `actana` CLI (setup, status, token, daemon, …)
+//   app/actana-cli.cjs      the unified `actana` — the operator verbs (setup,
+//                           status, token, daemon, …) and the client nouns
+//                           (core, project, session, events, harness) (#288)
 //   app/core-entry.cjs   the esbuild-bundled Core daemon
 //   app/node_modules/       the runtime dependency closure, natives included
 //   core-manifest.json   version + core-link protocol version + target
@@ -227,12 +229,18 @@ async function main() {
     stringFlag(args, "cache-dir", fail, path.join(repoRoot, ".cache", "node-dist")),
   );
 
-  const coreDist = path.join(repoRoot, "packages", "core", "dist");
-  for (const required of ["core-entry.cjs", "actana-cli.cjs"]) {
-    if (fs.existsSync(path.join(coreDist, required))) continue;
-    fail(
-      `no ${required} at ${coreDist} — run \`pnpm --filter @actana/core build\` first`,
-    );
+  // Two packages stage into one `app/` since #288: the daemon comes from
+  // `packages/core`, and `actana-cli.cjs` — the unified `actana`, operator
+  // verbs and client nouns alike — comes from `packages/cli`. Both are
+  // required, and this is the line that fails the build when the wiring is
+  // wrong rather than shipping a tarball whose launcher execs nothing.
+  const stagedBundles = [
+    { file: "core-entry.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
+    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist"), pkg: "@actana/cli" },
+  ];
+  for (const { file, dist, pkg } of stagedBundles) {
+    if (fs.existsSync(path.join(dist, file))) continue;
+    fail(`no ${file} at ${dist} — run \`pnpm --filter ${pkg} build\` first`);
   }
 
   const protocolVersion = parseCoreLinkProtocolVersion(
@@ -258,11 +266,15 @@ async function main() {
     });
     fs.cpSync(path.join(nodeDir, "LICENSE"), path.join(stageDir, "node", "LICENSE"));
 
-    for (const entry of fs.readdirSync(coreDist)) {
-      fs.cpSync(path.join(coreDist, entry), path.join(stageDir, "app", entry), {
-        recursive: true,
-        dereference: true,
-      });
+    for (const { file, dist } of stagedBundles) {
+      for (const entry of [file, `${file}.map`]) {
+        const source = path.join(dist, entry);
+        if (!fs.existsSync(source)) continue;
+        fs.cpSync(source, path.join(stageDir, "app", entry), {
+          recursive: true,
+          dereference: true,
+        });
+      }
     }
     fs.writeFileSync(
       path.join(stageDir, "app", "package.json"),
@@ -270,11 +282,15 @@ async function main() {
     );
 
     const coreDir = path.join(repoRoot, "packages", "core");
-    const layout = planDependencyLayout(CORE_RUNTIME_DEPENDENCIES, (name, fromDir) =>
-      // Roots resolve as the Core resolves them; transitive deps resolve
-      // from their dependent, which is the only place pnpm exposes them.
-      resolvePackageDir(name, fromDir ?? coreDir),
-    );
+    const cliDir = path.join(repoRoot, "packages", "cli");
+    const layout = planDependencyLayout(CORE_RUNTIME_DEPENDENCIES, (name, fromDir) => {
+      // Transitive deps resolve from their dependent, which is the only place
+      // pnpm exposes them. A root resolves as the package that declares it
+      // does — the Core for the daemon's four, `packages/cli` for `undici`,
+      // which is the unified CLI's (#288 D1).
+      if (fromDir) return resolvePackageDir(name, fromDir);
+      return resolvePackageDir(name, coreDir) ?? resolvePackageDir(name, cliDir);
+    });
     for (const { name, sourceDir, installPath } of layout) {
       copyDependency(name, sourceDir, path.join(stageDir, "app", installPath), descriptor);
     }

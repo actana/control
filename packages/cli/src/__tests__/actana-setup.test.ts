@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
+import { registryPaths } from "../blob-registry.ts";
 import * as os from "node:os";
 import * as path from "node:path";
 import { X509Certificate, createPublicKey } from "node:crypto";
@@ -79,6 +80,13 @@ function makeTarballTree(root: string, manifest = MANIFEST): void {
 function options(system: ActanaSystem, over: Partial<SetupOptions> = {}): SetupOptions {
   const merged: Omit<SetupOptions, "service"> = {
     layout,
+    // #288 D9: setup registers the Core it installs with this machine's own
+    // CLI, so it needs to be told where that registry is. Under the scratch
+    // home, like everything else these tests write.
+    registry: registryPaths({ HOME: home }, home),
+    // #288 D10: the launcher decision reads `PATH`. An empty one means nothing
+    // else answers to `actana`, which is the ordinary case.
+    env: { HOME: home, PATH: layout.binDir },
     sourceRoot,
     manifest: MANIFEST,
     port: 8443,
@@ -492,9 +500,91 @@ describe("runActanaSetup — re-running over an existing install", () => {
 
   it("replaces a stale bin link left by a previous install", async () => {
     fs.mkdirSync(layout.binDir, { recursive: true });
-    fs.symlinkSync("/nonexistent/actana", layout.binLink);
+    // Dangling, and pointing into this layout's own root — which is what a
+    // previous install of *this* Core leaves behind when its version directory
+    // has been deleted by hand. Ownership is decided by where the link points
+    // (#288 D10), so this one is setup's to repoint.
+    fs.symlinkSync(path.join(layout.root, "versions", "0.0.1", "bin", "actana"), layout.binLink);
 
     await runActanaSetup(options(fakeSystem()));
+    expect(fs.readlinkSync(layout.binLink)).toBe(path.join(layout.currentLink, "bin", "actana"));
+  });
+});
+
+// ─── Who owns `<binDir>/actana` (#288 D10) ──────────────────────────────────
+//
+// **Tested in the container's shape, because that is where the collision is
+// real.** `deploy/core.Dockerfile` sets `NPM_CONFIG_PREFIX=/home/core/.local`
+// and the layout resolves `binLink` to `$HOME/.local/bin/actana` — the same
+// directory. So an `npm i -g @actana/cli` inside a container Core puts its shim
+// exactly where setup wants its symlink, and which of the two ends up there was
+// decided by whichever ran last.
+//
+// These run against real files rather than a fake `exists`, deliberately: the
+// question is what `lstat` and `readlink` say about a path two installers both
+// wrote to, and a stub filesystem would be answering a different question.
+
+describe("runActanaSetup — the launcher path has one owner (#288 D10)", () => {
+  /** What `npm i -g` leaves at `<prefix>/bin/actana`: a symlink into its own tree. */
+  function plantNpmShim(): string {
+    const target = path.join(layout.home, ".local", "lib", "node_modules", "@actana", "cli", "bin", "actana.mjs");
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "#!/usr/bin/env node\n");
+    fs.mkdirSync(layout.binDir, { recursive: true });
+    fs.symlinkSync(target, layout.binLink);
+    return target;
+  }
+
+  it("does not clobber an `actana` npm put at the very same path", async () => {
+    // The container's shape exactly: `binLink`'s directory IS the npm prefix's
+    // bin, so the two installers are fighting over one filename.
+    expect(layout.binLink).toBe(path.join(layout.home, ".local", "bin", "actana"));
+    const shim = plantNpmShim();
+
+    const result = await runActanaSetup(options(fakeSystem()));
+
+    expect(result.launcher.outcome).toBe("foreign");
+    // Not repointed, not deleted, not moved aside.
+    expect(fs.readlinkSync(layout.binLink)).toBe(shim);
+  });
+
+  it("says so plainly, and names this install's own launcher", async () => {
+    plantNpmShim();
+    const said: string[] = [];
+    await runActanaSetup(options(fakeSystem(), { out: (line) => said.push(line) }));
+
+    const text = said.join("\n");
+    // An operator who is not told has a Core whose `actana` is not the one
+    // setup just installed, and no way to find that out from the output.
+    expect(text).toContain(layout.binLink);
+    expect(text).toContain(path.join(layout.currentLink, "bin", "actana"));
+  });
+
+  it("leaves an `actana` that is only on PATH alone too", async () => {
+    // The other spelling of the same collision: nothing at `binLink`, but a
+    // different directory earlier on `PATH` already answers to `actana`. Writing
+    // the symlink would be legal and useless — the other one still wins — so
+    // setup writes nothing and says which one is answering.
+    const elsewhere = path.join(layout.home, "bin");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "actana"), "#!/bin/sh\n");
+
+    const said: string[] = [];
+    const result = await runActanaSetup(
+      options(fakeSystem(), {
+        env: { HOME: layout.home, PATH: `${elsewhere}:${layout.binDir}` },
+        out: (line) => said.push(line),
+      }),
+    );
+
+    expect(result.launcher.outcome).toBe("foreign");
+    expect(fs.existsSync(layout.binLink)).toBe(false);
+    expect(said.join("\n")).toContain(path.join(elsewhere, "actana"));
+  });
+
+  it("writes the symlink when nothing else answers to the name", async () => {
+    const result = await runActanaSetup(options(fakeSystem()));
+    expect(result.launcher.outcome).toBe("linked");
     expect(fs.readlinkSync(layout.binLink)).toBe(path.join(layout.currentLink, "bin", "actana"));
   });
 });

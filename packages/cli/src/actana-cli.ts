@@ -57,7 +57,6 @@
 import * as fs from "node:fs";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import {
   loadMaterialFromFile,
   materialFilePath,
@@ -87,7 +86,7 @@ import {
   type UpdateCheck,
 } from "@actana/shared/actana-update-check";
 import { readCoreManifest, type CoreManifest } from "./actana-manifest.ts";
-import { releaseChannel, type ReleaseFetcher } from "./actana-release.ts";
+import { releaseChannel } from "./actana-release.ts";
 import {
   createServiceManager,
   type ActanaServiceManager,
@@ -105,7 +104,6 @@ import {
 } from "./actana-harnesses.ts";
 import type { Harness } from "@actana/shared/domain";
 import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./actana-status.ts";
-import type { ActanaSystem } from "./actana-system.ts";
 import { runActanaUninstall } from "./actana-uninstall.ts";
 import { runActanaUpdate } from "./actana-update.ts";
 import { parseArgs } from "./cli-args.ts";
@@ -119,7 +117,6 @@ import { CORE_BLOB_ENV } from "./core-resolution.ts";
 import { ensureOrchestrationSkillQuietly } from "./orchestration-skill.ts";
 import { EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-codes.ts";
 import { runActanaInstall } from "./actana-install.ts";
-import { wireLocalCore, type LocalCoreWiring } from "./local-core-wiring.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import manifest from "../package.json" with { type: "json" };
 
@@ -438,7 +435,7 @@ function manifestFor(deps: ActanaCliDeps, config: ActanaConfig | null): CoreMani
  * daemon loads verify it, and a freshly signed one carries a full lease
  * instead of whatever was left of the original.
  */
-function pairingToken(config: ActanaConfig, materialPath: string): string | null {
+function pairingToken(config: ActanaConfig, materialPath: string, now: number): string | null {
   const material = loadMaterialFromFile(materialPath);
   if (!material) return null;
   return encodeRegistrationBlob({
@@ -448,7 +445,7 @@ function pairingToken(config: ActanaConfig, materialPath: string): string | null
     clientCert: material.clientCert,
     clientKey: material.clientKey,
     bearer: signBearer(
-      { coreId: material.coreId, exp: Date.now() + BEARER_DAYS * 24 * 60 * 60 * 1000 },
+      { coreId: material.coreId, exp: now + BEARER_DAYS * 24 * 60 * 60 * 1000 },
       material.bearerSecret as BearerSecret,
     ),
   });
@@ -768,6 +765,7 @@ async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   const token = pairingToken(
     installed.config,
     materialPathFor(deps, installed.layout),
+    deps.now(),
   );
   if (!token) {
     deps.err(
@@ -832,7 +830,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   persistMaterialToFile(materialPath, await mintFreshMaterial(config.publicHost));
 
   if (container) {
-    const token = pairingToken(config, materialPath);
+    const token = pairingToken(config, materialPath, deps.now());
     if (!token) {
       deps.err(`The new pairing material could not be read back from ${materialPath}.`);
       return 1;
@@ -864,7 +862,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   }
   const listening = await deps.system.waitForPort(config.port, LISTEN_TIMEOUT_MS);
 
-  const token = pairingToken(config, materialPath);
+  const token = pairingToken(config, materialPath, deps.now());
   if (!token) {
     deps.err("The new pairing material could not be read back. Re-run `actana setup`.");
     return 1;
@@ -1198,19 +1196,38 @@ function versionLines(deps: ActanaCliDeps): string[] {
 
 /** Run one `actana` invocation. Returns the exit code; never calls process.exit. */
 export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
-  const [head, ...rest] = deps.argv;
+  // Parsed up front only to find the *name* the operator typed. The client
+  // nouns take their flags in any position — `actana --json core ls` is the
+  // same command as `actana core ls --json` — so "which command is this" is a
+  // question about the first positional, not about `argv[0]`. The machine
+  // verbs each parse their own flags below, against their own spec.
+  const args = parseArgs(deps.argv);
+  const head = args.positionals[0];
 
-  if (head === undefined || head === "help" || head === "--help" || head === "-h") {
-    // The container page goes first: a chunk of the command list below does not
-    // work here, and an operator should read that before the list, not after it.
+  if (head === undefined) {
+    if (args.version || deps.argv[0] === "-v") {
+      for (const line of versionLines(deps)) deps.out(line);
+      return EXIT_OK;
+    }
+    // `actana`, `actana --help` and `actana -h` are a question, not a mistake:
+    // printing the help and exiting 0 is what any of the three should do, and
+    // there is nothing for a script to have got wrong.
+    //
+    // The container page goes first: a chunk of the command list does not work
+    // there, and an operator should read that before the list, not after it.
     if (inContainer(deps.env)) deps.out(CONTAINER_USAGE.trimEnd() + "\n");
     deps.out(USAGE.trimEnd());
     return EXIT_OK;
   }
-  if (head === "--version" || head === "-V" || head === "-v") {
-    for (const line of versionLines(deps)) deps.out(line);
+  if (head === "help") {
+    if (inContainer(deps.env)) deps.out(CONTAINER_USAGE.trimEnd() + "\n");
+    deps.out(USAGE.trimEnd());
     return EXIT_OK;
   }
+
+  // Everything after the command name, with the name itself removed. Normally
+  // `argv.slice(1)`; the filter is for the flags-first spelling above.
+  const rest = deps.argv[0] === head ? deps.argv.slice(1) : deps.argv.filter((a) => a !== head);
 
   // The client nouns first, and deliberately ahead of the container refusal
   // below: reaching a Core over the core link is the one thing that works
@@ -1219,8 +1236,6 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   // dishonesty #288 exists to end — the Core installs a skill that teaches
   // these verbs onto the machine it is itself running on.
   if ((CLIENT_NOUNS as readonly string[]).includes(head)) {
-    const args = parseArgs(deps.argv);
-
     if (args.missingValue) {
       deps.err(`actana: ${args.missingValue} needs a value.`);
       return EXIT_USAGE;
@@ -1313,8 +1328,11 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
         deps.err(`actana ${head}: not built yet — ${reserved}.`);
         return EXIT_UNIMPLEMENTED;
       }
-      deps.err(`unknown command: ${head}`);
-      deps.err("Run `actana --help` for the list of commands and nouns.");
+      // One message for one namespace (#288). `actana` used to answer
+      // `unknown command: setup` from one program and `unknown noun "setup"`
+      // from the other, which was the split leaking into its own error text.
+      deps.err(`actana: unknown command "${head}".`);
+      deps.err("`actana --help` lists the commands and the nouns.");
       return EXIT_USAGE;
     }
   }
