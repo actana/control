@@ -697,6 +697,7 @@ async function containerStatus(deps: ActanaCliDeps): Promise<number> {
   const report: ActanaStatusReport = {
     installed: true,
     version: manifest?.version ?? null,
+    cliVersion: CLI_VERSION,
     protocolVersion: manifest?.protocolVersion ?? null,
     target: manifest?.target ?? null,
     endpoint: endpointFor(config),
@@ -732,6 +733,7 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   const report: ActanaStatusReport = {
     installed: config !== null,
     version,
+    cliVersion: CLI_VERSION,
     protocolVersion: manifest?.protocolVersion ?? null,
     target: manifest?.target ?? null,
     endpoint: config ? endpointFor(config) : null,

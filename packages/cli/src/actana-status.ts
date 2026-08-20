@@ -35,7 +35,21 @@ export type ContainerStatus = {
 export type ActanaStatusReport = {
   /** Whether `actana setup` has ever completed on this machine. */
   installed: boolean;
+  /** The version of the Core installed here, read off *its* manifest. */
   version: string | null;
+  /**
+   * The version of the `actana` doing the reporting (#288 D10).
+   *
+   * Its own field rather than something the formatter assumes, because since
+   * #288 one binary manages an install it did not necessarily ship with: a CLI
+   * from `npm i -g @actana/cli` can be a train ahead of, or behind, the Core it
+   * is standing on. **Reported, never enforced** — nothing refuses a verb over
+   * the difference, and the local verbs read the install's own manifest so they
+   * act on what is actually there. Pinning would let a global `npm update`
+   * break a running Core on a machine where the operator did nothing but update
+   * a client.
+   */
+  cliVersion: string;
   /** The core-link protocol version — what the Panel's version lock compares. */
   protocolVersion: string | null;
   target: string | null;
@@ -139,6 +153,13 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
 
   lines.push("");
   lines.push(row("Version", report.version ?? "unknown"));
+  if (report.version !== null && report.version !== report.cliVersion) {
+    // Two versions, one machine, and the row says which is which rather than
+    // leaving an operator to guess why `actana --version` disagreed with this
+    // page. Nothing about it is a warning: the Core keeps running and every
+    // verb keeps working (#288 D10).
+    lines.push(row("CLI version", `${report.cliVersion} (this \`actana\`; the Core above is what it manages)`));
+  }
   lines.push(...updateRows(report));
   lines.push(row("Protocol version", report.protocolVersion ?? "unknown"));
   if (report.target) lines.push(row("Target", report.target));

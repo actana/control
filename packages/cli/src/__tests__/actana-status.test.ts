@@ -4,6 +4,9 @@ import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "..
 const healthy: ActanaStatusReport = {
   installed: true,
   version: "0.1.0",
+  // The ordinary case: the CLI shipped with the Core it manages, so there is
+  // one version and the report says it once.
+  cliVersion: "0.1.0",
   protocolVersion: "3",
   target: "linux-x64",
   endpoint: "wss://10.0.0.5:8443",
@@ -122,6 +125,7 @@ describe("formatActanaStatus", () => {
     const text = formatActanaStatus({
       installed: false,
       version: null,
+      cliVersion: "0.1.0",
       protocolVersion: null,
       target: null,
       endpoint: null,
@@ -245,5 +249,38 @@ describe("in a container", () => {
     expect(
       formatActanaStatus({ ...inContainer, container: { listening: false, port: 9443 } }),
     ).toMatch(/State\s+not running.*9443/);
+  });
+});
+
+describe("version skew is tolerated and reported (#288 D10)", () => {
+  // One binary now manages an install it did not necessarily ship with: a CLI
+  // from `npm i -g @actana/cli` can be a train ahead of, or behind, the Core it
+  // is standing on. That is a fact to print, not a condition to refuse on.
+  const skewed: ActanaStatusReport = { ...healthy, version: "0.3.3", cliVersion: "0.4.0" };
+
+  it("prints both versions and says which is which", () => {
+    const text = formatActanaStatus(skewed);
+    expect(text).toMatch(/Version\s+0\.3\.3/);
+    expect(text).toMatch(/CLI version\s+0\.4\.0/);
+  });
+
+  it("still reports the Core as healthy — a version difference is not a fault", () => {
+    // The half that matters more than the row. `actana status` is documented as
+    // a health check and exits non-zero when the Core is unhealthy; a machine
+    // whose operator ran `npm update` must not start failing deployments.
+    expect(summarizeHealth(skewed)).toBe("healthy");
+  });
+
+  it("says nothing when the two agree", () => {
+    // A row that appeared on every machine would be noise, and would train an
+    // operator to ignore it on the one machine where it means something.
+    expect(formatActanaStatus(healthy)).not.toMatch(/CLI version/);
+  });
+
+  it("reports the install's version, never the CLI's, as the Core's", () => {
+    // The local verbs read the install's own manifest so they act on what is
+    // actually there. A `Version` row that echoed the CLI would be this program
+    // reporting on itself and calling it the Core.
+    expect(formatActanaStatus(skewed)).not.toMatch(/Version\s+0\.4\.0/);
   });
 });

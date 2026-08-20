@@ -1629,3 +1629,65 @@ describe("actana harnesses install", () => {
     expect(out.join("\n")).toContain("--no-harnesses");
   });
 });
+
+// ─── Version skew, tolerated and reported (#288 D10) ────────────────────────
+//
+// One binary now manages an install it did not necessarily ship with. The rule
+// is *tolerate and report*: print both versions, and refuse nothing over the
+// difference. Pinning would let a global `npm update` break a running Core on a
+// machine where the operator did nothing but update a client.
+
+describe("a Core on a different version from the CLI managing it", () => {
+  /** Install, then rewrite the install's manifest to a version this CLI is not. */
+  async function installOlderCore(system: ActanaSystem): Promise<string> {
+    expect(await setup(system)).toBe(0);
+    const layout = layoutForHome();
+    const manifestPath = path.join(
+      installDirFor(layout, MANIFEST.version),
+      "core-manifest.json",
+    );
+    const older = { ...MANIFEST, version: "0.0.9" };
+    fs.writeFileSync(manifestPath, JSON.stringify(older, null, 2) + "\n");
+    return older.version;
+  }
+
+  /** A system whose unit reports as running, so `status` exits 0. */
+  const runningSystem = () =>
+    fakeSystem({ "systemctl --user show": { status: 0, stdout: RUNNING_UNIT, stderr: "" } });
+
+  it("prints both versions and says which `actana` is which", async () => {
+    const system = runningSystem();
+    const older = await installOlderCore(system);
+    out = [];
+
+    expect(await runActanaCli(deps(["status"], system))).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain(older);
+    expect(text).toMatch(/CLI version/);
+  });
+
+  it("answers `--version` with both, on two lines", async () => {
+    const system = fakeSystem();
+    const older = await installOlderCore(system);
+    out = [];
+
+    expect(await runActanaCli(deps(["--version"], system))).toBe(0);
+    expect(out[0]).toMatch(/^actana \d/);
+    expect(out.join("\n")).toContain(`Core installed here: ${older}`);
+  });
+
+  it("refuses nothing over the difference", async () => {
+    // The half that is a *rule* rather than a row. Every local verb still runs
+    // against an install on another version, and each reads that install's own
+    // manifest rather than assuming this CLI's.
+    const system = runningSystem();
+    await installOlderCore(system);
+
+    for (const verb of ["status", "token", "start", "logs"]) {
+      err = [];
+      const code = await runActanaCli(deps([verb], system));
+      expect(err.join("\n"), verb).not.toMatch(/version/i);
+      expect(code, verb).toBe(0);
+    }
+  });
+});
