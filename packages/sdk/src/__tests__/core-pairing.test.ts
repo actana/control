@@ -29,7 +29,7 @@ import * as path from "node:path";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { X509Certificate, createPublicKey } from "node:crypto";
 import { afterEach, describe, expect, it } from "vitest";
-import { generateCertMaterial } from "@actana/shared/core-cert-material";
+import { generateCertMaterial, issueServerCert } from "@actana/shared/core-cert-material";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { generatePairingCode } from "@actana/shared/pairing-code";
 import { createPairingSession } from "@actana/shared/pairing-session";
@@ -37,7 +37,6 @@ import { PairingStore, derivePairingCodeKey, hashPairingCode } from "@actana/sha
 import type { CoreHttpRoutes } from "@actana/core/core-files-routes";
 import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
 import { PairingRateLimiter } from "@actana/core/core-pairing-rate-limit";
-import type { PairingAuditEvent } from "@actana/core/core-pairing-audit";
 import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "@actana/core/core-pairing-wiring";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
@@ -53,6 +52,18 @@ import {
 import { coreConnectionFromBlob, type CoreRegistrationBlob } from "../core-registration-blob";
 import { createNodeCoreLinkSocket } from "../core-link-socket";
 
+/**
+ * The audit line, as this suite reads it — one field, and it is the one #282
+ * refuses to put on the wire.
+ *
+ * Declared rather than imported from the Core. #297 moves that module to
+ * `packages/shared`, and the two branches merge cleanly: git would report no
+ * conflict while leaving an import of a file that no longer exists, and because
+ * it was an `import type` the vitest run would not have caught it either. A
+ * structural read of one field costs nothing and survives the move.
+ */
+type PairingAuditLine = { outcome: string; reason?: string };
+
 const SECRET = "sdk-pairing-suite-secret-at-least-32-bytes";
 const CORE_UUID = "9c1f4a5e-3f6d-0f0a-6c1f-1d0a5b7e9c31";
 
@@ -64,7 +75,7 @@ type Rig = {
   origin: string;
   caCert: string;
   fingerprint: string;
-  audit: PairingAuditEvent[];
+  audit: PairingAuditLine[];
   wire: WireLog;
   clock: { now: number };
   openSession(opts?: { label?: string; ttlMs?: number }): { sessionId: string; code: string };
@@ -141,7 +152,7 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-sdk-pairing-"));
   tempDirs.push(dir);
   const store = new PairingStore(path.join(dir, "pairing.json"));
-  const audit: PairingAuditEvent[] = [];
+  const audit: PairingAuditLine[] = [];
   const wire: WireLog = { requests: 0, bodies: [] };
   const clock = { now: Date.now() };
   const codeKey = derivePairingCodeKey(SECRET);
@@ -580,6 +591,19 @@ describe("every refusal a caller can act on is a different failure", () => {
     expect(parsePairingTicket("abcd efgh", "ps_7f3a")).toEqual({ sessionId: "ps_7f3a", code: "ABCD-EFGH" });
     // An explicit session id wins, and the code beside it is read as a code.
     expect(parsePairingTicket("ABCD-EFGH", "ps_other")).toEqual({ sessionId: "ps_other", code: "ABCD-EFGH" });
+    // Both at once — a caller that always forwards `--session` while an
+    // operator pastes whatever they were read out. This used to keep the
+    // `ps_7f3a:` prefix inside the code and refuse a perfectly good pairing.
+    expect(parsePairingTicket("ps_7f3a:ABCD-EFGH", "ps_7f3a")).toEqual({
+      sessionId: "ps_7f3a",
+      code: "ABCD-EFGH",
+    });
+    // And two that disagree are refused rather than resolved: one of them is a
+    // mistake, and redeeming against the wrong session fails in a way that
+    // looks exactly like a mistyped code.
+    const clash = (): unknown => parsePairingTicket("ps_7f3a:ABCD-EFGH", "ps_other");
+    expect(clash).toThrow(CorePairingError);
+    expect(clash).toThrow(/must agree/);
   });
 });
 
@@ -589,6 +613,8 @@ describe("every refusal a caller can act on is a different failure", () => {
 async function startStub(opts: {
   cert: { cert: string; key: string; ca: string };
   answer?: { status: number; body: string; headers?: Record<string, string> };
+  /** The loopback address to bind. `127.0.0.2` is a Core reached off its SAN. */
+  host?: string;
 }): Promise<{ address: string; requests: number; server: https.Server }> {
   const state = { requests: 0 };
   const stub = https.createServer({ cert: opts.cert.cert, key: opts.cert.key, ca: opts.cert.ca }, (req, res) => {
@@ -601,10 +627,11 @@ async function startStub(opts: {
     });
   });
   stubs.push(stub);
-  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", () => resolve()));
+  const host = opts.host ?? "127.0.0.1";
+  await new Promise<void>((resolve) => stub.listen(0, host, () => resolve()));
   const port = (stub.address() as { port: number }).port;
   return {
-    address: `127.0.0.1:${port}`,
+    address: `${host}:${port}`,
     get requests() {
       return state.requests;
     },
@@ -651,6 +678,9 @@ describe("the redemption dial is pinned to the certificate authority that matche
     );
 
     expect(failure.failure).toBe<CorePairingFailure>("fingerprint-mismatch");
+    // The pin refusing, by name: OpenSSL finds the pinned CA by subject and the
+    // impostor's signature does not check out against it.
+    expect(failure.detail.tlsCode).toBe("CERT_SIGNATURE_FAILURE");
     expect(stub.requests).toBe(0);
   }, 30_000);
 
@@ -685,6 +715,70 @@ describe("the redemption dial is pinned to the certificate authority that matche
 
     expect(failure.failure).toBe<CorePairingFailure>("fingerprint-mismatch");
     expect(stub.requests).toBe(1);
+  }, 30_000);
+});
+
+describe("a certificate problem is not an accusation", () => {
+  it("tells a Core reached off its SAN from a Core that is not the right Core", async () => {
+    // A Core set up for one address and reached at another: a second interface,
+    // a tunnel, a DNS name added later. `core-cert-material.ts` covers the
+    // configured host plus loopback and nothing else, so the fingerprint
+    // matches perfectly and Node's hostname check still refuses.
+    //
+    // This used to be reported as `fingerprint-mismatch` — the operator was
+    // told they were being intercepted and went looking for an attacker.
+    const material = await generateCertMaterial({ host: "127.0.0.1" });
+    const stub = await startStub({
+      cert: { cert: material.server.cert, key: material.server.key, ca: material.ca.cert },
+      host: "127.0.0.2",
+      answer: { status: 200, body: "{}" },
+    });
+
+    const failure = await failureOf(
+      pairWithCore({
+        address: stub.address,
+        sessionId: "ps_1",
+        code: "ABCD-EFGH",
+        expectedCaFingerprint: fingerprintOf(new X509Certificate(material.ca.cert).raw),
+        timeoutMs: 5_000,
+      }),
+    );
+
+    expect(failure.failure).toBe<CorePairingFailure>("hostname-mismatch");
+    expect(failure.detail.tlsCode).toBe("ERR_TLS_CERT_ALTNAME_INVALID");
+    expect(failure.message).toContain("127.0.0.2");
+    // Said plainly, because the wrong sentence here costs an operator an
+    // afternoon: this is the CA they were told to expect.
+    expect(failure.message).toContain("presented the expected certificate authority");
+    expect(stub.requests).toBe(0);
+  }, 30_000);
+
+  it("reports an expired server certificate as a certificate problem, not a mismatch", async () => {
+    const ca = await generateCertMaterial({ host: "127.0.0.1" });
+    const stale = await issueServerCert({
+      ca: { cert: ca.ca.cert, key: ca.ca.key },
+      host: "127.0.0.1",
+      days: 1,
+      notBefore: new Date(Date.now() - 400 * 24 * 60 * 60 * 1000),
+    });
+    const stub = await startStub({
+      cert: { cert: stale.cert, key: stale.key, ca: ca.ca.cert },
+      answer: { status: 200, body: "{}" },
+    });
+
+    const failure = await failureOf(
+      pairWithCore({
+        address: stub.address,
+        sessionId: "ps_1",
+        code: "ABCD-EFGH",
+        expectedCaFingerprint: fingerprintOf(new X509Certificate(ca.ca.cert).raw),
+        timeoutMs: 5_000,
+      }),
+    );
+
+    expect(failure.failure).toBe<CorePairingFailure>("certificate-invalid");
+    expect(failure.detail.tlsCode).toBe("CERT_HAS_EXPIRED");
+    expect(stub.requests).toBe(0);
   }, 30_000);
 });
 
@@ -734,7 +828,35 @@ describe("answers that are not a Core's", () => {
     const incomplete = await failureAgainst({ status: 200, body: JSON.stringify({ endpoint: "wss://x:1" }) });
     expect(incomplete.failure).toBe<CorePairingFailure>("malformed-response");
     expect(incomplete.message).toContain("caCert");
+
+    // `JSON.parse("null")` succeeds, and so does an array. Both used to reach
+    // the field sweep, where `null` threw a raw `TypeError` past the failure
+    // union every caller of this module switches on.
+    const nulled = await failureAgainst({ status: 200, body: "null" });
+    expect(nulled.failure).toBe<CorePairingFailure>("malformed-response");
+
+    const listed = await failureAgainst({ status: 200, body: "[]" });
+    expect(listed.failure).toBe<CorePairingFailure>("malformed-response");
   }, 60_000);
+
+  it("refuses a credential for a plaintext endpoint", async () => {
+    // `coreConnectionFromBlob` reads TLS off the scheme: a `ws://` endpoint
+    // yields `tls: null` and still carries the bearer, so accepting one here
+    // would hand back a credential that ships the bearer in cleartext on every
+    // later dial — undoing the whole of what the pinned exchange bought.
+    const failure = await failureAgainst({
+      status: 200,
+      body: JSON.stringify({
+        endpoint: "ws://127.0.0.1:9443",
+        caCert: "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
+        clientCert: "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
+        bearer: "b",
+      }),
+    });
+
+    expect(failure.failure).toBe<CorePairingFailure>("malformed-response");
+    expect(failure.message).toContain("ws://127.0.0.1:9443");
+  }, 30_000);
 });
 
 describe("nothing this package ships stays unverified", () => {
