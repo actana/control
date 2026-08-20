@@ -18,10 +18,11 @@ Actana Control is two programs that talk over one WebSocket:
   agree on, and the only definition of it in the repository. It lives with the
   client that speaks it, and the Core imports its frames from here too
   ([ADR 0025](docs/adr/0025-the-protocol-ships-with-the-client.md)).
-- `packages/cli` — the `actana` command's client half: the blob registry that
-  names the Cores a machine can reach, and the nouns built on the SDK. One
-  command name split by noun — running a Core is the Core package's half
-  ([#129](https://github.com/actana/control/issues/129) D8).
+- `packages/cli` — the whole `actana` command: the blob registry that names the
+  Cores a machine can reach and the nouns built on the SDK, plus the verbs that
+  install and operate a Core on this machine. One program under one name; the
+  Core package is the daemon and nothing else
+  ([ADR 0032](docs/adr/0032-one-actana-cli.md)).
 - `packages/shared` — the other types both sides agree on: the mutation and
   query contracts, the registration-blob codec, the event log, the harness
   registry. Private, and it stays private.
@@ -43,7 +44,7 @@ project's glossary, and reviewers use its terms.
 ```
 control/
 ├── packages/
-│   ├── cli/                The `actana` command's client half
+│   ├── cli/                The whole `actana` command — client and Core manager
 │   │   ├── bin/actana.mjs  what npm links as `actana`
 │   │   └── src/
 │   │       ├── actana-cli.ts       noun dispatch

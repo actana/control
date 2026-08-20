@@ -236,7 +236,7 @@ async function main() {
   // wrong rather than shipping a tarball whose launcher execs nothing.
   const stagedBundles = [
     { file: "core-entry.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
-    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist"), pkg: "@actana/cli" },
+    { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/cli" },
   ];
   for (const { file, dist, pkg } of stagedBundles) {
     if (fs.existsSync(path.join(dist, file))) continue;

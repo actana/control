@@ -3,10 +3,16 @@
 `actana` — drive AI coding agents across your Cores, from the command line.
 
 A **Core** is a machine that runs AI coding sessions. This package is the
-client half of the `actana` command: the registry that names the Cores this
-machine can reach, and the verbs that talk to one. It is built on
+`actana` command — **all of it**: the registry that names the Cores this machine
+can reach and the verbs that talk to one, *and* the verbs that install and
+operate a Core on the machine you are typing on. It is built on
 [`@actana/sdk`](https://www.npmjs.com/package/@actana/sdk) and speaks
 `core-link` over mutual TLS.
+
+There used to be two `actana` binaries — this one and the one inside the Core
+tarball — and which answered on a machine that had both came down to `PATH`
+order. There is one now
+([ADR 0032](https://github.com/actana/control/blob/main/docs/adr/0032-one-actana-cli.md)).
 
 ```sh
 npm install -g @actana/cli
@@ -17,7 +23,7 @@ Node **22 or newer**. Published with
 [provenance](https://docs.npmjs.com/generating-provenance-statements) — every
 release is attested to the workflow and the commit that built it.
 
-## One command name, split by noun
+## Cores this machine can reach
 
 ```sh
 actana core add laptop ~/blob.txt   # register a Core from its blob, or stdin
@@ -113,10 +119,35 @@ local file with a colon in it. The one form this costs is a Windows
 which reads as a Project called `C`; `./C:dist` is the escape, the same one a
 filename with a colon in it uses.
 
-**Running a Core is the other half of the name.** `actana daemon`, and the rest
-of the machine-side lifecycle, ships with the Core itself and is not in this
-package — a program whose whole job is to talk to a Core over a socket should
-not carry a daemon's dependency graph.
+## Running a Core on this machine
+
+The same command installs and operates one. A CLI with no Core is a client and
+nothing else; a CLI on a machine that has one manages it.
+
+```sh
+actana install                  # fetch a release, verify it, install and start it
+actana status                   # daemon state, versions, endpoint, Harnesses
+actana token                    # reprint the pairing token
+actana update                   # install the latest release and restart
+actana logs -f                  # follow the daemon
+actana uninstall                # remove the service and the install
+```
+
+A failed install leaves nothing installed: the download, its SHA-256 check
+against the release's published `SHA256SUMS` and the unpack all happen in a
+temporary directory before anything under `~/.local/share/actana` is touched.
+`install.sh` does the same three steps in POSIX sh and stays, because a bare
+machine has no Node to run this with.
+
+A Core installed this way is registered with this machine's `actana`
+automatically and becomes its default target — nothing to paste, on the one
+machine where pasting a credential into the program that just printed it was
+always absurd.
+
+**The daemon is still not in this package's dependency graph.** `actana daemon`
+loads `core-entry.cjs` from the install root by path rather than importing it,
+so a published client never carries a database driver or a native addon. A test
+sweeps every shipped module for an `@actana/core` import and fails CI on one.
 
 ## A registration blob is a credential
 

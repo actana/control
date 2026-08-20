@@ -5,6 +5,16 @@ downloading the Core bundle, running `actana setup`, and pairing the machine
 with your Panel. The Core is the stateful daemon that runs harnesses and owns
 the PTY layer; the Panel is the web app you drive it from.
 
+**There is one `actana`.** The command that installs and operates a Core is the
+same command that drives Cores — `actana core ls`, `actana session start` and
+the rest — whether it arrived in the Core tarball or from
+`npm i -g @actana/cli`. Two programs used to share this name and which one
+answered depended on `PATH` order; see
+[ADR 0032](docs/adr/0032-one-actana-cli.md). Two practical consequences on this
+page: a machine that already has the CLI can install a Core with `actana
+install`, and a Core installed on a machine is registered with that machine's
+own `actana` — so `actana core ls` lists it with nothing pasted anywhere.
+
 Everything here runs **as your own user, without sudo** — a systemd *user* unit
 on Linux, a *LaunchAgent* on macOS. The one exception is Linux's
 `loginctl enable-linger`, which `actana setup` prompts for and explains, and
@@ -29,6 +39,20 @@ automatic login, or leave the session open.
 ```bash
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
 ```
+
+**Or, if you already have the CLI**, the same three steps without the shell
+script:
+
+```bash
+npm i -g @actana/cli
+actana install
+```
+
+`install.sh` stays the door for a machine with no Node — the tarball carries its
+own pinned runtime, so the script cannot be replaced by the CLI it installs.
+Both do the same work: resolve the release, download it, check it against the
+release's `SHA256SUMS`, extract it, then set up. A failed check leaves nothing
+installed either way.
 
 That detects the machine's OS and CPU, downloads the matching Core tarball
 from the latest GitHub Release, **checks it against the release's `SHA256SUMS`
@@ -134,7 +158,10 @@ tar -xzf actana-core-0.1.0-linux-x64.tar.gz
 - copies the tree to `~/.local/share/actana/versions/<version>` and points
   `~/.local/share/actana/current` at it,
 - links the launcher into `~/.local/bin/actana` (and tells you if that
-  directory is not on your `PATH`),
+  directory is not on your `PATH`) — **unless something else already answers to
+  `actana` there or earlier on your `PATH`**, in which case it leaves that one
+  alone and says so. Whoever installed a CLI owns its path; since there is one
+  `actana` program, the one already there runs this Core's verbs too,
 - generates the mTLS material and persists it to `~/.config/actana/material.json`,
 - writes the auto-start service — the systemd user unit
   `~/.config/systemd/user/actana-core.service` on Linux, or the LaunchAgent
@@ -143,7 +170,10 @@ tar -xzf actana-core-0.1.0-linux-x64.tar.gz
 - offers to install any harness CLI (Claude Code, Codex, Cursor CLI, OpenCode)
   that is not already on the machine, using each vendor's own installer,
 - registers and starts the service, then waits for the port to answer,
-- prints your **pairing token**.
+- registers this Core with **this machine's own** `actana`, so `actana core ls`
+  lists it and it is what `actana session start` means here by default,
+- prints your **pairing token** — which is for your *Panel*, and for any other
+  machine you want to drive this Core from.
 
 Useful flags:
 
@@ -395,6 +425,15 @@ off `PATH`. Add it:
 ```bash
 export PATH="$HOME/.local/bin:$PATH"
 ```
+
+### `setup` said it left the launcher alone
+
+Something else already answers to `actana` — usually `npm i -g @actana/cli`,
+whose global shim lands in the same directory. Nothing is broken: it is the same
+program, so it runs this Core's `status`, `logs` and `update` as well. Setup
+prints where this install's own launcher is if you would rather run that one
+directly. To hand the path over, remove the other install
+(`npm rm -g @actana/cli`) and re-run `actana setup`.
 
 ### The service started but nothing is listening
 

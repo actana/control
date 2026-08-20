@@ -4,11 +4,20 @@
 //
 //   dist/actana-cli.mjs   ESM — what `bin/actana.mjs` loads, and therefore what
 //                         `npm i -g @actana/cli` puts on an operator's PATH.
-//   dist/actana-cli.cjs   CJS — staged into the Core tarball as
+//   dist-tarball/actana-cli.cjs
+//                         CJS — staged into the Core tarball as
 //                         `app/actana-cli.cjs` by `scripts/build-core-tarball.mjs`,
 //                         which `bin/actana` in the tarball execs on the bundled
 //                         Node. That script fails the build if the file is not
 //                         there, which is the line that keeps this wiring honest.
+//
+// **Outside `dist/`, and that is the point of the second directory.** This
+// package's `files` field is `["dist", "bin"]`, so anything under `dist/` is
+// published — and a second, differently-formatted copy of the same program in
+// the npm tarball is bytes every installer downloads and nothing runs.
+// `scripts/lib/npm-packages.mjs` enforces that from the other side: it fails
+// the publish rehearsal on any packed file that is not the ESM bundle and its
+// paperwork.
 //
 // The CJS half is CJS because the tarball's tree is: `app/package.json` is
 // `type: commonjs`, and `app/core-entry.cjs` — the daemon this bundle
@@ -74,5 +83,5 @@ await build({
   // daemon it sits beside.
   target: "node24",
   format: "cjs",
-  outfile: "dist/actana-cli.cjs",
+  outfile: "dist-tarball/actana-cli.cjs",
 });
