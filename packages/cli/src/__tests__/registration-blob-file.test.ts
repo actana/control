@@ -9,7 +9,11 @@
 // time somebody improves an error message.
 
 import { describe, it, expect } from "vitest";
-import { decodeRegistrationBlobText, summarizeBlob } from "../registration-blob-file.ts";
+import {
+  decodeRegistrationBlobText,
+  encodeRegistrationBlobText,
+  summarizeBlob,
+} from "../registration-blob-file.ts";
 import { SENTINELS, sentinelBlobText } from "./cli-harness.ts";
 
 /** The blob shape, as an object, before it is encoded. */
@@ -143,3 +147,55 @@ describe("what it says when a blob is wrong", () => {
     }
   });
 });
+
+describe("encodeRegistrationBlobText", () => {
+  // The other direction, which #285 needs: `actana core pair` is handed a blob
+  // *object* by the SDK and the registry stores text. What matters is that the
+  // two halves of this module are each other's inverse — a credential that
+  // encoded but did not decode would land on disk as an entry `core ls` reports
+  // as corrupt, on a machine that has just been told pairing worked.
+  it("round-trips a blob through the decoder", () => {
+    const blob = {
+      endpoint: "wss://core.test:9444",
+      caCert: "ca",
+      clientCert: "cert",
+      clientKey: "key",
+      bearer: "bearer",
+    };
+    const result = decodeRegistrationBlobText(encodeRegistrationBlobText(blob));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.blob).toEqual({ ...blob, label: "" });
+  });
+
+  it("keeps a label when there is one, and writes no key for one there is not", () => {
+    const withLabel = encodeRegistrationBlobText({
+      endpoint: "wss://core.test:9444",
+      label: "the-test-core",
+      caCert: "ca",
+      clientCert: "cert",
+      clientKey: "key",
+      bearer: "bearer",
+    });
+    expect(summarizeBlob(unwrap(withLabel)).label).toBe("the-test-core");
+
+    // A paired credential has no alias, because the Core's redemption answer
+    // has no field for one. An empty string written here would put a blank
+    // LABEL column in `core ls` on the strength of a field nobody set.
+    const without = encodeRegistrationBlobText({
+      endpoint: "wss://core.test:9444",
+      caCert: "ca",
+      clientCert: "cert",
+      clientKey: "key",
+      bearer: "bearer",
+    });
+    expect(JSON.parse(Buffer.from(without, "base64").toString("utf8"))).not.toHaveProperty("label");
+  });
+});
+
+/** Decode text this suite just encoded, failing loudly if it will not. */
+function unwrap(text: string) {
+  const result = decodeRegistrationBlobText(text);
+  if (!result.ok) throw new Error(`the encoder wrote something the decoder refuses: ${result.error}`);
+  return result.blob;
+}

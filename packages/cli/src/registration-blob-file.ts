@@ -110,6 +110,43 @@ export function decodeRegistrationBlobText(raw: string): BlobDecodeResult {
 }
 
 /**
+ * Write a blob down, in exactly the form {@link decodeRegistrationBlobText}
+ * reads back.
+ *
+ * The other direction of the same one file, and it exists because #285 gives
+ * this package a second way to *come by* a credential: `actana core pair` gets
+ * a `CoreRegistrationBlob` object back from the SDK, and the registry stores
+ * text. Encoding it anywhere else would be a second opinion about the format at
+ * rest — the thing this module's header says it is the only place for — and the
+ * round trip is asserted rather than assumed (`registration-blob-file.test.ts`).
+ *
+ * **`label` is written only when there is one.** A blob from `actana setup`
+ * carries the *Core's* own alias in it; a paired credential carries no alias at
+ * all, because the Core's redemption answer has no field for one (#284). An
+ * empty string here would put a blank LABEL column in `actana core ls` on the
+ * strength of a field nobody set, so the key is left out instead and the
+ * decoder's `?? ""` answers for it.
+ *
+ * The result is base64 of compact JSON and has no trailing newline: the file
+ * `actana core add` writes has whatever the operator's paste had, and the
+ * decoder trims either way.
+ */
+export function encodeRegistrationBlobText(blob: CoreRegistrationBlob): string {
+  const label = blob.label ?? "";
+  return Buffer.from(
+    JSON.stringify({
+      endpoint: blob.endpoint,
+      ...(label === "" ? {} : { label }),
+      caCert: blob.caCert,
+      clientCert: blob.clientCert,
+      clientKey: blob.clientKey,
+      bearer: blob.bearer,
+    }),
+    "utf8",
+  ).toString("base64");
+}
+
+/**
  * The parts of a blob that are safe to print, name, sort by and log.
  *
  * This exists so that "never log the blob" is something the code can be *read*
