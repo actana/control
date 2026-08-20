@@ -30,7 +30,7 @@ import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
 import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "../core-pairing-wiring";
 import { PairingRateLimiter } from "../core-pairing-rate-limit";
-import type { PairingAuditEvent } from "../core-pairing-audit";
+import type { PairingAuditEvent } from "@actana/shared/pairing-audit";
 
 const SECRET = "core-pairing-suite-secret-at-least-32-bytes";
 const CORE_UUID = "3f6d0f0a-6c1f-4a5e-9c2f-1d0a5b7e9c31";

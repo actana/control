@@ -49,7 +49,7 @@ import {
 } from "@actana/shared/pairing-store";
 import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
-import { pairingAuditor, type PairingAuditEvent } from "./core-pairing-audit";
+import { pairingAuditor, type PairingAuditEvent } from "@actana/shared/pairing-audit";
 import { PairingRateLimiter } from "./core-pairing-rate-limit";
 import { pairingBearerSubject } from "./core-pairing-revocation";
 

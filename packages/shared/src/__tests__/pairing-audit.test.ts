@@ -4,7 +4,7 @@
 // written on the failure path, read by people, and outlives the request by
 // however long the log is kept. So the redaction is a function with a test.
 import { describe, expect, it } from "vitest";
-import { pairingAuditor, redactPairingAuditEvent, type PairingAuditEvent } from "../core-pairing-audit";
+import { pairingAuditor, redactPairingAuditEvent, type PairingAuditEvent } from "../pairing-audit";
 
 const attempt: PairingAuditEvent = {
   outcome: "issued",
