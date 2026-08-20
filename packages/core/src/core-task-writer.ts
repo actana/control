@@ -102,7 +102,20 @@ export class CoreTaskWriter {
             : isOnlyPatchedField(mutation, "pinned")
               ? "task:pinnedChanged"
               : "task:updated";
-    const payload = JSON.stringify({ taskId: task.taskId, projectId: task.projectId });
+    // The **patched** status, when the mutation carried one — never the status
+    // the resulting row happens to have (#289 A). That distinction is the whole
+    // value of the field: a rename of a Session sitting at `finished` produces a
+    // `task:updated` whose row still reads `finished`, and a waiter that took
+    // the row's status from it would call the rename the end of a turn. A patch
+    // that sets the status is a report about a turn even when it sets the status
+    // it already had — which is the ordinary case on a harness that never moved
+    // the row to `running`, and the one a follow-up turn depends on.
+    const status = mutation.op === "update" ? mutation.status : undefined;
+    const payload = JSON.stringify({
+      taskId: task.taskId,
+      projectId: task.projectId,
+      ...(status === undefined ? {} : { status }),
+    });
     eventLog.appendEvent(kind, payload, { taskId: task.taskId });
     this.recordSessionFinish(mutation, task, previousStatus);
   }
