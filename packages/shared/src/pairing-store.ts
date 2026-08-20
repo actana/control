@@ -130,27 +130,105 @@ export type PairingConsumeOutcome =
 export class PairingStore {
   constructor(private readonly filePath: string) {}
 
-  /** Everything on disk. A missing, corrupt or wrong-shaped file reads as empty. */
+  /**
+   * Everything on disk. A missing, corrupt or wrong-shaped file reads as empty,
+   * and a single unrecognised row is dropped while the rest are kept.
+   *
+   * That leniency is right for every writer here — a daemon must not fail to
+   * boot because a file it is about to rewrite is malformed — and **wrong for
+   * anything whose safety depends on the contents**, because it makes "this
+   * Core has revoked nobody" and "this Core cannot tell you who it revoked"
+   * the same answer. A reader in that position uses {@link readStrict}.
+   */
   read(): PairingRecords {
+    try {
+      return this.parse(false);
+    } catch {
+      return emptyPairingRecords();
+    }
+  }
+
+  /**
+   * Everything on disk, or throw saying why it could not be read.
+   *
+   * The distinction {@link read} cannot draw, for the one caller that must:
+   * `core-pairing-revocation.ts` treats an unreadable store as *everything is
+   * revoked*, and it can only do that if being unable to read is a different
+   * outcome from reading nothing.
+   *
+   * **A file that is not there is not an error.** A Core that has never paired
+   * anything has no `pairing.json`, and a reader that failed closed on its
+   * absence would refuse every client on every fresh Core. Every *other* read
+   * failure — a permission this process does not have, an I/O error, a
+   * half-written document, a row whose shape this build does not recognise —
+   * throws, because each of them is a state in which a revoked row could be
+   * sitting in this file unseen.
+   */
+  readStrict(): PairingRecords {
+    return this.parse(true);
+  }
+
+  /**
+   * The one reader, in its two moods.
+   *
+   * Written once rather than twice on purpose: the lenient and the strict
+   * reader must agree about what a *good* file contains, and two parsers would
+   * be two chances to disagree — the strict one accepting a document the
+   * lenient one silently trimmed, or the reverse.
+   */
+  private parse(strict: boolean): PairingRecords {
     let raw: string;
     try {
       raw = fs.readFileSync(this.filePath, "utf8");
-    } catch {
-      return emptyPairingRecords();
+    } catch (err) {
+      // Absent is empty in both moods. It is the state of a Core that has
+      // paired nobody, not a failure to read one that has.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyPairingRecords();
+      throw new Error(`${this.filePath} could not be read: ${errorText(err)}`);
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
-    } catch {
-      return emptyPairingRecords();
+    } catch (err) {
+      throw new Error(`${this.filePath} is not valid JSON: ${errorText(err)}`);
     }
-    if (!parsed || typeof parsed !== "object") return emptyPairingRecords();
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error(`${this.filePath} is not a pairing store`);
+    }
     const o = parsed as Partial<PairingRecords>;
     return {
       version: 1,
-      sessions: Array.isArray(o.sessions) ? o.sessions.filter(isPairingSession) : [],
-      clients: Array.isArray(o.clients) ? o.clients.filter(isPairedClient) : [],
+      sessions: this.rows(o.sessions, isPairingSession, "session", strict),
+      clients: this.rows(o.clients, isPairedClient, "client", strict),
     };
+  }
+
+  /**
+   * One list of rows: filtered when lenient, checked when strict.
+   *
+   * Absent is empty either way — a document that never grew a `clients` key has
+   * no clients. Present and wrong, or one unrecognised row, is where the two
+   * moods part: the lenient reader drops it, and a dropped row is exactly what
+   * a revoked client's row would look like to a reader that must not miss one.
+   */
+  private rows<T>(
+    value: unknown,
+    isRow: (row: unknown) => row is T,
+    what: string,
+    strict: boolean,
+  ): T[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+      if (!strict) return [];
+      throw new Error(`${this.filePath}: ${what}s is not a list`);
+    }
+    if (!strict) return value.filter(isRow);
+    return value.map((row, index) => {
+      if (!isRow(row)) {
+        throw new Error(`${this.filePath}: ${what} ${index} is not a ${what} this build knows`);
+      }
+      return row;
+    });
   }
 
   /** Add a freshly minted session. `actana pair new`'s one write. */
@@ -288,6 +366,10 @@ export class PairingStore {
       /* best effort — non-POSIX filesystems have no mode to set */
     }
   }
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Drop sessions that stopped being interesting a day ago. See the constant. */
