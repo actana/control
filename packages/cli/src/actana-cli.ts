@@ -6,6 +6,7 @@
 //     actana status    daemon state, versions, endpoint, Harness availability
 //     actana token     reprint the pairing token
 //     actana token regenerate   mint fresh credentials, invalidating the old ones
+//     actana pair      enroll a client on this Core: pair new | ls | revoke
 //     actana update    fetch, verify and swap in a release, then restart
 //     actana start|stop|restart|logs
 //     actana harnesses install <id>   install a Harness, the vendor's way
@@ -109,6 +110,7 @@ import { runActanaUpdate } from "./actana-update.ts";
 import { parseArgs } from "./cli-args.ts";
 import { registryPaths } from "./blob-registry.ts";
 import { runCoreCommand } from "./core-command.ts";
+import { runPairCommand } from "./actana-pair.ts";
 import { runProjectCommand } from "./project-command.ts";
 import { runHarnessCommand } from "./harness-command.ts";
 import { runEventsCommand } from "./events-command.ts";
@@ -173,6 +175,8 @@ This machine's own Core
   token      Reprint the pairing token
   token regenerate
              Issue fresh pairing credentials and invalidate the old ones
+  pair       Enroll a client on this Core — \`pair new\`, \`pair ls\`, \`pair revoke\`.
+             This is the Core end: \`actana core pair\` is the client end
   update     Install the latest release and restart the daemon
   start      Start the Core daemon
   stop       Stop the Core daemon
@@ -753,6 +757,33 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   return summarizeHealth(report) === "healthy" ? 0 : 1;
 }
 
+/**
+ * `actana pair` — mint, list and revoke this Core's pairing codes (#283).
+ *
+ * Thin here on purpose. The verb belongs to the machine half and needs exactly
+ * one thing from the install — where `material.json` is — so that is what this
+ * resolves and hands over; `actana-pair.ts` holds every decision about codes,
+ * fingerprints, expiry and revocation, and is driven directly by its own tests
+ * without a fake install underneath it.
+ *
+ * **Not refused in a container.** `pair` is not a lifecycle verb that Docker
+ * owns (ADR 0016 D13) — it is how an operator enrolls a client on the Core in
+ * front of them, and a containerised Core is the case where that matters most.
+ * `actana-container.ts`'s refusal table is what decides this, and `pair` is
+ * deliberately not on it.
+ */
+function cmdPair(deps: ActanaCliDeps, argv: string[]): number {
+  // The install is resolved on demand rather than up front, so that `actana
+  // pair --help` answers on a machine that has never run `actana setup` — the
+  // help is a question about this program, not about this box.
+  return runPairCommand(deps, argv, {
+    materialPath: () => {
+      const installed = requireInstall(deps);
+      return installed ? materialPathFor(deps, installed.layout) : null;
+    },
+  });
+}
+
 async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   if (argv[0] === "regenerate") return cmdTokenRegenerate(deps, argv.slice(1));
 
@@ -1301,6 +1332,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
       return cmdStatus(deps, rest);
     case "token":
       return cmdToken(deps, rest);
+    case "pair":
+      return cmdPair(deps, rest);
     case "update":
       return cmdUpdate(deps, rest);
     case "start":

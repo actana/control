@@ -15,7 +15,7 @@
 
 import selfsigned from "selfsigned";
 import * as x509 from "@peculiar/x509";
-import { randomBytes, webcrypto } from "node:crypto";
+import { createHash, randomBytes, webcrypto } from "node:crypto";
 
 export type CertPem = {
   /** PEM-encoded certificate. */
@@ -525,4 +525,38 @@ function derToPem(label: string, der: Buffer): string {
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+// ─── The CA fingerprint an operator reads out loud ──────────────────────────
+//
+// `actana pair new` prints this beside the pairing code, and the client's
+// bootstrap dial checks the CA it was presented against it before it sends the
+// code (#280 step 3, #283, #284). It is the whole of what makes that first
+// dial verifiable: the client has no certificate yet, so there is nothing else
+// on the wire it can pin.
+
+/**
+ * SHA-256 over a certificate's DER, rendered colon-separated upper-case hex.
+ *
+ * **The format is the contract**, not a presentation choice. A human compares
+ * these two by eye — one on the Core's terminal, one on the client's — so it is
+ * the conventional form every other tool prints (`openssl x509 -fingerprint
+ * -sha256`, a browser's certificate viewer, `X509Certificate.fingerprint256`),
+ * grouped into byte-sized pairs an eye can chunk. An operator who checks it
+ * against `openssl` must see the same string, character for character, or the
+ * check they just performed proved nothing.
+ *
+ * Over the **DER**, not the PEM: the PEM is base64 of exactly these bytes
+ * wrapped in a header, a footer and line breaks, and hashing that would make
+ * the fingerprint depend on line width and trailing whitespace. The DER is the
+ * certificate; everything else is packaging.
+ *
+ * Computed here rather than read off `node:crypto`'s `X509Certificate` so that
+ * the format lives in code with a test rather than in a property whose spelling
+ * this repository does not own — `core-cert-material.test.ts` asserts the two
+ * agree, which is the check that keeps the convention honest.
+ */
+export function certFingerprintSha256(certPem: string): string {
+  const digest = createHash("sha256").update(pemToDer(certPem)).digest("hex").toUpperCase();
+  return (digest.match(/.{2}/g) ?? []).join(":");
 }

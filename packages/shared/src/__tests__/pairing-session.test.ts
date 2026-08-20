@@ -8,6 +8,7 @@ import {
   isConsumed,
   isDead,
   isExpired,
+  isRevoked,
   recordWrongAttempt,
   type PairingSession,
 } from "../pairing-session";
@@ -161,6 +162,22 @@ describe("pairing session", () => {
         ok: false,
         reason: "attempts-exhausted",
       });
+    });
+
+    it("refuses a session the operator revoked, ahead of every other reason", () => {
+      // Revocation is the operator's own decision, so it is the answer the
+      // audit log should carry even when the session had also run out of time.
+      const s = session({ revokedAt: MINT + 1 });
+      expect(consumePairingSession(s, s.expiresAt + 1)).toEqual({ ok: false, reason: "revoked" });
+      expect(isRevoked(s)).toBe(true);
+    });
+
+    it("does not read a session written before the field existed as revoked", () => {
+      // Every pending session on a Core would die at the moment it upgraded if
+      // `undefined` counted. This is that regression, written down.
+      const { revokedAt: _absent, ...older } = session();
+      expect(isRevoked(older as PairingSession)).toBe(false);
+      expect(canRedeem(older as PairingSession, MINT)).toEqual({ ok: true });
     });
 
     it("reports consumption ahead of expiry, so a replay reads as a replay", () => {

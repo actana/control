@@ -30,7 +30,7 @@ import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
 import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "../core-pairing-wiring";
 import { PairingRateLimiter } from "../core-pairing-rate-limit";
-import type { PairingAuditEvent } from "../core-pairing-audit";
+import type { PairingAuditEvent } from "@actana/shared/pairing-audit";
 
 const SECRET = "core-pairing-suite-secret-at-least-32-bytes";
 const CORE_UUID = "3f6d0f0a-6c1f-4a5e-9c2f-1d0a5b7e9c31";
@@ -493,6 +493,45 @@ describe("the defences, over the real transport", () => {
     const res = await post(rig, "/v1/pair/redeem", "", { method: "GET" });
     expect(res.status).toBe(405);
     expect(res.headers.allow).toBe("POST");
+  }, 30_000);
+});
+
+describe("a session the operator cancelled (#283)", () => {
+  it("is refused, and the refusal is indistinguishable from every other one", async () => {
+    const rig = await startCore();
+    const { sessionId, code } = rig.openSession();
+    const { csrPem } = await generateClientCsr("laptop");
+
+    rig.store.cancelSession(sessionId, rig.clock.now);
+
+    const res = await redeem(rig, { sessionId, code, csr: csrPem });
+    expect(res.status).toBe(403);
+    expect(rig.store.listClients()).toEqual([]);
+  }, 30_000);
+
+  it("says `revoked` in the audit log, not `wrong-code`", async () => {
+    // The operator reading this log has to be able to see that their own
+    // cancellation is what stopped the redemption. Caught in the state ladder
+    // rather than left to `consume()` is what makes that true.
+    const rig = await startCore();
+    const { sessionId, code } = rig.openSession();
+    const { csrPem } = await generateClientCsr("laptop");
+    rig.store.cancelSession(sessionId, rig.clock.now);
+
+    await redeem(rig, { sessionId, code, csr: csrPem });
+
+    expect(rig.audit.at(-1)).toMatchObject({ outcome: "refused", reason: "revoked", sessionId });
+  }, 30_000);
+
+  it("does not spend an attempt the session will never get to use", async () => {
+    const rig = await startCore();
+    const { sessionId } = rig.openSession();
+    const { csrPem } = await generateClientCsr("laptop");
+    rig.store.cancelSession(sessionId, rig.clock.now);
+
+    await redeem(rig, { sessionId, code: "AAAA-BBBB", csr: csrPem });
+
+    expect(rig.store.getSession(sessionId)?.attempts).toBe(0);
   }, 30_000);
 });
 

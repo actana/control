@@ -226,3 +226,115 @@ describe("the code digest", () => {
     expect(pairingCodeMatches("", "")).toBe(false);
   });
 });
+
+// ─── Cancelling a pending code (#283) ───────────────────────────────────────
+//
+// `actana pair revoke` pointed at a session, rather than at a paired client.
+// The property is not that the row changed — it is that the endpoint's own
+// gate now refuses the code, which is the only thing that stops a redemption.
+
+describe("cancelling a pending session", () => {
+  it("stops the code being redeemed", () => {
+    const pending = createPairingSession({ id: "ps_9", label: "laptop", codeHash: "h", now: NOW });
+    store.createSession(pending, NOW);
+    expect(store.consume("ps_9", NOW).ok).toBe(true);
+
+    const again = createPairingSession({ id: "ps_10", label: "laptop", codeHash: "h", now: NOW });
+    store.createSession(again, NOW);
+    expect(store.cancelSession("ps_10", NOW)?.revokedAt).toBe(NOW);
+    expect(store.consume("ps_10", NOW)).toEqual({ ok: false, reason: "revoked" });
+  });
+
+  it("survives the round trip through disk", () => {
+    store.createSession(createPairingSession({ id: "ps_11", label: "l", codeHash: "h", now: NOW }), NOW);
+    store.cancelSession("ps_11", NOW);
+    expect(new PairingStore(path.join(dir, "pairing.json")).getSession("ps_11")?.revokedAt).toBe(NOW);
+  });
+
+  it("reports a session that was already redeemed rather than pretending to undo it", () => {
+    store.createSession(createPairingSession({ id: "ps_12", label: "l", codeHash: "h", now: NOW }), NOW);
+    store.consume("ps_12", NOW);
+    const after = store.cancelSession("ps_12", NOW + 1);
+    // There is a certificate in the world for this one. The thing to take back
+    // is the client, and the caller is told so by what comes back unchanged.
+    expect(after?.consumedAt).toBe(NOW);
+    expect(after?.revokedAt).toBe(null);
+  });
+
+  it("answers null for a session this Core does not have", () => {
+    expect(store.cancelSession("ps_nope", NOW)).toBe(null);
+  });
+
+  it("is idempotent — a second cancel changes nothing", () => {
+    store.createSession(createPairingSession({ id: "ps_13", label: "l", codeHash: "h", now: NOW }), NOW);
+    store.cancelSession("ps_13", NOW);
+    expect(store.cancelSession("ps_13", NOW + 5_000)?.revokedAt).toBe(NOW);
+  });
+});
+
+// ─── Telling "empty" apart from "unreadable" (#283) ─────────────────────────
+//
+// `read()` answers a corrupt file with an empty store, which is right for every
+// writer here — a daemon must not fail to boot because a file it is about to
+// rewrite is malformed — and wrong for anything whose safety depends on the
+// contents. `core-pairing-revocation.ts` is that reader: it treats an unreadable
+// store as *everything is revoked*, and it can only do that if being unable to
+// read is a different outcome from reading nothing.
+
+describe("reading strictly", () => {
+  const file = () => path.join(dir, "pairing.json");
+
+  it("reads a file that is simply not there as empty", () => {
+    // A Core that has never paired anything has no file. Throwing here would
+    // make every fresh Core refuse every client.
+    expect(store.readStrict()).toEqual({ version: 1, sessions: [], clients: [] });
+  });
+
+  it("reads a good file the same way the lenient reader does", () => {
+    store.recordClient(client(), NOW);
+    expect(store.readStrict()).toEqual(store.read());
+  });
+
+  it("throws on a half-written document, where the lenient reader says empty", () => {
+    // A truncated write renamed into place, which is exactly how this store
+    // writes — so this is what an ENOSPC failure leaves behind.
+    fs.writeFileSync(file(), '{"version":1,"sessions":[],"clients":[{"certSerial"');
+    expect(store.read().clients).toEqual([]);
+    expect(() => store.readStrict()).toThrow(/not valid JSON/);
+  });
+
+  it("throws on a document that is not a pairing store at all", () => {
+    fs.writeFileSync(file(), '"a string"');
+    expect(() => store.readStrict()).toThrow(/is not a pairing store/);
+  });
+
+  it("throws on a row whose shape this build does not know", () => {
+    // The lenient reader drops it silently, and a dropped row is exactly what a
+    // revoked client's row would look like to a reader that must not miss one.
+    fs.writeFileSync(file(), JSON.stringify({ version: 1, sessions: [], clients: [{ certSerial: 7 }] }));
+    expect(store.read().clients).toEqual([]);
+    expect(() => store.readStrict()).toThrow(/client 0 is not a client this build knows/);
+  });
+
+  it("leaves the lenient reader salvaging what it can", () => {
+    // The two moods must not have grown apart: `read()` still drops the one bad
+    // row and keeps the good one, which is what a daemon booting on a partly
+    // damaged file needs it to do.
+    fs.writeFileSync(
+      file(),
+      JSON.stringify({ version: 1, sessions: [], clients: [{ certSerial: 7 }, client("beef")] }),
+    );
+    expect(store.read().clients.map((c) => c.certSerial)).toEqual(["beef"]);
+    expect(() => store.readStrict()).toThrow();
+  });
+
+  it("throws when a list is not a list", () => {
+    fs.writeFileSync(file(), JSON.stringify({ version: 1, clients: "none" }));
+    expect(() => store.readStrict()).toThrow(/clients is not a list/);
+  });
+
+  it("names the file in every complaint, since the operator has to go and find it", () => {
+    fs.writeFileSync(file(), "{ not json");
+    expect(() => store.readStrict()).toThrow(new RegExp(file().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+});

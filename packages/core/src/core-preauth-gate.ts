@@ -53,12 +53,23 @@ export const CLIENT_CERT_REFUSAL_MESSAGE =
  * `rejectUnauthorized: true` and never reaches this function with
  * `authorized: false` — but it answers `refuse` if it does, because a gate
  * whose safety depends on a flag set somewhere else is not a gate.
+ *
+ * **`revoked` is checked before anything else, `authorized` included** (#283).
+ * A revoked client's certificate is still signed by this Core's CA and still
+ * completes the handshake — TLS has no idea an operator took it back — so
+ * `authorized: true` is exactly what a revoked client arrives with, and a gate
+ * that read it first would serve every one of them. Revocation is also the one
+ * refusal with no pre-auth exception: a client here to *redeem a code* has no
+ * certificate to have had revoked, so nothing legitimate is turned away.
  */
 export function clientCertGate(opts: {
   pathname: string;
   authorized: boolean;
+  /** Did this connection present a certificate `actana pair revoke` took back? */
+  revoked?: boolean;
   isPreAuthPath?: PreAuthPathPredicate;
 }): ClientCertVerdict {
+  if (opts.revoked) return "refuse";
   if (opts.authorized) return "serve";
   if (!opts.isPreAuthPath) return "refuse";
   return opts.isPreAuthPath(opts.pathname) ? "serve" : "refuse";
@@ -71,8 +82,13 @@ export function clientCertGate(opts: {
  * the path: the core link is the Panel's authenticated session with this Core,
  * and no pairing exception reaches it. A pre-auth WebSocket would be a socket
  * that could ask this Core to spawn a PTY without ever proving who it was.
+ *
+ * `revoked` refuses for the reason spelled out on {@link clientCertGate}: a
+ * revoked certificate is a valid certificate, and this is the layer that knows
+ * the difference.
  */
-export function coreLinkUpgradeGate(authorized: boolean): ClientCertVerdict {
+export function coreLinkUpgradeGate(authorized: boolean, revoked = false): ClientCertVerdict {
+  if (revoked) return "refuse";
   return authorized ? "serve" : "refuse";
 }
 

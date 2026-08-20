@@ -1,4 +1,12 @@
-// The audit record of every pairing attempt (#280, #282).
+// The audit record of every pairing attempt — and of every revocation (#280,
+// #282, #283).
+//
+// **In `packages/shared` because two processes write it.** The daemon records
+// the attempts at the pre-auth endpoint; the `actana pair revoke` CLI records
+// the revocations, in a different process that never loads `@actana/core`. One
+// shape, one field list and one redaction across both is the whole point of an
+// audit trail — two modules that agreed by convention would drift the first
+// time a field was added to one of them.
 //
 // Pairing is the one thing on a Core that turns knowledge of a short code into
 // a certificate this Core's CA vouches for, so "who asked, when, and what did
@@ -20,7 +28,7 @@
 // event goes; the seam exists so a test can read what was written, and so that
 // a later "ship the audit trail somewhere" has one place to attach.
 
-import log from "@actana/shared/log";
+import log from "./log";
 
 /** What happened to one attempt. */
 export type PairingOutcome =
@@ -33,7 +41,16 @@ export type PairingOutcome =
   /** The request was not shaped like a redemption at all. */
   | "bad-request"
   /** The Core failed — a CA key it could not read, a disk it could not write. */
-  | "core-error";
+  | "core-error"
+  /**
+   * An operator took a pairing back with `actana pair revoke` (#283).
+   *
+   * On this list rather than on a log of its own, because it answers the same
+   * question the others do — *who holds a credential this Core signed, and how
+   * did they get it* — and an operator reading back through a pairing's life
+   * should not have to join two logs to see it end.
+   */
+  | "revoked";
 
 /**
  * One attempt, as the audit log records it.
@@ -60,7 +77,11 @@ export type PairingAuditEvent = {
   sessionId?: string | null;
   /** The operator's label for that session. Display-only, and never a secret. */
   label?: string | null;
-  /** Where the request came from — `req.socket.remoteAddress`. */
+  /**
+   * Where the request came from — `req.socket.remoteAddress`, or
+   * {@link LOCAL_OPERATOR_PEER} for a revocation, which arrives at no socket
+   * at all.
+   */
   peer: string;
   /** Wrong codes counted against the session after this attempt. */
   attempts?: number;
@@ -88,6 +109,16 @@ const LOGGED_FIELDS = [
   "certSerial",
   "at",
 ] as const satisfies readonly (keyof PairingAuditEvent)[];
+
+/**
+ * The `peer` of an event that came from the operator's own shell rather than
+ * over the wire — every `outcome: "revoked"` record.
+ *
+ * A constant rather than an empty string or an omission: `peer` is the field a
+ * reader scans to answer "where did this come from", and a blank one reads as a
+ * record whose origin was lost rather than one that never had a remote origin.
+ */
+export const LOCAL_OPERATOR_PEER = "local-cli";
 
 /** Where an audit record goes. Injectable so a test can read what was written. */
 export type PairingAuditSink = (record: Record<string, unknown>) => void;

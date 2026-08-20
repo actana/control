@@ -32,7 +32,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import type { PairingRefusal, PairingSession } from "./pairing-session";
-import { canRedeem, recordWrongAttempt } from "./pairing-session";
+import { canRedeem, isConsumed, isRevoked, recordWrongAttempt } from "./pairing-session";
 
 /** The filename, beside `material.json` in the same directory. */
 export const PAIRING_STORE_FILENAME = "pairing.json";
@@ -130,27 +130,105 @@ export type PairingConsumeOutcome =
 export class PairingStore {
   constructor(private readonly filePath: string) {}
 
-  /** Everything on disk. A missing, corrupt or wrong-shaped file reads as empty. */
+  /**
+   * Everything on disk. A missing, corrupt or wrong-shaped file reads as empty,
+   * and a single unrecognised row is dropped while the rest are kept.
+   *
+   * That leniency is right for every writer here — a daemon must not fail to
+   * boot because a file it is about to rewrite is malformed — and **wrong for
+   * anything whose safety depends on the contents**, because it makes "this
+   * Core has revoked nobody" and "this Core cannot tell you who it revoked"
+   * the same answer. A reader in that position uses {@link readStrict}.
+   */
   read(): PairingRecords {
+    try {
+      return this.parse(false);
+    } catch {
+      return emptyPairingRecords();
+    }
+  }
+
+  /**
+   * Everything on disk, or throw saying why it could not be read.
+   *
+   * The distinction {@link read} cannot draw, for the one caller that must:
+   * `core-pairing-revocation.ts` treats an unreadable store as *everything is
+   * revoked*, and it can only do that if being unable to read is a different
+   * outcome from reading nothing.
+   *
+   * **A file that is not there is not an error.** A Core that has never paired
+   * anything has no `pairing.json`, and a reader that failed closed on its
+   * absence would refuse every client on every fresh Core. Every *other* read
+   * failure — a permission this process does not have, an I/O error, a
+   * half-written document, a row whose shape this build does not recognise —
+   * throws, because each of them is a state in which a revoked row could be
+   * sitting in this file unseen.
+   */
+  readStrict(): PairingRecords {
+    return this.parse(true);
+  }
+
+  /**
+   * The one reader, in its two moods.
+   *
+   * Written once rather than twice on purpose: the lenient and the strict
+   * reader must agree about what a *good* file contains, and two parsers would
+   * be two chances to disagree — the strict one accepting a document the
+   * lenient one silently trimmed, or the reverse.
+   */
+  private parse(strict: boolean): PairingRecords {
     let raw: string;
     try {
       raw = fs.readFileSync(this.filePath, "utf8");
-    } catch {
-      return emptyPairingRecords();
+    } catch (err) {
+      // Absent is empty in both moods. It is the state of a Core that has
+      // paired nobody, not a failure to read one that has.
+      if ((err as NodeJS.ErrnoException).code === "ENOENT") return emptyPairingRecords();
+      throw new Error(`${this.filePath} could not be read: ${errorText(err)}`);
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(raw);
-    } catch {
-      return emptyPairingRecords();
+    } catch (err) {
+      throw new Error(`${this.filePath} is not valid JSON: ${errorText(err)}`);
     }
-    if (!parsed || typeof parsed !== "object") return emptyPairingRecords();
+    if (!parsed || typeof parsed !== "object") {
+      throw new Error(`${this.filePath} is not a pairing store`);
+    }
     const o = parsed as Partial<PairingRecords>;
     return {
       version: 1,
-      sessions: Array.isArray(o.sessions) ? o.sessions.filter(isPairingSession) : [],
-      clients: Array.isArray(o.clients) ? o.clients.filter(isPairedClient) : [],
+      sessions: this.rows(o.sessions, isPairingSession, "session", strict),
+      clients: this.rows(o.clients, isPairedClient, "client", strict),
     };
+  }
+
+  /**
+   * One list of rows: filtered when lenient, checked when strict.
+   *
+   * Absent is empty either way — a document that never grew a `clients` key has
+   * no clients. Present and wrong, or one unrecognised row, is where the two
+   * moods part: the lenient reader drops it, and a dropped row is exactly what
+   * a revoked client's row would look like to a reader that must not miss one.
+   */
+  private rows<T>(
+    value: unknown,
+    isRow: (row: unknown) => row is T,
+    what: string,
+    strict: boolean,
+  ): T[] {
+    if (value === undefined) return [];
+    if (!Array.isArray(value)) {
+      if (!strict) return [];
+      throw new Error(`${this.filePath}: ${what}s is not a list`);
+    }
+    if (!strict) return value.filter(isRow);
+    return value.map((row, index) => {
+      if (!isRow(row)) {
+        throw new Error(`${this.filePath}: ${what} ${index} is not a ${what} this build knows`);
+      }
+      return row;
+    });
   }
 
   /** Add a freshly minted session. `actana pair new`'s one write. */
@@ -210,6 +288,34 @@ export class PairingStore {
     return { ok: true, session: consumed };
   }
 
+  /**
+   * Cancel a pending session before anybody redeems it — `actana pair revoke`
+   * pointed at a session rather than at a paired client (#283).
+   *
+   * Returns the cancelled row, the row unchanged when it was already cancelled,
+   * or `null` when there is no such session. A session that has already been
+   * *redeemed* is returned unchanged too and reports itself through
+   * `consumedAt`: there is a certificate in the world for it, so the thing to
+   * take back is the client, not the code, and the caller says so rather than
+   * pretending a cancel undid an issuance.
+   *
+   * The stamp is what stops the redemption: `canRedeem` checks `revokedAt`
+   * first, so the endpoint's next look at this session refuses it with the same
+   * body every other refusal gets — a client that had the code cannot tell a
+   * cancelled session from one that never existed.
+   */
+  cancelSession(id: string, now: number): PairingSession | null {
+    const records = this.read();
+    const index = records.sessions.findIndex((session) => session.id === id);
+    if (index === -1) return null;
+    const session = records.sessions[index]!;
+    if (isRevoked(session) || isConsumed(session)) return session;
+    const cancelled: PairingSession = { ...session, revokedAt: now };
+    records.sessions[index] = cancelled;
+    this.write(records);
+    return cancelled;
+  }
+
   /** Record an issued client identity. What `pair ls` and `pair revoke` read. */
   recordClient(client: PairedClient, now: number = Date.now()): void {
     const records = this.read();
@@ -260,6 +366,10 @@ export class PairingStore {
       /* best effort — non-POSIX filesystems have no mode to set */
     }
   }
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
 }
 
 /** Drop sessions that stopped being interesting a day ago. See the constant. */
