@@ -2,6 +2,7 @@ import type { Group, Project, ProjectPresentation, Task, UserTerminal } from "~/
 import type { Harness, TaskStatus } from "@actana/shared/domain";
 import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
+import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
 import type { Binding, BindingMap, HotkeyAction } from "~/lib/keybindings/types";
 import type { UsageSummary } from "~/shared/token-usage";
@@ -175,6 +176,38 @@ export const api = {
     req<{ core: CoreWithDial }>(`/api/cores/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ label }),
+    }),
+  /**
+   * Ask the Panel server what certificate authority a Core presents (#286).
+   *
+   * No code goes in this request, which is what makes it safe to make against
+   * an address nobody has verified yet: the answer is the fingerprint the
+   * operator compares against what `actana pair new` printed, and the dial
+   * that produced it sent nothing.
+   */
+  inspectCoreForPairing: (address: string) =>
+    req<CorePairingIdentityResponse>("/api/cores/pairing/inspect", {
+      method: "POST",
+      body: JSON.stringify({ address }),
+    }),
+  /**
+   * Pair with a Core by short code. The server dials, checks the fingerprint
+   * again, redeems the code and registers what comes back — the key it now
+   * holds was generated there and never crossed the wire, in either direction.
+   *
+   * A refusal is an ApiError whose `body` is a `CorePairingRefusal`: switch on
+   * `failure` to say what to do next rather than rendering `message` alone.
+   */
+  pairCore: (body: {
+    address: string;
+    code: string;
+    sessionId?: string;
+    expectedFingerprint: string;
+    label?: string;
+  }) =>
+    req<{ core: CoreWithDial }>("/api/cores/pairing", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   removeCore: (id: string) => req<void>(`/api/cores/${id}`, { method: "DELETE" }),
 
