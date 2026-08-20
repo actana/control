@@ -356,3 +356,66 @@ describe("planDependencyLayout", () => {
     expect(planned.map((p) => p.name)).toEqual(["better-sqlite3", "bindings"]);
   });
 });
+
+// ─── Every pipeline that builds a tarball builds both bundles first ─────────
+//
+// `build-core-tarball.mjs` stages two files into `app/`: `core-entry.cjs` from
+// `packages/core/dist` and `actana-cli.cjs` from `packages/cli/dist-tarball`
+// (#288 D1). It fails loudly without either, which is the enforcing line the
+// issue names — but only if something built them, and nothing in the pipeline
+// did. Both release-tarball jobs and `pnpm core:tarball` ran
+// `pnpm --filter @actana/core build` and stopped, so every tarball leg went red
+// the moment the CLI's bundle moved out of the Core package.
+//
+// So the pair has one name — `build:core-tarball-bundles` — and this asserts
+// that every caller uses it rather than spelling the two filters out again. A
+// third package added to the tarball later changes one script; a workflow that
+// went back to building one of them fails here instead of in a release.
+
+describe("the tarball's bundles are built by one named script", () => {
+  const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"));
+  const BUNDLE_SCRIPT = "build:core-tarball-bundles";
+
+  it("names both packages the tarball stages from", () => {
+    const script = manifest.scripts[BUNDLE_SCRIPT];
+    expect(script, `package.json has no \`${BUNDLE_SCRIPT}\` script`).toBeDefined();
+    expect(script).toContain("@actana/core");
+    expect(script).toContain("@actana/cli");
+  });
+
+  it("is what `core:tarball` runs before the builder", () => {
+    const script = manifest.scripts["core:tarball"];
+    expect(script).toContain(BUNDLE_SCRIPT);
+    expect(script).toContain("scripts/build-core-tarball.mjs");
+    // The order matters and a substring check cannot see it.
+    expect(script.indexOf(BUNDLE_SCRIPT)).toBeLessThan(script.indexOf("build-core-tarball.mjs"));
+  });
+
+  it("is what every workflow that calls the builder directly runs first", () => {
+    // `pnpm core:tarball` covers ci.yml, container-image.yml and
+    // housekeeping.yml. `release.yml` is the one that calls the builder itself,
+    // in two jobs, and it is the leg that actually ships a tarball — so it is
+    // the one this most needs to hold.
+    const workflows = fs
+      .readdirSync(path.join(repoRoot, ".github", "workflows"))
+      .filter((name) => name.endsWith(".yml"));
+
+    let checked = 0;
+    for (const name of workflows) {
+      const text = fs.readFileSync(path.join(repoRoot, ".github", "workflows", name), "utf8");
+      if (!text.includes("scripts/build-core-tarball.mjs")) continue;
+      checked += 1;
+      expect(
+        text.includes(`pnpm ${BUNDLE_SCRIPT}`),
+        `${name} runs scripts/build-core-tarball.mjs without \`pnpm ${BUNDLE_SCRIPT}\` first`,
+      ).toBe(true);
+      expect(
+        /pnpm --filter @actana\/core build\b/.test(text),
+        `${name} still builds only the Core's bundle — the tarball needs the CLI's too`,
+      ).toBe(false);
+    }
+    // The guard on the guard: a rename of the builder would make the loop above
+    // sweep nothing and pass.
+    expect(checked, "no workflow calls scripts/build-core-tarball.mjs any more").toBeGreaterThan(0);
+  });
+});

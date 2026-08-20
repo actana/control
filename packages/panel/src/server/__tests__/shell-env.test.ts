@@ -9,7 +9,7 @@ import {
   resolveCommandOnPath,
   setCanonicalPathEnv,
   shellArgsForCommand,
-} from "../../../../core/src/shell-env";
+} from "@actana/shared/shell-env";
 
 function touch(file: string) {
   fs.mkdirSync(path.dirname(file), { recursive: true });

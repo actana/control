@@ -36,7 +36,7 @@
 // without reporting — and it makes no claim about how the work ended, which is
 // the honest position. Nobody knows.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
 import type { CoreTaskWriter } from "./core-task-writer";
 

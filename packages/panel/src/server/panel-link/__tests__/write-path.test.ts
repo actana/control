@@ -13,7 +13,7 @@ import {
   type CoreMutationPort,
 } from "@actana/core/pty-core-link-server";
 import { createDirectory, listDirectory } from "@actana/core/directory-browse";
-import { generateCertMaterial } from "@actana/core/core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";

@@ -1,4 +1,4 @@
-import log from "./log";
+import log from "@actana/shared/log";
 import * as os from "node:os";
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -10,12 +10,12 @@ import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";
 import {
   resolveHarnessCommandMeetingVersion,
   resolveHarnessCommandOnPath,
-} from "./harness-cli-resolution";
+} from "@actana/shared/harness-cli-resolution";
 import {
   resolveShell,
   sanitizedProcessEnv,
   shellArgsForCommand,
-} from "./shell-env";
+} from "@actana/shared/shell-env";
 import { loadProjectRoots } from "./project-roots";
 import { MAX_TCP_PORT } from "@actana/shared/tcp-port";
 import { shortId } from "@actana/shared/short-id";
@@ -32,11 +32,11 @@ import {
   HOOK_URL_ENV,
   installHarnessHooks,
 } from "./harness-hooks";
-import { checkHarnessCliVersionCached, harnessVersionErrorMessage } from "./harness-cli-version";
+import { checkHarnessCliVersionCached, harnessVersionErrorMessage } from "@actana/shared/harness-cli-version";
 import {
   HARNESS_CLI_CONFIG,
   HARNESS_CLI_CONFIG_BY_COMMAND,
-} from "./harness-cli-version-requirements";
+} from "@actana/shared/harness-cli-version-requirements";
 import { applyHarnessPtyEnv } from "@actana/shared/harness-pty-env";
 import { acquireSpawnSlot, SPAWN_SETTLE_MS } from "./pty-spawn-queue";
 import { HarnessPromptDelivery } from "./harness-prompt-delivery";

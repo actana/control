@@ -89,7 +89,7 @@ import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-ho
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { CoreSessionBackstop } from "./core-session-backstop";
-import { generateCertMaterial } from "./core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
   buildRegistrationBlob,
@@ -98,22 +98,26 @@ import {
   registrationBlobPath,
   type LoadOrMintResult,
 } from "./core-first-run";
+import { registerSelfWithLocalCli } from "./core-self-register";
 import {
   CONTAINER_PUBLIC_HOST_ENV,
   coreUpdateCommand,
   inContainer,
-} from "./actana-container";
-import { updateCheckCachePath, updateNoticeStatePath } from "./actana-layout";
-import { readCoreManifest } from "./actana-manifest";
-import { nodeReleaseFetcher } from "./actana-release";
+} from "@actana/shared/actana-container-contract";
+import {
+  updateCheckCachePath,
+  updateNoticeStatePath,
+} from "@actana/shared/actana-state-paths";
+import { readCoreManifest } from "@actana/shared/actana-manifest";
+import { nodeReleaseFetcher } from "@actana/shared/actana-release-fetch";
 import { startUpdateNotice } from "./core-update-notice";
-import log from "./log";
+import log from "@actana/shared/log";
 import { bootstrapCoreDb } from "./core-db-bootstrap";
-import { HarnessAvailabilityStore } from "./harness-availability-store";
+import { HarnessAvailabilityStore } from "@actana/shared/harness-availability-store";
 import { HarnessSkillWatcher } from "./harness-skill-watcher";
 import { ensureOrchestrationSkill } from "./orchestration-skill";
 import { HarnessInstallService } from "./harness-install-service";
-import { nodeActanaSystem } from "./actana-system";
+import { daemonHarnessSystem } from "./core-harness-system";
 
 const CORE_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 const REGISTRATION_BLOB_SENTINEL = "@@AC_CORE_REGISTRATION_BLOB@@";
@@ -326,7 +330,7 @@ async function startCore(): Promise<void> {
   const harnessInstalls = new HarnessInstallService({
     availability: () => availabilityStore.snapshot(),
     reprobe: () => availabilityStore.runProbe(),
-    system: nodeActanaSystem(),
+    system: daemonHarnessSystem(),
     platform: process.platform,
     homeDir: os.homedir(),
   });
@@ -458,6 +462,47 @@ async function startCore(): Promise<void> {
             `this Core's address in your Panel, or re-pair with the token in ` +
             `${registrationBlobPath(materialFile)}.`,
         );
+      }
+
+      // #288 D9, criterion 3: a containerised Core wires itself to the `actana`
+      // on its own machine, because the image is the install and `actana setup`
+      // — which does this on metal — is refused here. Without it a Session
+      // started on this Core finds an empty registry and cannot address the
+      // Core it is running on, and the `actana-sessions` skill installed a few
+      // lines below states the opposite as a fact. Not gated on `blob`: a
+      // volume that predates this has material but no registry entry, and this
+      // is the boot that fixes it. See `core-self-register.ts`.
+      if (containerMode) {
+        const registered = registerSelfWithLocalCli({
+          material,
+          bindHost: host,
+          port,
+          label,
+          bearerDays,
+          env: process.env,
+          home: os.homedir(),
+        });
+        if (!registered.ok) {
+          // Serving Panels does not depend on this, so a registry that cannot
+          // be written is reported and stepped over rather than fatal.
+          console.error(
+            `[core-entry] could not register this Core with the \`actana\` on its own machine: ` +
+              `${registered.error}. \`actana core ls\` here will be empty; the pairing token in ` +
+              `${registrationBlobPath(materialFile)} still works from anywhere.`,
+          );
+        } else if (registered.wiring.selected) {
+          console.log(
+            `[core-entry] registered this Core with this machine's \`actana\` as ` +
+              `${registered.wiring.name} (${registered.endpoint}) and selected it.`,
+          );
+        } else {
+          console.log(
+            `[core-entry] registered this Core with this machine's \`actana\` as ` +
+              `${registered.wiring.name} (${registered.endpoint}). ` +
+              `\`current\` still points at ${registered.wiring.keptSelection} — ` +
+              `\`actana core use ${registered.wiring.name}\` switches to this one.`,
+          );
+        }
       }
 
       // Printed only when this boot minted the identity. On every later boot

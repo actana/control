@@ -87,6 +87,7 @@ routing around it.
 | [0029](adr/0029-a-folder-crosses-as-one-streamed-tar.md) | A folder crosses as one streamed tar |
 | [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials |
 | [0031](adr/0031-the-product-ships-one-skill.md) | The product ships one skill, and installs it into the operator's home — **PROPOSED**, amends 0006 |
+| [0032](adr/0032-one-actana-cli.md) | There is one `actana`, and it is both the Core manager and the client — supersedes #265 §6 and 0031 D8's two-binaries premise |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

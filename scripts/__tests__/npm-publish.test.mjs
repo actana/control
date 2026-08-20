@@ -547,11 +547,37 @@ describe("packing both published packages for real", () => {
     // directory outside the workspace has no `node_modules` to resolve it from
     // — that would test the extraction. `pnpm pack` ran `prepack`, so these are
     // the bytes in the tarball, in the same `bin/` → `../dist/` layout.
-    const version = execFileSync(
-      process.execPath,
-      [path.join(repoRoot, "packages/cli/bin/actana.mjs"), "--version"],
-      { encoding: "utf8" },
-    ).trim();
+    // Under an empty HOME, deliberately. Since #288 there is one `actana` and
+    // `--version` is one answer about *both* halves: a machine with a Core
+    // installed under it gets a second line naming that install's version
+    // (ADR 0032 D10, tolerate and report). What this test is about is the
+    // published command running at all, so it is asked the question on a
+    // machine with nothing installed — which is also every machine a fresh
+    // `npm i -g @actana/cli` lands on.
+    const emptyHome = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-home-"));
+    let version;
+    try {
+      version = execFileSync(
+        process.execPath,
+        [path.join(repoRoot, "packages/cli/bin/actana.mjs"), "--version"],
+        {
+          encoding: "utf8",
+          // Built from nothing rather than spread from `process.env`: a CI
+          // runner that is itself a container Core carries `ACTANA_CONTAINER`
+          // and `ACTANA_ROOT`, and `actana` would then report *that* machine's
+          // Core. The published command needs `PATH` and a home, and nothing
+          // else.
+          env: {
+            PATH: process.env.PATH ?? "",
+            HOME: emptyHome,
+            XDG_DATA_HOME: path.join(emptyHome, ".local", "share"),
+            XDG_CONFIG_HOME: path.join(emptyHome, ".config"),
+          },
+        },
+      ).trim();
+    } finally {
+      fs.rmSync(emptyHome, { recursive: true, force: true });
+    }
     expect(version).toBe(`actana ${pack("@actana/cli").manifest.version}`);
   });
 

@@ -3,8 +3,8 @@
 // the way down.
 //
 // The Core owns the other half (`packages/core/src/files-tar.ts`) and the two
-// never share code — this package cannot import a private workspace package
-// (ADR 0025 D4, and `no-local-escape.test.ts` enforces it), and it should not:
+// never share code — this package cannot import `@actana/core` at all (#129 D8,
+// and `no-local-escape.test.ts` enforces it), and it should not:
 // the two halves guard different disks and their rules are not the same. What
 // they do share is a format, and it is a thirty-year-old one with an unusually
 // precise definition, so "compatible" here means ustar with pax extensions and

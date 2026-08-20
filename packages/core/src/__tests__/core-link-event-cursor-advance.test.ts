@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import log from "../log";
+import log from "@actana/shared/log";
 import {
   PtyCoreLinkServer,
   type EventLogPort,

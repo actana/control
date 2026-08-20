@@ -175,7 +175,7 @@ describe("a Core-owned Project's path is immutable (ADR 0022)", () => {
   it("still points at the noun grammar: there is no root-level `actana cp` (D8, F12)", async () => {
     const run = await cli().run(["cp", "./a", "api:b"]);
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain('unknown noun "cp"');
+    expect(run.err.join("\n")).toContain('unknown command "cp"');
   });
 });
 

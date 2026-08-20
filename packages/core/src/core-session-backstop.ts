@@ -39,7 +39,7 @@
 // which is a state it is allowed to sit in indefinitely and silently; a card
 // that says the operator is being waited on is not made truer by a timer.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import {
   clearSubagentActivity,
   noteTaskFinished,

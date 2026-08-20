@@ -1,7 +1,7 @@
 {
   "name": "@actana/shared",
   "version": "0.4.0",
-  "description": "Actana Control shared internals — mutation/query contracts, registration-blob codec, event log. The core-link frames live in @actana/sdk.",
+  "description": "Actana Control shared internals — mutation/query contracts, registration-blob codec, event log, and the machine-side modules the Core daemon and the `actana` CLI both use. The core-link frames live in @actana/sdk.",
   "license": "MIT",
   "private": true,
   "type": "module",
@@ -13,7 +13,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@actana/sdk": "workspace:*"
+    "@actana/sdk": "workspace:*",
+    "selfsigned": "^5.5.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "7.6.13",

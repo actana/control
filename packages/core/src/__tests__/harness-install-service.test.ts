@@ -1,8 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { HarnessInstallService } from "../harness-install-service";
-import type { HarnessInstallOutcome } from "../actana-harnesses";
+import type { HarnessInstallOutcome } from "@actana/shared/actana-harnesses";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
-import type { ActanaSystem } from "../actana-system";
+import type { ActanaSystem } from "@actana/shared/actana-system-port";
 
 // The Core's half of "install this Harness for me" (issue 83). What matters
 // here is the verdict: the Panel's row waits on this service saying the Harness

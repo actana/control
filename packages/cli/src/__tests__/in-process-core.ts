@@ -60,7 +60,7 @@ import {
   type WebSocketLike as ServerSocketLike,
   type WebSocketServerLike,
 } from "@actana/core/pty-core-link-server";
-import { generateCertMaterial } from "@actana/core/core-cert-material";
+import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { CoreLinkEvent } from "@actana/sdk/core-link-frames.ts";
 

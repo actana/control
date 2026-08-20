@@ -40,7 +40,7 @@ import { confineToProjectRoot, confineWriteTarget, freeSpaceBytes } from "./file
 import { listTree, type FileListingOptions } from "./files-listing";
 import { packDirectory, TarError, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "./files-tar";
 import { ProjectWriteLocks } from "./files-transfer-locks";
-import log from "./log";
+import log from "@actana/shared/log";
 
 /**
  * A Project's root on this machine.
