@@ -138,6 +138,18 @@ export type CorePairingFailure =
   | "fingerprint-unconfirmed"
   /** The presented CA is not the expected one. The code was not sent. */
   | "fingerprint-mismatch"
+  /**
+   * The expected CA, on an address its certificate does not cover.
+   *
+   * Its own failure rather than a mismatch, because it is not an attack and
+   * saying so sends the operator hunting for one: a Core's server certificate
+   * covers the host it was set up for plus loopback, so reaching a Core over a
+   * second interface, a tunnel or a DNS name added later fails here with the
+   * fingerprint matching perfectly.
+   */
+  | "hostname-mismatch"
+  /** The expected CA, and a certificate that is expired or otherwise unusable. */
+  | "certificate-invalid"
   /** Wrong, expired, already redeemed, or out of attempts — see above. */
   | "refused"
   /** Too many attempts from this client, too fast. Try again later. */
@@ -165,6 +177,8 @@ export type CorePairingErrorDetail = {
   presentedFingerprint?: string;
   /** The CA the Core presented, PEM — for a UI that wants to show it. */
   presentedCaCert?: string;
+  /** The TLS or OpenSSL code behind a dial failure, e.g. `CERT_HAS_EXPIRED`. */
+  tlsCode?: string;
 };
 
 /**
@@ -402,8 +416,21 @@ export function parsePairingTicket(input: string, sessionId?: string): PairingTi
   const separator = trimmed.indexOf(":");
   const explicit = sessionId?.trim() ?? "";
   const carried = separator === -1 ? "" : trimmed.slice(0, separator).trim();
-  const rawCode = separator === -1 || explicit !== "" ? trimmed : trimmed.slice(separator + 1);
+  // The prefix is stripped whenever there is one, whether or not a session id
+  // was also passed: a caller that always forwards `--session` while letting an
+  // operator paste whatever they were read out hands in both, and refusing that
+  // would refuse the one shape this function exists to be tolerant of.
+  const rawCode = separator === -1 ? trimmed : trimmed.slice(separator + 1);
 
+  if (explicit !== "" && carried !== "" && explicit !== carried) {
+    // Two session ids that disagree is not a shape to pick a winner from: one
+    // of them is a mistake, and redeeming against the wrong session refuses in
+    // a way that looks like a bad code.
+    throw new CorePairingError(
+      "bad-code",
+      `the code names session "${carried}" and "${explicit}" was passed beside it — they must agree`,
+    );
+  }
   const session = explicit !== "" ? explicit : carried;
   if (session === "") {
     throw new CorePairingError(
@@ -562,6 +589,12 @@ function chainOf(leaf: DetailedPeerCertificate): DetailedPeerCertificate[] {
  * fingerprinting whatever is at the top, would compare the operator's CA
  * fingerprint against a leaf and fail with a mismatch that describes the wrong
  * problem.
+ *
+ * That makes "a Core presents a chain ending in its own root" a property of the
+ * pairing flow rather than a detail of this file: a Core that later fronts an
+ * intermediate, or serves a partial chain, breaks first contact for every
+ * client. It belongs in #280 beside the rest of the flow's properties, and is
+ * written here so the dependency is visible from the code that has it.
  */
 function certificateAuthorityIn(chain: DetailedPeerCertificate[]): DetailedPeerCertificate | null {
   const top = chain.at(-1);
@@ -647,24 +680,51 @@ function postRedemption(opts: {
     }, opts.timeoutMs);
     req.on("error", (err: Error) => {
       clearTimeout(timer);
-      reject(
-        // A dial that was pinned and did not verify is not an unreachable Core;
-        // it is a different Core, and saying "unreachable" would send an
-        // operator looking at their network for something that is not there.
-        // Either way the body was never written: the failure is the handshake's,
-        // and the code went nowhere.
-        certificateFailure(err)
-          ? new CorePairingError(
-              "fingerprint-mismatch",
-              `${opts.origin} did not verify against the certificate authority whose fingerprint was confirmed: ${err.message}`,
-              { expectedFingerprint: opts.expectedFingerprint },
-              { cause: err },
-            )
-          : new CorePairingError("unreachable", `${opts.origin} could not be reached: ${err.message}`, {}, { cause: err }),
-      );
+      // Whatever this turns out to be, the body was never written: the failure
+      // is the handshake's, and the code went nowhere. What is decided here is
+      // only which of four things the operator is told — and one of them
+      // accuses somebody, so see {@link classifyDialFailure}.
+      const code = failureCode(err);
+      const tls = code === undefined ? {} : { tlsCode: code };
+      reject(dialFailure(classifyDialFailure(err), err, opts, tls));
     });
     req.end(opts.body);
   });
+}
+
+/** One sentence per {@link DialFailure}, and the failure that carries it. */
+function dialFailure(
+  kind: DialFailure,
+  err: Error,
+  opts: { origin: string; host: string; expectedFingerprint: string },
+  tls: { tlsCode?: string },
+): CorePairingError {
+  const cause = { cause: err };
+  if (kind === "pin") {
+    return new CorePairingError(
+      "fingerprint-mismatch",
+      `${opts.origin} did not present the certificate authority whose fingerprint was confirmed — the pairing code was not sent (${err.message})`,
+      { ...tls, expectedFingerprint: opts.expectedFingerprint },
+      cause,
+    );
+  }
+  if (kind === "hostname") {
+    return new CorePairingError(
+      "hostname-mismatch",
+      `${opts.origin} presented the expected certificate authority, but its certificate does not cover ${opts.host} — dial the address this Core was set up for (${err.message})`,
+      { ...tls, expectedFingerprint: opts.expectedFingerprint },
+      cause,
+    );
+  }
+  if (kind === "certificate") {
+    return new CorePairingError(
+      "certificate-invalid",
+      `${opts.origin} presented the expected certificate authority, but its certificate could not be used: ${err.message}`,
+      { ...tls, expectedFingerprint: opts.expectedFingerprint },
+      cause,
+    );
+  }
+  return new CorePairingError("unreachable", `${opts.origin} could not be reached: ${err.message}`, tls, cause);
 }
 
 /**
@@ -687,6 +747,15 @@ function readRedeemResponse(answer: RedemptionAnswer, origin: string): CorePairi
       status: answer.status,
     });
   }
+  // `JSON.parse("null")` succeeds, and an array parses too. Both would reach
+  // the sweep below as something a field can be read off without complaint from
+  // the compiler, and `null` would throw a raw `TypeError` out of a function
+  // whose whole contract is that failures arrive as a `CorePairingError`.
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new CorePairingError("malformed-response", `${origin} answered 200 with something that was not an object`, {
+      status: answer.status,
+    });
+  }
   const fields = parsed as Partial<Record<keyof CorePairingRedeemResponse, unknown>>;
   const missing = (["endpoint", "caCert", "clientCert", "bearer"] as const).filter(
     (field) => typeof fields[field] !== "string" || (fields[field] as string).length === 0,
@@ -698,8 +767,24 @@ function readRedeemResponse(answer: RedemptionAnswer, origin: string): CorePairi
       { status: answer.status },
     );
   }
+  // The endpoint decides whether anything later is protected at all.
+  // `coreConnectionFromBlob` reads TLS off the scheme and nothing else: a
+  // `ws://` endpoint yields `tls: null` **and still carries the bearer**, so a
+  // Core that answered with one — misconfigured, or hostile — would hand back a
+  // credential whose every later dial ships the bearer in cleartext with no
+  // client certificate. That is the property this module spent a bootstrap
+  // dial, a fingerprint comparison and a pinned second connection to establish,
+  // undone by one field nobody looked at.
+  const endpoint = (fields.endpoint as string).trim();
+  if (!endpoint.startsWith("wss://")) {
+    throw new CorePairingError(
+      "malformed-response",
+      `${origin} answered with the endpoint ${endpoint}, which is not a \`wss://\` core link — a paired credential is only a credential on one`,
+      { status: answer.status },
+    );
+  }
   return {
-    endpoint: fields.endpoint as string,
+    endpoint,
     caCert: fields.caCert as string,
     clientCert: fields.clientCert as string,
     bearer: fields.bearer as string,
@@ -743,8 +828,8 @@ function refusalFor(answer: RedemptionAnswer, origin: string): CorePairingError 
  * Node reports a refusal from `checkServerIdentity` by destroying the socket
  * with the returned error, which arrives at the request as an ordinary
  * `error` event indistinguishable from a connection reset. Tagging it is what
- * lets {@link certificateFailure} tell "this is not the Core you confirmed"
- * from "nothing answered".
+ * lets {@link classifyDialFailure} tell "this is not the Core you confirmed"
+ * from "nothing answered" — and from the two failures that are neither.
  */
 const PIN_FAILURE_CODE = "ERR_ACTANA_PAIRING_PIN";
 
@@ -754,26 +839,101 @@ function pinFailure(message: string): Error {
 }
 
 /**
- * Did this connection fail because the certificate did not verify?
+ * Was this failure about the certificate at all?
  *
- * The tagged refusal above, then OpenSSL's own verdicts, which Node surfaces as
- * `code` — `UNABLE_TO_VERIFY_LEAF_SIGNATURE`, `SELF_SIGNED_CERT_IN_CHAIN`,
+ * OpenSSL's verdicts reach Node as `code` — `UNABLE_TO_VERIFY_LEAF_SIGNATURE`,
  * `CERT_HAS_EXPIRED` and the rest of a list too long and too version-dependent
- * to enumerate, plus the `ERR_TLS_*` family Node raises itself. Matched by
- * prefix rather than by an exhaustive set: a verification failure this function
- * did not recognise would be reported as `unreachable`, which is the wrong
- * sentence for the one case that matters most.
+ * to enumerate — beside the `ERR_TLS_*` family Node raises itself. Matched by
+ * prefix, deliberately: a verification failure this predicate did not recognise
+ * would be reported as `unreachable`, which sends an operator looking at their
+ * network for a problem that is in their certificates.
+ *
+ * It answers only that question. Which certificate failure it was — the pin,
+ * the hostname, or an unusable certificate — is {@link classifyDialFailure}'s,
+ * and that one is enumerated rather than guessed.
  */
-function certificateFailure(err: unknown): boolean {
-  const code = String((err as { code?: unknown } | null)?.code ?? "");
-  if (code === PIN_FAILURE_CODE) return true;
+function certificateFailure(code: string): boolean {
   return (
     code.startsWith("ERR_TLS_") ||
     code.startsWith("ERR_SSL_") ||
     code.includes("CERT") ||
     code.startsWith("UNABLE_TO_") ||
-    code.startsWith("DEPTH_ZERO_")
+    code.startsWith("DEPTH_ZERO_") ||
+    code.startsWith("SELF_SIGNED_")
   );
+}
+
+/**
+ * OpenSSL verdicts that mean **this chain does not lead to the pinned CA**.
+ *
+ * Every one of them is a statement about who signed what: no issuer, an issuer
+ * that is not the one supplied, a signature that does not check out, a chain
+ * that ends in a self-signed certificate that is not the pinned root. On a dial
+ * whose `ca` is the single certificate the operator's fingerprint matched,
+ * that is the pin refusing — the same event `checkServerIdentity` reports when
+ * it gets far enough to run.
+ *
+ * Enumerated rather than prefix-matched, because this is the set that decides
+ * whether a person is told they are being attacked.
+ */
+const CHAIN_FAILURE_CODES: ReadonlySet<string> = new Set([
+  "UNABLE_TO_GET_ISSUER_CERT",
+  "UNABLE_TO_GET_ISSUER_CERT_LOCALLY",
+  "UNABLE_TO_VERIFY_LEAF_SIGNATURE",
+  "SELF_SIGNED_CERT_IN_CHAIN",
+  "DEPTH_ZERO_SELF_SIGNED_CERT",
+  "CERT_SIGNATURE_FAILURE",
+  "CERT_UNTRUSTED",
+  "INVALID_CA",
+]);
+
+/** Node's own verdict when a certificate does not cover the address dialled. */
+const HOSTNAME_FAILURE_CODE = "ERR_TLS_CERT_ALTNAME_INVALID";
+
+/** What a failed redemption dial was actually about. */
+type DialFailure =
+  /** The peer is not the Core whose CA fingerprint was confirmed. */
+  | "pin"
+  /** The right CA, on an address its certificate does not cover. */
+  | "hostname"
+  /** The right CA, and a certificate that is expired or otherwise unusable. */
+  | "certificate"
+  /** Nothing about certificates: refused, reset, timed out. */
+  | "transport";
+
+/**
+ * Classify a failure on the pinned dial.
+ *
+ * The distinction this draws is the module's most consequential sentence, and
+ * it used to be drawn wrong: any code containing `CERT` was reported as a
+ * fingerprint mismatch, so `ERR_TLS_CERT_ALTNAME_INVALID` — a Core set up for
+ * one address and reached at another, which `core-cert-material.ts` makes an
+ * ordinary configuration rather than an exotic one — told the operator they
+ * were being intercepted. So did an expired server certificate. **A
+ * misconfigured Core must not be reported as an attack**: the person who reads
+ * that goes looking for an attacker instead of for their own SAN list.
+ *
+ * So the width and the accusation are now two separate decisions.
+ * {@link certificateFailure} still decides broadly whether the failure was
+ * about the certificate at all — being wrong there only costs the wrong noun.
+ * Whether it was the *pin* is decided by an enumerated set plus the tagged
+ * refusal, and anything certificate-shaped that is in neither is reported as an
+ * invalid certificate. Nothing is lost by that default: the exchange is refused
+ * either way and the code was never written to the socket — the only thing that
+ * changes is which sentence a person is shown.
+ */
+function classifyDialFailure(err: unknown): DialFailure {
+  const code = String((err as { code?: unknown } | null)?.code ?? "");
+  if (code === PIN_FAILURE_CODE) return "pin";
+  if (CHAIN_FAILURE_CODES.has(code)) return "pin";
+  if (code === HOSTNAME_FAILURE_CODE) return "hostname";
+  return certificateFailure(code) ? "certificate" : "transport";
+}
+
+/** The `code` a dial failure carried, for {@link CorePairingErrorDetail.tlsCode}. */
+function failureCode(err: unknown): string | undefined {
+  const code = (err as { code?: unknown } | null)?.code;
+  return typeof code === "string" && code.length > 0 ? code : undefined;
 }
 
 function safeRefusal(body: string): CorePairingRefusalBody {
