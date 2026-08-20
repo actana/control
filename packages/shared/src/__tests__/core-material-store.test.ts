@@ -8,6 +8,7 @@ import {
   loadMaterial,
   materialFilePath,
   mintFreshMaterial,
+  readMaterialFile,
   reissueServerCert,
   checkServerCertHost,
   type PersistedMaterial,
@@ -29,6 +30,7 @@ const sample: PersistedMaterial = {
   clientKey: "-----BEGIN PRIVATE KEY-----\nCLIENTKEY\n-----END PRIVATE KEY-----",
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
+  coreUuid: "6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b",
   serverHost: "10.0.0.5",
 };
 
@@ -180,6 +182,64 @@ describe("core material store", () => {
 
     it("prefers the recorded host over the fallback", () => {
       expect(checkServerCertHost(sample, "10.0.0.5", "stale.example")).toBe("covered");
+    });
+  });
+
+  // ─── The stable core UUID (#280, #282) ───────────────────────────────────
+  //
+  // A second identifier only earns its place if it outlives the first. This one
+  // is what an issued bearer's `aud` names, so what these tests actually pin is
+  // that nothing an operator does to a certificate can change the audience.
+
+  describe("the stable core UUID", () => {
+    it("mints one at install", async () => {
+      const minted = await mintFreshMaterial("10.0.0.5");
+      expect(minted.coreUuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
+    });
+
+    it("gives two Cores two different UUIDs", async () => {
+      const a = await mintFreshMaterial("10.0.0.5");
+      const b = await mintFreshMaterial("10.0.0.5");
+      expect(a.coreUuid).not.toBe(b.coreUuid);
+    });
+
+    it("survives reissueServerCert unchanged", async () => {
+      // The whole point of the field. A Core that moves re-signs its server
+      // cert from the CA it already holds; a `aud` that changed with it would
+      // be no more stable than the certificate it was supposed to outlive.
+      const minted = await mintFreshMaterial("10.0.0.5");
+      const reissued = await reissueServerCert(minted, "10.0.0.9");
+      expect(reissued.coreUuid).toBe(minted.coreUuid);
+      expect(reissued.serverCert).not.toBe(minted.serverCert);
+    });
+
+    it("mints one on load for material written before the field existed", () => {
+      // An install that predates #282 must not have to be redone to gain a
+      // UUID — and re-minting the material to get one would lock out every
+      // paired Panel.
+      const file = materialFilePath(dir);
+      const { coreUuid: _dropped, ...legacy } = sample;
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(file, JSON.stringify(legacy, null, 2));
+
+      const read = readMaterialFile(file);
+
+      expect(read?.mintedCoreUuid).toBe(true);
+      expect(read?.material.coreUuid).not.toBe("");
+      expect(read?.material.coreId).toBe(sample.coreId);
+      expect(read?.material.caKey).toBe(sample.caKey);
+    });
+
+    it("reports a stored UUID as stored, and returns it verbatim", () => {
+      persistMaterial(dir, sample);
+      const read = readMaterialFile(materialFilePath(dir));
+      expect(read?.mintedCoreUuid).toBe(false);
+      expect(read?.material.coreUuid).toBe(sample.coreUuid);
+    });
+
+    it("round-trips through persist and load", () => {
+      persistMaterial(dir, sample);
+      expect(loadMaterial(dir)?.coreUuid).toBe(sample.coreUuid);
     });
   });
 });

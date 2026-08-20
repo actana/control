@@ -36,10 +36,10 @@ import * as path from "node:path";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
-  loadMaterialFromFile,
   mintFreshMaterial,
   persistMaterialToFile,
   checkServerCertHost,
+  readMaterialFile,
   reissueServerCert,
   type PersistedMaterial,
 } from "@actana/shared/core-material-store";
@@ -144,14 +144,21 @@ export type LoadOrMintResult = {
  */
 export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadOrMintResult> {
   if (fs.existsSync(opts.materialFile)) {
-    const existing = loadMaterialFromFile(opts.materialFile);
-    if (!existing) {
+    const read = readMaterialFile(opts.materialFile);
+    if (!read) {
       throw new Error(
         `${opts.materialFile} exists but could not be read as Core material. ` +
           "Fix or remove it — removing it re-mints this Core's identity and " +
           "every paired Panel has to re-pair.",
       );
     }
+    const existing = read.material;
+    // Material written before #282 has no stable core UUID, and the load just
+    // minted one. Writing it back here is what makes it stable: unpersisted, a
+    // Core would announce a different `aud` on every boot, which is the one
+    // thing that identifier exists not to do. Nothing else about the identity
+    // changes, so no Panel notices and nothing has to re-pair.
+    if (read.mintedCoreUuid) persistMaterialToFile(opts.materialFile, existing);
     const check = checkServerCertHost(existing, opts.publicHost);
     if (check === "covered" || !opts.publicHostDeclared) {
       return { material: existing, blob: null, certAction: "unchanged" };
