@@ -39,6 +39,15 @@
 
 import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
+import {
+  CLIENT_CERT_REFUSAL_CODE,
+  CLIENT_CERT_REFUSAL_MESSAGE,
+  CLIENT_CERT_REFUSAL_STATUS,
+  clientCertGate,
+  coreLinkUpgradeGate,
+  rejectUnauthorizedAtHandshake,
+  type PreAuthPathPredicate,
+} from "./core-preauth-gate";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
@@ -290,6 +299,11 @@ export type PtyCoreLinkServerOptions = {
      * no HTTP at all, which is what it did before this ticket.
      */
     httpRoutes?: CoreHttpRoutes;
+    /**
+     * Which of those routes may be served to a client presenting no
+     * certificate (#282). See {@link PtyCoreLinkServerOptions.isPreAuthPath}.
+     */
+    isPreAuthPath?: PreAuthPathPredicate;
   }) => WebSocketServerLike;
   /**
    * The per-Core event log. When provided, PTY lifecycle events are
@@ -418,6 +432,20 @@ export type PtyCoreLinkServerOptions = {
    * {@link announceMultiConnection} does.
    */
   announceFiles?: boolean;
+  /**
+   * The Core's pre-auth surface: which paths this server may answer on a
+   * connection that presented no client certificate (#282).
+   *
+   * Absent — every Core before this ticket, and every Core that does not mount
+   * the pairing endpoint — the TLS handshake keeps demanding a verified client
+   * certificate and nothing here changes. Present, the handshake accepts a
+   * connection without one and `core-preauth-gate.ts` refuses it, per request
+   * and per upgrade, everywhere this predicate does not say yes.
+   *
+   * Wired by `core-pairing-wiring.ts`'s `isPairingPath`; see that module and
+   * `core-preauth-gate.ts` for why the relaxation is scoped this way.
+   */
+  isPreAuthPath?: PreAuthPathPredicate;
 };
 
 /**
@@ -619,7 +647,13 @@ export class PtyCoreLinkServer {
     // them: one https.Server answering a WebSocket upgrade and the `/v1/…`
     // routes, never two listeners (#165 F2, ADR 0028).
     this.announceFiles = opts.announceFiles ?? Boolean(opts.httpRoutes);
-    this.server = create({ port: opts.port, host, tls: opts.tls, httpRoutes: opts.httpRoutes });
+    this.server = create({
+      port: opts.port,
+      host,
+      tls: opts.tls,
+      httpRoutes: opts.httpRoutes,
+      ...(opts.isPreAuthPath ? { isPreAuthPath: opts.isPreAuthPath } : {}),
+    });
     this.eventLog = opts.eventLog ?? null;
     this.liveEventPollMs = opts.liveEventPollMs ?? DEFAULT_LIVE_EVENT_POLL_MS;
     this.authVerifier = opts.authVerifier ?? null;
@@ -2102,6 +2136,7 @@ function defaultCreateServer(opts: {
   host: string;
   tls?: TlsOptions;
   httpRoutes?: CoreHttpRoutes;
+  isPreAuthPath?: PreAuthPathPredicate;
 }): WebSocketServerLike {
   // Lazy require so this module stays importable in tests without `ws` at
   // import time.
@@ -2118,16 +2153,40 @@ function defaultCreateServer(opts: {
       key: opts.tls.serverKey,
       ca: opts.tls.caCert,
       requestCert: true,
-      rejectUnauthorized: true,
+      // True unless this Core mounts a pre-auth surface, in which case the
+      // handshake has to complete for a client that has no certificate *yet* —
+      // it is here to be issued one — and the same rule is enforced per request
+      // and per upgrade below instead. `core-preauth-gate.ts` is where that
+      // trade is written out; nothing about it is decided in this file.
+      rejectUnauthorized: rejectUnauthorizedAtHandshake(opts.isPreAuthPath),
       // Disable Nagle on accepted sockets. PTY output is a stream of small
       // writes; coalescing them against the Panel's delayed ACKs adds tens of
       // ms of jitter to every repaint. Set explicitly rather than relying on
       // the runtime's default.
       noDelay: true,
     });
-    mountHttpRoutes(tlsServer, opts.httpRoutes);
+    mountHttpRoutes(tlsServer, opts.httpRoutes, opts.isPreAuthPath);
     tlsServer.listen(opts.port, opts.host);
-    const wss = new WebSocketServer({ server: tlsServer });
+    // `noServer`, so the upgrade is ours to allow or refuse: the core link is
+    // never pre-auth, and a WebSocket that reached this Core without a client
+    // certificate would be a socket that can spawn a PTY without having said
+    // who it is. In the `{ server }` form `ws` owns the `upgrade` event and
+    // there is nowhere to put that check. The cost is that `ws` no longer
+    // forwards the HTTP server's `error` for us — a listen failure has to reach
+    // the caller — so both are forwarded explicitly below.
+    const wss = new WebSocketServer({ noServer: true });
+    tlsServer.on("upgrade", (req, socket, head) => {
+      if (coreLinkUpgradeGate(clientCertVerified(req)) === "refuse") {
+        socket.write(
+          `HTTP/1.1 ${CLIENT_CERT_REFUSAL_STATUS} Forbidden\r\n` +
+            "connection: close\r\n" +
+            "content-length: 0\r\n\r\n",
+        );
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    });
     return {
       close: (cb) => {
         wss.close(() => tlsServer.close(cb));
@@ -2139,6 +2198,7 @@ function defaultCreateServer(opts: {
           });
         } else if (event === "error") {
           wss.on("error", (err: Error) => (cb as (err: Error) => void)(err));
+          tlsServer.on("error", (err: Error) => (cb as (err: Error) => void)(err));
         }
       },
     };
@@ -2203,16 +2263,62 @@ function defaultCreateServer(opts: {
 function mountHttpRoutes(
   server: import("node:http").Server | import("node:https").Server,
   routes: CoreHttpRoutes | undefined,
+  isPreAuthPath?: PreAuthPathPredicate,
 ): void {
   if (!routes) return;
   server.on("request", (req, res) => {
+    if (!mayServe(req, isPreAuthPath)) return respondClientCertRequired(res);
     if (routes.handle(req, res)) return;
     respondNotFound(res);
   });
   server.on("checkContinue", (req, res) => {
+    if (!mayServe(req, isPreAuthPath)) return respondClientCertRequired(res);
     if (routes.handleContinue(req, res)) return;
     respondNotFound(res);
   });
+}
+
+/**
+ * Is this request allowed on the connection it arrived on (#282)?
+ *
+ * The gate is asked on every request, including on a plain `http` Core, where
+ * there are no certificates at all and {@link clientCertVerified} answers
+ * `true` — the loopback surface is as trusted as the rest of that Core, which
+ * is the trade ADR 0004 already made for every core-link frame.
+ */
+function mayServe(
+  req: import("node:http").IncomingMessage,
+  isPreAuthPath: PreAuthPathPredicate | undefined,
+): boolean {
+  const pathname = new URL(req.url ?? "/", "https://core.invalid").pathname;
+  const verdict = clientCertGate({
+    pathname,
+    authorized: clientCertVerified(req),
+    ...(isPreAuthPath ? { isPreAuthPath } : {}),
+  });
+  return verdict === "serve";
+}
+
+/**
+ * Did this connection present a client certificate this Core's CA vouches for?
+ *
+ * `authorized` is Node's own verdict from the handshake, and it is `undefined`
+ * on a plain TCP socket — a Core running `ws://` on loopback, where the
+ * question does not arise. `!== false` rather than `=== true` says exactly
+ * that: only a TLS socket that was *checked and failed* is unauthorized here.
+ */
+function clientCertVerified(req: import("node:http").IncomingMessage): boolean {
+  const socket = req.socket as unknown as { authorized?: boolean };
+  return socket.authorized !== false;
+}
+
+function respondClientCertRequired(res: import("node:http").ServerResponse): void {
+  const body = JSON.stringify({ code: CLIENT_CERT_REFUSAL_CODE, error: CLIENT_CERT_REFUSAL_MESSAGE });
+  res.writeHead(CLIENT_CERT_REFUSAL_STATUS, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(body)),
+  });
+  res.end(body);
 }
 
 function respondNotFound(res: import("node:http").ServerResponse): void {
