@@ -166,6 +166,16 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     deps.err(`actana pair new: ${flags.error}.`);
     return EXIT_USAGE;
   }
+  // `actana pair new laptop` used to mint an *unlabelled* code and exit 0. The
+  // operator then reads that code out believing it is called `laptop`, `pair
+  // ls` shows `(unnamed)`, and `pair revoke laptop` says nothing matches. An
+  // argument this verb has no use for is a mistake, exactly as an unknown flag
+  // is.
+  if (flags.positionals.length > 0) {
+    deps.err(`actana pair new: unexpected argument "${flags.positionals[0]}".`);
+    deps.err(`The name goes in a flag — \`actana pair new --label ${flags.positionals[0]}\`.`);
+    return EXIT_USAGE;
+  }
 
   const rawTtl = valueFlag(flags.values, "ttl");
   const ttl = rawTtl === undefined ? PAIRING_SESSION_TTL_MS : parseDuration(rawTtl);
@@ -183,6 +193,9 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     deps.err("Run `actana setup` — pairing needs a CA to sign against.");
     return EXIT_FAILURE;
   }
+
+  const store = openStore(deps, materialPath, "new");
+  if (!store) return EXIT_FAILURE;
 
   const now = deps.now();
   const label = valueFlag(flags.values, "label") ?? "";
@@ -203,7 +216,7 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     ttlMs: ttl,
   });
 
-  new PairingStore(pairingStorePath(materialPath)).createSession(session, now);
+  store.createSession(session, now);
 
   // stdout: the three facts a human reads out. stderr: everything explaining
   // them, so a `pair new` that is being piped or screen-scraped stays three
@@ -227,11 +240,18 @@ function pairLs(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): n
     deps.err(`actana pair ls: ${flags.error}.`);
     return EXIT_USAGE;
   }
+  if (flags.positionals.length > 0) {
+    deps.err(`actana pair ls: unexpected argument "${flags.positionals[0]}".`);
+    deps.err("`ls` takes no arguments — it lists everything.");
+    return EXIT_USAGE;
+  }
 
   const materialPath = ctx.materialPath();
   if (materialPath === null) return EXIT_FAILURE;
 
-  const store = new PairingStore(pairingStorePath(materialPath));
+  const store = openStore(deps, materialPath, "ls");
+  if (!store) return EXIT_FAILURE;
+
   const now = deps.now();
   const pending = store.listSessions().filter((session) => canRedeem(session, now).ok);
   const clients = store.listClients();
@@ -311,7 +331,13 @@ function pairRevoke(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext
     return EXIT_USAGE;
   }
   const [target, ...extra] = flags.positionals;
-  if (target === undefined) {
+  // Blank as well as absent, and that is not tidiness. `""` prefix-matches
+  // every serial and every session id, so `actana pair revoke "$SERIAL"` in a
+  // script where `SERIAL` is unset matches everything — and on a Core with
+  // exactly one client the ambiguity check below does not fire, so it revokes
+  // it and exits 0. That check is the whole defence against revoking the wrong
+  // machine, and this is the input that walks straight past it.
+  if (target === undefined || target.trim() === "") {
     deps.err("actana pair revoke: a target is required — `actana pair revoke <serial|session|label>`.");
     return EXIT_USAGE;
   }
@@ -323,7 +349,9 @@ function pairRevoke(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext
   const materialPath = ctx.materialPath();
   if (materialPath === null) return EXIT_FAILURE;
 
-  const store = new PairingStore(pairingStorePath(materialPath));
+  const store = openStore(deps, materialPath, "revoke");
+  if (!store) return EXIT_FAILURE;
+
   const now = deps.now();
   const audit = pairingAuditor(ctx.audit ?? ((record) => deps.err(`pairing.revoke ${formatJson(record)}`)));
 
@@ -405,6 +433,39 @@ function pairRevoke(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext
 }
 
 /**
+ * This Core's pairing store, or `null` after saying why it cannot be used.
+ *
+ * `readStrict` rather than `read`, and every verb here goes through it.
+ * `PairingStore.read` answers an unreadable file with an empty store, and each
+ * of these verbs would then do something wrong with that answer: `ls` would
+ * report a Core that has paired nobody, `revoke` would say nothing matches, and
+ * `new` would be worse than either — `createSession` reads the whole document,
+ * adds a session and writes it back, so minting against a corrupt file
+ * *replaces* it, taking the record of which clients are revoked with it.
+ *
+ * That last one is not hypothetical damage. The daemon fails closed on exactly
+ * this file (`core-pairing-revocation.ts`), so a Core with an unreadable
+ * `pairing.json` is refusing every client it ever paired — and a `pair new`
+ * that quietly rewrote the file would end that refusal by forgetting who was
+ * revoked, handing every revoked certificate its access back. Recovery has to
+ * be repairing the file, so these verbs decline to be the thing that destroys
+ * it.
+ */
+function openStore(deps: ActanaCliDeps, materialPath: string, verb: string): PairingStore | null {
+  const store = new PairingStore(pairingStorePath(materialPath));
+  try {
+    store.readStrict();
+  } catch (err) {
+    deps.err(`actana pair ${verb}: ${err instanceof Error ? err.message : String(err)}.`);
+    deps.err("While that file cannot be read, this Core refuses every client it has paired.");
+    deps.err("Repair the JSON or restore it from a backup. Do not delete it — it is the record");
+    deps.err("of which pairings were revoked, and deleting it would un-revoke every one of them.");
+    return null;
+  }
+  return store;
+}
+
+/**
  * Does this target name this client?
  *
  * A serial matches on a prefix — serials are 32 hex characters and nobody
@@ -445,10 +506,14 @@ function readFlags(argv: string[], spec: Record<string, FlagKind>): ReadFlags {
   const positionals: string[] = [];
   for (let i = 0; i < argv.length; i++) {
     const token = argv[i]!;
-    if (!token.startsWith("--")) {
+    if (!token.startsWith("-")) {
       positionals.push(token);
       continue;
     }
+    // A single-dash token is a flag this build does not know, never a value.
+    // Read as a positional, `actana pair new -l laptop` would have minted an
+    // unlabelled code from two arguments that both look like they were used.
+    if (!token.startsWith("--")) return { error: `unknown option: ${token}` };
     const eq = token.indexOf("=");
     const name = eq >= 0 ? token.slice(2, eq) : token.slice(2);
     const kind = spec[name];

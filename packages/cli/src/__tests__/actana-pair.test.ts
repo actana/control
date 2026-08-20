@@ -205,6 +205,38 @@ describe("actana pair new", () => {
     expect(run(["new", "--tll", "5m"])).toBe(2);
     expect(err.join("\n")).toMatch(/--tll/);
   });
+
+  it("refuses a bare positional instead of minting an unlabelled code", () => {
+    // `actana pair new laptop` used to exit 0 having minted a code called
+    // nothing. The operator reads it out believing it is `laptop`, `pair ls`
+    // shows `(unnamed)`, and `pair revoke laptop` says nothing matches.
+    expect(run(["new", "laptop"])).toBe(2);
+    expect(err.join("\n")).toMatch(/unexpected argument "laptop"/);
+    expect(err.join("\n")).toMatch(/--label laptop/);
+    expect(store().listSessions()).toEqual([]);
+  });
+
+  it("refuses a single-dash flag rather than reading it as a positional", () => {
+    expect(run(["new", "-l", "laptop"])).toBe(2);
+    expect(err.join("\n")).toMatch(/unknown option: -l/);
+    expect(store().listSessions()).toEqual([]);
+  });
+
+  it("refuses to mint against a pairing file it cannot read", () => {
+    // `createSession` reads the whole document, adds a session and writes it
+    // back — so minting on a corrupt file replaces it, taking the record of who
+    // was revoked with it. The daemon would then read a clean store and serve
+    // every revoked certificate again.
+    fs.writeFileSync(pairingStorePath(materialPath), '{"version":1,"clients":[{"certSerial"');
+    expect(run(["new", "--label", "laptop"])).toBe(1);
+    expect(err.join("\n")).toMatch(/not valid JSON/);
+    expect(err.join("\n")).toMatch(/refuses every client it has paired/);
+    expect(err.join("\n")).toMatch(/Do not delete it/);
+    // And the file it declined to rewrite is exactly as it was.
+    expect(fs.readFileSync(pairingStorePath(materialPath), "utf8")).toBe(
+      '{"version":1,"clients":[{"certSerial"',
+    );
+  });
 });
 
 // ─── pair ls ────────────────────────────────────────────────────────────────
@@ -270,6 +302,19 @@ describe("actana pair ls", () => {
     run(["new", "--label", "laptop", "--ttl", "30s"]);
     expect(run(["ls"], NOW + 31_000)).toBe(0);
     expect(out.join("\n")).toMatch(/Pending codes\n\s+None\./);
+  });
+
+  it("refuses a bare positional", () => {
+    expect(run(["ls", "laptop"])).toBe(2);
+    expect(err.join("\n")).toMatch(/unexpected argument "laptop"/);
+  });
+
+  it("says the file is unreadable rather than reporting a Core that paired nobody", () => {
+    store().recordClient(paired());
+    fs.writeFileSync(pairingStorePath(materialPath), "{ not json");
+    expect(run(["ls"])).toBe(1);
+    expect(err.join("\n")).toMatch(/not valid JSON/);
+    expect(out.join("\n")).not.toMatch(/None\./);
   });
 
   it("keeps a revoked client visible, and says it is revoked", () => {
@@ -343,6 +388,35 @@ describe("actana pair revoke", () => {
   it("needs a target", () => {
     expect(run(["revoke"])).toBe(2);
     expect(err.join("\n")).toMatch(/a target is required/);
+  });
+
+  it("refuses a blank target rather than matching everything", () => {
+    // `actana pair revoke "$SERIAL"` with `SERIAL` unset. `""` prefix-matches
+    // every serial and every session id, and on a Core with exactly one client
+    // the ambiguity check never fires — so it used to revoke it and exit 0.
+    store().recordClient(paired());
+    expect(run(["revoke", ""])).toBe(2);
+    expect(err.join("\n")).toMatch(/a target is required/);
+    expect(store().listClients()[0]!.revokedAt).toBe(null);
+
+    expect(run(["revoke", "   "])).toBe(2);
+    expect(store().listClients()[0]!.revokedAt).toBe(null);
+  });
+
+  it("refuses a blank target even when a pending code is the only thing here", () => {
+    run(["new", "--label", "laptop"]);
+    const sessionId = field("Session");
+    expect(run(["revoke", ""])).toBe(2);
+    expect(store().consume(sessionId, NOW).ok).toBe(true);
+  });
+
+  it("refuses to revoke against a pairing file it cannot read", () => {
+    store().recordClient(paired());
+    const corrupt = '{"version":1,"sessions":[],"clients":[{"certSerial":7}]}';
+    fs.writeFileSync(pairingStorePath(materialPath), corrupt);
+    expect(run(["revoke", "laptop"])).toBe(1);
+    expect(err.join("\n")).toMatch(/is not a client this build knows/);
+    expect(fs.readFileSync(pairingStorePath(materialPath), "utf8")).toBe(corrupt);
   });
 
   it("audit-logs the revocation through the same auditor the endpoint uses", () => {
