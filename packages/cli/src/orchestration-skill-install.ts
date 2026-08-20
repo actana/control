@@ -1,26 +1,31 @@
 // Writing the product's own agent skill into an operator's home (ADR 0031).
 //
 // **This file exists twice, byte for byte**, here and at
-// `packages/cli/src/orchestration-skill-install.ts`. It has to: the skill is
-// written to disk by two different programs on two different machines — the CLI
-// writes to the laptop it is installed on, the Core writes to the Core's
-// machine, which for a remote Core is somewhere else entirely — and those two
-// programs cannot share a module. `@actana/cli` may not import
-// `@actana/shared` (ADR 0025 D4, swept by `no-local-escape.test.ts`), and
-// `@actana/core` may import only two named modules from `@actana/sdk`
-// (ADR 0025 D2 as amended by #224). Neither list moves for a skill payload,
-// which is neither protocol nor client.
+// `packages/cli/src/orchestration-skill-install.ts`. The skill is written to
+// disk by two different programs on two different machines — the CLI writes to
+// the laptop it is installed on, the Core writes to the Core's machine, which
+// for a remote Core is somewhere else entirely — so the payload it writes is
+// embedded in two bundles either way.
+//
+// **The copy is a convenience now, not a workaround.** The rule that used to
+// force it — *`@actana/cli` may not import `@actana/shared`* (ADR 0025 D4) — was
+// superseded by ADR 0032 D5 (#288): the CLI may import this package, because it
+// is *inlined* into the published bundle rather than resolved from it, and an
+// inlined bundle offers no surface for a stranger to depend on. ADR 0031 D8
+// carries a note recording exactly that, and keeping this arrangement anyway:
+// one authored source plus a drift test is still the cheapest way to hold two
+// embedded payloads together. The other half of the old argument is unchanged —
+// `@actana/core` may import only two named modules from `@actana/sdk` (ADR 0025
+// D2 as amended by #224), and a skill payload is neither protocol nor client.
 //
 // So the copies are kept honest by a test rather than by memory. There is one
 // such test and it lives in one package:
 // `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` reads both
-// files and fails on the first differing byte. It reaches into the CLI by
-// relative path because the dependency rule runs one way — shared may read the
-// CLI's source as text, the CLI may not import shared at all — so there is no
-// second copy of this assertion in `packages/cli` and there cannot be one that
-// covers both. Edit one file, run the `shared` suite, copy it across. That is
-// the same arrangement ADR 0025 D3 permits and `registration-blob-file.ts`
-// already lives under.
+// files and fails on the first differing byte. One assertion in one place is the
+// point — a second copy in `packages/cli` would be another thing to keep in
+// step. Edit one file, run the `shared` suite, copy it across. That is the same
+// arrangement ADR 0025 D3 permits and `registration-blob-file.ts` already lives
+// under.
 //
 // Everything below is a filesystem write and nothing else. No process is
 // started (#129 D9), no vendor CLI is invoked, no network is touched — which is

@@ -1,0 +1,170 @@
+// `actana update` — fetch a release, prove it is the release, swap it in.
+//
+// The order of operations is the whole design. Everything that can fail —
+// resolving the version, downloading, verifying the checksum, unpacking,
+// checking the build is for this machine — happens in a temporary directory,
+// before a single byte of the running install is touched. Only once a verified,
+// well-formed tree exists does the swap happen, and the swap itself is one
+// symlink rename: `current` names the old version or the new one and never
+// anything in between.
+//
+// So a failed update is a no-op, not a broken Core. That is the property the
+// acceptance criterion "failed checksum aborts leaving the old install
+// untouched" names, and it is why nothing here writes outside `workDir` until
+// {@link verifyAndUnpack} has returned.
+//
+// Old versions are deliberately left in `versions/` rather than pruned: a
+// Panel↔Core version lock is recovered by `actana update --version <older>`,
+// and having the tree already on disk is the difference between that being a
+// re-download and a repointed symlink.
+//
+// What survives an update: the pairing material (untouched — a paired Panel
+// stays paired), the data dir, and every choice `actana setup` recorded. What
+// changes: the tree, `current`, and the version in `actana.json`. The service
+// definition is not rewritten because it already runs `current/bin/actana`.
+
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { writeActanaConfig, type ActanaConfig } from "./actana-config.ts";
+import { installDirFor, type ActanaLayout } from "./actana-layout.ts";
+import type { CoreManifest } from "./actana-manifest.ts";
+import {
+  releaseTargetFor,
+  resolveReleaseVersion,
+  type ReleaseChannel,
+  type ReleaseFetcher,
+} from "./actana-release.ts";
+import { fetchVerifiedRelease } from "./actana-fetch-release.ts";
+import type { ActanaServiceManager } from "./actana-service.ts";
+import type { ActanaSystem } from "./actana-system.ts";
+import { installTree, missingTreeFile, pointSymlink, realpathOrNull } from "./actana-tree.ts";
+import { claimLauncher } from "./actana-launcher.ts";
+
+/** How long an update waits for the restarted daemon's port before saying so. */
+const LISTEN_TIMEOUT_MS = 30_000;
+
+export type UpdateOptions = {
+  layout: ActanaLayout;
+  /** The `PATH` this run was given, for deciding who owns the launcher. */
+  env: NodeJS.ProcessEnv;
+  /** What `actana setup` recorded — the version being replaced, and the port. */
+  config: ActanaConfig;
+  /** This machine's init system, for the restart onto the new tree. */
+  service: ActanaServiceManager;
+  system: ActanaSystem;
+  fetcher: ReleaseFetcher;
+  channel: ReleaseChannel;
+  /** The version the operator pinned; the latest release when absent. */
+  requestedVersion?: string;
+  platform: NodeJS.Platform;
+  arch: string;
+  /** Progress for the operator. */
+  out: (line: string) => void;
+};
+
+export type UpdateResult = {
+  /** False when the machine was already running the version asked for. */
+  updated: boolean;
+  /** The version `current` now points at. */
+  version: string;
+  /** The version it pointed at before. */
+  previousVersion: string;
+  installDir: string;
+  /** Whether the daemon's port answered after the restart; null when nothing changed. */
+  listening: boolean | null;
+};
+
+/** Fetch, verify, and swap in a release, then restart the daemon onto it. */
+export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult> {
+  const { layout, config, service } = opts;
+
+  // An Intel Mac lands here, and it is the one machine with a real answer
+  // rather than a refusal — the on-device install is Apple silicon only, and
+  // the container image is the supported path. Same distinction `install.sh`
+  // draws at detection.
+  const target = releaseTargetFor(opts.platform, opts.arch);
+  if (!target) {
+    throw new Error(
+      opts.platform === "darwin" && opts.arch === "x64"
+        ? "there is no Core build for an Intel Mac — the on-device install is Apple silicon " +
+          "only. Run your Core from the container image instead."
+        : `there is no Core build for ${opts.platform}/${opts.arch} — Cores run on Linux ` +
+          "(WSL counts as Linux) at x64 and arm64, and on Apple-silicon macOS.",
+    );
+  }
+
+  const version = await resolveReleaseVersion(opts.fetcher, opts.channel, opts.requestedVersion);
+  const installDir = installDirFor(layout, version);
+
+  // "Already current" is about the tree, not just the recorded version: an
+  // install whose `versions/<v>` has been deleted reports that version and
+  // cannot start, and re-running update is the obvious repair.
+  if (version === config.version && missingTreeFile(installDir) === null) {
+    opts.out(`Already running Core ${version} — nothing to update.`);
+    return {
+      updated: false,
+      version,
+      previousVersion: config.version,
+      installDir: config.installDir,
+      listening: null,
+    };
+  }
+
+  const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-update-work-"));
+  let root: string;
+  let manifest: CoreManifest;
+  try {
+    ({ root, manifest } = await fetchVerifiedRelease(
+      {
+        ...opts,
+        noChange: "Nothing was changed; the Core is still running the version it was. Retry the update",
+      },
+      version,
+      target,
+      workDir,
+    ));
+
+    // Everything above this line was reversible. From here the install changes.
+    //
+    // Only a re-install of the *running* version has to stop the daemon first:
+    // its tree is about to be replaced under it, and a process executing a
+    // version that no longer exists on disk is a worse state than a short
+    // outage. A normal update lands beside the running tree and needs no stop —
+    // the restart below is the only interruption.
+    if (realpathOrNull(installDir) && realpathOrNull(installDir) === realpathOrNull(layout.currentLink)) {
+      service.stop();
+    }
+    installTree(root, installDir);
+  } finally {
+    fs.rmSync(workDir, { recursive: true, force: true });
+  }
+
+  // The atomic swap: after this rename the machine is running the new version.
+  pointSymlink(layout.currentLink, installDir);
+  // Same ownership rule setup follows (#288 D10): the launcher is repointed
+  // when it is this install's, and left alone when it is somebody else's.
+  // An update is if anything the more important of the two — an operator who
+  // updates a Core has not asked for their `PATH` to be rearranged.
+  const launcher = claimLauncher(layout, opts.env);
+  if (launcher.note) opts.out(launcher.note);
+  writeActanaConfig(layout.configDir, { ...config, version: manifest.version, installDir });
+
+  opts.out(`Restarting ${service.name} on ${manifest.version}…`);
+  const restarted = service.verb("restart");
+  if (restarted.status !== 0) {
+    throw new Error(
+      `${manifest.version} is installed but ${service.name} would not restart: ` +
+        `${(restarted.stderr || restarted.stdout).trim() || `exit ${restarted.status}`}. ` +
+        "Check `actana logs`.",
+    );
+  }
+
+  return {
+    updated: true,
+    version: manifest.version,
+    previousVersion: config.version,
+    installDir,
+    listening: await opts.system.waitForPort(config.port, LISTEN_TIMEOUT_MS),
+  };
+}

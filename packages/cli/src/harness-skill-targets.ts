@@ -1,7 +1,10 @@
 // Where a global agent skill goes, for each Harness this build knows.
 //
-// **A hand-declared copy of `HARNESS_SKILL_TARGETS` in `@actana/shared`**, which
-// this package may not import (ADR 0025 D4, swept by `no-local-escape.test.ts`).
+// **A hand-declared copy of `HARNESS_SKILL_TARGETS` in `@actana/shared`.** The
+// import rule that once forced the copy is superseded — ADR 0032 D5 (#288) lets
+// this package import that one, because it is inlined into the published bundle
+// rather than resolved from it — and ADR 0031 D8's note keeps the arrangement
+// anyway, with the installer it feeds.
 // The copy is not maintained by memory: `orchestration-skill-fanout.test.ts` in
 // `packages/shared` reads both and fails when they disagree, and fails again
 // when either is missing a member of `HARNESSES`. That is the arrangement

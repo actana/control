@@ -89,12 +89,13 @@ export const CORE_HOME = "/home/core";
  * Docker command that does the same job instead (ADR 0016 D16).
  *
  * A copy of `DOCKER_EQUIVALENT`'s keys in
- * `packages/core/src/actana-container.ts`, and deliberately a copy: the image
+ * `packages/cli/src/actana-container.ts`, and deliberately a copy: the image
  * smoke runs `actana <verb>` inside a container and cannot import the Core's
  * TypeScript. The list is held to the original by a test, so a verb added
  * there without being added here fails in CI rather than going unsmoked.
  */
 export const CORE_REFUSED_VERBS = Object.freeze([
+  "install",
   "setup",
   "start",
   "stop",

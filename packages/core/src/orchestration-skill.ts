@@ -14,7 +14,7 @@
 // seam: it supplies the home directory, reads the fan-out table off
 // `HARNESS_CLI_CONFIG`, and turns the result into log lines.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import { HARNESS_SKILL_TARGETS } from "@actana/shared/harness-cli-config";
 import {
   installOrchestrationSkill,

@@ -83,7 +83,7 @@ describe("nothing is reserved any more, and a typo is still a typo", () => {
     // retry on it.
     const typo = await cli().run(["sessoin"]);
     expect(typo.code).toBe(EXIT_USAGE);
-    expect(typo.err.join("\n")).toContain('unknown noun "sessoin"');
+    expect(typo.err.join("\n")).toContain('unknown command "sessoin"');
     expect(typo.err.join("\n")).not.toContain("not built yet");
   });
 
@@ -93,17 +93,27 @@ describe("nothing is reserved any more, and a typo is still a typo", () => {
     // that nobody documented.
     const run = await cli().run(["cp", "./a", "api:b"]);
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain('unknown noun "cp"');
+    expect(run.err.join("\n")).toContain('unknown command "cp"');
   });
 
-  it("keeps `daemon` a usage error — it is the wrong package, not a later train", async () => {
-    // Deliberately 2 and not 3. Nothing in this phase, or any phase, makes
-    // `actana daemon` work here: the Core's tarball is where that half of the
-    // command name lives (#129 D8). "Not built yet" would promise a train that
-    // is never coming.
-    const run = await cli().run(["daemon"]);
-    expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain("not this package's half");
+  it("no longer answers `daemon` with a wrong-package refusal (#288)", async () => {
+    // This assertion is inverted from what it was, and the inversion is the
+    // point. Until 0.4.0 `actana daemon` here printed *running a Core is not
+    // this package's half of `actana`* — a message that existed only because
+    // two programs shared one name, and whose whole job was to explain which
+    // of the two the operator had installed. There is one program now, so the
+    // message is deleted rather than reworded: the confusion it explained
+    // cannot occur.
+    //
+    // What `daemon` does instead is run the Core, which needs a Core on this
+    // machine — so what a fixture with no install can assert is that the
+    // refusal is gone and the verb is dispatched.
+    const run = await cli()
+      .run(["daemon"], { machine: { runDaemon: async () => {} } })
+      .catch((err: unknown) => ({ code: -1, out: [], err: [String(err)], all: String(err) }));
+    expect(run.err.join("\n")).not.toContain("not this package's half");
+    expect(run.err.join("\n")).not.toContain("unknown command");
+    expect(run.code).toBe(0);
   });
 });
 
@@ -141,6 +151,9 @@ describe("the root itself", () => {
   });
 
   it("prints the train's version", async () => {
+    // One version answer (#288). A CLI with no Core installed under it says
+    // one line; `actana-machine-cli.test.ts` covers the second line a machine
+    // with a Core on a different version gets.
     const run = await cli().run(["--version"]);
     expect(run.code).toBe(EXIT_OK);
     expect(run.out.join("\n")).toBe(`actana ${CLI_VERSION}`);

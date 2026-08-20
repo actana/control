@@ -419,8 +419,9 @@ export const HARNESS_AUTO_MODE_FLAGS = Object.fromEntries(
  * Derived rather than typed out for {@link HARNESS_AUTO_MODE_FLAGS}'s reason: a
  * new Harness cannot arrive with this table half-filled, because the table is
  * the config. The array carries the harness id on each row, so the installer —
- * which is a byte-identical twin of a file in a package that may not import
- * this one — takes plain data and knows nothing about `Harness`.
+ * which is a byte-identical twin of a file in the CLI, embedded in that bundle
+ * rather than imported from here (ADR 0031 D8) — takes plain data and knows
+ * nothing about `Harness`.
  *
  * The CLI's hand-declared copy is `packages/cli/src/harness-skill-targets.ts`,
  * and `orchestration-skill-fanout.test.ts` fails when the two disagree or when

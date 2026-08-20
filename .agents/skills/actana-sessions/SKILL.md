@@ -29,6 +29,12 @@ actana session ls --json       # Sessions already running there
 takes `--json`, and under `--json` only the JSON document reaches stdout —
 diagnostics go to stderr — so parsing is safe.
 
+**On a machine that is itself a Core, that Core is already registered and
+already selected.** Installing a Core wires it to the same machine's `actana`,
+so `core ls` lists it and it is what every command below means unless `--core`
+or `core use` says otherwise. Address it by default; do not ask the operator to
+pair the machine you are already standing on.
+
 **Pick the Harness from what `harness ls` reports, every time.** It lists each
 Harness with a `status` of `available` or `missing`; only `available` can run.
 There is no default and no preference order here on purpose — operators have
@@ -180,9 +186,12 @@ number that was asked for; if no number was asked for, ask.
 
 ## When something is wrong
 
-- **`no Core registered` / nothing from `core ls`** — the operator has not
-  paired this machine with a Core. That is theirs to do (`actana core add`);
-  say so rather than attempting it.
+- **`no Core registered` / nothing from `core ls`** — this machine has no Core
+  of its own and has not been pointed at a remote one. Pairing a remote Core is
+  the operator's to do (`actana core add`); say so rather than attempting it.
+  Note that a machine running a Core registers it automatically, so an empty
+  `core ls` means there is no local Core either — not that somebody forgot to
+  pair one.
 - **`harness ls` shows everything `missing`** — the Core has no coding agent
   installed. `actana harness install <id>` asks the Core to install one and
   waits for its verdict; it takes minutes and can legitimately fail.

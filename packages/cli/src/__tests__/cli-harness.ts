@@ -13,6 +13,7 @@ import { runActanaCli } from "../actana-cli.ts";
 import { registryPaths, type RegistryPaths } from "../blob-registry.ts";
 import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
 import { nonInteractiveTerminal, type CliTerminal, type TerminalSignal } from "../cli-terminal.ts";
+import { stubMachineHalf, type MachineHalf } from "./machine-fixture.ts";
 import type { OpenCoreShellFn } from "../core-shell-channel.ts";
 import { SessionWriteRefused } from "../session-attach-channel.ts";
 import type {
@@ -83,6 +84,8 @@ export type RunOptions = {
   sessions?: OpenSessionGateway;
   /** What `project cp` and `project files` get back, or a throw. */
   files?: OpenProjectFilesFn;
+  /** Overrides for the machine half — a suite about a client noun rarely needs one. */
+  machine?: Partial<MachineHalf>;
   /**
    * Called with each stdout line as it is written, rather than at the end.
    *
@@ -255,6 +258,11 @@ export function makeCliFixture(): CliFixture {
           (async () => {
             throw new Error("this test did not expect to attach to a session");
           }),
+        // `actana` is one program, so its deps bag has one shape (#288). A
+        // suite about the client nouns still has to fill the machine half; it
+        // gets fakes that refuse, so a noun that somehow reached `systemctl`
+        // or the release channel fails here rather than passing quietly.
+        ...stubMachineHalf(opts.machine),
       });
       return { code, out, err, all: [...out, ...err].join("\n") };
     },

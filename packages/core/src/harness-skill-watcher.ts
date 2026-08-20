@@ -21,7 +21,7 @@
 // ensure has already run — treating the first observation as an arrival would
 // mean every Core wrote the skill twice on every start.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core-link-frames";
 

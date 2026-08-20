@@ -22,7 +22,7 @@
 // on this Core's PATH is a failure the operator has to hear about, or the
 // Panel's row waits for an availability change that is never coming.
 
-import log from "./log";
+import log from "@actana/shared/log";
 import { HARNESS_CLI_CONFIG } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
@@ -31,8 +31,8 @@ import {
   resolveHarnessId,
   supportedHarnessIdsSentence,
   type HarnessInstallOutcome,
-} from "./actana-harnesses";
-import type { ActanaSystem } from "./actana-system";
+} from "@actana/shared/actana-harnesses";
+import type { ActanaSystem } from "@actana/shared/actana-system-port";
 
 /** What one install ended as. `ok` means the Harness is on this Core now. */
 export type HarnessInstallResult = { ok: true } | { ok: false; message: string };
