@@ -7,7 +7,9 @@
 // rolling renewal over the live socket).
 //
 // The token is a compact, URL-safe string: `base64url(payload).base64url(sig)`
-// where `payload` is JSON `{coreId, exp}` and `sig` is HMAC-SHA256 over the
+// where `payload` is JSON `{coreId, exp}` — since #282 optionally carrying the
+// standard `iss`, `sub`, `aud` and `jti` claims beside them, all four inert in
+// this train — and `sig` is HMAC-SHA256 over the
 // payload string, keyed by the shared secret provisioned at Core install
 // (carried in the registration blob). ~50 lines of app-layer code on top of
 // TLS; the mTLS handshake is the key-pair handshake, TLS 1.3 is the symmetric
@@ -28,7 +30,35 @@ export type BearerClaims = {
   coreId: string;
   /** Wall-clock ms expiry (JWT `exp`-style). Inclusive at the boundary. */
   exp: number;
+  /**
+   * Who issued this bearer — the Core itself, as `core:<coreId>` (#282).
+   *
+   * The four claims below are the standard set #280 fixes on, and **nothing in
+   * this feature train reads them**. They exist so that a later identity layer
+   * can gate a bearer on who and what it was issued for without a protocol
+   * change, which is only possible if the tokens minted today already carry the
+   * fields. Every one of them is optional, and that is load-bearing rather than
+   * lax: bearers signed before this existed are `{coreId, exp}` and must keep
+   * verifying, so absence is a valid token and not a malformed one.
+   */
+  iss?: string;
+  /** The subject the bearer speaks for — the paired client's identity (#282). */
+  sub?: string;
+  /**
+   * The audience: this Core's **stable UUID**, not its `coreId` (#280).
+   *
+   * `coreId` is `core_<hex>` and is re-minted whenever an operator regenerates
+   * the material; the UUID in `core-material-store.ts` survives that and a
+   * `reissueServerCert`, which is what makes it the thing a token can name and
+   * a Panel can pin.
+   */
+  aud?: string;
+  /** Unique token id, so a later layer can revoke or de-duplicate one (#280). */
+  jti?: string;
 };
+
+/** The optional standard claims, in the order {@link signBearer} writes them. */
+const STANDARD_CLAIMS = ["iss", "sub", "aud", "jti"] as const;
 
 /**
  * HMAC port. The default implementation uses `node:crypto.createHmac`, which is
@@ -66,7 +96,8 @@ function safeEqual(a: Buffer, b: Buffer): boolean {
 }
 
 /**
- * Sign `{coreId, exp}` with `secret` and return the URL-safe bearer string
+ * Sign `{coreId, exp}` — plus whichever of `iss`, `sub`, `aud` and `jti` the
+ * caller supplied — with `secret`, and return the URL-safe bearer string
  * `base64url(payload).base64url(sig)`.
  */
 export function signBearer(
@@ -74,13 +105,31 @@ export function signBearer(
   secret: BearerSecret,
   hmac: HmacPort = defaultHmac,
 ): string {
-  const payloadJson = JSON.stringify({ coreId: claims.coreId, exp: claims.exp });
+  // Absent claims are left out of the payload rather than written as `null`.
+  // A Core that mints no `aud` produces byte-for-byte the token it produced
+  // before this file knew what an `aud` was, so nothing downstream can start
+  // depending on the shape having grown.
+  const payload: Record<string, string | number> = { coreId: claims.coreId, exp: claims.exp };
+  for (const claim of STANDARD_CLAIMS) {
+    const value = claims[claim];
+    if (value !== undefined) payload[claim] = value;
+  }
+  const payloadJson = JSON.stringify(payload);
   const payloadB64 = encodeBase64Url(Buffer.from(payloadJson, "utf8"));
   const sig = hmac.sha256(secret, payloadB64);
   return `${payloadB64}${SEP}${encodeBase64Url(sig)}`;
 }
 
-export type BearerVerifyOk = { ok: true; coreId: string; exp: number };
+export type BearerVerifyOk = {
+  ok: true;
+  coreId: string;
+  exp: number;
+  /** The standard claims, when the Core that signed this one minted them (#282). */
+  iss?: string;
+  sub?: string;
+  aud?: string;
+  jti?: string;
+};
 export type BearerVerifyErr =
   | { ok: false; reason: "malformed" }
   | { ok: false; reason: "bad-signature" }
@@ -131,9 +180,31 @@ export function verifyBearer(
   if (typeof obj.coreId !== "string" || typeof obj.exp !== "number" || !Number.isFinite(obj.exp)) {
     return { ok: false, reason: "malformed" };
   }
+  const claims = readStandardClaims(parsed as Record<string, unknown>);
+  // A claim that is present but not a string is a token this Core did not mint
+  // and cannot reason about. It signed, so it is not `bad-signature`; it is
+  // simply not the shape — which is what `malformed` already means here.
+  if (claims === null) return { ok: false, reason: "malformed" };
   const now = opts.now ?? Date.now();
   if (obj.exp < now) return { ok: false, reason: "expired" };
-  return { ok: true, coreId: obj.coreId, exp: obj.exp };
+  return { ok: true, coreId: obj.coreId, exp: obj.exp, ...claims };
+}
+
+/**
+ * Pull the optional standard claims out of a decoded payload, or `null` when
+ * one of them is present with a non-string value.
+ *
+ * Absence is never a failure — see {@link BearerClaims}.
+ */
+function readStandardClaims(payload: Record<string, unknown>): Partial<BearerClaims> | null {
+  const claims: Partial<BearerClaims> = {};
+  for (const claim of STANDARD_CLAIMS) {
+    const value = payload[claim];
+    if (value === undefined) continue;
+    if (typeof value !== "string") return null;
+    claims[claim] = value;
+  }
+  return claims;
 }
 
 /**
@@ -161,5 +232,7 @@ export function decodeBearer(token: string): BearerClaims | null {
   if (typeof obj.coreId !== "string" || typeof obj.exp !== "number" || !Number.isFinite(obj.exp)) {
     return null;
   }
-  return { coreId: obj.coreId, exp: obj.exp };
+  const claims = readStandardClaims(parsed as Record<string, unknown>);
+  if (claims === null) return null;
+  return { coreId: obj.coreId, exp: obj.exp, ...claims };
 }

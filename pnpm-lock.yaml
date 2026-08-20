@@ -383,6 +383,9 @@ importers:
       '@actana/sdk':
         specifier: workspace:*
         version: link:../sdk
+      '@peculiar/x509':
+        specifier: ^1.14.2
+        version: 1.14.3
       selfsigned:
         specifier: ^5.5.0
         version: 5.5.0

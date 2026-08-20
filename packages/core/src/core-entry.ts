@@ -59,6 +59,9 @@ import {
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
+import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "./core-pairing-wiring";
+import type { CorePairingRoutesOptions } from "./core-pairing-routes";
+import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
 import { configureProjectRootsDb } from "./project-roots";
@@ -340,6 +343,12 @@ async function startCore(): Promise<void> {
   // Panel client cert, and gates every frame behind a verified bearer. In
   // loopback mode (default) the server stays plain `ws://` and trusted — no
   // auth, no TLS, exactly as before.
+  // Set by the remote-mode block below when this Core has persisted material —
+  // the only shape of Core that can pair (#282). Left null otherwise, which is
+  // what keeps a loopback Core's TLS posture and route list exactly as they
+  // were.
+  let pairing: CorePairingRoutesOptions | null = null;
+
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
     host,
@@ -444,6 +453,25 @@ async function startCore(): Promise<void> {
       }
       const { material, blob, certAction } = resolved;
       const secret: BearerSecret = material.bearerSecret;
+
+      // The pre-auth pairing endpoint (#282). Mounted only on this path, and
+      // that is the whole of the condition: pairing needs a CA key to sign
+      // with, a stable UUID to put in the bearers it issues, and a file the
+      // operator's `actana pair new` and this daemon can both see — all three
+      // are the persisted material, and a daemon started without one has
+      // nowhere for a session to live.
+      pairing = {
+        material: {
+          caCert: material.caCert,
+          caKey: material.caKey,
+          bearerSecret: material.bearerSecret,
+          coreId: material.coreId,
+          coreUuid: material.coreUuid,
+        },
+        sessions: new PairingStore(pairingStorePath(materialFile)),
+        endpoint: `wss://${publicHost}:${port}`,
+        bearerDays,
+      };
 
       serverOpts.tls = {
         caCert: material.caCert,
@@ -576,8 +604,23 @@ async function startCore(): Promise<void> {
     },
     ...(serverOpts.authVerifier ? { authVerifier: serverOpts.authVerifier } : {}),
   });
-  serverOpts.httpRoutes = fileRoutes;
+  // The pairing family goes first, and `composeCoreHttpRoutes` documents why:
+  // the file routes claim the whole `/v1/` prefix and would answer
+  // `/v1/pair/redeem` with the 401 a client without a bearer gets — which is
+  // every client that is here to be given one.
+  //
+  // `announceFiles` stays a statement about the *file* routes. The composed
+  // surface is no longer only them, so the default ("yes if any HTTP surface is
+  // mounted") would now be announcing a capability on the strength of a
+  // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
+  serverOpts.httpRoutes = pairing
+    ? composeCoreHttpRoutes(buildCorePairingRoutes(pairing), fileRoutes)
+    : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
+  // What the mTLS gate is allowed to serve without a client certificate. Absent
+  // unless pairing is mounted, and absent means the handshake keeps refusing
+  // uncertificated clients outright — see `core-preauth-gate.ts`.
+  if (pairing) serverOpts.isPreAuthPath = isPairingPath;
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 

@@ -29,6 +29,7 @@ const sample: PersistedMaterial = {
   clientKey: "-----BEGIN PRIVATE KEY-----\nCLIENTKEY\n-----END PRIVATE KEY-----",
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
+  coreUuid: "1f2e3d4c-5b6a-4798-8a9b-0c1d2e3f4a5b",
   serverHost: "core.example.test",
 };
 
