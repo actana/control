@@ -12,6 +12,7 @@
 // stub that said yes; every stub here that a suite has not deliberately
 // replaced throws with the name of what it was asked to do.
 
+import { spawnSync } from "node:child_process";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
 import type { ReleaseFetcher } from "../actana-release.ts";
@@ -82,6 +83,24 @@ export function fakeSystem(
     },
   };
   return system;
+}
+
+/**
+ * A `realRun` that runs `tar` for real and fakes everything else.
+ *
+ * `tar` is faked by nobody: the install and update paths unpack a tarball built
+ * moments ago by `release-fixture.ts`, so the archive handling under test is
+ * the archive handling that runs on an operator's machine. `systemctl` is a
+ * different matter — there is none on a test runner.
+ */
+export function realTar(command: string, args: string[]): CommandResult {
+  if (command !== "tar") return null as unknown as CommandResult;
+  const result = spawnSync(command, args, { encoding: "utf8" });
+  return {
+    status: result.status ?? 127,
+    stdout: result.stdout ?? "",
+    stderr: result.stderr ?? "",
+  };
 }
 
 /** A release fetcher no test asked for. Reaching it is the failure. */

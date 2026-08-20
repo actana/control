@@ -1,5 +1,4 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -10,7 +9,7 @@ import { refusedContainerVerbs } from "../actana-container.ts";
 import { installDirFor, resolveActanaLayout } from "../actana-layout.ts";
 import { releaseAssetName, releaseChannel } from "../actana-release.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
-import { fakeSystem as makeFakeSystem, stubClientHalf } from "./machine-fixture.ts";
+import { fakeSystem as makeFakeSystem, realTar, stubClientHalf } from "./machine-fixture.ts";
 import { materialFilePath } from "@actana/shared/core-material-store";
 import { fixtureFetcher, writeRelease } from "./release-fixture.ts";
 
@@ -31,17 +30,7 @@ const RUNNING_UNIT = [
 ].join("\n");
 
 function fakeSystem(overrides: Record<string, CommandResult> = {}) {
-  // `tar` is faked by nobody: `actana update` unpacks a real tarball built
-  // moments ago, so the archive handling under test is the real one.
-  return makeFakeSystem(overrides, (command, args) => {
-    if (command !== "tar") return null as unknown as CommandResult;
-    const result = spawnSync(command, args, { encoding: "utf8" });
-    return {
-      status: result.status ?? 127,
-      stdout: result.stdout ?? "",
-      stderr: result.stderr ?? "",
-    };
-  });
+  return makeFakeSystem(overrides, realTar);
 }
 
 /** The stand-in release channel `actana update` is pointed at with --base-url. */
