@@ -496,6 +496,45 @@ describe("the defences, over the real transport", () => {
   }, 30_000);
 });
 
+describe("a session the operator cancelled (#283)", () => {
+  it("is refused, and the refusal is indistinguishable from every other one", async () => {
+    const rig = await startCore();
+    const { sessionId, code } = rig.openSession();
+    const { csrPem } = await generateClientCsr("laptop");
+
+    rig.store.cancelSession(sessionId, rig.clock.now);
+
+    const res = await redeem(rig, { sessionId, code, csr: csrPem });
+    expect(res.status).toBe(403);
+    expect(rig.store.listClients()).toEqual([]);
+  }, 30_000);
+
+  it("says `revoked` in the audit log, not `wrong-code`", async () => {
+    // The operator reading this log has to be able to see that their own
+    // cancellation is what stopped the redemption. Caught in the state ladder
+    // rather than left to `consume()` is what makes that true.
+    const rig = await startCore();
+    const { sessionId, code } = rig.openSession();
+    const { csrPem } = await generateClientCsr("laptop");
+    rig.store.cancelSession(sessionId, rig.clock.now);
+
+    await redeem(rig, { sessionId, code, csr: csrPem });
+
+    expect(rig.audit.at(-1)).toMatchObject({ outcome: "refused", reason: "revoked", sessionId });
+  }, 30_000);
+
+  it("does not spend an attempt the session will never get to use", async () => {
+    const rig = await startCore();
+    const { sessionId } = rig.openSession();
+    const { csrPem } = await generateClientCsr("laptop");
+    rig.store.cancelSession(sessionId, rig.clock.now);
+
+    await redeem(rig, { sessionId, code: "AAAA-BBBB", csr: csrPem });
+
+    expect(rig.store.getSession(sessionId)?.attempts).toBe(0);
+  }, 30_000);
+});
+
 describe("the pre-auth hole is exactly one route wide", () => {
   it("answers the pairing route to a client with no certificate", async () => {
     const rig = await startCore();

@@ -16,10 +16,12 @@
 // return a key because there is nothing here that has one (#280).
 //
 // **Validation runs in a fixed order** — rate limit, then session lookup and
-// binding, then TTL, then single use, then the attempt cap, and only then the
-// code itself. The order is the design's, not a convenience: every check before
-// the code is one an attacker cannot influence with a guess, so a guess reaches
-// the comparison only after the cheap defences have had their say.
+// binding, then revocation, TTL, single use and the attempt cap, and only then
+// the code itself. The order is the design's, not a convenience: every check
+// before the code is one an attacker cannot influence with a guess, so a guess
+// reaches the comparison only after the cheap defences have had their say — and
+// a guess against a session the operator has already cancelled never costs that
+// session one of its five attempts.
 //
 // **Every refusal is the same refusal.** Expired, consumed, unknown, dead,
 // wrong code — one status, one body, no header that differs. A response that
@@ -39,7 +41,13 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { CsrRejectedError, assertSignableCsr, signClientCsr } from "@actana/shared/core-cert-material";
 import { signBearer } from "@actana/shared/core-link-bearer";
 import { normalisePairingCode } from "@actana/shared/pairing-code";
-import { isConsumed, isDead, isExpired, type PairingSession } from "@actana/shared/pairing-session";
+import {
+  isConsumed,
+  isDead,
+  isExpired,
+  isRevoked,
+  type PairingSession,
+} from "@actana/shared/pairing-session";
 import {
   derivePairingCodeKey,
   hashPairingCode,
@@ -248,17 +256,27 @@ export function createCorePairingRequestHandler(opts: CorePairingRoutesOptions):
       return sendRefusal(res, PAIRING_REFUSED);
     }
 
-    // ── 3. TTL · 4. Single use · 5. Attempt cap ──
+    // ── 3. Revoked · 4. TTL · 5. Single use · 6. Attempt cap ──
     // Written out in the order #282 fixes rather than delegated to `canRedeem`,
     // whose internal order is its own. Nothing observable turns on which of the
-    // three answers first — all three produce the one refusal — but the order a
+    // four answers first — all four produce the one refusal — but the order a
     // reader has to check against the spec is the order it is written in.
+    //
+    // Revocation joins the ladder rather than being left to `consume()` below
+    // (#283). It is caught at the same layer as the rest for two reasons that
+    // are about the operator, not the attacker: a guess against a cancelled
+    // session should not cost that session an attempt it will never use, and
+    // the audit line should say `revoked` rather than `wrong-code` — otherwise
+    // the log does not show that the operator's own cancellation is what
+    // stopped the redemption. `consume()` still refuses it, and must: this is
+    // the reported reason, not the enforcement.
     const at = now();
+    if (isRevoked(session)) return refuse(res, audit, session, peer, "revoked");
     if (isExpired(session, at)) return refuse(res, audit, session, peer, "expired");
     if (isConsumed(session)) return refuse(res, audit, session, peer, "already-consumed");
     if (isDead(session)) return refuse(res, audit, session, peer, "attempts-exhausted");
 
-    // ── 6. The code ──
+    // ── 7. The code ──
     // A code that is not in the alphabet at all is a wrong code, not a protocol
     // error: it is a guess that cannot be right, and treating it as a 400 would
     // hand an attacker a free probe that never costs them an attempt.
