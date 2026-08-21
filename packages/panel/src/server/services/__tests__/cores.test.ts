@@ -2,7 +2,6 @@ import { beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-cores-test-"));
 process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
@@ -11,21 +10,27 @@ const { getPanelDb } = await import("../../panel-db");
 const { createOperator, operatorExists } = await import("../operator");
 const {
   CoreRegistryError,
-  RegistrationBlobError,
   advanceCoreCursor,
   getCore,
   getCoreSecrets,
   listCores,
-  registerCoreFromRegistrationBlob,
+  registerCoreFromCredential,
   removeCore,
   renameCore,
 } = await import("../cores");
 
+type Credential = Parameters<typeof registerCoreFromCredential>[0];
+
 const BEARER = "bearer.eyJjb3JlSWQiOiJjb3JlXzEifQ.sig";
 const CLIENT_KEY = "-----BEGIN PRIVATE KEY-----\nMIIsecret\n-----END PRIVATE KEY-----";
 
-function registrationBlob(overrides: Partial<Parameters<typeof encodeRegistrationBlob>[0]> = {}): string {
-  return encodeRegistrationBlob({
+/**
+ * The credential a pairing hands back — the one door into the registry now that
+ * the blob paste is gone (#287). Built as an object rather than encoded and
+ * decoded, because there is no longer a codec between the two.
+ */
+function credential(overrides: Partial<Credential> = {}): Credential {
+  return {
     endpoint: "wss://10.0.0.5:7777",
     label: "prod-vm-1",
     caCert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
@@ -33,7 +38,7 @@ function registrationBlob(overrides: Partial<Parameters<typeof encodeRegistratio
     clientKey: CLIENT_KEY,
     bearer: BEARER,
     ...overrides,
-  });
+  };
 }
 
 function coreRowCount(): number {
@@ -52,8 +57,8 @@ beforeEach(() => {
 });
 
 describe("Core registry", () => {
-  it("registers a Core from a pairing token", () => {
-    const core = registerCoreFromRegistrationBlob(registrationBlob());
+  it("registers a Core from the credential a pairing produced", () => {
+    const core = registerCoreFromCredential(credential());
     expect(core.endpoint).toBe("wss://10.0.0.5:7777");
     expect(core.label).toBe("prod-vm-1");
     expect(core.lastEventId).toBe(0);
@@ -62,7 +67,7 @@ describe("Core registry", () => {
   });
 
   it("keeps the secrets available to the dialer", () => {
-    const core = registerCoreFromRegistrationBlob(registrationBlob());
+    const core = registerCoreFromCredential(credential());
     expect(getCoreSecrets(core.id)).toEqual({
       caCert: "-----BEGIN CERTIFICATE-----\nca\n-----END CERTIFICATE-----",
       clientCert: "-----BEGIN CERTIFICATE-----\nclient\n-----END CERTIFICATE-----",
@@ -72,7 +77,7 @@ describe("Core registry", () => {
   });
 
   it("stores no readable secret material in the database", () => {
-    registerCoreFromRegistrationBlob(registrationBlob());
+    registerCoreFromCredential(credential());
     const rows = getPanelDb().prepare("SELECT sealed FROM core_secrets").all() as {
       sealed: Uint8Array;
     }[];
@@ -86,62 +91,34 @@ describe("Core registry", () => {
     expect(dump.includes(Buffer.from(BEARER))).toBe(false);
   });
 
-  it("falls back to the endpoint host when the token carries no label", () => {
-    const core = registerCoreFromRegistrationBlob(registrationBlob({ label: "" }));
+  it("falls back to the endpoint host when the credential carries no label", () => {
+    const core = registerCoreFromCredential(credential({ label: "" }));
     expect(core.label).toBe("10.0.0.5");
   });
 
-  it("rejects a malformed pairing token and writes nothing", () => {
-    expect(() => registerCoreFromRegistrationBlob("not-a-token")).toThrow(RegistrationBlobError);
-    expect(coreRowCount()).toBe(0);
-    expect(secretRowCount()).toBe(0);
-  });
-
-  it("rejects a token that decodes but is missing its secret half", () => {
-    const truncated = Buffer.from(
-      JSON.stringify({ endpoint: "wss://10.0.0.5:7777", label: "x" }),
-      "utf8",
-    ).toString("base64");
-    expect(() => registerCoreFromRegistrationBlob(truncated)).toThrow(RegistrationBlobError);
-    expect(coreRowCount()).toBe(0);
-  });
-
-  it("rejects a blob whose secret fields are blank", () => {
-    // Well-formed enough to decode, useless to dial with. Registering it would
-    // take the endpoint and leave a Core that can never connect and can't be
-    // re-paired without a manual removal.
+  it("rejects a credential whose secret fields are blank", () => {
+    // Shaped right, useless to dial with. Registering one would take the
+    // endpoint and leave a Core that can never connect and can't be paired
+    // again without a manual removal.
     for (const blank of ["caCert", "clientCert", "clientKey", "bearer"] as const) {
-      expect(() => registerCoreFromRegistrationBlob(registrationBlob({ [blank]: "" }))).toThrow(
-        RegistrationBlobError,
+      expect(() => registerCoreFromCredential(credential({ [blank]: "" }))).toThrow(
+        CoreRegistryError,
       );
     }
     expect(coreRowCount()).toBe(0);
     expect(secretRowCount()).toBe(0);
   });
 
-  it("rejects a plaintext ws:// endpoint — mTLS is not optional", () => {
-    const downgraded = Buffer.from(
-      JSON.stringify({
-        endpoint: "ws://10.0.0.5:7777",
-        label: "x",
-        caCert: "ca",
-        clientCert: "cert",
-        clientKey: "key",
-        bearer: BEARER,
-      }),
-      "utf8",
-    ).toString("base64");
-    expect(() => registerCoreFromRegistrationBlob(downgraded)).toThrow(RegistrationBlobError);
+  it("rejects a credential that names no endpoint", () => {
+    expect(() => registerCoreFromCredential(credential({ endpoint: "  " }))).toThrow(
+      CoreRegistryError,
+    );
     expect(coreRowCount()).toBe(0);
   });
 
-  // `CoreRegistryError`, not `RegistrationBlobError`: an endpoint already spoken
-  // for is the registry's invariant rather than the codec's, and pairing (#286)
-  // hits it through a door that never sees a blob. Same refusal, same 400, same
-  // nothing written — only the name says whose rule it is.
   it("refuses a second registration of the same endpoint, leaving the first intact", () => {
-    const first = registerCoreFromRegistrationBlob(registrationBlob());
-    expect(() => registerCoreFromRegistrationBlob(registrationBlob({ label: "duplicate" }))).toThrow(
+    const first = registerCoreFromCredential(credential());
+    expect(() => registerCoreFromCredential(credential({ label: "duplicate" }))).toThrow(
       CoreRegistryError,
     );
     expect(listCores().map((c) => c.id)).toEqual([first.id]);
@@ -151,20 +128,20 @@ describe("Core registry", () => {
 
   describe("the Panel-owned cursor", () => {
     it("advances and is read back off the registry row", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       advanceCoreCursor(core.id, 42);
       expect(getCore(core.id)?.lastEventId).toBe(42);
     });
 
     it("never rewinds", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       advanceCoreCursor(core.id, 42);
       advanceCoreCursor(core.id, 7);
       expect(getCore(core.id)?.lastEventId).toBe(42);
     });
 
     it("ignores nonsense rather than corrupting the replay position", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       advanceCoreCursor(core.id, 42);
       advanceCoreCursor(core.id, Number.NaN);
       advanceCoreCursor(core.id, -1);
@@ -174,7 +151,7 @@ describe("Core registry", () => {
 
   describe("renaming", () => {
     it("takes the operator's alias and bumps updated_at", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       // Age the row first: registration and the rename can land in the same
       // millisecond, and a bump asserted against the wall clock would flake.
       getPanelDb().prepare("UPDATE cores SET updated_at = 0 WHERE id = ?").run(core.id);
@@ -185,19 +162,19 @@ describe("Core registry", () => {
     });
 
     it("trims and caps at 120 characters, like registration does", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       expect(renameCore(core.id, "  spaced out  ")?.label).toBe("spaced out");
       expect(renameCore(core.id, "x".repeat(200))?.label).toBe("x".repeat(120));
     });
 
     it("falls back to the endpoint host rather than leaving a blank row", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       expect(renameCore(core.id, "   ")?.label).toBe("10.0.0.5");
       expect(renameCore(core.id, "")?.label).toBe("10.0.0.5");
     });
 
     it("touches nothing but the label — endpoint, cursor and secrets are left alone", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       advanceCoreCursor(core.id, 17);
       renameCore(core.id, "build-box");
       const after = getCore(core.id);
@@ -215,7 +192,7 @@ describe("Core registry", () => {
 
   describe("removal", () => {
     it("drops the registry row, the secrets, and the cursor", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       advanceCoreCursor(core.id, 99);
       expect(removeCore(core.id)).toBe(true);
       expect(getCore(core.id)).toBeNull();
@@ -225,9 +202,9 @@ describe("Core registry", () => {
     });
 
     it("frees the endpoint for a fresh pairing", () => {
-      const core = registerCoreFromRegistrationBlob(registrationBlob());
+      const core = registerCoreFromCredential(credential());
       removeCore(core.id);
-      const again = registerCoreFromRegistrationBlob(registrationBlob());
+      const again = registerCoreFromCredential(credential());
       expect(again.id).not.toBe(core.id);
       expect(again.lastEventId).toBe(0);
     });

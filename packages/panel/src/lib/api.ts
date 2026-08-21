@@ -156,17 +156,6 @@ export const api = {
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**
-   * Register a Core. The blob is the whole base64 line `core install`
-   * printed ("pairing token" in what the UI says); the service decodes it,
-   * seals the credentials, and starts dialing. A bad paste comes back as an
-   * ApiError whose message is what to show the operator.
-   */
-  addCore: (registrationBlob: string) =>
-    req<{ core: CoreWithDial }>("/api/cores", {
-      method: "POST",
-      body: JSON.stringify({ registrationBlob }),
-    }),
-  /**
    * Rename a Core. The alias is the Panel's own name for the machine, so this
    * writes to the registry and stops there — nothing reaches the Core. The
    * response carries the normalized label (trimmed, 120 chars, endpoint host

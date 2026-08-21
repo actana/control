@@ -1,12 +1,7 @@
 import { z } from "zod";
 import { json, noContent, notFound, parseJsonBody } from "./_helpers";
 import { HTTP_BAD_REQUEST, HTTP_CREATED } from "~/shared/http-status";
-import {
-  listCores,
-  registerCoreFromRegistrationBlob,
-  removeCore,
-  renameCore,
-} from "../services/cores";
+import { listCores, removeCore, renameCore } from "../services/cores";
 import {
   CorePairingRefusedError,
   inspectCoreForPairing,
@@ -16,9 +11,12 @@ import { coreLinkManager } from "../services/core-link-manager";
 import type { Core, CoreWithDial } from "~/shared/cores";
 
 /**
- * The Cores surface: list the fleet with live link state, add a Core — by
- * pairing code, or from the registration blob #287 removes — rename one,
- * forget one.
+ * The Cores surface: list the fleet with live link state, add a Core by pairing
+ * code, rename one, forget one.
+ *
+ * **There is no `POST /api/cores`.** A Core enters this Panel by redeeming a
+ * short pairing code and no other way; the route that took a pasted
+ * registration blob went with the hand-carry it belonged to (#287, #280).
  *
  * Note what is absent — there is no endpoint that returns a Core's secrets, and
  * none that takes them piecemeal. The credentials enter once, inside a
@@ -28,7 +26,6 @@ import type { Core, CoreWithDial } from "~/shared/cores";
  * direction of the exchange.
  */
 
-const addBody = z.object({ registrationBlob: z.string() });
 const renameBody = z.object({ label: z.string() });
 const inspectBody = z.object({ address: z.string() });
 const pairBody = z.object({
@@ -45,23 +42,6 @@ function withDial(core: Core): CoreWithDial {
 
 export function list(): Response {
   return json({ cores: listCores().map(withDial) });
-}
-
-/**
- * Register a Core. The dial starts here rather than waiting for a poll, so the
- * row the operator just added is already reaching for its Core by the time
- * the response paints.
- *
- * A bad blob throws {@link RegistrationBlobError}, which the router turns into
- * a 400 carrying its message — and nothing was written, so there is no
- * half-added Core left behind.
- */
-export async function add(request: Request): Promise<Response> {
-  const body = await parseJsonBody(request, addBody);
-  if (!body.ok) return body.response;
-  const core = registerCoreFromRegistrationBlob(body.data.registrationBlob);
-  coreLinkManager().dial(core.id);
-  return json({ core: withDial(core) }, { status: HTTP_CREATED });
 }
 
 /**

@@ -210,7 +210,6 @@ async function dispatch(
   // Cores — the registry the Panel service dials from.
   if (pathname === "/api/cores") {
     if (method === "GET") return coresController.list();
-    if (method === "POST") return coresController.add(request);
   }
   // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
   // is never read as a Core id. Both are Node-side work the browser cannot do:
@@ -241,8 +240,8 @@ async function dispatch(
   if (m) {
     const id = decode(m[1]);
     // PATCH is the alias, and only the alias: a Core's endpoint and credentials
-    // are what the registration blob said they were, and re-pairing is the only
-    // way to change them.
+    // are what its pairing produced, and pairing again is the only way to
+    // change them.
     if (method === "PATCH") return coresController.rename(id, request);
     if (method === "DELETE") return coresController.remove(id);
   }
