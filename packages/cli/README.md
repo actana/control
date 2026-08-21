@@ -78,27 +78,38 @@ Every noun and verb in the tree is built. A name this CLI does not know is a
 typo and says so; a name reserved for a later train would exit with a distinct
 code and a ticket number instead, which is how the two are told apart.
 
-## The skill this CLI installs
+## The skills this CLI installs
 
-`actana` ships one agent skill of its own — `actana-sessions`, which teaches a
-coding agent how to drive Cores and Sessions with these verbs — and writes it
-into the global skills directory of every Harness already on this machine:
-`~/.claude/skills/actana-sessions/` for Claude Code, `~/.agents/skills/actana-sessions/`
-for Codex, Cursor CLI and OpenCode.
+`actana` ships two agent skills of its own and writes both into the global
+skills directory of every Harness already on this machine — `~/.claude/skills/`
+for Claude Code, `~/.agents/skills/` for Codex, Cursor CLI and OpenCode:
 
-The skill is a **folder**, not a single file: `SKILL.md` beside `await.sh`, a
-watcher that waits on several Sessions' report files at once. Run it with
+- **`actana-sessions/`** teaches a coding agent how to drive Cores and Sessions
+  with these verbs, and how to collect what a Session it started produced.
+- **`actana-subagent/`** is the other half of the same round: it teaches a
+  Session that was woken *as somebody else's sub-agent* how to hand its work
+  back — a report file, ending in a marker line, at the path its prompt named —
+  and forbids it starting Sessions of its own.
+
+The two are deliberately asymmetric. `actana-sessions` is invoke-only: it sits
+installed and waits to be asked. `actana-subagent` is eager and triggers on a
+prompt declaring the Session a sub-agent, because that role is one a Session is
+told it already has, by the prompt that woke it.
+
+A skill is a **folder**, not a single file. `actana-sessions/` is `SKILL.md`
+beside `await.sh`, a watcher that waits on several Sessions' report files at
+once; `actana-subagent/` is `SKILL.md` alone. Run the watcher with
 `bash await.sh` — it is installed without an executable bit, so installing a
 skill stays a filesystem write and nothing else.
 
 ```sh
-actana harness skills          # write or repair it, and say what happened
-actana harness skills --json   # the same, per Harness, machine-readable
+actana harness skills          # write or repair them, and say what happened
+actana harness skills --json   # the same, per Harness per skill, machine-readable
 ```
 
 It also happens quietly in front of every other `actana` command, because this
-package deliberately has no npm install hook — so the skill is there one command
-after `npm i -g @actana/cli` rather than at install time. Both paths write only
+package deliberately has no npm install hook — so the skills are there one
+command after `npm i -g @actana/cli` rather than at install time. Both paths write only
 into a directory the Harness itself created: a Harness you do not use here costs
 you no directory.
 
@@ -106,7 +117,9 @@ A copy is replaced when it differs from the shipped one, edits included. To keep
 your own version, delete the `x-actana-managed: true` line from it — from
 `SKILL.md`'s frontmatter, or from the comment on the second line of `await.sh` —
 and that file is then yours and is never written again. The hatch is **per
-file**: keeping your `await.sh` does not stop `SKILL.md` from updating.
+file**, and it works the same way in either folder: keeping your `await.sh` does
+not stop `actana-sessions/SKILL.md` from updating, and keeping your own
+`actana-subagent/SKILL.md` does not stop the other skill from updating at all.
 `harness skills` reports the folder as `skipped` and names the file, so you can
 see why it stopped updating.
 
