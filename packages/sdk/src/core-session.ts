@@ -674,11 +674,14 @@ export class CoreSession {
       // until it has been served; it is set exactly when one does, because a
       // hold nobody redeems strands the Session's output on the Core.
       await client.ptySubscribe(ptyId, { catchUp: replay });
+      // Recorded the moment it is owed, not once the rest succeeded: a replay
+      // that throws still leaves this connection subscribed, and the `dispose`
+      // in the catch below is the only thing that will ever give it back.
+      session.subscribedToPty = true;
       if (replay) {
         const { data } = await client.replay(ptyId);
         terminal.write(data);
       }
-      session.subscribedToPty = true;
       await session.seedStatus();
     } catch (err) {
       session.dispose();
