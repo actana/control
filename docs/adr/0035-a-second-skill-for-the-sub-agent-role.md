@@ -3,7 +3,7 @@
 > **Status: PROPOSED.** Not accepted. **This record depends on
 > [ADR 0031](0031-the-product-ships-one-skill.md)**, which is itself `PROPOSED`.
 > 0031's consequences say *"a second skill is not authorised by this record; it
-> argues against D2 on its own"* (`0031-…:371-375`), and this is that argument,
+> argues against D2 on its own"* (`0031-…:396-400`), and this is that argument,
 > made for one named skill so it can be accepted or rejected on its own terms.
 > **The repository owner ratifies or rejects both at the beta gate**, and the
 > order matters: if 0031 is rejected, this record is moot in its shipped form and
@@ -42,7 +42,7 @@ objection D2 answers has to be answered again, on the record, for
 ## The argument this record expects to win on, stated so it can be rejected
 
 **D2's cost is discoverability by Sessions that never touch a Core.** 0031
-accepts it openly for `actana-sessions` (`0031-…:144-148`): *"a Session that
+accepts it openly for `actana-sessions` (`0031-…:169-173`): *"a Session that
 never touches a Core can still read this skill's description, and that is a real
 cost paid for the mandatory-ness D3 chooses."* That cost is paid because the
 skill's `description` is **subject-matter** — Cores, Sessions, orchestration —
@@ -65,7 +65,7 @@ in a way a reviewer can point at.
 
 **The honest form of the counter-question, put here so it is answered rather
 than assumed** — the same discipline 0031 D2 applies to itself at
-`0031-…:130-142`. `actana-subagent` does carry one instruction that is *about
+`0031-…:155-167`. `actana-subagent` does carry one instruction that is *about
 the operator's work* rather than about the product's CLI: the prohibition on
 `actana session start` (D3 below). Three things are true of it — it is a "do not
 do this" rather than a "do this", it is confined to one CLI the operator
@@ -107,14 +107,18 @@ native sub-agent facility** — that is a different mechanism with different
 bounds, it provisions nothing on a Core, and it stays available. The prohibition
 is about `actana session start` and nothing else. It is stated harness-neutrally
 in the skill text, because
-`packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` asserts the
-shipped text names none of the four harness ids and that assertion extends to the
-new file rather than exempting it.
+`packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` asserts that the
+shipped text names none of the four harness ids — and **that assertion is to be
+extended** to cover the new file rather than exempting it. Today it reads exactly
+one path, `.agents/skills/${ORCHESTRATION_SKILL_NAME}/SKILL.md`, and
+`ORCHESTRATION_SKILL_NAME` is the hardcoded `"actana-sessions"`
+(`packages/shared/src/orchestration-skill-payload.ts:10`), so a second skill folder
+is invisible to it until #303 generalises it.
 
 **D4 — The home-directory footprint grows, and this record is where that is
 decided.** 0031's consequences bound it at *"exactly two directories deep in two
 roots: `~/.claude/skills/actana-sessions/` and `~/.agents/skills/actana-sessions/`
-… Anything larger than that is a new decision"* (`0031-…:391-394`). Two things
+… Anything larger than that is a new decision"* (`0031-…:416-419`). Two things
 here are larger:
 
 - **A second folder in each root** — `~/.claude/skills/actana-subagent/` and
@@ -132,9 +136,10 @@ D8 authors one `SKILL.md` under `.agents/skills/` and has a generator embed it a
 a string constant in both packages, because the daemon and the CLI write the
 skill from two different processes on two different machines. That stays exactly
 as it is. What changes is arity: **one authored source per skill**, each embedded
-into the same two bundles, all of them held honest by the one drift test at
-`packages/shared/src/__tests__/orchestration-skill-fanout.test.ts`. No new
-mechanism, no second generator, no copy in `dist/`.
+into the same two bundles, and all of them **to be** held honest by the one drift
+test at `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` — which
+covers one skill today and is #303's to widen, not a second test to stand beside
+it. No new mechanism, no second generator, no copy in `dist/`.
 
 ## Consequences
 
