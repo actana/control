@@ -13,29 +13,30 @@ not on your screen, and it cannot see anything you print.
 
 **This skill is eager, and the one installed beside it — the orchestrator skill
 — is invoke-only. The asymmetry is deliberate; do not tidy it into symmetry.**
-The
-orchestrator role is a thing an operator asks for, so that skill waits to be
-asked. The sub-agent role is a thing a Session is *told it already is*, by the
-prompt that woke it, and there is no operator in that loop to ask. One
+The orchestrator role is a thing an operator asks for, so that skill waits to
+be asked. The sub-agent role is a thing a Session is *told it already is*, by
+the prompt that woke it, and there is no operator in that loop to ask. One
 `description` field cannot hold both requirements, which is why these are two
 files.
 
 **This skill covers two things and nothing else: the report file, and the
 prohibition below.** It says nothing about how to do the work — not the
 planning, not the implementation, not the testing, not what to put in the
-report.
-That silence is deliberate and it is a bound, not an omission. An orchestrating
-Session routinely passes other skills in the same prompt, and this one is eager
-while those were invoked: advice from here would fight them and would win.
-Whatever the prompt asked for, and whatever skill it named, is what governs the
-work. This governs only how the answer gets back.
+report. That silence is deliberate and it is a bound, not an omission. An
+orchestrating Session routinely passes other skills in the same prompt, and
+this one is eager while those were invoked: advice from here would fight them
+and would win. Whatever the prompt asked for, and whatever skill it named, is
+what governs the work. This governs only how the answer gets back.
 
 ## The report file
 
-- **The path is `.actana/reports/<id>-r<turn>.md`, relative to this Session's own
-  working directory — its `cwd` on the machine it is running on.** Create
-  `.actana/reports` if it is not there. It is dot-prefixed because it is machine state rather than project
-  content.
+- **The path is `.actana/reports/<id>-r<turn>.md`, relative to this Session's
+  own working directory — its `cwd` on the machine it is running on.** Create
+  `.actana/reports` if it is not there. It is dot-prefixed because it is machine
+  state rather than project content. Write it exactly where the prompt said,
+  and do not helpfully move it somewhere tidier: the Session that woke you
+  converts that path into one it can read back, and a file at a different place
+  is a file nobody collects.
 - **The orchestrating Session mints the name, and it states the full relative
   path in its prompt, every turn.** Use exactly the path you were given.
   **Never invent one, never shorten one, and never reuse a path from an earlier

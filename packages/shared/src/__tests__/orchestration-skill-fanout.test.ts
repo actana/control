@@ -414,22 +414,29 @@ describe("the report file contract, stated in both skills (#303 §6)", () => {
 describe("the orchestrator collects a file, not a screen (#303 §1 and §7)", () => {
   const skill = skillText(SESSIONS);
 
-  it("keeps no trace of the screen mechanism it replaced", () => {
+  it("keeps no trace of the screen mechanism it replaced, in either skill", () => {
     // Deleted, not reworded. The mechanism failed for reasons no rule could
     // patch — interleaved frames, a bounded ring, a scrollback a harness may
     // discard outright — so a document that still described it would be
     // teaching a model to try it.
-    for (const gone of [
-      "<%ACT_REPORT%>",
-      "<%/ACT_REPORT%>",
-      "sentinel",
-      "last complete pair",
-      "collect first, kill second",
-    ]) {
-      expect(
-        skill.toLowerCase().includes(gone.toLowerCase()),
-        `the orchestrator skill still mentions "${gone}"`,
-      ).toBe(false);
+    //
+    // Both markdown bodies, and deliberately not `everyShippedFile()`:
+    // `await.sh` says "sentinel" throughout and means `ACT-REPORT-END` by it,
+    // which is the replacement rather than the thing replaced.
+    for (const skillName of ORCHESTRATION_SKILL_NAMES) {
+      const body = skillText(skillName).toLowerCase();
+      for (const gone of [
+        "<%ACT_REPORT%>",
+        "<%/ACT_REPORT%>",
+        "sentinel",
+        "last complete pair",
+        "collect first, kill second",
+      ]) {
+        expect(
+          body.includes(gone.toLowerCase()),
+          `${skillName} still mentions "${gone}"`,
+        ).toBe(false);
+      }
     }
   });
 
@@ -476,6 +483,42 @@ describe("the orchestrator collects a file, not a screen (#303 §1 and §7)", ()
   it("ships the watcher and tells the reader how to run it", () => {
     expect(skill).toContain("await.sh");
     expect(skill).toContain("bash await.sh");
+  });
+
+  it("reconciles the two anchors the report path is read against (#309 review)", () => {
+    // The defect this asserts against: the contract anchors the report path at
+    // the Session's own `cwd`, and everything that reads it back — `project cp`
+    // and every lane handed to `await.sh` — anchors at the **Project root**.
+    // They coincide only when the Session runs at the Project root, and this
+    // same document teaches `--cwd` as a directory inside the Project.
+    //
+    // A lane started with `--cwd apps/api` then has its report written exactly
+    // where the contract said, collected from somewhere else, and the round
+    // runs to its timeout reporting nothing — the sub-agent having done
+    // everything right, and nothing having failed loudly enough to say so.
+    // That is the failure class this whole contract exists to end, so the
+    // conversion has to be in the document rather than in a reader's head.
+    expect(skill.toLowerCase()).toContain("project-relative");
+    expect(
+      skill.includes("`--cwd` unset"),
+      "the skill never names the case where the two anchors coincide",
+    ).toBe(true);
+    expect(
+      skill.includes("apps/api/.actana/reports/"),
+      "the skill never shows the converted path for a lane that has a --cwd",
+    ).toBe(true);
+
+    // And the conversion is stated where the reader meets each anchor: in the
+    // contract, and again at the lane syntax `await.sh` takes.
+    const contract = skill.slice(
+      skill.indexOf("## Asking a Session for a report file"),
+      skill.indexOf("## Collecting a report"),
+    );
+    expect(contract, "the contract section is gone or was renamed").not.toBe("");
+    expect(contract).toContain("Project root");
+    const watcher = skill.slice(skill.indexOf("## `await.sh`"));
+    expect(watcher, "the await.sh section is gone or was renamed").not.toBe("");
+    expect(watcher).toContain("--cwd");
   });
 });
 

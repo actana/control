@@ -175,7 +175,28 @@ The contract, in full. Every clause is load-bearing:
 - **The path is `.actana/reports/<id>-r<turn>.md`, relative to the Session's own
   `cwd` on its own Core.** Dot-prefixed so it reads as machine state rather than
   as project content, and so it falls under the ignore habits operators already
-  have for dot-directories.
+  have for dot-directories. The Session's `cwd` is the anchor because it is the
+  only directory a prompt can name in a sentence: a Session knows where it is
+  standing and nothing else.
+- **Everything that reads the file back is anchored at the Project root
+  instead, and closing that gap is yours.** `actana project cp` takes
+  `<project>:<path>` and resolves `<path>` against the **Project**, and so does
+  every lane you hand `await.sh`. The two anchors are the same path only when
+  the Session runs at the Project root, which is exactly what `--cwd` changes.
+  So:
+
+  - **Leave `--cwd` unset on any lane you intend to collect** and the question
+    does not arise — the prompt's path and the lane's path are one string.
+  - **If a lane needs a `--cwd`, convert once, when you mint the name.** The
+    collection path is that directory followed by the path you put in the
+    prompt. `--cwd apps/api` with `.actana/reports/api-r1.md` in the prompt is
+    the lane `api:apps/api/.actana/reports/api-r1.md`, and
+    `core exec --cwd apps/api -- tail -n 3 -- .actana/reports/api-r1.md`.
+    Keep both forms beside the lane and never derive one from the other twice.
+
+  Getting this wrong is silent. The sub-agent writes the file it was told to
+  write, the collector looks somewhere else, and every lane in the round runs to
+  its timeout reporting nothing — with no error anywhere, because nothing failed.
 - **You mint the filename; the sub-agent never invents one.** You are the only
   party that knows every lane in the round, so you are the only party that can
   promise no two lanes collide. **Never reuse a name** — not across lanes, not
@@ -216,8 +237,10 @@ skill you ask it to use travels there too.
 no rendering, stdout as it was written.
 
 ```bash
-actana core exec --cwd <dir-on-the-core> -- tail -n 3 -- .actana/reports/api-r1.md
-actana core exec --core <name> --cwd <dir> -- cat .actana/reports/api-r1.md
+# --cwd is the Session's own cwd — the directory the prompt's path was relative
+# to. Omit it only when the Session ran at the Project root.
+actana core exec --cwd <the-Session's-cwd> -- tail -n 3 -- .actana/reports/api-r1.md
+actana core exec --core <name> --cwd <the-Session's-cwd> -- cat .actana/reports/api-r1.md
 ```
 
 The order below is the whole of it:
@@ -232,11 +255,15 @@ The order below is the whole of it:
    and a search that matched it would settle a Session that has not finished.
    Read the tail and compare its last non-blank line.
 3. **Save the content locally, first.** `actana project cp <project>:<path>
-   ./<local-path>` copies it down; give every lane its own local filename,
-   because "three Sessions, each on a different thing" naturally gives every
-   sub-agent the same basename inside its own Project.
-4. **Only then, after roughly 20 seconds, delete the remote file** —
-   `actana core exec --cwd <dir> -- rm -f .actana/reports/api-r1.md`. **The
+   ./<local-path>` copies it down. **`<path>` here is Project-relative** — this
+   is the step where the anchor changes, so it is the lane's path and not the
+   prompt's, and they differ by the Session's `cwd` whenever one was given. Give
+   every lane its own local filename, because "three Sessions, each on a
+   different thing" naturally gives every sub-agent the same basename inside its
+   own Project.
+4. **Only then, after roughly 20 seconds, delete the remote file** — with
+   `core exec`, cwd-anchored again, like steps 1 and 2:
+   `actana core exec --cwd <cwd> -- rm -f .actana/reports/api-r1.md`. **The
    delay is not tidiness.** It exists so that a Session still finishing cannot
    have its file deleted out from under it and write it again, which would
    present as a second, partial report at a path you have already retired.
@@ -254,16 +281,25 @@ the last line rather than searching the file, treats a dropped link as "not
 yet", and saves each report to local disk before it touches the Session.
 
 ```bash
+# Both lanes below ran with no --cwd, so the lane path and the prompt's path are
+# the same string. A lane started with `--cwd apps/api` would read
+#   7f3a=api:apps/api/.actana/reports/api-r1.md
 bash await.sh --out ./reports --timeout 1800 \
   7f3a=api:.actana/reports/api-r1.md \
   9c1b=web:.actana/reports/web-r1.md
 ```
 
 A lane is `<session-id>=<project>:<report-path>`, and the report path is the
-**Project's**, exactly as `actana project cp` takes it. `--core <name>` passes
-through to every call it makes; `--kill` stops each Session once its report is
-safely on this disk. It exits 0 when every lane's report was saved and 1 when
-any lane's was not, and prints one line per lane saying which.
+**Project's**, exactly as `actana project cp` takes it — not the Session's, and
+that is the one conversion this whole procedure asks of you. `await.sh` resolves
+it against the Project root the Core reports, so a lane carrying a bare
+cwd-relative path from a Session started with `--cwd` waits for a file nobody is
+writing, and says so only when the round's budget runs out.
+
+`--core <name>` passes through to every call it makes; `--kill` stops each
+Session once its report is safely on this disk. It exits 0 when every lane's
+report was saved and 1 when any lane's was not, and prints one line per lane
+saying which.
 
 It is installed without an executable bit, on purpose — run it as `bash
 await.sh`. Read it before you extend it: the reasons for each of those four
@@ -287,7 +323,9 @@ The shape that works:
 3. **Mint one report path per lane before you start anything, and put it in that
    lane's prompt** along with the sub-agent declaration. The paths are what make
    the round collectable, and minting them up front is what makes them unique:
-   one `<id>` per lane, `-r1` for the first turn of each.
+   one `<id>` per lane, `-r1` for the first turn of each. Mint the lane's
+   **collection** path in the same breath — the same string when the lane has no
+   `--cwd`, and that directory in front of it when it has one.
 
    ```bash
    actana session start "$project" "$prompt_a" --harness "$h_a" --json > a.json
@@ -299,9 +337,10 @@ The shape that works:
    Core has the Session running, so three starts in a row are three Sessions
    working side by side. Take each `taskId` out of its object.
 4. **Wait for the files, not for the Sessions.** One loop over every
-   outstanding lane — `bash await.sh` is that loop — polling each report path
-   until its last line is `ACT-REPORT-END`, saving each one down as it lands.
-   A lane that has not finished costs a lane that has nothing.
+   outstanding lane — `bash await.sh` is that loop — polling each lane's
+   **Project-relative** report path until its last line is `ACT-REPORT-END`,
+   saving each one down as it lands. A lane that has not finished costs a lane
+   that has nothing.
 5. **`logs`, `events tail` and `session ls` are for watching progress, and that
    is all they are for.** A row's `live` field says whether the harness process
    is still up and its transcript still exists; a terminal status is not
