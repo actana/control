@@ -219,6 +219,11 @@ async function coreWithSessions(
     ptyCore: pty.core,
     queryPort,
     mutationPort,
+    // The live-event push, at test speed. A wait resolves when the status event
+    // reaches the client, and the Core's default poll is 500 ms — which is fine
+    // for a person and is most of the wall clock of a suite that waits twice,
+    // on a machine already running five other packages' tests.
+    liveEventPollMs: 25,
     ...(opts.eventLog === false ? {} : { eventLog }),
   });
   fixture = makeCliFixture();
@@ -362,7 +367,10 @@ describe("actana session, against a Core in this process", () => {
     // The transcript rides along, rendered, read while the Session is alive —
     // and it is the Core's replay ring, so it holds what came before the wait.
     expect(String(payload.screen)).toContain("done: 3 files changed");
-  }, 30_000);
+    // A minute, not thirty seconds: this one dials a real Core, runs a CLI
+    // command end to end and waits on a live event push, and `pnpm test` runs it
+    // beside five other packages' suites.
+  }, 60_000);
 
   it("waits as a verb, and refuses to wait on a Session with no harness running", async () => {
     const { eventLog, endTurn } = await coreWithSessions();
@@ -387,7 +395,7 @@ describe("actana session, against a Core in this process", () => {
     const stopped = await fixture!.run(["session", "wait", "task_done", "--json"], withCore());
     expect(stopped.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(stopped.out.join("\n")).error).toContain("no harness running");
-  }, 30_000);
+  }, 60_000);
 
   it("refuses to wait after a delivery the Core did not stamp, rather than answering with the turn before", async () => {
     // The Core here is on this protocol version and still cannot stamp: no
@@ -430,7 +438,7 @@ describe("actana session, against a Core in this process", () => {
       // Read off the archived row rather than lost with it.
       harness: "claude-code",
     });
-  }, 30_000);
+  }, 60_000);
 
   it("says a stopped Session has no transcript rather than printing an empty one", async () => {
     await coreWithSessions();
