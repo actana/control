@@ -208,6 +208,31 @@ describe("adding a Core by short code (#286)", () => {
       expect(state()).toBe("unchecked");
       expect(screen.queryByLabelText("Pairing code")).toBeNull();
     });
+
+    it("drops the code with it — a code minted for one machine is a secret to every other", async () => {
+      await openPage();
+      await verify();
+      type("Session", "ps_machine_a");
+      type("Pairing code", "k7rp-9x4t");
+
+      // Point the box at a second machine and verify *its* fingerprint. The
+      // form comes back; what must not come back with it is machine A's
+      // still-redeemable code, one click from being posted to machine B.
+      await act(async () => {
+        type("Core address", "machine-b.internal:7777");
+      });
+      await click("Check fingerprint");
+      await act(async () => {
+        type("CA fingerprint from `actana pair new`", PRESENTED);
+      });
+      expect(state()).toBe("verified");
+
+      expect((screen.getByLabelText("Pairing code") as HTMLInputElement).value).toBe("");
+      expect((screen.getByLabelText("Session") as HTMLInputElement).value).toBe("");
+      expect(document.body.textContent).not.toContain("k7rp-9x4t");
+      expect(document.body.textContent).not.toContain("ps_machine_a");
+      expect(screen.getByRole("button", { name: "Pair Core" })).toHaveProperty("disabled", true);
+    });
   });
 
   describe("sending the code", () => {
@@ -274,6 +299,7 @@ describe("adding a Core by short code (#286)", () => {
       "unreachable",
       "no-ca-presented",
       "fingerprint-unconfirmed",
+      "fingerprint-mismatch",
       "hostname-mismatch",
       "certificate-invalid",
       "refused",
@@ -328,6 +354,81 @@ describe("adding a Core by short code (#286)", () => {
       expect((screen.getByLabelText("Pairing code") as HTMLInputElement).value).toBe("");
       expect(document.body.textContent).not.toContain("k7rp-9x4t");
       expect(document.body.textContent).not.toContain("K7RP-9X4T");
+    });
+
+    it("shows a mismatch the server found even though the local check passed", async () => {
+      await openPage();
+      await verify();
+      type("Session", "ps_abc");
+      type("Pairing code", "k7rp-9x4t");
+      // The certificate on the pairing dial was not the one the inspect dial
+      // saw — a rotation between the two calls, an address that moved, or the
+      // SDK's post-redemption check. The panel is still green, because the
+      // panel only knows what `inspect` reported, so the refusal box is the
+      // only thing that can say so. Silence here would be the worst outcome in
+      // the whole flow.
+      api.pairCore.mockRejectedValueOnce(
+        refusalOf("fingerprint-mismatch", {
+          expectedFingerprint: PRESENTED,
+          presentedFingerprint: OTHER,
+        }),
+      );
+
+      await click("Pair Core");
+
+      expect(state()).toBe("verified");
+      const box = document.querySelector('[data-pairing-failure="fingerprint-mismatch"]');
+      expect(box).toBeTruthy();
+      expect(box!.textContent).toContain("treat the code as spent");
+    });
+
+    it("still hides the box when the panel beside it is already showing the mismatch", async () => {
+      await openPage();
+      await checkFingerprint();
+      await act(async () => {
+        type("CA fingerprint from `actana pair new`", OTHER);
+      });
+
+      // Suppression is keyed on the local comparison, not on the failure code:
+      // this is the one case where the panel says it better, with both
+      // fingerprints side by side.
+      expect(state()).toBe("mismatch");
+      expect(document.querySelector("[data-pairing-failure]")).toBeNull();
+    });
+
+    it("keeps the server's own sentence for a refusal that is not a pairing one", async () => {
+      await openPage();
+      await verify();
+      type("Session", "ps_abc");
+      type("Pairing code", "k7rp-9x4t");
+      // The registry refusing an endpoint it already holds. The server writes a
+      // true sentence for it; a fabricated `core-error` would say the Core
+      // failed, that nothing was paired, and to mint a fresh code — none of
+      // which is true, and the last of which sends the operator in a circle.
+      const stated = "A Core at wss://prod-vm-1.internal:7777 is already registered.";
+      api.pairCore.mockRejectedValueOnce(new ApiError(stated, 400, { error: stated }));
+
+      await click("Pair Core");
+
+      const box = screen.getByRole("alert");
+      expect(box.textContent).toBe(stated);
+      expect(box.textContent).not.toContain("actana pair new");
+    });
+
+    it("renders the sentence the server sent rather than recomputing one", async () => {
+      await openPage();
+      await verify();
+      type("Session", "ps_abc");
+      type("Pairing code", "k7rp-9x4t");
+      // A failure code this build does not know about: `pairingFailureMessage`
+      // is an exhaustive switch with no default and would paint an empty box.
+      const stated = "This Core wants something newer than this Panel knows how to say.";
+      api.pairCore.mockRejectedValueOnce(
+        new ApiError(stated, 400, { failure: "some-future-failure", error: stated }),
+      );
+
+      await click("Pair Core");
+      expect(screen.getByRole("alert").textContent).toBe(stated);
     });
 
     it("falls back to something true when the failure is not a refusal at all", async () => {

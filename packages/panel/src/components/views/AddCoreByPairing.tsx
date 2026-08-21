@@ -35,6 +35,18 @@ import type { CoreWithDial } from "~/shared/cores";
  * row.
  */
 
+/**
+ * What the panel says when *this* comparison failed.
+ *
+ * Its own string rather than `pairingFailureMessage("fingerprint-mismatch")`,
+ * because this is the one place that can promise the code has not moved: no
+ * request has been made with it, and the button that would make one is not
+ * rendered. The shared sentence has to cover a mismatch the server returned,
+ * where the code may already have been spent, so it cannot promise that.
+ */
+const LOCAL_MISMATCH_MESSAGE =
+  "That machine is not the Core you were read a fingerprint for. The pairing code has not been sent and will not be — find out why the two differ before going any further.";
+
 /** What each fingerprint state looks like, and what it is called out loud. */
 const FINGERPRINT_STATES: Record<
   FingerprintCheck,
@@ -63,16 +75,28 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
   const codeReady = normalizePairingCode(code) !== null && sessionId.trim() !== "";
 
   /**
-   * Retyping the address drops the fingerprint that was read off the old one.
+   * Retyping the address drops everything that was true of the old one — the
+   * fingerprint read off it, the fingerprint typed against it, **and the code**.
    *
-   * Without this, an operator who checked one machine and then pointed the box
-   * at another would be looking at a "verified" badge earned by a Core they are
-   * no longer talking to — the exact confusion the fingerprint exists to
-   * prevent.
+   * The badge is the obvious half: an operator who checked one machine and then
+   * pointed the box at another would otherwise be looking at a "verified" badge
+   * earned by a Core they are no longer talking to. The code is the half that
+   * matters. It lives on this component rather than on the `{verified && …}`
+   * subtree, so unmounting step 3 does not clear it, and without this an
+   * operator could check machine A, type A's code, point the box at machine B,
+   * verify B's fingerprint, and find A's still-redeemable code waiting in a
+   * re-enabled form — one click from posting A's pairing secret to B, which
+   * could then spend it against A.
+   *
+   * A code is minted for one machine and is a secret to every other. Nothing
+   * about it survives a change of address.
    */
   const changeAddress = (next: string) => {
     setAddress(next);
     setIdentity(null);
+    setExpected("");
+    setSessionId("");
+    setCode("");
     setRefusal(null);
   };
 
@@ -177,10 +201,11 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
         check={check}
         identity={identity}
         expected={expected}
-        onExpectedChange={(next) => {
-          setExpected(next);
-          if (refusal?.failure === "fingerprint-mismatch") setRefusal(null);
-        }}
+        // Editing what was typed does not clear a refusal. A server-returned
+        // mismatch is a statement about the certificate that machine presented,
+        // and retyping the expected fingerprint does not change it — the
+        // warning stands until the next attempt or the next address.
+        onExpectedChange={setExpected}
         busy={inspecting || pairing}
       />
 
@@ -222,9 +247,17 @@ export function AddCoreByPairing({ onPaired }: { onPaired: (core: CoreWithDial) 
         </div>
       )}
 
-      {refusal && refusal.failure !== "fingerprint-mismatch" && (
-        <RefusalBox refusal={refusal} />
-      )}
+      {/* The refusal box is suppressed for exactly one reason: `FingerprintPanel`
+          is already showing this refusal, in more detail, with both
+          fingerprints side by side. That is true when the *local* comparison
+          failed — and only then. A `fingerprint-mismatch` the server returned
+          while the local check says verified is a different animal: the CA on
+          the pairing dial was not the CA the inspect dial presented, or the CA
+          in the response was not the one in the handshake. Neither is visible
+          here, and a suppression keyed on the failure code rather than on the
+          local state would leave the operator with a green badge and silence —
+          on the one refusal in this flow that must never be quiet. */}
+      {refusal && check !== "mismatch" && <RefusalBox refusal={refusal} />}
 
       <div style={{ display: "flex", justifyContent: "flex-end" }}>
         <Btn
@@ -346,7 +379,7 @@ function FingerprintPanel({
               lineHeight: 1.5,
             }}
           >
-            {pairingFailureMessage("fingerprint-mismatch")}
+            {LOCAL_MISMATCH_MESSAGE}
           </div>
           <Fingerprint caption="Expected" value={expected} color={state.color} />
           <Fingerprint
@@ -416,7 +449,13 @@ function RefusalBox({ refusal }: { refusal: CorePairingRefusal }) {
         borderRadius: 7,
       }}
     >
-      {pairingFailureMessage(refusal.failure, refusal)}
+      {/* The server's own sentence first. `~/shared/core-pairing` fills `error`
+          in precisely so a caller reading only that field still gets prose, and
+          it is the only text that can be right for a refusal the renderer's
+          compiled-in union does not know about — where `pairingFailureMessage`,
+          an exhaustive switch with no default, would return nothing and paint
+          an empty red box. */}
+      {refusal.error || pairingFailureMessage(refusal.failure, refusal)}
     </div>
   );
 }
@@ -424,13 +463,29 @@ function RefusalBox({ refusal }: { refusal: CorePairingRefusal }) {
 /**
  * Read a refusal out of whatever the call threw.
  *
- * A `CorePairingRefusal` body is the expected shape; anything else — a proxy
- * in the way, a Panel that fell over — is reported as `core-error`, which is
- * the arm whose advice ("nothing was paired, try again") is true of every
- * failure that never reached the pairing endpoint.
+ * Three cases, in order of how much the server managed to tell us:
+ *
+ *   1. A `CorePairingRefusal` body — the pairing endpoint's own answer, with a
+ *      failure code to switch on and fingerprints where there are any.
+ *   2. Any other `ApiError`. Most often the registry refusing an endpoint it
+ *      already holds, which `pairCore` deliberately lets past its own catch so
+ *      that the registry gets to explain itself. `ApiError.message` is carrying
+ *      that explanation, and it is used verbatim: writing a pairing sentence
+ *      over it would tell an operator whose code was redeemed perfectly well
+ *      that the Core failed and to mint a fresh one — four false claims in one
+ *      sentence, and the exact outcome the server went out of its way to avoid.
+ *   3. Anything else — a proxy in the way, a socket that hung up, a Panel that
+ *      fell over. `core-error` is the arm whose advice is true of every failure
+ *      that never got an answer out of the Panel.
+ *
+ * `core-error` is the failure code in case 2 as well, because there is no
+ * pairing failure to name; only the sentence comes from the server.
  */
 function refusalOf(err: unknown): CorePairingRefusal {
-  if (err instanceof ApiError && isRefusal(err.body)) return err.body;
+  if (err instanceof ApiError) {
+    if (isRefusal(err.body)) return err.body;
+    if (err.message.trim() !== "") return { failure: "core-error", error: err.message };
+  }
   return { failure: "core-error", error: pairingFailureMessage("core-error") };
 }
 

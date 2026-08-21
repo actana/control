@@ -157,7 +157,12 @@ export function pairingFailureMessage(
     case "fingerprint-unconfirmed":
       return "The fingerprint was not confirmed, so the pairing code was not sent. Compare the Core's fingerprint with the one `actana pair new` printed.";
     case "fingerprint-mismatch":
-      return "That machine is not the Core you were given a fingerprint for. The pairing code was NOT sent. Do not retry until you know why they differ.";
+      // Deliberately silent on whether the code moved. Reached before the code
+      // is sent when the presented CA is wrong, and *after* it is spent when the
+      // CA in the response is not the one from the handshake — and a client
+      // cannot tell those apart from the outside. "Treat the code as spent" is
+      // the one instruction that is safe under both.
+      return "That machine is not the Core you were read a fingerprint for. Stop: do not retry, treat the code as spent, and find out why the two differ.";
     case "hostname-mismatch":
       return "The right Core, on an address its certificate does not cover. Reach it on the host it was set up for, or reissue its certificate for this one.";
     case "certificate-invalid":
