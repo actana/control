@@ -394,6 +394,14 @@ export class CoreSession {
   }>();
 
   /**
+   * This Session asked the Core for its PTY's stream, so {@link dispose} owes it
+   * a matching `ptyUnsubscribe`. False for a spawned Session: the Core
+   * subscribes the connection that spawned a PTY, inside the spawn, and nothing
+   * here asked for that.
+   */
+  private subscribedToPty = false;
+
+  /**
    * The Core's last reported status, or null before one has been *observed*.
    *
    * Null rather than the status the Task carried when this Session started, and
@@ -402,13 +410,6 @@ export class CoreSession {
    * to end, not being told about the last one. Only a status learned from an
    * event after {@link start} lands here.
    */
-  /**
-   * This Session asked the Core for its PTY's stream, so {@link dispose} owes it
-   * a matching `ptyUnsubscribe`. False for a spawned Session: the Core
-   * subscribes the connection that spawned a PTY, inside the spawn, and nothing
-   * here asked for that.
-   */
-  private subscribedToPty = false;
   private lastStatus: string | null = null;
   /**
    * The event id {@link lastStatus} was learned at, or 0 when it was not learned
