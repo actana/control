@@ -16,19 +16,42 @@
 //     and carrying the whole sentinel rule.
 
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { HARNESSES } from "../domain";
 import { HARNESS_CLI_CONFIG, HARNESS_SKILL_TARGETS } from "../harness-cli-config";
 import { HARNESS_SKILL_TARGETS as CLI_TARGETS } from "../../../cli/src/harness-skill-targets";
 import {
+  ORCHESTRATION_SKILL_FILES,
   ORCHESTRATION_SKILL_MARKER,
-  ORCHESTRATION_SKILL_MD,
   ORCHESTRATION_SKILL_NAME,
 } from "../orchestration-skill-payload";
 
 const REPO = path.resolve(import.meta.dirname, "..", "..", "..", "..");
 const read = (relative: string) => readFileSync(path.join(REPO, relative), "utf8");
+
+const SKILL_DIR = `.agents/skills/${ORCHESTRATION_SKILL_NAME}`;
+
+/**
+ * Every authored file in the skill folder, folder-relative and `/`-separated.
+ *
+ * The prefix is built on the way down and the slice happens at the leaf, so it
+ * happens exactly once. Stripping `SKILL_DIR` from the returned list instead
+ * stripped it again from paths the recursive call had already made relative,
+ * and every nested file collapsed to `""` — which the flat folder of today hid,
+ * and which `writeOneFolder`'s split on `/` means is a shape this payload is
+ * allowed to take tomorrow.
+ */
+function authoredFiles(dir = SKILL_DIR, prefix = "", root = REPO): string[] {
+  return readdirSync(path.join(root, dir), { withFileTypes: true })
+    .flatMap((entry) =>
+      entry.isDirectory()
+        ? authoredFiles(`${dir}/${entry.name}`, `${prefix}${entry.name}/`, root)
+        : [`${prefix}${entry.name}`],
+    )
+    .sort();
+}
 
 describe("every Harness has a skill target (#265, ADR 0031 D4)", () => {
   it("names the missing Harness rather than failing on a length", () => {
@@ -99,14 +122,56 @@ describe("the installer exists twice and is one file (ADR 0031 D8)", () => {
   });
 });
 
-describe("the embedded payload is the authored file (ADR 0031 D8)", () => {
-  const authored = read(`.agents/skills/${ORCHESTRATION_SKILL_NAME}/SKILL.md`);
+describe("the walker this file compares against (#308 review)", () => {
+  it("keeps a nested file's path instead of collapsing it to an empty key", () => {
+    // The folder is flat today, so nothing downstream would notice: a nested
+    // file came back as `""`, the key-set comparison below became nonsense and
+    // the byte comparison read a directory. `writeOneFolder` splits keys on
+    // `/`, so nesting is a shape the payload is allowed to take — this is the
+    // assertion that makes the drift test survive the first one.
+    const root = mkdtempSync(path.join(os.tmpdir(), "actana-walk-"));
+    try {
+      mkdirSync(path.join(root, "skill", "lib"), { recursive: true });
+      for (const file of ["skill/SKILL.md", "skill/await.sh", "skill/lib/helper.sh"]) {
+        writeFileSync(path.join(root, ...file.split("/")), "x", "utf8");
+      }
+      expect(authoredFiles("skill", "", root)).toEqual([
+        "SKILL.md",
+        "await.sh",
+        "lib/helper.sh",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 
-  it("matches, byte for byte, in this package", () => {
-    expect(
-      ORCHESTRATION_SKILL_MD === authored,
-      "run `node scripts/gen-skill-payload.mjs` — the embedded copy is stale",
-    ).toBe(true);
+  it("returns a usable key for every file actually in the skill folder", () => {
+    for (const relative of authoredFiles()) {
+      expect(relative.length, "a file collapsed to an empty key").toBeGreaterThan(0);
+      expect(relative.startsWith("/"), `${relative} is not folder-relative`).toBe(false);
+    }
+  });
+});
+
+describe("the embedded payload is the authored folder (ADR 0031 D8, ADR 0035 D5)", () => {
+  const authored = authoredFiles();
+
+  it("carries an entry for every authored file, and no others", () => {
+    // A folder, not a file, since #304 — `await.sh` ships beside `SKILL.md`.
+    // Asserting the key set in both directions is what catches the two ways
+    // this drifts: a file added to the folder and never generated, and a file
+    // deleted from the folder that lives on inside the bundle.
+    expect(Object.keys(ORCHESTRATION_SKILL_FILES).sort()).toEqual(authored);
+    expect(authored.length, "the skill folder is empty").toBeGreaterThan(0);
+  });
+
+  it("matches, byte for byte, entry by entry, in this package", () => {
+    for (const relative of authored) {
+      expect(
+        ORCHESTRATION_SKILL_FILES[relative] === read(`${SKILL_DIR}/${relative}`),
+        `${relative}: run \`node scripts/gen-skill-payload.mjs\` — the embedded copy is stale`,
+      ).toBe(true);
+    }
   });
 
   it("matches in the CLI's copy too", () => {
@@ -115,8 +180,60 @@ describe("the embedded payload is the authored file (ADR 0031 D8)", () => {
     expect(cliCopy).toBe(sharedCopy);
   });
 
-  it("carries the marker that authorises overwriting it (D1)", () => {
-    expect(authored).toContain(ORCHESTRATION_SKILL_MARKER);
+  it("carries the marker that authorises overwriting it, in every file (D1)", () => {
+    // Per file, and within the window the installer actually reads. An entry
+    // whose marker sat past `MARKER_SCAN_BYTES` would ship a copy the installer
+    // could write once and never repair — which is D5's escape hatch fired by
+    // accident, on our side, for everybody.
+    for (const [relative, content] of Object.entries(ORCHESTRATION_SKILL_FILES)) {
+      expect(
+        content.slice(0, 4096).includes(ORCHESTRATION_SKILL_MARKER),
+        `${relative} carries no ${ORCHESTRATION_SKILL_MARKER} in its first 4096 bytes`,
+      ).toBe(true);
+    }
+  });
+});
+
+describe("the skill folder ships the watcher (#304)", () => {
+  const script = read(`${SKILL_DIR}/await.sh`);
+
+  it("is a shell script whose marker sits under the shebang", () => {
+    // The marker mechanism is a substring match on the first bytes rather than
+    // a YAML parse (ADR 0031 D1), which is the whole reason a `.sh` needed no
+    // new code. Line 1 must stay the shebang; line 2 is the marker.
+    const [shebang, second] = script.split("\n");
+    expect(shebang).toMatch(/^#!/);
+    expect(second).toContain(ORCHESTRATION_SKILL_MARKER);
+  });
+
+  it("checks the LAST line for the sentinel rather than grepping for it", () => {
+    // `ACT-REPORT-END` quoted inside a report must not settle a Session that
+    // has not finished. A `grep` here would be the bug; the tail is the proof.
+    expect(script).toContain("last_line_is_sentinel");
+    expect(script).toMatch(/tail -n \d+/);
+    expect(script.includes("grep -q"), "await.sh greps for the sentinel").toBe(false);
+  });
+
+  it("treats a lost link as 'not yet' rather than as a missing report", () => {
+    // `actana core exec` exits 125 when the link went away mid-command: the
+    // command kept running on the Core and this side has no result. Reading it
+    // as failure abandons a lane that is fine.
+    expect(script).toContain("125");
+    expect(script.toLowerCase()).toContain("retrying, not giving up");
+  });
+
+  it("saves the report to local disk before killing anything", () => {
+    const save = script.indexOf("project cp");
+    const kill = script.indexOf("session kill");
+    expect(save, "await.sh never copies the report down").toBeGreaterThan(-1);
+    expect(kill, "await.sh never kills a Session").toBeGreaterThan(-1);
+    expect(save, "await.sh kills before it saves — delete-then-save").toBeLessThan(kill);
+  });
+
+  it("is invoked as `bash await.sh`, so it needs no executable bit", () => {
+    // `writeOneCopy` writes with no mode, and deliberately: the installer's
+    // safety argument is that it is a filesystem write and nothing else.
+    expect(script).toContain("bash await.sh");
   });
 });
 
@@ -131,17 +248,23 @@ describe("the skill is generic and self-contained (ADR 0031 D9)", () => {
     expect(skill).not.toMatch(/\bdocs\/[a-z-]+\.md/);
   });
 
-  it("names no project, ticket workflow, train or repository", () => {
-    for (const forbidden of [
-      "actana/control",
-      "release train",
-      "beta/",
-      "promote.yml",
-      "gh pr",
-      "CONTRIBUTING",
-      "ADR 00",
-    ]) {
-      expect(skill.includes(forbidden), `the skill mentions "${forbidden}"`).toBe(false);
+  it("names no project, ticket workflow, train or repository — in any file", () => {
+    // Every file, not just the markdown. D9's claim is about what lands in an
+    // operator's home, and since #304 that is a folder: a citation of a record
+    // this repository keeps is exactly as meaningless inside `await.sh`'s
+    // comments as it would be inside the skill's prose.
+    for (const [relative, content] of Object.entries(ORCHESTRATION_SKILL_FILES)) {
+      for (const forbidden of [
+        "actana/control",
+        "release train",
+        "beta/",
+        "promote.yml",
+        "gh pr",
+        "CONTRIBUTING",
+        "ADR 00",
+      ]) {
+        expect(content.includes(forbidden), `${relative} mentions "${forbidden}"`).toBe(false);
+      }
     }
   });
 

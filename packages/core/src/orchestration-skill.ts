@@ -22,7 +22,7 @@ import {
 } from "@actana/shared/orchestration-skill-install";
 import {
   ORCHESTRATION_SKILL_MARKER,
-  ORCHESTRATION_SKILL_MD,
+  ORCHESTRATION_SKILL_FILES,
   ORCHESTRATION_SKILL_NAME,
 } from "@actana/shared/orchestration-skill-payload";
 
@@ -30,7 +30,7 @@ import {
  * Write or repair every copy on this machine, and log what happened.
  *
  * Never throws, and deliberately so: this runs on the boot path, and a Core
- * that refused to start because it could not write a markdown file into a
+ * that refused to start because it could not write a skill folder into a
  * directory it does not own would be trading a documented capability for the
  * whole product.
  *
@@ -39,6 +39,10 @@ import {
  * noise on every boot; `current` is the ordinary state of every boot after the
  * first. What gets a line is a write, a refusal and a failure — the three
  * things a "why has my Harness not got the skill?" report is answered from.
+ *
+ * `entry.path` is the skill **folder**, not a file in it, and `entry.detail`
+ * names the file when one of several went wrong — so a log line still says
+ * enough to act on without this file learning what the payload contains.
  */
 export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
   let entries: SkillInstallEntry[];
@@ -48,7 +52,7 @@ export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
       targets: HARNESS_SKILL_TARGETS,
       skillName: ORCHESTRATION_SKILL_NAME,
       marker: ORCHESTRATION_SKILL_MARKER,
-      content: ORCHESTRATION_SKILL_MD,
+      files: ORCHESTRATION_SKILL_FILES,
     });
   } catch (err) {
     log.warn("core-skill.install-failed", {

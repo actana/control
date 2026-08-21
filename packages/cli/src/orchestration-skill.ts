@@ -19,19 +19,24 @@ import {
 } from "./orchestration-skill-install.ts";
 import {
   ORCHESTRATION_SKILL_MARKER,
-  ORCHESTRATION_SKILL_MD,
+  ORCHESTRATION_SKILL_FILES,
   ORCHESTRATION_SKILL_NAME,
 } from "./orchestration-skill-payload.ts";
 import { HARNESS_SKILL_TARGETS } from "./harness-skill-targets.ts";
 
-/** Write or repair every copy, and report one row per Harness. Never throws. */
+/**
+ * Write or repair every copy, and report one row per Harness. Never throws.
+ *
+ * The payload is a folder — `SKILL.md` and `await.sh` — and the installer is
+ * handed all of it at once. Nothing here knows which file is which.
+ */
 export function ensureOrchestrationSkill(home: string): SkillInstallEntry[] {
   return installOrchestrationSkill({
     home,
     targets: HARNESS_SKILL_TARGETS,
     skillName: ORCHESTRATION_SKILL_NAME,
     marker: ORCHESTRATION_SKILL_MARKER,
-    content: ORCHESTRATION_SKILL_MD,
+    files: ORCHESTRATION_SKILL_FILES,
   });
 }
 

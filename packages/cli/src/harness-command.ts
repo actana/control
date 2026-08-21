@@ -209,6 +209,11 @@ function harnessRows(availability: CoreLinkHarnessAvailabilityMap): Array<
  * counted as one: the operator took ownership of that file on purpose, and the
  * point of printing it is that a later "why is my skill not updating?" has an
  * answer on screen instead of in a code path.
+ *
+ * **A skill is a folder now** (#304), so the column names one and the detail
+ * line under it names the file. One row per Harness either way: an operator
+ * reading this wants "has this agent got the skill?" answered once, and a table
+ * that grew a row per file would answer a question about our payload instead.
  */
 function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): number {
   if (rest.length > 0) {
@@ -226,7 +231,7 @@ function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): n
   }
 
   const table = formatTable(
-    ["HARNESS", "RESULT", "PATH"],
+    ["HARNESS", "RESULT", "SKILL FOLDER"],
     entries.map((entry) => [entry.harness, entry.outcome, entry.path]),
   );
   for (const line of table) deps.out(line);
