@@ -426,11 +426,12 @@ describe("core-link-frames", () => {
     // The reason lives in the test name on purpose: this assertion exists to
     // fail a future edit that bumps the version *for the multiConnection
     // surface*, and whoever reads that failure needs the reason, not the
-    // number. It did not bump for multiConnection and never will; 0.16.0 is
-    // the `exec` frame (issue 266), which is a frame rather than a ready
-    // capability and so is not the additive case D11 carves out.
-    it("is 0.16.0 — moved for the `exec` frame (#266), never for multiConnection, which is a ready capability no Core is marked needs-update for (ADR 0024 D11, issue 143)", () => {
-      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.16.0");
+    // number. It did not bump for multiConnection and never will; 0.16.0 was
+    // the `exec` frame (issue 266) and 0.17.0 is the stamped write (issue
+    // 289), both frames rather than ready capabilities and so neither the
+    // additive case D11 carves out.
+    it("is 0.17.0 — moved for the `exec` frame (#266) and the stamped write (#289), never for multiConnection, which is a ready capability no Core is marked needs-update for (ADR 0024 D11, issue 143)", () => {
+      expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.17.0");
     });
 
     it("leaves a Core that announces no multiConnection capability fully compatible — absence is a supported state, not drift", () => {

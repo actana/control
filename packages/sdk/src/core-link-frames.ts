@@ -586,6 +586,40 @@ export type CoreLinkSessionLockState = "unlocked" | "held-by-you" | "held-by-ano
 export const SESSION_LOCK_CHANGED_EVENT_KIND = "session:lockChanged";
 
 /**
+ * The kind of the event the Core appends when it accepts a **stamped** write
+ * for a Session (#289 A).
+ *
+ * It exists to be a cursor, not a notification. A client that is about to wait
+ * for the turn a write starts needs one fact the event log could not otherwise
+ * give it: *where in the log the write landed*. With that id in hand the wait is
+ * "the first settling status for this task after event N", which is a question
+ * with one answer — and not "is this Session settled?", which answers with the
+ * status the Session was already sitting at before the write (the `settledNow`
+ * short-circuit in `core-session.ts`, and the reason this event exists).
+ *
+ * Payload is {@link CoreLinkSessionDeliveredPayload}. Appended only for a write
+ * that asked to be stamped and that the PTY accepted, and only when the Core can
+ * name the Task behind the PTY — the id is what the cursor is *for*.
+ */
+export const SESSION_DELIVERED_EVENT_KIND = "session:delivered";
+
+/**
+ * Payload of a {@link SESSION_DELIVERED_EVENT_KIND} event.
+ *
+ * The Task, the PTY and how many characters went in — no text. What was typed
+ * into a Session is the Session's, and this row goes into a log every connection
+ * replays; a length is enough for an operator reading `actana events tail` to
+ * tell a prompt from a keystroke, and carries nothing a transcript would not
+ * already show to somebody entitled to see it.
+ */
+export type CoreLinkSessionDeliveredPayload = {
+  taskId: string;
+  ptyId: string;
+  /** Characters accepted, not bytes on the wire. */
+  characters: number;
+};
+
+/**
  * What happened to a Session's lock, in the vocabulary of the lock rather than
  * of the frame that caused it.
  *
@@ -636,7 +670,25 @@ export type CoreLinkSessionLockChangedPayload = {
 
 export type CoreLinkRequestFrame =
   | { type: "spawn"; reqId: string; opts: CoreLinkPtySpawnOptions }
-  | { type: "write"; reqId: string; ptyId: string; data: string }
+  | {
+      type: "write";
+      reqId: string;
+      ptyId: string;
+      data: string;
+      /**
+       * Ask the Core to **stamp this delivery in its event log** and answer with
+       * the id it got (#289 A). Opt-in, and the opt is what keeps the log
+       * usable: an attached terminal's keystrokes are `write` frames too, and a
+       * log that is append-only for the life of a Core must not carry a row per
+       * keypress. A client that is about to wait for the turn this write starts
+       * sets it; a client that is typing does not.
+       *
+       * Absent on a Core too old to stamp, which answers `writeResult` with no
+       * {@link CoreLinkResponseFrame} `deliveryEventId` — read as 0, "not
+       * stamped", never as a cursor.
+       */
+      stamp?: boolean;
+    }
   | { type: "resize"; reqId: string; ptyId: string; cols: number; rows: number }
   | { type: "kill"; reqId: string; ptyId: string }
   | {
@@ -920,7 +972,23 @@ export type CoreLinkResponseFrame =
       hooksReportTurnStart?: boolean;
     }
   | { type: "spawnError"; reqId: string; message: string }
-  | { type: "writeResult"; reqId: string; ok: boolean }
+  | {
+      type: "writeResult";
+      reqId: string;
+      ok: boolean;
+      /**
+       * The event id of the `session:delivered` this write was stamped with,
+       * when the frame asked for a stamp and the write was accepted (#289 A).
+       *
+       * The cursor a turn-end wait counts from: the wait resolves on the first
+       * settling status for that task at an event id **strictly greater** than
+       * this one, which is what stops it from answering with the status the
+       * Session was already sitting at. 0 or absent means nothing was stamped —
+       * a Core that predates this, a write nothing accepted, or a PTY with no
+       * Task behind it — and 0 is not a cursor.
+       */
+      deliveryEventId?: number;
+    }
   | { type: "resizeResult"; reqId: string; ok: boolean }
   | { type: "killResult"; reqId: string; ok: boolean }
   | {
@@ -1392,10 +1460,29 @@ export type CoreLinkServerFrame =
  * tells its operator to update one of the two, in one sentence, before the
  * first `exec` rather than after it.
  *
+ * **Issue 289 moves it to 0.17.0, on the same reasoning and a stronger case.**
+ * The stamped `write` — {@link CoreLinkRequestFrame} `stamp`, answered with
+ * `deliveryEventId` — looks like the additive exception and is not it. The
+ * exception is available only where the capability's absence yields today's
+ * behaviour **exactly**, and here absence yields something worse than today:
+ * `actana session send X --wait` is a clean usage refusal on a Core built
+ * before this, and a client that shipped the flag against an unstamping Core
+ * would send, get no cursor back, and fall through to an uncursored wait that
+ * answers instantly with the status the Session was already parked at — last
+ * turn's answer printed as this turn's, with a zero exit. A silent wrong
+ * answer replacing a hard error is the one degradation the exception exists to
+ * forbid, so the minor moves and no capability is announced for the stamp.
+ *
+ * The cursor is refused rather than approximated in the client as well
+ * ({@link CoreLinkResponseFrame} `deliveryEventId`, and the CLI's session
+ * gateway): the version gate is what an operator meets first, and the refusal
+ * is what covers a Core that is on this version and still could not stamp —
+ * one with no event-log port, or whose append failed.
+ *
  * Patch stays 0 — see {@link coreLinkProtocolCompatible}, which compares
  * major.minor only.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.16.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.17.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?

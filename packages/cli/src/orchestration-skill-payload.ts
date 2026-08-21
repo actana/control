@@ -108,12 +108,60 @@ also look at it directly:
 \`\`\`bash
 actana session logs <id>          # the transcript, rendered, while the harness is running
 actana session send <id> "text"   # write into it; --enter follows with a carriage return
+actana session wait <id>          # block until the Core reports it settled
 actana session kill <id>          # stop the harness running for it
 \`\`\`
 
 \`actana events tail --json\` follows the Core's event log as NDJSON if you want
 to watch state change rather than poll — \`session:finished\` is the Core's own
 signal that a Session reached a terminal state.
+
+## The multi-turn loop
+
+A Session is a conversation, not a single question. The whole loop:
+
+\`\`\`bash
+ID=$(actana session start <project> "<first prompt>")   # prints the id, exits
+actana session wait "$ID" --json --wait-timeout 900     # block until it settles
+actana session send "$ID" "<follow-up>" --enter --wait --json --wait-timeout 900
+actana session logs "$ID"                               # or read \`screen\` off the object
+actana session send "$ID" "<next>" --enter --wait --json
+\`\`\`
+
+**\`actana session wait <id>\` blocks until the Core reports the Session settled**
+— \`finished\`, \`needs-input\`, \`interrupted\`, \`terminated\` or \`disconnected\`,
+because every one of those is a turn that ended. A Session that is already
+settled answers at once, so a wait that starts after the turn ended is not a
+wait that hangs.
+
+**\`actana session send <id> "<text>" --wait\` waits for the turn that text
+starts.** The Core stamps the delivery in its event log and the wait resolves on
+the first settling status *after* that stamp, so it can never hand you the
+status the Session was already parked at. With \`--json\` it prints the **same
+object** \`start --wait --json\` prints — same keys, same \`screen\` — so one parser
+reads all three verbs. Two of those keys are \`null\` on a Session you attached to
+rather than started: \`command\` and \`reportsTurnStart\` are answers to a spawn.
+
+Three things to know before you build on it:
+
+1. **Sending into a turn that is already running resolves on *that* turn's
+   end.** A keystroke into a busy Harness is not a new turn. If the Session was
+   mid-turn when your text landed, the wait ends when the current turn ends —
+   possibly before the Harness has read a character of what you sent. Wait for
+   the Session to settle *first*, then send.
+2. **\`--enter\` is what submits the text.** \`send\` writes exactly the bytes it
+   was given and appends nothing, so text with no return sits in the Harness's
+   composer and no turn starts — and the wait then runs to your timeout.
+3. **A timeout is this side giving up, not a status.** \`--wait-timeout
+   <seconds>\` bounds the wait; without it there is no deadline, because a turn
+   takes as long as the work takes. On expiry you get a message saying the wait
+   gave up and a non-zero exit — the Session is still running on the Core, and
+   \`session logs\`, another \`session wait\` and \`session kill\` all still work.
+
+Do not poll \`actana session logs\` for a sentinel instead. It renders a
+fixed-size screen: lines scroll off the top, so counting occurrences is not
+monotonic, and a marker can match your own echoed prompt rather than the
+Harness's reply.
 
 ## Asking a Session for a machine-readable report
 
