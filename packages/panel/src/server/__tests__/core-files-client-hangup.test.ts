@@ -31,7 +31,6 @@ import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import { buildCoreFileRoutes } from "@actana/core/core-files-wiring";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { ProjectWriteLocks } from "@actana/core/files-transfer-locks";
 import type { PtyCore } from "@actana/core/pty-manager";
 
@@ -43,7 +42,10 @@ const { handleApiRequest } = await import("../api-router");
 const { serveNodeRequest } = await import("../node-http-bridge");
 const { closePanelDb, getPanelDb } = await import("../panel-db");
 const { operatorSessionCookie } = await import("./_operator-session");
-const { resetCoreLinkManagerForTests } = await import("../services/core-link-manager");
+const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
+  "../services/core-link-manager"
+);
+const { registerCoreFromCredential } = await import("../services/cores");
 const { resetCoreFilesSendersForTests } = await import("../services/core-files-proxy");
 
 const BEARER_SECRET = "core-files-hangup-secret-32-bytes-x";
@@ -108,7 +110,13 @@ async function rig(): Promise<Rig> {
   });
   running.push(core);
 
-  const registrationBlob = encodeRegistrationBlob({
+  // Registered through the service and dialled, which is what the pairing
+  // controller does with the credential a redemption produced. `POST
+  // /api/cores` — the blob paste — is gone (#287). The Operator row is what the
+  // registry's foreign key points at, and an HTTP registration used to create
+  // it on the way past — so ask for it before registering.
+  operatorSessionCookie();
+  const registered = registerCoreFromCredential({
     endpoint: `wss://127.0.0.1:${corePort}`,
     label: "hangup-vm",
     caCert: material.ca.cert,
@@ -116,14 +124,7 @@ async function rig(): Promise<Rig> {
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_hangup", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
-  const added = await handleApiRequest(
-    new Request("http://panel.test/api/cores", {
-      method: "POST",
-      headers: { cookie: operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify({ registrationBlob }),
-    }),
-  );
-  const { core: registered } = (await added!.json()) as { core: { id: string } };
+  coreLinkManager().dial(registered.id);
   await vi.waitFor(
     async () => {
       const listed = (await (

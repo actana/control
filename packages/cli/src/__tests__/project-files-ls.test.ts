@@ -11,7 +11,12 @@
 // two flags that cost the Core real work, and the exit codes.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { fakeProjectFiles, makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
+import {
+  fakeProjectFiles,
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 import type { CoreFileEntry } from "@actana/sdk/core-files.ts";
 
@@ -26,7 +31,7 @@ afterEach(() => {
 });
 
 async function withRegisteredCore(): Promise<void> {
-  expect((await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() })).code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 function entry(overrides: Partial<CoreFileEntry> & Pick<CoreFileEntry, "path">): CoreFileEntry {

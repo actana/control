@@ -8,8 +8,10 @@
 // because by the time the report reaches here the platform difference has
 // already been reduced to a service name and a persistence row.
 //
-// Operator-facing strings say "pairing token" — the glossary's UI note. Code
-// and frames keep "Registration blob".
+// Operator-facing strings say "pairing code" for the short code and "pairing
+// material" for this Core's own identity — the glossary's UI note, as #287
+// settled it. "Pairing token" named the hand-carried blob and is retired with
+// it; code and frames keep "Registration blob" for what a paired client holds.
 
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import type { UpdateCheck } from "@actana/shared/actana-update-check";
@@ -63,7 +65,7 @@ export type ActanaStatusReport = {
   persistence: { label: string; value: string } | null;
   /** Set only in container mode, where the three rows above have no answer. */
   container: ContainerStatus | null;
-  /** Whether pairing material exists — i.e. a pairing token can be printed. */
+  /** Whether pairing material exists — i.e. this Core can enroll a client. */
   paired: boolean;
   /** The Core's own view of which Harnesses resolve on its PATH. */
   agents: CoreLinkHarnessAvailabilityMap;
@@ -85,9 +87,9 @@ export type ActanaHealth = "healthy" | "stopped" | "degraded" | "not-installed";
  * Collapse the report into one word.
  *
  * `healthy` demands both halves of a working Core: a daemon the init system is
- * actually running, and material to pair with. An install that runs but cannot
- * produce a pairing token is not healthy, it is degraded — the operator has
- * nothing to paste into their Panel.
+ * actually running, and material to pair with. An install that runs but has no
+ * identity to sign a certificate against is not healthy, it is degraded — no
+ * client can ever enroll on it.
  */
 export function summarizeHealth(report: ActanaStatusReport): ActanaHealth {
   if (!report.installed) return "not-installed";
@@ -197,8 +199,10 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
 
   lines.push(
     row(
-      "Pairing token",
-      report.paired ? "available (`actana token` reprints it)" : "missing — re-run `actana setup`",
+      "Pairing",
+      report.paired
+        ? "ready (`actana pair new` enrolls a client)"
+        : "no material — re-run `actana setup`",
     ),
   );
 

@@ -206,15 +206,20 @@ describe("a Core installed here is wired to the CLI here (#288 D9)", () => {
     expect(decodeRegistrationBlob(stored.trim())?.endpoint).toBe("wss://10.0.0.5:8443");
   });
 
-  it("stores the blob at 0600 and never prints it as part of the wiring", async () => {
+  it("stores the credential at 0600 and prints no copy of it anywhere", async () => {
     await install();
     const mode = fs.statSync(path.join(paths().coresDir, "vm-1.txt")).mode & 0o777;
     expect(mode).toBe(0o600);
-    // The pairing token is printed once, deliberately, as the thing to paste
-    // into a Panel. What must not appear is a second copy in the registry line.
+    // The credential goes into this machine's own registry and nowhere else at
+    // all: #287 removed the printed artifact, so a second copy on any output
+    // sink is the hand-carry coming back.
     const wiringLine = out.find((line) => line.includes("Registered as"));
     expect(wiringLine).toBeDefined();
     expect(wiringLine ?? "").not.toContain("ey");
+    const stored = (readCoreBlobText(paths(), "vm-1") ?? "").trim();
+    const printed = [...out, ...err].join("\n");
+    expect(printed).not.toContain(stored);
+    expect(printed).not.toMatch(/BEGIN (CERTIFICATE|PRIVATE KEY)/);
   });
 
   it("does not steal a selection the operator already made", async () => {

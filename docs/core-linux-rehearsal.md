@@ -9,11 +9,10 @@ Core. arm64 runs the same script on the release tag
 
 All of it runs with the prompts suppressed and nobody watching. That is the
 gap this fills: **once per release, a person pastes the real one-liner into a
-machine that has never seen it, answers the questions it asks, and takes the
-pairing token to a live Panel.** What it catches is the class of problem a
-green matrix cannot — a prompt that reads badly, a token that is awkward to
-copy out of a terminal, an instruction that is technically true and practically
-useless.
+machine that has never seen it, answers the questions it asks, and takes a
+pairing code to a live Panel.** What it catches is the class of problem a green
+matrix cannot — a prompt that reads badly, a code that is awkward to read out
+loud, an instruction that is technically true and practically useless.
 
 Fifteen minutes, and the only install rehearsal a release needs — Linux is the
 only platform a release publishes a Core for. [The macOS
@@ -86,21 +85,26 @@ Paste the printed one-liner. **Do not add `--yes`** — the prompts are the poin
       (Decline them all — this machine has no vendor logins on it, and CI
       already covers accepting.)
 - [ ] Nothing asks for a password, and nothing mentions `sudo` or `root`.
-- [ ] It ends by printing a **pairing token** with a one-line instruction about
-      pasting it into a Panel.
-- [ ] The token is one selectable block — you can copy it out of the terminal
-      without reflowing or stitching lines together.
+- [ ] It ends by telling you to run `actana pair new` to enroll a client.
+- [ ] **It prints no credential.** No `BEGIN CERTIFICATE`, no `BEGIN PRIVATE
+      KEY`, no base64 block to copy — the hand-carry is gone (#287) and its
+      reappearance is a release blocker.
 
 ```bash
 actana status
+actana pair new --label my-panel
 ```
 
 - [ ] `Core: healthy`, the version you just built, and a `Linger` row.
 - [ ] `actana` is on `PATH` in this shell without sourcing anything by hand.
+- [ ] `pair new` prints a **pairing code** as `XXXX-XXXX`, the Core's **CA
+      fingerprint**, and when the code expires.
+- [ ] The code is short enough to read out loud over a phone without spelling
+      anything — no `0`, `O`, `1`, `I` or `L` in it.
 
 ---
 
-## 3 — Take the token to a live Panel
+## 3 — Take the code to a live Panel
 
 In another terminal on your own machine, start a Panel:
 
@@ -109,9 +113,12 @@ pnpm dev:server
 ```
 
 Open http://localhost:5173, create the Operator if it is a fresh data
-directory, then **Add Core** and paste the token from step 2.
+directory, then **Add Core**, give it `127.0.0.1:8443` and the code from step 2.
 
+- [ ] The Panel shows the fingerprint it was presented **before** asking for the
+      code, and it matches what `pair new` printed.
 - [ ] The Core appears and reaches **connected**.
+- [ ] Entering the same code again is refused — it is spent.
 - [ ] Its projects list loads (empty is correct — the machine has no projects).
 - [ ] The Panel shows no "needs update" state; the Core is the version the
       Panel expects.
@@ -142,21 +149,27 @@ that the Core comes back after a full reboot.)
 ```bash
 actana restart && actana status
 actana logs -n 20
-actana token
+actana pair ls
 ```
 
 - [ ] The Core reconnects in the Panel on its own after the restart.
 - [ ] `actana logs` shows something a person could triage from.
-- [ ] `actana token` reprints the same token — the Panel does not need
-      re-pairing.
+- [ ] `actana pair ls` lists the Panel you paired in step 3, and prints **no
+      code** — there is none stored to print.
+- [ ] `actana token` on its own refuses and names `actana pair new`.
 
 ```bash
 actana token regenerate
 ```
 
-- [ ] It says plainly that this locks out paired Panels before doing it.
-- [ ] The Panel's Core goes unauthorized, and pasting the new token into
-      **Add Core** recovers it.
+- [ ] It says plainly that this locks out paired clients before doing it.
+- [ ] It prints no credential — only what to do next.
+- [ ] It says to remove the Core from the Panel before pairing it again.
+- [ ] The Panel's Core goes unauthorized. **Remove it** (Settings → Cores →
+      Remove Core), then a fresh `actana pair new` plus a second **Add Core**
+      recovers it. Pairing without removing it first is refused, because the
+      Core is still registered at that address — try it once, and check the
+      refusal says so rather than blaming the code.
 
 ---
 
@@ -175,13 +188,13 @@ exit
 
 ## Ports
 
-The Core inside the machine mints its certificate for `127.0.0.1:8443` and its
-pairing token says so. The rehearsal publishes the container on host port
-**8443** by default precisely so the printed token can be pasted verbatim.
+The Core inside the machine mints its certificate for `127.0.0.1:8443`. The
+rehearsal publishes the container on host port **8443** by default precisely so
+the address you type into **Add Core** is the one the certificate names.
 
-If 8443 is taken, `--port <n>` moves it — but then the token names the wrong
-port, and you must edit the endpoint to `wss://127.0.0.1:<n>` before pasting.
-The script warns when you are in that case. Freeing 8443 is less error-prone.
+If 8443 is taken, `--port <n>` moves it — and then you pair against
+`127.0.0.1:<n>` instead. The script warns when you are in that case. Freeing
+8443 is less error-prone.
 
 ---
 
@@ -190,5 +203,5 @@ The script warns when you are in that case. Freeing 8443 is less error-prone.
 Note in the release PR: the distro you used, and which boxes did not tick.
 
 Unticked boxes in sections 2 and 3 are release blockers — "the one-liner ends
-with a token a person can actually get into a Panel" is the whole product
-promise this rehearsal exists to protect. Everything else is a bug report.
+with a Core a person can actually pair to a Panel" is the whole product promise
+this rehearsal exists to protect. Everything else is a bug report.

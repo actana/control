@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { getPanelDb } from "../panel-db";
 import { OPERATOR_ID } from "./operator";
 import { openSecret, sealSecret } from "./secrets-at-rest";
@@ -9,12 +8,19 @@ import type { Core } from "~/shared/cores";
  * The Core registry — the Panel's list of Cores it can talk to, plus the
  * sealed credentials it dials them with.
  *
- * Registration is one paste: the operator hands over the registration blob
- * that `core install` printed ("pairing token" in what the UI says), the
- * endpoint and label land in `cores`, and the secret half is sealed into
- * `core_secrets`. There is no other way in; the Panel does not accept a
- * hand-typed endpoint, because a Core without pinned mTLS material is a Core
- * it cannot safely dial.
+ * A registration is one credential: an endpoint, the mTLS material and the
+ * bearer. The endpoint and label land in `cores` and the secret half is sealed
+ * into `core_secrets`. The Panel does not accept a hand-typed endpoint,
+ * because a Core without pinned mTLS material is a Core it cannot safely dial.
+ *
+ * **One door leads here: {@link registerCoreFromCredential}.** A short pairing
+ * code is redeemed against the Core by `services/core-pairing.ts` (#286), which
+ * hands back a credential whose private key never crossed the wire, and that
+ * credential is registered. There is no second way in — the pasted registration
+ * blob `actana setup` used to print was the other door and #287 removed it,
+ * outright and with no compatibility shim (#280). A registration path nobody
+ * exercises is a second way to become a Core client with its own security
+ * properties, which is the thing that removal exists to prevent.
  */
 
 /** The secret half of a registration. Never leaves the service. */
@@ -30,18 +36,40 @@ export type CoreSecrets = {
 };
 
 /**
- * A registration blob the Panel won't accept. `expose` marks it caller-facing
- * so the API router returns the message rather than swallowing it into a 500 —
- * the operator needs to know *that* the paste was bad, and the messages here
- * deliberately say nothing about the blob's contents.
+ * A credential the registry itself won't take — an endpoint already spoken
+ * for, or material with a field missing. `expose` marks it caller-facing so the
+ * API router returns the message rather than swallowing it into a 500, and it
+ * is worded without reference to how the credential arrived: pairing is the one
+ * door today, and a message naming it would have to be rewritten by whatever
+ * opens the next one.
  */
-export class RegistrationBlobError extends Error {
+export class CoreRegistryError extends Error {
   readonly expose = true;
   constructor(message: string) {
     super(message);
-    this.name = "RegistrationBlobError";
+    this.name = "CoreRegistryError";
   }
 }
+
+/**
+ * What a registration is made of.
+ *
+ * Structurally `CoreRegistrationBlob` from `@actana/sdk` — declared here rather
+ * than imported so the registry depends on the *shape* of a credential and not
+ * on any one producer of it. A **Registration blob** is still exactly this: the
+ * credential a paired client holds. What #287 removed is the base64 artifact a
+ * human used to carry, not the thing it carried.
+ */
+export type CoreCredential = {
+  /** `wss://host:port` — the core-link endpoint the dialer will use. */
+  endpoint: string;
+  /** The name the credential carried, if any. Overridden by an explicit one. */
+  label?: string;
+  caCert: string;
+  clientCert: string;
+  clientKey: string;
+  bearer: string;
+};
 
 type CoreRow = {
   id: string;
@@ -72,8 +100,8 @@ function newCoreId(): string {
  * Normalize an alias for the registry: trimmed, capped at 120 characters, and
  * falling back to the endpoint's host when what's left is empty.
  *
- * Both ways in go through here — the label carried in a registration blob, and
- * whatever the operator types into a rename — so neither can leave a row with
+ * Both ways in go through here — the label a pairing produced, and whatever
+ * the operator types into a rename — so neither can leave a row with
  * nothing to identify it by. The host is the fallback because it is what the
  * operator recognizes about a machine they haven't named themselves.
  */
@@ -94,6 +122,26 @@ export function listCores(): Core[] {
   return rows.map(rowToCore);
 }
 
+/**
+ * Is a Core already registered at this endpoint?
+ *
+ * The same question {@link registerCoreFromCredential} asks inside its
+ * transaction, exposed so a caller holding something expensive and perishable
+ * can ask it *first*. Pairing does (#286): discovering the collision after the
+ * redemption costs the operator their one-time code and leaves the Core holding
+ * a signed certificate for a client this Panel never stored.
+ *
+ * An answer here is advice, not a decision — the endpoint a Core reports is its
+ * own, and need not be the address it was reached on. The check inside the
+ * transaction stays the authority.
+ */
+export function coreRegisteredAt(endpoint: string): boolean {
+  return (
+    getPanelDb().prepare("SELECT id FROM cores WHERE endpoint = ?").get(endpoint.trim()) !==
+    undefined
+  );
+}
+
 export function getCore(id: string): Core | null {
   const row = getPanelDb().prepare("SELECT * FROM cores WHERE id = ?").get(id) as
     | CoreRow
@@ -102,36 +150,55 @@ export function getCore(id: string): Core | null {
 }
 
 /**
- * Register a Core from a pasted registration blob.
+ * Register a Core from the credential a pairing produced.
  *
  * Both rows go in under one transaction: a Core in the registry that the
  * dialer has no credentials for would sit in the fleet showing "unreachable"
  * forever with no way to fix it but a manual delete. Either the Core is
  * registered and dialable, or nothing happened.
+ *
+ * `label` is the Panel's alias for the *machine* and is passed explicitly by a
+ * caller that has one — pairing does, because the label it sent the Core names
+ * this Panel rather than the machine, and letting that come back round as the
+ * alias would fill the fleet list with the Panel's own name.
  */
-export function registerCoreFromRegistrationBlob(raw: unknown): Core {
-  if (typeof raw !== "string" || !raw.trim()) {
-    throw new RegistrationBlobError("Paste the pairing token from `core install`.");
+export function registerCoreFromCredential(
+  credential: CoreCredential,
+  opts: { label?: string } = {},
+): Core {
+  if (
+    !credential.caCert.trim() ||
+    !credential.clientCert.trim() ||
+    !credential.clientKey.trim() ||
+    !credential.bearer.trim()
+  ) {
+    throw new CoreRegistryError("That credential is missing material the Panel needs to dial the Core.");
   }
-  const blob = decodeRegistrationBlob(raw);
-  // The codec only type-checks its fields, so a blob with an empty cert or
-  // bearer decodes cleanly. Registering one would produce a Core that can
-  // never connect and can't be re-paired (its endpoint is taken) — reject it
-  // here, where the operator still has the paste in front of them.
-  if (!blob || !blob.caCert.trim() || !blob.clientCert.trim() || !blob.clientKey.trim() || !blob.bearer.trim()) {
-    throw new RegistrationBlobError(
-      "That isn't a valid pairing token. Copy the whole line `core install` printed and paste it again.",
+
+  const endpoint = credential.endpoint.trim();
+  if (!endpoint) throw new CoreRegistryError("That credential names no Core endpoint.");
+  // mTLS is mandatory for a Core (ADR 0002), so a `ws://` endpoint is a
+  // downgrade rather than a convenience — and this is the door that has to say
+  // so. The rule used to live one layer up, in the codec
+  // `registerCoreFromRegistrationBlob` decoded with; #287 deleted that function
+  // and the guarantee left with it. Today's only caller builds the endpoint as
+  // `wss://` itself (`core-pairing.ts`), so nothing is reachable through the
+  // gap — but this is the single exported way into the registry, and the next
+  // caller would inherit nothing. Held here, where it cannot be deleted with
+  // whatever surface happens to be in front of it.
+  if (!endpoint.startsWith("wss://")) {
+    throw new CoreRegistryError(
+      `That credential's endpoint is ${endpoint}, not wss:// — a Core's core link is mTLS.`,
     );
   }
 
-  const endpoint = blob.endpoint.trim();
   const id = newCoreId();
   const now = Date.now();
   const secrets: CoreSecrets = {
-    caCert: blob.caCert,
-    clientCert: blob.clientCert,
-    clientKey: blob.clientKey,
-    bearer: blob.bearer,
+    caCert: credential.caCert,
+    clientCert: credential.clientCert,
+    clientKey: credential.clientKey,
+    bearer: credential.bearer,
   };
   // Sealed before the transaction opens: a misconfigured AC_SECRETS_KEY should
   // fail the registration outright, not leave a half-written one to roll back.
@@ -140,12 +207,12 @@ export function registerCoreFromRegistrationBlob(raw: unknown): Core {
   const db = getPanelDb();
   const insert = db.transaction(() => {
     if (db.prepare("SELECT id FROM cores WHERE endpoint = ?").get(endpoint)) {
-      throw new RegistrationBlobError(`A Core at ${endpoint} is already registered.`);
+      throw new CoreRegistryError(`A Core at ${endpoint} is already registered.`);
     }
     db.prepare(
       `INSERT INTO cores (id, operator_id, endpoint, label, last_event_id, created_at, updated_at)
        VALUES (?, ?, ?, ?, 0, ?, ?)`,
-    ).run(id, OPERATOR_ID, endpoint, labelFor(blob.label ?? "", endpoint), now, now);
+    ).run(id, OPERATOR_ID, endpoint, labelFor(opts.label ?? credential.label ?? "", endpoint), now, now);
     db.prepare("INSERT INTO core_secrets (core_id, sealed, updated_at) VALUES (?, ?, ?)").run(
       id,
       sealed,

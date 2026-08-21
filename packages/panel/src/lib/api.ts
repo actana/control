@@ -2,6 +2,7 @@ import type { Group, Project, ProjectPresentation, Task, UserTerminal } from "~/
 import type { Harness, TaskStatus } from "@actana/shared/domain";
 import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
+import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
 import type { Binding, BindingMap, HotkeyAction } from "~/lib/keybindings/types";
 import type { UsageSummary } from "~/shared/token-usage";
@@ -155,17 +156,6 @@ export const api = {
   /** The fleet: every registered Core with the service's live view of its link. */
   listCores: () => req<CoreListResponse>("/api/cores"),
   /**
-   * Register a Core. The blob is the whole base64 line `core install`
-   * printed ("pairing token" in what the UI says); the service decodes it,
-   * seals the credentials, and starts dialing. A bad paste comes back as an
-   * ApiError whose message is what to show the operator.
-   */
-  addCore: (registrationBlob: string) =>
-    req<{ core: CoreWithDial }>("/api/cores", {
-      method: "POST",
-      body: JSON.stringify({ registrationBlob }),
-    }),
-  /**
    * Rename a Core. The alias is the Panel's own name for the machine, so this
    * writes to the registry and stops there — nothing reaches the Core. The
    * response carries the normalized label (trimmed, 120 chars, endpoint host
@@ -175,6 +165,38 @@ export const api = {
     req<{ core: CoreWithDial }>(`/api/cores/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ label }),
+    }),
+  /**
+   * Ask the Panel server what certificate authority a Core presents (#286).
+   *
+   * No code goes in this request, which is what makes it safe to make against
+   * an address nobody has verified yet: the answer is the fingerprint the
+   * operator compares against what `actana pair new` printed, and the dial
+   * that produced it sent nothing.
+   */
+  inspectCoreForPairing: (address: string) =>
+    req<CorePairingIdentityResponse>("/api/cores/pairing/inspect", {
+      method: "POST",
+      body: JSON.stringify({ address }),
+    }),
+  /**
+   * Pair with a Core by short code. The server dials, checks the fingerprint
+   * again, redeems the code and registers what comes back — the key it now
+   * holds was generated there and never crossed the wire, in either direction.
+   *
+   * A refusal is an ApiError whose `body` is a `CorePairingRefusal`: switch on
+   * `failure` to say what to do next rather than rendering `message` alone.
+   */
+  pairCore: (body: {
+    address: string;
+    code: string;
+    sessionId?: string;
+    expectedFingerprint: string;
+    label?: string;
+  }) =>
+    req<{ core: CoreWithDial }>("/api/cores/pairing", {
+      method: "POST",
+      body: JSON.stringify(body),
     }),
   removeCore: (id: string) => req<void>(`/api/cores/${id}`, { method: "DELETE" }),
 

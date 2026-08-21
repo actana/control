@@ -34,7 +34,7 @@ docker run -d --name actana-core-pr \
   -v actana-core-pr-home:/home/core \
   -e ACTANA_PUBLIC_HOST=localhost \
   actana/core-dev:pr-116202608
-docker logs actana-core-pr        # the registration blob
+docker exec actana-core-pr actana pair new   # a code and a CA fingerprint
 ```
 
 Nothing privileged, no host cgroup, one volume — the same shape the released

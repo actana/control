@@ -3,10 +3,14 @@
 // The Linux e2e (systemd, in a privileged container) and the macOS one
 // (launchd, on the host) assert the same acceptance criteria against two
 // different init systems. What they legitimately share is everything that is
-// not the init system: running a command, polling until something is true,
-// waiting for the daemon's port, and picking the pairing token out of setup's
-// output. Those live here so the two scripts differ only where the platforms
-// actually differ.
+// not the init system: running a command, polling until something is true, and
+// waiting for the daemon's port. Those live here so the two scripts differ only
+// where the platforms actually differ.
+//
+// There used to be a third: picking the pairing token out of setup's output.
+// #287 removed the printed token, so what an e2e reads instead is the registry
+// entry setup wrote — `credentialFromMaterial` in `core-smoke.mjs` builds the
+// dialling half of it.
 //
 // `scripts/lib/core-smoke.mjs` stays the home for the tarball smoke's own
 // helpers — spawning the Core and dialling it. This module never spawns a
@@ -14,8 +18,6 @@
 
 import { spawnSync } from "node:child_process";
 import * as net from "node:net";
-
-import { decodeBlob } from "./core-smoke.mjs";
 
 /** How long the daemon gets to answer on its port before a test gives up. */
 export const LISTEN_TIMEOUT_MS = 60_000;
@@ -72,21 +74,3 @@ export async function waitForTcpPort(port, die, timeoutMs = LISTEN_TIMEOUT_MS) {
   await until(`port ${port} to answer`, timeoutMs, () => tryConnect(port), die);
 }
 
-/**
- * Pull the pairing token out of a verb's output.
- *
- * The token is identified by decoding rather than by position: setup prints
- * prose around it, and matching "the long line" would silently start passing
- * on the wrong line the day the output grows a second long one.
- */
-export function extractPairingToken(stdout, context, die) {
-  for (const line of stdout.split("\n").map((l) => l.trim())) {
-    if (line.length < 100) continue;
-    try {
-      return { raw: line, blob: decodeBlob(line) };
-    } catch {
-      /* not the token line */
-    }
-  }
-  die(`no pairing token in the output of ${context}`, stdout.split("\n"));
-}

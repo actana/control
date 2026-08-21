@@ -1,6 +1,6 @@
 // `actana core` — the Cores this machine can reach (#129 D10).
 //
-//   actana core add <name> [file]   register a Core from a blob file, or stdin
+//   actana core pair <name> <address> <code>   enroll this machine on a Core
 //   actana core ls [--json]         what this machine knows, without dialling
 //   actana core use <name>          point `current` at one of them
 //   actana core rm <name>           forget one
@@ -8,15 +8,28 @@
 //   actana core shell               an interactive shell on the Core (#162)
 //   actana core exec -- <cmd>       one command on the Core, no terminal (#266)
 //
-// **`add` reads a file or stdin, and there is no third way.** It does not shell
-// into a container to fetch the credential for it (#129 D9, and the ticket's
-// wording is worth keeping: *a CLI that shells into a container to fetch its
-// own credentials is not a CLI*). The reasons are not stylistic. A client that
-// reaches a Core by running a command on the Core's host only works when the
-// Core is on this machine, which is the one case that matters least; it makes
-// the container runtime a dependency of a program whose whole job is to not
-// need one; and it turns "paste this once" into a privilege the CLI holds
-// forever. `packages/cli` imports nothing that can start a process, and
+// **`pair` is how a machine comes by a credential, and there is no second way
+// (#280, #287).** The operator types an address and an eight-character code
+// somebody read out to them, the SDK generates a key pair here and gets a
+// certificate signed, and what lands is a 0600 file in the registry — so every
+// verb below reads exactly what it always read. It runs on the *client*;
+// `actana pair new`, which mints the code, runs on the Core. `core-pair.ts` has
+// the reasoning.
+//
+// **What used to be here was `core add`, and its removal is the point of #287.**
+// It took the base64 blob `actana setup` printed, from a file, from `-` or from
+// a pipe, and wrote it into the registry — the hand-carry the short code
+// replaced. There is no deprecation and no `--legacy-blob`: a second way to
+// become a Core client, with its own security properties and nobody testing it,
+// is the thing #280 removed rather than kept.
+//
+// **Nothing here shells into a container to fetch a credential** (#129 D9, and
+// the ticket's wording is worth keeping: *a CLI that shells into a container to
+// fetch its own credentials is not a CLI*). A client that reaches a Core by
+// running a command on the Core's host only works when the Core is on this
+// machine, which is the one case that matters least; it makes the container
+// runtime a dependency of a program whose whole job is to not need one.
+// `packages/cli` imports nothing that can start a process, and
 // `src/__tests__/no-local-escape.test.ts` is what keeps that true.
 //
 // **`exec` is the same argument one verb further along (#266).** A maintenance
@@ -34,11 +47,10 @@ import {
   readCurrentCore,
   readRegistry,
   removeCoreBlob,
-  writeCoreBlob,
   writeCurrentCore,
   type RegistryPaths,
 } from "./blob-registry.ts";
-import { decodeRegistrationBlobText } from "./registration-blob-file.ts";
+import { runCorePair } from "./core-pair.ts";
 import { resolveCore } from "./core-resolution.ts";
 import { runCoreShell } from "./core-shell.ts";
 import { runCoreExec } from "./core-exec.ts";
@@ -46,7 +58,6 @@ import { formatJson, formatTable } from "./cli-output.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
-import * as fs from "node:fs";
 
 /** How long `core status` waits for a Core to answer. */
 const STATUS_TIMEOUT_MS = 15_000;
@@ -54,7 +65,8 @@ const STATUS_TIMEOUT_MS = 15_000;
 export const CORE_HELP = `actana core — the Cores this machine can reach
 
 Usage
-  actana core add <name> [file]   register a Core from a blob file, or stdin
+  actana core pair <name> <address> <code>
+                                  enroll THIS machine on a Core
   actana core ls                  list the Cores this machine knows
   actana core use <name>          point \`current\` at a Core
   actana core rm <name>           forget a Core
@@ -66,7 +78,31 @@ Flags
   --core <name>   which Core \`status\` (and every later noun) talks to
   --cwd <dir>     a directory on the **Core's** machine — \`exec\`
   --json          machine-readable output — \`ls\`, \`status\` and \`exec\`
-  --verbose       explain the steps. Never prints a blob.
+  --verbose       explain the steps. Never prints a blob, a code or a key.
+  --fingerprint <sha256>   the Core's CA fingerprint — \`pair\`
+  --session <id>  the pairing session the code belongs to — \`pair\`
+  --label <name>  what to call this machine on the Core — \`pair\`
+
+Pairing with a Core
+  \`pair\` runs on the machine being paired — **this one**. On the Core, an
+  operator runs \`actana pair new\`, which prints a code, that Core's CA
+  fingerprint and the pairing session. Then, here:
+
+    actana core pair prod core.example:8443 ABCD-2345 \\
+      --session 0f6d… --fingerprint AA:BB:CC:…
+
+  The fingerprint is not optional. Without \`--fingerprint\` this prints the
+  fingerprint the Core presents and asks you to compare it with the one on the
+  Core's terminal; with no terminal to ask on, it refuses. Either way the code
+  is never sent to a certificate authority nobody confirmed.
+
+  The code is one-time, expires, and is spent by a wrong guess. A fresh one is
+  \`actana pair new\` again — it cannot be recovered, only re-minted.
+
+  What lands is a credential file at mode 0600 under
+  \${XDG_CONFIG_HOME:-~/.config}/actana/cores/<name>.txt. It is never printed
+  back, by any command or any flag, and \`ls\`, \`use\`, \`rm\`, \`status\`,
+  \`shell\` and \`exec\` all read it.
 
 Running one command
   \`exec\` is the non-interactive half of \`shell\`: no terminal, stdout and
@@ -79,16 +115,7 @@ Running one command
 
   A dropped link exits 125 and says so: the command keeps running on the Core
   and its outcome is unknown. That is never the command's own status.
-
-Registering a Core
-  \`actana setup\` prints one blob per Core. Save it, or pipe it:
-
-    actana core add prod ~/blob.txt
-    ssh core-host 'actana token' | actana core add prod
-
-  The blob is a credential: it is stored at mode 0600 under
-  \${XDG_CONFIG_HOME:-~/.config}/actana/cores/<name>.txt and is never printed
-  back, by any command or any flag.`;
+`;
 
 /** Dispatch a `core` verb. `argv` is the positionals after `core`. */
 export async function runCoreCommand(
@@ -103,12 +130,13 @@ export async function runCoreCommand(
     return verb === undefined && !args.help ? EXIT_USAGE : EXIT_OK;
   }
 
-  // Only the verbs with flags of their own take `args`. `add`, `use` and `rm`
+  // Only the verbs with flags of their own take `args`. `use` and `rm`
   // have none — passing it to them anyway made every verb look like it read the
-  // flag set, which is the one thing a reader checks a dispatch for.
+  // flag set, which is the one thing a reader checks a dispatch for. `pair`
+  // does: `--fingerprint`, `--session` and `--label` are all its.
   switch (verb) {
-    case "add":
-      return coreAdd(deps, paths, rest);
+    case "pair":
+      return runCorePair(deps, args, paths, rest);
     case "ls":
     case "list":
       return coreLs(deps, args, paths);
@@ -125,88 +153,9 @@ export async function runCoreCommand(
       return runCoreExec(deps, args, paths, rest);
     default:
       deps.err(`actana core: unknown verb "${verb}".`);
-      deps.err("Verbs: add, ls, use, rm, status, shell, exec. `actana core --help` lists them.");
+      deps.err("Verbs: pair, ls, use, rm, status, shell, exec. `actana core --help` lists them.");
       return EXIT_USAGE;
   }
-}
-
-/**
- * `actana core add <name> [file]`.
- *
- * The blob arrives from a file path, from `-`, or from a pipe — and the three
- * are one code path with one decoder, so a blob that is rejected is rejected
- * identically however it arrived.
- */
-async function coreAdd(
-  deps: ActanaCliDeps,
-  paths: RegistryPaths,
-  rest: string[],
-): Promise<number> {
-  const [name, source, ...extra] = rest;
-  if (name === undefined) {
-    deps.err("actana core add: a name is required — `actana core add <name> [file]`.");
-    return EXIT_USAGE;
-  }
-  if (extra.length > 0) {
-    deps.err(`actana core add: unexpected argument "${extra[0]}".`);
-    return EXIT_USAGE;
-  }
-  const nameError = coreNameError(name);
-  if (nameError) {
-    deps.err(`actana core add: ${nameError}.`);
-    return EXIT_USAGE;
-  }
-
-  const fromStdin = source === undefined || source === "-";
-  if (fromStdin && deps.stdinIsTty) {
-    deps.err("actana core add: no blob file given and nothing is piped in.");
-    deps.err("Pass the file `actana setup` wrote, or pipe the blob:");
-    deps.err(`  actana core add ${name} ~/blob.txt`);
-    deps.err(`  cat blob.txt | actana core add ${name}`);
-    return EXIT_USAGE;
-  }
-
-  let text: string;
-  if (fromStdin) {
-    deps.verbose("reading the blob from stdin");
-    text = await deps.readStdin();
-  } else {
-    deps.verbose(`reading the blob from ${source}`);
-    try {
-      text = fs.readFileSync(source!, "utf8");
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      deps.err(`actana core add: could not read ${source} (${code ?? "unknown error"}).`);
-      return EXIT_FAILURE;
-    }
-  }
-
-  const decoded = decodeRegistrationBlobText(text);
-  if (!decoded.ok) {
-    // The reason, never the input — see `decodeRegistrationBlobText`.
-    deps.err(`actana core add: ${decoded.error}.`);
-    return EXIT_FAILURE;
-  }
-
-  const replacing = coreExists(paths, name);
-  writeCoreBlob(paths, name, text);
-  deps.verbose(`stored at ${paths.coresDir}/${name}.txt, mode 0600`);
-
-  // The first Core a machine learns about becomes `current`, because a machine
-  // with exactly one Core should not need a second command before anything
-  // works. A second Core does not steal the pointer — that is `core use`, and
-  // silently repointing it would change what every open terminal on this
-  // machine means by "the Core".
-  const current = readCurrentCore(paths);
-  if (current === null) {
-    writeCurrentCore(paths, name);
-  }
-
-  const verb = replacing ? "Replaced" : "Added";
-  deps.out(`${verb} Core "${name}" → ${decoded.blob.endpoint}`);
-  if (current === null) deps.out(`\`current\` now points at "${name}".`);
-  else if (current !== name) deps.out(`\`current\` is still "${current}" — \`actana core use ${name}\` to switch.`);
-  return EXIT_OK;
 }
 
 /** `actana core ls [--json]` — the registry, without dialling anything. */
@@ -230,7 +179,7 @@ function coreLs(deps: ActanaCliDeps, args: ParsedArgs, paths: RegistryPaths): nu
   }
 
   if (rows.length === 0) {
-    deps.out("No Cores registered. `actana core add <name> <blob-file>` registers one.");
+    deps.out("No Cores registered. `actana core pair <name> <address> <code>` registers one.");
     return EXIT_OK;
   }
 

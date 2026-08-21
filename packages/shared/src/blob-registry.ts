@@ -54,7 +54,7 @@ export type RegistryPaths = {
  * A relative `XDG_CONFIG_HOME` is ignored rather than resolved against the
  * working directory: the specification says the variable holds an absolute
  * path, and a registry whose location depends on where the operator happened to
- * be standing when they ran `actana core add` is a registry that loses Cores.
+ * be standing when they paired a Core is a registry that loses Cores.
  */
 export function registryPaths(env: NodeJS.ProcessEnv, home: string): RegistryPaths {
   const xdg = env.XDG_CONFIG_HOME?.trim();

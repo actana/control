@@ -28,7 +28,11 @@ import path from "node:path";
 import { runCoreExec } from "@actana/core/core-exec";
 import { connectCore } from "../core-connection.ts";
 import { EXIT_FAILURE, EXIT_LINK_LOST, EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 
 let core: InProcessCore | null = null;
@@ -61,8 +65,7 @@ async function liveCore(opts: { maxOutputBytes?: number } = {}): Promise<void> {
     },
   });
   fixture = makeCliFixture();
-  const added = await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
-  expect(added.code).toBe(EXIT_OK);
+  registerCore(fixture.paths, "inproc", core.blobText);
 }
 
 /** Every verb below dials the Core for real. */

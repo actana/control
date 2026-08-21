@@ -26,13 +26,26 @@ release is attested to the workflow and the commit that built it.
 ## Cores this machine can reach
 
 ```sh
-actana core add laptop ~/blob.txt   # register a Core from its blob, or stdin
+actana core pair laptop core.example:8443 ABCD-2345 \
+  --session <id> --fingerprint AA:BB:…  # enroll this machine on a Core
 actana core ls --json               # what this machine knows
 actana core use laptop              # point `current` at one
 actana core status                  # reach it, and report what it says
 actana core shell                   # an interactive shell on that machine
 actana core exec -- df -h /         # one command on it, no terminal
 ```
+
+`core pair` is the enrollment gesture: somebody on the Core runs `actana pair
+new`, reads out an eight-character code and that Core's CA fingerprint, and this
+machine generates its own key pair, checks the fingerprint **before** it sends
+the code, and stores the credential the Core signs. The private half never
+leaves this machine, and the code is never sent to a certificate authority
+nobody confirmed — with no `--fingerprint` and no terminal to confirm one on,
+the command refuses.
+
+It is the only way in. There is no `actana core add` and no blob to paste: the
+hand-carry that used to be the enrollment gesture is gone, with no deprecation
+and no dual path.
 
 `core exec` is the non-interactive half of `core shell`, and the reason it
 exists is that a script cannot use a terminal. It returns the command's real
@@ -127,7 +140,9 @@ nothing else; a CLI on a machine that has one manages it.
 ```sh
 actana install                  # fetch a release, verify it, install and start it
 actana status                   # daemon state, versions, endpoint, Harnesses
-actana token                    # reprint the pairing token
+actana pair new                 # mint a one-time code to enroll a client with
+actana pair ls                  # pending codes, and the clients already paired
+actana pair revoke <target>     # unpair a client, or cancel a pending code
 actana update                   # install the latest release and restart
 actana logs -f                  # follow the daemon
 actana uninstall                # remove the service and the install
@@ -140,22 +155,24 @@ temporary directory before anything under `~/.local/share/actana` is touched.
 machine has no Node to run this with.
 
 A Core installed this way is registered with this machine's `actana`
-automatically and becomes its default target — nothing to paste, on the one
-machine where pasting a credential into the program that just printed it was
-always absurd.
+automatically and becomes its default target — nothing to pair, on the one
+machine where enrolling a client with the program that just installed the Core
+would be absurd.
 
 **The daemon is still not in this package's dependency graph.** `actana daemon`
 loads `core-entry.cjs` from the install root by path rather than importing it,
 so a published client never carries a database driver or a native addon. A test
 sweeps every shipped module for an `@actana/core` import and fails CI on one.
 
-## A registration blob is a credential
+## A stored credential is a credential
 
-It carries the client certificate and the bearer token for one Core. This CLI
-never prints one — not on `--verbose`, not in an error quoting input that
-failed to parse. `actana core add` reads it from a file or from stdin and
-stores it at mode 0600; a single-Core setup can pass it as `ACTANA_CORE_BLOB`
-instead. Everything that prints reduces a blob to its endpoint and label.
+Each registered Core is a client certificate and a bearer for that one machine.
+This CLI never prints one — not on `--verbose`, not in an error quoting input
+that failed to parse. `actana core pair` writes what the Core signed to mode
+0600 under `${XDG_CONFIG_HOME:-~/.config}/actana/cores/<name>.txt`, and nothing
+reads it back out to a terminal; a single-Core setup can point
+`ACTANA_CORE_BLOB` at that file instead. Everything that prints reduces a
+credential to its endpoint and label.
 
 ## Versioning
 

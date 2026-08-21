@@ -11,9 +11,9 @@ supervises the process owns the sink:
 | Foreground (`pnpm start`) | the terminal you started it in |
 
 On any Core, `actana logs` (`-f` to follow) reads the daemon's log wherever it
-lands, and `actana status` prints the Core's health, its endpoint, whether a
-pairing token is available, and — when one exists — whether a newer release
-does too.
+lands, and `actana status` prints the Core's health, its endpoint, whether this
+Core has pairing material yet, and — when one exists — whether a newer release
+is available too.
 
 ## Log lines worth grepping for
 

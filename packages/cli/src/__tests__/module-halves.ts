@@ -61,6 +61,9 @@ export const MACHINE_MODULES: Record<string, string> = {
   "actana-launchd.ts": "writes the LaunchAgent plist macOS starts the daemon from",
   "actana-layout.ts": "resolves every path this install owns under the operator's home",
   "actana-manifest.ts": "reads the extracted tarball's `core-manifest.json`",
+  "actana-pair.ts":
+    "mints, lists and revokes the pairing codes THIS machine's Core hands out (#283) — the " +
+    "Core end of enrollment, reading and writing this install's own pairing store",
   "actana-release.ts": "maps this machine to a release target and reads a release's checksums",
   "actana-service.ts": "the init-system port: enable, start, stop and query the unit",
   "actana-setup.ts": "lays down the tree, registers the service and mints the pairing material",

@@ -20,11 +20,12 @@ Core installed on metal rather than in a container.
 git clone https://github.com/actana/control
 cd control/deploy
 docker compose up -d
-docker compose logs core        # the registration blob it printed on first boot
+docker compose exec core actana pair new     # a one-time code and a fingerprint
 ```
 
 Then open <http://localhost:7420>, create the Operator (name + password), and
-paste that blob into **Add Core**.
+give **Add Core** the address `core:8443` and that code — checking the CA
+fingerprint the Panel shows you against the one `pair new` printed.
 
 You do not need the clone. Copying `docker-compose.yml` alone to a bare VM
 works identically — plus `mkdir repos` beside it, for the bind mount the `core`
@@ -48,21 +49,31 @@ The Panel dials the Core, never the reverse. That direction is why the Core
 needs no published port, and it is the same direction on a real fleet — see
 [How it works](../README.md#how-it-works).
 
-## The registration blob
+## Pairing
 
-A Core mints its own CA on first boot, issues itself a server certificate and
-the Panel a client certificate, and prints all of it — plus its endpoint and a
-bearer secret — as one base64 blob ([ADR 0002](../docs/adr/0002-core-link-auth-and-transport.md)).
-That blob is the pairing. It is printed once, on first boot, into the log:
+A Core mints its own certificate authority on first boot and issues itself a
+server certificate ([ADR 0002](../docs/adr/0002-core-link-auth-and-transport.md)).
+It prints no credential and writes none into the log: a client is enrolled one
+at a time, with a one-time code.
 
 ```bash
-docker compose logs core            # scroll to the first boot
-docker compose exec core actana token          # or just reprint it
-docker compose exec core actana token regenerate   # invalidate the old one
+docker compose exec core actana pair new       # a code, a CA fingerprint, an expiry
+docker compose exec core actana pair ls        # pending codes and paired clients
+docker compose exec core actana pair revoke <target>   # unpair one, or cancel a code
+docker compose exec core actana token regenerate       # rotate this Core's identity
 ```
 
-Treat it as a credential: anyone holding it can pair a Panel to that Core.
-`regenerate` is the revocation.
+The code is single-use, expires in five minutes by default, and dies after five
+wrong guesses. Read it out with the fingerprint beside it: the client checks the
+CA it is presented against that fingerprint before it sends the code, and the
+private key it ends up holding is generated on the client and never crosses the
+wire.
+
+`pair revoke` takes back one client. `token regenerate` is the wider hammer — a
+new CA, and every client paired with this Core has to pair again. Remove the Core
+from a Panel before you do: rotation does not move the endpoint, so pairing at an
+address that is already registered is refused, and refused *before* the code is
+spent. `actana core pair` replaces its stored credential in place instead.
 
 ## `ACTANA_PUBLIC_HOST` is the service name, and that is load-bearing
 
@@ -76,7 +87,7 @@ That one value is three things at once:
 
 1. the **address the Panel dials** (`wss://core:8443`),
 2. the **SAN in the Core's server certificate**, and
-3. the **endpoint baked into every pairing token** the Core prints.
+3. the **endpoint every pairing hands back** to the client that redeems a code.
 
 So it lives in the compose file you edit, next to the service it names — never
 in `.env`, which has room for one value and a fleet needs one per Core, and
@@ -139,7 +150,8 @@ between `# >>> second Core` and `# <<< second Core`; uncomment it, add
 
 Three things change per Core, and they must agree: the **service name**,
 `ACTANA_PUBLIC_HOST` **to match it**, and its **own volumes**. Pair it the same
-way — its blob is in `docker compose logs core2`.
+way — `docker compose exec core2 actana pair new` prints its own code and CA
+fingerprint, and **Add Core** takes the address `core2:8443` with that code.
 
 Its repos are a named volume rather than a second bind mount, which is exactly
 the swap described above: a bind mount needs a host directory that already
@@ -258,5 +270,5 @@ job:
 | `actana uninstall` | `docker compose down` (add `-v` to also delete sessions and pairing) |
 
 The verbs that still work are the ones that are about *this* Core rather than
-its lifecycle — `actana status`, `actana token`, `actana harnesses install
+its lifecycle — `actana status`, `actana pair`, `actana harnesses install
 <id>`. `docker compose exec core actana --help` prints the container page.

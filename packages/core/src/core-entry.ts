@@ -12,46 +12,39 @@
 //
 // Remote mode (issue 04 — `wss://` + mTLS + bearer auth):
 //   AC_CORE_REMOTE=1            — enable remote mode (mTLS + auth)
-//   AC_CORE_PUBLIC_HOST=<host>  — the reachable host for the cert SAN + blob
+//   AC_CORE_PUBLIC_HOST=<host>  — the reachable host for the cert SAN and the
 //                                     endpoint (default: AC_CORE_LINK_HOST)
-//   AC_CORE_BEARER_SECRET=<hex> — HMAC key for the bearer (default: random)
-//   AC_CORE_ID=<id>        — coreId in the bearer (default: random)
 //   AC_CORE_BEARER_DAYS=<n>     — bearer validity in days (default: 365)
 //   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
-//                                     When set, the daemon restarts with the
-//                                     same CA + certs + bearer secret + coreId
-//                                     — required for the auto-start reboot
-//                                     path (ADR 0003). Present: load, print
-//                                     nothing (on metal the operator already
-//                                     has the blob from `actana setup`).
-//                                     Absent: mint, persist and print the blob
-//                                     once — first run in a container, where
-//                                     `actana setup` never runs (ADR 0016
-//                                     D13/D17).
+//                                     **Required in remote mode.** The daemon
+//                                     restarts with the same CA + certs +
+//                                     bearer secret + coreId — required for the
+//                                     auto-start reboot path (ADR 0003) — and
+//                                     it is also where the pairing sessions
+//                                     live, so a remote Core without one could
+//                                     enroll nobody. Present: load. Absent:
+//                                     mint and persist — first run in a
+//                                     container, where `actana setup` never
+//                                     runs (ADR 0016 D13/D17).
 //
 // Container mode (ADR 0016 D15/D16 — baked into the Core image):
-//   ACTANA_CONTAINER=1  — this Core is a container. Two effects here: the
-//                            first-run blob prints human-readably instead of
-//                            behind the sentinel, because the reader is an
-//                            operator tailing `docker compose logs` rather
-//                            than a supervising parent parsing stdout; and
-//                            the public host becomes required, below.
-//   ACTANA_LABEL=<text> — human-friendly alias carried in the blob.
+//   ACTANA_CONTAINER=1  — this Core is a container. One effect here: the
+//                            public host becomes required, below.
+//   ACTANA_LABEL=<text> — human-friendly alias for this Core.
 //
 // The operator sets `ACTANA_PUBLIC_HOST`, which `actana daemon` hands down as
 // `AC_CORE_PUBLIC_HOST`. Missing, the boot stops here rather than defaulting to
 // the bind address — a Core with a guessed SAN pairs with nothing.
 //
-// Prints "@@AC_CORE_LISTENING@@" on stdout once the WS server is listening,
-// so the parent can resolve boot readiness (mirrors server-runner.mjs). In
-// remote mode also prints "@@AC_CORE_REGISTRATION_BLOB@@<base64>" — the
-// single paste artifact the operator copies into the Panel's "Add Core"
-// (ADR 0003). A supervising parent swallows both lines; a
-// `core install` flow captures the blob line for the operator.
+// Prints "@@AC_CORE_LISTENING@@" on stdout once the WS server is listening, so
+// the parent can resolve boot readiness (mirrors server-runner.mjs). That is the
+// only sentinel now: remote mode used to follow it with
+// "@@AC_CORE_REGISTRATION_BLOB@@<base64>", the single artifact an operator
+// pasted into the Panel's "Add Core", and #287 removed the hand-carry it
+// belonged to. A client enrolls with a code from `actana pair new`.
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { randomBytes } from "node:crypto";
 import {
   PtyCore,
   ensureClaudeShiftEnterBinding,
@@ -59,6 +52,14 @@ import {
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
+import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "./core-pairing-wiring";
+import type { CorePairingRoutesOptions } from "./core-pairing-routes";
+import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
+import {
+  PairingRevocations,
+  startPairingRevocationSweep,
+  type PairingRevocationSweep,
+} from "./core-pairing-revocation";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
 import { configureProjectRootsDb } from "./project-roots";
@@ -89,15 +90,8 @@ import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-ho
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { CoreSessionBackstop } from "./core-session-backstop";
-import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
-import {
-  buildRegistrationBlob,
-  formatRegistrationBlobNotice,
-  loadOrMintMaterial,
-  registrationBlobPath,
-  type LoadOrMintResult,
-} from "./core-first-run";
+import { loadOrMintMaterial, type LoadOrMintResult } from "./core-first-run";
 import { registerSelfWithLocalCli } from "./core-self-register";
 import {
   CONTAINER_PUBLIC_HOST_ENV,
@@ -120,7 +114,6 @@ import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
 
 const CORE_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
-const REGISTRATION_BLOB_SENTINEL = "@@AC_CORE_REGISTRATION_BLOB@@";
 
 function requiredEnv(name: string): string {
   const value = process.env[name];
@@ -340,6 +333,16 @@ async function startCore(): Promise<void> {
   // Panel client cert, and gates every frame behind a verified bearer. In
   // loopback mode (default) the server stays plain `ws://` and trusted — no
   // auth, no TLS, exactly as before.
+  // Set by the remote-mode block below when this Core has persisted material —
+  // the only shape of Core that can pair (#282). Left null otherwise, which is
+  // what keeps a loopback Core's TLS posture and route list exactly as they
+  // were.
+  let pairing: CorePairingRoutesOptions | null = null;
+  // Set beside `pairing`, and for the same reason: a Core with no persisted
+  // material has no pairing store, so there is nothing on this machine that
+  // could have been revoked.
+  let revocations: PairingRevocations | null = null;
+
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
     host,
@@ -387,8 +390,8 @@ async function startCore(): Promise<void> {
       create: (parent, name) => createDirectory(parent, name),
     },
     // Issue 266: `actana core exec` runs one command here, non-interactively.
-    // It grants nothing `core shell` does not already grant — same blob, same
-    // link, same class of process — and it is more auditable, because it
+    // It grants nothing `core shell` does not already grant — same credential,
+    // same link, same class of process — and it is more auditable, because it
     // arrives through this Core's own authentication instead of through a
     // `docker exec` on the host that this Core never sees.
     execPort: {
@@ -399,8 +402,8 @@ async function startCore(): Promise<void> {
   if (remoteMode) {
     // In a container the public host is the operator's to supply and never
     // ours to guess (ADR 0016 D15): it is baked into the server certificate's
-    // SAN and into every pairing token, so falling back to the bind address
-    // would mint a Core no Panel can verify. `actana daemon` translates
+    // SAN and into the endpoint every pairing hands back, so falling back to
+    // the bind address would mint a Core no Panel can verify. `actana daemon` translates
     // `ACTANA_PUBLIC_HOST` into `AC_CORE_PUBLIC_HOST` before it gets here; this
     // is the same refusal one layer down, for anything that execs the daemon
     // bundle directly.
@@ -417,14 +420,32 @@ async function startCore(): Promise<void> {
     const bearerDays = Number(process.env.AC_CORE_BEARER_DAYS ?? 365);
     const label = process.env.ACTANA_LABEL || "";
 
-    if (materialFile) {
-      // Persisted-material path: the daemon was started by the auto-start unit
-      // (or the container's ENTRYPOINT) with a material file. Present, it is
-      // loaded so the CA + certs + bearer secret + coreId match what the
-      // operator pasted into the Panel — a rebooted machine must resume the
-      // same identity, not generate fresh certs. Absent, this is a first run
-      // with no `actana setup` behind it (ADR 0016 D17) and the daemon mints,
-      // persists and prints the blob itself.
+    // **A remote Core has a material file or it does not boot (#287).** There
+    // used to be a second branch here for a daemon started without one: it
+    // minted certs it never persisted and printed a blob for the operator to
+    // carry, which was the whole of how anything reached that Core. The blob is
+    // gone, and a Core that cannot enroll a client — no CA key to sign a CSR
+    // with, no file for a pairing session to live in (#282) — is not a Core
+    // anybody can use. So the configuration is refused rather than served: a
+    // dual identity path where one of the two is unreachable is exactly the
+    // "second way to become a Core client" #280 exists to remove.
+    if (!materialFile) {
+      console.error(
+        "[core-entry] AC_CORE_MATERIAL_FILE is not set. A Core in remote mode keeps its " +
+          "identity and its pairing sessions in that file; without one it can issue no " +
+          "credential and no client can ever reach it. `actana setup` sets it on metal, " +
+          "and the Core image bakes it into the ENTRYPOINT.",
+      );
+      process.exit(1);
+    }
+
+    {
+      // The daemon was started by the auto-start unit (or the container's
+      // ENTRYPOINT) with a material file. Present, it is loaded so the CA +
+      // certs + bearer secret + coreId are the ones every paired client
+      // chains to — a rebooted machine must resume the same identity, not
+      // generate fresh certs. Absent, this is a first run with no `actana
+      // setup` behind it (ADR 0016 D17) and the daemon mints and persists.
       let resolved: LoadOrMintResult;
       try {
         resolved = await loadOrMintMaterial({
@@ -434,16 +455,41 @@ async function startCore(): Promise<void> {
           // did not give — enough to mint a first identity from, never enough
           // to re-sign an existing one's SAN with.
           publicHostDeclared: Boolean(process.env.AC_CORE_PUBLIC_HOST),
-          port,
-          label,
-          bearerDays,
         });
       } catch (err) {
         console.error(`[core-entry] ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-      const { material, blob, certAction } = resolved;
+      const { material, certAction } = resolved;
       const secret: BearerSecret = material.bearerSecret;
+
+      // The pre-auth pairing endpoint (#282). Mounted only on this path, and
+      // that is the whole of the condition: pairing needs a CA key to sign
+      // with, a stable UUID to put in the bearers it issues, and a file the
+      // operator's `actana pair new` and this daemon can both see — all three
+      // are the persisted material, and a daemon started without one has
+      // nowhere for a session to live.
+      const pairingStore = new PairingStore(pairingStorePath(materialFile));
+      pairing = {
+        material: {
+          caCert: material.caCert,
+          caKey: material.caKey,
+          bearerSecret: material.bearerSecret,
+          coreId: material.coreId,
+          coreUuid: material.coreUuid,
+        },
+        sessions: pairingStore,
+        endpoint: `wss://${publicHost}:${port}`,
+        bearerDays,
+      };
+      // The other half of `actana pair revoke` (#283). That command runs in the
+      // CLI and can only stamp a row; this is the process that makes the stamp
+      // mean something — refusing the certificate at the gate, refusing the
+      // bearer at the `auth` frame, and closing the link a revoked client
+      // already has open. Built here, next to the store it reads, and armed
+      // below once there is a server for it to close connections on.
+      revocations = new PairingRevocations(pairingStore);
+      serverOpts.revocation = revocations;
 
       serverOpts.tls = {
         caCert: material.caCert,
@@ -453,14 +499,14 @@ async function startCore(): Promise<void> {
       serverOpts.authVerifier = (b) => verifyBearer(b, secret);
 
       // A moved public host keeps the identity and re-signs the cert for the
-      // new address (D18), so this is not a pairing event — but the Panel is
-      // still dialling the old address, so say where the fresh token is.
+      // new address (D18), so this is not a pairing event — but a paired client
+      // is still dialling the old address, so say where this Core now is.
       if (certAction === "moved") {
         console.log(
           `[core-entry] public host is now ${publicHost} — re-issued this Core's server ` +
             "certificate from its existing CA. Pairing credentials are unchanged; update " +
-            `this Core's address in your Panel, or re-pair with the token in ` +
-            `${registrationBlobPath(materialFile)}.`,
+            `this Core's address in your Panel, or run \`actana pair new\` here and pair ` +
+            "it again.",
         );
       }
 
@@ -469,7 +515,7 @@ async function startCore(): Promise<void> {
       // — which does this on metal — is refused here. Without it a Session
       // started on this Core finds an empty registry and cannot address the
       // Core it is running on, and the `actana-sessions` skill installed a few
-      // lines below states the opposite as a fact. Not gated on `blob`: a
+      // lines below states the opposite as a fact. Not gated on a first mint: a
       // volume that predates this has material but no registry entry, and this
       // is the boot that fixes it. See `core-self-register.ts`.
       if (containerMode) {
@@ -487,8 +533,8 @@ async function startCore(): Promise<void> {
           // be written is reported and stepped over rather than fatal.
           console.error(
             `[core-entry] could not register this Core with the \`actana\` on its own machine: ` +
-              `${registered.error}. \`actana core ls\` here will be empty; the pairing token in ` +
-              `${registrationBlobPath(materialFile)} still works from anywhere.`,
+              `${registered.error}. \`actana core ls\` here will be empty; \`actana pair new\` ` +
+              "here still enrolls a client from anywhere.",
           );
         } else if (registered.wiring.selected) {
           console.log(
@@ -504,46 +550,6 @@ async function startCore(): Promise<void> {
           );
         }
       }
-
-      // Printed only when this boot minted the identity. On every later boot
-      // `blob` is null: the operator has already paired, and a second blob in
-      // the log reads as "this Core moved".
-      if (blob !== null) {
-        console.log(
-          containerMode
-            ? formatRegistrationBlobNotice(blob, registrationBlobPath(materialFile))
-            : `${REGISTRATION_BLOB_SENTINEL}${blob}`,
-        );
-      }
-    } else {
-      // Fresh-material path (issue 04 backward-compat): generate new certs +
-      // bearer, print the registration blob for the operator to capture. Used
-      // when the daemon is invoked directly without a persisted material file.
-      const mat = await generateCertMaterial({ host: publicHost });
-      const secretHex = process.env.AC_CORE_BEARER_SECRET ?? randomBytes(32).toString("hex");
-      const secret: BearerSecret = secretHex;
-      const coreId = process.env.AC_CORE_ID ?? `core_${randomBytes(8).toString("hex")}`;
-
-      serverOpts.tls = {
-        caCert: mat.ca.cert,
-        serverCert: mat.server.cert,
-        serverKey: mat.server.key,
-      };
-      serverOpts.authVerifier = (b) => verifyBearer(b, secret);
-
-      // Print the registration blob first so the operator can capture it
-      // before the "listening" line resolves boot readiness.
-      const blob = buildRegistrationBlob(
-        {
-          caCert: mat.ca.cert,
-          clientCert: mat.client.cert,
-          clientKey: mat.client.key,
-          coreId,
-          bearerSecret: secretHex,
-        },
-        { publicHost, port, label, bearerDays },
-      );
-      console.log(`${REGISTRATION_BLOB_SENTINEL}${blob}`);
     }
   }
 
@@ -576,10 +582,34 @@ async function startCore(): Promise<void> {
     },
     ...(serverOpts.authVerifier ? { authVerifier: serverOpts.authVerifier } : {}),
   });
-  serverOpts.httpRoutes = fileRoutes;
+  // The pairing family goes first, and `composeCoreHttpRoutes` documents why:
+  // the file routes claim the whole `/v1/` prefix and would answer
+  // `/v1/pair/redeem` with the 401 a client without a bearer gets — which is
+  // every client that is here to be given one.
+  //
+  // `announceFiles` stays a statement about the *file* routes. The composed
+  // surface is no longer only them, so the default ("yes if any HTTP surface is
+  // mounted") would now be announcing a capability on the strength of a
+  // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
+  serverOpts.httpRoutes = pairing
+    ? composeCoreHttpRoutes(buildCorePairingRoutes(pairing), fileRoutes)
+    : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
+  // What the mTLS gate is allowed to serve without a client certificate. Absent
+  // unless pairing is mounted, and absent means the handshake keeps refusing
+  // uncertificated clients outright — see `core-preauth-gate.ts`.
+  if (pairing) serverOpts.isPreAuthPath = isPairingPath;
 
   const server = new PtyCoreLinkServer(core, serverOpts);
+
+  // Armed after the server exists, because what it does when it finds a fresh
+  // revocation is close that client's connections. Its first read runs here and
+  // is deliberately not dispatched — see `startPairingRevocationSweep` — so a
+  // Core that boots with revocations already on file refuses them from its
+  // first request rather than from one second in.
+  const revocationSweep: PairingRevocationSweep | null = revocations
+    ? startPairingRevocationSweep({ revocations, onRevoked: () => server.closeRevoked() })
+    : null;
 
   // Alert-only, once a day, into this daemon's log — never a frame the Panel
   // raises and never an update this process applies (ADR 0010).
@@ -610,6 +640,7 @@ async function startCore(): Promise<void> {
     sessionBackstop?.stop();
     availabilityStore.stop();
     updateNotice?.stop();
+    revocationSweep?.stop();
     disposeEventLogStore();
     disposeCoreQueryStore();
     disposeCoreMutationStore();

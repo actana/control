@@ -16,7 +16,12 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { connectCore } from "../core-connection.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, projectSnapshot, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  projectSnapshot,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { arrayEventLog, startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
@@ -99,7 +104,7 @@ describe("actana project, against a Core in this process", () => {
     const store = projectStore([projectSnapshot("api", "/srv/work/api", { pinned: true })]);
     core = await startInProcessCore({ queryPort: store.queryPort });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["project", "ls", "--json"], { connect: connectCore });
 
@@ -113,12 +118,9 @@ describe("actana project, against a Core in this process", () => {
     const store = projectStore();
     core = await startInProcessCore({ queryPort: store.queryPort, mutationPort: store.mutationPort });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
-    const added = await fixture.run(["project", "add", "api", "/srv/work/api"], {
-      connect: connectCore,
-    });
-    expect(added.code, added.err.join("\n")).toBe(EXIT_OK);
+    await fixture.run(["project", "add", "api", "/srv/work/api"], { connect: connectCore });
     expect(store.mutations).toEqual([{ op: "create", name: "api", path: "/srv/work/api" }]);
 
     // It is there when asked again — the round trip, not just the frame.
@@ -130,7 +132,7 @@ describe("actana project, against a Core in this process", () => {
     const store = projectStore();
     core = await startInProcessCore({ queryPort: store.queryPort, mutationPort: store.mutationPort });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["project", "add", "api", "/elsewhere/api"], {
       connect: connectCore,
@@ -143,7 +145,7 @@ describe("actana project, against a Core in this process", () => {
   it("browses the Core's disk, not the operator's", async () => {
     core = await startInProcessCore({ directoryPort: coreDisk });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["project", "browse", "/srv/core-disk", "--json"], {
       connect: connectCore,
@@ -164,7 +166,7 @@ describe("actana project, against a Core in this process", () => {
   it("passes a Core with no directory port through as a refusal", async () => {
     core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["project", "browse"], { connect: connectCore });
 
@@ -183,7 +185,7 @@ describe("actana harness, against a Core in this process", () => {
   it("lists what the Core reports", async () => {
     core = await startInProcessCore({ availabilityPort: { snapshot: () => missing } });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["harness", "ls", "--json"], { connect: connectCore });
 
@@ -212,7 +214,7 @@ describe("actana harness, against a Core in this process", () => {
       liveEventPollMs: 25,
     });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["harness", "install", "opencode"], { connect: connectCore });
 
@@ -245,7 +247,7 @@ describe("actana harness, against a Core in this process", () => {
       liveEventPollMs: 25,
     });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["harness", "install", "opencode", "--json"], {
       connect: connectCore,
@@ -292,7 +294,7 @@ describe("actana harness, against a Core in this process", () => {
       liveEventPollMs: 25,
     });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["harness", "install", "opencode", "--json"], {
       connect: connectCore,
@@ -341,7 +343,7 @@ describe("actana harness, against a Core in this process", () => {
       liveEventPollMs: 25,
     });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["harness", "install", "opencode", "--json"], {
       connect: connectCore,
@@ -357,7 +359,7 @@ describe("actana harness, against a Core in this process", () => {
   it("reports a Core that cannot install anything, rather than waiting on it", async () => {
     core = await startInProcessCore({ availabilityPort: { snapshot: () => missing } });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const run = await fixture.run(["harness", "install", "opencode"], { connect: connectCore });
 

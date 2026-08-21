@@ -57,8 +57,8 @@ installed either way.
 That detects the machine's OS and CPU, downloads the matching Core tarball
 from the latest GitHub Release, **checks it against the release's `SHA256SUMS`
 before extracting or running anything**, and hands over to `actana setup` —
-which installs, writes the auto-start unit, starts the daemon, and prints your
-pairing token.
+which installs, writes the auto-start unit, starts the daemon, and tells you how
+to pair a client with it.
 
 The checksum catches a corrupted or truncated download: it proves the tarball
 is the one that release's own checksum file describes. Releases are not signed
@@ -85,8 +85,8 @@ curl -fsSL <install-script-url> | bash -s -- --version 0.1.0 --public-host core1
 options, for provisioning systems where flags are awkward.
 
 **Re-running the one-liner on a machine that already has a Core upgrades it
-in place** — same install, same pairing token, one unit. It is always safe to
-paste again.
+in place** — same install, same identity, one unit, and every paired client
+stays paired. It is always safe to paste again.
 
 If anything fails — an unsupported platform, a release without a build for it,
 a checksum that does not match — the installer stops before extracting or
@@ -172,8 +172,12 @@ tar -xzf actana-core-0.1.0-linux-x64.tar.gz
 - registers and starts the service, then waits for the port to answer,
 - registers this Core with **this machine's own** `actana`, so `actana core ls`
   lists it and it is what `actana session start` means here by default,
-- prints your **pairing token** — which is for your *Panel*, and for any other
-  machine you want to drive this Core from.
+- tells you to run `actana pair new` when you want to enroll a client — a
+  Panel, or another machine you want to drive this Core from.
+
+`setup` prints no credential of any kind. A client is enrolled one at a time,
+by a one-time code, and the private key it ends up holding is generated on that
+client and never crosses the wire.
 
 Useful flags:
 
@@ -210,20 +214,37 @@ work). A vendor installer that fails is reported with the vendor's own docs
 URL and never fails your Core install. After an install the Core
 re-probes immediately, so a paired Panel sees the new harness without a restart.
 
-Re-running `setup` is safe: it upgrades in place, keeps your existing pairing
-token, and leaves exactly one unit (or one LaunchAgent). It issues a new token only when
-`--public-host` changed, because the old server certificate would no longer
-verify — and it says so when it does.
+Re-running `setup` is safe: it upgrades in place, keeps this Core's identity, and
+leaves exactly one unit (or one LaunchAgent). Paired clients stay paired. It
+re-signs the server certificate only when `--public-host` changed, because the
+old one would no longer verify for the new address — and it says so when it does.
 
 ### Step 3 — Pair the Core in your Panel
 
-Copy the base64 pairing token `setup` printed, then in the Panel go to
-**Settings → Cores → Add Core** and paste it. The Panel dials
-`wss://<public-host>:<port>`, verifies the certificate, and the Core appears in
-the Fleet view.
+On the Core:
 
-Lost the token? `actana token` reprints it. It puts only the token on stdout,
-so piping it into a clipboard tool works.
+```bash
+actana pair new --label my-panel
+```
+
+That prints three things: a one-time **pairing code** as `XXXX-XXXX`, this
+Core's **CA fingerprint**, and when the code expires (five minutes by default,
+`--ttl` moves it). Then in the Panel go to **Settings → Cores → Add Core**,
+give it `<public-host>:<port>`, and check the fingerprint the Panel shows you
+against the one on the Core's terminal *before* you enter the code. The Panel
+generates its own key, has the Core sign it, and the Core appears in the Fleet
+view.
+
+The code is single-use, expires, and dies after five wrong guesses. There is no
+way to look one up — `actana pair ls` stores a digest, not the code — so a lost
+code is re-minted with another `actana pair new`.
+
+From another machine's `actana`, the client end of the same exchange is:
+
+```bash
+actana core pair prod <public-host>:<port> XXXX-XXXX \
+  --session <id> --fingerprint <sha256>
+```
 
 ---
 
@@ -320,7 +341,9 @@ actana status
 ```
 
 ```bash
-actana token
+actana pair new      # enroll a client — prints a code, a fingerprint, an expiry
+actana pair ls       # pending codes, and the clients already paired
+actana pair revoke <target>   # unpair a client, or cancel a pending code
 ```
 
 ```bash
@@ -379,17 +402,26 @@ unchanged. A Core one release behind is not an unhealthy Core.
 
 Set `ACTANA_UPDATE_CHECK=0` (or `false`, or `off`) to turn it off entirely.
 
-### Reissuing the pairing token
+### Rotating this Core's identity
 
 ```bash
 actana token regenerate
 ```
 
 This mints a fresh CA, certificates and bearer secret, then restarts the daemon
-onto them — so **every token this Core printed before stops working**. That is
-the one-command answer to a leaked pairing token; every Panel paired with this
-Core shows it as unauthorized until you paste the new token into "Add Core".
-Reprinting an unchanged token is `actana token`.
+onto them — so **every credential this Core ever issued stops working**. That is
+the one-command answer to a compromised Core: every client paired with it shows
+as unauthorized until you pair it again with a fresh `actana pair new`.
+
+**Remove the Core from a Panel before pairing it again.** Rotation does not move
+the endpoint, so the Panel's registry row is still there, and pairing refuses at
+an address that is already registered — before it spends your code, so you have
+to mint another. `actana core pair` needs no such step: it replaces the stored
+credential in place.
+
+`token regenerate` hands nothing out and there is nothing to reprint.
+
+To take back one client without touching the rest, use `actana pair revoke`.
 
 ### Uninstalling
 

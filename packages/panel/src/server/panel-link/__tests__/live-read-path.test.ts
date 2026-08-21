@@ -14,7 +14,6 @@ import {
 } from "@actana/core/pty-core-link-server";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
 import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core-link-frames";
 import type {
@@ -41,6 +40,8 @@ const { handleApiRequest } = await import("../../api-router");
 const { closePanelDb, getPanelDb } = await import("../../panel-db");
 const { operatorSessionCookie } = await import("../../__tests__/_operator-session");
 const { attachPanelLink } = await import("../ws-server");
+const { coreLinkManager } = await import("../../services/core-link-manager");
+const { registerCoreFromCredential } = await import("../../services/cores");
 const { PANEL_LINK_PATH, PANEL_LINK_PROTOCOL_VERSION, PANEL_LINK_VERSION_PARAM } = await import(
   "~/shared/panel-link"
 );
@@ -287,7 +288,8 @@ function queryPort(): CoreQueryPort {
   };
 }
 
-type CoreFixture = { server: PtyCoreLinkServer; blob: string; log: ReturnType<typeof growableEventLog> };
+type CoreCredential = Parameters<typeof registerCoreFromCredential>[0];
+type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential; log: ReturnType<typeof growableEventLog> };
 
 async function startCore(label: string, protocolVersion?: string): Promise<CoreFixture> {
   const material = await generateCertMaterial({ host: "127.0.0.1" });
@@ -308,15 +310,15 @@ async function startCore(label: string, protocolVersion?: string): Promise<CoreF
     protocolVersion,
   });
   await vi.waitFor(() => expect(bound.port).toBeGreaterThan(0));
-  const blob = encodeRegistrationBlob({
+  const credential = {
     endpoint: `wss://127.0.0.1:${bound.port}`,
     label,
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
-  });
-  return { server, blob, log };
+  };
+  return { server, credential, log };
 }
 
 const running: PtyCoreLinkServer[] = [];
@@ -330,15 +332,14 @@ async function pair(
 ): Promise<{ coreId: string; core: CoreFixture }> {
   const core = await startCore(label, opts.protocolVersion);
   running.push(core.server);
-  const response = await handleApiRequest(
-    new Request(`${ORIGIN}/api/cores`, {
-      method: "POST",
-      headers: { cookie: operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify({ registrationBlob: core.blob }),
-    }),
-  );
-  const body = (await response!.json()) as { core: { id: string } };
-  const coreId = body.core.id;
+  // Registered through the service and dialled — the two calls the pairing
+  // controller makes once a code has been redeemed. There is no `POST
+  // /api/cores` to paste a blob at any more (#287). `operatorSessionCookie`
+  // first because the registry row's foreign key points at the Operator, which
+  // an HTTP registration used to create on the way past.
+  operatorSessionCookie();
+  const coreId = registerCoreFromCredential(core.credential).id;
+  coreLinkManager().dial(coreId);
   paired.push(coreId);
   await vi.waitFor(async () => {
     const listing = await handleApiRequest(

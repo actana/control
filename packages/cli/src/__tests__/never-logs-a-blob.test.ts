@@ -13,10 +13,10 @@
 // exactly the line somebody adds without thinking.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import { CorePairingError } from "@actana/sdk/core-pairing.ts";
 import {
   fakeAttachment,
+  fakePairing,
   fakeTerminal,
   fakeCore,
   fakeProjectFiles,
@@ -25,6 +25,7 @@ import {
   healthyProbe,
   makeCliFixture,
   projectSnapshot,
+  registerCore,
   sentinelBlobText,
   SENTINELS,
   type CliFixture,
@@ -59,14 +60,13 @@ function expectNoSecrets(what: string, output: string) {
 }
 
 describe("no verb prints a blob, with --verbose on", () => {
-  it("sweeps add, ls, use, status, rm and the help", async () => {
-    const dir = path.join(cli().home, "blobs");
-    mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, "blob.txt");
-    writeFileSync(file, `${sentinelBlobText()}\n`);
+  it("sweeps ls, use, status, rm and the help", async () => {
+    // The sweep used to open with `core add (file)`, the verb that read a blob
+    // off disk. #287 removed it, so the registry is arranged directly and the
+    // sweep starts at the first verb that *reads* one.
+    registerCore(cli().paths, "prod");
 
     const runs: Array<[string, string[]]> = [
-      ["core add (file)", ["core", "add", "prod", file, "--verbose"]],
       ["core ls", ["core", "ls", "--verbose"]],
       ["core ls --json", ["core", "ls", "--json", "--verbose"]],
       ["core use", ["core", "use", "prod", "--verbose"]],
@@ -83,13 +83,105 @@ describe("no verb prints a blob, with --verbose on", () => {
     }
   });
 
+  it("sweeps `core pair`, which is handed a credential rather than reading one (#285)", async () => {
+    // The verb the sweep would miss if it were only ever run against a registry
+    // that already had a blob in it: `core pair` receives one from the SDK and
+    // writes it, so every line it prints — the success, the `--verbose` steps,
+    // the fingerprint prompt and every refusal — has the material in scope.
+    //
+    // The pairing **code** is swept alongside the credential here, because this
+    // is the one verb that is handed one. It is a bearer secret for as long as
+    // its session is open and it must not reach a terminal, a CI log or a shell
+    // history any more than the key does.
+    //
+    // **The sentinel is a code the shape check accepts.** An unmistakable
+    // string that could not be a pairing code only ever reaches the one path
+    // that refuses it, which would leave the absence assertion vacuous on the
+    // three runs that matter most — the confirmed dial, the issued credential
+    // and the Core's refusal. So the well-formed sentinel goes through all
+    // four, and the malformed one shares its first four characters so a single
+    // absence check covers both.
+    const CODE = "ZZVV-QQWW";
+    const MALFORMED = "ZZVVQQWWXX";
+    const session = "session-1";
+    const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+    const argv = (code: string, extra: string[] = []) => [
+      "core",
+      "pair",
+      "paired",
+      "core.test:8443",
+      code,
+      "--session",
+      session,
+      "--verbose",
+      ...extra,
+    ];
+
+    const runs: Array<[string, string[], Parameters<CliFixture["run"]>[1]]> = [
+      // A shape that is refused before anything is dialled.
+      ["core pair (bad code)", argv(MALFORMED, ["--fingerprint", fingerprint]), { pairing: fakePairing() }],
+      // The interactive confirmation, which prints a fingerprint beside a code
+      // it was given.
+      [
+        "core pair (confirmed)",
+        argv(CODE),
+        { pairing: fakePairing({ fingerprint }), machine: { interactive: true } },
+      ],
+      // The success, which has the issued credential in hand.
+      [
+        "core pair (issued)",
+        argv(CODE, ["--fingerprint", fingerprint]),
+        { pairing: fakePairing({ fingerprint }) },
+      ],
+      // And a refusal, where a diagnostic would reach for its input.
+      [
+        "core pair (refused)",
+        argv(CODE, ["--fingerprint", fingerprint]),
+        { pairing: fakePairing({ fingerprint, fails: "refused" }) },
+      ],
+      // And the second door onto `bad-code`: a shape this package accepted and
+      // the SDK did not, whose own message ends with the code in quotes.
+      [
+        "core pair (SDK refused the shape)",
+        argv(CODE, ["--fingerprint", fingerprint]),
+        {
+          pairing: fakePairing({
+            fingerprint,
+            failsWith: new CorePairingError(
+              "bad-code",
+              `a pairing code is eight characters, written XXXX-XXXX — "${CODE}" is not`,
+            ),
+          }),
+        },
+      ],
+    ];
+
+    for (const [what, args, opts] of runs) {
+      const run = await cli().run(args, opts);
+      expectNoSecrets(what, run.all);
+      // Both spellings, and the prefix they share: a code echoed back without
+      // its hyphen is a code in a shell history.
+      for (const shape of [CODE, MALFORMED, "ZZVV"]) {
+        expect(run.all, `${what} printed the pairing code`).not.toContain(shape);
+      }
+    }
+
+    // The guard on the guard: the well-formed sentinel really is one the shape
+    // check takes, so the four runs above reached the paths they name rather
+    // than all landing on the refusal that rejects a malformed code.
+    const issued = await cli().run(argv(CODE, ["--fingerprint", fingerprint]), {
+      pairing: fakePairing({ fingerprint }),
+    });
+    expect(issued.code, "the sentinel code was refused, so three of these runs proved nothing").toBe(0);
+  });
+
   it("sweeps the nouns that dial with the credential in hand", async () => {
     // `project`, `harness` and `events` (#161) reach a Core, which means the
     // blob is decoded, handed to a client and quoted back by any failure on the
     // way. Every verb runs with `--verbose`, including the paths where the Core
     // refuses — the diagnostic that explains a refusal is the line most likely
     // to reach for its input.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     const core = fakeCore({
       projects: [projectSnapshot("api", "/srv/work/api")],
       availability: { opencode: { status: "missing" } },
@@ -144,7 +236,7 @@ describe("no verb prints a blob, with --verbose on", () => {
   });
 
   it("sweeps a dial that failed, where the error quotes the endpoint it could not reach", async () => {
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     for (const argv of [
       ["project", "ls", "--verbose"],
       ["harness", "ls", "--verbose"],
@@ -166,7 +258,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // failure path, which is where a diagnostic would quote what it dialled
     // with. The gateway refuses so that path is the one swept; the successes
     // are covered by the verbs above it.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
 
     const refusing = fakeSessionGateway({
       list: async () => {
@@ -201,13 +293,6 @@ describe("no verb prints a blob, with --verbose on", () => {
     }
   });
 
-  it("sweeps the stdin path, where the blob is in memory rather than on disk", async () => {
-    const run = await cli().run(["core", "add", "prod", "--verbose"], {
-      stdin: sentinelBlobText(),
-    });
-    expectNoSecrets("core add (stdin)", run.all);
-  });
-
   it("sweeps single-Core mode, where the blob is in the environment", async () => {
     const run = await cli().run(["core", "status", "--json", "--verbose"], {
       env: { ACTANA_CORE_BLOB: sentinelBlobText() },
@@ -217,8 +302,10 @@ describe("no verb prints a blob, with --verbose on", () => {
   });
 
   it("sweeps the failure paths, which are where a diagnostic would quote its input", async () => {
-    // A blob that is *nearly* right is the dangerous case: the decoder has the
-    // real credential in hand and is about to explain what is wrong with it.
+    // A stored credential that is *nearly* right is the dangerous case: the
+    // decoder has the real material in hand and is about to explain what is
+    // wrong with it. It arrives through the registry rather than a paste now
+    // (#287) — the file a pairing wrote, corrupted since.
     const almost = Buffer.from(
       JSON.stringify({
         endpoint: "ws://downgraded.test:9444",
@@ -229,18 +316,31 @@ describe("no verb prints a blob, with --verbose on", () => {
       }),
     ).toString("base64");
 
-    const downgraded = await cli().run(["core", "add", "prod", "--verbose"], { stdin: almost });
-    expect(downgraded.code).not.toBe(0);
-    expectNoSecrets("core add (rejected blob)", downgraded.all);
+    registerCore(cli().paths, "downgraded", almost);
+    const listed = await cli().run(["core", "ls", "--verbose"]);
+    expectNoSecrets("core ls (unusable entry)", listed.all);
+    const selected = await cli().run(["core", "status", "--core", "downgraded", "--verbose"], {
+      probe: healthyProbe(),
+    });
+    expect(selected.code).not.toBe(0);
+    expectNoSecrets("core status (unusable entry)", selected.all);
 
     // …and a Core that refuses the connection, where the error comes back from
     // the transport with the endpoint and whatever else it chose to include.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
-    const refused = await cli().run(["core", "status", "--verbose"], {
+    //
+    // `--core prod` is load-bearing, not decoration. `registerCore` claims
+    // `current` only when nothing holds it, so the undecodable entry above took
+    // the pointer and keeps it — and a bare `core status` would resolve *that*,
+    // fail inside the decoder, and never reach the probe. The sweep would still
+    // pass, on a path the leg above already covers, which is the worst way for
+    // an absence assertion to be green.
+    registerCore(cli().paths, "prod");
+    const refused = await cli().run(["core", "status", "--core", "prod", "--verbose"], {
       probe: async () => {
         throw new Error("connect ECONNREFUSED");
       },
     });
+    expect(refused.all).toContain("ECONNREFUSED");
     expectNoSecrets("core status (refused)", refused.all);
   });
 
@@ -249,7 +349,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // open: it has the resolved blob in hand and is explaining a failure to
     // reach the Core the blob names. Everything after that point is bytes the
     // remote shell chose, which never touch a credential.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     const run = await cli().run(["core", "shell", "--verbose"], {
       terminal: fakeTerminal(),
       openShell: async () => {
@@ -267,7 +367,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // read-only names another Core client, at a moment when the only identity
     // this process holds is a credential. Everything else is bytes the harness
     // chose, which never touch one.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
 
     const refused = await cli().run(["session", "attach", "task_1", "--verbose"], {
       terminal: fakeTerminal(),
@@ -294,7 +394,7 @@ describe("no verb prints a blob, with --verbose on", () => {
   it("prints the endpoint and label, which are the non-secret half", async () => {
     // The counterpart assertion: a sweep that passed because nothing was printed
     // at all would be a sweep that proves nothing.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText("wss://visible.test:9444") });
+    registerCore(cli().paths, "prod", sentinelBlobText("wss://visible.test:9444"));
     const run = await cli().run(["core", "ls", "--json"]);
     expect(run.out.join("\n")).toContain("wss://visible.test:9444");
     expect(run.out.join("\n")).toContain("the-test-core");

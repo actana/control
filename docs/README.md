@@ -17,7 +17,8 @@ Start with the task you actually have.
 | See where the Panel's and a Core's logs land | [`observability.md`](observability.md) |
 
 The order that works: **deploy a Panel first**, then install a Core on each
-machine, then paste that machine's pairing token into the Panel.
+machine, then run `actana pair new` on that machine and spend the code it prints
+in the Panel's "Add Core".
 
 ## I want to contribute
 

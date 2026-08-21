@@ -781,7 +781,7 @@ function waitTimeoutMs(
  * Words are joined with single spaces, which is what a shell has already done
  * to anything unquoted — so `session send s1 yes please` sends `yes please`
  * rather than failing over an argument the operator did not think of as a
- * second one. `-` is the same stdin convention `core add` uses, and it is what
+ * second one. `-` is the conventional stdin marker, and it is what
  * a prompt longer than a command line arrives by.
  */
 async function readText(

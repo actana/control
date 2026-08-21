@@ -2,8 +2,8 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Btn } from "~/components/ui/Btn";
 import { ConfirmDialog } from "~/components/ui/ConfirmDialog";
-import { Textarea } from "~/components/ui/Textarea";
 import { Field, SettingsSection } from "~/components/views/SettingsParts";
+import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { api } from "~/lib/api";
 import { formatRelativeTime } from "~/lib/format-relative-time";
@@ -12,6 +12,12 @@ import { coreOrder, type CoreDialStatus, type CoreWithDial } from "~/shared/core
 /**
  * Cores settings — the operator's view of the fleet, and the one place a Core
  * is paired or forgotten.
+ *
+ * Pairing is a short code and an address (#286): `actana pair new` on the
+ * machine prints a code, that Core's CA fingerprint and a session id, and
+ * `AddCoreByPairing` walks the operator through comparing the fingerprint
+ * before the code goes anywhere. The Panel server does the pairing itself —
+ * key generation and a TLS dial are not a browser's work.
  *
  * The link state shown here belongs to the Panel *service*: it dials every Core
  * whether or not this page is open, so all this page does is poll for the
@@ -26,10 +32,6 @@ export function CoresSettingsPage() {
   const [cores, setCores] = useState<CoreWithDial[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-
-  const [registrationBlob, setRegistrationBlob] = useState("");
-  const [registering, setRegistering] = useState(false);
-  const [registerError, setRegisterError] = useState<string | null>(null);
 
   const [pendingRemoval, setPendingRemoval] = useState<CoreWithDial | null>(null);
   const [removing, setRemoving] = useState(false);
@@ -65,23 +67,14 @@ export function CoresSettingsPage() {
     return () => clearInterval(timer);
   }, [refresh]);
 
-  const handleRegister = async () => {
-    const blob = registrationBlob.trim();
-    if (!blob) return;
-    setRegistering(true);
-    setRegisterError(null);
-    try {
-      const { core } = await api.addCore(blob);
-      setRegistrationBlob("");
-      await refresh();
-      toast.success(`Core "${core.label}" paired.`);
-    } catch (err) {
-      // Inline rather than a toast: a rejected paste is something the operator
-      // has to correct in the box that is still in front of them.
-      setRegisterError(err instanceof Error ? err.message : "Could not pair that Core.");
-    } finally {
-      setRegistering(false);
-    }
+  /**
+   * A Core that just paired. The list is re-read rather than appended to, so
+   * the new row arrives with the service's own view of its link rather than
+   * the one the pairing response happened to be born with.
+   */
+  const handlePaired = async (core: CoreWithDial) => {
+    await refresh();
+    toast.success(`Core "${core.label}" paired.`);
   };
 
   /**
@@ -128,7 +121,7 @@ export function CoresSettingsPage() {
   return (
     <SettingsSection
       title="Cores"
-      subtitle="The machines this Panel manages. Pair one by pasting the token its Core printed at install; the Panel keeps the link up from the server, so your fleet stays connected with no browser open. Credentials are encrypted in the Panel's data directory."
+      subtitle="The machines this Panel manages. Pair one with the short code `actana pair new` prints on the machine; the Panel keeps the link up from the server, so your fleet stays connected with no browser open. Credentials are encrypted in the Panel's data directory."
       headingLevel="h1"
     >
       {loading ? (
@@ -152,7 +145,8 @@ export function CoresSettingsPage() {
                   borderRadius: 7,
                 }}
               >
-                No Cores yet. Install the Core on a machine and paste the token it prints below.
+                No Cores yet. Install the Core on a machine, run `actana pair new` there, and
+                pair it below.
               </div>
             ) : (
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -171,47 +165,7 @@ export function CoresSettingsPage() {
           </Field>
 
           <Field label="Add a Core">
-            <div
-              style={{
-                padding: "14px 16px",
-                background: "var(--surface-0)",
-                border: "1px solid var(--border)",
-                borderRadius: 7,
-                display: "flex",
-                flexDirection: "column",
-                gap: 12,
-              }}
-            >
-              <div style={{ fontFamily: "var(--mono)", fontSize: 11.5, color: "var(--text-dim)" }}>
-                Run <code>core install</code> on the machine and paste the single line it prints.
-                It carries the endpoint, the pinned CA and client certificate, and the signed bearer
-                — everything the Panel needs to dial that Core, and nothing it can reach without.
-              </div>
-              <Textarea
-                label="Pairing token"
-                value={registrationBlob}
-                onChange={(v) => {
-                  setRegistrationBlob(v);
-                  if (registerError) setRegisterError(null);
-                }}
-                placeholder="paste the pairing token here…"
-                rows={3}
-                mono
-                disabled={registering}
-              />
-              {registerError && <ErrorBox>{registerError}</ErrorBox>}
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <Btn
-                  variant="primary"
-                  size="sm"
-                  icon="plus"
-                  onClick={handleRegister}
-                  disabled={registering || !registrationBlob.trim()}
-                >
-                  {registering ? "Pairing…" : "Add Core"}
-                </Btn>
-              </div>
-            </div>
+            <AddCoreByPairing onPaired={handlePaired} />
           </Field>
         </>
       )}
@@ -226,7 +180,8 @@ export function CoresSettingsPage() {
       >
         The Panel stops dialing this Core and forgets its credentials and its place in the event
         log. Nothing on the machine itself is touched — its projects, tasks, and running sessions
-        keep going. To manage it again you&apos;ll need a fresh pairing token.
+        keep going. To manage it again, run <code>actana pair new</code> on the machine and pair it
+        here with the code it prints.
       </ConfirmDialog>
     </SettingsSection>
   );
@@ -267,8 +222,8 @@ function endpointHost(endpoint: string): string {
 /**
  * One Core in the list. The alias is editable in place — it is the only field
  * here that is the Panel's to change, and the operator's read of the fleet
- * depends on it. Endpoint and credentials are what the pairing token said they
- * were; changing those means a fresh token.
+ * depends on it. Endpoint and credentials are what the pairing produced;
+ * changing those means pairing again with a fresh code.
  */
 function CoreRow({
   core,
@@ -476,7 +431,7 @@ function badgeTitle(dial: CoreDialStatus): string {
     case "unreachable":
       return `${dial.detail ?? "The Panel can't reach this Core"} — ${lastSeen}. It keeps retrying.`;
     case "auth-error":
-      return `This Core rejected the Panel's credentials (${dial.detail ?? "rejected"}). Reissue a pairing token on the machine and add it again.`;
+      return `This Core rejected the Panel's credentials (${dial.detail ?? "rejected"}). Run \`actana pair new\` on the machine and pair it again.`;
     case "needs-update":
       return `${dial.detail ?? "This Core speaks a different core-link protocol"}. Its data is suppressed until the Core on that machine is updated.`;
   }

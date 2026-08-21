@@ -39,6 +39,16 @@
 
 import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
+import {
+  CLIENT_CERT_REFUSAL_CODE,
+  CLIENT_CERT_REFUSAL_MESSAGE,
+  CLIENT_CERT_REFUSAL_STATUS,
+  clientCertGate,
+  coreLinkUpgradeGate,
+  rejectUnauthorizedAtHandshake,
+  type PreAuthPathPredicate,
+} from "./core-preauth-gate";
+import { certSerialFromBearerSubject, type PairingRevocations } from "./core-pairing-revocation";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
@@ -292,6 +302,21 @@ export type PtyCoreLinkServerOptions = {
      * no HTTP at all, which is what it did before this ticket.
      */
     httpRoutes?: CoreHttpRoutes;
+    /**
+     * Which of those routes may be served to a client presenting no
+     * certificate (#282). See {@link PtyCoreLinkServerOptions.isPreAuthPath}.
+     */
+    isPreAuthPath?: PreAuthPathPredicate;
+    /**
+     * Is this certificate serial one `actana pair revoke` took back (#283)?
+     *
+     * Declared here and not only on the default factory, because a custom
+     * transport is the seam {@link PtyCoreLinkServerOptions.revocation}
+     * explicitly anticipates — and one that had no typed way to receive this
+     * would silently lose both TLS-layer refusals, leaving revocation resting
+     * on the registration check in `onConnection` alone.
+     */
+    isRevokedSerial?: (serial: string) => boolean;
   }) => WebSocketServerLike;
   /**
    * The per-Core event log. When provided, PTY lifecycle events are
@@ -420,6 +445,36 @@ export type PtyCoreLinkServerOptions = {
    * {@link announceMultiConnection} does.
    */
   announceFiles?: boolean;
+  /**
+   * The Core's pre-auth surface: which paths this server may answer on a
+   * connection that presented no client certificate (#282).
+   *
+   * Absent — every Core before this ticket, and every Core that does not mount
+   * the pairing endpoint — the TLS handshake keeps demanding a verified client
+   * certificate and nothing here changes. Present, the handshake accepts a
+   * connection without one and `core-preauth-gate.ts` refuses it, per request
+   * and per upgrade, everywhere this predicate does not say yes.
+   *
+   * Wired by `core-pairing-wiring.ts`'s `isPairingPath`; see that module and
+   * `core-preauth-gate.ts` for why the relaxation is scoped this way.
+   */
+  isPreAuthPath?: PreAuthPathPredicate;
+  /**
+   * This Core's revoked pairings, as `actana pair revoke` leaves them (#283).
+   *
+   * Present, three things become true and none of them is true without it: a
+   * revoked client's certificate stops getting past the upgrade and past the
+   * `/v1/…` routes, a revoked client's bearer stops passing the `auth` frame,
+   * and {@link PtyCoreLinkServer.closeRevoked} has something to be called with.
+   * Absent — a loopback Core, a test, a Core that mounts no pairing endpoint —
+   * nothing here changes: there is no pairing store to have revoked anything
+   * in.
+   *
+   * The seam is a reader, never the sweep itself. Deciding *when* to look is
+   * `core-entry.ts`'s job (`startPairingRevocationSweep`), and a server that
+   * owned a timer would be a server every test had to stop.
+   */
+  revocation?: PairingRevocations;
 };
 
 /**
@@ -430,7 +485,21 @@ export type PtyCoreLinkServerOptions = {
  */
 export type AuthVerifier = (
   bearer: string,
-) => { ok: true; coreId: string; exp: number } | { ok: false; reason: "expired" | "bad-signature" | "malformed" };
+) =>
+  | {
+      ok: true;
+      coreId: string;
+      exp: number;
+      /**
+       * The bearer's `sub` claim, when the Core that signed it minted one
+       * (#282). `pair:<serial>` names the pairing this bearer speaks for, which
+       * is what {@link PtyCoreLinkServerOptions.revocation} needs to answer
+       * whether an operator has taken it back. Optional: bearers minted before
+       * the claim existed verify exactly as they always did.
+       */
+      sub?: string;
+    }
+  | { ok: false; reason: "expired" | "bad-signature" | "malformed" };
 
 /**
  * mTLS material for the core-link server (issue 04). The Core presents
@@ -446,9 +515,23 @@ export type TlsOptions = {
   serverKey: string;
 };
 
+/**
+ * What the transport knows about who is on the other end of one socket (#283).
+ *
+ * Only the certificate serial, and only because revocation names one: an
+ * operator revokes an *issuance*, and the serial is the one field that
+ * identifies an issuance where a subject is whatever the operator typed, twice.
+ * Optional throughout, because a loopback `ws://` Core has no certificates at
+ * all and a fake transport in a test has none either.
+ */
+export type CoreLinkPeer = {
+  /** The client certificate's serial, or `null` when there is no certificate. */
+  certSerial: string | null;
+};
+
 export interface WebSocketServerLike {
   close(cb?: () => void): void;
-  on(event: "connection", cb: (ws: WebSocketLike) => void): void;
+  on(event: "connection", cb: (ws: WebSocketLike, peer?: CoreLinkPeer) => void): void;
   on(event: "error", cb: (err: Error) => void): void;
 }
 
@@ -575,6 +658,8 @@ export class PtyCoreLinkServer {
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
   private readonly announceFiles: boolean;
+  /** This Core's revoked pairings, or null when it has no pairing surface. */
+  private readonly revocation: PairingRevocations | null;
   /**
    * The one seam every task-row change goes through — the Panel's
    * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
@@ -621,7 +706,20 @@ export class PtyCoreLinkServer {
     // them: one https.Server answering a WebSocket upgrade and the `/v1/…`
     // routes, never two listeners (#165 F2, ADR 0028).
     this.announceFiles = opts.announceFiles ?? Boolean(opts.httpRoutes);
-    this.server = create({ port: opts.port, host, tls: opts.tls, httpRoutes: opts.httpRoutes });
+    this.revocation = opts.revocation ?? null;
+    this.server = create({
+      port: opts.port,
+      host,
+      tls: opts.tls,
+      httpRoutes: opts.httpRoutes,
+      ...(opts.isPreAuthPath ? { isPreAuthPath: opts.isPreAuthPath } : {}),
+      // Passed as a predicate rather than the object, so the factory — which
+      // knows about sockets and nothing about pairing — can ask the one
+      // question it needs to ask at the TLS gate.
+      ...(opts.revocation
+        ? { isRevokedSerial: (serial: string) => opts.revocation!.isRevoked(serial) }
+        : {}),
+    });
     this.eventLog = opts.eventLog ?? null;
     this.liveEventPollMs = opts.liveEventPollMs ?? DEFAULT_LIVE_EVENT_POLL_MS;
     this.authVerifier = opts.authVerifier ?? null;
@@ -641,18 +739,38 @@ export class PtyCoreLinkServer {
         queryPort: this.queryPort,
         eventLog: this.eventLog,
       });
-    this.server.on("connection", (ws) => this.onConnection(ws));
+    this.server.on("connection", (ws, peer) => this.onConnection(ws, peer));
     this.server.on("error", (err) => {
       log.error("core-link.server.error", { error: err.message });
     });
   }
 
-  private onConnection(ws: WebSocketLike): void {
+  private onConnection(ws: WebSocketLike, peer?: CoreLinkPeer): void {
+    // A revoked client is turned away here rather than registered and closed
+    // later (#283). The upgrade gate has already refused it on a real `https`
+    // server; this is the same rule at the layer that owns the registry, so a
+    // transport that cannot gate its own upgrade — an injected one, a future
+    // one — cannot hand this Core a connection it has already been told not to
+    // serve. Nothing is sent back: there is no frame in the protocol for it,
+    // and a client whose certificate was revoked is not owed a reason by the
+    // Core that revoked it.
+    const certSerial = peer?.certSerial ?? null;
+    if (this.revocation?.isRevoked(certSerial)) {
+      log.warn("core-link.connection.revoked", { certSerial });
+      try {
+        ws.close();
+      } catch {
+        /* already gone */
+      }
+      return;
+    }
+
     // Many connections at a time (ADR 0024 D1). A new connection — a second
     // Panel tab, the CLI, a reconnecting renderer — is registered alongside
     // whatever is already here, never in place of it. Nothing on `PtyCore`
     // moves as a result.
     const conn = new ActiveConnection(ws);
+    conn.certSerial = certSerial;
     this.connections.set(ws, conn);
     this.ensureEmitTarget();
 
@@ -1882,13 +2000,82 @@ export class PtyCoreLinkServer {
       }
       return;
     }
+    // A bearer that verifies but names a pairing the operator has taken back
+    // (#283). Refused as `expired`, and that is a deliberate choice of an
+    // existing reason rather than a new one: the wire's three reasons live in
+    // `@actana/sdk`, a client that pinned a fourth would be a client this Core
+    // could not talk to, and — more to the point — "expired" is what a revoked
+    // credential *is* from where the client stands. Its validity ended. The
+    // client's own reconnect path takes it to re-pairing, which is exactly
+    // where an operator who revoked it wants it to go. The Core's log is where
+    // the real reason is written, because the operator reading that log is the
+    // person who revoked it.
+    if (this.revocation?.isBearerSubjectRevoked(result.sub)) {
+      log.warn("core-link.auth.revoked", { certSerial: certSerialFromBearerSubject(result.sub) });
+      this.send(ws, { type: "authError", reqId: frame.reqId, reason: "expired" });
+      try {
+        ws.close();
+      } catch {
+        /* already closed */
+      }
+      return;
+    }
+
     conn.authenticated = true;
+    conn.bearerSubject = result.sub ?? null;
     this.send(ws, {
       type: "authOk",
       reqId: frame.reqId,
       coreId: result.coreId,
       exp: result.exp,
     });
+  }
+
+  /**
+   * Close every link a revoked pairing is holding open (#283).
+   *
+   * This is the half of revocation the gates cannot do. A Panel that paired
+   * yesterday and has been connected ever since never presents its certificate
+   * again and never re-sends its `auth` frame, so a rule enforced only at the
+   * door would leave it driving this Core until it happened to reconnect —
+   * which for a healthy client is never. `core-entry.ts`'s sweep is what calls
+   * this, within a second of the operator's `actana pair revoke`.
+   *
+   * **It takes no list and asks the authority instead.** Being handed the
+   * newly-named serials would miss the change that matters most: when the
+   * pairing store cannot be read, `PairingRevocations` revokes *every* pairing
+   * at once and there are no serials to hand over. Re-asking per connection
+   * makes both cases one code path, and makes this method's answer always the
+   * same answer the gates would give the same client at the door.
+   *
+   * The listeners come off before the close, for the reason {@link close}
+   * gives: a close handshake still delivers whatever is already in flight, and
+   * a frame from a revoked client must not be dispatched on the way out.
+   */
+  closeRevoked(): number {
+    const revocation = this.revocation;
+    if (!revocation) return 0;
+    let closed = 0;
+    for (const [ws, conn] of [...this.connections]) {
+      const bySerial = revocation.isRevoked(conn.certSerial);
+      const byBearer = revocation.isBearerSubjectRevoked(conn.bearerSubject ?? undefined);
+      if (!bySerial && !byBearer) continue;
+      try {
+        ws.removeAllListeners();
+        ws.close();
+      } catch {
+        /* already gone */
+      }
+      // The listeners are off, so the `close` handler will not run and the
+      // ordinary retirement has to be done by hand — Session locks included.
+      // A revoked client that kept a Session locked on the way out would leave
+      // a Session nobody can write and nobody can release (ADR 0024 D7), which
+      // is the failure a revocation is least entitled to cause.
+      this.dropConnection(ws, conn);
+      closed += 1;
+    }
+    if (closed > 0) log.info("core-link.connections.revoked", { closed });
+    return closed;
   }
 
   /**
@@ -2089,6 +2276,26 @@ class ActiveConnection {
    * commentary on {@link PtyCoreLinkServer.reclaimFor}.
    */
   clientId: string | null = null;
+  /**
+   * The serial of the client certificate this connection presented, or null on
+   * a Core with no mTLS (#283).
+   *
+   * Unlike {@link clientId} this one *is* authority: it is what the CA signed
+   * and what the TLS handshake verified, which is exactly why revocation names
+   * it. It is recorded at registration and never afterwards — a connection
+   * cannot change which certificate it arrived on.
+   */
+  certSerial: string | null = null;
+  /**
+   * The `sub` claim of the bearer this connection authenticated with, or null
+   * (#283).
+   *
+   * The second half of the same question: a client whose certificate this Core
+   * never saw — one behind a terminating proxy, a transport with no peer
+   * certificate — is still identifiable by the pairing its bearer names, and a
+   * revocation has to reach it too.
+   */
+  bearerSubject: string | null = null;
   lastSentEventId = 0;
   /** Last time anything arrived from this client — a frame, or a pong. */
   lastInboundAt = Date.now();
@@ -2144,6 +2351,9 @@ function defaultCreateServer(opts: {
   host: string;
   tls?: TlsOptions;
   httpRoutes?: CoreHttpRoutes;
+  isPreAuthPath?: PreAuthPathPredicate;
+  /** Is this certificate serial one `actana pair revoke` took back (#283)? */
+  isRevokedSerial?: (serial: string) => boolean;
 }): WebSocketServerLike {
   // Lazy require so this module stays importable in tests without `ws` at
   // import time.
@@ -2160,27 +2370,57 @@ function defaultCreateServer(opts: {
       key: opts.tls.serverKey,
       ca: opts.tls.caCert,
       requestCert: true,
-      rejectUnauthorized: true,
+      // True unless this Core mounts a pre-auth surface, in which case the
+      // handshake has to complete for a client that has no certificate *yet* —
+      // it is here to be issued one — and the same rule is enforced per request
+      // and per upgrade below instead. `core-preauth-gate.ts` is where that
+      // trade is written out; nothing about it is decided in this file.
+      rejectUnauthorized: rejectUnauthorizedAtHandshake(opts.isPreAuthPath),
       // Disable Nagle on accepted sockets. PTY output is a stream of small
       // writes; coalescing them against the Panel's delayed ACKs adds tens of
       // ms of jitter to every repaint. Set explicitly rather than relying on
       // the runtime's default.
       noDelay: true,
     });
-    mountHttpRoutes(tlsServer, opts.httpRoutes);
+    mountHttpRoutes(tlsServer, opts.httpRoutes, opts.isPreAuthPath, opts.isRevokedSerial);
     tlsServer.listen(opts.port, opts.host);
-    const wss = new WebSocketServer({ server: tlsServer });
+    // `noServer`, so the upgrade is ours to allow or refuse: the core link is
+    // never pre-auth, and a WebSocket that reached this Core without a client
+    // certificate would be a socket that can spawn a PTY without having said
+    // who it is. In the `{ server }` form `ws` owns the `upgrade` event and
+    // there is nowhere to put that check. The cost is that `ws` no longer
+    // forwards the HTTP server's `error` for us — a listen failure has to reach
+    // the caller — so both are forwarded explicitly below.
+    const wss = new WebSocketServer({ noServer: true });
+    tlsServer.on("upgrade", (req, socket, head) => {
+      if (coreLinkUpgradeGate(clientCertVerified(req), isRevokedPeer(req, opts.isRevokedSerial)) === "refuse") {
+        socket.write(
+          `HTTP/1.1 ${CLIENT_CERT_REFUSAL_STATUS} Forbidden\r\n` +
+            "connection: close\r\n" +
+            "content-length: 0\r\n\r\n",
+        );
+        socket.destroy();
+        return;
+      }
+      wss.handleUpgrade(req, socket, head, (ws) => wss.emit("connection", ws, req));
+    });
     return {
       close: (cb) => {
         wss.close(() => tlsServer.close(cb));
       },
       on: (event, cb) => {
         if (event === "connection") {
-          wss.on("connection", (ws: WebSocket) => {
-            (cb as (ws: WebSocketLike) => void)(adaptWs(ws));
+          // `req` is the upgrade request `handleUpgrade` was given, so the
+          // socket under it is the TLS socket that completed the handshake —
+          // the only place the peer certificate exists.
+          wss.on("connection", (ws: WebSocket, req: import("node:http").IncomingMessage) => {
+            (cb as (ws: WebSocketLike, peer?: CoreLinkPeer) => void)(adaptWs(ws), {
+              certSerial: peerCertSerial(req),
+            });
           });
         } else if (event === "error") {
           wss.on("error", (err: Error) => (cb as (err: Error) => void)(err));
+          tlsServer.on("error", (err: Error) => (cb as (err: Error) => void)(err));
         }
       },
     };
@@ -2245,16 +2485,95 @@ function defaultCreateServer(opts: {
 function mountHttpRoutes(
   server: import("node:http").Server | import("node:https").Server,
   routes: CoreHttpRoutes | undefined,
+  isPreAuthPath?: PreAuthPathPredicate,
+  isRevokedSerial?: (serial: string) => boolean,
 ): void {
   if (!routes) return;
   server.on("request", (req, res) => {
+    if (!mayServe(req, isPreAuthPath, isRevokedSerial)) return respondClientCertRequired(res);
     if (routes.handle(req, res)) return;
     respondNotFound(res);
   });
   server.on("checkContinue", (req, res) => {
+    if (!mayServe(req, isPreAuthPath, isRevokedSerial)) return respondClientCertRequired(res);
     if (routes.handleContinue(req, res)) return;
     respondNotFound(res);
   });
+}
+
+/**
+ * Is this request allowed on the connection it arrived on (#282)?
+ *
+ * The gate is asked on every request, including on a plain `http` Core, where
+ * there are no certificates at all and {@link clientCertVerified} answers
+ * `true` — the loopback surface is as trusted as the rest of that Core, which
+ * is the trade ADR 0004 already made for every core-link frame.
+ */
+function mayServe(
+  req: import("node:http").IncomingMessage,
+  isPreAuthPath: PreAuthPathPredicate | undefined,
+  isRevokedSerial?: (serial: string) => boolean,
+): boolean {
+  const pathname = new URL(req.url ?? "/", "https://core.invalid").pathname;
+  const verdict = clientCertGate({
+    pathname,
+    authorized: clientCertVerified(req),
+    revoked: isRevokedPeer(req, isRevokedSerial),
+    ...(isPreAuthPath ? { isPreAuthPath } : {}),
+  });
+  return verdict === "serve";
+}
+
+/**
+ * The serial of the client certificate on this request's socket, or null.
+ *
+ * `getPeerCertificate` is a TLS-socket method and this is called on plain
+ * `http` Cores too, so its absence is the ordinary answer rather than an
+ * error. An empty object is what Node returns for a socket that presented no
+ * certificate, and `serialNumber` is absent from it.
+ */
+function peerCertSerial(req: import("node:http").IncomingMessage): string | null {
+  const socket = req.socket as unknown as {
+    getPeerCertificate?: () => { serialNumber?: string } | undefined;
+  };
+  if (typeof socket.getPeerCertificate !== "function") return null;
+  try {
+    return socket.getPeerCertificate()?.serialNumber ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Did this request arrive on a certificate `actana pair revoke` took back? */
+function isRevokedPeer(
+  req: import("node:http").IncomingMessage,
+  isRevokedSerial: ((serial: string) => boolean) | undefined,
+): boolean {
+  if (!isRevokedSerial) return false;
+  const serial = peerCertSerial(req);
+  return serial !== null && isRevokedSerial(serial);
+}
+
+/**
+ * Did this connection present a client certificate this Core's CA vouches for?
+ *
+ * `authorized` is Node's own verdict from the handshake, and it is `undefined`
+ * on a plain TCP socket — a Core running `ws://` on loopback, where the
+ * question does not arise. `!== false` rather than `=== true` says exactly
+ * that: only a TLS socket that was *checked and failed* is unauthorized here.
+ */
+function clientCertVerified(req: import("node:http").IncomingMessage): boolean {
+  const socket = req.socket as unknown as { authorized?: boolean };
+  return socket.authorized !== false;
+}
+
+function respondClientCertRequired(res: import("node:http").ServerResponse): void {
+  const body = JSON.stringify({ code: CLIENT_CERT_REFUSAL_CODE, error: CLIENT_CERT_REFUSAL_MESSAGE });
+  res.writeHead(CLIENT_CERT_REFUSAL_STATUS, {
+    "content-type": "application/json",
+    "content-length": String(Buffer.byteLength(body)),
+  });
+  res.end(body);
 }
 
 function respondNotFound(res: import("node:http").ServerResponse): void {

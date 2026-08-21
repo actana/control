@@ -87,6 +87,24 @@ function withoutComments(source: string): string {
  */
 const ALLOWED_DEPENDENCIES: ReadonlySet<string> = new Set(["ws", "undici"]);
 
+/**
+ * Node's own builtins, which are not on that list because they are not
+ * dependencies at all.
+ *
+ * `node:crypto`, `node:tls` and `node:https` are what `core-pairing.ts` mints a
+ * key pair, reads a presented certificate chain and posts a redemption with
+ * (#284), and there is nothing to install for any of them: the `node:` scheme
+ * is unresolvable *except* on a Node runtime, which `engines` already requires.
+ * The rule this file enforces is "a published package must not depend on a
+ * private one", and a builtin cannot be a private one.
+ *
+ * The prefix is required rather than merely accepted. Bare `crypto` resolves to
+ * the builtin today and to whatever a `crypto` package on the registry is
+ * tomorrow, so it stays an offence — the fixture below plants one and asserts
+ * it is caught.
+ */
+const NODE_BUILTIN_PREFIX = "node:";
+
 /** Every import in these files that is neither a relative path nor an allowed dependency. */
 function offendingImports(files: string[]): string[] {
   const offences: string[] = [];
@@ -96,6 +114,7 @@ function offendingImports(files: string[]): string[] {
       const allowed =
         specifier.startsWith("./") ||
         specifier.startsWith("../") ||
+        specifier.startsWith(NODE_BUILTIN_PREFIX) ||
         ALLOWED_DEPENDENCIES.has(specifier);
       if (!allowed) offences.push(`${path.basename(file)} imports ${specifier}`);
     }
@@ -149,8 +168,16 @@ describe("package boundaries", () => {
     temporaryDirs.push(root);
     mkdirSync(path.join(root, "transport"), { recursive: true });
     mkdirSync(path.join(root, "__tests__"), { recursive: true });
-    writeFileSync(path.join(root, "ok.ts"), 'import { a } from "./a";\nimport WS from "ws";\n');
+    writeFileSync(
+      path.join(root, "ok.ts"),
+      'import { a } from "./a";\nimport WS from "ws";\nimport { sign } from "node:crypto";\n',
+    );
     writeFileSync(path.join(root, "single.ts"), "import { z } from 'zod';\n");
+    // Bare `crypto`, without the scheme. It resolves to the builtin today and
+    // to a registry package the day someone publishes one, which is exactly the
+    // ambiguity `node:` exists to remove — so it is an offence, and saying so
+    // here is what keeps the allowance above a prefix rather than a guess.
+    writeFileSync(path.join(root, "bare-builtin.ts"), 'import { sign } from "crypto";\n');
     writeFileSync(path.join(root, "transport", "nested.ts"), 'import x from "@actana/shared/x";\n');
     // Left out on both counts: a test directory, and a `.test.ts` file beside
     // shipped code. Neither is shipped, and both import what shipped code cannot.
@@ -160,6 +187,7 @@ describe("package boundaries", () => {
     const offences = offendingImports(shippedSources(root));
 
     expect(offences).toEqual([
+      "bare-builtin.ts imports crypto",
       "single.ts imports zod",
       "nested.ts imports @actana/shared/x",
     ]);

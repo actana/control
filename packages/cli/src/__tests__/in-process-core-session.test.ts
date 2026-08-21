@@ -34,7 +34,11 @@ import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core-link-frames.ts";
 
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import {
   arrayEventLog,
   startInProcessCore,
@@ -227,7 +231,7 @@ async function coreWithSessions(
     ...(opts.eventLog === false ? {} : { eventLog }),
   });
   fixture = makeCliFixture();
-  await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+  registerCore(fixture.paths, "inproc", core.blobText);
   const endTurn = (taskId: string, status: string): void => {
     const row = tasks.find((t) => t.taskId === taskId);
     if (row) row.status = status;

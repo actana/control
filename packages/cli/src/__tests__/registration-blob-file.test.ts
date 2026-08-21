@@ -1,15 +1,24 @@
-// The decoder, on its own — the only module in this package that turns bytes
-// into credentials (#129 D9).
+// The registry codec, on its own — the only module in this package that turns
+// bytes into credentials (#129 D9).
+//
+// It survives #287 because the *storage* survives: `actana core pair` writes a
+// credential here and every client verb reads one back. What it no longer sees
+// is a paste — the hand-carry it also served is gone — so what is asserted
+// below is a file, or `ACTANA_CORE_BLOB`, and never an operator's clipboard.
 //
 // Everything else covers it through a verb, which proves the verbs and leaves
-// the decoder's own contract implicit. Its contract has two halves and they
-// pull in opposite directions: **say precisely what is wrong**, and **never
-// quote the input**. A blob is a credential, and a malformed one is very often
-// a nearly well-formed one, so the second half is the one under pressure every
-// time somebody improves an error message.
+// the codec's own contract implicit. Its contract has two halves and they pull
+// in opposite directions: **say precisely what is wrong**, and **never quote
+// the input**. A stored credential that will not decode is very often a nearly
+// well-formed one, so the second half is the one under pressure every time
+// somebody improves an error message.
 
 import { describe, it, expect } from "vitest";
-import { decodeRegistrationBlobText, summarizeBlob } from "../registration-blob-file.ts";
+import {
+  decodeRegistrationBlobText,
+  encodeRegistrationBlobText,
+  summarizeBlob,
+} from "../registration-blob-file.ts";
 import { SENTINELS, sentinelBlobText } from "./cli-harness.ts";
 
 /** The blob shape, as an object, before it is encoded. */
@@ -79,7 +88,7 @@ describe("what it says when a blob is wrong", () => {
   it("tells base64url from base64 rather than decoding it into nonsense", () => {
     // `-` and `_` are the base64url alphabet. Skipped rather than rejected,
     // they used to silently corrupt the decode and surface as a JSON error
-    // about a blob that was pasted whole.
+    // about a file that was in fact intact.
     const result = decodeRegistrationBlobText("eyJlbmRwb2lu-dCI6_Q");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("the blob is not base64");
@@ -115,7 +124,7 @@ describe("what it says when a blob is wrong", () => {
   it("never quotes what it was handed, on any failure path", () => {
     // The property the whole module exists to hold, asserted where the
     // messages are written rather than only where they are printed. Each of
-    // these is a *nearly* well-formed blob carrying real sentinel credentials,
+    // these is a *nearly* well-formed entry carrying real sentinel credentials,
     // which is exactly the input an error message is most tempted to echo.
     const nearly = [
       // Right shape, wrong scheme — the failure that has a valid blob behind it.
@@ -143,3 +152,55 @@ describe("what it says when a blob is wrong", () => {
     }
   });
 });
+
+describe("encodeRegistrationBlobText", () => {
+  // The other direction, which #285 needs: `actana core pair` is handed a blob
+  // *object* by the SDK and the registry stores text. What matters is that the
+  // two halves of this module are each other's inverse — a credential that
+  // encoded but did not decode would land on disk as an entry `core ls` reports
+  // as corrupt, on a machine that has just been told pairing worked.
+  it("round-trips a blob through the decoder", () => {
+    const blob = {
+      endpoint: "wss://core.test:9444",
+      caCert: "ca",
+      clientCert: "cert",
+      clientKey: "key",
+      bearer: "bearer",
+    };
+    const result = decodeRegistrationBlobText(encodeRegistrationBlobText(blob));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.blob).toEqual({ ...blob, label: "" });
+  });
+
+  it("keeps a label when there is one, and writes no key for one there is not", () => {
+    const withLabel = encodeRegistrationBlobText({
+      endpoint: "wss://core.test:9444",
+      label: "the-test-core",
+      caCert: "ca",
+      clientCert: "cert",
+      clientKey: "key",
+      bearer: "bearer",
+    });
+    expect(summarizeBlob(unwrap(withLabel)).label).toBe("the-test-core");
+
+    // A paired credential has no alias, because the Core's redemption answer
+    // has no field for one. An empty string written here would put a blank
+    // LABEL column in `core ls` on the strength of a field nobody set.
+    const without = encodeRegistrationBlobText({
+      endpoint: "wss://core.test:9444",
+      caCert: "ca",
+      clientCert: "cert",
+      clientKey: "key",
+      bearer: "bearer",
+    });
+    expect(JSON.parse(Buffer.from(without, "base64").toString("utf8"))).not.toHaveProperty("label");
+  });
+});
+
+/** Decode text this suite just encoded, failing loudly if it will not. */
+function unwrap(text: string) {
+  const result = decodeRegistrationBlobText(text);
+  if (!result.ok) throw new Error(`the encoder wrote something the decoder refuses: ${result.error}`);
+  return result.blob;
+}

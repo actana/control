@@ -1,6 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { X509Certificate, createPublicKey } from "node:crypto";
-import { generateCertMaterial } from "../core-cert-material";
+import { X509Certificate, createPublicKey, webcrypto } from "node:crypto";
+import * as x509 from "@peculiar/x509";
+import {
+  certFingerprintSha256,
+  generateCertMaterial,
+  generateClientCsr,
+  signClientCsr,
+} from "../core-cert-material";
 
 // Core generates a self-signed CA + server cert + Panel client cert at
 // start (ADR 0002). The Core holds the server cert; the Panel pins the CA
@@ -63,5 +69,201 @@ describe("core cert material", () => {
     const bCaPub = createPublicKey(b.ca.cert);
     const aServer = new X509Certificate(a.server.cert);
     expect(aServer.verify(bCaPub)).toBe(false);
+  });
+});
+
+// ─── CSR signing (#282) ─────────────────────────────────────────────────────
+//
+// The pairing endpoint's whole cryptographic claim: a certificate signed here
+// from a client's own CSR is the same certificate, to the mTLS handshake, as
+// the one an operator used to hand-carry — and the private key never came near
+// this process.
+
+describe("signing a client CSR against the Core's CA", () => {
+  it("issues a client leaf that verifies against the CA and is not itself a CA", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const { csrPem } = await generateClientCsr("laptop");
+
+    const issued = await signClientCsr({
+      ca: { cert: mat.ca.cert, key: mat.ca.key },
+      csrPem,
+      subject: "CN=laptop",
+    });
+
+    const cert = new X509Certificate(issued.cert);
+    expect(cert.verify(createPublicKey(mat.ca.cert))).toBe(true);
+    expect(cert.ca).toBe(false);
+    expect(cert.subject).toContain("laptop");
+    expect(issued.serial).toBe(cert.serialNumber.toLowerCase());
+    expect(issued.notAfter).toBeGreaterThan(Date.now());
+  });
+
+  it("writes the same client-leaf extensions the hand-carried client cert has", async () => {
+    // The comparison is the assertion: whatever `generateCertMaterial` writes
+    // for the Panel's client cert is what a paired client must get, because the
+    // handshake on the other end cannot tell them apart and must not have to.
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const { csrPem } = await generateClientCsr("laptop");
+
+    const issued = await signClientCsr({
+      ca: { cert: mat.ca.cert, key: mat.ca.key },
+      csrPem,
+      subject: "CN=laptop",
+    });
+
+    const paired = new x509.X509Certificate(issued.cert);
+    const handCarried = new x509.X509Certificate(mat.client.cert);
+    const extensions = (cert: x509.X509Certificate): unknown =>
+      cert.extensions
+        .map((ext) => {
+          if (ext instanceof x509.BasicConstraintsExtension) return `basicConstraints:cA=${ext.ca}`;
+          if (ext instanceof x509.KeyUsagesExtension) return `keyUsage:${ext.usages}`;
+          if (ext instanceof x509.ExtendedKeyUsageExtension) return `extKeyUsage:${ext.usages.join(",")}`;
+          return null;
+        })
+        .filter((line) => line !== null)
+        .sort();
+    expect(extensions(paired)).toEqual(extensions(handCarried));
+    expect(extensions(paired)).toContain("basicConstraints:cA=false");
+  });
+
+  it("takes only the public key from the CSR — never its subject or its extensions", async () => {
+    // A client that has spent a pairing code still does not get to say what its
+    // certificate means. This CSR asks to be a CA under another name; the
+    // issued certificate is neither.
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const keys = (await webcrypto.subtle.generateKey(
+      { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) },
+      true,
+      ["sign", "verify"],
+    )) as Parameters<typeof x509.Pkcs10CertificateRequestGenerator.create>[0]["keys"];
+    const greedy = await x509.Pkcs10CertificateRequestGenerator.create({
+      name: "CN=mission-control-core-ca",
+      keys,
+      signingAlgorithm: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+      extensions: [new x509.BasicConstraintsExtension(true, 5, true)],
+    });
+
+    const issued = await signClientCsr({
+      ca: { cert: mat.ca.cert, key: mat.ca.key },
+      csrPem: greedy.toString("pem"),
+      subject: "CN=laptop",
+    });
+
+    const cert = new X509Certificate(issued.cert);
+    expect(cert.ca).toBe(false);
+    expect(cert.subject).toContain("laptop");
+    expect(cert.subject).not.toContain("mission-control-core-ca");
+    // The key, on the other hand, is exactly the one that asked.
+    const requested = new x509.Pkcs10CertificateRequest(greedy.toString("pem"));
+    expect(new x509.X509Certificate(issued.cert).publicKey.toString("pem")).toBe(
+      requested.publicKey.toString("pem"),
+    );
+  });
+
+  it("refuses a CSR whose signature does not match the key it carries", async () => {
+    // Proof of possession is the only thing the CSR's own signature proves, and
+    // it is the reason this Core will not certify a key somebody else holds.
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const { csrPem } = await generateClientCsr("laptop");
+    const lines = csrPem.trim().split("\n");
+    const body = lines.slice(1, -1).join("");
+    const bytes = Buffer.from(body, "base64");
+    bytes[bytes.length - 1] = bytes[bytes.length - 1]! ^ 0xff;
+    const tampered = `${lines[0]}\n${bytes.toString("base64")}\n${lines[lines.length - 1]}`;
+
+    await expect(
+      signClientCsr({ ca: { cert: mat.ca.cert, key: mat.ca.key }, csrPem: tampered, subject: "CN=laptop" }),
+    ).rejects.toMatchObject({ name: "CsrRejectedError", rejection: "bad-signature" });
+  });
+
+  it("refuses something that is not a CSR at all", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    await expect(
+      signClientCsr({ ca: { cert: mat.ca.cert, key: mat.ca.key }, csrPem: "not a CSR", subject: "CN=laptop" }),
+    ).rejects.toMatchObject({ name: "CsrRejectedError", rejection: "unparseable" });
+  });
+
+  it("refuses an RSA key too small to be worth a signature", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const weakAlg = {
+      name: "RSASSA-PKCS1-v1_5",
+      hash: "SHA-256",
+      modulusLength: 1024,
+      publicExponent: new Uint8Array([1, 0, 1]),
+    };
+    const keys = (await webcrypto.subtle.generateKey(weakAlg, true, ["sign", "verify"])) as Parameters<
+      typeof x509.Pkcs10CertificateRequestGenerator.create
+    >[0]["keys"];
+    const csr = await x509.Pkcs10CertificateRequestGenerator.create({
+      name: "CN=weak",
+      keys,
+      signingAlgorithm: { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+    });
+
+    await expect(
+      signClientCsr({
+        ca: { cert: mat.ca.cert, key: mat.ca.key },
+        csrPem: csr.toString("pem"),
+        subject: "CN=weak",
+      }),
+    ).rejects.toMatchObject({ name: "CsrRejectedError", rejection: "weak-key" });
+  });
+
+  it("gives every issuance its own serial", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const first = await generateClientCsr("laptop");
+    const second = await generateClientCsr("desktop");
+    const ca = { cert: mat.ca.cert, key: mat.ca.key };
+
+    const a = await signClientCsr({ ca, csrPem: first.csrPem, subject: "CN=laptop" });
+    const b = await signClientCsr({ ca, csrPem: second.csrPem, subject: "CN=desktop" });
+
+    expect(a.serial).not.toBe(b.serial);
+    // Positive, per RFC 5280 §4.1.2.2 — the top bit of the first byte is clear.
+    expect(parseInt(a.serial.slice(0, 2), 16)).toBeLessThan(0x80);
+  });
+
+  it("mints a client CSR whose private key it hands back and never embeds", async () => {
+    const { csrPem, privateKeyPem } = await generateClientCsr("laptop");
+    expect(csrPem).toMatch(/-----BEGIN CERTIFICATE REQUEST-----/);
+    expect(privateKeyPem).toMatch(/-----BEGIN PRIVATE KEY-----/);
+    expect(csrPem).not.toContain("PRIVATE KEY");
+  });
+});
+
+// ─── The CA fingerprint an operator reads out loud (#283) ───────────────────
+//
+// `actana pair new` prints this and the client checks the certificate it is
+// presented against it before it sends the pairing code (#280 step 3). The
+// format is the contract, not a presentation choice: an operator who verifies
+// it against `openssl x509 -fingerprint -sha256` must see the same characters,
+// or the check they just performed proved nothing.
+
+describe("the CA fingerprint", () => {
+  it("is the conventional colon-separated upper-case hex SHA-256", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const fingerprint = certFingerprintSha256(mat.ca.cert);
+    expect(fingerprint).toMatch(/^[0-9A-F]{2}(:[0-9A-F]{2}){31}$/);
+  });
+
+  it("agrees with what every other tool prints for the same certificate", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    // Node computes this over the DER too. Asserting against it is what keeps
+    // the hand-rolled version from quietly hashing the PEM — which would still
+    // look like a fingerprint and would match nothing on the client's side.
+    expect(certFingerprintSha256(mat.ca.cert)).toBe(new X509Certificate(mat.ca.cert).fingerprint256);
+  });
+
+  it("is over the DER, so PEM whitespace cannot move it", async () => {
+    const mat = await generateCertMaterial({ host: "127.0.0.1" });
+    const rewrapped = mat.ca.cert.replace(/\n/g, "\r\n").trimEnd() + "\n\n";
+    expect(certFingerprintSha256(rewrapped)).toBe(certFingerprintSha256(mat.ca.cert));
+  });
+
+  it("distinguishes two CAs", async () => {
+    const one = await generateCertMaterial({ host: "127.0.0.1" });
+    const two = await generateCertMaterial({ host: "127.0.0.1" });
+    expect(certFingerprintSha256(one.ca.cert)).not.toBe(certFingerprintSha256(two.ca.cert));
   });
 });

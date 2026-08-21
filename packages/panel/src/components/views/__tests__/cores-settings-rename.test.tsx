@@ -17,7 +17,6 @@ const api = {
     throw new Error("not stubbed");
   }),
   removeCore: vi.fn(async () => undefined),
-  addCore: vi.fn(),
   // The page mounts a ConfirmDialog, whose hotkey reaches the keybindings store.
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
 };

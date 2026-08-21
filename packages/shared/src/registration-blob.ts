@@ -1,15 +1,30 @@
-// Registration blob — the single base64 artifact emitted by `core install`
-// and pasted once into the Panel's "Add Core" (ADR 0003, CONTEXT.md
-// "Registration blob").
+// Registration blob — the credential a paired client holds, as the blob
+// registry keeps it on disk (CONTEXT.md "Registration blob").
 //
-// The blob is `base64(JSON({endpoint, label, caCert, clientCert, clientKey,
-// bearer}))`. `endpoint` and `label` go to the Core registry; the secret
-// fields go to `safeStorage` (macOS keychain / OS equivalent). The Panel never
-// logs or sends the secret fields over HTTP.
+// **This is a storage format, not an artifact anybody carries.** Until #287 the
+// same encoding *was* the hand-carry: `actana setup` printed one base64 line and
+// a human moved it — private key included — to the machine that would use it.
+// That path is gone, in every direction, and what survives is the narrow thing
+// this module was always also doing: `local-core-wiring.ts` writes a machine's
+// own Core into `$XDG_CONFIG_HOME/actana/cores/<name>.txt` with
+// {@link encodeRegistrationBlob}, on metal from `actana setup` and in a
+// container from the daemon's own boot (#288 D9). Nothing prints the result and
+// nothing reads it out of a terminal.
+//
+// The encoding is `base64(JSON({endpoint, label, caCert, clientCert, clientKey,
+// bearer}))`. In the Panel, `endpoint` and `label` go to the Core registry and
+// the secret fields are sealed; the Panel never logs them or sends them over
+// HTTP.
 //
 // `endpoint` MUST be `wss://` — the mTLS transport (ADR 0002) is mandatory for
-// a Core. A Core that is somehow reached without one never
-// goes through this blob path.
+// a Core, so {@link decodeRegistrationBlob} refuses anything else rather than
+// letting a downgraded entry through.
+//
+// **`packages/cli` has its own copy and that is deliberate** (`ADR 0025` D3,
+// `registration-blob-file.ts`): this package is private and the CLI is
+// published, so the client half reads the registry with a decoder it owns. The
+// two agree because they both read the wire format, not because either mirrors
+// the other's types.
 //
 // This file is self-contained (no `~/` imports) so it compiles under both the
 // Vite (browser/server) and the Core's CommonJS tsconfigs. It uses Node's
@@ -32,7 +47,7 @@ export type RegistrationBlob = {
   bearer: string;
 };
 
-/** Encode a registration blob into a single base64 paste string. */
+/** Encode a registration blob into the single base64 line a registry file holds. */
 export function encodeRegistrationBlob(blob: RegistrationBlob): string {
   const json = JSON.stringify({
     endpoint: blob.endpoint,
@@ -46,11 +61,11 @@ export function encodeRegistrationBlob(blob: RegistrationBlob): string {
 }
 
 /**
- * Decode a pasted registration blob. Returns `null` for any malformed input:
+ * Decode a stored registration blob. Returns `null` for any malformed input:
  * bad base64, non-JSON, missing required fields, wrong-typed fields, or an
  * endpoint that is not `wss://` (mTLS is mandatory for a remote Core).
  *
- * Surrounding whitespace (a trailing newline from a paste) is tolerated.
+ * Surrounding whitespace (a trailing newline on the file) is tolerated.
  */
 export function decodeRegistrationBlob(raw: string): RegistrationBlob | null {
   if (typeof raw !== "string") return null;

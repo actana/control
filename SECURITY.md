@@ -29,8 +29,9 @@ The things this project actually controls:
 
 - The **Panel** — the web service, its session/cookie handling, the Operator
   password path, its HTTP API and bearer-token surface.
-- The **core-link** — the mutual-TLS WebSocket between a Panel and a Core, and
-  the registration blob that establishes it.
+- The **core-link** — the mutual-TLS WebSocket between a Panel and a Core, the
+  short-code pairing that issues a client its certificate, and the credential
+  that establishes the link.
 - The **Core** — the daemon, `actana setup`, the installer (`install.sh`),
   and the release tarballs and their checksums.
 - The **published container image**, [`actana/panel`](https://hub.docker.com/r/actana/panel) on Docker Hub.

@@ -45,7 +45,7 @@ Mac runs its Core from the container image, and both `install.sh` and
 
 The Linux path is covered by
 [the one-liner rehearsal](core-linux-rehearsal.md): `pnpm core:rehearse` for a
-throwaway machine to paste the real one-liner into. Same standing as this page
+throwaway machine to run the real one-liner on. Same standing as this page
 now has, for the other half of the release.
 
 ---
@@ -74,21 +74,25 @@ tar -xzf actana-core-<version>-mac-arm64.tar.gz && ./actana-core-<version>-mac-a
       cannot be verified", for the launcher or for the bundled `node`. (If one
       appears, that is a release blocker, not something to click through: note
       exactly which binary it named.)
-- [ ] Ends by printing a pairing token.
+- [ ] Ends by telling you to run `actana pair new`, and prints no credential —
+      no `BEGIN CERTIFICATE`, no base64 block to copy.
 
 ```bash
 actana status
+actana pair new --label my-panel
 ```
 
 - [ ] `Core: healthy`, the LaunchAgent named as `com.actana.core`, and an
       `At login` row.
+- [ ] `pair new` prints a pairing code, this Core's CA fingerprint and an expiry.
 
 ---
 
 ## 2 — The Core is actually usable
 
-- [ ] Paste the pairing token into a Panel's **Add Core**. The Core appears and
-      its projects list loads.
+- [ ] Give a Panel's **Add Core** this Mac's address and that code. The
+      fingerprint the Panel shows matches the one `pair new` printed, the Core
+      appears, and its projects list loads.
 
 ---
 
@@ -106,8 +110,8 @@ actana status
 ```
 
 - [ ] `Core: healthy` again, with a **different** PID from before the reboot.
-- [ ] `actana token` prints a token whose Core is the one already paired — the
-      Panel reconnects without being re-paired.
+- [ ] `actana pair ls` still lists the Panel from step 2 — the identity survived
+      the reboot and nothing has to be paired again.
 - [ ] The Panel shows the Core online again without any action taken on it.
 
 ---

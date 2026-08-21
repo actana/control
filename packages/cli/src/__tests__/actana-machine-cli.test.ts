@@ -2,8 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { runActanaCli, CLIENT_NOUNS, EXIT_USAGE } from "../actana-cli.ts";
+import { loadCoreBlob, registryPaths } from "../blob-registry.ts";
+import { localCoreName } from "../local-core-wiring.ts";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import { refusedContainerVerbs } from "../actana-container.ts";
 import { installDirFor, resolveActanaLayout } from "../actana-layout.ts";
@@ -93,6 +94,26 @@ function deps(argv: string[], system: ActanaSystem, over: Partial<ActanaCliDeps>
   };
 }
 
+/**
+ * The credential setup wired into this machine's own registry (#288 D9).
+ *
+ * Setup emits nothing an operator can carry (#287), so the registry file is
+ * where its work lands and this is how the suite reads it back. `label` is what
+ * the registry name is derived from, and defaults to the hostname the way
+ * setup's does.
+ */
+function wiredCredential(label = "vm-1") {
+  const loaded = loadCoreBlob(registryPaths({ HOME: home }, home), localCoreName(label));
+  if (!loaded.ok) throw new Error(`no registry entry for ${label}: ${loaded.error}`);
+  return loaded.blob;
+}
+
+/** This Core's own identity, as the daemon will load it. */
+function readMaterial(platform: NodeJS.Platform = "linux") {
+  const file = materialFilePath(layoutForHome(platform).configDir);
+  return JSON.parse(fs.readFileSync(file, "utf8")) as Record<string, string>;
+}
+
 /** The layout the CLI resolves for the scratch home under test. */
 function layoutForHome(platform: NodeJS.Platform = "linux") {
   return resolveActanaLayout({ HOME: home }, home, platform);
@@ -136,10 +157,15 @@ describe("usage", () => {
     }
   });
 
-  it("says `pairing token`, never `registration blob`", async () => {
+  // The vocabulary #287 settled: "pairing code" is the eight characters `pair
+  // new` prints, and the artifact the old "pairing token" named does not exist.
+  // Neither phrase belongs in the help any more.
+  it("says `pairing code`, and neither `pairing token` nor `registration blob`", async () => {
     await runActanaCli(deps(["--help"], fakeSystem()));
-    expect(out.join("\n").toLowerCase()).toContain("pairing token");
-    expect(out.join("\n").toLowerCase()).not.toContain("registration blob");
+    const text = out.join("\n").toLowerCase();
+    expect(text).not.toContain("pairing token");
+    expect(text).not.toContain("registration blob");
+    expect(text).toMatch(/\bpair new\b/);
   });
 
   it("reports the bundled version", async () => {
@@ -241,16 +267,26 @@ describe("help and dispatch stay in sync", () => {
 });
 
 describe("setup", () => {
-  it("installs, starts, and prints a pairing token with a paste instruction", async () => {
+  it("installs, starts, and points the operator at `actana pair new`", async () => {
     expect(await setup(fakeSystem())).toBe(0);
 
     const text = out.join("\n");
-    expect(text).toMatch(/pairing token/i);
-    expect(text).toMatch(/paste .*panel/i);
+    expect(text).toContain("actana pair new");
+    expect(text).not.toMatch(/paste/i);
+    // The credential went into this machine's own registry and nowhere else.
+    expect(wiredCredential().endpoint).toBe("wss://10.0.0.5:8443");
+  });
 
-    const token = out.find((line) => decodeRegistrationBlob(line) !== null);
-    expect(token).toBeDefined();
-    expect(decodeRegistrationBlob(token!)?.endpoint).toBe("wss://10.0.0.5:8443");
+  // #287, and the assertion the whole ticket turns on: no output sink sees a
+  // credential, because there is no artifact for one to be printed as.
+  it("prints no credential — not the CA, not the client cert, not the bearer", async () => {
+    expect(await setup(fakeSystem())).toBe(0);
+    const printed = [...out, ...err].join("\n");
+    const blob = wiredCredential();
+    for (const secret of [blob.caCert, blob.clientCert, blob.clientKey, blob.bearer]) {
+      expect(printed).not.toContain(secret);
+    }
+    expect(printed).not.toMatch(/BEGIN (CERTIFICATE|PRIVATE KEY)/);
   });
 
   it("tells a re-running operator their existing pairing survives", async () => {
@@ -274,8 +310,7 @@ describe("setup", () => {
     expect(text).toMatch(/unchanged/i);
     expect(text).toContain("core.example");
     expect(text).not.toMatch(/stays paired/i);
-    expect(decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)?.endpoint)
-      .toBe("wss://core.example:8443");
+    expect(wiredCredential().endpoint).toBe("wss://core.example:8443");
   });
 
   it("defaults the public host to the machine's routable address", async () => {
@@ -286,8 +321,7 @@ describe("setup", () => {
   it("honours --public-host, --port and --label", async () => {
     await setup(fakeSystem(), ["--public-host", "core.example", "--port", "9443", "--label", "eu-1"]);
 
-    const token = out.find((line) => decodeRegistrationBlob(line) !== null)!;
-    const blob = decodeRegistrationBlob(token)!;
+    const blob = wiredCredential("eu-1");
     expect(blob.endpoint).toBe("wss://core.example:9443");
     expect(blob.label).toBe("eu-1");
   });
@@ -495,67 +529,133 @@ describe("status: the update check", () => {
   });
 });
 
+// `actana token` on its own reprinted the hand-carried blob. #287 deleted the
+// artifact, so the verb has nothing to print and says so — it must not quietly
+// become `regenerate`, which locks every paired client out.
 describe("token", () => {
-  it("reprints the same pairing token setup printed", async () => {
-    await setup(fakeSystem());
-    const printed = out.find((line) => decodeRegistrationBlob(line) !== null)!;
-    out.length = 0;
-
-    expect(await runActanaCli(deps(["token"], fakeSystem()))).toBe(0);
-    const reprinted = decodeRegistrationBlob(out.join("\n").trim())!;
-    expect(reprinted.caCert).toBe(decodeRegistrationBlob(printed)!.caCert);
-    expect(reprinted.endpoint).toBe("wss://10.0.0.5:8443");
-  });
-
-  it("puts only the token on stdout so it can be piped", async () => {
+  it("refuses on its own and names the code flow instead", async () => {
     await setup(fakeSystem());
     out.length = 0;
     err.length = 0;
 
+    expect(await runActanaCli(deps(["token"], fakeSystem()))).toBe(EXIT_USAGE);
+    expect(out).toHaveLength(0);
+    expect(err.join("\n")).toContain("actana pair new");
+    expect(err.join("\n")).toContain("actana core pair");
+  });
+
+  it("prints no credential when it refuses", async () => {
+    await setup(fakeSystem());
+    const blob = wiredCredential();
+    out.length = 0;
+    err.length = 0;
+
     await runActanaCli(deps(["token"], fakeSystem()));
-    expect(out).toHaveLength(1);
-    expect(decodeRegistrationBlob(out[0])).not.toBeNull();
-    expect(err.join("\n").toLowerCase()).toContain("pairing token");
+    const printed = [...out, ...err].join("\n");
+    for (const secret of [blob.caCert, blob.clientCert, blob.clientKey, blob.bearer]) {
+      expect(printed).not.toContain(secret);
+    }
+  });
+
+  it("rejects a verb under it that is not `regenerate`", async () => {
+    expect(await runActanaCli(deps(["token", "reprint"], fakeSystem()))).toBe(EXIT_USAGE);
+    expect(err.join("\n")).toContain("regenerate");
+  });
+});
+
+// ─── pair (#283) ────────────────────────────────────────────────────────────
+//
+// `actana-pair.test.ts` is where the three verbs are exercised. What is here is
+// the other question, and it is the one #288 exists over: does the verb an
+// operator reads about in `actana --help` actually answer on this binary, on
+// the machine that has the Core. The suite reaches it the long way round —
+// through `runActanaCli`, after a real `setup` — so a `pair` wired into the
+// help and not into the dispatch would fail here.
+
+describe("pair", () => {
+  it("reaches the Core-side pairing verbs through the real dispatch", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+    err.length = 0;
+
+    expect(await runActanaCli(deps(["pair", "new", "--label", "laptop"], fakeSystem()))).toBe(0);
+    expect(out.join("\n")).toMatch(/^Pairing code\s+[A-Z2-9]{4}-[A-Z2-9]{4}$/m);
+    expect(out.join("\n")).toMatch(/^CA fingerprint\s+[0-9A-F]{2}(:[0-9A-F]{2}){31}$/m);
+  });
+
+  it("writes the session beside the material, where the daemon reads it", async () => {
+    await setup(fakeSystem());
+    await runActanaCli(deps(["pair", "new", "--label", "laptop"], fakeSystem()));
+    const pairingFile = path.join(layoutForHome().configDir, "pairing.json");
+    expect(fs.existsSync(pairingFile)).toBe(true);
+    expect(JSON.parse(fs.readFileSync(pairingFile, "utf8")).sessions).toHaveLength(1);
+  });
+
+  it("lists what it minted, without the code", async () => {
+    await setup(fakeSystem());
+    await runActanaCli(deps(["pair", "new", "--label", "laptop"], fakeSystem()));
+    const code = out.join("\n").match(/Pairing code\s+(\S+)/)![1]!;
+    out.length = 0;
+
+    expect(await runActanaCli(deps(["pair", "ls"], fakeSystem()))).toBe(0);
+    expect(out.join("\n")).toContain("laptop");
+    expect(out.join("\n")).not.toContain(code);
+  });
+
+  it("says which machine it is for, in the top-level help and its own", async () => {
+    await runActanaCli(deps(["--help"], fakeSystem()));
+    expect(out.join("\n")).toMatch(/^\s+pair\b/m);
+    expect(out.join("\n")).toMatch(/actana core pair.*client end/);
+    out.length = 0;
+
+    await runActanaCli(deps(["pair", "--help"], fakeSystem()));
+    expect(out.join("\n")).toMatch(/You are on the Core/);
   });
 
   it("fails clearly when nothing is installed", async () => {
-    expect(await runActanaCli(deps(["token"], fakeSystem()))).toBe(1);
+    expect(await runActanaCli(deps(["pair", "ls"], fakeSystem()))).toBe(1);
     expect(err.join("\n")).toContain("actana setup");
   });
 });
 
 describe("token regenerate", () => {
-  it("issues credentials the old pairing token's no longer match", async () => {
+  it("mints an identity no previously paired client can match", async () => {
     await setup(fakeSystem());
-    const old = decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)!;
+    const old = readMaterial();
     out.length = 0;
     err.length = 0;
 
     expect(await runActanaCli(deps(["token", "regenerate"], fakeSystem()))).toBe(0);
 
-    const fresh = decodeRegistrationBlob(out.join("\n").trim())!;
-    // Every credential a Panel pinned is replaced: a client cert signed by the
-    // old CA is not signed by this one, so the old blob cannot complete the
-    // mTLS handshake against the daemon that now serves these.
+    // Every credential a client pinned is replaced: a client cert signed by the
+    // old CA is not signed by this one, so no credential issued before this can
+    // complete the mTLS handshake against the daemon that now serves these.
+    const fresh = readMaterial();
     expect(fresh.caCert).not.toBe(old.caCert);
-    expect(fresh.clientCert).not.toBe(old.clientCert);
-    expect(fresh.clientKey).not.toBe(old.clientKey);
-    expect(fresh.bearer).not.toBe(old.bearer);
-    // The Core is the same Core, at the same address.
-    expect(fresh.endpoint).toBe(old.endpoint);
-    expect(fresh.label).toBe(old.label);
+    expect(fresh.caKey).not.toBe(old.caKey);
+    expect(fresh.bearerSecret).not.toBe(old.bearerSecret);
+    expect(fresh.coreId).not.toBe(old.coreId);
   });
 
-  it("keeps stdout a single pipeable token and warns on stderr", async () => {
+  it("hands nothing out — it says to pair again, and prints no credential", async () => {
     await setup(fakeSystem());
     out.length = 0;
     err.length = 0;
 
     await runActanaCli(deps(["token", "regenerate"], fakeSystem()));
-    expect(out).toHaveLength(1);
-    expect(decodeRegistrationBlob(out[0])).not.toBeNull();
-    expect(err.join("\n")).toMatch(/no longer work/i);
-    expect(err.join("\n")).toMatch(/re-pair/i);
+    expect(out).toHaveLength(0);
+    expect(err.join("\n")).toMatch(/locked out/i);
+    expect(err.join("\n")).toContain("actana pair new");
+    // The step that makes the advice followable. A Panel already registered at
+    // this endpoint — which is every Panel this sentence is addressed to —
+    // refuses the pairing *before* it spends the code, so an operator who does
+    // as they are told loses a one-time code and learns nothing.
+    expect(err.join("\n")).toMatch(/remove the Core first/i);
+    expect(err.join("\n")).toContain("actana core pair");
+    const fresh = readMaterial();
+    const printed = [...out, ...err].join("\n");
+    expect(printed).not.toContain(fresh.caCert);
+    expect(printed).not.toContain(fresh.clientKey);
   });
 
   it("restarts the daemon — until it reloads, the old credentials still work", async () => {
@@ -640,15 +740,16 @@ describe("update", () => {
 
   it("says the pairing credentials survived — a paired Panel stays paired", async () => {
     await setup(fakeSystem());
-    const before = decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)!;
+    const before = readMaterial();
     writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     out.length = 0;
     await update(fakeSystem());
     expect(out.join("\n")).toMatch(/unchanged|stay paired/i);
 
-    out.length = 0;
-    await runActanaCli(deps(["token"], fakeSystem()));
-    expect(decodeRegistrationBlob(out.join("\n").trim())!.caCert).toBe(before.caCert);
+    // Read off the material rather than out of a reprint: #287 removed the
+    // reprint, and the material file is what a paired client's certificate
+    // chains to anyway.
+    expect(readMaterial().caCert).toBe(before.caCert);
   });
 
   it("aborts on a bad checksum, leaving the old install running", async () => {
@@ -902,14 +1003,14 @@ describe("macOS", () => {
     return runActanaCli(macDeps(["setup", ...extra], system));
   }
 
-  it("installs a LaunchAgent and prints a pairing token", async () => {
+  it("installs a LaunchAgent and points the operator at `actana pair new`", async () => {
     expect(await macSetup(fakeSystem())).toBe(0);
 
     const text = out.join("\n");
-    expect(text).toMatch(/pairing token/i);
+    expect(text).toContain("actana pair new");
     expect(text).toContain("com.actana.core");
     expect(fs.existsSync(plistPath())).toBe(true);
-    expect(out.find((line) => decodeRegistrationBlob(line) !== null)).toBeDefined();
+    expect(text).not.toMatch(/BEGIN (CERTIFICATE|PRIVATE KEY)/);
   });
 
   it("tells the operator the daemon starts at login rather than surviving logout", async () => {
@@ -1120,7 +1221,7 @@ describe("macOS", () => {
 
   it("regenerates credentials and reloads the agent onto them", async () => {
     await macSetup(fakeSystem());
-    const old = decodeRegistrationBlob(out.find((l) => decodeRegistrationBlob(l) !== null)!)!;
+    const old = readMaterial("darwin");
     out.length = 0;
 
     const system = fakeSystem({
@@ -1132,7 +1233,7 @@ describe("macOS", () => {
     });
     expect(await runActanaCli(macDeps(["token", "regenerate"], system))).toBe(0);
 
-    expect(decodeRegistrationBlob(out.join("\n").trim())!.caCert).not.toBe(old.caCert);
+    expect(readMaterial("darwin").caCert).not.toBe(old.caCert);
     expect(system.calls.map((c) => c.join(" "))).toContain(
       "launchctl kickstart -k gui/501/com.actana.core",
     );
@@ -1336,22 +1437,38 @@ describe("in a container", () => {
     expect(out.join("\n")).not.toContain("10.0.0.5");
   });
 
-  it("reprints a pairing token built from the environment contract", async () => {
+  // The environment contract used to be observed through the token this Core
+  // reprinted. #287 deleted the reprint, so the observable is `status`, which
+  // reads the same three variables through the same `endpointFor`.
+  it("builds its endpoint from the environment contract", async () => {
     const env = containerEnv({ ACTANA_PORT: "9443", ACTANA_LABEL: "build box" });
     writeContainerMaterial(env);
 
-    expect(await runActanaCli(deps(["token"], fakeSystem(), { env }))).toBe(0);
-
-    const blob = decodeRegistrationBlob(out.join("\n").trim());
-    expect(blob?.endpoint).toBe("wss://core1.example.com:9443");
-    expect(blob?.label).toBe("build box");
+    expect(await runActanaCli(deps(["status"], fakeSystem(), { env }))).toBe(0);
+    expect(out.join("\n")).toContain("wss://core1.example.com:9443");
   });
 
-  it("labels the Core with its public host when the operator named no label", async () => {
+  it("has no token to reprint, and says how a client enrolls instead", async () => {
     const env = containerEnv();
     writeContainerMaterial(env);
-    await runActanaCli(deps(["token"], fakeSystem(), { env }));
-    expect(decodeRegistrationBlob(out.join("\n").trim())?.label).toBe("core1.example.com");
+    expect(await runActanaCli(deps(["token"], fakeSystem(), { env }))).toBe(EXIT_USAGE);
+    expect(out).toHaveLength(0);
+    expect(err.join("\n")).toContain("actana pair new");
+  });
+
+  // The container path says the same thing about re-pairing as the metal path,
+  // and it has to carry the same caveat: a Panel refuses at an endpoint it
+  // already holds, and `docker compose restart` does not move the endpoint.
+  it("names the restart it owes and the removal a Panel needs, after regenerate", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+
+    expect(await runActanaCli(deps(["token", "regenerate"], fakeSystem(), { env }))).toBe(0);
+
+    expect(out).toHaveLength(0);
+    expect(err.join("\n")).toContain("docker compose restart");
+    expect(err.join("\n")).toContain("actana pair new");
+    expect(err.join("\n")).toMatch(/remove the Core first/i);
   });
 
   it("refuses to boot the daemon without a public host, naming the variable", async () => {
@@ -1557,8 +1674,8 @@ describe("agent offers during setup", () => {
     ).toBe(0);
 
     expect(out.join("\n")).toContain("could not install OpenCode");
-    // The pairing token still printed — the Core is usable.
-    expect(out.join("\n")).toContain("pairing token");
+    // The install finished and said how to enroll a client — the Core is usable.
+    expect(out.join("\n")).toContain("actana pair new");
   });
 });
 
@@ -1697,7 +1814,7 @@ describe("a Core on a different version from the CLI managing it", () => {
     const system = runningSystem();
     await installOlderCore(system);
 
-    for (const verb of ["status", "token", "start", "logs"]) {
+    for (const verb of ["status", "start", "logs"]) {
       err = [];
       const code = await runActanaCli(deps([verb], system));
       expect(err.join("\n"), verb).not.toMatch(/version/i);

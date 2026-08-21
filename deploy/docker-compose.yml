@@ -1,10 +1,12 @@
 # The reference deployment: one Panel, one Core, one network (ADR 0016 D41).
 #
 #   docker compose up -d
-#   docker compose logs core        # copy the registration blob it printed
+#   docker compose exec core actana pair new     # a code and a CA fingerprint
 #
-# then open http://localhost:7420, create the Operator, and paste the blob into
-# "Add Core". The Panel dials wss://core:8443 over this network — which is why
+# then open http://localhost:7420, create the Operator, and give "Add Core" the
+# address core:8443 and that code — checking the fingerprint the Panel shows
+# against the one pair new printed. The Panel dials wss://core:8443 over this
+# network — which is why
 # ACTANA_PUBLIC_HOST below is the compose *service name* and not a real DNS
 # name. Both images are published, so a clean checkout needs nothing built.
 #
@@ -18,8 +20,9 @@
 #
 # None of that touches the core-link. The Core presents a self-signed server
 # certificate from its own CA and requires the Panel's client certificate
-# (ADR 0002); that material is minted by the Core, travels in the registration
-# blob, and is never something you supply or renew.
+# (ADR 0002). The Core mints that CA itself; each client generates its own key
+# and gets a certificate signed when it pairs, so no key material you supply or
+# renew ever crosses the wire.
 #
 # ── The two variables in the image names ─────────────────────────────────────
 #
@@ -73,7 +76,7 @@ services:
     restart: unless-stopped
     environment:
       # The address the Panel dials, and therefore the SAN in this Core's
-      # server certificate and the endpoint in every pairing token it prints.
+      # server certificate and the endpoint every pairing hands back.
       # It lives here, in the file you edit, rather than in the image — the
       # image never guesses it, because a container's default hostname is its
       # container ID and would change the certificate on every recreation.
@@ -99,8 +102,8 @@ services:
 # A second Core is the block above again with three things changed: the
 # service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
 # here is a singleton. Uncomment, add `core2-home:` and `core2-repos:` under
-# `volumes:`, and pair it the same way — its blob is in
-# `docker compose logs core2`.
+# `volumes:`, and pair it the same way — `docker compose exec core2 actana
+# pair new` prints its own code and CA fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
 # swap the first Core's comment describes: a bind mount needs a host directory

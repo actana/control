@@ -1,10 +1,9 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
-import { registryPaths } from "../blob-registry.ts";
+import { loadCoreBlob, registryPaths } from "../blob-registry.ts";
 import * as os from "node:os";
 import * as path from "node:path";
 import { X509Certificate, createPublicKey } from "node:crypto";
-import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { readActanaConfig } from "../actana-config";
 import { resolveActanaLayout, type ActanaLayout } from "../actana-layout";
@@ -196,25 +195,45 @@ describe("runActanaSetup — the install layout", () => {
   });
 });
 
-describe("runActanaSetup — the pairing token", () => {
-  it("returns a token that decodes into a usable Registration blob", async () => {
+/**
+ * The credential setup wrote into this machine's own registry (#288 D9).
+ *
+ * Read back out of the registry rather than off the result, because since #287
+ * the result carries no credential at all: setup emits nothing for a human to
+ * carry, and the registry file is the only place its work lands.
+ */
+function wiredCredential(result: { wiring: { name: string } }) {
+  const loaded = loadCoreBlob(registryPaths({ HOME: home }, home), result.wiring.name);
+  if (!loaded.ok) throw new Error(`no registry entry for ${result.wiring.name}: ${loaded.error}`);
+  return loaded.blob;
+}
+
+describe("runActanaSetup — the credential it wires into the registry", () => {
+  it("writes one this machine's own client can dial with", async () => {
     const result = await runActanaSetup(options(fakeSystem()));
 
-    const blob = decodeRegistrationBlob(result.blob);
-    expect(blob).not.toBeNull();
-    expect(blob?.endpoint).toBe("wss://10.0.0.5:8443");
-    expect(blob?.label).toBe("vm-1");
-    expect(blob?.caCert).toContain("BEGIN CERTIFICATE");
-    expect(blob?.clientKey).toContain("PRIVATE KEY");
+    const blob = wiredCredential(result);
+    expect(blob.endpoint).toBe("wss://10.0.0.5:8443");
+    expect(blob.label).toBe("vm-1");
+    expect(blob.caCert).toContain("BEGIN CERTIFICATE");
+    expect(blob.clientKey).toContain("PRIVATE KEY");
+  });
+
+  // #287: the whole point of the removal is that there is no artifact. A field
+  // on the result would be one, whether or not anything printed it today.
+  it("returns no credential of any kind to its caller", async () => {
+    const result = await runActanaSetup(options(fakeSystem()));
+    expect(result).not.toHaveProperty("blob");
+    expect(JSON.stringify(result)).not.toContain("PRIVATE KEY");
   });
 
   it("signs the bearer with the secret the daemon will load from disk", async () => {
     const result = await runActanaSetup(options(fakeSystem()));
 
-    const blob = decodeRegistrationBlob(result.blob);
+    const blob = wiredCredential(result);
     const material = loadMaterial(layout.configDir);
     expect(material).not.toBeNull();
-    const verified = verifyBearer(blob!.bearer, material!.bearerSecret);
+    const verified = verifyBearer(blob.bearer, material!.bearerSecret);
     expect(verified.ok).toBe(true);
     expect(verified.ok && verified.coreId).toBe(material!.coreId);
   });
@@ -353,12 +372,11 @@ describe("runActanaSetup — linger", () => {
 });
 
 describe("runActanaSetup — re-running over an existing install", () => {
-  it("keeps the pairing token stable so a paired Panel stays paired", async () => {
+  it("keeps the pairing credentials stable so a paired client stays paired", async () => {
     const first = await runActanaSetup(options(fakeSystem()));
+    const a = wiredCredential(first);
     const second = await runActanaSetup(options(fakeSystem()));
-
-    const a = decodeRegistrationBlob(first.blob)!;
-    const b = decodeRegistrationBlob(second.blob)!;
+    const b = wiredCredential(second);
     expect(b.caCert).toBe(a.caCert);
     expect(b.clientCert).toBe(a.clientCert);
     expect(second.materialOutcome).toBe("reused");
@@ -423,7 +441,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     expect(second.materialOutcome).toBe("reissued");
     expect(after.serverCert).not.toBe(before.serverCert);
     expect(new X509Certificate(after.serverCert).subjectAltName).toContain("10.0.0.9");
-    expect(decodeRegistrationBlob(second.blob)!.endpoint).toBe("wss://10.0.0.9:8443");
+    expect(wiredCredential(second).endpoint).toBe("wss://10.0.0.9:8443");
   });
 
   // The regression this ticket exists for (ADR 0016 D18): re-minting on a host
@@ -432,6 +450,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
   it("keeps the identity across a host change — no new CA, coreId or bearer secret", async () => {
     const first = await runActanaSetup(options(fakeSystem()));
     const before = loadMaterial(layout.configDir)!;
+    const { caCert: caBefore, clientCert: clientCertBefore } = wiredCredential(first);
 
     const second = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
 
@@ -444,15 +463,13 @@ describe("runActanaSetup — re-running over an existing install", () => {
     expect(after.clientKey).toBe(before.clientKey);
     expect(second.materialOutcome).toBe("reissued");
 
-    const a = decodeRegistrationBlob(first.blob)!;
-    const b = decodeRegistrationBlob(second.blob)!;
-    expect(b.caCert).toBe(a.caCert);
-    expect(b.clientCert).toBe(a.clientCert);
+    expect(wiredCredential(second).caCert).toBe(caBefore);
+    expect(wiredCredential(second).clientCert).toBe(clientCertBefore);
   });
 
   it("a Panel paired before the move still validates the Core against its pinned CA", async () => {
     const first = await runActanaSetup(options(fakeSystem()));
-    const pinnedCa = decodeRegistrationBlob(first.blob)!.caCert;
+    const pinnedCa = wiredCredential(first).caCert;
 
     await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
 

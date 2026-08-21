@@ -1,18 +1,23 @@
 // Core first run — the daemon mints its own identity when the volume is empty
 // (ADR 0016 D17).
 //
-// On metal, `actana setup` mints the material, persists it and prints the
-// pairing blob; the daemon only ever loads what setup left behind. In a
-// container the image *is* the install (D13) and `actana setup` never runs, so
-// the daemon has to do all three itself on first boot:
+// On metal, `actana setup` mints the material and persists it; the daemon only
+// ever loads what setup left behind. In a container the image *is* the install
+// (D13) and `actana setup` never runs, so the daemon has to mint and persist
+// for itself on first boot:
 //
-//   material file absent  → mint, persist, write `registration-blob.txt`
-//                           beside it, hand the blob back to be printed once
-//   material file present → load it, print nothing; re-sign only the server
-//                           cert if `ACTANA_PUBLIC_HOST` moved (D18)
+//   material file absent  → mint it, persist it
+//   material file present → load it; re-sign only the server cert if
+//                           `ACTANA_PUBLIC_HOST` moved (D18)
 //
-// That asymmetry is the whole pairing contract for a containerised Core:
-// `docker compose restart` re-enters the second branch and is a no-op for
+// **Nothing is emitted either way (#287).** The first run used to write a
+// `registration-blob.txt` beside the material and print the blob once for an
+// operator to copy into a Panel; that hand-carry is gone, and a client enrolls
+// by spending a code from `actana pair new` — which works in a container,
+// because `pair` is deliberately not on the refusal table (ADR 0016 D13).
+//
+// The asymmetry above is still the whole identity contract for a containerised
+// Core: `docker compose restart` re-enters the second branch and is a no-op for
 // pairing; `docker compose down -v` drops the volume and is the only thing
 // that unpairs. Pre-seeding material through env or a mounted secret is
 // deliberately not an option — it would need a generator that runs outside a
@@ -32,75 +37,20 @@
 // Core process only — never imported by the browser.
 
 import * as fs from "node:fs";
-import * as path from "node:path";
-import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
-  loadMaterialFromFile,
   mintFreshMaterial,
   persistMaterialToFile,
   checkServerCertHost,
+  readMaterialFile,
   reissueServerCert,
   type PersistedMaterial,
 } from "@actana/shared/core-material-store";
 
-/** The blob file written beside the material file on first run. */
-export const REGISTRATION_BLOB_FILENAME = "registration-blob.txt";
-
-/**
- * Where the blob lands for a given material file — beside it, so one volume
- * carries both and `docker compose exec core cat …` finds it for the life of
- * that volume.
- */
-export function registrationBlobPath(materialFile: string): string {
-  return path.join(path.dirname(materialFile), REGISTRATION_BLOB_FILENAME);
-}
-
-/** Everything a blob needs that is not part of the identity itself. */
-export type BlobAddressing = {
-  /** The host a Panel reaches this Core on — the cert SAN and the endpoint. */
-  publicHost: string;
-  /** The core-link port, for the endpoint in the blob. */
-  port: number;
-  /** Human-friendly alias carried in the blob (`ACTANA_LABEL`). */
-  label: string;
-  /** Bearer lease length in days. */
-  bearerDays: number;
-};
-
-/**
- * Build the pairing blob for an identity: the Panel's half of the mTLS pair,
- * the CA to pin, where to dial, and a freshly signed bearer.
- *
- * The bearer is signed here rather than stored, so every blob this Core hands
- * out carries a full lease instead of whatever is left of an older one.
- */
-export function buildRegistrationBlob(
-  material: Pick<
-    PersistedMaterial,
-    "caCert" | "clientCert" | "clientKey" | "coreId" | "bearerSecret"
-  >,
-  addressing: BlobAddressing,
-): string {
-  return encodeRegistrationBlob({
-    endpoint: `wss://${addressing.publicHost}:${addressing.port}`,
-    label: addressing.label,
-    caCert: material.caCert,
-    clientCert: material.clientCert,
-    clientKey: material.clientKey,
-    bearer: signBearer(
-      {
-        coreId: material.coreId,
-        exp: Date.now() + addressing.bearerDays * 24 * 60 * 60 * 1000,
-      },
-      material.bearerSecret as BearerSecret,
-    ),
-  });
-}
-
-export type LoadOrMintOptions = BlobAddressing & {
+export type LoadOrMintOptions = {
   /** Full path from `AC_CORE_MATERIAL_FILE`. */
   materialFile: string;
+  /** The host a client reaches this Core on — the server cert's SAN. */
+  publicHost: string;
   /**
    * Whether `publicHost` is the operator's answer (`ACTANA_PUBLIC_HOST`) or the
    * bind address standing in for one. Only the operator's answer may re-sign an
@@ -113,8 +63,6 @@ export type LoadOrMintOptions = BlobAddressing & {
 export type LoadOrMintResult = {
   /** The identity the daemon serves — freshly minted or loaded from disk. */
   material: PersistedMaterial;
-  /** The pairing blob, to print once. `null` on every boot after the first. */
-  blob: string | null;
   /**
    * What this boot did to the server cert. `moved` is the one the operator
    * hears about: `ACTANA_PUBLIC_HOST` changed under a paired Core. `backfilled`
@@ -126,7 +74,7 @@ export type LoadOrMintResult = {
 
 /**
  * Resolve the identity this daemon boots with: load the material file, or —
- * when it is absent — mint one, persist it and write the blob beside it.
+ * when it is absent — mint one and persist it.
  *
  * Named for both paths because it runs on every boot, and after the first one
  * the load is all that happens.
@@ -144,17 +92,24 @@ export type LoadOrMintResult = {
  */
 export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadOrMintResult> {
   if (fs.existsSync(opts.materialFile)) {
-    const existing = loadMaterialFromFile(opts.materialFile);
-    if (!existing) {
+    const read = readMaterialFile(opts.materialFile);
+    if (!read) {
       throw new Error(
         `${opts.materialFile} exists but could not be read as Core material. ` +
           "Fix or remove it — removing it re-mints this Core's identity and " +
           "every paired Panel has to re-pair.",
       );
     }
+    const existing = read.material;
+    // Material written before #282 has no stable core UUID, and the load just
+    // minted one. Writing it back here is what makes it stable: unpersisted, a
+    // Core would announce a different `aud` on every boot, which is the one
+    // thing that identifier exists not to do. Nothing else about the identity
+    // changes, so no Panel notices and nothing has to re-pair.
+    if (read.mintedCoreUuid) persistMaterialToFile(opts.materialFile, existing);
     const check = checkServerCertHost(existing, opts.publicHost);
     if (check === "covered" || !opts.publicHostDeclared) {
-      return { material: existing, blob: null, certAction: "unchanged" };
+      return { material: existing, certAction: "unchanged" };
     }
 
     const reissued = await reissueServerCert(existing, opts.publicHost);
@@ -162,54 +117,19 @@ export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadO
     if (check === "unrecorded") {
       // Nothing moved as far as anyone knows — the record simply did not exist
       // before D18. Re-signing for the host in hand fills it in; announcing a
-      // move here, or handing out a new token for one, would be a fiction.
-      return { material: reissued, blob: null, certAction: "backfilled" };
+      // move here would be a fiction.
+      return { material: reissued, certAction: "backfilled" };
     }
-    // The blob on disk still points a Panel at the address this Core just left,
-    // and that address is the one thing re-issuing cannot fix from here — the
-    // Panel holds it. Rewriting the file means the documented `cat` hands the
-    // operator a token for where the Core actually is.
-    writeBlobFile(opts.materialFile, buildRegistrationBlob(reissued, opts));
-    return { material: reissued, blob: null, certAction: "moved" };
+    // A paired client is still dialling the address this Core just left, and
+    // that address is the one thing re-issuing cannot fix from here — the
+    // client holds it. There is nothing to rewrite on disk any more (#287): the
+    // caller says the new address in the log, and an operator either re-points
+    // their client at it or pairs again.
+    return { material: reissued, certAction: "moved" };
   }
 
   const material = await mintFreshMaterial(opts.publicHost);
   persistMaterialToFile(opts.materialFile, material);
 
-  const blob = buildRegistrationBlob(material, opts);
-  writeBlobFile(opts.materialFile, blob);
-
-  return { material, blob, certAction: "unchanged" };
-}
-
-/**
- * Write the blob beside the material file. It holds the blob and nothing else:
- * the documented way to get it is `cat`, and its output has to be pasteable
- * without editing.
- */
-function writeBlobFile(materialFile: string, blob: string): void {
-  fs.writeFileSync(registrationBlobPath(materialFile), `${blob}\n`, {
-    encoding: "utf8",
-    mode: 0o600,
-  });
-}
-
-/**
- * The first-run blob as a human reads it out of `docker compose logs`.
- *
- * The `@@AC_CORE_REGISTRATION_BLOB@@` sentinel exists for a supervising parent
- * that captures the line; a container has no such parent, and prefixing the
- * one thing the operator must copy makes it something they have to edit first.
- * The blob keeps a line to itself so a triple-click gets exactly it.
- */
-export function formatRegistrationBlobNotice(blob: string, blobFile: string): string {
-  return [
-    "",
-    'Your pairing token — paste this into your Panel\'s "Add Core":',
-    "",
-    blob,
-    "",
-    `Saved to ${blobFile}. It stays valid for the life of this volume.`,
-    "",
-  ].join("\n");
+  return { material, certAction: "unchanged" };
 }

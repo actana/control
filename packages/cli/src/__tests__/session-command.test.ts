@@ -15,7 +15,7 @@ import {
   fakeSessionGateway,
   fakeStartedSession,
   makeCliFixture,
-  sentinelBlobText,
+  registerCore,
   type CliFixture,
 } from "./cli-harness.ts";
 import {
@@ -37,7 +37,7 @@ afterEach(() => {
 
 /** A registered Core, so resolution finds one and the verbs get as far as the gateway. */
 async function withRegisteredCore(): Promise<void> {
-  await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+  registerCore(cli().paths, "prod");
 }
 
 function row(overrides: Partial<SessionRow> = {}): SessionRow {

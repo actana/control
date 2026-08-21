@@ -107,7 +107,7 @@ export function FleetView() {
           {cores.length === 0 ? (
             <EmptyState
               title="Add your first Core"
-              subtitle="A Core is a machine running the Core. Install it there, then pair it with this Panel using its registration blob to see its sessions here."
+              subtitle="A Core is a machine running the Core. Install it there, run `actana pair new` on it, and pair it with this Panel using the code it prints to see its sessions here."
               icon="grid"
             />
           ) : error ? (

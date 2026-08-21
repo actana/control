@@ -67,6 +67,27 @@ export type ParsedArgs = {
   enter: boolean;
   /** `--dangerously-skip-permissions`: start the harness without permission prompts. */
   skipPermissions: boolean;
+  // ─── `core pair`'s flags (#285) ───
+  /**
+   * `--fingerprint <sha256>` — the CA fingerprint the operator was read out by
+   * `actana pair new`, in any form a human copies it in.
+   *
+   * Raw, like `--since` and `--limit`: what shape a fingerprint has is the
+   * SDK's business, and the verb that hands it over is the one that can say
+   * what a bad one means without this parser mirroring a format it does not
+   * own.
+   */
+  fingerprint: string | null;
+  /**
+   * `--session <id>` — the pairing session the code belongs to, when the code
+   * the operator was given does not already carry it as `<session>:<XXXX-XXXX>`.
+   *
+   * A code names a session and the Core will not go looking for which one
+   * (#282), so one of the two spellings has to supply it.
+   */
+  session: string | null;
+  /** `--label <name>` — what this machine calls itself in the Core's `pair ls`. */
+  label: string | null;
   /**
    * `--read-only`: attach without claiming the Session's write lock (#163).
    *
@@ -93,6 +114,9 @@ const VALUE_FLAGS = new Set([
   "--harness",
   "--cwd",
   "--title",
+  "--fingerprint",
+  "--session",
+  "--label",
 ]);
 
 /** Parse `process.argv.slice(2)`. Never throws; malformed input is reported in the result. */
@@ -114,6 +138,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
     harness: null,
     cwd: null,
     title: null,
+    fingerprint: null,
+    session: null,
+    label: null,
     raw: false,
     enter: false,
     skipPermissions: false,
@@ -128,7 +155,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
     if (flagsEnded || arg === "-" || !arg.startsWith("-")) {
       // A bare `-` is a positional: it is the conventional name for stdin, and
-      // `actana core add prod -` is a sentence somebody will type.
+      // `actana project cp - remote:path` is a sentence somebody will type.
       parsed.positionals.push(arg);
       continue;
     }
@@ -160,6 +187,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
       else if (name === "--harness") parsed.harness = value;
       else if (name === "--cwd") parsed.cwd = value;
       else if (name === "--title") parsed.title = value;
+      else if (name === "--fingerprint") parsed.fingerprint = value;
+      else if (name === "--session") parsed.session = value;
+      else if (name === "--label") parsed.label = value;
       continue;
     }
 

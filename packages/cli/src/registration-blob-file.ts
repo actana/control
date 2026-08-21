@@ -1,12 +1,19 @@
 // A registration blob, as it is written down.
 //
-// `actana setup` prints one base64 artifact per machine —
+// The registry keeps one credential per named Core, as
 // `base64(JSON({endpoint, label, caCert, clientCert, clientKey, bearer}))`
-// (CONTEXT.md "Registration blob"). The SDK takes that decoded, as an object,
-// and says so at length in `packages/sdk/src/core-registration-blob.ts`:
-// **where a blob is kept and how it is encoded at rest is the CLI's business**
-// (#129 D9). This file is that business, and it is deliberately the only place
-// in this package that turns bytes into credentials.
+// in a 0600 file (CONTEXT.md "Registration blob"). The SDK takes that decoded,
+// as an object, and says so at length in
+// `packages/sdk/src/core-registration-blob.ts`: **where a blob is kept and how
+// it is encoded at rest is the CLI's business** (#129 D9). This file is that
+// business, and it is deliberately the only place in this package that turns
+// bytes into credentials.
+//
+// **This is a storage format and not an artifact, which is a distinction #287
+// made real.** The same encoding used to be both: `actana setup` printed one
+// base64 line, a human carried it, and `actana core add` read it back here.
+// That path is gone in both directions. What is left is `actana core pair`
+// writing what a Core signed for it, and every verb below reading it back.
 //
 // Why this decoder is not imported from `@actana/shared`, which has one:
 // `packages/shared` is private and stays private ([ADR 0025][adr] D4), and this
@@ -27,12 +34,12 @@ export type BlobDecodeResult =
   | { ok: false; error: string };
 
 /**
- * Decode the text of a blob file — or of a paste, or of what came in on stdin.
- * Surrounding whitespace is tolerated, because every one of those three arrives
- * with a trailing newline at least some of the time.
+ * Decode the text of a registry file, or of `ACTANA_CORE_BLOB`. Surrounding
+ * whitespace is tolerated, because both arrive with a trailing newline at least
+ * some of the time.
  *
  * Every failure is one sentence naming what is wrong with the input. **None of
- * them quotes the input.** A blob is a credential and a malformed one is very
+ * them quotes the input.** A stored credential that will not decode is very
  * often a *nearly* well-formed one — echoing "expected base64, got
  * eyJlbmRwb2ludCI6…" into a terminal, a CI log or a shell history is how the
  * good half of a credential ends up somewhere it cannot be taken back from.
@@ -71,7 +78,7 @@ export function decodeRegistrationBlobText(raw: string): BlobDecodeResult {
   } catch {
     return {
       ok: false,
-      error: "the blob does not decode to JSON — check it was pasted whole, with no line breaks introduced",
+      error: "the stored credential does not decode to JSON — the file may be truncated",
     };
   }
 
@@ -107,6 +114,42 @@ export function decodeRegistrationBlobText(raw: string): BlobDecodeResult {
       bearer: o.bearer as string,
     },
   };
+}
+
+/**
+ * Write a blob down, in exactly the form {@link decodeRegistrationBlobText}
+ * reads back.
+ *
+ * The other direction of the same one file, and it is how a credential gets
+ * into the registry at all: `actana core pair` gets a `CoreRegistrationBlob`
+ * object back from the SDK, and the registry stores text. Encoding it anywhere
+ * else would be a second opinion about the format at rest — the thing this
+ * module's header says it is the only place for — and the round trip is
+ * asserted rather than assumed (`registration-blob-file.test.ts`).
+ *
+ * **`label` is written only when there is one.** A paired credential carries no
+ * alias at all, because the Core's redemption answer has no field for one
+ * (#284). An empty string here would put a blank LABEL column in `actana core
+ * ls` on the strength of a field nobody set, so the key is left out instead and
+ * the decoder's `?? ""` answers for it.
+ *
+ * The result is base64 of compact JSON and has no trailing newline. The decoder
+ * trims either way, which matters because a registry file restored from a
+ * backup or copied by hand often gains one.
+ */
+export function encodeRegistrationBlobText(blob: CoreRegistrationBlob): string {
+  const label = blob.label ?? "";
+  return Buffer.from(
+    JSON.stringify({
+      endpoint: blob.endpoint,
+      ...(label === "" ? {} : { label }),
+      caCert: blob.caCert,
+      clientCert: blob.clientCert,
+      clientKey: blob.clientKey,
+      bearer: blob.bearer,
+    }),
+    "utf8",
+  ).toString("base64");
 }
 
 /**

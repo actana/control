@@ -13,8 +13,9 @@
 //   • first boot reports `needsSetup`, and BEFORE anyone logs in, an API call
 //     and a panel-link upgrade are both refused;
 //   • setup creates the Operator, logout/login round-trips the session cookie;
-//   • a real registration blob pasted into "Add Core" registers a Core, and its
-//     dial reaches `connected` over the panel link;
+//   • a real pairing code, redeemed through "Add Core" against a Core whose
+//     fingerprint was checked first, registers a Core — and its dial reaches
+//     `connected` over the panel link;
 //   • projects and tasks list, and a project created over the panel link shows
 //     up in the next list — the write path is mutation frames, not HTTP;
 //   • a PTY spawned over the panel link streams `coreId`-tagged output frames
@@ -22,9 +23,9 @@
 //   • the panel link is killed mid-flight, events happen on the Core while
 //     no browser is attached, and a reconnected link replaying from its cursor
 //     sees every one of them — no event loss;
-//   • the Core's secrets are unreadable at rest: the bearer appears nowhere in
-//     panel.db, and a data directory restored without its `secrets.key` cannot
-//     dial the Core it still lists;
+//   • the credential the pairing issued is unreadable at rest: it appears
+//     nowhere in panel.db in the clear, and a data directory restored without
+//     its `secrets.key` cannot dial the Core it still lists;
 //   • the `AC_SECRETS_KEY` path works: a Panel given the key by environment
 //     pairs and dials without ever writing a key file;
 //   • and a file dropped on a Project reaches that Core's disk — read back with
@@ -337,7 +338,7 @@ async function assertUnauthenticatedIsRefused(panel, fail) {
     { method: "GET", pathname: "/api/settings" },
     // A write, too: the reads and the writes go through the same gate, and a
     // regression that opened only one of them would be missed by either alone.
-    { method: "POST", pathname: "/api/cores", body: { registrationBlob: "x" } },
+    { method: "POST", pathname: "/api/cores/pairing/inspect", body: { address: "127.0.0.1:1" } },
   ]) {
     const response =
       probe.method === "GET"
@@ -399,29 +400,85 @@ async function assertSetupAndLogin(panel, fail) {
   log("setup → logout → login: the session cookie is the whole gate");
 }
 
-/** Pasting the Core's registration blob registers a Core. */
+/**
+ * Redeeming a pairing code registers a Core — the whole of "Add Core" (#286),
+ * and since #287 the only way in.
+ *
+ * Three assertions in the order the operator meets them: the paste door is
+ * *gone*, the fingerprint is answered before any code moves, and the code is
+ * spent by its one successful redemption.
+ */
 async function assertCoreRegisters(panel, core, fail) {
-  const rejected = await panel.client.post("/api/cores", { registrationBlob: "not-a-blob" });
-  if (rejected.status !== 400) fail(`a junk registration blob: expected 400, got ${rejected.status}`);
+  // #287: no add route at all. Not a 400 on a bad blob — a 404 on the route.
+  const pasted = await panel.client.post("/api/cores", { registrationBlob: "not-a-blob" });
+  if (pasted.status !== 404) {
+    fail(`POST /api/cores should be gone: expected 404, got ${pasted.status}`);
+  }
 
-  const added = await panel.client.post("/api/cores", {
-    registrationBlob: core.registrationBlob,
+  // Step one: what CA does that address present? No code in the request, so
+  // nothing is spent by asking.
+  const inspected = await panel.client.post("/api/cores/pairing/inspect", {
+    address: core.address,
+  });
+  if (inspected.status !== 200) {
+    fail(`pairing inspect: expected 200, got ${inspected.status} (${inspected.text.slice(0, 200)})`);
+  }
+  const presented = inspected.body?.identity?.fingerprint;
+  if (presented !== core.caFingerprint) {
+    fail(`the Panel was presented ${presented}, expected ${core.caFingerprint}`);
+  }
+
+  // One `actana pair new` per phase: a code is single-use, and a phase that
+  // reused the last one's would be asserting the wrong thing.
+  const { code, sessionId } = core.newPairing();
+
+  // A wrong code is refused, and the Core is not registered on the strength of
+  // one — the attempt cap is what stops this being a guessing game.
+  const wrong = await panel.client.post("/api/cores/pairing", {
+    address: core.address,
+    code: "ZZZZ-ZZZZ",
+    sessionId,
+    expectedFingerprint: core.caFingerprint,
+    label: "e2e",
+  });
+  if (wrong.status !== 400) fail(`a wrong pairing code: expected 400, got ${wrong.status}`);
+
+  const added = await panel.client.post("/api/cores/pairing", {
+    address: core.address,
+    code,
+    sessionId,
+    expectedFingerprint: core.caFingerprint,
+    label: "e2e",
   });
   if (added.status !== 201) {
-    fail(`add Core: expected 201, got ${added.status} (${added.text.slice(0, 200)})`);
+    fail(`pair Core: expected 201, got ${added.status} (${added.text.slice(0, 200)})`);
   }
   const coreId = added.body?.core?.id;
-  if (typeof coreId !== "string" || !coreId) fail(`add Core returned no id: ${added.text.slice(0, 200)}`);
+  if (typeof coreId !== "string" || !coreId) fail(`pairing returned no id: ${added.text.slice(0, 200)}`);
+
+  // Single-use: the same code cannot register a second Core.
+  const replay = await panel.client.post("/api/cores/pairing", {
+    address: core.address,
+    code,
+    sessionId,
+    expectedFingerprint: core.caFingerprint,
+    label: "e2e-again",
+  });
+  if (replay.status !== 400) fail(`a spent pairing code: expected 400, got ${replay.status}`);
 
   const listed = await panel.client.get("/api/cores");
-  if (!listed.body?.cores?.some((core) => core.id === coreId)) {
+  if (!listed.body?.cores?.some((row) => row.id === coreId)) {
     fail(`the registered Core is not in GET /api/cores: ${listed.text.slice(0, 300)}`);
   }
-  // The secrets went in with the paste and must not come back out of any API.
-  if (listed.text.includes(core.blob.bearer) || listed.text.includes(core.blob.clientKey)) {
-    fail("GET /api/cores leaked the Core's credentials");
+  // The credential the redemption produced must not come back out of any API,
+  // and neither may anything of the Core's own identity.
+  for (const [name, secret] of Object.entries(core.secrets)) {
+    if (listed.text.includes(secret)) fail(`GET /api/cores leaked the Core's ${name}`);
   }
-  log(`registered Core ${coreId} from the Core's registration blob`);
+  if (/BEGIN (CERTIFICATE|PRIVATE KEY)/.test(listed.text)) {
+    fail("GET /api/cores returned certificate material");
+  }
+  log(`paired Core ${coreId} with a one-time code, fingerprint checked first`);
   return coreId;
 }
 
@@ -885,22 +942,26 @@ async function assertReconnectReplaysMissedEvents(panel, link, coreId, fail) {
 }
 
 /**
- * The bearer and client key are nowhere in the database as plaintext.
+ * Nothing the pairing produced is in the database as plaintext.
+ *
+ * The Panel's own client key never leaves it, so the fixture cannot hand this
+ * a copy to search for — what it searches for instead is the shape: a PEM
+ * header in the file at all means a credential was written unsealed, whichever
+ * one it is. The Core's own material is checked by name on top of that.
  *
  * Every `panel.db*` file, not just `panel.db`: the Panel runs in WAL mode, so a
  * row written moments ago normally lives in `panel.db-wal` and a scan of the
- * main file alone would clear a Panel that had just written the bearer in the
- * clear.
+ * main file alone would clear a Panel that had just written a key in the clear.
  */
 async function assertSecretsSealedAtRest(dataDir, core, fail) {
   if (!fs.existsSync(path.join(dataDir, "panel.db"))) fail(`no panel.db in ${dataDir}`);
   const dbFiles = fs.readdirSync(dataDir).filter((name) => name.startsWith("panel.db"));
   for (const file of dbFiles) {
     const raw = fs.readFileSync(path.join(dataDir, file));
-    for (const [name, secret] of [
-      ["bearer", core.blob.bearer],
-      ["client key", core.blob.clientKey],
-    ]) {
+    if (raw.includes(Buffer.from("-----BEGIN", "utf8"))) {
+      fail(`${file} holds PEM material in the clear`);
+    }
+    for (const [name, secret] of Object.entries(core.secrets)) {
       if (raw.includes(Buffer.from(secret, "utf8"))) {
         fail(`the Core's ${name} is stored in ${file} in the clear`);
       }

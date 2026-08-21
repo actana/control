@@ -5,7 +5,7 @@ import { resolvePanelDataDir } from "../panel-data-dir";
 
 /**
  * Encryption for the secrets the Panel holds at rest — today the CA, client
- * cert/key, and bearer that came out of a Core's pairing token.
+ * cert/key, and bearer that came out of a pairing with a Core.
  *
  * The threat this answers is the one from the spec: "a casual copy of my
  * database doesn't leak fleet credentials." A `panel.db` lifted off a backup,

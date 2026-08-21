@@ -27,7 +27,13 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 import { openSessionAttach } from "../session-attach-channel.ts";
-import { fakeTerminal, makeCliFixture, type CliFixture, type FakeTerminal } from "./cli-harness.ts";
+import {
+  fakeTerminal,
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+  type FakeTerminal,
+} from "./cli-harness.ts";
 import { startInProcessCore, waitFor, type InProcessCore } from "./in-process-core.ts";
 import type {
   CoreLinkProjectSnapshot,
@@ -157,7 +163,7 @@ async function coreWithLiveSession(): Promise<ReturnType<typeof livePtyCore>> {
   const pty = livePtyCore();
   core = await startInProcessCore({ ptyCore: pty.core, ...ports() });
   fixture = makeCliFixture();
-  await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+  registerCore(fixture.paths, "inproc", core.blobText);
   return pty;
 }
 

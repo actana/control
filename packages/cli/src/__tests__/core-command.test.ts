@@ -2,11 +2,16 @@
 // `--json` shape and exit codes (#129 D10).
 
 import { describe, it, expect, afterEach } from "vitest";
-import { writeFileSync, mkdirSync, statSync } from "node:fs";
-import path from "node:path";
+import { mkdirSync, statSync, writeFileSync } from "node:fs";
 import { coreBlobPath, readCurrentCore } from "../blob-registry.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
-import { healthyProbe, makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
+import {
+  healthyProbe,
+  makeCliFixture,
+  registerCore,
+  sentinelBlobText,
+  type CliFixture,
+} from "./cli-harness.ts";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {
@@ -18,89 +23,44 @@ afterEach(() => {
   fixture = null;
 });
 
-/** Write a blob file somewhere the fixture can hand it to `core add`. */
-function blobFile(name = "blob.txt", endpoint?: string): string {
-  const dir = path.join(cli().home, "blobs");
-  mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, name);
-  writeFileSync(file, `${sentinelBlobText(endpoint)}\n`);
-  return file;
+/**
+ * A Core in the registry, as a pairing leaves one.
+ *
+ * There used to be a `blobFile` helper here, and a whole `actana core add`
+ * suite reading it back through a file, a `-` and a pipe. #287 deleted the verb
+ * and this is what replaced the arrangement it did for every suite below —
+ * `core-pair.test.ts` is where "a credential lands in the registry" is asserted
+ * now, against the verb that actually puts one there.
+ */
+function haveCore(name: string, endpoint?: string): void {
+  registerCore(cli().paths, name, sentinelBlobText(endpoint));
 }
 
 describe("actana core add", () => {
-  it("takes a file", async () => {
-    const run = await cli().run(["core", "add", "prod", blobFile()]);
-    expect(run.code).toBe(EXIT_OK);
-    expect(run.out.join("\n")).toContain('Added Core "prod"');
-    expect(statSync(coreBlobPath(cli().paths, "prod")).mode & 0o777).toBe(0o600);
-  });
-
-  it("takes stdin, with or without the conventional `-`", async () => {
-    const piped = sentinelBlobText("wss://piped.test:9444");
-    const bare = await cli().run(["core", "add", "prod"], { stdin: piped });
-    expect(bare.code).toBe(EXIT_OK);
-
-    const dashed = await cli().run(["core", "add", "second", "-"], { stdin: piped });
-    expect(dashed.code).toBe(EXIT_OK);
-    expect(dashed.out.join("\n")).toContain("wss://piped.test:9444");
-  });
-
-  it("refuses to hang when there is no file and nothing piped", async () => {
-    // Reading a TTY here would look exactly like a hang, with no prompt.
-    const run = await cli().run(["core", "add", "prod"], { stdinIsTty: true });
+  // The removal itself, pinned. `add` was the client half of the hand-carry and
+  // #280 took it out with no deprecation and no dual path, so the verb has to
+  // be *unknown* — not hidden, not a stub that says "use pair", which would be
+  // a compatibility shim with a nicer error message.
+  it("is not a verb — the blob paste is gone (#287)", async () => {
+    const run = await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain("nothing is piped in");
-  });
-
-  it("makes the first Core `current`, and leaves the pointer alone after that", async () => {
-    await cli().run(["core", "add", "first", blobFile("a.txt")]);
-    expect(readCurrentCore(cli().paths)).toBe("first");
-
-    const second = await cli().run(["core", "add", "second", blobFile("b.txt")]);
-    expect(readCurrentCore(cli().paths)).toBe("first");
-    expect(second.out.join("\n")).toContain("`current` is still \"first\"");
-  });
-
-  it("replaces a stored blob, which is what a reissued credential needs", async () => {
-    await cli().run(["core", "add", "prod", blobFile("a.txt", "wss://old.test:9444")]);
-    const again = await cli().run(["core", "add", "prod", blobFile("b.txt", "wss://new.test:9444")]);
-    expect(again.code).toBe(EXIT_OK);
-    expect(again.out.join("\n")).toContain('Replaced Core "prod"');
-    expect(again.out.join("\n")).toContain("wss://new.test:9444");
-  });
-
-  it("rejects a name that could become a different path", async () => {
-    const run = await cli().run(["core", "add", "../escape", blobFile()]);
-    expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain("Core name");
-  });
-
-  it("rejects a blob that is not one, without quoting it back", async () => {
-    const run = await cli().run(["core", "add", "prod"], { stdin: "this is not a blob" });
-    expect(run.code).toBe(EXIT_FAILURE);
-    expect(run.all).not.toContain("this is not a blob");
-  });
-
-  it("rejects a ws:// endpoint — mTLS is mandatory for a Core (ADR 0002)", async () => {
-    const downgraded = Buffer.from(
-      JSON.stringify({
-        endpoint: "ws://core.test:9444",
-        caCert: "x",
-        clientCert: "x",
-        clientKey: "x",
-        bearer: "x",
-      }),
-    ).toString("base64");
-    const run = await cli().run(["core", "add", "prod"], { stdin: downgraded });
-    expect(run.code).toBe(EXIT_FAILURE);
-    expect(run.err.join("\n")).toContain("wss://");
-  });
-
-  it("reports an unreadable file by path, and does not register anything", async () => {
-    const run = await cli().run(["core", "add", "prod", "/nowhere/blob.txt"]);
-    expect(run.code).toBe(EXIT_FAILURE);
-    expect(run.err.join("\n")).toContain("/nowhere/blob.txt");
+    expect(run.err.join("\n")).toContain('unknown verb "add"');
+    expect(run.err.join("\n")).toContain("pair");
     expect(readCurrentCore(cli().paths)).toBeNull();
+  });
+
+  it("is absent from the help, which offers pairing instead", async () => {
+    const run = await cli().run(["core", "--help"]);
+    expect(run.code).toBe(EXIT_OK);
+    const help = run.out.join("\n");
+    expect(help).not.toContain("core add");
+    expect(help).not.toContain("blob file");
+    expect(help).toContain("actana core pair");
+  });
+
+  it("leaves the registry it wrote readable by exactly its owner", async () => {
+    haveCore("prod");
+    expect(statSync(coreBlobPath(cli().paths, "prod")).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -117,8 +77,8 @@ describe("actana core ls", () => {
   });
 
   it("tabulates the registry and marks `current`", async () => {
-    await cli().run(["core", "add", "prod", blobFile("a.txt", "wss://prod.test:9444")]);
-    await cli().run(["core", "add", "dev", blobFile("b.txt", "wss://dev.test:9444")]);
+    haveCore("prod", "wss://prod.test:9444");
+    haveCore("dev", "wss://dev.test:9444");
 
     const run = await cli().run(["core", "ls"]);
     expect(run.out[0]).toContain("NAME");
@@ -129,7 +89,7 @@ describe("actana core ls", () => {
   });
 
   it("emits machine-readable rows for --json", async () => {
-    await cli().run(["core", "add", "prod", blobFile("a.txt", "wss://prod.test:9444")]);
+    haveCore("prod", "wss://prod.test:9444");
     const run = await cli().run(["core", "ls", "--json"]);
 
     expect(run.code).toBe(EXIT_OK);
@@ -147,7 +107,7 @@ describe("actana core ls", () => {
   });
 
   it("keeps a corrupt entry in the listing, with the reason on the row", async () => {
-    await cli().run(["core", "add", "good", blobFile()]);
+    haveCore("good");
     mkdirSync(cli().paths.coresDir, { recursive: true });
     writeFileSync(coreBlobPath(cli().paths, "broken"), "not-a-blob");
 
@@ -161,8 +121,8 @@ describe("actana core ls", () => {
 
 describe("actana core use / rm", () => {
   it("moves the pointer", async () => {
-    await cli().run(["core", "add", "first", blobFile("a.txt")]);
-    await cli().run(["core", "add", "second", blobFile("b.txt")]);
+    haveCore("first");
+    haveCore("second");
 
     const run = await cli().run(["core", "use", "second"]);
     expect(run.code).toBe(EXIT_OK);
@@ -170,14 +130,14 @@ describe("actana core use / rm", () => {
   });
 
   it("refuses to point at a Core this machine does not have, and lists what it does", async () => {
-    await cli().run(["core", "add", "first", blobFile("a.txt")]);
+    haveCore("first");
     const run = await cli().run(["core", "use", "absent"]);
     expect(run.code).toBe(EXIT_FAILURE);
     expect(run.err.join("\n")).toContain("first");
   });
 
   it("drops the pointer with the Core it named", async () => {
-    await cli().run(["core", "add", "only", blobFile()]);
+    haveCore("only");
     const run = await cli().run(["core", "rm", "only"]);
 
     expect(run.code).toBe(EXIT_OK);
@@ -186,8 +146,8 @@ describe("actana core use / rm", () => {
   });
 
   it("leaves the pointer alone when it removes a different Core", async () => {
-    await cli().run(["core", "add", "first", blobFile("a.txt")]);
-    await cli().run(["core", "add", "second", blobFile("b.txt")]);
+    haveCore("first");
+    haveCore("second");
 
     await cli().run(["core", "rm", "second"]);
     expect(readCurrentCore(cli().paths)).toBe("first");
@@ -201,7 +161,7 @@ describe("actana core use / rm", () => {
 
 describe("actana core status", () => {
   it("reaches the Core and reports the version it answered with", async () => {
-    await cli().run(["core", "add", "prod", blobFile("a.txt", "wss://prod.test:9444")]);
+    haveCore("prod", "wss://prod.test:9444");
     const run = await cli().run(["core", "status"], {
       probe: healthyProbe({ protocolVersion: "1.2.3", coreId: "core_abc" }),
     });
@@ -215,7 +175,7 @@ describe("actana core status", () => {
   });
 
   it("emits the same facts as --json", async () => {
-    await cli().run(["core", "add", "prod", blobFile("a.txt", "wss://prod.test:9444")]);
+    haveCore("prod", "wss://prod.test:9444");
     const run = await cli().run(["core", "status", "--json"], {
       probe: healthyProbe({ protocolVersion: "1.2.3", coreId: "core_abc" }),
     });
@@ -234,7 +194,7 @@ describe("actana core status", () => {
   });
 
   it("fails, and says the Core did not answer, when the dial throws", async () => {
-    await cli().run(["core", "add", "prod", blobFile()]);
+    haveCore("prod");
     const run = await cli().run(["core", "status", "--json"], {
       probe: async () => {
         throw new Error("connect ECONNREFUSED 10.0.0.1:9444");
@@ -248,7 +208,7 @@ describe("actana core status", () => {
   });
 
   it("fails on a protocol this build does not speak, rather than degrading", async () => {
-    await cli().run(["core", "add", "prod", blobFile()]);
+    haveCore("prod");
     const run = await cli().run(["core", "status"], {
       probe: healthyProbe({ protocolVersion: "99.0.0", compatible: false }),
     });
@@ -257,8 +217,8 @@ describe("actana core status", () => {
   });
 
   it("honours --core over the pointer", async () => {
-    await cli().run(["core", "add", "pointed", blobFile("a.txt", "wss://pointed.test:9444")]);
-    await cli().run(["core", "add", "flagged", blobFile("b.txt", "wss://flagged.test:9444")]);
+    haveCore("pointed", "wss://pointed.test:9444");
+    haveCore("flagged", "wss://flagged.test:9444");
 
     const run = await cli().run(["core", "status", "--json", "--core", "flagged"], {
       probe: healthyProbe(),
@@ -307,17 +267,17 @@ describe("usage errors", () => {
   it("names an unknown verb and lists the ones there are", async () => {
     const run = await cli().run(["core", "frobnicate"]);
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain("add, ls, use, rm, status, shell");
+    expect(run.err.join("\n")).toContain("pair, ls, use, rm, status, shell");
   });
 
   it("prints the noun's help, and fails, when the verb is missing", async () => {
     const run = await cli().run(["core"]);
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.out.join("\n")).toContain("actana core add");
+    expect(run.out.join("\n")).toContain("actana core pair");
   });
 
   it("takes flags before the positionals too", async () => {
-    await cli().run(["core", "add", "prod", blobFile()]);
+    haveCore("prod");
     const run = await cli().run(["--json", "core", "ls"]);
     expect(Array.isArray(JSON.parse(run.out.join("\n")))).toBe(true);
   });

@@ -6,7 +6,7 @@
 //
 // ─── 1. The client cannot shell out (#129 D9, narrowed by #288 C1) ───────────
 //
-// The ticket's wording is the argument in full — *`actana core add` accepts a
+// The ticket's wording is the argument in full — *the CLI accepts a
 // file or stdin. Never `docker exec` — a CLI that shells into a container to
 // fetch its own credentials is not a CLI.* A client that gets its credential by
 // running a command on the Core's host only works when the Core is on this
@@ -33,7 +33,7 @@
 // `module-halves.ts`.
 //
 // **What would make a breach a breach again**: a *client* noun reaching for a
-// subprocess to get at a Core — `core add` running `docker exec`, `core status`
+// subprocess to get at a Core — `core pair` running `docker exec`, `core status`
 // running `ssh`, `project cp` running `scp`. That is what the sweep below still
 // fails on, and it is why `actana-cli.ts` and `actana-cli-entry.ts` are
 // deliberately left in the swept set even though both halves dispatch through
