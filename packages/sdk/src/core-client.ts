@@ -1114,8 +1114,32 @@ export class CoreClient {
     };
   }
 
-  write(ptyId: string, data: string): Promise<boolean> {
-    return this.rpc({ type: "write", reqId: "", ptyId, data }) as Promise<boolean>;
+  /** Write, unstamped — the one every keystroke goes through. See {@link deliver}. */
+  async write(ptyId: string, data: string): Promise<boolean> {
+    const { ok } = (await this.rpc({ type: "write", reqId: "", ptyId, data })) as {
+      ok: boolean;
+    };
+    return ok;
+  }
+
+  /**
+   * Write, and ask the Core where in its event log the delivery landed (#289 A).
+   *
+   * The same frame `write` sends with one field set, and the same answer with
+   * one field read: `deliveryEventId` is the cursor a turn-end wait counts from,
+   * and it is 0 when the Core did not stamp — an older Core, a write the PTY
+   * refused, a PTY with no Task behind it. A caller that got 0 has no cursor and
+   * must not invent one; what it has is the ordinary `ok`.
+   *
+   * {@link write} is this without the stamp, and stays the one every keystroke
+   * goes through: the log is append-only for the life of a Core, so stamping is
+   * for a caller that is about to wait, not for typing.
+   */
+  async deliver(ptyId: string, data: string): Promise<{ ok: boolean; deliveryEventId: number }> {
+    return (await this.rpc({ type: "write", reqId: "", ptyId, data, stamp: true })) as {
+      ok: boolean;
+      deliveryEventId: number;
+    };
   }
 
   resize(ptyId: string, cols: number, rows: number): Promise<boolean> {
@@ -1409,7 +1433,13 @@ export function unwrapResponse(msg: CoreLinkResponseFrame): unknown {
       };
     case "spawnError":
       throw new Error(msg.message);
+    // The write answers with a pair, because a stamped write has a second thing
+    // to say: where in the event log the delivery landed (#289 A). `ok` alone
+    // would make the cursor unreachable through the typed client, and the two
+    // facts belong to one round trip. Absent `deliveryEventId` reads as 0 — a
+    // Core that does not stamp, never a cursor.
     case "writeResult":
+      return { ok: msg.ok, deliveryEventId: msg.deliveryEventId ?? 0 };
     case "resizeResult":
     case "killResult":
       return msg.ok;

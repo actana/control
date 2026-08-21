@@ -88,6 +88,7 @@ routing around it.
 | [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials |
 | [0031](adr/0031-the-product-ships-one-skill.md) | The product ships one skill, and installs it into the operator's home — **PROPOSED**, amends 0006 |
 | [0032](adr/0032-one-actana-cli.md) | There is one `actana`, and it is both the Core manager and the client — supersedes #265 §6 and 0031 D8's two-binaries premise |
+| [0033](adr/0033-turn-end-is-the-one-mandatory-harness-signal.md) | Turn-end reporting is the one mandatory harness signal; turn-start, auto-mode flags and resume ids may never gate a feature |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

@@ -69,8 +69,8 @@ describe("the protocol version does not move for it", () => {
   // not move it and does not: it is a ready capability whose absence yields
   // today's behaviour exactly. What moved it to 0.16.0 is the `exec` frame
   // (#266), which is a frame and therefore not that case.
-  it("is 0.16.0 for the `exec` frame (#266) and not for `files`, which is a ready capability no Core becomes needs-update for (#165 F9, ADR 0024 D11)", () => {
-    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.16.0");
+  it("is 0.17.0 for the `exec` frame (#266) and the stamped write (#289), and not for `files`, a ready capability no Core becomes needs-update for (#165 F9, ADR 0024 D11)", () => {
+    expect(CORE_LINK_PROTOCOL_VERSION).toBe("0.17.0");
   });
 
   it("serializes the ready frame with the capability when a Core announces it", () => {

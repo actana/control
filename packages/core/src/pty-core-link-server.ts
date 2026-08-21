@@ -46,10 +46,12 @@ import {
   EXEC_OUTPUT_TOO_LARGE_ERROR_CODE,
   SESSION_LOCKED_ERROR_CODE,
   SESSION_LOCK_CHANGED_EVENT_KIND,
+  SESSION_DELIVERED_EVENT_KIND,
   parseCoreLinkRequestFrame,
   serializeCoreLinkFrame,
   type CoreLinkSessionLock,
   type CoreLinkSessionLockChangedPayload,
+  type CoreLinkSessionDeliveredPayload,
   type CoreLinkSessionLockTransition,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
@@ -1245,6 +1247,34 @@ export class PtyCoreLinkServer {
     });
   }
 
+  /**
+   * Stamp an accepted write in the event log and hand back the id (#289 A).
+   *
+   * **The Task id is the whole point.** A wait is per Session, and the cursor it
+   * counts from has to sit in the same log as the status events it is counting
+   * against — so a PTY this Core cannot name a Task for is not stamped at all,
+   * and answers 0. That is honest rather than convenient: a cursor with no Task
+   * on it could never be compared with anything, and a client reading 0 falls
+   * back to waiting with no cursor rather than waiting on a fiction.
+   *
+   * Only stamped writes reach here. Every keystroke of an attached terminal is
+   * a `write` frame too, and this log is append-only for the life of the Core.
+   */
+  private recordSessionDelivery(ptyId: string, data: string): number {
+    if (!this.eventLog) return 0;
+    const taskId = this.core.taskIdForPty(ptyId);
+    if (!taskId) return 0;
+    const payload: CoreLinkSessionDeliveredPayload = {
+      taskId,
+      ptyId,
+      characters: data.length,
+    };
+    return this.eventLog.appendEvent(SESSION_DELIVERED_EVENT_KIND, JSON.stringify(payload), {
+      taskId,
+      ptyId,
+    });
+  }
+
   private async dispatch(conn: ActiveConnection, frame: CoreLinkRequestFrame): Promise<void> {
     const ws = conn.ws;
     switch (frame.type) {
@@ -1303,7 +1333,19 @@ export class PtyCoreLinkServer {
       case "write": {
         if (this.refuseLockedPty(conn, frame.reqId, frame.ptyId)) return;
         const ok = this.core.write(frame.ptyId, frame.data);
-        this.send(ws, { type: "writeResult", reqId: frame.reqId, ok });
+        // The stamp goes in **after** the PTY took the bytes and **before** the
+        // answer goes out, so the id the caller waits from cannot be older than
+        // the delivery it names. A write the PTY refused is not a delivery and
+        // is not stamped: a cursor for something that never arrived would have
+        // the wait sitting on a turn nobody asked for.
+        const deliveryEventId =
+          ok && frame.stamp === true ? this.recordSessionDelivery(frame.ptyId, frame.data) : 0;
+        this.send(ws, {
+          type: "writeResult",
+          reqId: frame.reqId,
+          ok,
+          ...(deliveryEventId > 0 ? { deliveryEventId } : {}),
+        });
         return;
       }
       case "resize": {
