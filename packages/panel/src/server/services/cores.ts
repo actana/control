@@ -137,6 +137,26 @@ export function listCores(): Core[] {
   return rows.map(rowToCore);
 }
 
+/**
+ * Is a Core already registered at this endpoint?
+ *
+ * The same question {@link registerCoreFromCredential} asks inside its
+ * transaction, exposed so a caller holding something expensive and perishable
+ * can ask it *first*. Pairing does (#286): discovering the collision after the
+ * redemption costs the operator their one-time code and leaves the Core holding
+ * a signed certificate for a client this Panel never stored.
+ *
+ * An answer here is advice, not a decision — the endpoint a Core reports is its
+ * own, and need not be the address it was reached on. The check inside the
+ * transaction stays the authority.
+ */
+export function coreRegisteredAt(endpoint: string): boolean {
+  return (
+    getPanelDb().prepare("SELECT id FROM cores WHERE endpoint = ?").get(endpoint.trim()) !==
+    undefined
+  );
+}
+
 export function getCore(id: string): Core | null {
   const row = getPanelDb().prepare("SELECT * FROM cores WHERE id = ?").get(id) as
     | CoreRow

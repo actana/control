@@ -366,13 +366,17 @@ describe("a code redeemed against a Core the operator verified", () => {
     expect(listed).not.toContain(code);
   }, 40_000);
 
-  it("refuses a second Core at an endpoint already registered", async () => {
+  it("refuses a second Core at an endpoint already registered, without spending the code", async () => {
     const rig = await startCore();
     const first = rig.openSession();
-    expect(
-      (await pair({ address: rig.address, code: first.code, sessionId: first.sessionId, expectedFingerprint: rig.fingerprint }))
-        .status,
-    ).toBe(201);
+    const created = await pair({
+      address: rig.address,
+      code: first.code,
+      sessionId: first.sessionId,
+      expectedFingerprint: rig.fingerprint,
+    });
+    expect(created.status).toBe(201);
+    const firstId = ((await created.json()) as { core: { id: string } }).core.id;
 
     const second = rig.openSession();
     const response = await pair({
@@ -384,6 +388,43 @@ describe("a code redeemed against a Core the operator verified", () => {
     expect(response.status).toBe(400);
     expect(((await response.json()) as { error: string }).error).toContain("already registered");
     expect(registryCounts()).toEqual({ cores: 1, secrets: 1 });
+
+    // The collision was seen *before* the redemption, so the operator still has
+    // their code: remove the Core that was in the way and the same code pairs.
+    // Discovering this after the fact would have cost them the code and left
+    // this Core holding a signed certificate for a client nobody stored.
+    expect((await call(`/api/cores/${firstId}`, { method: "DELETE" })).status).toBe(204);
+    expect(
+      (await pair({
+        address: rig.address,
+        code: second.code,
+        sessionId: second.sessionId,
+        expectedFingerprint: rig.fingerprint,
+      })).status,
+    ).toBe(201);
+  }, 40_000);
+
+  it("says so plainly, without telling the operator to mint a code they still hold", async () => {
+    const rig = await startCore();
+    const first = rig.openSession();
+    await pair({ address: rig.address, code: first.code, sessionId: first.sessionId, expectedFingerprint: rig.fingerprint });
+
+    const second = rig.openSession();
+    const body = (await (
+      await pair({
+        address: rig.address,
+        code: second.code,
+        sessionId: second.sessionId,
+        expectedFingerprint: rig.fingerprint,
+      })
+    ).json()) as { error: string; failure?: string };
+
+    // Not a pairing refusal — the registry's own, so it carries no `failure`
+    // and the renderer must show this sentence rather than write one of its
+    // own over it.
+    expect(body.failure).toBeUndefined();
+    expect(body.error).toContain("has not been used");
+    expect(body.error).not.toContain("actana pair new");
   }, 40_000);
 
   it("requires an Operator session", async () => {

@@ -3,9 +3,10 @@ import {
   CorePairingError,
   fetchCorePairingIdentity,
   pairWithCore,
+  parseCoreAddress,
   type CorePairingFailure,
 } from "@actana/sdk/core-pairing";
-import { registerCoreFromCredential } from "./cores";
+import { CoreRegistryError, coreRegisteredAt, registerCoreFromCredential } from "./cores";
 import {
   pairingFailureMessage,
   type CorePairingFailureCode,
@@ -125,6 +126,8 @@ export type PairCoreInput = {
  * `core-link-manager.ts` dials the result unchanged.
  */
 export async function pairCore(input: PairCoreInput): Promise<Core> {
+  refuseIfAlreadyRegistered(input.address);
+
   let credential;
   try {
     credential = await pairWithCore({
@@ -142,6 +145,37 @@ export async function pairCore(input: PairCoreInput): Promise<Core> {
   // the registry's to explain, and wrapping it as a pairing failure would tell
   // the operator to mint a code they do not need.
   return registerCoreFromCredential(credential, { label: input.label ?? "" });
+}
+
+/**
+ * Refuse a collision this Panel can already see, before the code is spent.
+ *
+ * A pairing code is one-time. Redeeming it and *then* discovering the endpoint
+ * is taken costs the operator that code and leaves the Core holding a signed
+ * certificate for a client this Panel never stored — a credential nobody can
+ * use and nobody has revoked. The check inside
+ * {@link registerCoreFromCredential} still runs and is still the authority,
+ * because a Core reports its own endpoint and that need not be the address it
+ * was reached on. This one only moves the ordinary case — an operator pairing a
+ * machine that is already in the fleet — to before the irreversible step.
+ *
+ * A bad address falls through to `pairWithCore`, which owns that failure and
+ * words it. Nothing here dials, so nothing here is slow.
+ */
+function refuseIfAlreadyRegistered(address: string): void {
+  let endpoint: string;
+  try {
+    // Via `httpsOrigin` rather than by reassembling host and port: it keeps the
+    // brackets an IPv6 authority needs, which a `${host}:${port}` would lose.
+    endpoint = `wss://${parseCoreAddress(address).httpsOrigin.slice("https://".length)}`;
+  } catch {
+    return;
+  }
+  if (coreRegisteredAt(endpoint)) {
+    throw new CoreRegistryError(
+      `A Core at ${endpoint} is already registered. Remove it first — your pairing code has not been used.`,
+    );
+  }
 }
 
 /**
