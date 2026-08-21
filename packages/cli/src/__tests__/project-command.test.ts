@@ -11,7 +11,7 @@ import {
   fakeCore,
   makeCliFixture,
   projectSnapshot,
-  sentinelBlobText,
+  registerCore,
   type CliFixture,
 } from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "../exit-codes.ts";
@@ -29,8 +29,7 @@ afterEach(() => {
 
 /** A registry with one Core in it, which is what every verb below needs. */
 async function withRegisteredCore(): Promise<void> {
-  const added = await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
-  expect(added.code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 describe("actana project ls", () => {

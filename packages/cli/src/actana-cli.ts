@@ -4,7 +4,6 @@
 //     actana install   fetch a release, verify it, install and start a Core
 //     actana setup     install from an extracted tarball, or fetch one first
 //     actana status    daemon state, versions, endpoint, Harness availability
-//     actana token     reprint the pairing token
 //     actana token regenerate   mint fresh credentials, invalidating the old ones
 //     actana pair      enroll a client on this Core: pair new | ls | revoke
 //     actana update    fetch, verify and swap in a release, then restart
@@ -35,13 +34,16 @@
 //
 // Two rules this file holds, stated once each:
 //
-//   **A blob is a credential and never reaches an output sink.** Not stdout,
-//   not stderr, not `--verbose`, not an error message quoting the input that
-//   failed to parse. `registration-blob-file.ts` is the only module that turns
-//   bytes into a blob and it reduces one to a {@link BlobSummary} for anything
+//   **A credential never reaches an output sink.** Not stdout, not stderr, not
+//   `--verbose`, not an error message quoting the input that failed to parse.
+//   `registration-blob-file.ts` is the only module that turns registry bytes
+//   into a credential and it reduces one to a {@link BlobSummary} for anything
 //   that prints; `src/__tests__/never-logs-a-blob.test.ts` runs every verb,
-//   with `--verbose`, against a blob whose material is a known sentinel and
-//   fails if any byte of it appears in any output.
+//   with `--verbose`, against a credential whose material is a known sentinel
+//   and fails if any byte of it appears in any output. Since #287 there is also
+//   nothing left that *would* print one: the hand-carried blob `setup` and
+//   `token` emitted is gone, and enrollment is a short code that grants a
+//   certificate rather than an artifact that carries one.
 //
 //   **Context-sensitivity stays.** The same binary ships inside the Core
 //   image, where the machine lifecycle belongs to the container runtime
@@ -51,13 +53,14 @@
 //   (ADR 0016 D13/D15/D16). The client nouns are never refused: talking to a
 //   Core is the one thing that works identically everywhere.
 //
-// Operator-facing strings say "pairing token" (CONTEXT.md's UI note); the code
-// underneath keeps the domain name "Registration blob".
+// **"Pairing code" is the short code, and nothing else is a "token".** Until
+// #287 operator-facing strings called the hand-carried blob "the pairing
+// token"; that artifact is gone and the phrase now belongs to the eight
+// characters `actana pair new` prints. The domain name for what a paired client
+// holds is still **Registration blob** — see CONTEXT.md.
 
 
 import * as fs from "node:fs";
-import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
   loadMaterialFromFile,
   materialFilePath,
@@ -149,9 +152,6 @@ const CLIENT_NOUNS = ["core", "project", "harness", "events", "session"] as cons
 /** Default core-link port. Matches the port the docs and install script use. */
 const DEFAULT_PORT = 8443;
 
-/** Bearer validity for a reprinted token. Same lease setup issues. */
-const BEARER_DAYS = 365;
-
 /** How long a verb that restarts the daemon waits for its port to answer. */
 const LISTEN_TIMEOUT_MS = 30_000;
 
@@ -172,9 +172,12 @@ This machine's own Core
   install    Fetch a release, verify it, install the Core and start it
   setup      Install from an extracted tarball — or fetch one when there is none
   status     Show daemon state, versions, endpoint, and Harness availability
-  token      Reprint the pairing token
   token regenerate
-             Issue fresh pairing credentials and invalidate the old ones
+             Rotate this Core's own identity — a new CA, new certificates and a
+             new bearer secret. Every client paired with it is locked out and
+             has to pair again. There is no \`token\` on its own: nothing is
+             reprinted, because a credential is issued to one client by
+             \`pair new\` and never handed out as an artifact
   pair       Enroll a client on this Core — \`pair new\`, \`pair ls\`, \`pair revoke\`.
              This is the Core end: \`actana core pair\` is the client end
   update     Install the latest release and restart the daemon
@@ -188,7 +191,7 @@ This machine's own Core
 Client flags:
   --core <name>         Which registered Core to talk to
   --json                Machine-readable output; every list command has it
-  --verbose             Explain the steps, on stderr. Never prints a blob.
+  --verbose             Explain the steps, on stderr. Never prints a credential.
 
 Which Core a client command means, in this order:
   1. --core <name>
@@ -248,7 +251,8 @@ const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to D
 
 The image reads three variables:
   ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials. Never guessed:
-                        it is baked into this Core's certificate and its pairing token
+                        it is baked into this Core's certificate and the endpoint
+                        a pairing hands out
   ${CONTAINER_PORT_ENV}           port the daemon listens on (default ${DEFAULT_CONTAINER_PORT})
   ${CONTAINER_LABEL_ENV}          alias shown in your Panel (default: the public host)
 `;
@@ -432,29 +436,6 @@ function manifestFor(deps: ActanaCliDeps, config: ActanaConfig | null): CoreMani
   );
 }
 
-/**
- * Mint a pairing token from persisted material.
- *
- * The bearer is re-signed rather than stored: the same secret and coreId the
- * daemon loads verify it, and a freshly signed one carries a full lease
- * instead of whatever was left of the original.
- */
-function pairingToken(config: ActanaConfig, materialPath: string, now: number): string | null {
-  const material = loadMaterialFromFile(materialPath);
-  if (!material) return null;
-  return encodeRegistrationBlob({
-    endpoint: endpointFor(config),
-    label: config.label,
-    caCert: material.caCert,
-    clientCert: material.clientCert,
-    clientKey: material.clientKey,
-    bearer: signBearer(
-      { coreId: material.coreId, exp: now + BEARER_DAYS * 24 * 60 * 60 * 1000 },
-      material.bearerSecret as BearerSecret,
-    ),
-  });
-}
-
 // ─── verbs ──────────────────────────────────────────────────────────────────
 
 const SETUP_FLAGS: FlagSpec = {
@@ -610,26 +591,25 @@ async function cmdSetup(
   deps.out("");
   if (result.materialOutcome === "reissued") {
     // The identity survived the move (ADR 0016 D18) but the address did not,
-    // and the address is the half the Panel holds — so the token is the fix
+    // and the address is the half the Panel holds — so re-pairing is the fix
     // here, not just an option.
     deps.out(
-      "This machine's pairing credentials are unchanged — a paired Panel still " +
+      "This Core's pairing credentials are unchanged — a paired Panel still " +
         `trusts this Core, but it is dialling the address it paired with. Point it at ` +
-        `${publicHost} or re-pair it with this token:`,
+        `${publicHost}, or run \`actana pair new\` here and pair it again.`,
     );
   } else if (result.materialOutcome === "reused") {
-    // The bytes differ every time (the bearer inside carries a fresh expiry),
-    // so "the same token" would be a lie — but the credentials a paired Panel
-    // pinned are untouched, which is what the operator needs to know.
     deps.out(
-      "This machine's pairing credentials are unchanged — a Panel already paired " +
-        "with it stays paired. Pair a new Panel with this token:",
+      "This Core's pairing credentials are unchanged — a Panel already paired " +
+        "with it stays paired. To add another client, run `actana pair new` here.",
     );
   } else {
-    deps.out('Your pairing token — paste this into your Panel\'s "Add Core":');
+    deps.out(
+      "To pair a client — a Panel, or another machine's `actana` — run `actana pair new` " +
+        "here. It prints a one-time code, this Core's CA fingerprint and when the code " +
+        "expires; you read all three out to whoever is pairing.",
+    );
   }
-  deps.out("");
-  deps.out(result.blob);
   deps.out("");
 
   if (!result.listening) {
@@ -784,50 +764,57 @@ function cmdPair(deps: ActanaCliDeps, argv: string[]): number {
   });
 }
 
+/**
+ * `actana token` — one verb deep, and only `regenerate` under it.
+ *
+ * Bare `actana token` used to reprint the hand-carried blob. #287 deleted that
+ * artifact outright, so there is nothing to reprint and deliberately no way to
+ * ask for one: a credential is issued to exactly one client, by that client
+ * redeeming a code, and a command that handed out a second copy would be the
+ * hand-carry back under a different name.
+ *
+ * It refuses rather than silently doing `regenerate`'s job. Rotation locks out
+ * every paired client, and an operator whose muscle memory still types `actana
+ * token` must not discover that by having it happen.
+ */
 async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   if (argv[0] === "regenerate") return cmdTokenRegenerate(deps, argv.slice(1));
 
-  const parsed = parseFlags(argv, {});
-  if ("error" in parsed) {
-    deps.err(parsed.error);
+  if (argv.length > 0) {
+    deps.err(`actana token: unknown verb "${argv[0]}". The only one is \`regenerate\`.`);
     return EXIT_USAGE;
   }
-  const installed = requireInstall(deps);
-  if (!installed) return 1;
-
-  const token = pairingToken(
-    installed.config,
-    materialPathFor(deps, installed.layout),
-    deps.now(),
+  deps.err(
+    "There is no pairing token to print. A client enrolls with a one-time code: run " +
+      "`actana pair new` here, read the code and CA fingerprint it prints out to the " +
+      "machine being paired, and spend them there — in your Panel's Add Core, or with " +
+      "`actana core pair`.",
   );
-  if (!token) {
-    deps.err(
-      inContainer(deps.env)
-        ? "This Core has no pairing material yet — it is minted on first boot. Check " +
-            "`docker compose logs` for why the daemon did not start."
-        : "No pairing material found. Re-run `actana setup` to reissue it.",
-    );
-    return 1;
-  }
-
-  // The instruction goes to stderr so stdout stays a single pipeable token.
-  deps.err('Your pairing token — paste this into your Panel\'s "Add Core":');
-  deps.out(token);
-  return 0;
+  deps.err(
+    "`actana pair ls` shows the codes still pending and the clients already paired. " +
+      "`actana token regenerate` rotates this Core's own identity and locks all of them out.",
+  );
+  return EXIT_USAGE;
 }
 
 const REGENERATE_FLAGS: FlagSpec = { yes: { type: "boolean", alias: "y" } };
 
 /**
- * `actana token regenerate` — the one-command answer to a leaked pairing token.
+ * `actana token regenerate` — the one-command answer to a leaked credential.
  *
  * Fresh material means a new CA, new certs, a new bearer secret and a new
- * coreId, so every credential in every blob this Core ever printed stops
- * working: the old client cert is no longer signed by the CA the daemon
- * presents, and the old bearer no longer verifies. That is the point, and it is
- * also why the daemon must be restarted before the operator is told it is done
- * — until it reloads `material.json` it is still serving the old identity from
- * memory, and "invalidated" would be a lie.
+ * coreId, so every credential this Core ever issued stops working: an old
+ * client cert is no longer signed by the CA the daemon presents, and an old
+ * bearer no longer verifies. That is the point, and it is also why the daemon
+ * must be restarted before the operator is told it is done — until it reloads
+ * `material.json` it is still serving the old identity from memory, and
+ * "invalidated" would be a lie.
+ *
+ * **It rotates; it does not hand anything out.** Nothing is printed for an
+ * operator to carry, because nothing is carried any more (#287): every client
+ * locked out by this comes back by pairing again, which is `actana pair new`
+ * here and a code spent there. `pair revoke` is the narrower instrument — it
+ * takes back one client without touching the rest.
  */
 async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   const parsed = parseFlags(argv, REGENERATE_FLAGS);
@@ -863,21 +850,19 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   persistMaterialToFile(materialPath, await mintFreshMaterial(config.publicHost));
 
   if (container) {
-    const token = pairingToken(config, materialPath, deps.now());
-    if (!token) {
+    if (!loadMaterialFromFile(materialPath)) {
       deps.err(`The new pairing material could not be read back from ${materialPath}.`);
       return 1;
     }
-    // Said before the token, and said as a restart the operator still owes:
-    // the daemon holds the old identity in memory until the container comes
-    // back, so "invalidated" is not true yet and must not be printed as if it
-    // were.
+    // Said as a restart the operator still owes: the daemon holds the old
+    // identity in memory until the container comes back, so "invalidated" is
+    // not true yet and must not be printed as if it were.
     deps.err(
       "New pairing credentials are written. This Core is still serving the old ones " +
-        "until you restart the container — `docker compose restart` — and the token " +
-        "below only works after that. Re-pair every Panel with it:",
+        "until you restart the container — `docker compose restart`. After that, " +
+        "re-pair every client: `actana pair new` here, and spend the code it prints " +
+        "in the Panel's Add Core or with `actana core pair`.",
     );
-    deps.out(token);
     return 0;
   }
   // Already handled above — `requireService` either answered or returned.
@@ -895,16 +880,16 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
   }
   const listening = await deps.system.waitForPort(config.port, LISTEN_TIMEOUT_MS);
 
-  const token = pairingToken(config, materialPath, deps.now());
-  if (!token) {
+  if (!loadMaterialFromFile(materialPath)) {
     deps.err("The new pairing material could not be read back. Re-run `actana setup`.");
     return 1;
   }
 
   deps.err(
-    "This Core's previous pairing tokens no longer work. Re-pair every Panel with this one:",
+    "This Core has a new identity, and every client paired with it is locked out. " +
+      "Pair each one again: `actana pair new` here, then spend the code it prints in " +
+      "the Panel's Add Core or with `actana core pair`.",
   );
-  deps.out(token);
 
   if (!listening) {
     deps.err(

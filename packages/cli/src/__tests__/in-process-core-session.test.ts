@@ -32,7 +32,11 @@ import type {
 } from "@actana/sdk/core-link-frames.ts";
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 
 const PROJECT: CoreLinkProjectSnapshot = {
@@ -168,7 +172,7 @@ async function coreWithSessions(): Promise<{ writes: string[]; killed: string[] 
   );
   core = await startInProcessCore({ ptyCore: pty.core, queryPort, mutationPort });
   fixture = makeCliFixture();
-  await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+  registerCore(fixture.paths, "inproc", core.blobText);
   return { writes: pty.writes, killed: pty.killed };
 }
 

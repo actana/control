@@ -14,8 +14,6 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import { CorePairingError } from "@actana/sdk/core-pairing.ts";
-import { mkdirSync, writeFileSync } from "node:fs";
-import path from "node:path";
 import {
   fakeAttachment,
   fakePairing,
@@ -27,6 +25,7 @@ import {
   healthyProbe,
   makeCliFixture,
   projectSnapshot,
+  registerCore,
   sentinelBlobText,
   SENTINELS,
   type CliFixture,
@@ -61,14 +60,13 @@ function expectNoSecrets(what: string, output: string) {
 }
 
 describe("no verb prints a blob, with --verbose on", () => {
-  it("sweeps add, ls, use, status, rm and the help", async () => {
-    const dir = path.join(cli().home, "blobs");
-    mkdirSync(dir, { recursive: true });
-    const file = path.join(dir, "blob.txt");
-    writeFileSync(file, `${sentinelBlobText()}\n`);
+  it("sweeps ls, use, status, rm and the help", async () => {
+    // The sweep used to open with `core add (file)`, the verb that read a blob
+    // off disk. #287 removed it, so the registry is arranged directly and the
+    // sweep starts at the first verb that *reads* one.
+    registerCore(cli().paths, "prod");
 
     const runs: Array<[string, string[]]> = [
-      ["core add (file)", ["core", "add", "prod", file, "--verbose"]],
       ["core ls", ["core", "ls", "--verbose"]],
       ["core ls --json", ["core", "ls", "--json", "--verbose"]],
       ["core use", ["core", "use", "prod", "--verbose"]],
@@ -183,7 +181,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // way. Every verb runs with `--verbose`, including the paths where the Core
     // refuses — the diagnostic that explains a refusal is the line most likely
     // to reach for its input.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     const core = fakeCore({
       projects: [projectSnapshot("api", "/srv/work/api")],
       availability: { opencode: { status: "missing" } },
@@ -238,7 +236,7 @@ describe("no verb prints a blob, with --verbose on", () => {
   });
 
   it("sweeps a dial that failed, where the error quotes the endpoint it could not reach", async () => {
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     for (const argv of [
       ["project", "ls", "--verbose"],
       ["harness", "ls", "--verbose"],
@@ -260,7 +258,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // failure path, which is where a diagnostic would quote what it dialled
     // with. The gateway refuses so that path is the one swept; the successes
     // are covered by the verbs above it.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
 
     const refusing = fakeSessionGateway({
       list: async () => {
@@ -295,13 +293,6 @@ describe("no verb prints a blob, with --verbose on", () => {
     }
   });
 
-  it("sweeps the stdin path, where the blob is in memory rather than on disk", async () => {
-    const run = await cli().run(["core", "add", "prod", "--verbose"], {
-      stdin: sentinelBlobText(),
-    });
-    expectNoSecrets("core add (stdin)", run.all);
-  });
-
   it("sweeps single-Core mode, where the blob is in the environment", async () => {
     const run = await cli().run(["core", "status", "--json", "--verbose"], {
       env: { ACTANA_CORE_BLOB: sentinelBlobText() },
@@ -311,8 +302,10 @@ describe("no verb prints a blob, with --verbose on", () => {
   });
 
   it("sweeps the failure paths, which are where a diagnostic would quote its input", async () => {
-    // A blob that is *nearly* right is the dangerous case: the decoder has the
-    // real credential in hand and is about to explain what is wrong with it.
+    // A stored credential that is *nearly* right is the dangerous case: the
+    // decoder has the real material in hand and is about to explain what is
+    // wrong with it. It arrives through the registry rather than a paste now
+    // (#287) — the file a pairing wrote, corrupted since.
     const almost = Buffer.from(
       JSON.stringify({
         endpoint: "ws://downgraded.test:9444",
@@ -323,13 +316,18 @@ describe("no verb prints a blob, with --verbose on", () => {
       }),
     ).toString("base64");
 
-    const downgraded = await cli().run(["core", "add", "prod", "--verbose"], { stdin: almost });
-    expect(downgraded.code).not.toBe(0);
-    expectNoSecrets("core add (rejected blob)", downgraded.all);
+    registerCore(cli().paths, "downgraded", almost);
+    const listed = await cli().run(["core", "ls", "--verbose"]);
+    expectNoSecrets("core ls (unusable entry)", listed.all);
+    const selected = await cli().run(["core", "status", "--core", "downgraded", "--verbose"], {
+      probe: healthyProbe(),
+    });
+    expect(selected.code).not.toBe(0);
+    expectNoSecrets("core status (unusable entry)", selected.all);
 
     // …and a Core that refuses the connection, where the error comes back from
     // the transport with the endpoint and whatever else it chose to include.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     const refused = await cli().run(["core", "status", "--verbose"], {
       probe: async () => {
         throw new Error("connect ECONNREFUSED");
@@ -343,7 +341,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // open: it has the resolved blob in hand and is explaining a failure to
     // reach the Core the blob names. Everything after that point is bytes the
     // remote shell chose, which never touch a credential.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
     const run = await cli().run(["core", "shell", "--verbose"], {
       terminal: fakeTerminal(),
       openShell: async () => {
@@ -361,7 +359,7 @@ describe("no verb prints a blob, with --verbose on", () => {
     // read-only names another Core client, at a moment when the only identity
     // this process holds is a credential. Everything else is bytes the harness
     // chose, which never touch one.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+    registerCore(cli().paths, "prod");
 
     const refused = await cli().run(["session", "attach", "task_1", "--verbose"], {
       terminal: fakeTerminal(),
@@ -388,7 +386,7 @@ describe("no verb prints a blob, with --verbose on", () => {
   it("prints the endpoint and label, which are the non-secret half", async () => {
     // The counterpart assertion: a sweep that passed because nothing was printed
     // at all would be a sweep that proves nothing.
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText("wss://visible.test:9444") });
+    registerCore(cli().paths, "prod", sentinelBlobText("wss://visible.test:9444"));
     const run = await cli().run(["core", "ls", "--json"]);
     expect(run.out.join("\n")).toContain("wss://visible.test:9444");
     expect(run.out.join("\n")).toContain("the-test-core");

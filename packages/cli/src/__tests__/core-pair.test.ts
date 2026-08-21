@@ -496,6 +496,6 @@ describe("actana core pair — what it says", () => {
   it("is named in the verb list an unknown verb prints", async () => {
     const run = await cli().run(["core", "wat"]);
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain("Verbs: pair, add");
+    expect(run.err.join("\n")).toContain("Verbs: pair, ls");
   });
 });

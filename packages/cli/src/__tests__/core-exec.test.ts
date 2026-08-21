@@ -11,7 +11,13 @@
 // Core. This suite is about the surface; that one is about the wire.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { fakeCore, makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
+import {
+  fakeCore,
+  makeCliFixture,
+  registerCore,
+  sentinelBlobText,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_LINK_LOST, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 import { EXEC_OUTPUT_TOO_LARGE_ERROR_CODE } from "@actana/sdk/core-link-frames.ts";
 import type {
@@ -30,8 +36,7 @@ afterEach(() => {
 });
 
 async function withRegisteredCore(): Promise<void> {
-  const added = await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
-  expect(added.code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 /** A Core that answers `exec` with one finished command. */
@@ -359,10 +364,7 @@ describe("actana core exec — Core selection and usage", () => {
     expect(viaEnv.err.join("\n")).toContain("wss://env.test:9444");
 
     // 3. the flag beats both.
-    const added = await cli().run(["core", "add", "other"], {
-      stdin: sentinelBlobText("wss://other.test:9444"),
-    });
-    expect(added.code).toBe(EXIT_OK);
+    registerCore(cli().paths, "other", sentinelBlobText("wss://other.test:9444"));
     const viaFlag = await cli().run(
       ["core", "exec", "--core", "other", "--verbose", "--", "true"],
       {

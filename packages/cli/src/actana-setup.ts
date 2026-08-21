@@ -9,20 +9,27 @@
 //
 // The init system itself is behind `ActanaServiceManager`, so what is left in
 // this file is the part that is the same everywhere: lay out the tree, resolve
-// the material, write the config, register the service, print the token.
+// the material, write the config, register the service, and wire the Core it
+// just installed into this machine's own registry.
+//
+// **Setup emits no credential.** It used to end by printing one base64 blob for
+// a human to carry to a Panel; #287 deleted that, along with the `blob` field
+// this function used to return. A client — a Panel, another machine's `actana`
+// — enrolls by running `actana pair new` here and spending the code it prints.
+// The one credential setup still writes is this machine's own, straight into
+// the registry at 0600, and it never passes through an output sink.
 //
 // The install is versioned — `versions/<v>` with a `current` symlink — so
 // re-running over an existing install lands the new tree beside the old one
 // and swaps by repointing one link. Re-running deliberately REUSES the existing
-// material: regenerating would invalidate the pairing token an operator already
-// pasted into their Panel. A changed publicHost re-signs the server cert from
+// material: regenerating would lock out every client already paired with this
+// Core. A changed publicHost re-signs the server cert from
 // that same CA and nothing else (ADR 0016 D18). Minting fresh credentials is
 // `actana token regenerate` (issue 06), an explicit act.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import {
   loadMaterial,
   materialFilePath,
@@ -56,8 +63,8 @@ export type SetupOptions = {
   /**
    * Where this machine's client half keeps its Cores (#288 D9).
    *
-   * Setup writes the blob it mints into it, so the Core it just installed is
-   * one this machine's `actana core ls` already knows about — no token
+   * Setup writes the credential it mints into it, so the Core it just installed
+   * is one this machine's `actana core ls` already knows about — no credential
    * hand-carried from one half of this command into the other.
    */
   registry: RegistryPaths;
@@ -70,7 +77,7 @@ export type SetupOptions = {
   port: number;
   /** The address the daemon binds. */
   host: string;
-  /** The address a Panel dials — goes in the cert SAN and the pairing token. */
+  /** The address a client dials — goes in the cert SAN and the endpoint. */
   publicHost: string;
   label: string;
   platform: NodeJS.Platform;
@@ -96,8 +103,6 @@ export type SetupOptions = {
 export type MaterialOutcome = "minted" | "reused" | "reissued";
 
 export type SetupResult = {
-  /** The pairing token — base64 of the Registration blob. */
-  blob: string;
   /** The version that is now installed — the tree's, not this CLI's (#288 D10). */
   version: string;
   installDir: string;
@@ -300,7 +305,10 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     material.bearerSecret as BearerSecret,
   );
 
-  const blob = encodeRegistrationBlob({
+  // #288 D9. The credential never reaches an output sink: it goes straight into
+  // a 0600 file in the registry, and what setup prints about it is a name and
+  // whether it is selected. There is no second copy for anyone to carry (#287).
+  const wiring = wireLocalCore(opts.registry, opts.label, {
     endpoint: endpointFor(config),
     label: opts.label,
     caCert: material.caCert,
@@ -309,13 +317,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     bearer,
   });
 
-  // #288 D9. The blob never reaches an output sink on the way here: it goes
-  // from `encodeRegistrationBlob` into a 0600 file in the registry, and what
-  // setup prints about it is a name and whether it is selected.
-  const wiring = wireLocalCore(opts.registry, opts.label, blob);
-
   return {
-    blob,
     version: manifest.version,
     installDir,
     servicePath: service.filePath,

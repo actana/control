@@ -12,7 +12,12 @@
 // command an operator types.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { fakeCore, makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
+import {
+  fakeCore,
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 
 let fixture: CliFixture | null = null;
@@ -26,8 +31,7 @@ afterEach(() => {
 });
 
 async function withRegisteredCore(): Promise<void> {
-  const added = await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
-  expect(added.code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 /** Let the command reach the point where it is listening. */

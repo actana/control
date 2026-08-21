@@ -9,7 +9,12 @@
 // it must name the Harness and link the issue.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { fakeCore, makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
+import {
+  fakeCore,
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 import {
   HARNESS_INSTALL_FAILED_EVENT_KIND,
@@ -30,8 +35,7 @@ afterEach(() => {
 });
 
 async function withRegisteredCore(): Promise<void> {
-  const added = await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
-  expect(added.code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 /** Let the command's promises run to the point where it is waiting on an event. */
