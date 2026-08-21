@@ -528,6 +528,7 @@ class CoreLinkSessionGateway implements SessionGateway {
         // The text **was delivered** and the message says so, because the next
         // thing an operator does with a failure here must not be to send it
         // again.
+        //
         // Guarded on a write having happened at all: a delivery of nothing is
         // not a delivery, and it leaves this exactly where a bare `wait` is —
         // no cursor, because nothing was sent to count from.
