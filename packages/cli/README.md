@@ -86,6 +86,10 @@ into the global skills directory of every Harness already on this machine:
 `~/.claude/skills/actana-sessions/` for Claude Code, `~/.agents/skills/actana-sessions/`
 for Codex, Cursor CLI and OpenCode.
 
+The skill is a **folder**, not a single file. `SKILL.md` is what it holds today;
+the installer writes every file the folder carries, and each one is repaired,
+skipped or left alone on its own.
+
 ```sh
 actana harness skills          # write or repair it, and say what happened
 actana harness skills --json   # the same, per Harness, machine-readable
@@ -98,9 +102,11 @@ into a directory the Harness itself created: a Harness you do not use here costs
 you no directory.
 
 A copy is replaced when it differs from the shipped one, edits included. To keep
-your own version, delete the `x-actana-managed: true` line from its frontmatter —
-that file is then yours and is never written again, and `harness skills` reports
-it as `skipped` so you can see why it stopped updating.
+your own version, delete the `x-actana-managed: true` line from it and that file
+is then yours and is never written again. The hatch is **per file**: keeping one
+file of the folder does not stop the others from updating. `harness skills`
+reports the folder as `skipped` and names the file, so you can see why it
+stopped updating.
 
 ## Copying files, in either direction
 

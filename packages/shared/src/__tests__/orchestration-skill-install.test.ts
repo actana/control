@@ -19,6 +19,8 @@ import {
 
 const MARKER = "x-actana-managed: true";
 const CONTENT = `---\nname: actana-sessions\n${MARKER}\n---\n\n# body\n`;
+const SCRIPT = `#!/usr/bin/env bash\n# ${MARKER}\necho hello\n`;
+const FILES = { "SKILL.md": CONTENT, "await.sh": SCRIPT };
 
 const TARGETS: SkillInstallTarget[] = [
   { harness: "claude-code", kind: "skill-dir", homeMarkers: [".claude"], skillDir: ".claude/skills" },
@@ -35,13 +37,13 @@ afterEach(() => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-function run() {
+function run(files: Record<string, string> = FILES) {
   return installOrchestrationSkill({
     home,
     targets: TARGETS,
     skillName: "actana-sessions",
     marker: MARKER,
-    content: CONTENT,
+    files,
   });
 }
 
@@ -49,8 +51,12 @@ function outcomes(entries: ReturnType<typeof run>): Record<string, string> {
   return Object.fromEntries(entries.map((entry) => [entry.harness, entry.outcome]));
 }
 
-const claudeFile = () => path.join(home, ".claude", "skills", "actana-sessions", "SKILL.md");
-const agentsFile = () => path.join(home, ".agents", "skills", "actana-sessions", "SKILL.md");
+const claudeDir = () => path.join(home, ".claude", "skills", "actana-sessions");
+const agentsDir = () => path.join(home, ".agents", "skills", "actana-sessions");
+const claudeFile = () => path.join(claudeDir(), "SKILL.md");
+const agentsFile = () => path.join(agentsDir(), "SKILL.md");
+const claudeScript = () => path.join(claudeDir(), "await.sh");
+const agentsScript = () => path.join(agentsDir(), "await.sh");
 
 describe("only where the harness already lives (ADR 0031 D4)", () => {
   it("writes nothing at all into a home with no harness in it", () => {
@@ -74,7 +80,9 @@ describe("only where the harness already lives (ADR 0031 D4)", () => {
       "cursor-cli": "absent",
     });
     expect(fs.readFileSync(claudeFile(), "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(claudeScript(), "utf8")).toBe(SCRIPT);
     expect(fs.existsSync(agentsFile())).toBe(false);
+    expect(fs.existsSync(agentsScript())).toBe(false);
   });
 
   it("takes any one of a harness's markers as evidence", () => {
@@ -90,7 +98,7 @@ describe("only where the harness already lives (ADR 0031 D4)", () => {
       targets: [target],
       skillName: "actana-sessions",
       marker: MARKER,
-      content: CONTENT,
+      files: FILES,
     });
     expect(entries[0]!.outcome).toBe("written");
   });
@@ -108,8 +116,8 @@ describe("one write per directory, one row per harness (ADR 0031 D4)", () => {
     });
     // The same file, named by both rows — the fan-out is a covering set of
     // directories, not one directory per vendor.
-    expect(entries.find((e) => e.harness === "codex")!.path).toBe(agentsFile());
-    expect(entries.find((e) => e.harness === "cursor-cli")!.path).toBe(agentsFile());
+    expect(entries.find((e) => e.harness === "codex")!.path).toBe(agentsDir());
+    expect(entries.find((e) => e.harness === "cursor-cli")!.path).toBe(agentsDir());
   });
 
   it("writes the shared directory when only one of its harnesses is present", () => {
@@ -193,9 +201,116 @@ describe("failures are reported, never thrown", () => {
       targets: [{ harness: "future", kind: "manifest-entry", homeMarkers: [], skillDir: "" }],
       skillName: "actana-sessions",
       marker: MARKER,
-      content: CONTENT,
+      files: FILES,
     });
     expect(entries[0]!.outcome).toBe("skipped");
     expect(entries[0]!.detail).toContain("manifest-entry");
+  });
+});
+
+describe("a skill is a folder of files (#304, ADR 0035 D4)", () => {
+  beforeEach(() => {
+    fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+  });
+
+  it("writes every entry in the map, and reports the folder", () => {
+    const entry = run().find((e) => e.harness === "claude-code")!;
+    expect(entry.outcome).toBe("written");
+    // The folder, not a file inside it: `ls` takes a directory, and that is the
+    // next thing an operator debugging a missing skill does.
+    expect(entry.path).toBe(claudeDir());
+    expect(fs.readFileSync(claudeFile(), "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(claudeScript(), "utf8")).toBe(SCRIPT);
+  });
+
+  it("writes a nested entry, splitting its key on `/` on any platform", () => {
+    const nested = `# ${MARKER}\nnested\n`;
+    run({ ...FILES, "lib/helper.sh": nested });
+    expect(fs.readFileSync(path.join(claudeDir(), "lib", "helper.sh"), "utf8")).toBe(nested);
+  });
+
+  it("writes N files per directory and not N per harness", () => {
+    // Three of the four harnesses read the same root. The dedup is on the
+    // folder, which is what keeps a two-file payload at two writes rather than
+    // six — the arithmetic that has to hold as the payload grows.
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.mkdirSync(path.join(home, ".cursor"), { recursive: true });
+    run();
+    const first = fs.statSync(agentsFile()).mtimeMs;
+    const secondScript = fs.statSync(agentsScript()).mtimeMs;
+    const entries = run();
+    expect(outcomes(entries).codex).toBe("current");
+    expect(outcomes(entries)["cursor-cli"]).toBe("current");
+    expect(fs.statSync(agentsFile()).mtimeMs).toBe(first);
+    expect(fs.statSync(agentsScript()).mtimeMs).toBe(secondScript);
+  });
+
+  it("is `current` only when EVERY file matches", () => {
+    run();
+    // One of two files edited back to a managed-but-different state. A folder
+    // reported `current` here would be telling an operator the skill is up to
+    // date because the *other* file happened to match.
+    fs.writeFileSync(claudeScript(), SCRIPT.replace("echo hello", "echo mine"), "utf8");
+    const entry = run().find((e) => e.harness === "claude-code")!;
+    expect(entry.outcome).toBe("written");
+    expect(entry.detail).toContain("await.sh");
+    expect(entry.detail).toContain("replaced");
+    expect(fs.readFileSync(claudeScript(), "utf8")).toBe(SCRIPT);
+  });
+
+  it("is `skipped` when ANY managed file lost its marker, and names it", () => {
+    run();
+    const mine = SCRIPT.replace(`# ${MARKER}\n`, "") + "mine now\n";
+    fs.writeFileSync(claudeScript(), mine, "utf8");
+    const entry = run().find((e) => e.harness === "claude-code")!;
+    expect(entry.outcome).toBe("skipped");
+    expect(entry.detail).toContain("await.sh");
+    // And the file the operator took is still theirs, while the other one is
+    // still ours: the escape hatch is per file, not per folder.
+    expect(fs.readFileSync(claudeScript(), "utf8")).toBe(mine);
+    expect(fs.readFileSync(claudeFile(), "utf8")).toBe(CONTENT);
+  });
+
+  it("is `failed` when any file fails, and names which one", () => {
+    // A directory where `await.sh` has to go: the write fails for that entry
+    // and succeeds for the other. `failed` outranks `written`, because it is
+    // the only outcome that is a fault.
+    fs.mkdirSync(claudeScript(), { recursive: true });
+    const entry = run().find((e) => e.harness === "claude-code")!;
+    expect(entry.outcome).toBe("failed");
+    expect(entry.detail).toContain("await.sh");
+    expect(fs.readFileSync(claudeFile(), "utf8")).toBe(CONTENT);
+  });
+
+  it("refuses a key that would write outside the folder, and writes the rest", () => {
+    // Ours come from a `readdir` of our own folder and can never look like
+    // this. The check is for the caller that is not us: an installer that can
+    // be talked into writing outside the directory it names is a different and
+    // much worse thing than the one ADR 0031 argued for.
+    for (const escape of ["../escaped.md", "/etc/passwd", "a/../../escaped.md", ""]) {
+      const entry = run({ ...FILES, [escape]: CONTENT }).find((e) => e.harness === "claude-code")!;
+      expect(entry.outcome, `${escape} was not refused`).toBe("failed");
+      expect(entry.detail).toContain("inside the skill folder");
+    }
+    expect(fs.existsSync(path.join(home, ".claude", "skills", "escaped.md"))).toBe(false);
+    // The refusal is per file: the honest entries were still written.
+    expect(fs.readFileSync(claudeFile(), "utf8")).toBe(CONTENT);
+    expect(fs.readFileSync(claudeScript(), "utf8")).toBe(SCRIPT);
+  });
+
+  it("is `failed`, never `current`, for a payload carrying no files at all", () => {
+    // Nothing was checked. Reporting "up to date" for a folder nobody looked
+    // in is the failure the fold's ordering exists to rule out.
+    const entry = run({}).find((e) => e.harness === "claude-code")!;
+    expect(entry.outcome).toBe("failed");
+    expect(entry.detail).toContain("no files");
+  });
+
+  it("still never touches a file it did not write, whatever else is in the folder", () => {
+    fs.mkdirSync(claudeDir(), { recursive: true });
+    const theirs = "#!/bin/sh\nmine, no marker\n";
+    fs.writeFileSync(claudeScript(), theirs, "utf8");
+    expect(outcomes(run())["claude-code"]).toBe("skipped");
+    expect(fs.readFileSync(claudeScript(), "utf8")).toBe(theirs);
   });
 });

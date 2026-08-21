@@ -1,12 +1,19 @@
-// Embed the authored `SKILL.md` into both packages that have to write it.
+// Embed the authored skill folder into both packages that have to write it.
 //
 // ADR 0031 D8. The skill is authored once at
-// `.agents/skills/actana-sessions/SKILL.md`, following the `release` skill's
+// `.agents/skills/actana-sessions/`, following the `release` skill's
 // harness-neutral precedent, and this script writes it into `packages/shared`
 // (which the Core imports) and `packages/cli`, which embeds its own copy so the
 // published bundle carries the payload rather than resolving it (ADR 0031 D8).
 //
-// **Embedded as a string, not copied into `dist/`.** The Core ships as an
+// **A folder, not a file** (#304, ADR 0035 D4 and D5). The skill ships
+// `await.sh` beside `SKILL.md`, so what is embedded is a map from
+// folder-relative path to bytes rather than one string constant. D5 is explicit
+// that this is a change of *shape* and not of *kind*: one authored source per
+// skill, embedded into the same two bundles, held honest by the same one drift
+// test. No second generator, no copy in `dist/`.
+//
+// **Embedded as strings, not copied into `dist/`.** The Core ships as an
 // esbuild bundle and the CLI ships as one too, so a `.md` asset read from disk
 // at runtime is a file that is not in the bundle — the same reason
 // `harness-hooks-opencode.ts` keeps its plugin as a template literal rather
@@ -15,20 +22,21 @@
 // Running this is not what keeps the copies honest; the drift test is, and it
 // is one test in one package:
 // `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` re-reads
-// the authored file, fails when either generated copy no longer matches it, and
-// fails again when the two generated copies disagree with each other. This
-// script is how you fix those failures.
+// the authored folder, fails when either generated copy no longer matches it
+// entry for entry, and fails again when the two generated copies disagree with
+// each other. This script is how you fix those failures.
 //
 //   node scripts/gen-skill-payload.mjs
 
-import { readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { dirname, join, posix } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
 export const SKILL_NAME = "actana-sessions";
-export const SKILL_SOURCE = join(".agents", "skills", SKILL_NAME, "SKILL.md");
+export const SKILLS_ROOT = join(".agents", "skills");
+export const SKILL_SOURCE = join(SKILLS_ROOT, SKILL_NAME);
 export const MARKER = "x-actana-managed: true";
 
 const TARGETS = [
@@ -37,25 +45,58 @@ const TARGETS = [
 ];
 
 /**
- * The markdown as a TypeScript template literal.
+ * Every file in one skill folder, as `{ relative, content }`, sorted by path.
  *
- * A template literal rather than `JSON.stringify`, because the payload is nine
+ * Takes the folder name rather than closing over `SKILL_NAME`, because a second
+ * skill folder is a second call and nothing else — a folder name is a string
+ * this script is handed, never an identifier it branches on. What the *shape of
+ * the emitted payload* becomes when there are two of them — two maps, or one
+ * keyed by `<folder>/<path>` — is deliberately not decided here: that choice
+ * belongs to the change that brings the second folder, where both halves of it
+ * can be seen at once.
+ *
+ * Sorted, because the emitted map's key order is the diff a reviewer reads, and
+ * `readdir` order is the filesystem's business. POSIX separators, because the
+ * installer splits these keys on `/` on every platform.
+ */
+export function readSkillFolder(skillName) {
+  const root = join(repoRoot, SKILLS_ROOT, skillName);
+  const walk = (dir, prefix) =>
+    readdirSync(dir, { withFileTypes: true })
+      .flatMap((entry) =>
+        entry.isDirectory()
+          ? walk(join(dir, entry.name), posix.join(prefix, entry.name))
+          : [{ relative: posix.join(prefix, entry.name), content: readFileSync(join(dir, entry.name), "utf8") }],
+      )
+      .sort((a, b) => (a.relative < b.relative ? -1 : a.relative > b.relative ? 1 : 0));
+  return walk(root, "");
+}
+
+/**
+ * The folder as a TypeScript map of template literals.
+ *
+ * Template literals rather than `JSON.stringify`, because the payload is nine
  * kilobytes of prose and a one-line JSON string turns every edit to it into a
  * one-line diff nobody can review. Only three sequences can end or escape a
- * template literal, and all three are escaped here.
+ * template literal, and all three are escaped here — per value, unchanged.
  */
-export function renderPayload(markdown) {
-  const literal = markdown
-    .replace(/\\/g, "\\\\")
-    .replace(/`/g, "\\`")
-    .replace(/\$\{/g, "\\${");
+export function renderPayload(files) {
+  const escape = (text) =>
+    text
+      .replace(/\\/g, "\\\\")
+      .replace(/`/g, "\\`")
+      .replace(/\$\{/g, "\\${");
+
+  const entries = files
+    .map((file) => `  ${JSON.stringify(file.relative)}: \`${escape(file.content)}\`,`)
+    .join("\n");
 
   return `// GENERATED by scripts/gen-skill-payload.mjs — do not edit.
 //
-// The source is \`${SKILL_SOURCE}\`, and
+// The source is \`${SKILL_SOURCE}/\`, and
 // \`packages/shared/src/__tests__/orchestration-skill-fanout.test.ts\` — the one
 // drift test, in the one package that can read both copies — fails when the two
-// disagree. Edit the markdown, re-run the generator, commit both.
+// disagree. Edit the authored files, re-run the generator, commit both.
 // ADR 0031 D8 is why this is embedded rather than read off disk.
 
 /** The skill's directory name — its address in a harness's skills root. */
@@ -65,24 +106,50 @@ export const ORCHESTRATION_SKILL_NAME = ${JSON.stringify(SKILL_NAME)};
  * The in-band marker that makes a copy ours (ADR 0031 D1).
  *
  * The authorisation to overwrite, and the operator's escape hatch: delete this
- * line from a copy and the installer never touches that file again.
+ * line from a copy and the installer never touches that file again. It is
+ * matched as a substring of a file's first bytes rather than as a parsed key,
+ * which is why the same marker works in \`SKILL.md\`'s frontmatter and in a
+ * shell script's second line.
  */
 export const ORCHESTRATION_SKILL_MARKER = ${JSON.stringify(MARKER)};
 
-/** The authored \`SKILL.md\`, byte for byte. */
-export const ORCHESTRATION_SKILL_MD = \`${literal}\`;
+/**
+ * The authored skill folder, byte for byte: folder-relative path to contents.
+ *
+ * Keys are \`/\`-separated on every platform — the installer splits them before
+ * joining. Every value carries the marker above; the generator refuses to emit
+ * one that does not.
+ *
+ * Typed as a plain record rather than left to infer its literal keys: a file
+ * name in here is data the installer is handed, never an identifier anything
+ * branches on, and a type that made \`"SKILL.md"\` special would be the first
+ * step towards code that treats it that way.
+ */
+export const ORCHESTRATION_SKILL_FILES: Readonly<Record<string, string>> = {
+${entries}
+};
 `;
 }
 
 function main() {
-  const markdown = readFileSync(join(repoRoot, SKILL_SOURCE), "utf8");
-  if (!markdown.includes(MARKER)) {
-    throw new Error(`${SKILL_SOURCE} carries no ${MARKER} — an untagged copy is unrepairable`);
+  const files = readSkillFolder(SKILL_NAME);
+  if (files.length === 0) {
+    throw new Error(`${SKILL_SOURCE} holds no files — there is nothing to install`);
   }
-  const rendered = renderPayload(markdown);
+  // The guard is per file, and it is the reason ADR 0031 D5's escape hatch is
+  // repairable: an untagged copy on an operator's disk is one the installer can
+  // never write again, so shipping one is shipping a file we have given away.
+  // Every file this script emits is a managed file, so every file is checked.
+  for (const file of files) {
+    if (file.content.includes(MARKER)) continue;
+    throw new Error(
+      `${SKILL_SOURCE}/${file.relative} carries no ${MARKER} — an untagged copy is unrepairable`,
+    );
+  }
+  const rendered = renderPayload(files);
   for (const target of TARGETS) {
     writeFileSync(join(repoRoot, target), rendered, "utf8");
-    process.stdout.write(`wrote ${target}\n`);
+    process.stdout.write(`wrote ${target} (${files.length} file${files.length === 1 ? "" : "s"})\n`);
   }
 }
 
