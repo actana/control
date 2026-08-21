@@ -251,6 +251,11 @@ async function pair(
 ): Promise<{ id: string; core: CoreFixture }> {
   const core = await startCore(label, eventCount);
   running.push(core.server);
+  // The Operator row is what the registry's foreign key points at, and an HTTP
+  // registration used to create it on the way past. Without this the helper
+  // depends on some earlier test in file order having called `call()` first,
+  // and any pair-using test run on its own fails on the foreign key.
+  operatorSessionCookie();
   const registered = registerCoreFromCredential(core.credential);
   coreLinkManager().dial(registered.id);
   return { id: registered.id, core };
