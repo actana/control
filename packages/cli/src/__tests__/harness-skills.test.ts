@@ -18,6 +18,7 @@ import { ORCHESTRATION_SKILL_FILES, ORCHESTRATION_SKILL_MARKER } from "../orches
 
 /** The skill is a folder since #304; these two are its files. */
 const SKILL_MD = ORCHESTRATION_SKILL_FILES["SKILL.md"]!;
+const AWAIT_SH = ORCHESTRATION_SKILL_FILES["await.sh"]!;
 
 let cli: CliFixture;
 
@@ -32,6 +33,8 @@ const claudeSkill = () =>
   path.join(cli.home, ".claude", "skills", "actana-sessions", "SKILL.md");
 const agentsSkill = () =>
   path.join(cli.home, ".agents", "skills", "actana-sessions", "SKILL.md");
+const claudeAwait = () =>
+  path.join(cli.home, ".claude", "skills", "actana-sessions", "await.sh");
 
 function pretendHarnessIsInstalled(dir: string): void {
   fs.mkdirSync(path.join(cli.home, dir), { recursive: true });
@@ -56,18 +59,28 @@ describe("actana harness skills", () => {
     expect(fs.readFileSync(claudeSkill(), "utf8")).toBe(SKILL_MD);
   });
 
+  it("installs the whole folder, not just the markdown (#304)", async () => {
+    pretendHarnessIsInstalled(".claude");
+    await cli.run(["harness", "skills"]);
+    expect(fs.readFileSync(claudeAwait(), "utf8")).toBe(AWAIT_SH);
+    // Written without an executable bit, on purpose: the skill says
+    // `bash await.sh`, and the installer stays a filesystem write and nothing
+    // else. A mode assertion is how that decision stops being one silently.
+    expect(fs.statSync(claudeAwait()).mode & 0o111).toBe(0);
+  });
+
   it("names the folder to an operator, and the file when one goes wrong", async () => {
     pretendHarnessIsInstalled(".claude");
-    // A directory where `SKILL.md` has to go — the one file of the folder fails.
-    fs.mkdirSync(claudeSkill(), { recursive: true });
+    // A directory where `await.sh` has to go — one file of two fails.
+    fs.mkdirSync(claudeAwait(), { recursive: true });
     const run = await cli.run(["harness", "skills", "--json"]);
     const report = JSON.parse(run.out.join("\n")) as {
       harnesses: Array<{ harness: string; outcome: string; path: string; detail?: string }>;
     };
     const row = report.harnesses.find((entry) => entry.harness === "claude-code")!;
     expect(row.outcome).toBe("failed");
-    expect(row.path).toBe(path.dirname(claudeSkill()));
-    expect(row.detail).toContain("SKILL.md");
+    expect(row.path).toBe(path.dirname(claudeAwait()));
+    expect(row.detail).toContain("await.sh");
   });
 
   it("changes nothing the second time", async () => {

@@ -152,6 +152,49 @@ describe("the embedded payload is the authored folder (ADR 0031 D8, ADR 0035 D5)
   });
 });
 
+describe("the skill folder ships the watcher (#304)", () => {
+  const script = read(`${SKILL_DIR}/await.sh`);
+
+  it("is a shell script whose marker sits under the shebang", () => {
+    // The marker mechanism is a substring match on the first bytes rather than
+    // a YAML parse (ADR 0031 D1), which is the whole reason a `.sh` needed no
+    // new code. Line 1 must stay the shebang; line 2 is the marker.
+    const [shebang, second] = script.split("\n");
+    expect(shebang).toMatch(/^#!/);
+    expect(second).toContain(ORCHESTRATION_SKILL_MARKER);
+  });
+
+  it("checks the LAST line for the sentinel rather than grepping for it", () => {
+    // `ACT-REPORT-END` quoted inside a report must not settle a Session that
+    // has not finished. A `grep` here would be the bug; the tail is the proof.
+    expect(script).toContain("last_line_is_sentinel");
+    expect(script).toMatch(/tail -n \d+/);
+    expect(script.includes("grep -q"), "await.sh greps for the sentinel").toBe(false);
+  });
+
+  it("treats a lost link as 'not yet' rather than as a missing report", () => {
+    // `actana core exec` exits 125 when the link went away mid-command: the
+    // command kept running on the Core and this side has no result. Reading it
+    // as failure abandons a lane that is fine.
+    expect(script).toContain("125");
+    expect(script.toLowerCase()).toContain("retrying, not giving up");
+  });
+
+  it("saves the report to local disk before killing anything", () => {
+    const save = script.indexOf("project cp");
+    const kill = script.indexOf("session kill");
+    expect(save, "await.sh never copies the report down").toBeGreaterThan(-1);
+    expect(kill, "await.sh never kills a Session").toBeGreaterThan(-1);
+    expect(save, "await.sh kills before it saves — delete-then-save").toBeLessThan(kill);
+  });
+
+  it("is invoked as `bash await.sh`, so it needs no executable bit", () => {
+    // `writeOneCopy` writes with no mode, and deliberately: the installer's
+    // safety argument is that it is a filesystem write and nothing else.
+    expect(script).toContain("bash await.sh");
+  });
+});
+
 describe("the skill is generic and self-contained (ADR 0031 D9)", () => {
   const skill = read(`.agents/skills/${ORCHESTRATION_SKILL_NAME}/SKILL.md`);
 
