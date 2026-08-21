@@ -251,6 +251,11 @@ export type CoreSessionAttachOptions = {
    * conversation it lands in the middle of, not the tail of one turn — and the
    * ring belongs to the PTY, so it is readable now and gone when the harness
    * exits. Off is for a caller that wants only what this attachment saw.
+   *
+   * **It does not turn the PTY subscription off**, which is a separate thing and
+   * is unconditional: without one, `onData` and `onExit` never fire against a
+   * multi-connection Core, and an attachment that could not hear an exit is one
+   * whose wait outlives the process it is about.
    */
   replay?: boolean;
 };
@@ -397,6 +402,13 @@ export class CoreSession {
    * to end, not being told about the last one. Only a status learned from an
    * event after {@link start} lands here.
    */
+  /**
+   * This Session asked the Core for its PTY's stream, so {@link dispose} owes it
+   * a matching `ptyUnsubscribe`. False for a spawned Session: the Core
+   * subscribes the connection that spawned a PTY, inside the spawn, and nothing
+   * here asked for that.
+   */
+  private subscribedToPty = false;
   private lastStatus: string | null = null;
   /**
    * The event id {@link lastStatus} was learned at, or 0 when it was not learned
@@ -589,8 +601,10 @@ export class CoreSession {
    *   2. resolve the Task's live PTY — **once**, and every write and wait made
    *      through the returned Session uses that resolution, so there is no
    *      window between delivering text and starting to wait for it;
-   *   3. wire the byte stream, the exit and the events **before** the replay;
-   *   4. seed the screen from the Core's replay ring, and the last known status
+   *   3. wire the byte stream, the exit and the events **before** subscribing;
+   *   4. subscribe to that PTY, which is what makes the Core send this
+   *      connection its bytes and its exit at all;
+   *   5. seed the screen from the Core's replay ring, and the last known status
    *      from the Session snapshot.
    *
    * **The seeded status carries event id 0**, which is what keeps it honest.
@@ -601,7 +615,11 @@ export class CoreSession {
    * turn a write starts cannot be answered by the turn before it.
    *
    * Rejects with {@link CoreSessionAttachError} when the Task has no live PTY —
-   * a harness that exited, or a Session id that is not one.
+   * a harness that exited, or a Session id that is not one. **Only that.** A
+   * link that blinked during the subscribe, the replay or the status read
+   * rejects with an ordinary `Error`: the two are different next steps, and
+   * reporting a busy Core as a dead harness sends a caller to `resume` for a
+   * Session that is running perfectly well.
    */
   static async attach(client: CoreClient, opts: CoreSessionAttachOptions): Promise<CoreSession> {
     if (opts.subscribeToEvents !== false && !client.isSubscribedToEvents()) {
@@ -642,27 +660,40 @@ export class CoreSession {
       client.onEvent(({ event }) => session.onCoreEvent(event)),
     );
 
+    const replay = opts.replay !== false;
     try {
-      if (opts.replay !== false) {
-        // `catchUp` is a promise to read the ring, and the two lines are that
-        // promise kept: the Core holds this PTY's live stream until the replay
-        // has been served, so the bytes either side of it arrive once and in
-        // order. A subscribe with no replay behind it strands the stream.
-        await client.ptySubscribe(ptyId, { catchUp: true });
+      // **The subscribe is not part of the replay.** Until a connection
+      // subscribes, a multi-connection Core fans this PTY's output to somebody
+      // else and `onData` / `onExit` never fire here — so an attachment that
+      // skipped it would have an empty screen *and* a dead exit route, and the
+      // "an exit answers every wait" case in `settledSince` would never run. A
+      // caller that turns the replay off wants to skip the scrollback, not to
+      // be deaf.
+      //
+      // `catchUp` says a replay follows and the Core must hold the live stream
+      // until it has been served; it is set exactly when one does, because a
+      // hold nobody redeems strands the Session's output on the Core.
+      await client.ptySubscribe(ptyId, { catchUp: replay });
+      if (replay) {
         const { data } = await client.replay(ptyId);
         terminal.write(data);
       }
+      session.subscribedToPty = true;
       await session.seedStatus();
     } catch (err) {
       session.dispose();
-      throw err instanceof CoreSessionAttachError
-        ? err
-        : new CoreSessionAttachError(
-            `could not attach to session ${opts.taskId}: ${
-              err instanceof Error ? err.message : String(err)
-            }`,
-            { cause: err },
-          );
+      // **Only "nothing is running" is an attach error.** A link that blinked
+      // during the subscribe, the replay or the status read is a retry, and
+      // reporting it as a harness that has exited sends the operator to
+      // `resume` for a Session that is running perfectly well. The one genuine
+      // case was decided above, before any of this ran.
+      if (err instanceof CoreSessionAttachError) throw err;
+      throw new Error(
+        `could not attach to session ${opts.taskId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        { cause: err },
+      );
     }
 
     return session;
@@ -884,6 +915,17 @@ export class CoreSession {
     this.disposed = true;
     for (const off of this.unsubscribes) off();
     this.unsubscribes.length = 0;
+    if (this.subscribedToPty) {
+      this.subscribedToPty = false;
+      // The stream this attachment asked for, given back. Removing the listener
+      // stops this process reading the bytes; it does not stop the Core sending
+      // them, and an orchestrator that attaches to and disposes many Sessions on
+      // one long-lived client would otherwise leave every one of those streams
+      // running at it for the life of the client. Fire and forget on purpose:
+      // `dispose` is synchronous, nothing waits on the answer, and a link that
+      // is already gone has released the subscription by going.
+      void this.client.ptyUnsubscribe(this.ptyId).catch(() => {});
+    }
     if (this.statusRetryTimer) {
       clearTimeout(this.statusRetryTimer);
       this.statusRetryTimer = null;

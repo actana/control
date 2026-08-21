@@ -35,6 +35,7 @@ import type {
 import { CoreClient } from "../core-client.ts";
 import {
   CoreSession,
+  CoreSessionAttachError,
   CoreSessionStartError,
   HARNESS_LAUNCH_COMMANDS,
   STATUS_READ_RETRIES,
@@ -871,6 +872,77 @@ describe("attaching to a Session that is already running (#289)", () => {
     await new Promise((done) => setTimeout(done, 50));
 
     expect(settled).toBeNull();
+  });
+
+  it("subscribes to the PTY even with the replay off, so an exit still settles a wait", async () => {
+    // Until a connection subscribes, a multi-connection Core fans this PTY out
+    // to somebody else: `onData` and `onExit` never fire, the screen stays
+    // empty, and the "an exit answers every wait" route is dead — so a caller
+    // that attached with `replay: false` to await a harness that then died
+    // would hang to its deadline instead. The subscribe is not part of the
+    // replay, and turning the scrollback off does not make the attachment deaf.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId, replay: false });
+    // No scrollback: that is what `replay: false` buys, and all it buys.
+    expect(session.screen().trim()).toBe("");
+
+    const { deliveryEventId } = await session.deliver("carry on");
+    const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
+
+    r.ptyCore.emitEvent({ type: "exit", ptyId: "pty-1", exitCode: 4 });
+
+    await expect(idle).resolves.toMatchObject({ exited: true, exitCode: 4 });
+  });
+
+  it("reports a link that blinked mid-attach as a failed attach, not as a dead harness", async () => {
+    // The two are different next steps. "Nothing is running" sends an operator
+    // to `logs` or `resume`; a Core that was busy for a moment wants a retry.
+    // Only the `findByTask` answer decides the first, and it decided before any
+    // of this ran.
+    rig = startRig();
+    const taskId = await runningSession();
+    const r = rig;
+    vi.spyOn(r.client, "sessionsList").mockRejectedValueOnce(new Error("link dropped mid-read"));
+
+    const attaching = CoreSession.attach(r.client, { taskId });
+
+    await expect(attaching).rejects.toThrow(/could not attach/);
+    await expect(attaching).rejects.not.toBeInstanceOf(CoreSessionAttachError);
+  });
+
+  it("gives the PTY subscription back on dispose", async () => {
+    // Removing the listener stops this process reading the bytes; it does not
+    // stop the Core sending them. An orchestrator that attaches to and disposes
+    // many Sessions on one long-lived client would otherwise leave every one of
+    // those streams running at it for the life of the client.
+    rig = startRig();
+    const taskId = await runningSession();
+    const r = rig;
+    const unsubscribe = vi.spyOn(r.client, "ptyUnsubscribe");
+
+    const attached = await CoreSession.attach(r.client, { taskId });
+    expect(unsubscribe).not.toHaveBeenCalled();
+    attached.dispose();
+
+    expect(unsubscribe).toHaveBeenCalledWith("pty-1");
+    // Idempotent: a second dispose is not a second frame.
+    attached.dispose();
+    expect(unsubscribe).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not unsubscribe a PTY it never subscribed to — a spawned Session's is the Core's", async () => {
+    // The Core subscribes the connection that spawned a PTY, inside the spawn
+    // (issue 142). Nothing here asked for it, so nothing here gives it back.
+    rig = startRig();
+    const spawned = await startSession(rig);
+    const unsubscribe = vi.spyOn(rig.client, "ptyUnsubscribe");
+
+    spawned.dispose();
+
+    expect(unsubscribe).not.toHaveBeenCalled();
   });
 
   it("resolves a delivered wait when the harness's process exits", async () => {
