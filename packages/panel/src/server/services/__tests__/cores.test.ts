@@ -116,6 +116,26 @@ describe("Core registry", () => {
     expect(coreRowCount()).toBe(0);
   });
 
+  // This assertion outlived the function it was written against. It used to be
+  // "rejects a plaintext ws:// endpoint" on `registerCoreFromRegistrationBlob`,
+  // where the codec held the rule; #287 deleted that door, and mTLS being
+  // mandatory (ADR 0002) is a property of the registry rather than of any one
+  // way into it. So it comes back here, on the door that is left.
+  it("rejects a plaintext ws:// endpoint — mTLS is not optional", () => {
+    expect(() => registerCoreFromCredential(credential({ endpoint: "ws://10.0.0.5:7777" }))).toThrow(
+      CoreRegistryError,
+    );
+    expect(coreRowCount()).toBe(0);
+    expect(secretRowCount()).toBe(0);
+  });
+
+  it("rejects anything that is not a URL scheme at all", () => {
+    for (const endpoint of ["10.0.0.5:7777", "https://10.0.0.5:7777", "WSS://10.0.0.5:7777"]) {
+      expect(() => registerCoreFromCredential(credential({ endpoint }))).toThrow(CoreRegistryError);
+    }
+    expect(coreRowCount()).toBe(0);
+  });
+
   it("refuses a second registration of the same endpoint, leaving the first intact", () => {
     const first = registerCoreFromCredential(credential());
     expect(() => registerCoreFromCredential(credential({ label: "duplicate" }))).toThrow(

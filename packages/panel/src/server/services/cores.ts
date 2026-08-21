@@ -177,6 +177,20 @@ export function registerCoreFromCredential(
 
   const endpoint = credential.endpoint.trim();
   if (!endpoint) throw new CoreRegistryError("That credential names no Core endpoint.");
+  // mTLS is mandatory for a Core (ADR 0002), so a `ws://` endpoint is a
+  // downgrade rather than a convenience — and this is the door that has to say
+  // so. The rule used to live one layer up, in the codec
+  // `registerCoreFromRegistrationBlob` decoded with; #287 deleted that function
+  // and the guarantee left with it. Today's only caller builds the endpoint as
+  // `wss://` itself (`core-pairing.ts`), so nothing is reachable through the
+  // gap — but this is the single exported way into the registry, and the next
+  // caller would inherit nothing. Held here, where it cannot be deleted with
+  // whatever surface happens to be in front of it.
+  if (!endpoint.startsWith("wss://")) {
+    throw new CoreRegistryError(
+      `That credential's endpoint is ${endpoint}, not wss:// — a Core's core link is mTLS.`,
+    );
+  }
 
   const id = newCoreId();
   const now = Date.now();

@@ -121,8 +121,8 @@ export type PairCoreInput = {
  * The credential the SDK returns is `CoreRegistrationBlob`-shaped with a
  * `clientKey` that was born on this machine and never crossed the wire, so it
  * goes into the registry and the sealed store through
- * {@link registerCoreFromCredential} — the same door a decoded blob walks
- * through today. Nothing downstream can tell the two apart, which is the point:
+ * {@link registerCoreFromCredential}, which since #287 is the only door there
+ * is. Nothing downstream knows a pairing happened, which is the point:
  * `core-link-manager.ts` dials the result unchanged.
  */
 export async function pairCore(input: PairCoreInput): Promise<Core> {
