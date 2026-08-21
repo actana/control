@@ -1460,10 +1460,29 @@ export type CoreLinkServerFrame =
  * tells its operator to update one of the two, in one sentence, before the
  * first `exec` rather than after it.
  *
+ * **Issue 289 moves it to 0.17.0, on the same reasoning and a stronger case.**
+ * The stamped `write` — {@link CoreLinkRequestFrame} `stamp`, answered with
+ * `deliveryEventId` — looks like the additive exception and is not it. The
+ * exception is available only where the capability's absence yields today's
+ * behaviour **exactly**, and here absence yields something worse than today:
+ * `actana session send X --wait` is a clean usage refusal on a Core built
+ * before this, and a client that shipped the flag against an unstamping Core
+ * would send, get no cursor back, and fall through to an uncursored wait that
+ * answers instantly with the status the Session was already parked at — last
+ * turn's answer printed as this turn's, with a zero exit. A silent wrong
+ * answer replacing a hard error is the one degradation the exception exists to
+ * forbid, so the minor moves and no capability is announced for the stamp.
+ *
+ * The cursor is refused rather than approximated in the client as well
+ * ({@link CoreLinkResponseFrame} `deliveryEventId`, and the CLI's session
+ * gateway): the version gate is what an operator meets first, and the refusal
+ * is what covers a Core that is on this version and still could not stamp —
+ * one with no event-log port, or whose append failed.
+ *
  * Patch stays 0 — see {@link coreLinkProtocolCompatible}, which compares
  * major.minor only.
  */
-export const CORE_LINK_PROTOCOL_VERSION = "0.16.0";
+export const CORE_LINK_PROTOCOL_VERSION = "0.17.0";
 
 /**
  * Does a Core advertising `reported` speak this build's core-link?
