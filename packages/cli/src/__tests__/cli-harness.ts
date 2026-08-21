@@ -223,7 +223,14 @@ export function fakePairing(
       if (opts.fails) {
         throw new CorePairingError(opts.fails, `the fake Core answered ${opts.fails}`, opts.detail ?? {});
       }
-      return opts.blob ?? sentinelPairedBlob();
+      // **The label is echoed, because `pairWithCore` echoes it.** The real
+      // function copies `opts.label` straight into the blob it returns — the
+      // one field where what the caller passed in comes back out — and a fake
+      // that answered with a fixed blob instead would make every assertion
+      // about what is *stored* vacuous, which is exactly how a client hostname
+      // reached the column that means the Core's own alias.
+      const issued = opts.blob ?? sentinelPairedBlob();
+      return { ...issued, ...(pairOpts.label === undefined ? {} : { label: pairOpts.label }) };
     },
   };
   return state;

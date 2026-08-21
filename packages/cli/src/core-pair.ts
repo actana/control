@@ -184,7 +184,14 @@ export async function runCorePair(
   // already exist: the private key was generated locally and the Core never had
   // it. What is left is the part `core add` also does.
   const replacing = coreExists(paths, name);
-  writeCoreBlob(paths, name, encodeRegistrationBlobText(blob));
+  // The label goes to the Core and stops there. `pairWithCore` copies whatever
+  // label it was handed straight into the blob it returns, and the LABEL column
+  // of `actana core ls` means *the Core's* own alias — the one `actana setup`
+  // puts in a blob it prints. Storing this machine's name there would put the
+  // client's hostname in a column about the other end of the link, so a paired
+  // credential is stored with no alias at all and the column stays empty until
+  // a Core has something to say for itself.
+  writeCoreBlob(paths, name, encodeRegistrationBlobText({ ...blob, label: "" }));
   deps.verbose(`stored at ${paths.coresDir}/${name}.txt, mode 0600`);
 
   const current = readCurrentCore(paths);
