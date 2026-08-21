@@ -38,6 +38,11 @@ import type { CoreHttpRoutes } from "@actana/core/core-files-routes";
 import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
 import { PairingRateLimiter } from "@actana/core/core-pairing-rate-limit";
 import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "@actana/core/core-pairing-wiring";
+import { CORE_PAIRING_REDEEM_PATH as CORE_ROUTE_REDEEM_PATH } from "@actana/core/core-pairing-routes";
+import type {
+  CorePairingRedeemRequest,
+  CorePairingRedeemResponse,
+} from "../core-pairing-wire.ts";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
 import {
@@ -898,5 +903,39 @@ describe("the route this client posts to", () => {
     // production and nothing at all in a suite that declared its own.
     expect(CORE_PAIRING_REDEEM_PATH).toBe("/v1/pair/redeem");
     expect(isPairingPath(CORE_PAIRING_REDEEM_PATH)).toBe(true);
+  });
+
+  it("is one constant now, not two that agree", () => {
+    // #306's review: the path was pinned by this suite, but the request and
+    // response shapes around it were a hand-kept mirror. Both sides now import
+    // `@actana/sdk/core-pairing-wire`, so this asserts identity rather than
+    // equality — a Core that redeclared the string would fail here.
+    expect(CORE_PAIRING_REDEEM_PATH).toBe(CORE_ROUTE_REDEEM_PATH);
+  });
+});
+
+describe("the redeem contract has one definition (ADR 0025 D3)", () => {
+  // These do nothing at runtime. They fail at *compile* time if the Core's use
+  // of the redeem shapes stops matching the SDK's declaration of them, which is
+  // the failure a mirror cannot produce: it disagrees on a wire instead.
+  it("types the Core's 200 body as the SDK's response type", () => {
+    const answer: CorePairingRedeemResponse = {
+      endpoint: "wss://core.test:9444",
+      caCert: "-----BEGIN CERTIFICATE-----",
+      clientCert: "-----BEGIN CERTIFICATE-----",
+      bearer: "bearer.value",
+    };
+    // Every field the Core sends, and no fifth one — the key is not here.
+    expect(Object.keys(answer).sort()).toEqual(["bearer", "caCert", "clientCert", "endpoint"]);
+  });
+
+  it("types the request the client posts as the shape the Core parses", () => {
+    const body: CorePairingRedeemRequest = {
+      sessionId: "ps_1",
+      code: "ABCD2345",
+      client: { label: "laptop", platform: "linux" },
+      csr: "-----BEGIN CERTIFICATE REQUEST-----",
+    };
+    expect(Object.keys(body).sort()).toEqual(["client", "code", "csr", "sessionId"]);
   });
 });

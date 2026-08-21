@@ -20,8 +20,9 @@
 #
 # None of that touches the core-link. The Core presents a self-signed server
 # certificate from its own CA and requires the Panel's client certificate
-# (ADR 0002); that material is minted by the Core, travels in the registration
-# blob, and is never something you supply or renew.
+# (ADR 0002). The Core mints that CA itself; each client generates its own key
+# and gets a certificate signed when it pairs, so no key material you supply or
+# renew ever crosses the wire.
 #
 # ── The two variables in the image names ─────────────────────────────────────
 #
@@ -101,8 +102,8 @@ services:
 # A second Core is the block above again with three things changed: the
 # service name, ACTANA_PUBLIC_HOST to match it, and its own volume. Nothing
 # here is a singleton. Uncomment, add `core2-home:` and `core2-repos:` under
-# `volumes:`, and pair it the same way — its blob is in
-# `docker compose logs core2`.
+# `volumes:`, and pair it the same way — `docker compose exec core2 actana
+# pair new` prints its own code and CA fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
 # swap the first Core's comment describes: a bind mount needs a host directory

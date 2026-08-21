@@ -33,15 +33,16 @@
 // `fingerprint-unconfirmed` failure of {@link pairWithCore}, which has one and
 // does not send it.
 //
-// **The wire types below are declared here, not imported from
-// `@actana/shared`.** The reasoning is `core-registration-blob.ts`'s and it
-// applies unchanged: `packages/shared` is private and stays private ([ADR
-// 0025][adr] D4), so an SDK that imported the pairing request and response from
-// it would be a published package with a dependency nobody outside this
-// repository can resolve — the arrangement that ADR rejected (D1: the protocol
-// ships with the client). These declarations are structurally identical to what
-// `packages/core/src/core-pairing-routes.ts` reads and answers with, and the
-// field names are the wire's rather than either side's.
+// **The wire types live in `core-pairing-wire.ts` and are re-exported here.**
+// They are not imported from `@actana/shared`: that package is private and
+// stays private ([ADR 0025][adr] D4), so an SDK that imported the pairing
+// request and response from it would be a published package with a dependency
+// nobody outside this repository can resolve — the arrangement that ADR
+// rejected (D1: the protocol ships with the client). Nor are they declared
+// here: `packages/core/src/core-pairing-routes.ts` reads and answers with the
+// same shapes, and two structurally identical declarations are the mirror D3
+// forbids. One import-free module, imported by both sides, is the shape D2's
+// amendment allows and D3 asks for.
 //
 // [adr]: ../../docs/adr/0025-the-protocol-ships-with-the-client.md
 
@@ -55,58 +56,23 @@ import type { CoreRegistrationBlob } from "./core-registration-blob.ts";
 
 // ─── The wire ───
 
-/** The one route a client with no certificate may reach on a Core. */
-export const CORE_PAIRING_REDEEM_PATH = "/v1/pair/redeem";
+// One definition, in an import-free module the Core imports too (ADR 0025 D2 as
+// amended by #306, D3). Re-exported here so every client-side caller keeps
+// reaching for them by the name it already used.
+export {
+  CORE_PAIRING_REDEEM_PATH,
+  type CorePairingClientInfo,
+  type CorePairingRedeemRequest,
+  type CorePairingRedeemResponse,
+  type CorePairingRefusalBody,
+} from "./core-pairing-wire.ts";
 
-/** What the client says about itself. The Core keeps the label and ignores the rest. */
-export type CorePairingClientInfo = {
-  /** The machine's own name for itself, e.g. a hostname. */
-  label?: string;
-  /** `process.platform`, for the operator reading `actana pair ls`. */
-  platform?: string;
-};
-
-/**
- * The redemption request body.
- *
- * `sessionId` names the pairing session the code belongs to and is not
- * optional: the Core hashes a candidate code together with the session id and
- * refuses to search for a session a code might fit, which is what stops a code
- * lifted from one session being replayed against another.
- */
-export type CorePairingRedeemRequest = {
-  sessionId: string;
-  code: string;
-  client: CorePairingClientInfo;
-  /** PEM `CERTIFICATE REQUEST`. The private half is not in this object. */
-  csr: string;
-};
-
-/**
- * The 200 body.
- *
- * Four fields, and the absence of a fifth is the point: there is no key here,
- * because the Core never had one. {@link pairWithCore} supplies the fifth from
- * the key it generated locally.
- */
-export type CorePairingRedeemResponse = {
-  /** The `wss://host:port` core link to dial from now on. */
-  endpoint: string;
-  /** PEM CA certificate — the trust anchor for every later dial. */
-  caCert: string;
-  /** PEM client certificate, signed from the CSR just posted. */
-  clientCert: string;
-  /** The signed bearer for the `auth` frame. */
-  bearer: string;
-};
-
-/** A refusal body, as every non-200 answer from the pairing route is shaped. */
-export type CorePairingRefusalBody = {
-  /** The Core's machine-readable reason, e.g. `pairing-refused`. */
-  code?: string;
-  /** The human-readable one. */
-  error?: string;
-};
+import { CORE_PAIRING_REDEEM_PATH } from "./core-pairing-wire.ts";
+import type {
+  CorePairingRedeemRequest,
+  CorePairingRedeemResponse,
+  CorePairingRefusalBody,
+} from "./core-pairing-wire.ts";
 
 // ─── Failures ───
 

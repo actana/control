@@ -171,6 +171,25 @@ describe("paired clients", () => {
     expect(store.listClients().find((c) => c.certSerial === "0c2d")?.revokedAt).toBeNull();
   });
 
+  it("keeps a revocation when a second process writes after it", () => {
+    // #306's review: a lost `revokedAt` is the one write that fails *open* —
+    // the operator is told the client is unpaired and the file does not say
+    // so. Two `PairingStore` instances are the daemon and the CLI over one
+    // file. Neither holds a parsed copy, so a write that lands *after* a
+    // revocation re-reads it and carries the stamp forward. That is the whole
+    // protection there is today, and it covers the sequential case; the
+    // same-millisecond interleave is the gap the class comment tracks.
+    const daemon = new PairingStore(path.join(dir, "pairing.json"));
+    store.recordClient(client("0a1b"), NOW);
+    store.revokeClient("0a1b", NOW + 5);
+
+    daemon.recordClient(client("0c2d"), NOW + 6);
+
+    const rows = daemon.listClients();
+    expect(rows.find((c) => c.certSerial === "0a1b")?.revokedAt).toBe(NOW + 5);
+    expect(rows.find((c) => c.certSerial === "0c2d")?.revokedAt).toBeNull();
+  });
+
   it("says nothing about a serial it never issued", () => {
     expect(store.revokeClient("nope", NOW)).toBeNull();
   });

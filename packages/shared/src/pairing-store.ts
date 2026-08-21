@@ -127,6 +127,17 @@ export type PairingConsumeOutcome =
  * alternative is a lockfile protocol between a daemon and a one-shot CLI for a
  * collision measured in milliseconds a few times in a Core's life, and the
  * failure it would prevent is "the operator runs `pair new` again".
+ *
+ * **`revokeClient` is the exception, and it is tracked rather than fixed
+ * here.** Every other lost write costs an operator a retry; a lost `revokedAt`
+ * stamp fails *open* — the operator is told the client is unpaired, the file
+ * does not say so, and the certificate keeps verifying until someone revokes
+ * again. The window is the same handful of milliseconds and needs a concurrent
+ * daemon write to hit, so this is a known gap and not a live incident, but it
+ * is the one direction where losing the race is silent. Raised in #306's
+ * review; the fix is a lockfile or an append-only revocation log, and both are
+ * a ticket rather than a comment. Until then: `actana pair ls` after a revoke
+ * shows whether the stamp landed, and re-running `pair revoke` is idempotent.
  */
 export class PairingStore {
   constructor(private readonly filePath: string) {}

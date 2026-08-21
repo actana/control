@@ -150,7 +150,8 @@ between `# >>> second Core` and `# <<< second Core`; uncomment it, add
 
 Three things change per Core, and they must agree: the **service name**,
 `ACTANA_PUBLIC_HOST` **to match it**, and its **own volumes**. Pair it the same
-way — its blob is in `docker compose logs core2`.
+way — `docker compose exec core2 actana pair new` prints its own code and CA
+fingerprint, and **Add Core** takes the address `core2:8443` with that code.
 
 Its repos are a named volume rather than a second bind mount, which is exactly
 the swap described above: a bind mount needs a host directory that already

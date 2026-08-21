@@ -38,6 +38,15 @@
 // together.
 import { randomUUID } from "node:crypto";
 import type { IncomingMessage, ServerResponse } from "node:http";
+// The redeem contract, defined once and imported by both sides (ADR 0025 D2 as
+// amended by #306, D3). The module is import-free, which is what lets a Core
+// take it without taking any client machinery with it.
+import { CORE_PAIRING_REDEEM_PATH as SDK_CORE_PAIRING_REDEEM_PATH } from "@actana/sdk/core-pairing-wire";
+import type {
+  CorePairingClientInfo,
+  CorePairingRedeemRequest,
+  CorePairingRedeemResponse,
+} from "@actana/sdk/core-pairing-wire";
 import { CsrRejectedError, assertSignableCsr, signClientCsr } from "@actana/shared/core-cert-material";
 import { signBearer } from "@actana/shared/core-link-bearer";
 import { normalisePairingCode } from "@actana/shared/pairing-code";
@@ -65,7 +74,7 @@ import { pairingBearerSubject } from "./core-pairing-revocation";
 export const CORE_PAIRING_ROUTE_PREFIX = "/v1/pair/";
 
 /** The one route. Named so the pre-auth gate and the tests agree on the string. */
-export const CORE_PAIRING_REDEEM_PATH = "/v1/pair/redeem";
+export const CORE_PAIRING_REDEEM_PATH = SDK_CORE_PAIRING_REDEEM_PATH;
 
 /**
  * The most a redemption body may weigh.
@@ -388,12 +397,13 @@ export function createCorePairingRequestHandler(opts: CorePairingRoutesOptions):
     // Four fields, and the absence of a fifth is the point: there is no key
     // here, and `core-pairing-redeem.test.ts` asserts the response never
     // contains one.
-    sendJson(res, 200, {
+    const answer: CorePairingRedeemResponse = {
       caCert: opts.material.caCert,
       clientCert: issued.cert,
       bearer,
       endpoint: opts.endpoint,
-    });
+    };
+    sendJson(res, 200, answer);
   }
 
   return { handle, handleContinue };
@@ -419,11 +429,18 @@ function refuse(
   sendRefusal(res, PAIRING_REFUSED);
 }
 
-type RedeemRequest = {
-  sessionId: string;
-  code: string;
+/**
+ * A redemption, as this Core uses it.
+ *
+ * The three load-bearing fields are the wire's own declarations rather than
+ * re-typed copies, so renaming or retyping one in the SDK stops this file
+ * compiling instead of producing two processes that disagree at runtime (ADR
+ * 0025 D3). `label` is deliberately *not* the wire shape: the parser flattens
+ * `client.label` to a trimmed string or null, which is a projection of the
+ * contract rather than a second version of it.
+ */
+type RedeemRequest = Pick<CorePairingRedeemRequest, "sessionId" | "code" | "csr"> & {
   label: string | null;
-  csr: string;
 };
 
 type ParseResult =
@@ -455,10 +472,13 @@ function parseRedeemRequest(body: unknown): ParseResult {
   if (typeof csr !== "string" || !csr.includes("BEGIN CERTIFICATE REQUEST")) {
     return { ok: false, reason: "bad-csr", message: "`csr` must be a PEM certificate request" };
   }
-  const client = o.client;
+  // Read through the wire's own `client` declaration: `platform` is accepted
+  // and dropped here, which is a server ignoring an optional field rather than
+  // a shape the two sides disagree about.
+  const client = o.client as CorePairingClientInfo | undefined;
   const label =
-    client && typeof client === "object" && typeof (client as Record<string, unknown>).label === "string"
-      ? String((client as Record<string, unknown>).label).slice(0, 64)
+    client && typeof client === "object" && typeof client.label === "string"
+      ? client.label.slice(0, 64)
       : null;
   return { ok: true, value: { sessionId, code, label, csr } };
 }
