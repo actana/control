@@ -108,12 +108,13 @@ bounds, it provisions nothing on a Core, and it stays available. The prohibition
 is about `actana session start` and nothing else. It is stated harness-neutrally
 in the skill text, because
 `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` asserts that the
-shipped text names none of the four harness ids — and **that assertion is to be
-extended** to cover the new file rather than exempting it. Today it reads exactly
-one path, `.agents/skills/${ORCHESTRATION_SKILL_NAME}/SKILL.md`, and
-`ORCHESTRATION_SKILL_NAME` is the hardcoded `"actana-sessions"`
-(`packages/shared/src/orchestration-skill-payload.ts:10`), so a second skill folder
-is invisible to it until #303 generalises it.
+shipped text names none of the four harness ids — and **that assertion was
+widened** to cover the new file rather than exempting it. It used to read exactly
+one path under a single hardcoded `"actana-sessions"`, so a second skill folder
+was invisible to it; #303, landed in the same change as this record, replaced that
+constant with `ORCHESTRATION_SKILL_NAMES`
+(`packages/shared/src/orchestration-skill-payload.ts`) and made the assertion sweep
+every shipped file of both folders.
 
 **D4 — The home-directory footprint grows, and this record is where that is
 decided.** 0031's consequences bound it at *"exactly two directories deep in two
@@ -136,10 +137,11 @@ D8 authors one `SKILL.md` under `.agents/skills/` and has a generator embed it a
 a string constant in both packages, because the daemon and the CLI write the
 skill from two different processes on two different machines. That stays exactly
 as it is. What changes is arity: **one authored source per skill**, each embedded
-into the same two bundles, and all of them **to be** held honest by the one drift
+into the same two bundles, and all of them **held honest** by the one drift
 test at `packages/shared/src/__tests__/orchestration-skill-fanout.test.ts` — which
-covers one skill today and is #303's to widen, not a second test to stand beside
-it. No new mechanism, no second generator, no copy in `dist/`.
+covers both skills as of #303, landed in the same change as this record, and not a
+second test standing beside it. No new mechanism, no second generator, no copy
+in `dist/`.
 
 ## Consequences
 

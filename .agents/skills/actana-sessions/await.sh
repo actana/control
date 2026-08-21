@@ -16,7 +16,8 @@
 # write and nothing else, and a write that also flips a permission bit is a
 # larger act for no gain.
 #
-#   bash await.sh --out ./reports 7f3a=api:reports/a.md 9c1b=api:reports/b.md
+#   bash await.sh --out ./reports \
+#     7f3a=api:.actana/reports/api-r1.md 9c1b=web:.actana/reports/web-r1.md
 #
 # ── Why this is a file and not four paragraphs of advice ──────────────────────
 #
@@ -60,7 +61,7 @@ bash await.sh [options] <lane>...
 
   lane            <session-id>=<project>:<report-path>
                   the report path is the Project's, exactly as `project cp`
-                  takes it — `7f3a=api:reports/impl-304-r1.md`
+                  takes it — `7f3a=api:.actana/reports/api-r1.md`
 
   --out <dir>     where saved reports land. Default: .
   --timeout <s>   give up on the round after this long. Default: 1800

@@ -280,13 +280,21 @@ The order below is the whole of it:
 point of reading a file rather than a screen, and deleting first reintroduces
 exactly the failure this contract exists to end.
 
-## `await.sh`, which does all of that for a whole round
+## `await.sh`, which does steps 1-3 of that for a whole round
 
 This skill folder ships `await.sh` beside this file. It watches every lane in
 **one** loop — a per-lane wait serialises a round, so a six-lane round runs at
 the speed of its worst lane *summed* rather than its worst lane alone — checks
 the last line rather than searching the file, treats a dropped link as "not
 yet", and saves each report to local disk before it touches the Session.
+
+**It does steps 1, 2 and 3. It never does step 4.** The script has no remote
+delete and no ~20 second delay; once a lane's bytes are safely down it either
+stops that Session under `--kill` or moves on. Retiring the remote file stays
+yours, per lane, after the round. `--kill` is a *different* guard from the
+delay, not a substitute for it: a stopped Session cannot rewrite its report, so
+a killed lane's file is settled and you may retire it at once, while a lane left
+running still wants the ~20 seconds before you delete anything.
 
 ```bash
 # Both lanes below started with no --cwd, so each Session runs at its Project
