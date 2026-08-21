@@ -38,6 +38,7 @@
 // refused to try would be inventing a verdict. This one tries, waits, and when
 // the Core says no it names the Harness and links the issue.
 
+import path from "node:path";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { ensureOrchestrationSkill } from "./orchestration-skill.ts";
 import { ORCHESTRATION_SKILL_NAMES } from "./orchestration-skill-payload.ts";
@@ -109,9 +110,10 @@ What install waits for
 
 What skills does
   Writes this product's own skills — \`actana-sessions\`, how to drive Cores and
-  Sessions with this CLI, and \`actana-subagent\`, how a Session woken as somebody
-  else's sub-agent hands its work back — into the global skills directory of every
-  Harness present on THIS machine, and repairs a copy that was deleted or changed. It talks to no Core, it starts
+  Sessions with this CLI, and \`actana-subagent\`, how a Session woken as
+  somebody else's sub-agent hands its work back — into the global skills
+  directory of every Harness present on THIS machine, and repairs a copy that
+  was deleted or changed. It talks to no Core, it starts
   no process, and running it twice changes nothing the second time. Every other
   \`actana\` command does the same thing quietly before it runs, so this verb is
   the repair path and the one that tells you what it did.
@@ -197,7 +199,7 @@ function harnessRows(availability: CoreLinkHarnessAvailabilityMap): Array<
 }
 
 /**
- * `actana harness skills [--json]` — write the product's skill, here, now.
+ * `actana harness skills [--json]` — write the product's skills, here, now.
  *
  * The explicit, idempotent path ADR 0031 D6 asks for. It exits 0 when nothing
  * is broken, and that includes a machine with no Harnesses on it at all: "you
@@ -216,10 +218,24 @@ function harnessRows(availability: CoreLinkHarnessAvailabilityMap): Array<
  * our payload instead of the operator's.
  *
  * **There are two skills now** (#303), so there is a row per Harness per skill
- * and the folder column is what tells them apart. That is one row more than the
+ * and the folder is what tells them apart. That is one row more than the
  * question "has this agent got the skill?" strictly needs, and it is the honest
  * shape: the two folders are written independently, and either one of them can
  * be the one an operator took ownership of.
+ *
+ * **A row carries no skill key, by design: `path` is the identity.** It is the
+ * folder, and `path.basename` of it is the skill's name — which is what the
+ * table prints and what a consumer reads. A second field repeating the tail of
+ * the first is a field that can disagree with it. The `skills` array beside
+ * `harnesses` under `--json` says which folders this build shipped, which is
+ * the question the rows cannot answer on a machine with no Harness on it.
+ *
+ * The stderr detail lines carry the folder too, in their prefix. They have to:
+ * two rows for one harness can otherwise print byte-identical sentences — an
+ * operator who took ownership of both `SKILL.md` copies in one root sees the
+ * same "it is yours, and was left alone" twice with nothing to tell them apart,
+ * which is precisely the "why is my skill not updating?" question these lines
+ * exist to answer.
  */
 function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): number {
   if (rest.length > 0) {
@@ -243,7 +259,9 @@ function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): n
   for (const line of table) deps.out(line);
 
   for (const entry of entries) {
-    if (entry.detail && entry.outcome !== "absent") deps.err(`  ${entry.harness}: ${entry.detail}`);
+    if (!entry.detail || entry.outcome === "absent") continue;
+    const skill = entry.path === "" ? "" : `${path.basename(entry.path)} `;
+    deps.err(`  ${entry.harness}: ${skill}${entry.detail}`);
   }
   if (entries.every((entry) => entry.outcome === "absent")) {
     deps.err("No Harness of the four this build knows has a directory in this home —");

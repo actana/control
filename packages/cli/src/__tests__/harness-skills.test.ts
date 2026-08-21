@@ -172,6 +172,29 @@ describe("actana harness skills", () => {
     expect(fs.readFileSync(claudeSkill(), "utf8")).toBe(mine);
   });
 
+  it("names the skill in each stderr detail line, so two rows differ (#309 review)", async () => {
+    // With two folders per root, a detail line with no folder in it can be
+    // printed twice, byte for byte, for one harness — and the operator cannot
+    // tell which skill stopped updating, which is the whole question these
+    // lines exist to answer.
+    pretendHarnessIsInstalled(".claude");
+    await cli.run(["harness", "skills"]);
+    for (const file of [claudeSkill(), claudeSubagent()]) {
+      fs.writeFileSync(
+        file,
+        fs.readFileSync(file, "utf8").replace(`${ORCHESTRATION_SKILL_MARKER}\n`, ""),
+        "utf8",
+      );
+    }
+
+    const run = await cli.run(["harness", "skills"]);
+    const said = run.err.filter((line) => line.includes("claude-code:"));
+    expect(said.length).toBe(2);
+    expect(new Set(said).size, "two detail lines for one harness are identical").toBe(2);
+    expect(said.join("\n")).toContain("actana-sessions");
+    expect(said.join("\n")).toContain("actana-subagent");
+  });
+
   it("takes no arguments, and says which one it did not want", async () => {
     const run = await cli.run(["harness", "skills", "claude-code"]);
     expect(run.code).toBe(EXIT_USAGE);
