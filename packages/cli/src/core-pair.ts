@@ -217,31 +217,53 @@ type TicketResult = { ok: true; sessionId: string; code: string } | { ok: false;
  * accepts both for the same reason.
  */
 function readTicket(deps: ActanaCliDeps, code: string, session: string | null): TicketResult {
-  const carried = code.includes(":");
-  if (!carried && (session === null || session.trim() === "")) {
+  // The two session ids, read the way `parsePairingTicket` reads them. Split
+  // out here rather than inferred from `code.includes(":")`, because a
+  // `bad-code` covers two different mistakes and the operator has to be told
+  // which of them they made: "the ids disagree" and "that is not a code" have
+  // opposite fixes, and sending somebody to drop a `--session` that was right
+  // all along is worse than saying nothing.
+  const separator = code.indexOf(":");
+  const carried = separator === -1 ? "" : code.slice(0, separator).trim();
+  const explicit = session?.trim() ?? "";
+
+  if (carried === "" && explicit === "") {
     deps.err("actana core pair: a pairing code names the pairing session it belongs to.");
     deps.err("Pass `--session <id>` — `actana pair new` prints it beside the code — or the <session>:<code> form.");
     return { ok: false, exit: EXIT_USAGE };
   }
+  if (carried !== "" && explicit !== "" && carried !== explicit) {
+    deps.err("actana core pair: the code names one pairing session and `--session` names another.");
+    deps.err("Drop `--session`, or pass the bare code beside it — they have to agree.");
+    return { ok: false, exit: EXIT_USAGE };
+  }
+
   try {
     const ticket = parsePairingTicket(code, session ?? undefined);
     return { ok: true, sessionId: ticket.sessionId, code: ticket.code };
   } catch (err) {
-    if (err instanceof CorePairingError && err.failure === "bad-code") {
-      // Worded here rather than relayed: the SDK's sentence quotes the code it
-      // was handed, and a pairing code is a secret for as long as its session
-      // is open. Which of the two mistakes it was is knowable without it.
-      if (carried && session !== null && session.trim() !== "") {
-        deps.err("actana core pair: the code names one pairing session and `--session` names another.");
-        deps.err("Drop `--session`, or pass the bare code beside it — they have to agree.");
-      } else {
-        deps.err("actana core pair: that is not a pairing code — it is eight characters, written XXXX-XXXX.");
-        deps.err("Hyphen and case do not matter. `actana pair new` on the Core prints a fresh one.");
-      }
-      return { ok: false, exit: EXIT_USAGE };
-    }
+    // Every remaining `bad-code` is a shape, the ids having been checked above.
+    if (err instanceof CorePairingError && err.failure === "bad-code") return { ok: false, exit: badCode(deps) };
     throw err;
   }
+}
+
+/**
+ * The one sentence this package writes about a code that is not one.
+ *
+ * It is written here rather than relayed from the SDK, whose message ends
+ * `— "ABCD-2345" is not`: correct for a library whose caller decides where text
+ * goes, and wrong for a CLI whose stderr is a terminal, a CI log and a shell
+ * history at once. One function for it because there are two ways to arrive —
+ * the ticket read here, and a `bad-code` raised inside `pairWithCore`, which
+ * parses the ticket again — and a rule kept in one of two places is a rule that
+ * holds until somebody touches the other.
+ */
+function badCode(deps: ActanaCliDeps): number {
+  const outcome = corePairingOutcome("bad-code");
+  deps.err("actana core pair: that was not accepted as a pairing code — hyphen and case do not matter, its shape does.");
+  deps.err(outcome.next);
+  return outcome.exit;
 }
 
 /** A fingerprint the operator stands behind, or the exit code for the refusal. */
@@ -321,6 +343,14 @@ function reportPairingFailure(deps: ActanaCliDeps, err: unknown): number {
     deps.err(`actana core pair: pairing failed — ${message}`);
     return EXIT_FAILURE;
   }
+  // `bad-code` is the one failure whose message is not relayed, because the
+  // SDK's quotes the code — see {@link badCode}. Reaching it from here means
+  // `pairWithCore` refused a ticket this file had already normalised, which
+  // nothing does today and something will the moment the SDK tightens its shape
+  // check (it says as much, and calls the stop deliberate). The rule should not
+  // wait for that.
+  if (err.failure === "bad-code") return badCode(deps);
+
   const outcome = corePairingOutcome(err.failure, err.detail);
   deps.err(`actana core pair: ${err.message}`);
   deps.err(outcome.next);

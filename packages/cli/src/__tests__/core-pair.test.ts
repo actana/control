@@ -359,6 +359,51 @@ describe("actana core pair — the command line", () => {
     expect(pairing.paired).toEqual([]);
   });
 
+  it("does not blame the session when the ids agree and the code is malformed", async () => {
+    // The overlap the two cases either side of this one each miss. Both spellings
+    // of the session are present and they agree; what is wrong is the code. An
+    // operator told to drop `--session` here would be sent after a mistake they
+    // did not make, and dropping it would not help.
+    const run = await cli().run(
+      [
+        "core",
+        "pair",
+        "prod",
+        "core.test:8443",
+        `${SESSION}:ABCD-234`,
+        "--session",
+        SESSION,
+        "--fingerprint",
+        PAIRED_FINGERPRINT,
+      ],
+      { pairing: fakePairing() },
+    );
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain("eight characters");
+    expect(run.err.join("\n")).not.toContain("--session");
+    expect(run.all).not.toContain("ABCD-234");
+  });
+
+  it("writes its own sentence for a code the SDK refuses, rather than relaying one that quotes it", async () => {
+    // The second door onto `bad-code`: `pairWithCore` parses the ticket again,
+    // so a shape this file accepted and the SDK did not arrives through the
+    // failure path instead. Its message ends `— "…" is not`, and relaying it
+    // would put the code on stderr through the one route the header's rule does
+    // not cover.
+    const pairing = fakePairing({
+      failsWith: new CorePairingError(
+        "bad-code",
+        `a pairing code is eight characters, written XXXX-XXXX — "${CODE}" is not`,
+      ),
+    });
+    const run = await cli().run(pairArgv(), { pairing });
+
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain("eight characters");
+    expect(run.all, "the SDK's sentence was relayed with the code in it").not.toContain(CODE);
+    expect(existsSync(coreBlobPath(cli().paths, "prod"))).toBe(false);
+  });
+
   it("refuses two session ids that disagree", async () => {
     const run = await cli().run(
       ["core", "pair", "prod", "core.test:8443", `other-session:${CODE}`, "--session", SESSION, "--fingerprint", PAIRED_FINGERPRINT],
