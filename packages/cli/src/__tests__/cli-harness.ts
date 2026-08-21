@@ -23,6 +23,9 @@ import type {
   SessionAttachment,
 } from "../session-attach-channel.ts";
 import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
+import type { CorePairingPort } from "../core-pair.ts";
+import { CorePairingError, type CorePairingFailure } from "@actana/sdk/core-pairing.ts";
+import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
 import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
 import { projectFilesErrorFrom } from "../project-files-gateway.ts";
 import type {
@@ -80,6 +83,8 @@ export type RunOptions = {
   probe?: CoreProbeFn;
   /** What every other noun gets when it dials, or a throw. */
   connect?: CoreConnectFn;
+  /** What `core pair` gets back from the SDK, or a throw. */
+  pairing?: CorePairingPort;
   /** What the `session` noun's verbs get back, or a throw. */
   sessions?: OpenSessionGateway;
   /** What `project cp` and `project files` get back, or a throw. */
@@ -165,6 +170,90 @@ export function fakeSessionGateway(overrides: Partial<SessionGateway> = {}): Ope
   });
 }
 
+/** What a {@link fakePairing} was asked, and what it answered. */
+export type FakePairing = CorePairingPort & {
+  /** Every `identify`, by the address it was given. */
+  identified: string[];
+  /**
+   * Every `pair`, with the options it carried — **including the code**.
+   *
+   * Recorded so a suite can assert what crossed the seam: that the code handed
+   * to the SDK is the normalised one, that the fingerprint is the confirmed
+   * one, and that a refusal happened without `pair` ever being reached.
+   */
+  paired: Array<Parameters<CorePairingPort["pair"]>[0]>;
+};
+
+/**
+ * The SDK's pairing surface, without a Core.
+ *
+ * `identify` answers with the fingerprint the test says the Core presents;
+ * `pair` hands back a credential or throws the `CorePairingError` the suite is
+ * about. Both are recorded, because half of what this verb has to get right is
+ * *not* reaching the second one.
+ */
+export function fakePairing(
+  opts: {
+    fingerprint?: string;
+    identifyFails?: unknown;
+    blob?: CoreRegistrationBlob;
+    fails?: CorePairingFailure;
+    failsWith?: unknown;
+    detail?: ConstructorParameters<typeof CorePairingError>[2];
+  } = {},
+): FakePairing {
+  const fingerprint = opts.fingerprint ?? PAIRED_FINGERPRINT;
+  const state: FakePairing = {
+    identified: [],
+    paired: [],
+    identify: async ({ address }) => {
+      state.identified.push(address);
+      if (opts.identifyFails) throw opts.identifyFails;
+      return {
+        fingerprint,
+        caCert: SENTINEL_CA,
+        host: address.split(":")[0] ?? address,
+        port: 8443,
+        httpsOrigin: `https://${address}`,
+      };
+    },
+    pair: async (pairOpts) => {
+      state.paired.push(pairOpts);
+      if (opts.failsWith) throw opts.failsWith;
+      if (opts.fails) {
+        throw new CorePairingError(opts.fails, `the fake Core answered ${opts.fails}`, opts.detail ?? {});
+      }
+      // **The label is echoed, because `pairWithCore` echoes it.** The real
+      // function copies `opts.label` straight into the blob it returns — the
+      // one field where what the caller passed in comes back out — and a fake
+      // that answered with a fixed blob instead would make every assertion
+      // about what is *stored* vacuous, which is exactly how a client hostname
+      // reached the column that means the Core's own alias.
+      const issued = opts.blob ?? sentinelPairedBlob();
+      return { ...issued, ...(pairOpts.label === undefined ? {} : { label: pairOpts.label }) };
+    },
+  };
+  return state;
+}
+
+/** The fingerprint {@link fakePairing} presents unless a test says otherwise. */
+export const PAIRED_FINGERPRINT =
+  "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+
+/**
+ * The credential a successful pair hands back: the same sentinels every other
+ * suite sweeps for, so `never-logs-a-blob.test.ts` covers this path too.
+ */
+export function sentinelPairedBlob(endpoint = "wss://core.test:8443"): CoreRegistrationBlob {
+  return {
+    endpoint,
+    caCert: SENTINEL_CA,
+    clientCert: SENTINEL_CERT,
+    clientKey: SENTINEL_KEY,
+    bearer: SENTINEL_BEARER,
+  };
+}
+
 /** A probe that answers like a healthy Core on the current protocol. */
 export function healthyProbe(overrides: Partial<CoreProbe> = {}): CoreProbeFn {
   return async () => ({
@@ -233,6 +322,15 @@ export function makeCliFixture(): CliFixture {
           (async () => {
             throw new Error("this test did not expect to dial a Core");
           }),
+        pairing:
+          opts.pairing ?? {
+            identify: async () => {
+              throw new Error("this test did not expect to identify a Core");
+            },
+            pair: async () => {
+              throw new Error("this test did not expect to pair with a Core");
+            },
+          },
         openSessions:
           opts.sessions ??
           (async () => {

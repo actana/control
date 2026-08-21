@@ -43,6 +43,7 @@ import { probeCore } from "./core-probe.ts";
 import { openCoreShell } from "./core-shell-channel.ts";
 import { terminalFromProcess } from "./cli-terminal.ts";
 import { connectCore } from "./core-connection.ts";
+import { sdkCorePairing } from "./core-pair.ts";
 import { openSessionGateway } from "./session-gateway.ts";
 import { openProjectFiles } from "./project-files-gateway.ts";
 import { openSessionAttach } from "./session-attach-channel.ts";
@@ -145,6 +146,9 @@ async function main(): Promise<void> {
     stdinIsTty: Boolean(process.stdin.isTTY),
     probe: probeCore,
     connect: connectCore,
+    // The one dial that starts with nothing trusted: `core pair` enrolls this
+    // machine on a Core it has no credential for yet (#285).
+    pairing: sdkCorePairing,
     openSessions: openSessionGateway,
     // The file surface, which is the one thing in this program that does not
     // cross the core link: `project cp` and `project files` reach the Core's

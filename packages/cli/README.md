@@ -26,6 +26,8 @@ release is attested to the workflow and the commit that built it.
 ## Cores this machine can reach
 
 ```sh
+actana core pair laptop core.example:8443 ABCD-2345 \
+  --session <id> --fingerprint AA:BB:…  # enroll this machine on a Core
 actana core add laptop ~/blob.txt   # register a Core from its blob, or stdin
 actana core ls --json               # what this machine knows
 actana core use laptop              # point `current` at one
@@ -33,6 +35,14 @@ actana core status                  # reach it, and report what it says
 actana core shell                   # an interactive shell on that machine
 actana core exec -- df -h /         # one command on it, no terminal
 ```
+
+`core pair` is the enrollment gesture: somebody on the Core runs `actana pair
+new`, reads out an eight-character code and that Core's CA fingerprint, and this
+machine generates its own key pair, checks the fingerprint **before** it sends
+the code, and stores the credential the Core signs. The private half never
+leaves this machine, and the code is never sent to a certificate authority
+nobody confirmed — with no `--fingerprint` and no terminal to confirm one on,
+the command refuses.
 
 `core exec` is the non-interactive half of `core shell`, and the reason it
 exists is that a script cannot use a terminal. It returns the command's real

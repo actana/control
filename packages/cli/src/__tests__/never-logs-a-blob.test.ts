@@ -13,10 +13,12 @@
 // exactly the line somebody adds without thinking.
 
 import { describe, it, expect, afterEach } from "vitest";
+import { CorePairingError } from "@actana/sdk/core-pairing.ts";
 import { mkdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import {
   fakeAttachment,
+  fakePairing,
   fakeTerminal,
   fakeCore,
   fakeProjectFiles,
@@ -81,6 +83,98 @@ describe("no verb prints a blob, with --verbose on", () => {
       const run = await cli().run(argv, { probe: healthyProbe() });
       expectNoSecrets(what, run.all);
     }
+  });
+
+  it("sweeps `core pair`, which is handed a credential rather than reading one (#285)", async () => {
+    // The verb the sweep would miss if it were only ever run against a registry
+    // that already had a blob in it: `core pair` receives one from the SDK and
+    // writes it, so every line it prints — the success, the `--verbose` steps,
+    // the fingerprint prompt and every refusal — has the material in scope.
+    //
+    // The pairing **code** is swept alongside the credential here, because this
+    // is the one verb that is handed one. It is a bearer secret for as long as
+    // its session is open and it must not reach a terminal, a CI log or a shell
+    // history any more than the key does.
+    //
+    // **The sentinel is a code the shape check accepts.** An unmistakable
+    // string that could not be a pairing code only ever reaches the one path
+    // that refuses it, which would leave the absence assertion vacuous on the
+    // three runs that matter most — the confirmed dial, the issued credential
+    // and the Core's refusal. So the well-formed sentinel goes through all
+    // four, and the malformed one shares its first four characters so a single
+    // absence check covers both.
+    const CODE = "ZZVV-QQWW";
+    const MALFORMED = "ZZVVQQWWXX";
+    const session = "session-1";
+    const fingerprint = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
+    const argv = (code: string, extra: string[] = []) => [
+      "core",
+      "pair",
+      "paired",
+      "core.test:8443",
+      code,
+      "--session",
+      session,
+      "--verbose",
+      ...extra,
+    ];
+
+    const runs: Array<[string, string[], Parameters<CliFixture["run"]>[1]]> = [
+      // A shape that is refused before anything is dialled.
+      ["core pair (bad code)", argv(MALFORMED, ["--fingerprint", fingerprint]), { pairing: fakePairing() }],
+      // The interactive confirmation, which prints a fingerprint beside a code
+      // it was given.
+      [
+        "core pair (confirmed)",
+        argv(CODE),
+        { pairing: fakePairing({ fingerprint }), machine: { interactive: true } },
+      ],
+      // The success, which has the issued credential in hand.
+      [
+        "core pair (issued)",
+        argv(CODE, ["--fingerprint", fingerprint]),
+        { pairing: fakePairing({ fingerprint }) },
+      ],
+      // And a refusal, where a diagnostic would reach for its input.
+      [
+        "core pair (refused)",
+        argv(CODE, ["--fingerprint", fingerprint]),
+        { pairing: fakePairing({ fingerprint, fails: "refused" }) },
+      ],
+      // And the second door onto `bad-code`: a shape this package accepted and
+      // the SDK did not, whose own message ends with the code in quotes.
+      [
+        "core pair (SDK refused the shape)",
+        argv(CODE, ["--fingerprint", fingerprint]),
+        {
+          pairing: fakePairing({
+            fingerprint,
+            failsWith: new CorePairingError(
+              "bad-code",
+              `a pairing code is eight characters, written XXXX-XXXX — "${CODE}" is not`,
+            ),
+          }),
+        },
+      ],
+    ];
+
+    for (const [what, args, opts] of runs) {
+      const run = await cli().run(args, opts);
+      expectNoSecrets(what, run.all);
+      // Both spellings, and the prefix they share: a code echoed back without
+      // its hyphen is a code in a shell history.
+      for (const shape of [CODE, MALFORMED, "ZZVV"]) {
+        expect(run.all, `${what} printed the pairing code`).not.toContain(shape);
+      }
+    }
+
+    // The guard on the guard: the well-formed sentinel really is one the shape
+    // check takes, so the four runs above reached the paths they name rather
+    // than all landing on the refusal that rejects a malformed code.
+    const issued = await cli().run(argv(CODE, ["--fingerprint", fingerprint]), {
+      pairing: fakePairing({ fingerprint }),
+    });
+    expect(issued.code, "the sentinel code was refused, so three of these runs proved nothing").toBe(0);
   });
 
   it("sweeps the nouns that dial with the credential in hand", async () => {

@@ -162,7 +162,7 @@ Usage:
   actana <noun> <verb> [flags]
 
 Cores this machine can reach
-  core       Register, select and inspect them
+  core       Pair with a Core, register, select and inspect them
   project    The Projects a Core owns: ls, add, browse, files, cp
   harness    The coding agents a Core can run: ls, install, skills
   events     Follow a Core's event log: tail
