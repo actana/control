@@ -103,7 +103,7 @@ the reference deployment — the published Panel and Core images on one network:
 
 ```bash
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs core   # the registration blob
+docker compose -f deploy/docker-compose.yml exec core actana pair new
 ```
 
 ## Before you open a PR

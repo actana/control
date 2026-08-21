@@ -56,9 +56,9 @@ cross here and never over the core link: chunking a multi-gigabyte upload into
 JSON frames would stutter every terminal pane sharing that socket, and base64
 would cost a third of the wire.
 
-This is not a public integration API either. It is reached with the material in
-a **registration blob** — `CoreConnection.httpsBaseUrl` is the origin, and the
-same client certificate and bearer the core link uses — and the surface a third
+This is not a public integration API either. It is reached with the material a
+pairing issued — `CoreConnection.httpsBaseUrl` is the origin, and the same
+client certificate and bearer the core link uses — and the surface a third
 party is meant to type against is `project.files.*` in `@actana/sdk`.
 
 | Property | Value |

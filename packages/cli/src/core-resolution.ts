@@ -3,7 +3,7 @@
 // Three sources, tried in this order and no other:
 //
 //   1. `--core <name>`      an explicit name, for a machine with several Cores
-//   2. `ACTANA_CORE_BLOB`   single-Core mode: the blob itself, or a path to it
+//   2. `ACTANA_CORE_BLOB`   single-Core mode: a stored credential, or a path to one
 //   3. the `current` pointer  what `actana core use` last selected
 //
 // The order is the point, and it reads from most specific to least. A flag on
@@ -77,7 +77,7 @@ function blobFromEnv(raw: string, home: string): { ok: true; text: string } | { 
  *
  * Every failure names the source that failed rather than the general shape of
  * the problem: an operator who set `ACTANA_CORE_BLOB` to something malformed
- * and an operator who has never run `actana core add` are one message apart in
+ * and an operator who has never paired with a Core are one message apart in
  * the code and a long way apart in what they should do next.
  */
 export function resolveCore(opts: {
@@ -121,7 +121,8 @@ export function resolveCore(opts: {
     error:
       "no Core selected. Pass --core <name>, set " +
       CORE_BLOB_ENV +
-      ", or run `actana core use <name>`. `actana core add <name>` registers one.",
+      ", or run `actana core use <name>`. `actana core pair <name> <address> <code>` " +
+      "registers one.",
   };
 }
 

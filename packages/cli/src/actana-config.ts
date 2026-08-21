@@ -2,7 +2,7 @@
 // to guess.
 //
 // `status` needs the endpoint and the installed version; `token` needs the
-// endpoint to re-encode the pairing token; `update` (issue 06) needs to know
+// endpoint to build a Core's own registry entry; `update` (issue 06) needs to know
 // which version is current. Keeping that in one small readable file beside
 // `material.json` means an operator can also just look at it.
 //
@@ -24,9 +24,9 @@ export type ActanaConfig = {
   port: number;
   /** The address the daemon binds. */
   host: string;
-  /** The reachable address in the cert SAN and the pairing token's endpoint. */
+  /** The reachable address in the cert SAN, and this Core's endpoint. */
   publicHost: string;
-  /** Human-friendly alias carried in the pairing token. */
+  /** Human-friendly alias carried in this Core's credential. */
   label: string;
   /** The versioned install tree `current` points at. */
   installDir: string;

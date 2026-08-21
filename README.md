@@ -80,12 +80,15 @@ product in one command:
 ```bash
 git clone https://github.com/actana/control && cd control
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs core   # the registration blob
+docker compose -f deploy/docker-compose.yml exec core actana pair new
 ```
 
-Open `http://localhost:7420`, create the Operator, and paste that blob into
-"Add Core". [deploy/README.md](deploy/README.md) walks through the file itself
-— the volumes, the loopback port, adding a second Core.
+That last command prints a one-time pairing code, the Core's CA fingerprint and
+when the code expires. Open `http://localhost:7420`, create the Operator, and
+give "Add Core" the Core's address and that code — the Panel shows you the
+fingerprint it was presented before the code goes anywhere, so you can check it
+against the one on screen. [deploy/README.md](deploy/README.md) walks through
+the file itself — the volumes, the loopback port, adding a second Core.
 
 **Installer** — turn a Linux or macOS (arm64) machine into a Core, as your own
 user, without sudo:
@@ -159,8 +162,9 @@ The Panel is a web service you deploy once. Each Core is a daemon on a machine
 that has your code; it owns the projects, the sessions, the SQLite database and
 the PTYs, and it is the only process that writes its own state ([ADR 0004](docs/adr/0004-core-owns-write-path.md)).
 The two speak over a **core-link**: a WebSocket the Panel dials, authenticated
-by mutual TLS with material the Core mints at first run and hands over in its
-registration blob ([ADR 0002](docs/adr/0002-core-link-auth-and-transport.md)).
+by mutual TLS: the Core mints a certificate authority at first run and signs one
+client certificate per pairing, for a key that is generated on the client and
+never crosses the wire ([ADR 0002](docs/adr/0002-core-link-auth-and-transport.md)).
 
 What you expose: one HTTP port for the Panel, reachable by your browser, and on
 each Core one port (default `8443`) reachable *from the Panel's machine* — the

@@ -90,7 +90,7 @@ function restrictPermissions(filePath: string): void {
  * Everything a paired Panel pinned is replaced, so whoever calls this is
  * choosing to lock that Panel out until it re-pairs. Setup calls it only when
  * there is nothing to reuse; `actana token regenerate` calls it deliberately,
- * which is how a leaked pairing token is revoked; the daemon's first run in a
+ * which is how a compromised Core is rotated; the daemon's first run in a
  * container calls it when the volume is empty (ADR 0016 D17).
  */
 export async function mintFreshMaterial(publicHost: string): Promise<PersistedMaterial> {
@@ -144,7 +144,7 @@ export function checkServerCertHost(
  * survive the spread below, so a Panel paired before the move still validates
  * this Core against the CA it pinned — where the re-mint this replaced locked
  * that Panel out for what is usually a typo'd env var. Revoking a leaked
- * pairing token stays the deliberate act it was: {@link mintFreshMaterial} via
+ * identity stays the deliberate act it was: {@link mintFreshMaterial} via
  * `actana token regenerate`.
  *
  * The `coreUuid` is called out because it is the one field with a *claim* on

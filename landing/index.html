@@ -134,13 +134,14 @@
               <div class="codeblock">
                 <pre><code>git clone https://github.com/actana/control &amp;&amp; cd control
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs core <span class="cmt"># the registration blob</span></code></pre>
+docker compose -f deploy/docker-compose.yml exec core actana pair new <span class="cmt"># a one-time code</span></code></pre>
                 <button class="copy" type="button" data-copy>Copy</button>
               </div>
               <p class="install-note">
                 The whole product in one command — a Panel and a Core on one
                 network. Open <b>http://localhost:7420</b>, create the Operator,
-                paste that blob into “Add Core”.
+                then give “Add Core” the address <b>core:8443</b> and the
+                one-time code.
               </p>
             </div>
 
@@ -596,7 +597,7 @@ docker compose -f deploy/docker-compose.yml logs core <span class="cmt"># the re
               <div class="codeblock">
                 <pre><code>git clone https://github.com/actana/control &amp;&amp; cd control
 docker compose -f deploy/docker-compose.yml up -d
-docker compose -f deploy/docker-compose.yml logs core <span class="cmt"># the registration blob</span></code></pre>
+docker compose -f deploy/docker-compose.yml exec core actana pair new <span class="cmt"># a one-time code</span></code></pre>
                 <button class="copy" type="button" data-copy>Copy</button>
               </div>
             </div>

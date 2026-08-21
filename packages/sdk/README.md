@@ -5,7 +5,8 @@ The Core client for [Actana Control](https://github.com/actana/control), and the
 transport.
 
 A **Core** is a machine that runs AI coding sessions. This package is what talks
-to one — over mutual TLS and a bearer token read from a registration blob. The
+to one — over mutual TLS and a bearer, out of the credential a pairing issued
+(`@actana/sdk/core-pairing` redeems a short code for one). The
 protocol ships with the client rather than beside it
 ([ADR 0025](https://github.com/actana/control/blob/main/docs/adr/0025-the-protocol-ships-with-the-client.md)):
 there is one definition of a frame, and it is here.

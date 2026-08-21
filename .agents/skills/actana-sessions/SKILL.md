@@ -188,7 +188,8 @@ number that was asked for; if no number was asked for, ask.
 
 - **`no Core registered` / nothing from `core ls`** — this machine has no Core
   of its own and has not been pointed at a remote one. Pairing a remote Core is
-  the operator's to do (`actana core add`); say so rather than attempting it.
+  the operator's to do (`actana core pair`, with a code from `actana pair new`
+  on the Core); say so rather than attempting it.
   Note that a machine running a Core registers it automatically, so an empty
   `core ls` means there is no local Core either — not that somebody forgot to
   pair one.

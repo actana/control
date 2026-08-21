@@ -155,7 +155,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
 
     if (flagsEnded || arg === "-" || !arg.startsWith("-")) {
       // A bare `-` is a positional: it is the conventional name for stdin, and
-      // `actana core add prod -` is a sentence somebody will type.
+      // `actana project cp - remote:path` is a sentence somebody will type.
       parsed.positionals.push(arg);
       continue;
     }

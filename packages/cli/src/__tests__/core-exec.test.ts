@@ -352,7 +352,7 @@ describe("actana core exec — Core selection and usage", () => {
     await withRegisteredCore();
     const core = coreThatRuns({});
 
-    // 1. `current`, which `core add` set.
+    // 1. `current`, which the first registration set.
     const viaCurrent = await cli().run(["core", "exec", "--", "true"], { connect: core.connect });
     expect(viaCurrent.code).toBe(EXIT_OK);
 

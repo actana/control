@@ -9,15 +9,16 @@
 // help text on each says which machine it runs on, because the only thing
 // separating the two commands is which words the operator types.
 //
-// **What this verb is, structurally: `actana core add` with a different way of
-// coming by the credential.** Everything after the credential lands is
+// **What this verb is, structurally: the old `actana core add` with a different
+// way of coming by the credential.** Everything after the credential lands is
 // deliberately unchanged — the same `writeCoreBlob` at mode 0600 under the same
 // cores directory, the same `current` pointer rule, the same name validation,
 // the same replace-in-place behaviour. `core-resolution.ts`, `core-connection.ts`
-// and every verb built on them cannot tell a paired credential from a pasted
-// one, and that is the whole design: this ticket replaces a *gesture*, not a
-// storage format. (The paste path is still here; #287 removes it everywhere at
-// once.)
+// and every verb built on them could not tell a paired credential from a pasted
+// one, and that was the whole design: #285 replaced a *gesture*, not a storage
+// format, which is what let #287 delete the paste path outright and leave every
+// verb below untouched. **This is now the only way a credential enters this
+// registry from outside the machine.**
 //
 // **No crypto happens in this file.** The key pair is born inside the SDK call,
 // on this machine, and its private half never crosses the wire — see
@@ -137,8 +138,8 @@ export async function runCorePair(
     return EXIT_USAGE;
   }
 
-  // The same validation `core add` does, in the same order and with the same
-  // wording: a name this registry will not take is a name none of `ls`, `use`,
+  // The registry's own name validation, first and with its own wording: a name
+  // this registry will not take is a name none of `ls`, `use`,
   // `rm`, `status`, `shell` or `exec` could reach afterwards.
   const nameError = coreNameError(name);
   if (nameError) {
@@ -182,12 +183,13 @@ export async function runCorePair(
 
   // Past here the credential exists on this machine and nowhere else it did not
   // already exist: the private key was generated locally and the Core never had
-  // it. What is left is the part `core add` also does.
+  // it. What is left is the storage half.
   const replacing = coreExists(paths, name);
   // The label goes to the Core and stops there. `pairWithCore` copies whatever
   // label it was handed straight into the blob it returns, and the LABEL column
   // of `actana core ls` means *the Core's* own alias — the one `actana setup`
-  // puts in a blob it prints. Storing this machine's name there would put the
+  // puts in the entry it writes for a machine's own Core. Storing this machine's
+  // name there would put the
   // client's hostname in a column about the other end of the link, so a paired
   // credential is stored with no alias at all and the column stays empty until
   // a Core has something to say for itself.

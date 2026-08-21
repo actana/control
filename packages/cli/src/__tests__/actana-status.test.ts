@@ -82,10 +82,15 @@ describe("formatActanaStatus", () => {
     expect(text).toMatch(/opencode\s+missing/);
   });
 
-  it("uses `pairing token`, never `registration blob`, in operator-facing text", () => {
-    const text = formatActanaStatus({ ...healthy, paired: false });
-    expect(text.toLowerCase()).not.toContain("registration blob");
-    expect(text.toLowerCase()).toContain("pairing token");
+  // The vocabulary #287 settled: "pairing token" named the hand-carried blob and
+  // is retired with it, and "registration blob" was never operator-facing.
+  it("names neither `pairing token` nor `registration blob` in operator-facing text", () => {
+    for (const paired of [true, false]) {
+      const text = formatActanaStatus({ ...healthy, paired }).toLowerCase();
+      expect(text).not.toContain("registration blob");
+      expect(text).not.toContain("pairing token");
+    }
+    expect(formatActanaStatus(healthy)).toContain("actana pair new");
   });
 
   it("names the service so an operator knows what to look for on their machine", () => {

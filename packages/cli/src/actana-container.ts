@@ -25,7 +25,7 @@
 // picks the first routable IPv4, which is a good guess for a machine and a
 // trap for a container: a bare `docker run` has a container-ID hostname, and a
 // guessing default would silently change the certificate SAN — and therefore
-// every pairing token this Core ever printed — each time the container is
+// break every client this Core ever paired — each time the container is
 // recreated.
 //
 // Everything else the image needs (`AC_CORE_REMOTE`, `AC_CORE_LINK_HOST`,

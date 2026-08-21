@@ -153,7 +153,7 @@ describe("a containerised Core registers itself with its own machine's CLI (#288
   it("reports a registry it cannot write instead of failing the boot", () => {
     // Serving Panels does not depend on this. A read-only home, or one owned by
     // somebody else, is a line in the log — the Core comes up either way and the
-    // pairing token in the volume still works from anywhere.
+    // Core can still enroll a client with `actana pair new`.
     fs.mkdirSync(path.join(home, ".config"), { recursive: true });
     fs.writeFileSync(path.join(home, ".config/actana"), "not a directory");
 

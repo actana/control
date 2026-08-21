@@ -67,7 +67,7 @@ export type ActanaCliDeps = {
   /** Read stdin to end. Only called when a verb was actually told to read it. */
   readStdin: () => Promise<string>;
   /**
-   * Whether stdin is a terminal. `actana core add <name>` with no file and no
+   * Whether stdin is a terminal. A verb that reads a piped payload with no
    * pipe would otherwise sit waiting for a paste with no prompt, which reads as
    * a hang.
    */

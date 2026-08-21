@@ -42,17 +42,22 @@ promises about what happens next.
 
 ```bash
 docker compose up -d
-docker compose logs core          # the registration blob
+docker compose logs core
+docker compose exec core actana pair new     # the code, and the CA fingerprint
 ```
 
 - [ ] Both containers reach `running` and stay there for a minute
 - [ ] `http://localhost:7420` serves the first-boot setup screen
 - [ ] Creating the Operator works, and logging out and back in works
-- [ ] The Core printed a registration blob
+- [ ] The Core's log holds no credential — no `BEGIN CERTIFICATE`, no bearer
+- [ ] `actana pair new` prints a code, a CA fingerprint and an expiry
 
 ## 3. Pair a Core
 
-- [ ] Pasting the blob into **Add Core** registers it
+- [ ] **Add Core** takes the Core's address, shows the fingerprint it was
+      presented, and it matches the one `pair new` printed
+- [ ] Spending the code registers the Core
+- [ ] The same code is refused the second time
 - [ ] The Core shows as reachable in Fleet view — **not** "needs update".
       "Needs update" here means the Panel and Core versions disagree, which on
       a beta usually means one image did not move

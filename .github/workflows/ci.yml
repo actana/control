@@ -596,7 +596,7 @@ jobs:
   # The Panel service seam (web-panel-extraction issue 10) — the spec's primary
   # testing seam. Boots the built Panel as a plain node process against a temp
   # data directory plus a real Core, then drives it exactly as a browser
-  # would: setup → login → paste a pairing token → panel link → PTY frames →
+  # would: setup → login → redeem a pairing code → panel link → PTY frames →
   # killed link → replay from cursor, with the pre-login refusals and the
   # secrets-at-rest legs alongside. One command covers auth, the registry,
   # secrets, the router, and a live core-link.
