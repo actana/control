@@ -500,7 +500,7 @@ describe("the orchestrator collects a file, not a screen (#303 §1 and §7)", ()
     // conversion has to be in the document rather than in a reader's head.
     expect(skill.toLowerCase()).toContain("project-relative");
     expect(
-      skill.includes("`--cwd` unset"),
+      skill.includes("no `--cwd` runs at the Project root"),
       "the skill never names the case where the two anchors coincide",
     ).toBe(true);
     expect(

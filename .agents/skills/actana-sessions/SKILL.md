@@ -182,17 +182,24 @@ The contract, in full. Every clause is load-bearing:
   instead, and closing that gap is yours.** `actana project cp` takes
   `<project>:<path>` and resolves `<path>` against the **Project**, and so does
   every lane you hand `await.sh`. The two anchors are the same path only when
-  the Session runs at the Project root, which is exactly what `--cwd` changes.
-  So:
+  the Session runs at the Project root. So:
 
-  - **Leave `--cwd` unset on any lane you intend to collect** and the question
-    does not arise — the prompt's path and the lane's path are one string.
-  - **If a lane needs a `--cwd`, convert once, when you mint the name.** The
-    collection path is that directory followed by the path you put in the
-    prompt. `--cwd apps/api` with `.actana/reports/api-r1.md` in the prompt is
-    the lane `api:apps/api/.actana/reports/api-r1.md`, and
-    `core exec --cwd apps/api -- tail -n 3 -- .actana/reports/api-r1.md`.
-    Keep both forms beside the lane and never derive one from the other twice.
+  - **Start a lane you intend to collect with no `--cwd`, and the question does
+    not arise.** A Session with no `--cwd` runs at the Project root, which is
+    where the collectors are already anchored, and the prompt's path and the
+    lane's path are one string.
+  - **If a lane needs a `--cwd`, convert once, when you mint the name.**
+    `--cwd` is a directory **on the Core**, so the lane's path is that
+    directory *relative to the Project root*, followed by the path you put in
+    the prompt. A Project `api` at `/srv/work/api`, started with
+    `--cwd /srv/work/api/apps/api` and told `.actana/reports/api-r1.md`, is
+    collected as the lane `api:apps/api/.actana/reports/api-r1.md`, and read
+    with `core exec --cwd /srv/work/api/apps/api -- tail -n 3 --` and that same
+    prompt path. Keep both forms beside the lane, and never derive one from the
+    other twice.
+
+  `actana project ls --json` prints each Project's `path`, which is the root
+  both of those are relative to.
 
   Getting this wrong is silent. The sub-agent writes the file it was told to
   write, the collector looks somewhere else, and every lane in the round runs to
@@ -237,10 +244,11 @@ skill you ask it to use travels there too.
 no rendering, stdout as it was written.
 
 ```bash
-# --cwd is the Session's own cwd — the directory the prompt's path was relative
-# to. Omit it only when the Session ran at the Project root.
-actana core exec --cwd <the-Session's-cwd> -- tail -n 3 -- .actana/reports/api-r1.md
-actana core exec --core <name> --cwd <the-Session's-cwd> -- cat .actana/reports/api-r1.md
+# --cwd here is the directory the Session is running in: the path you gave
+# `session start --cwd`, or the Project's own `path` from `project ls --json`
+# when you gave none. It is what the prompt's report path is relative to.
+actana core exec --cwd <session-cwd> -- tail -n 3 -- .actana/reports/api-r1.md
+actana core exec --core <name> --cwd <session-cwd> -- cat .actana/reports/api-r1.md
 ```
 
 The order below is the whole of it:
@@ -262,8 +270,8 @@ The order below is the whole of it:
    different thing" naturally gives every sub-agent the same basename inside its
    own Project.
 4. **Only then, after roughly 20 seconds, delete the remote file** — with
-   `core exec`, cwd-anchored again, like steps 1 and 2:
-   `actana core exec --cwd <cwd> -- rm -f .actana/reports/api-r1.md`. **The
+   `core exec`, against the Session's own directory again, like steps 1 and 2:
+   `actana core exec --cwd <session-cwd> -- rm -f .actana/reports/api-r1.md`. **The
    delay is not tidiness.** It exists so that a Session still finishing cannot
    have its file deleted out from under it and write it again, which would
    present as a second, partial report at a path you have already retired.
@@ -281,8 +289,9 @@ the last line rather than searching the file, treats a dropped link as "not
 yet", and saves each report to local disk before it touches the Session.
 
 ```bash
-# Both lanes below ran with no --cwd, so the lane path and the prompt's path are
-# the same string. A lane started with `--cwd apps/api` would read
+# Both lanes below started with no --cwd, so each Session runs at its Project
+# root and the lane path is the prompt's path unchanged. A lane started at
+# <project-root>/apps/api would instead read
 #   7f3a=api:apps/api/.actana/reports/api-r1.md
 bash await.sh --out ./reports --timeout 1800 \
   7f3a=api:.actana/reports/api-r1.md \
@@ -293,8 +302,8 @@ A lane is `<session-id>=<project>:<report-path>`, and the report path is the
 **Project's**, exactly as `actana project cp` takes it — not the Session's, and
 that is the one conversion this whole procedure asks of you. `await.sh` resolves
 it against the Project root the Core reports, so a lane carrying a bare
-cwd-relative path from a Session started with `--cwd` waits for a file nobody is
-writing, and says so only when the round's budget runs out.
+prompt path from a Session started somewhere else inside the Project waits for a
+file nobody is writing, and says so only when the round's budget runs out.
 
 `--core <name>` passes through to every call it makes; `--kill` stops each
 Session once its report is safely on this disk. It exits 0 when every lane's
