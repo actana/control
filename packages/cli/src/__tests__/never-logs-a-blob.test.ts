@@ -327,12 +327,20 @@ describe("no verb prints a blob, with --verbose on", () => {
 
     // …and a Core that refuses the connection, where the error comes back from
     // the transport with the endpoint and whatever else it chose to include.
+    //
+    // `--core prod` is load-bearing, not decoration. `registerCore` claims
+    // `current` only when nothing holds it, so the undecodable entry above took
+    // the pointer and keeps it — and a bare `core status` would resolve *that*,
+    // fail inside the decoder, and never reach the probe. The sweep would still
+    // pass, on a path the leg above already covers, which is the worst way for
+    // an absence assertion to be green.
     registerCore(cli().paths, "prod");
-    const refused = await cli().run(["core", "status", "--verbose"], {
+    const refused = await cli().run(["core", "status", "--core", "prod", "--verbose"], {
       probe: async () => {
         throw new Error("connect ECONNREFUSED");
       },
     });
+    expect(refused.all).toContain("ECONNREFUSED");
     expectNoSecrets("core status (refused)", refused.all);
   });
 
