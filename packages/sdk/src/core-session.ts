@@ -233,6 +233,33 @@ export type CoreSessionStartOptions = {
   subscribeToEvents?: boolean;
 };
 
+export type CoreSessionAttachOptions = {
+  /** The Session to join. It must have a live PTY; see {@link CoreSessionAttachError}. */
+  taskId: string;
+  /** Screen width for the transcript this attachment renders. */
+  cols?: number;
+  /** Screen height. Same. */
+  rows?: number;
+  /** How many scrolled-off lines {@link CoreSession.screen} keeps. */
+  scrollback?: number;
+  /** As {@link CoreSessionStartOptions.subscribeToEvents}. Default true. */
+  subscribeToEvents?: boolean;
+  /**
+   * Paint the Core's replay ring into the screen before returning. Default true.
+   *
+   * On by default because a caller that attaches to read a turn wants the
+   * conversation it lands in the middle of, not the tail of one turn — and the
+   * ring belongs to the PTY, so it is readable now and gone when the harness
+   * exits. Off is for a caller that wants only what this attachment saw.
+   *
+   * **It does not turn the PTY subscription off**, which is a separate thing and
+   * is unconditional: without one, `onData` and `onExit` never fire against a
+   * multi-connection Core, and an attachment that could not hear an exit is one
+   * whose wait outlives the process it is about.
+   */
+  replay?: boolean;
+};
+
 /** What a Session settled on. */
 export type CoreSessionIdle = {
   /** The Core's status for this Session — one of {@link SETTLED_SESSION_STATUSES}. */
@@ -254,11 +281,39 @@ export type CoreSessionWaitOptions = {
   timeoutMs?: number;
 };
 
+export type CoreSessionTurnWaitOptions = CoreSessionWaitOptions & {
+  /**
+   * Only a settling status learned at an event id **strictly greater** than this
+   * one ends the wait — the id the Core stamped a delivery with
+   * ({@link CoreSession.deliver}).
+   *
+   * 0, the default, is no cursor: any settled status the Session is known to be
+   * in ends the wait, which is what {@link CoreSession.waitForIdle} has always
+   * done.
+   */
+  afterEventId?: number;
+};
+
 /** The Core refused to start this Session. Carries the Core's own reason. */
 export class CoreSessionStartError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);
     this.name = "CoreSessionStartError";
+  }
+}
+
+/**
+ * There is nothing running to attach to.
+ *
+ * Its own kind because it is the one failure an attach has that a start does
+ * not, and because the alternative is worse than an error: a wait against a
+ * Session whose harness has already exited has nothing that will ever report a
+ * turn, so it would hang until the caller's deadline and then blame the Core.
+ */
+export class CoreSessionAttachError extends Error {
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
+    this.name = "CoreSessionAttachError";
   }
 }
 
@@ -275,10 +330,20 @@ export class CoreSession {
   readonly taskId: string;
   /** The Core's id for this Session's PTY. */
   readonly ptyId: string;
-  /** The harness running in it. */
-  readonly harness: CoreLinkPtySpawnHarness;
-  /** The command the Core was asked to start, after defaulting. */
-  readonly command: string;
+  /**
+   * The harness running in it, or `null` on a Session this process did not
+   * start — {@link attach} joins a PTY that is already running, and the Core
+   * publishes no harness for one. A caller that needs the name reads it off the
+   * Task row, which is where it lives.
+   */
+  readonly harness: CoreLinkPtySpawnHarness | null;
+  /**
+   * The command the Core was asked to start, after defaulting, or `null` on an
+   * {@link attach} — the command was decided by whoever spawned the PTY and the
+   * Core does not publish it afterwards. Null is "this side does not know",
+   * never "there was none".
+   */
+  readonly command: string | null;
   /**
    * Will anything move this Session to `running` when a turn begins (issue 84,
    * issue 177 finding 4)?
@@ -302,8 +367,14 @@ export class CoreSession {
    *
    * `false` on a Core too old to answer, which is the safe direction: a
    * redundant caveat, never a silently statusless Session.
+   *
+   * `null` on an {@link attach}, which is a different thing again: the Core
+   * answers this question on a **spawn**, so a Session joined after the fact has
+   * no answer rather than a negative one. **No wait consults this field** (#289
+   * A) — turn *end* is reported by every harness family, and that is what every
+   * wait here is waiting for.
    */
-  readonly reportsTurnStart: boolean;
+  readonly reportsTurnStart: boolean | null;
 
   private readonly client: CoreClient;
   private readonly terminal: TerminalScreen;
@@ -312,7 +383,23 @@ export class CoreSession {
   private readonly dataListeners = new Set<(chunk: string) => void>();
   private readonly exitListeners = new Set<(exit: { exitCode: number; signal?: number }) => void>();
   private readonly statusListeners = new Set<(status: string) => void>();
-  private readonly idleWaiters = new Set<(idle: CoreSessionIdle) => void>();
+  /**
+   * Everyone waiting for a turn to end, each with the event id it counts from.
+   * A waiter with `afterEventId: 0` takes any settled status; one carrying a
+   * delivery stamp takes only a status learned after it.
+   */
+  private readonly idleWaiters = new Set<{
+    afterEventId: number;
+    notify: (idle: CoreSessionIdle) => void;
+  }>();
+
+  /**
+   * This Session asked the Core for its PTY's stream, so {@link dispose} owes it
+   * a matching `ptyUnsubscribe`. False for a spawned Session: the Core
+   * subscribes the connection that spawned a PTY, inside the spawn, and nothing
+   * here asked for that.
+   */
+  private subscribedToPty = false;
 
   /**
    * The Core's last reported status, or null before one has been *observed*.
@@ -324,6 +411,18 @@ export class CoreSession {
    * event after {@link start} lands here.
    */
   private lastStatus: string | null = null;
+  /**
+   * The event id {@link lastStatus} was learned at, or 0 when it was not learned
+   * from an event — the status {@link attach} seeded from the Task row.
+   *
+   * This is what makes a cursored wait possible (#289 A). "Has this Session
+   * settled?" answers with whatever it is sitting at, including last turn's
+   * answer; "has this Session settled **since event N**?" is the question a
+   * caller that just delivered a prompt is actually asking, and it needs a
+   * *where* as well as a *what*. A seeded status carries 0 on purpose: 0 is
+   * greater than nothing, so it can never satisfy a real cursor.
+   */
+  private lastStatusEventId = 0;
   private exit: { exitCode: number; signal?: number } | null = null;
   private disposed = false;
   /** A status read is in flight; another event arrived while it was. */
@@ -337,9 +436,9 @@ export class CoreSession {
     client: CoreClient;
     taskId: string;
     ptyId: string;
-    harness: CoreLinkPtySpawnHarness;
-    command: string;
-    reportsTurnStart: boolean;
+    harness: CoreLinkPtySpawnHarness | null;
+    command: string | null;
+    reportsTurnStart: boolean | null;
     terminal: TerminalScreen;
   }) {
     this.client = opts.client;
@@ -487,6 +586,123 @@ export class CoreSession {
     return session;
   }
 
+  /**
+   * Join a Session that is **already running**, for the length of a turn (#289).
+   *
+   * The gap this closes: {@link start} is the only way into a `CoreSession`, and
+   * it spawns. Everything this class offers a caller after the first turn — the
+   * screen, the status, the wait — was unreachable for a Session somebody else
+   * started, or that this process started and hung up on. Awaiting a follow-up
+   * turn is therefore SDK work rather than a flag on a command, and this is it.
+   *
+   * What it does, in order, and the order is the point:
+   *
+   *   1. subscribe to the event log, if nothing has, so a status change that
+   *      lands during the rest of this is heard rather than missed;
+   *   2. resolve the Task's live PTY — **once**, and every write and wait made
+   *      through the returned Session uses that resolution, so there is no
+   *      window between delivering text and starting to wait for it;
+   *   3. wire the byte stream, the exit and the events **before** subscribing;
+   *   4. subscribe to that PTY, which is what makes the Core send this
+   *      connection its bytes and its exit at all;
+   *   5. seed the screen from the Core's replay ring, and the last known status
+   *      from the Session snapshot.
+   *
+   * **The seeded status carries event id 0**, which is what keeps it honest.
+   * `waitForIdle` will answer from it — that is `actana session wait` on a
+   * Session already sitting at `needs-input`, and answering immediately is
+   * right, because no turn was asked for. {@link waitForTurnEnd} with a delivery
+   * stamp will not: 0 can never be greater than a real cursor, so a wait for the
+   * turn a write starts cannot be answered by the turn before it.
+   *
+   * Rejects with {@link CoreSessionAttachError} when the Task has no live PTY —
+   * a harness that exited, or a Session id that is not one. **Only that.** A
+   * link that blinked during the subscribe, the replay or the status read
+   * rejects with an ordinary `Error`: the two are different next steps, and
+   * reporting a busy Core as a dead harness sends a caller to `resume` for a
+   * Session that is running perfectly well.
+   */
+  static async attach(client: CoreClient, opts: CoreSessionAttachOptions): Promise<CoreSession> {
+    if (opts.subscribeToEvents !== false && !client.isSubscribedToEvents()) {
+      client.subscribeEvents();
+    }
+
+    const { ptyId } = await client.findByTask(opts.taskId);
+    if (ptyId === null) {
+      throw new CoreSessionAttachError(
+        `session ${opts.taskId} has no harness running — there is nothing to attach a wait to`,
+      );
+    }
+
+    const cols = opts.cols ?? DEFAULT_COLS;
+    const rows = opts.rows ?? DEFAULT_ROWS;
+    const terminal = new TerminalScreen({ cols, rows, scrollback: opts.scrollback });
+    const session = new CoreSession({
+      client,
+      taskId: opts.taskId,
+      ptyId,
+      // Three facts about a spawn, and this is not one. The Task row carries the
+      // harness for a caller that needs the name; the command and the turn-start
+      // answer were the Core's answer to a `spawn` frame that happened before
+      // this process was involved, and inventing either would be worse than null.
+      harness: null,
+      command: null,
+      reportsTurnStart: null,
+      terminal,
+    });
+
+    session.unsubscribes.push(
+      client.onData((frame) => {
+        if (frame.ptyId === ptyId) session.ingest(frame.data);
+      }),
+      client.onExit((frame) => {
+        if (frame.ptyId === ptyId) session.ingestExit(frame);
+      }),
+      client.onEvent(({ event }) => session.onCoreEvent(event)),
+    );
+
+    const replay = opts.replay !== false;
+    try {
+      // **The subscribe is not part of the replay.** Until a connection
+      // subscribes, a multi-connection Core fans this PTY's output to somebody
+      // else and `onData` / `onExit` never fire here — so an attachment that
+      // skipped it would have an empty screen *and* a dead exit route, and the
+      // "an exit answers every wait" case in `settledSince` would never run. A
+      // caller that turns the replay off wants to skip the scrollback, not to
+      // be deaf.
+      //
+      // `catchUp` says a replay follows and the Core must hold the live stream
+      // until it has been served; it is set exactly when one does, because a
+      // hold nobody redeems strands the Session's output on the Core.
+      await client.ptySubscribe(ptyId, { catchUp: replay });
+      // Recorded the moment it is owed, not once the rest succeeded: a replay
+      // that throws still leaves this connection subscribed, and the `dispose`
+      // in the catch below is the only thing that will ever give it back.
+      session.subscribedToPty = true;
+      if (replay) {
+        const { data } = await client.replay(ptyId);
+        terminal.write(data);
+      }
+      await session.seedStatus();
+    } catch (err) {
+      session.dispose();
+      // **Only "nothing is running" is an attach error.** A link that blinked
+      // during the subscribe, the replay or the status read is a retry, and
+      // reporting it as a harness that has exited sends the operator to
+      // `resume` for a Session that is running perfectly well. The one genuine
+      // case was decided above, before any of this ran.
+      if (err instanceof CoreSessionAttachError) throw err;
+      throw new Error(
+        `could not attach to session ${opts.taskId}: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+        { cause: err },
+      );
+    }
+
+    return session;
+  }
+
   // ─── Programmatic I/O ──────────────────────────────────────────────────────
 
   /**
@@ -508,6 +724,25 @@ export class CoreSession {
    */
   send(text: string): Promise<boolean> {
     return this.client.write(this.ptyId, text);
+  }
+
+  /**
+   * {@link send}, with the Core stamping the delivery in its event log and
+   * answering with the id — the cursor {@link waitForTurnEnd} counts from
+   * (#289 A).
+   *
+   * Exactly the same bytes and exactly as little timing as `send`: the stamp is
+   * a fact recorded about a write that already happened, not a schedule imposed
+   * on one. A caller wanting to await the turn its text starts writes with this
+   * and waits from what it returns, and the two are one round trip apart with no
+   * window between them in which the Session could settle unobserved.
+   *
+   * `deliveryEventId` is 0 when the Core did not stamp — a write the PTY
+   * refused, a Core that predates the stamp, a PTY with no Task behind it. 0 is
+   * not a cursor: a caller that waits from it is waiting with none.
+   */
+  deliver(text: string): Promise<{ ok: boolean; deliveryEventId: number }> {
+    return this.client.deliver(this.ptyId, text);
   }
 
   /**
@@ -601,14 +836,47 @@ export class CoreSession {
    * passes a deadline it chose itself.
    */
   waitForIdle(opts: CoreSessionWaitOptions = {}): Promise<CoreSessionIdle> {
-    const settled = this.settledNow();
+    return this.waitForTurnEnd(opts);
+  }
+
+  /**
+   * Wait for the end of the turn that follows event `afterEventId` — the wait
+   * `session send --wait` is built on (#289 A, B).
+   *
+   * **Why a cursor.** {@link waitForIdle} answers from the status the Session is
+   * already sitting at, and for a Session that was started here that is right:
+   * it has observed no status yet, so anything it hears is this turn's. For a
+   * Session that was **already running** it is a lie waiting to be told — a
+   * harness parked on `needs-input` is settled, so a wait attached to it and
+   * started after a write would return before the harness had read a character,
+   * reporting the previous turn's answer as this one's. Passing the id the Core
+   * stamped the delivery with turns "is it settled?" into "has it settled since
+   * the thing I sent?", and only the second question has a truthful answer.
+   *
+   * `afterEventId: 0` (the default) is no cursor and is {@link waitForIdle}.
+   *
+   * Resolves on **any** of {@link SETTLED_SESSION_STATUSES}, not on `finished`
+   * alone: a turn that ended on a permission prompt, an escape or a dead harness
+   * ended, and a caller waiting for `finished` there waits forever on exactly the
+   * cases it most needs to hear about. A process exit resolves it too.
+   *
+   * Nothing here reads the byte stream, and nothing here consults
+   * {@link reportsTurnStart}. Turn end is reported by every harness family; turn
+   * *start* is not, which is why no wait is keyed on it.
+   */
+  waitForTurnEnd(opts: CoreSessionTurnWaitOptions = {}): Promise<CoreSessionIdle> {
+    const afterEventId = opts.afterEventId ?? 0;
+    const settled = this.settledSince(afterEventId);
     if (settled) return Promise.resolve(settled);
     return new Promise<CoreSessionIdle>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | null = null;
-      const waiter = (idle: CoreSessionIdle): void => {
-        this.idleWaiters.delete(waiter);
-        if (timer) clearTimeout(timer);
-        resolve(idle);
+      const waiter = {
+        afterEventId,
+        notify: (idle: CoreSessionIdle): void => {
+          this.idleWaiters.delete(waiter);
+          if (timer) clearTimeout(timer);
+          resolve(idle);
+        },
       };
       this.idleWaiters.add(waiter);
       if (opts.timeoutMs && opts.timeoutMs > 0) {
@@ -651,6 +919,17 @@ export class CoreSession {
     this.disposed = true;
     for (const off of this.unsubscribes) off();
     this.unsubscribes.length = 0;
+    if (this.subscribedToPty) {
+      this.subscribedToPty = false;
+      // The stream this attachment asked for, given back. Removing the listener
+      // stops this process reading the bytes; it does not stop the Core sending
+      // them, and an orchestrator that attaches to and disposes many Sessions on
+      // one long-lived client would otherwise leave every one of those streams
+      // running at it for the life of the client. Fire and forget on purpose:
+      // `dispose` is synchronous, nothing waits on the answer, and a link that
+      // is already gone has released the subscription by going.
+      void this.client.ptyUnsubscribe(this.ptyId).catch(() => {});
+    }
     if (this.statusRetryTimer) {
       clearTimeout(this.statusRetryTimer);
       this.statusRetryTimer = null;
@@ -660,7 +939,12 @@ export class CoreSession {
     // forever. `kill()` disposes, and `await session.kill()` after starting a
     // `waitForIdle()` is an ordinary thing to write.
     for (const waiter of [...this.idleWaiters]) {
-      waiter(this.settledNow() ?? { status: this.lastStatus ?? "disposed", exited: false });
+      waiter.notify(
+        this.settledSince(waiter.afterEventId) ?? {
+          status: this.lastStatus ?? "disposed",
+          exited: false,
+        },
+      );
     }
     this.dataListeners.clear();
     this.exitListeners.clear();
@@ -704,7 +988,17 @@ export class CoreSession {
     // `session:finished` is appended on the transition into `finished` and on
     // nothing else, so it is the one kind that already says what happened.
     if (event.kind === "session:finished") {
-      this.noteStatus("finished");
+      this.noteStatus("finished", event.eventId);
+      return;
+    }
+    // A `task:updated` whose payload names the status the mutation **patched**
+    // is a report about a turn, and it is exact: it needs no round trip, and it
+    // cannot be confused with a rename or an archive of a Session that happens
+    // to be sitting at a settled status. Anything else moves the last known
+    // status but never the cursor — see {@link readStatus}.
+    const patched = patchedStatusOf(event);
+    if (patched !== null) {
+      this.noteStatus(patched, event.eventId);
       return;
     }
     void this.readStatus();
@@ -722,6 +1016,13 @@ export class CoreSession {
    * A read that fails is re-asked ({@link STATUS_READ_RETRIES}), because on
    * `needs-input`, `interrupted` and `terminated` there is no second event to
    * carry the news.
+   *
+   * **What it reads never advances the wait cursor** (#289 A). This path is
+   * reached for an event that did not say what it changed — a rename, an
+   * archive, a Core too old to name the patched status — and the row it reads
+   * back may be carrying the status of a turn that ended long before. Answering
+   * a cursored wait from that is the early resolution the cursor exists to
+   * prevent, so a read updates `lastStatus` and leaves the cursor where it was.
    */
   private async readStatus(): Promise<void> {
     if (this.disposed) return;
@@ -756,6 +1057,20 @@ export class CoreSession {
     }
   }
 
+  /**
+   * Read the Core's current status for this Session once, at attach, at event
+   * id 0 — "what it is sitting at", never "what it did".
+   *
+   * A missing row is not an error here: the Session has a live PTY (the attach
+   * proved it), and a Core that does not list it yet will report its status like
+   * any other, through the event log this attachment is already listening to.
+   */
+  private async seedStatus(): Promise<void> {
+    const sessions = await this.client.sessionsList();
+    const mine = sessions.find((s: CoreLinkSessionSnapshot) => s.taskId === this.taskId);
+    if (mine) this.noteStatus(mine.status, 0);
+  }
+
   /** The next re-ask of a read that failed. Cleared by {@link dispose}. */
   private scheduleStatusRetry(): void {
     if (this.statusRetryTimer) return;
@@ -768,14 +1083,27 @@ export class CoreSession {
     this.statusRetryTimer.unref?.();
   }
 
-  private noteStatus(status: string): void {
-    if (status === this.lastStatus) return;
+  /**
+   * Record a status the Core reported, and where in the log it was reported.
+   *
+   * **A repeated status is still news**, which is why the cursor moves even when
+   * the string does not (#289 A). A harness that never moved its Session to
+   * `running` ends its second turn by patching `finished` onto a row that
+   * already said `finished`; the value did not change, but a turn ended, and a
+   * waiter counting from a delivery stamp is waiting for exactly that. What
+   * stays gated on a change is {@link onStatus}, which is about the value.
+   */
+  private noteStatus(status: string, eventId = 0): void {
+    const changed = status !== this.lastStatus;
     this.lastStatus = status;
-    for (const cb of this.statusListeners) {
-      try {
-        cb(status);
-      } catch {
-        /* same */
+    if (eventId > this.lastStatusEventId) this.lastStatusEventId = eventId;
+    if (changed) {
+      for (const cb of this.statusListeners) {
+        try {
+          cb(status);
+        } catch {
+          /* same */
+        }
       }
     }
     this.releaseWaiters();
@@ -783,6 +1111,18 @@ export class CoreSession {
 
   /** What {@link waitForIdle} would answer right now, or null if it must wait. */
   private settledNow(): CoreSessionIdle | null {
+    return this.settledSince(0);
+  }
+
+  /**
+   * What a wait counting from `afterEventId` would answer right now, or null.
+   *
+   * An **exit** answers every wait, cursor or none: a harness whose process is
+   * gone will not report anything else, and a caller left waiting for a status
+   * after that waits forever. A status answers a cursored wait only when it was
+   * learned after the cursor — a seeded status (event id 0) never does.
+   */
+  private settledSince(afterEventId: number): CoreSessionIdle | null {
     if (this.exit) {
       return {
         status: this.lastStatus ?? "terminated",
@@ -790,16 +1130,36 @@ export class CoreSession {
         ...(this.exit.exitCode === undefined ? {} : { exitCode: this.exit.exitCode }),
       };
     }
-    if (this.lastStatus && SETTLED_SESSION_STATUSES.has(this.lastStatus)) {
-      return { status: this.lastStatus, exited: false };
-    }
-    return null;
+    if (!this.lastStatus || !SETTLED_SESSION_STATUSES.has(this.lastStatus)) return null;
+    if (afterEventId > 0 && this.lastStatusEventId <= afterEventId) return null;
+    return { status: this.lastStatus, exited: false };
   }
 
   private releaseWaiters(): void {
-    const settled = this.settledNow();
-    if (!settled) return;
-    for (const waiter of [...this.idleWaiters]) waiter(settled);
+    for (const waiter of [...this.idleWaiters]) {
+      const settled = this.settledSince(waiter.afterEventId);
+      if (settled) waiter.notify(settled);
+    }
+  }
+}
+
+/**
+ * The status a `task:updated` event says its mutation **patched**, or null when
+ * the event does not say (#289 A).
+ *
+ * Null is not "no status": it is "this event did not report a turn". A Core that
+ * names the patched status makes every turn end legible without a round trip; a
+ * Core that does not leaves the caller with `readStatus`, which is a fresher
+ * answer to a different question.
+ */
+function patchedStatusOf(event: CoreLinkEvent): string | null {
+  try {
+    const payload = JSON.parse(event.payload) as { status?: unknown };
+    return typeof payload.status === "string" ? payload.status : null;
+  } catch {
+    // A payload this side cannot parse is a payload this side knows nothing
+    // about — the read path below covers it, which is what it is there for.
+    return null;
   }
 }
 
