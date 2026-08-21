@@ -374,13 +374,29 @@ LANE_LOCAL=()
 LANE_STATE=()
 LANE_NOTE=()
 
+# A value-taking flag with nothing after it is an error, and has to be said out
+# loud. \`shift 2\` with one argument left shifts nothing and returns non-zero;
+# nothing reads that status, so the same branch matched forever and the script
+# hung with no output — a symptom indistinguishable from waiting on a Session
+# that is still working. The caller here is a model composing a command line,
+# and a silent hang is the worst thing it can be handed.
+need_value() {
+  # $1 is the flag; $2 is how many arguments are still unparsed, this one
+  # included. Counting is the check: \`\${2:-}\` would turn a missing operand into
+  # an empty string, which is what hid this in the first place.
+  [ "$2" -ge 2 ] && return 0
+  echo "await.sh: $1 needs a value" >&2
+  usage >&2
+  exit 2
+}
+
 while [ $# -gt 0 ]; do
   case "$1" in
-    --out) OUT_DIR="\${2:-}"; shift 2 ;;
-    --timeout) TIMEOUT="\${2:-}"; shift 2 ;;
-    --interval) INTERVAL="\${2:-}"; shift 2 ;;
-    --sentinel) SENTINEL="\${2:-}"; shift 2 ;;
-    --core) CORE_ARGS=(--core "\${2:-}"); shift 2 ;;
+    --out) need_value "$1" "$#"; OUT_DIR="$2"; shift 2 ;;
+    --timeout) need_value "$1" "$#"; TIMEOUT="$2"; shift 2 ;;
+    --interval) need_value "$1" "$#"; INTERVAL="$2"; shift 2 ;;
+    --sentinel) need_value "$1" "$#"; SENTINEL="$2"; shift 2 ;;
+    --core) need_value "$1" "$#"; CORE_ARGS=(--core "$2"); shift 2 ;;
     --kill) KILL_AFTER=1; shift ;;
     -h|--help) usage; exit 0 ;;
     --) shift; break ;;
@@ -408,12 +424,36 @@ for lane in "$@"; do
     echo "await.sh: \\"$ref\\" is not <project>:<report-path>" >&2
     exit 2
   fi
+  # The destination carries the Session id, because the basename alone does not
+  # identify a lane. "Three Sessions, each on a different thing" naturally gives
+  # every sub-agent the same report filename inside its own Project, and two
+  # lanes writing \`report.md\` into one directory would overwrite each other,
+  # report \`saved\` twice naming the same file, and under --kill destroy both
+  # Sessions — so the second lane's bytes were saved and the first lane's were
+  # lost anyway. That is the failure "save before deleting" exists to prevent,
+  # arriving by a different route.
+  safe_session="$(printf '%s' "$session" | tr -c 'A-Za-z0-9._-' '_')"
   LANE_SESSION+=("$session")
   LANE_PROJECT+=("$project")
   LANE_REMOTE+=("$remote")
-  LANE_LOCAL+=("$OUT_DIR/$(basename "$remote")")
+  LANE_LOCAL+=("$OUT_DIR/\${safe_session}-$(basename "$remote")")
   LANE_STATE+=("waiting")
   LANE_NOTE+=("no report yet")
+done
+
+# Prefixing makes a collision unlikely, not impossible: one Session writing two
+# reports from different folders still lands on one name. So the remaining case
+# is refused here, before a single Session is touched — a usage error costs a
+# retype, and a silently discarded report costs the work that produced it.
+for i in "\${!LANE_LOCAL[@]}"; do
+  for j in "\${!LANE_LOCAL[@]}"; do
+    [ "$i" -lt "$j" ] || continue
+    [ "\${LANE_LOCAL[$i]}" = "\${LANE_LOCAL[$j]}" ] || continue
+    echo "await.sh: \${LANE_SESSION[$i]} and \${LANE_SESSION[$j]} would both be saved as" >&2
+    echo "  \${LANE_LOCAL[$i]}" >&2
+    echo "Give them different report filenames, or a --out directory each." >&2
+    exit 2
+  done
 done
 
 mkdir -p "$OUT_DIR" || exit 1

@@ -16,7 +16,8 @@
 //     and carrying the whole sentinel rule.
 
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { HARNESSES } from "../domain";
 import { HARNESS_CLI_CONFIG, HARNESS_SKILL_TARGETS } from "../harness-cli-config";
@@ -32,13 +33,23 @@ const read = (relative: string) => readFileSync(path.join(REPO, relative), "utf8
 
 const SKILL_DIR = `.agents/skills/${ORCHESTRATION_SKILL_NAME}`;
 
-/** Every authored file in the skill folder, folder-relative and `/`-separated. */
-function authoredFiles(dir = SKILL_DIR): string[] {
-  return readdirSync(path.join(REPO, dir), { withFileTypes: true })
+/**
+ * Every authored file in the skill folder, folder-relative and `/`-separated.
+ *
+ * The prefix is built on the way down and the slice happens at the leaf, so it
+ * happens exactly once. Stripping `SKILL_DIR` from the returned list instead
+ * stripped it again from paths the recursive call had already made relative,
+ * and every nested file collapsed to `""` — which the flat folder of today hid,
+ * and which `writeOneFolder`'s split on `/` means is a shape this payload is
+ * allowed to take tomorrow.
+ */
+function authoredFiles(dir = SKILL_DIR, prefix = "", root = REPO): string[] {
+  return readdirSync(path.join(root, dir), { withFileTypes: true })
     .flatMap((entry) =>
-      entry.isDirectory() ? authoredFiles(`${dir}/${entry.name}`) : [`${dir}/${entry.name}`],
+      entry.isDirectory()
+        ? authoredFiles(`${dir}/${entry.name}`, `${prefix}${entry.name}/`, root)
+        : [`${prefix}${entry.name}`],
     )
-    .map((file) => file.slice(SKILL_DIR.length + 1))
     .sort();
 }
 
@@ -108,6 +119,37 @@ describe("the installer exists twice and is one file (ADR 0031 D8)", () => {
       "packages/cli/src/orchestration-skill-install.ts has drifted from the shared copy — " +
         "edit one and copy it across; the payload is embedded in both bundles (ADR 0031 D8)",
     ).toBe(true);
+  });
+});
+
+describe("the walker this file compares against (#308 review)", () => {
+  it("keeps a nested file's path instead of collapsing it to an empty key", () => {
+    // The folder is flat today, so nothing downstream would notice: a nested
+    // file came back as `""`, the key-set comparison below became nonsense and
+    // the byte comparison read a directory. `writeOneFolder` splits keys on
+    // `/`, so nesting is a shape the payload is allowed to take — this is the
+    // assertion that makes the drift test survive the first one.
+    const root = mkdtempSync(path.join(os.tmpdir(), "actana-walk-"));
+    try {
+      mkdirSync(path.join(root, "skill", "lib"), { recursive: true });
+      for (const file of ["skill/SKILL.md", "skill/await.sh", "skill/lib/helper.sh"]) {
+        writeFileSync(path.join(root, ...file.split("/")), "x", "utf8");
+      }
+      expect(authoredFiles("skill", "", root)).toEqual([
+        "SKILL.md",
+        "await.sh",
+        "lib/helper.sh",
+      ]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("returns a usable key for every file actually in the skill folder", () => {
+    for (const relative of authoredFiles()) {
+      expect(relative.length, "a file collapsed to an empty key").toBeGreaterThan(0);
+      expect(relative.startsWith("/"), `${relative} is not folder-relative`).toBe(false);
+    }
   });
 });
 
