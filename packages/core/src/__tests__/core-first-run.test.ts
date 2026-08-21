@@ -3,22 +3,20 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { X509Certificate, createPublicKey } from "node:crypto";
-import {
-  REGISTRATION_BLOB_FILENAME,
-  buildRegistrationBlob,
-  registrationBlobPath,
-  formatRegistrationBlobNotice,
-  loadOrMintMaterial,
-} from "../core-first-run";
+import { loadOrMintMaterial } from "../core-first-run";
 import { persistMaterialToFile, type PersistedMaterial } from "@actana/shared/core-material-store";
-import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
-import { verifyBearer } from "@actana/shared/core-link-bearer";
 
 // First run in a container is the only place a Core mints its own identity
-// without `actana setup` (ADR 0016 D13/D17). The daemon mints, persists into
-// the volume, writes the blob beside the material and prints it once; every
-// later boot loads and stays silent, so `docker compose restart` is a no-op
-// for pairing and `down -v` is the only thing that unpairs.
+// without `actana setup` (ADR 0016 D13/D17). The daemon mints and persists into
+// the volume; every later boot loads, so `docker compose restart` is a no-op for
+// pairing and `down -v` is the only thing that unpairs.
+//
+// **Nothing is emitted, on any boot (#287).** First run used to write a
+// `registration-blob.txt` beside the material and hand the blob back to be
+// printed once. That hand-carry is gone and so are the assertions about it —
+// deleted rather than skipped, because there is no artifact left for them to be
+// about. A client enrolls by spending a code from `actana pair new`, which
+// `core-pairing-routes.test.ts` and `actana-pair.test.ts` cover.
 
 const sample: PersistedMaterial = {
   caCert: "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----",
@@ -48,18 +46,7 @@ afterEach(() => {
 const options = {
   publicHost: "core.example.test",
   publicHostDeclared: true,
-  port: 8443,
-  label: "workshop",
-  bearerDays: 365,
 };
-
-describe("registrationBlobPath", () => {
-  it("puts the blob beside the material file", () => {
-    expect(registrationBlobPath("/home/core/.actana/material.json")).toBe(
-      `/home/core/.actana/${REGISTRATION_BLOB_FILENAME}`,
-    );
-  });
-});
 
 describe("loadOrMintMaterial — the file is absent", () => {
   it("mints and persists material at the requested path", async () => {
@@ -79,36 +66,6 @@ describe("loadOrMintMaterial — the file is absent", () => {
     expect(fs.existsSync(nested)).toBe(true);
   });
 
-  it("writes the blob beside the material as the bare paste string", async () => {
-    const result = await loadOrMintMaterial({ materialFile, ...options });
-
-    expect(result.blob).not.toBeNull();
-    const onDisk = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
-    // `docker compose exec core cat registration-blob.txt` must yield something
-    // pasteable, so the file holds the blob and nothing else.
-    expect(onDisk.trim()).toBe(result.blob);
-    expect(decodeRegistrationBlob(onDisk)).not.toBeNull();
-  });
-
-  it("builds a blob the Panel can pair with", async () => {
-    const result = await loadOrMintMaterial({ materialFile, ...options });
-
-    const decoded = decodeRegistrationBlob(result.blob ?? "");
-    expect(decoded).not.toBeNull();
-    expect(decoded?.endpoint).toBe("wss://core.example.test:8443");
-    expect(decoded?.caCert).toBe(result.material.caCert);
-    expect(decoded?.clientCert).toBe(result.material.clientCert);
-    expect(decoded?.clientKey).toBe(result.material.clientKey);
-    // The bearer in the blob must verify against the secret the daemon keeps.
-    const verified = verifyBearer(decoded?.bearer ?? "", result.material.bearerSecret);
-    expect(verified).toMatchObject({ ok: true, coreId: result.material.coreId });
-  });
-
-  it("uses the label it was given rather than an empty string", async () => {
-    const result = await loadOrMintMaterial({ materialFile, ...options });
-    expect(decodeRegistrationBlob(result.blob ?? "")?.label).toBe("workshop");
-  });
-
   it("restricts the material file to the owner", async () => {
     await loadOrMintMaterial({ materialFile, ...options });
     // Private keys — same 0600 the install path writes.
@@ -117,15 +74,13 @@ describe("loadOrMintMaterial — the file is absent", () => {
 });
 
 describe("loadOrMintMaterial — the file is present", () => {
-  it("loads the persisted identity and prints nothing", async () => {
+  it("loads the persisted identity exactly as it was written", async () => {
     persistMaterialToFile(materialFile, sample);
 
     const result = await loadOrMintMaterial({ materialFile, ...options });
 
     expect(result.material).toEqual(sample);
-    // A restart must not re-print: the operator already paired, and a second
-    // blob on stdout reads as "this Core moved".
-    expect(result.blob).toBeNull();
+    expect(result.certAction).toBe("unchanged");
   });
 
   it("leaves the persisted bytes untouched across restarts", async () => {
@@ -136,17 +91,14 @@ describe("loadOrMintMaterial — the file is present", () => {
 
     expect(second.material.coreId).toBe(first.material.coreId);
     expect(fs.readFileSync(materialFile, "utf8")).toBe(bytes);
-    expect(second.blob).toBeNull();
   });
 
-  it("does not rewrite the blob file on a later boot", async () => {
+  // #287: nothing beside the material file, ever. A `registration-blob.txt`
+  // reappearing would be the hand-carry back, and it would be a credential
+  // sitting in a volume with no one who needs it.
+  it("writes nothing beside the material file", async () => {
     await loadOrMintMaterial({ materialFile, ...options });
-    const blobFile = registrationBlobPath(materialFile);
-    fs.writeFileSync(blobFile, "operator-edited");
-
-    await loadOrMintMaterial({ materialFile, ...options });
-
-    expect(fs.readFileSync(blobFile, "utf8")).toBe("operator-edited");
+    expect(fs.readdirSync(dir)).toEqual(["material.json"]);
   });
 
   it("throws rather than re-minting when the material is unreadable", async () => {
@@ -181,13 +133,11 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     expect(moved.material.clientCert).toBe(first.material.clientCert);
     expect(moved.material.clientKey).toBe(first.material.clientKey);
     expect(moved.material.serverCert).not.toBe(first.material.serverCert);
-    // Nothing to print: this is not a pairing event.
-    expect(moved.blob).toBeNull();
   });
 
-  it("signs the new cert for the new host with the CA the Panel pinned", async () => {
+  it("signs the new cert for the new host with the CA the client pinned", async () => {
     const first = await loadOrMintMaterial({ materialFile, ...options });
-    const pinnedCa = decodeRegistrationBlob(first.blob ?? "")!.caCert;
+    const pinnedCa = first.material.caCert;
 
     const moved = await loadOrMintMaterial({
       materialFile,
@@ -218,22 +168,10 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     expect(again.material.serverCert).toBe(moved.material.serverCert);
   });
 
-  it("refreshes the blob file so `cat` yields a token for the new address", async () => {
-    await loadOrMintMaterial({ materialFile, ...options });
-
-    await loadOrMintMaterial({ materialFile, ...options, publicHost: "core2.example.test" });
-
-    const onDisk = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
-    // The Panel holds the old endpoint and re-issuing cannot reach it, so the
-    // one token the operator can act on has to point at where the Core is now.
-    expect(decodeRegistrationBlob(onDisk)?.endpoint).toBe("wss://core2.example.test:8443");
-  });
-
   it("re-issues quietly for material written before the host was recorded", async () => {
     const minted = await loadOrMintMaterial({ materialFile, ...options });
     const { serverHost: _recorded, ...legacy } = minted.material;
     fs.writeFileSync(materialFile, JSON.stringify(legacy));
-    const blobBefore = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
 
     // An unrecorded host is an unknown one, not a moved one: the SAN is
     // re-signed once for the host in hand and recorded, but the boot after an
@@ -243,12 +181,10 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     expect(boot.certAction).toBe("backfilled");
     expect(boot.material.coreId).toBe(minted.material.coreId);
     expect(boot.material.serverHost).toBe(options.publicHost);
-    expect(fs.readFileSync(registrationBlobPath(materialFile), "utf8")).toBe(blobBefore);
   });
 
   it("leaves the cert alone when the public host was never declared", async () => {
     const first = await loadOrMintMaterial({ materialFile, ...options });
-    const blobBefore = fs.readFileSync(registrationBlobPath(materialFile), "utf8");
 
     // A daemon started without `ACTANA_PUBLIC_HOST` falls back to its bind
     // address. That is a guess, and re-signing the SAN with a guess would take
@@ -262,56 +198,5 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
 
     expect(boot.certAction).toBe("unchanged");
     expect(boot.material.serverCert).toBe(first.material.serverCert);
-    expect(fs.readFileSync(registrationBlobPath(materialFile), "utf8")).toBe(blobBefore);
-  });
-});
-
-describe("buildRegistrationBlob", () => {
-  it("carries the endpoint, label and Panel half of the mTLS pair", () => {
-    const blob = buildRegistrationBlob(sample, {
-      publicHost: "core",
-      port: 9443,
-      label: "second core",
-      bearerDays: 30,
-    });
-
-    const decoded = decodeRegistrationBlob(blob);
-    expect(decoded).toMatchObject({
-      endpoint: "wss://core:9443",
-      label: "second core",
-      caCert: sample.caCert,
-      clientCert: sample.clientCert,
-      clientKey: sample.clientKey,
-    });
-    // The Core's own server key never leaves the machine — only the Panel's
-    // half and the CA to pin do.
-    expect(blob).not.toContain(Buffer.from(sample.serverKey).toString("base64"));
-  });
-
-  it("signs a bearer for the lease it was given", () => {
-    const days = 30;
-    const blob = buildRegistrationBlob(sample, {
-      publicHost: "core",
-      port: 9443,
-      label: "",
-      bearerDays: days,
-    });
-
-    const verified = verifyBearer(decodeRegistrationBlob(blob)?.bearer ?? "", sample.bearerSecret);
-    expect(verified.ok).toBe(true);
-    const expected = Date.now() + days * 24 * 60 * 60 * 1000;
-    // Signed against now, so allow a second of clock drift across the call.
-    expect(verified.ok && Math.abs(verified.exp - expected)).toBeLessThan(1000);
-  });
-});
-
-describe("formatRegistrationBlobNotice", () => {
-  it("prints the blob on a line of its own, unprefixed", () => {
-    const notice = formatRegistrationBlobNotice("BLOB", "/home/core/.actana/blob.txt");
-    // The sentinel form is for a supervising parent; this one is read by a
-    // human tailing `docker compose logs`, so the blob must survive a copy.
-    expect(notice).not.toContain("@@");
-    expect(notice.split("\n")).toContain("BLOB");
-    expect(notice).toContain("/home/core/.actana/blob.txt");
   });
 });

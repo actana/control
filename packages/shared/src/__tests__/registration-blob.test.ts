@@ -5,10 +5,13 @@ import {
   type RegistrationBlob,
 } from "../registration-blob";
 
-// The single base64 artifact emitted by `core install` (ADR 0003), pasted
-// once into the Panel's "Add Core". `endpoint` + `label` go to the Core
-// registry; the secret fields (caCert, clientCert, clientKey, bearer) go to
-// `safeStorage`. See CONTEXT.md "Registration blob".
+// The credential a paired client holds, as the blob registry keeps it on disk.
+// It was the hand-carried artifact too until #287; what is asserted here is the
+// codec, which outlived the hand-carry because `local-core-wiring.ts` still
+// writes a machine's own Core into the registry with it. In the Panel,
+// `endpoint` + `label` go to the Core registry and the secret fields — caCert,
+// clientCert, clientKey, bearer — are sealed. See CONTEXT.md "Registration
+// blob".
 
 describe("registration blob", () => {
   const sample: RegistrationBlob = {
@@ -23,7 +26,7 @@ describe("registration blob", () => {
   describe("encodeRegistrationBlob / decodeRegistrationBlob", () => {
     it("round-trips a full blob", () => {
       const encoded = encodeRegistrationBlob(sample);
-      // The on-the-wire form is one base64 line — the single paste artifact.
+      // The at-rest form is one base64 line, which is what a registry file holds.
       expect(encoded).toMatch(/^[A-Za-z0-9_-]+=*$/);
       expect(decodeRegistrationBlob(encoded)).toEqual(sample);
     });
@@ -79,9 +82,9 @@ describe("registration blob", () => {
       expect(decodeRegistrationBlob(bad)).toBeNull();
     });
 
-    it("whitespace-trims and ignores surrounding whitespace in the paste", () => {
+    it("whitespace-trims and ignores surrounding whitespace in the file", () => {
       const encoded = encodeRegistrationBlob(sample);
-      // A user paste often has a trailing newline or surrounding spaces.
+      // A registry file often has a trailing newline.
       expect(decodeRegistrationBlob(`  ${encoded}\n`)).toEqual(sample);
     });
   });

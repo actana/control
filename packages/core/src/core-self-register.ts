@@ -1,9 +1,9 @@
 // A containerised Core registers itself with the CLI on its own machine
 // (#288 D9, criterion 3).
 //
-// On metal `actana setup` does this: it mints the material, encodes the pairing
-// blob and writes it straight into this machine's blob registry, so the `actana`
-// that installed the Core is already pointed at it. In a container none of that
+// On metal `actana setup` does this: it mints the material and writes the
+// credential straight into this machine's blob registry, so the `actana` that
+// installed the Core is already pointed at it. In a container none of that
 // runs — the image *is* the install (ADR 0016 D13) and `setup` and `install` are
 // refused there — so a fresh Session inside the container found an empty
 // registry: `actana core ls` printed the no-Cores sentence and every `actana
@@ -16,9 +16,10 @@
 // So the daemon does its own wiring, through the same module `setup` uses
 // (`@actana/shared/local-core-wiring`) and into the same directory: the
 // container's `AC_CORE_MATERIAL_FILE` already lives in `~/.config/actana`, which
-// is where the registry is. Nothing new is on disk that was not there before —
-// the same blob, under `cores/<name>.txt` instead of only in
-// `registration-blob.txt`.
+// is where the registry is. Since #287 this is the *only* place a credential
+// this Core issued to itself is written down — the `registration-blob.txt` that
+// used to sit beside the material file is gone, along with everything that read
+// it.
 //
 // **The endpoint is this machine's, not the Panel's.** `ACTANA_PUBLIC_HOST` is
 // the address *other* machines dial, and inside the container it may not route
@@ -31,7 +32,7 @@
 // machine's own client can dial it.
 //
 // **It runs on every boot, not only the one that mints.** A volume created
-// before this existed has material and a blob but no registry entry, and a Core
+// before this existed has material but no registry entry, and a Core
 // that only wired itself on the boot that minted would never fix itself for the
 // life of that volume. Writing is idempotent, and the bearer in the entry is
 // re-signed with a full lease each time — which is strictly better than a
@@ -40,12 +41,12 @@
 // A pointer the operator moved is left alone; that is `wireLocalCore`'s rule and
 // this module adds nothing to it.
 
+import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { registryPaths } from "@actana/shared/blob-registry";
 import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-wiring";
 import type { PersistedMaterial } from "@actana/shared/core-material-store";
-import { buildRegistrationBlob } from "./core-first-run";
 
-/** The identity fields a blob is built from — what the boot already has in hand. */
+/** The identity fields the credential is built from — what the boot has in hand. */
 export type SelfRegistrationMaterial = Pick<
   PersistedMaterial,
   "caCert" | "clientCert" | "clientKey" | "coreId" | "bearerSecret"
@@ -59,7 +60,7 @@ export type SelfRegistrationOptions = {
   port: number;
   /** `ACTANA_LABEL`, which the registry name is derived from. */
   label: string;
-  /** Bearer lease length in days, as the printed blob uses. */
+  /** Bearer lease length in days. */
   bearerDays: number;
   /** The daemon's environment, for `XDG_CONFIG_HOME`. */
   env: NodeJS.ProcessEnv;
@@ -97,7 +98,7 @@ function endpointHost(dialHost: string): string {
   return dialHost.includes(":") && !dialHost.startsWith("[") ? `[${dialHost}]` : dialHost;
 }
 
-/** `wss://host:port`, as it goes into the blob and into the log line. */
+/** `wss://host:port`, as it goes into the credential and into the log line. */
 export function localEndpoint(dialHost: string, port: number): string {
   return `wss://${endpointHost(dialHost)}:${port}`;
 }
@@ -115,13 +116,22 @@ export function registerSelfWithLocalCli(opts: SelfRegistrationOptions): SelfReg
   const dialHost = localDialHost(opts.bindHost);
   const endpoint = localEndpoint(dialHost, opts.port);
   try {
-    const blob = buildRegistrationBlob(opts.material, {
-      publicHost: endpointHost(dialHost),
-      port: opts.port,
+    // The bearer is signed here rather than stored, so the entry this boot
+    // writes carries a full lease instead of whatever is left of an older one.
+    const wiring = wireLocalCore(registryPaths(opts.env, opts.home), opts.label, {
+      endpoint,
       label: opts.label,
-      bearerDays: opts.bearerDays,
+      caCert: opts.material.caCert,
+      clientCert: opts.material.clientCert,
+      clientKey: opts.material.clientKey,
+      bearer: signBearer(
+        {
+          coreId: opts.material.coreId,
+          exp: Date.now() + opts.bearerDays * 24 * 60 * 60 * 1000,
+        },
+        opts.material.bearerSecret as BearerSecret,
+      ),
     });
-    const wiring = wireLocalCore(registryPaths(opts.env, opts.home), opts.label, blob);
     return { ok: true, wiring, endpoint };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
