@@ -212,6 +212,16 @@ async function dispatch(
     if (method === "GET") return coresController.list();
     if (method === "POST") return coresController.add(request);
   }
+  // Pairing (#286). Literal paths, and matched before CORE_PATH so `pairing`
+  // is never read as a Core id. Both are Node-side work the browser cannot do:
+  // a TLS chain is read here, a key pair is born here, and a code is spent
+  // here — see `services/core-pairing.ts`.
+  if (pathname === "/api/cores/pairing/inspect" && method === "POST") {
+    return coresController.inspect(request);
+  }
+  if (pathname === "/api/cores/pairing" && method === "POST") {
+    return coresController.pair(request);
+  }
   // A Project's files, on the Core that owns them (#129 F6/F11, #169). The
   // Panel is a dumb pipe here: these three lines resolve a Core and forward a
   // stream, and every decision about what a path means is the Core's.

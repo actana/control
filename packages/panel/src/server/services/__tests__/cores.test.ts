@@ -10,6 +10,7 @@ process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 const { getPanelDb } = await import("../../panel-db");
 const { createOperator, operatorExists } = await import("../operator");
 const {
+  CoreRegistryError,
   RegistrationBlobError,
   advanceCoreCursor,
   getCore,
@@ -134,10 +135,14 @@ describe("Core registry", () => {
     expect(coreRowCount()).toBe(0);
   });
 
+  // `CoreRegistryError`, not `RegistrationBlobError`: an endpoint already spoken
+  // for is the registry's invariant rather than the codec's, and pairing (#286)
+  // hits it through a door that never sees a blob. Same refusal, same 400, same
+  // nothing written — only the name says whose rule it is.
   it("refuses a second registration of the same endpoint, leaving the first intact", () => {
     const first = registerCoreFromRegistrationBlob(registrationBlob());
     expect(() => registerCoreFromRegistrationBlob(registrationBlob({ label: "duplicate" }))).toThrow(
-      RegistrationBlobError,
+      CoreRegistryError,
     );
     expect(listCores().map((c) => c.id)).toEqual([first.id]);
     expect(getCore(first.id)?.label).toBe("prod-vm-1");
