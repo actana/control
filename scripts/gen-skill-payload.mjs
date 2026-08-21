@@ -1,17 +1,26 @@
-// Embed the authored skill folder into both packages that have to write it.
+// Embed the authored skill folders into both packages that have to write them.
 //
-// ADR 0031 D8. The skill is authored once at
-// `.agents/skills/actana-sessions/`, following the `release` skill's
-// harness-neutral precedent, and this script writes it into `packages/shared`
-// (which the Core imports) and `packages/cli`, which embeds its own copy so the
-// published bundle carries the payload rather than resolving it (ADR 0031 D8).
+// ADR 0031 D8. The skills are authored once under `.agents/skills/`, following
+// the `release` skill's harness-neutral precedent, and this script writes them
+// into `packages/shared` (which the Core imports) and `packages/cli`, which
+// embeds its own copy so the published bundle carries the payload rather than
+// resolving it (ADR 0031 D8).
 //
-// **A folder, not a file** (#304, ADR 0035 D4 and D5). The skill ships
-// `await.sh` beside `SKILL.md`, so what is embedded is a map from
-// folder-relative path to bytes rather than one string constant. D5 is explicit
-// that this is a change of *shape* and not of *kind*: one authored source per
-// skill, embedded into the same two bundles, held honest by the same one drift
-// test. No second generator, no copy in `dist/`.
+// **A folder, not a file** (#304, ADR 0035 D4 and D5). A skill ships `await.sh`
+// beside `SKILL.md`, so what is embedded per skill is a map from folder-relative
+// path to bytes rather than one string constant.
+//
+// **Two folders, not one** (#303, ADR 0035 D1 and D4). `actana-sessions` carries
+// the orchestrator role and `actana-subagent` the sub-agent role, and the shape
+// the previous pass deliberately left open is settled here, in the change that
+// brings the second folder: **one map keyed by folder name**, each value the
+// folder's own path-to-bytes map. A folder name stays a string this script is
+// handed and the installer is given — never an identifier anything branches on,
+// which is what ADR 0035 D1's asymmetry must not become in code.
+//
+// D5 is explicit that this is a change of *shape* and not of *kind*: one
+// authored source per skill, embedded into the same two bundles, held honest by
+// the same one drift test. No second generator, no copy in `dist/`.
 //
 // **Embedded as strings, not copied into `dist/`.** The Core ships as an
 // esbuild bundle and the CLI ships as one too, so a `.md` asset read from disk
@@ -34,9 +43,16 @@ import { fileURLToPath } from "node:url";
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-export const SKILL_NAME = "actana-sessions";
+/**
+ * The authored skill folders, in the order the payload lists them.
+ *
+ * A list rather than two constants, because everything downstream of here — the
+ * generator's loop, the emitted map, both installers — treats them the same
+ * way. The roles they carry are a property of the prose inside them (ADR 0035
+ * D1), and adding a third folder is a line in this array.
+ */
+export const SKILL_NAMES = ["actana-sessions", "actana-subagent"];
 export const SKILLS_ROOT = join(".agents", "skills");
-export const SKILL_SOURCE = join(SKILLS_ROOT, SKILL_NAME);
 export const MARKER = "x-actana-managed: true";
 
 const TARGETS = [
@@ -47,13 +63,9 @@ const TARGETS = [
 /**
  * Every file in one skill folder, as `{ relative, content }`, sorted by path.
  *
- * Takes the folder name rather than closing over `SKILL_NAME`, because a second
- * skill folder is a second call and nothing else — a folder name is a string
- * this script is handed, never an identifier it branches on. What the *shape of
- * the emitted payload* becomes when there are two of them — two maps, or one
- * keyed by `<folder>/<path>` — is deliberately not decided here: that choice
- * belongs to the change that brings the second folder, where both halves of it
- * can be seen at once.
+ * Takes the folder name rather than closing over one, because a second skill
+ * folder is a second call and nothing else — a folder name is a string this
+ * script is handed, never an identifier it branches on.
  *
  * Sorted, because the emitted map's key order is the diff a reviewer reads, and
  * `readdir` order is the filesystem's business. POSIX separators, because the
@@ -73,34 +85,47 @@ export function readSkillFolder(skillName) {
 }
 
 /**
- * The folder as a TypeScript map of template literals.
+ * Every authored folder as a TypeScript map of maps of template literals.
  *
  * Template literals rather than `JSON.stringify`, because the payload is nine
  * kilobytes of prose and a one-line JSON string turns every edit to it into a
  * one-line diff nobody can review. Only three sequences can end or escape a
  * template literal, and all three are escaped here — per value, unchanged.
  */
-export function renderPayload(files) {
+export function renderPayload(folders) {
   const escape = (text) =>
     text
       .replace(/\\/g, "\\\\")
       .replace(/`/g, "\\`")
       .replace(/\$\{/g, "\\${");
 
-  const entries = files
-    .map((file) => `  ${JSON.stringify(file.relative)}: \`${escape(file.content)}\`,`)
+  const entries = folders
+    .map(({ skillName, files }) => {
+      const inner = files
+        .map((file) => `    ${JSON.stringify(file.relative)}: \`${escape(file.content)}\`,`)
+        .join("\n");
+      return `  ${JSON.stringify(skillName)}: {\n${inner}\n  },`;
+    })
     .join("\n");
 
   return `// GENERATED by scripts/gen-skill-payload.mjs — do not edit.
 //
-// The source is \`${SKILL_SOURCE}/\`, and
+// The sources are the folders under \`${SKILLS_ROOT}/\` named by
+// \`ORCHESTRATION_SKILL_NAMES\` below, and
 // \`packages/shared/src/__tests__/orchestration-skill-fanout.test.ts\` — the one
 // drift test, in the one package that can read both copies — fails when the two
 // disagree. Edit the authored files, re-run the generator, commit both.
 // ADR 0031 D8 is why this is embedded rather than read off disk.
 
-/** The skill's directory name — its address in a harness's skills root. */
-export const ORCHESTRATION_SKILL_NAME = ${JSON.stringify(SKILL_NAME)};
+/**
+ * The skill directory names — their addresses in a harness's skills root.
+ *
+ * Two of them since #303, and the order here is the order an installer reports
+ * them in. A name is data: nothing downstream may branch on which one it is
+ * holding, because the difference between the two roles is prose inside the
+ * files and not behaviour in the writer (ADR 0035 D1).
+ */
+export const ORCHESTRATION_SKILL_NAMES: readonly string[] = [${SKILL_NAMES.map((name) => JSON.stringify(name)).join(", ")}];
 
 /**
  * The in-band marker that makes a copy ours (ADR 0031 D1).
@@ -114,42 +139,53 @@ export const ORCHESTRATION_SKILL_NAME = ${JSON.stringify(SKILL_NAME)};
 export const ORCHESTRATION_SKILL_MARKER = ${JSON.stringify(MARKER)};
 
 /**
- * The authored skill folder, byte for byte: folder-relative path to contents.
+ * The authored skill folders, byte for byte: folder name to the folder's own
+ * map of folder-relative path to contents.
  *
- * Keys are \`/\`-separated on every platform — the installer splits them before
- * joining. Every value carries the marker above; the generator refuses to emit
- * one that does not.
+ * Inner keys are \`/\`-separated on every platform — the installer splits them
+ * before joining. Every value carries the marker above; the generator refuses to
+ * emit one that does not.
  *
- * Typed as a plain record rather than left to infer its literal keys: a file
- * name in here is data the installer is handed, never an identifier anything
- * branches on, and a type that made \`"SKILL.md"\` special would be the first
- * step towards code that treats it that way.
+ * Typed as plain records rather than left to infer their literal keys: a folder
+ * name or a file name in here is data the installer is handed, never an
+ * identifier anything branches on, and a type that made \`"SKILL.md"\` or
+ * \`"actana-subagent"\` special would be the first step towards code that treats
+ * it that way.
  */
-export const ORCHESTRATION_SKILL_FILES: Readonly<Record<string, string>> = {
+export const ORCHESTRATION_SKILL_FILES: Readonly<
+  Record<string, Readonly<Record<string, string>>>
+> = {
 ${entries}
 };
 `;
 }
 
 function main() {
-  const files = readSkillFolder(SKILL_NAME);
-  if (files.length === 0) {
-    throw new Error(`${SKILL_SOURCE} holds no files — there is nothing to install`);
+  const folders = SKILL_NAMES.map((skillName) => ({ skillName, files: readSkillFolder(skillName) }));
+  for (const { skillName, files } of folders) {
+    const source = join(SKILLS_ROOT, skillName);
+    if (files.length === 0) {
+      throw new Error(`${source} holds no files — there is nothing to install`);
+    }
+    // The guard is per file, and it is the reason ADR 0031 D5's escape hatch is
+    // repairable: an untagged copy on an operator's disk is one the installer
+    // can never write again, so shipping one is shipping a file we have given
+    // away. Every file this script emits is a managed file, so every file is
+    // checked.
+    for (const file of files) {
+      if (file.content.includes(MARKER)) continue;
+      throw new Error(
+        `${source}/${file.relative} carries no ${MARKER} — an untagged copy is unrepairable`,
+      );
+    }
   }
-  // The guard is per file, and it is the reason ADR 0031 D5's escape hatch is
-  // repairable: an untagged copy on an operator's disk is one the installer can
-  // never write again, so shipping one is shipping a file we have given away.
-  // Every file this script emits is a managed file, so every file is checked.
-  for (const file of files) {
-    if (file.content.includes(MARKER)) continue;
-    throw new Error(
-      `${SKILL_SOURCE}/${file.relative} carries no ${MARKER} — an untagged copy is unrepairable`,
-    );
-  }
-  const rendered = renderPayload(files);
+  const rendered = renderPayload(folders);
+  const count = folders.reduce((total, folder) => total + folder.files.length, 0);
   for (const target of TARGETS) {
     writeFileSync(join(repoRoot, target), rendered, "utf8");
-    process.stdout.write(`wrote ${target} (${files.length} file${files.length === 1 ? "" : "s"})\n`);
+    process.stdout.write(
+      `wrote ${target} (${folders.length} skills, ${count} file${count === 1 ? "" : "s"})\n`,
+    );
   }
 }
 

@@ -1,5 +1,5 @@
-// The CLI's half of ADR 0031: put the product's skill where the operator's
-// Harnesses will read it, on the machine this CLI is installed on.
+// The CLI's half of ADR 0031: put the product's skills where the operator's
+// Harnesses will read them, on the machine this CLI is installed on.
 //
 // Two callers, one function. `actana harness skills` is the explicit verb — the
 // thing a support answer or a script can name — and `runActanaCli` calls the
@@ -20,24 +20,32 @@ import {
 import {
   ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_FILES,
-  ORCHESTRATION_SKILL_NAME,
+  ORCHESTRATION_SKILL_NAMES,
 } from "./orchestration-skill-payload.ts";
 import { HARNESS_SKILL_TARGETS } from "./harness-skill-targets.ts";
 
 /**
- * Write or repair every copy, and report one row per Harness. Never throws.
+ * Write or repair every copy, and report one row per Harness per skill.
  *
- * The payload is a folder — `SKILL.md` and `await.sh` — and the installer is
- * handed all of it at once. Nothing here knows which file is which.
+ * A skill is a folder — `SKILL.md`, and `await.sh` for the one that ships it —
+ * and there are two of them since #303. The installer is handed one folder at a
+ * time and all of its files at once: nothing here knows which file is which, and
+ * nothing here knows which folder is which. The two carry opposite trigger
+ * requirements (ADR 0035 D1), and that difference is prose inside them rather
+ * than a branch out here.
+ *
+ * Never throws.
  */
 export function ensureOrchestrationSkill(home: string): SkillInstallEntry[] {
-  return installOrchestrationSkill({
-    home,
-    targets: HARNESS_SKILL_TARGETS,
-    skillName: ORCHESTRATION_SKILL_NAME,
-    marker: ORCHESTRATION_SKILL_MARKER,
-    files: ORCHESTRATION_SKILL_FILES,
-  });
+  return ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
+    installOrchestrationSkill({
+      home,
+      targets: HARNESS_SKILL_TARGETS,
+      skillName,
+      marker: ORCHESTRATION_SKILL_MARKER,
+      files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},
+    }),
+  );
 }
 
 /**

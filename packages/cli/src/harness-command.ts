@@ -40,7 +40,7 @@
 
 import { formatJson, formatTable } from "./cli-output.ts";
 import { ensureOrchestrationSkill } from "./orchestration-skill.ts";
-import { ORCHESTRATION_SKILL_NAME } from "./orchestration-skill-payload.ts";
+import { ORCHESTRATION_SKILL_NAMES } from "./orchestration-skill-payload.ts";
 import { errorText, openCore, type CoreLinkClient } from "./core-connection.ts";
 import { trackEventTip } from "./event-tip.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
@@ -91,7 +91,7 @@ export const HARNESS_HELP = `actana harness — the coding agents a Core can run
 Usage
   actana harness ls               what the selected Core has, and what it lacks
   actana harness install <id>     install one on the Core, and wait for the verdict
-  actana harness skills           install or repair this product's skill, here
+  actana harness skills           install or repair this product's skills, here
 
 Flags
   --core <name>   which Core to talk to
@@ -108,9 +108,10 @@ What install waits for
   A failure here names the Harness and links the issue rather than guessing.
 
 What skills does
-  Writes the \`actana-sessions\` skill — how to drive Cores and Sessions with this
-  CLI — into the global skills directory of every Harness present on THIS machine,
-  and repairs a copy that was deleted or changed. It talks to no Core, it starts
+  Writes this product's own skills — \`actana-sessions\`, how to drive Cores and
+  Sessions with this CLI, and \`actana-subagent\`, how a Session woken as somebody
+  else's sub-agent hands its work back — into the global skills directory of every
+  Harness present on THIS machine, and repairs a copy that was deleted or changed. It talks to no Core, it starts
   no process, and running it twice changes nothing the second time. Every other
   \`actana\` command does the same thing quietly before it runs, so this verb is
   the repair path and the one that tells you what it did.
@@ -211,9 +212,14 @@ function harnessRows(availability: CoreLinkHarnessAvailabilityMap): Array<
  * answer on screen instead of in a code path.
  *
  * **A skill is a folder now** (#304), so the column names one and the detail
- * line under it names the file. One row per Harness either way: an operator
- * reading this wants "has this agent got the skill?" answered once, and a table
- * that grew a row per file would answer a question about our payload instead.
+ * line under it names the file. A row per file would answer a question about
+ * our payload instead of the operator's.
+ *
+ * **There are two skills now** (#303), so there is a row per Harness per skill
+ * and the folder column is what tells them apart. That is one row more than the
+ * question "has this agent got the skill?" strictly needs, and it is the honest
+ * shape: the two folders are written independently, and either one of them can
+ * be the one an operator took ownership of.
  */
 function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): number {
   if (rest.length > 0) {
@@ -226,7 +232,7 @@ function harnessSkills(deps: ActanaCliDeps, args: ParsedArgs, rest: string[]): n
   const failed = entries.filter((entry) => entry.outcome === "failed");
 
   if (args.json) {
-    deps.out(formatJson({ skill: ORCHESTRATION_SKILL_NAME, harnesses: entries }));
+    deps.out(formatJson({ skills: ORCHESTRATION_SKILL_NAMES, harnesses: entries }));
     return failed.length > 0 ? EXIT_FAILURE : EXIT_OK;
   }
 
