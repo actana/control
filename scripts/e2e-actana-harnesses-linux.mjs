@@ -119,13 +119,29 @@ async function main() {
   );
   // The credential setup wired into this machine's own registry — the only
   // place it exists since #287 removed the printed artifact.
+  //
+  // Parsed inside a guard, not bare. `asOperator` folds the session's stderr
+  // into `stdout`, so anything `core ls` writes there — the "readable by more
+  // than its owner" warning, say — lands in the same string as the JSON. A bare
+  // `JSON.parse` would turn a diagnosable failure into a `SyntaxError` with no
+  // log attached, in a script whose whole job is to fail legibly in CI.
   const listed = mustAsOperator("actana core ls --json");
-  const rows = JSON.parse(listed.stdout);
+  let rows;
+  try {
+    rows = JSON.parse(listed.stdout);
+  } catch (err) {
+    die(`\`actana core ls --json\` did not print JSON (${err.message})`, listed.stdout.split("\n"));
+  }
   if (!Array.isArray(rows) || rows.length !== 1) {
     die(`expected exactly one registered Core, got ${listed.stdout.trim()}`);
   }
   const stored = mustAsOperator(`cat ~/.config/actana/cores/${rows[0].name}.txt`).stdout.trim();
-  const blob = JSON.parse(Buffer.from(stored, "base64").toString("utf8"));
+  let blob;
+  try {
+    blob = JSON.parse(Buffer.from(stored, "base64").toString("utf8"));
+  } catch (err) {
+    die(`the registry entry for ${rows[0].name} did not decode (${err.message})`);
+  }
   if (onPath("opencode")) die("--no-harnesses installed a Harness anyway", quiet.stdout.split("\n"));
   log("`--no-harnesses` installed nothing");
 

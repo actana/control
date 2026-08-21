@@ -45,7 +45,6 @@
 
 import * as os from "node:os";
 import * as path from "node:path";
-import { randomBytes } from "node:crypto";
 import {
   PtyCore,
   ensureClaudeShiftEnterBinding,
@@ -91,7 +90,6 @@ import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-ho
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
 import { CoreSessionBackstop } from "./core-session-backstop";
-import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { loadOrMintMaterial, type LoadOrMintResult } from "./core-first-run";
 import { registerSelfWithLocalCli } from "./core-self-register";
