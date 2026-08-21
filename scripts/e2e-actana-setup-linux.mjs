@@ -279,8 +279,12 @@ async function main() {
   }
   const reprint = asOperator("actana token");
   if (reprint.status === 0) die("`actana token` still reprints something — #287 removed it");
-  if (!/actana pair new/.test(reprint.stderr)) {
-    die("`actana token` refused without naming `actana pair new`", reprint.stderr.split("\n"));
+  // Both streams: `machinectl shell` folds the session's stderr into the
+  // `docker exec`'s stdout, so a refusal written to stderr arrives on `stdout`
+  // here. Every other check in this file reads the pair for the same reason.
+  const refusal = `${reprint.stdout}${reprint.stderr}`;
+  if (!/actana pair new/.test(refusal)) {
+    die("`actana token` refused without naming `actana pair new`", refusal.split("\n"));
   }
   log("`actana pair new` mints a code, and `actana token` refuses and says so");
 
