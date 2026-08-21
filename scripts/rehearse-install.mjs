@@ -16,8 +16,8 @@
 //                   artifacts/core for this machine's architecture.
 // --distro <id>     Which distribution the fake VM runs (see
 //                   scripts/lib/container-matrix.mjs). Defaults to ubuntu.
-// --port <n>        Host port the Core is published on. Defaults to 8443,
-//                   which is the port the printed pairing token names — pick
+// --port <n>        Host port the Core is published on. Defaults to 8443, which
+//                   is the port the Core's certificate is minted for — pick
 //                   another only if something already holds it, and read
 //                   docs/core-linux-rehearsal.md before you do.
 // --keep            Leave the machine running after you exit the shell.
@@ -43,12 +43,12 @@ const log = (message) => console.log(`[rehearse] ${message}`);
 const CONTAINER_PORT = 8443;
 
 /**
- * The default host port, and the one the printed token will name.
+ * The default host port, and the one the Core's certificate is minted for.
  *
  * `actana setup --public-host 127.0.0.1` mints the Core's certificate for
- * loopback and its pairing token says `wss://127.0.0.1:8443`. Publishing the
- * container on the same number is what lets the token be pasted into a Panel
- * on this machine verbatim — the doc explains what to edit if it is taken.
+ * loopback on 8443. Publishing the container on the same number is what lets
+ * `127.0.0.1:8443` — typed into a Panel's "Add Core" verbatim — reach it and
+ * verify. The doc explains what to pair against if the port is taken.
  */
 const DEFAULT_HOST_PORT = 8443;
 
@@ -146,9 +146,10 @@ async function main() {
     "",
     `  Serving: ${path.basename(tarball)}`,
     `  The Core will be reachable from this machine on port ${hostPort}.`,
+    "  Then run `actana pair new` inside and pair a Panel with the code",
     hostPort === DEFAULT_HOST_PORT
-      ? "  The pairing token it prints can be pasted into a Panel as-is."
-      : `  NOTE: the printed token will say :${CONTAINER_PORT} — edit it to :${hostPort}`,
+      ? `  it prints, against 127.0.0.1:${CONTAINER_PORT}.`
+      : `  it prints, against 127.0.0.1:${hostPort} — not the :${CONTAINER_PORT} the Core thinks it is on.`,
     "",
     "  Walk-through:  docs/core-linux-rehearsal.md",
     "  Type `exit` when you are done and this machine is destroyed.",

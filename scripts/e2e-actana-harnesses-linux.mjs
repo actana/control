@@ -39,7 +39,7 @@ import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { distroDockerfile, distroFlag, imageTag } from "./lib/container-matrix.mjs";
-import { dialAndListHarnessAvailability, extractToken, makeDie } from "./lib/core-smoke.mjs";
+import { dialAndListHarnessAvailability, makeDie } from "./lib/core-smoke.mjs";
 import {
   OPERATOR,
   pickHostPort,
@@ -117,7 +117,15 @@ async function main() {
   const quiet = mustAsOperator(
     `${extracted}/bin/actana setup --public-host 127.0.0.1 --yes --no-harnesses </dev/null`,
   );
-  const { blob } = extractToken(quiet.stdout, "actana setup", die);
+  // The credential setup wired into this machine's own registry — the only
+  // place it exists since #287 removed the printed artifact.
+  const listed = mustAsOperator("actana core ls --json");
+  const rows = JSON.parse(listed.stdout);
+  if (!Array.isArray(rows) || rows.length !== 1) {
+    die(`expected exactly one registered Core, got ${listed.stdout.trim()}`);
+  }
+  const stored = mustAsOperator(`cat ~/.config/actana/cores/${rows[0].name}.txt`).stdout.trim();
+  const blob = JSON.parse(Buffer.from(stored, "base64").toString("utf8"));
   if (onPath("opencode")) die("--no-harnesses installed a Harness anyway", quiet.stdout.split("\n"));
   log("`--no-harnesses` installed nothing");
 
