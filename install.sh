@@ -6,8 +6,9 @@
 # This script is a bootstrapper and nothing more: detect the platform, resolve
 # the release, download the matching tarball, verify it against the release's
 # published SHA256SUMS, extract it, and hand over to `actana setup`. Every real
-# decision — where to install, the systemd unit, lingering, Harnesses, the
-# pairing token — lives in that CLI, where it is unit-tested. Anything this
+# decision — where to install, the systemd unit, lingering, Harnesses, wiring
+# the Core into this machine's own registry — lives in that CLI, where it is
+# unit-tested. Anything this
 # script grows beyond "fetch, verify, exec" belongs there instead.
 #
 # Flags it does not own are forwarded verbatim to `actana setup`, so

@@ -40,10 +40,11 @@ export const PAIRING_STORE_FILENAME = "pairing.json";
 /**
  * The pairing file for a Core whose material file is `materialFile`.
  *
- * Derived from the material path rather than configured separately, the way
- * `registrationBlobPath` derives the blob file: the daemon is handed exactly
- * one path (`AC_CORE_MATERIAL_FILE`), a container mounts exactly one volume,
- * and a second env var to keep in step with it is a second thing to get wrong.
+ * Derived from the material path rather than configured separately: the daemon
+ * is handed exactly one path (`AC_CORE_MATERIAL_FILE`), a container mounts
+ * exactly one volume, and a second env var to keep in step with it is a second
+ * thing to get wrong. It has to sit beside the material anyway — the digest a
+ * session stores is keyed by the bearer secret in that file.
  */
 export function pairingStorePath(materialFile: string): string {
   return path.join(path.dirname(materialFile), PAIRING_STORE_FILENAME);

@@ -17,15 +17,17 @@
 // The legs, in order:
 //
 //   • the built image's config carries tini as ENTRYPOINT and drops to `core`;
-//   • a plain `docker run` — no privileges, no host mounts — boots the daemon,
-//     mints an identity on the empty volume and prints its pairing token;
+//   • a plain `docker run` — no privileges, no host mounts — boots the daemon
+//     and mints an identity on the empty volume, printing no credential at all;
 //   • tini is PID 1 and the daemon is a child of PID 1 (D14), read out of /proc;
 //   • the lifecycle verbs the image owns refuse, and each names its Docker
 //     equivalent rather than just saying no (D16);
-//   • a real Panel, booted as the deployable it is, pastes that token into
-//     "Add Core" and the panel link reports the Core connected;
-//   • `docker restart` is a no-op for pairing: same identity, no second token,
-//     and the same Panel reconnects without being touched (D17);
+//   • `docker compose exec core actana pair new` mints a one-time code inside
+//     the container, and a real Panel — booted as the deployable it is — checks
+//     the CA fingerprint, spends the code in "Add Core", and the panel link
+//     reports the Core connected;
+//   • `docker restart` is a no-op for pairing: same identity, still no
+//     credential in the log, and the same Panel reconnects untouched (D17);
 //   • and destroying the volume — the `docker compose down -v` motion — is the
 //     one thing that unpairs: the replacement Core mints a different identity
 //     and the Panel's stored credentials stop opening it.
@@ -52,7 +54,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
-import { LISTENING_SENTINEL, decodeBlob, makeDie, pickFreePort } from "./lib/core-smoke.mjs";
+import { LISTENING_SENTINEL, makeDie, pickFreePort } from "./lib/core-smoke.mjs";
 import {
   PANEL_SESSION_COOKIE,
   PanelLink,
@@ -81,8 +83,8 @@ if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) die(`--timeout must be a posi
 const suffix = `${process.pid}-${Date.now().toString(36)}`;
 const OPERATOR = { name: "Smoke Operator", password: "smoke-operator-passphrase" };
 
-/** The blob file the daemon writes beside its material on first boot. */
-const BLOB_FILE = `${CORE_HOME}/.config/actana/registration-blob.txt`;
+/** The identity the daemon mints into its volume on first boot. */
+const MATERIAL_FILE = `${CORE_HOME}/.config/actana/material.json`;
 
 const DIAL_TIMEOUT_MS = 60_000;
 
@@ -114,9 +116,9 @@ function docker(dockerArgs, { allowFailure = false } = {}) {
  * host and port as environment.
  *
  * `ACTANA_PORT` is set rather than left at 8443 so the published port and the
- * port inside agree — the endpoint in the pairing token is the Core's own
- * `publicHost:port`, and a token the test then rewrote would stop being the
- * token an operator pastes.
+ * port inside agree — a pairing hands the Panel this Core's own
+ * `publicHost:port` as the endpoint it will dial, and a Core whose published
+ * port differed would hand back an address nothing answers on.
  */
 async function bootCore(name, { port } = {}) {
   const id = `actana-core-smoke-${name}-${suffix}`;
@@ -136,10 +138,10 @@ async function bootCore(name, { port } = {}) {
     /** Boots this container has announced and `waitForCoreLink` has consumed. */
     boots: 0,
     /**
-     * The container's output. `tail: "all"` is not a nicety — the
-     * "a restart prints no second token" assertion counts notices across the
-     * whole life of the container, and a truncated tail would let a second
-     * token scroll out of sight and the count pass.
+     * The container's output. `tail: "all"` is not a nicety — the "no
+     * credential is ever printed" assertion reads the whole life of the
+     * container, and a truncated tail would let a PEM header scroll out of
+     * sight and the check pass.
      */
     logs: (tail = "60") => {
       const result = docker(["logs", "--tail", tail, containerName], { allowFailure: true });
@@ -285,34 +287,54 @@ function formatProcesses(processes) {
     .join("\n");
 }
 
-/** The pairing token this Core minted, as an operator would copy it. */
-function readBlob(container) {
-  const read = container.exec(["cat", BLOB_FILE], { allowFailure: true });
+/**
+ * The identity this Core minted into its volume.
+ *
+ * Read out of `material.json` rather than off a printed artifact, because since
+ * #287 there is no printed artifact: a Core emits nothing, and what an operator
+ * does instead is `actana pair new`. `coreId` and `caCert` are what the
+ * assertions below compare across a restart and across a destroyed volume.
+ */
+function readIdentity(container) {
+  const read = container.exec(["cat", MATERIAL_FILE], { allowFailure: true });
   if (read.status !== 0) {
-    die(`no pairing token at ${BLOB_FILE} in ${container.name}:\n${container.logs()}`);
+    die(`no material at ${MATERIAL_FILE} in ${container.name}:\n${container.logs()}`);
   }
-  const registrationBlob = read.stdout.trim();
-  if (!registrationBlob) die(`${BLOB_FILE} is empty in ${container.name}`);
-  const blob = decodeBlob(registrationBlob);
-  return { registrationBlob, blob, coreId: coreIdFromBearer(blob.bearer) };
+  let material;
+  try {
+    material = JSON.parse(read.stdout);
+  } catch {
+    return die(`${MATERIAL_FILE} in ${container.name} is not JSON`);
+  }
+  for (const field of ["coreId", "caCert", "bearerSecret"]) {
+    if (typeof material[field] !== "string" || material[field] === "") {
+      die(`${MATERIAL_FILE} in ${container.name} has no usable ${field}`);
+    }
+  }
+  return { coreId: material.coreId, caCert: material.caCert, bearerSecret: material.bearerSecret };
 }
 
 /**
- * The Core this token authorizes, read out of the bearer's payload.
+ * `actana pair new` inside the container — the operator's actual gesture.
  *
- * The blob carries no `coreId` field of its own — it is inside the signed
- * bearer (`base64url({coreId, exp}).base64url(sig)`, ADR 0002), which is where
- * the Panel reads it from too. Decoded rather than verified: what this asserts
- * is which Core the token names, not that the signature is good, and the
- * pairing legs below prove the signature by actually connecting.
+ * `pair` is deliberately not on the image's refusal table (ADR 0016 D13): it is
+ * about *this* Core rather than its lifecycle, and enrolling a client on the
+ * Core in front of you is the case a container makes most. The three labelled
+ * lines it puts on stdout are the contract this parses.
  */
-function coreIdFromBearer(bearer) {
-  const [payload] = String(bearer).split(".");
-  try {
-    return JSON.parse(Buffer.from(payload, "base64url").toString("utf8")).coreId;
-  } catch {
-    return die(`the pairing token's bearer does not decode: ${String(bearer).slice(0, 40)}…`);
+function pairNew(container, label) {
+  const run = container.exec(["actana", "pair", "new", "--label", label], { allowFailure: true });
+  if (run.status !== 0) {
+    die(`\`actana pair new\` in ${container.name} exited ${run.status}:\n${run.stdout}${run.stderr}`);
   }
+  const field = (name) => {
+    const match = run.stdout.match(new RegExp(`^${name}\\s+(\\S+)$`, "m"));
+    if (!match) die(`\`actana pair new\` printed no ${name} line:\n${run.stdout}`);
+    return match[1];
+  };
+  const code = field("Pairing code");
+  if (!/^[A-Z2-9]{4}-[A-Z2-9]{4}$/.test(code)) die(`\`actana pair new\` printed ${code} as a code`);
+  return { code, fingerprint: field("CA fingerprint"), sessionId: field("Session") };
 }
 
 // ─── The image, before anything runs ─────────────────────────────────────────
@@ -358,19 +380,28 @@ if (config?.User !== "core") die(`${image} runs as ${JSON.stringify(config?.User
 
 log("booting the Core on a clean volume …");
 const core = await bootCore("first");
-const first = readBlob(core);
-log(`the Core minted ${first.coreId} and printed its pairing token`);
+const first = readIdentity(core);
+log(`the Core minted ${first.coreId} on the empty volume`);
 
-if (first.blob.endpoint !== core.endpoint) {
-  die(
-    `the token's endpoint is ${first.blob.endpoint}, expected ${core.endpoint} — ` +
-      `ACTANA_PUBLIC_HOST/ACTANA_PORT did not reach the certificate and the token`,
-  );
+// #287: a first boot emits no credential. It used to print one blob and write
+// `registration-blob.txt` beside the material; both are gone, and the assertion
+// that they stay gone belongs on the image that actually ships.
+assertNoCredentialInLogs("the first boot");
+if (core.exec(["test", "-e", `${CORE_HOME}/.config/actana/registration-blob.txt`], {
+  allowFailure: true,
+}).status === 0) {
+  die("the first boot wrote a registration-blob.txt — the hand-carry is meant to be gone");
 }
-// What the operator is told to do is `docker compose logs core`, so the token
-// has to be in the log and not only in the volume.
-if (!core.logs("all").includes('paste this into your Panel\'s "Add Core"')) {
-  die(`the first boot printed no pairing-token notice:\n${core.logs()}`);
+
+/** No boot, ever, puts credential material where an operator reads logs. */
+function assertNoCredentialInLogs(what) {
+  const logs = core.logs("all");
+  if (/BEGIN (CERTIFICATE|PRIVATE KEY|RSA PRIVATE KEY)/.test(logs)) {
+    die(`${what} printed certificate material into the log:\n${core.logs()}`);
+  }
+  if (logs.includes("@@AC_CORE_REGISTRATION_BLOB@@") || /paste this into your Panel/.test(logs)) {
+    die(`${what} printed a registration blob:\n${core.logs()}`);
+  }
 }
 
 // D12 — the identity is pinned by number, because a uid that exists nowhere on
@@ -557,16 +588,37 @@ const setup = await panel.client.post("/api/auth/setup", OPERATOR);
 if (setup.status !== 200) die(`POST /api/auth/setup → ${setup.status}: ${setup.text.slice(0, 200)}`);
 if (!panel.client.jar.get(PANEL_SESSION_COOKIE)) die("setup issued no session cookie");
 
-const added = await panel.client.post("/api/cores", {
-  registrationBlob: first.registrationBlob,
+// The operator's two steps, in order: mint a code on the Core, then check the
+// fingerprint the Panel is presented against the one the Core printed before
+// the code goes anywhere.
+const enrollment = pairNew(core, "smoke-panel");
+const inspected = await panel.client.post("/api/cores/pairing/inspect", {
+  address: `127.0.0.1:${core.port}`,
 });
-if (added.status !== 201) die(`add Core → ${added.status}: ${added.text.slice(0, 200)}`);
+if (inspected.status !== 200) {
+  die(`pairing inspect → ${inspected.status}: ${inspected.text.slice(0, 200)}`);
+}
+if (inspected.body?.identity?.fingerprint !== enrollment.fingerprint) {
+  die(
+    `the Panel was presented ${inspected.body?.identity?.fingerprint}, but this Core printed ` +
+      `${enrollment.fingerprint} — the fingerprint an operator compares is not the one dialled`,
+  );
+}
+
+const added = await panel.client.post("/api/cores/pairing", {
+  address: `127.0.0.1:${core.port}`,
+  code: enrollment.code,
+  sessionId: enrollment.sessionId,
+  expectedFingerprint: enrollment.fingerprint,
+  label: "smoke",
+});
+if (added.status !== 201) die(`pair Core → ${added.status}: ${added.text.slice(0, 200)}`);
 // The Panel's registry key, not the Core's self-identity. `newCoreId()` in
 // packages/panel/src/server/services/cores.ts mints a fresh `core_` handle per
 // registration and nothing in that path adopts the bearer's `coreId` — the two
 // share a prefix and nothing else. Asserting they are equal was asserting a
-// contract that does not exist; what proves the token named *this* Core is the
-// dial below reaching `connected`, which only the bearer's Core can answer.
+// contract that does not exist; what proves the pairing reached *this* Core is
+// the dial below, which only a certificate this Core's CA signed can complete.
 const coreId = added.body?.core?.id;
 if (typeof coreId !== "string" || !coreId) {
   die(`the Panel registered the Core without returning an id: ${added.text.slice(0, 200)}`);
@@ -595,30 +647,23 @@ async function assertConnects(what) {
 // ─── Restart is a no-op for pairing ──────────────────────────────────────────
 
 // D17. The daemon mints on an *absent* material file and loads on a present
-// one, so a restart re-enters the load branch: same identity, and no second
-// token in the log — a second token would read to an operator as "this Core
-// moved" and send them re-pairing for nothing.
+// one, so a restart re-enters the load branch: the same CA, the same coreId, and
+// every client paired before it still paired.
 log("restarting the container — pairing must survive it untouched …");
 docker(["restart", core.name]);
 await waitForCoreLink(core);
 
-const afterRestart = readBlob(core);
+const afterRestart = readIdentity(core);
 if (afterRestart.coreId !== first.coreId) {
   die(`restart re-minted the identity: ${first.coreId} → ${afterRestart.coreId}`);
 }
-if (afterRestart.registrationBlob !== first.registrationBlob) {
-  die("restart rewrote the pairing token, so every paired Panel would be holding a stale one");
+if (afterRestart.caCert !== first.caCert) {
+  die("restart replaced the CA, so every paired client would be locked out");
 }
-// One over the container's whole life: the first boot's. A restart that
-// printed another would read to an operator as "this Core moved" and send them
-// re-pairing for nothing.
-const notices = core.logs("all").split('paste this into your Panel\'s "Add Core"').length - 1;
-if (notices !== 1) {
-  die(`the Core has printed ${notices} pairing tokens across its life; expected exactly 1`);
-}
+assertNoCredentialInLogs("a restart");
 
 await assertConnects("after a restart");
-log("restart is a no-op for pairing — same identity, no new token, still connected");
+log("restart is a no-op for pairing — same identity, nothing emitted, still connected");
 
 // ─── `down -v` is the only thing that unpairs ────────────────────────────────
 
@@ -636,11 +681,11 @@ docker(["volume", "rm", "-f", core.volume]);
 // with "connection refused", which would prove nothing about the credentials —
 // the claim under test is that the material is gone, not that the container is.
 const replacement = await bootCore("replacement", { port: staleEndpointPort });
-const second = readBlob(replacement);
+const second = readIdentity(replacement);
 if (second.coreId === first.coreId) {
   die("a Core booted on a destroyed volume kept its identity — `down -v` did not unpair");
 }
-if (second.blob.bearer === first.blob.bearer || second.blob.caCert === first.blob.caCert) {
+if (second.caCert === first.caCert || second.bearerSecret === first.bearerSecret) {
   die("a Core booted on a destroyed volume reused its old credentials");
 }
 
@@ -661,5 +706,8 @@ const stale = await pollUntil(
 ).catch((err) => die(`${err.message} — the Panel never noticed the unpairing`));
 log(`the Panel reports the old pairing as ${stale.state}: \`down -v\` unpaired it`);
 
-log("PASS — the Core image boots unprivileged, pairs a Panel, survives restart, unpairs on down -v");
+log(
+  "PASS — the Core image boots unprivileged, emits no credential, pairs a Panel by code, " +
+    "survives restart, unpairs on down -v",
+);
 process.exit(0);

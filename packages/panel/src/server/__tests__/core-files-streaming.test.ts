@@ -37,7 +37,6 @@ import { Server } from "node:net";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-core-files-stream-test-"));
@@ -47,7 +46,10 @@ process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 const { handleApiRequest } = await import("../api-router");
 const { closePanelDb, getPanelDb } = await import("../panel-db");
 const { operatorSessionCookie } = await import("./_operator-session");
-const { resetCoreLinkManagerForTests } = await import("../services/core-link-manager");
+const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
+  "../services/core-link-manager"
+);
+const { registerCoreFromCredential } = await import("../services/cores");
 const { resetCoreFilesSendersForTests } = await import("../services/core-files-proxy");
 
 const ORIGIN = "http://panel.example.test";
@@ -162,7 +164,12 @@ async function pairSinkCore(): Promise<string> {
   });
   running.push(server);
 
-  const registrationBlob = encodeRegistrationBlob({
+  // Registered through the service and dialled — the two calls the pairing
+  // controller makes once a code has been redeemed. There is no `POST
+  // /api/cores` to paste a blob at any more (#287); the cookie is asked for
+  // first because the registry row's foreign key points at the Operator.
+  operatorSessionCookie();
+  const registered = registerCoreFromCredential({
     endpoint: `wss://127.0.0.1:${port}`,
     label: "stream-vm",
     caCert: material.ca.cert,
@@ -170,14 +177,7 @@ async function pairSinkCore(): Promise<string> {
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_stream", exp: Date.now() + 600_000 }, BEARER_SECRET),
   });
-  const added = await handleApiRequest(
-    new Request(`${ORIGIN}/api/cores`, {
-      method: "POST",
-      headers: { cookie: operatorSessionCookie(), "content-type": "application/json" },
-      body: JSON.stringify({ registrationBlob }),
-    }),
-  );
-  const body = (await added!.json()) as { core: { id: string } };
+  coreLinkManager().dial(registered.id);
   await vi.waitFor(
     async () => {
       const list = (await (
@@ -185,13 +185,13 @@ async function pairSinkCore(): Promise<string> {
           new Request(`${ORIGIN}/api/cores`, { headers: { cookie: operatorSessionCookie() } }),
         )
       )!.json()) as { cores: { id: string; dial: { state: string; files?: unknown } }[] };
-      const core = list.cores.find((c) => c.id === body.core.id);
+      const core = list.cores.find((c) => c.id === registered.id);
       expect(core?.dial.state).toBe("connected");
       expect(core?.dial.files).toEqual({ version: 1 });
     },
     { timeout: 15_000 },
   );
-  return body.core.id;
+  return registered.id;
 }
 
 /** A PUT whose body this test drives chunk by chunk. */

@@ -177,7 +177,7 @@ async function main() {
     process.exit(130);
   });
 
-  await assertBootsAndDials(child, { port, timeoutMs, die, log });
+  await assertBootsAndDials(child, { home: tmpHome, port, timeoutMs, die, log });
 
   log("OK — extracted tarball boots a dialable Core with no system Node");
   cleanup();

@@ -1,10 +1,12 @@
 # The reference deployment: one Panel, one Core, one network (ADR 0016 D41).
 #
 #   docker compose up -d
-#   docker compose logs core        # copy the registration blob it printed
+#   docker compose exec core actana pair new     # a code and a CA fingerprint
 #
-# then open http://localhost:7420, create the Operator, and paste the blob into
-# "Add Core". The Panel dials wss://core:8443 over this network — which is why
+# then open http://localhost:7420, create the Operator, and give "Add Core" the
+# address core:8443 and that code — checking the fingerprint the Panel shows
+# against the one pair new printed. The Panel dials wss://core:8443 over this
+# network — which is why
 # ACTANA_PUBLIC_HOST below is the compose *service name* and not a real DNS
 # name. Both images are published, so a clean checkout needs nothing built.
 #
@@ -73,7 +75,7 @@ services:
     restart: unless-stopped
     environment:
       # The address the Panel dials, and therefore the SAN in this Core's
-      # server certificate and the endpoint in every pairing token it prints.
+      # server certificate and the endpoint every pairing hands back.
       # It lives here, in the file you edit, rather than in the image — the
       # image never guesses it, because a container's default hostname is its
       # container ID and would change the certificate on every recreation.

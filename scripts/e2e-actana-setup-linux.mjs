@@ -7,12 +7,13 @@
 // machine the one-liner produced instead of on a second machine that a
 // duplicated install phase set up:
 //
-//   • the one-liner ends with a running Core and a printed pairing token that a
-//     test client can dial the core-link with — with no `--yes` passed, because
-//     a piped (non-TTY) run must prompt for nothing;
+//   • the one-liner ends with a running Core, registered in this machine's own
+//     `actana`, whose credential a test client can dial the core-link with —
+//     with no `--yes` passed, because a piped (non-TTY) run must prompt for
+//     nothing, and **printing no credential of its own** (#287);
 //   • `--version` installs that exact release; with no flag, the latest;
-//   • `status` / `token` / `start` / `stop` / `restart` / `logs` control and
-//     report the daemon;
+//   • `status` / `start` / `stop` / `restart` / `logs` control and report the
+//     daemon, and `pair new` mints a code on it;
 //   • re-running the one-liner upgrades in place — one unit, same pairing
 //     credentials, and a pre-rename `actana-harness.service` is taken out on
 //     the way;
@@ -22,8 +23,8 @@
 //     download aborts and leaves the old install running;
 //   • `update --version` installs exactly that release (the Panel↔Core
 //     version-lock recovery);
-//   • after `token regenerate`, a client dialling with the old blob is rejected
-//     and the new blob works;
+//   • after `token regenerate`, a client dialling with the old credential is
+//     rejected, and the identity on disk is a new one;
 //   • `uninstall` leaves no unit, launcher or install files and keeps the data
 //     dir; `--purge-data` removes that too.
 //
@@ -74,7 +75,7 @@ import {
   repackWithVersion,
   startFixtureServerProcess,
 } from "./lib/fixture-release.mjs";
-import { dialAndListProjects, extractToken, makeDie } from "./lib/core-smoke.mjs";
+import { dialAndListProjects, makeDie } from "./lib/core-smoke.mjs";
 import { tarballName as releaseAssetName } from "./lib/core-tarball.mjs";
 import {
   OPERATOR,
@@ -163,6 +164,35 @@ async function main() {
   });
   const { asOperator, mustAsOperator } = machine;
 
+  /**
+   * The credential `actana setup` wired into this machine's own registry.
+   *
+   * Read out of the registry with `cat`, because that is now the only place it
+   * exists: #287 removed the printed artifact these assertions used to pick out
+   * of stdout. `actana core ls --json` names the entry — derived from the
+   * label, so it is the machine's hostname unless `--label` said otherwise.
+   */
+  const storedCredential = () => {
+    const listed = mustAsOperator("actana core ls --json");
+    let rows;
+    try {
+      rows = JSON.parse(listed.stdout);
+    } catch {
+      return die("`actana core ls --json` did not print JSON", listed.stdout.split("\n"));
+    }
+    if (!Array.isArray(rows) || rows.length !== 1) {
+      return die(`expected exactly one registered Core, got ${JSON.stringify(rows)}`);
+    }
+    const text = mustAsOperator(`cat ~/.config/actana/cores/${rows[0].name}.txt`).stdout.trim();
+    const parsed = JSON.parse(Buffer.from(text, "base64").toString("utf8"));
+    for (const field of ["endpoint", "caCert", "clientCert", "clientKey", "bearer"]) {
+      if (typeof parsed[field] !== "string" || parsed[field] === "") {
+        die(`the registry entry for ${rows[0].name} has no usable ${field}`);
+      }
+    }
+    return parsed;
+  };
+
   /** The one-liner, exactly as the docs print it. */
   const oneLiner = (url, flags) =>
     `curl -fsSL ${url}/install.sh | bash -s -- --base-url ${url} ${flags}`;
@@ -172,16 +202,22 @@ async function main() {
   const install = mustAsOperator(
     oneLiner(installChannel.url, `--version ${pinnedVersion} --public-host 127.0.0.1`),
   );
-  const { blob } = extractToken(install.stdout, "the one-liner", die);
-  if (!/pairing token/i.test(install.stdout)) {
-    die("the install never used the words 'pairing token'", install.stdout.split("\n"));
+  // #287: the install emits no credential. A PEM header or a base64 blob on
+  // stdout would be the hand-carry back, and the one-liner is where an operator
+  // would find it.
+  if (/BEGIN (CERTIFICATE|PRIVATE KEY|RSA PRIVATE KEY)/.test(install.stdout)) {
+    die("the install printed certificate material", install.stdout.split("\n"));
   }
+  if (!/actana pair new/.test(install.stdout)) {
+    die("the install never said how to enroll a client", install.stdout.split("\n"));
+  }
+  const blob = storedCredential();
   // Nothing asked the operator anything: no `--yes` was passed, and the run
   // still finished. A prompt would have hung until the session timed out.
   if (/\[Y\/n\]|\(y\/n\)/i.test(install.stdout)) {
     die("a piped install prompted for input", install.stdout.split("\n"));
   }
-  log("the one-liner installed unattended and printed a pairing token");
+  log("the one-liner installed unattended, printed no credential, and named `pair new`");
 
   const active = mustAsOperator("systemctl --user is-active actana-core.service");
   if (active.stdout.trim() !== "active") {
@@ -193,18 +229,18 @@ async function main() {
   }
   log("user unit is active and enabled");
 
-  // ─── the token actually works ───
+  // ─── the credential setup wired in actually works ───
   await waitForPort(hostPort, die);
   let projects;
   try {
     projects = await dialAndListProjects({ ...blob, endpoint: `wss://127.0.0.1:${hostPort}` });
   } catch (err) {
-    die(`core-link dial with the pairing token failed: ${err.message}`, install.stdout.split("\n"));
+    die(`core-link dial with the wired credential failed: ${err.message}`, install.stdout.split("\n"));
   }
   if (!Array.isArray(projects) || projects.length !== 0) {
     die(`projectsList did not return []: got ${JSON.stringify(projects)}`);
   }
-  log("a test client dialled the core-link with the printed pairing token");
+  log("a test client dialled the core-link with the credential setup registered");
 
   // ─── linger ───
   const linger = mustAsOperator(`loginctl show-user ${OPERATOR} --property=Linger`);
@@ -213,7 +249,7 @@ async function main() {
   }
   log("lingering is enabled — the daemon survives logout");
 
-  // ─── status / token ───
+  // ─── status / pair ───
   //
   // Read once the port is up, not straight off the back of the install: a
   // status taken before the daemon is listening would be reporting on a race.
@@ -228,11 +264,29 @@ async function main() {
   }
   log(`\`actana status\` reports a healthy Core on the pinned v${pinnedVersion}`);
 
-  const reprint = mustAsOperator("actana token");
-  if (extractToken(reprint.stdout, "actana token", die).blob.caCert !== blob.caCert) {
-    die("`actana token` reprinted a different Core's material");
+  // The verb that replaced the reprint. It has to work on the machine the
+  // one-liner produced, and it must not put the code on stdout twice or leak a
+  // credential while doing it.
+  const minted = mustAsOperator("actana pair new --label e2e-panel");
+  if (!/Pairing code\s+[A-Z2-9]{4}-[A-Z2-9]{4}/.test(minted.stdout)) {
+    die("`actana pair new` printed no pairing code", minted.stdout.split("\n"));
   }
-  log("`actana token` reprints the same pairing token");
+  if (!/CA fingerprint\s+[0-9A-F]{2}(:[0-9A-F]{2}){31}/.test(minted.stdout)) {
+    die("`actana pair new` printed no CA fingerprint", minted.stdout.split("\n"));
+  }
+  if (/BEGIN (CERTIFICATE|PRIVATE KEY)/.test(minted.stdout)) {
+    die("`actana pair new` printed certificate material", minted.stdout.split("\n"));
+  }
+  const reprint = asOperator("actana token");
+  if (reprint.status === 0) die("`actana token` still reprints something — #287 removed it");
+  // Both streams: `machinectl shell` folds the session's stderr into the
+  // `docker exec`'s stdout, so a refusal written to stderr arrives on `stdout`
+  // here. Every other check in this file reads the pair for the same reason.
+  const refusal = `${reprint.stdout}${reprint.stderr}`;
+  if (!/actana pair new/.test(refusal)) {
+    die("`actana token` refused without naming `actana pair new`", refusal.split("\n"));
+  }
+  log("`actana pair new` mints a code, and `actana token` refuses and says so");
 
   // ─── start / stop / restart / logs ───
   mustAsOperator("actana stop");
@@ -286,11 +340,11 @@ async function main() {
   }
 
   log("re-running the one-liner with no version pinned");
-  const upgrade = mustAsOperator(oneLiner(installChannel.url, "--public-host 127.0.0.1"));
+  mustAsOperator(oneLiner(installChannel.url, "--public-host 127.0.0.1"));
   // Not byte equality: the bearer inside carries a fresh expiry every time it
   // is signed. What must not change is the material the Panel pinned — a new
   // CA or client cert means the paired Panel is locked out.
-  const reissued = extractToken(upgrade.stdout, "the second one-liner", die).blob;
+  const reissued = storedCredential();
   if (reissued.caCert !== blob.caCert || reissued.clientCert !== blob.clientCert) {
     die("the upgrade replaced the pairing credentials — a paired Panel would break");
   }
@@ -335,13 +389,8 @@ async function main() {
   }
   // The identity must survive too — a Core that reboots into fresh certs is a
   // Core the operator has to re-pair.
-  const afterRebootToken = extractToken(
-    mustAsOperator("actana token").stdout,
-    "actana token after reboot",
-    die,
-  );
-  if (afterRebootToken.blob.caCert !== blob.caCert) {
-    die("the Core came back with different material — the Panel would be locked out");
+  if (storedCredential().caCert !== blob.caCert) {
+    die("the Core came back with different material — every paired client would be locked out");
   }
   log("the Core came back after reboot with the same identity");
 
@@ -426,41 +475,39 @@ async function main() {
   }
   // The material is untouched by an update, so the Panel that was paired is
   // still paired — and the token still dials.
-  const afterUpdateToken = extractToken(mustAsOperator("actana token").stdout, "actana token", die);
-  if (afterUpdateToken.blob.caCert !== blob.caCert) {
+  const afterUpdate = storedCredential();
+  if (afterUpdate.caCert !== blob.caCert) {
     die("updating replaced the pairing credentials — a paired Panel would break");
   }
-  await dialAndListProjects({ ...afterUpdateToken.blob, endpoint: `wss://127.0.0.1:${hostPort}` });
+  await dialAndListProjects({ ...afterUpdate, endpoint: `wss://127.0.0.1:${hostPort}` });
   log("`actana update` landed the latest release, restarted, and stayed paired");
 
   // ─── token regenerate ───
   const regenerated = mustAsOperator("actana token regenerate --yes");
-  const freshBlob = extractToken(regenerated.stdout, "actana token regenerate", die).blob;
-  if (freshBlob.caCert === blob.caCert || freshBlob.clientCert === blob.clientCert) {
-    die("`actana token regenerate` reissued the same credentials");
+  // It hands nothing out (#287): what it says is that every paired client is
+  // locked out and how to pair one again.
+  if (/BEGIN (CERTIFICATE|PRIVATE KEY)/.test(`${regenerated.stdout}${regenerated.stderr}`)) {
+    die("`actana token regenerate` printed certificate material", regenerated.stdout.split("\n"));
+  }
+  if (!/actana pair new/.test(`${regenerated.stdout}${regenerated.stderr}`)) {
+    die("`actana token regenerate` did not say how to pair again", regenerated.stderr.split("\n"));
   }
   await waitForPort(hostPort, die);
 
-  // The old blob must now be refused. This is the criterion, and it is checked
-  // against the running daemon rather than against the file on disk.
+  // The old credential must now be refused. This is the criterion, and it is
+  // checked against the running daemon rather than against the file on disk.
   let oldStillWorks = false;
   try {
     await dialAndListProjects(
-      { ...afterUpdateToken.blob, endpoint: `wss://127.0.0.1:${hostPort}` },
+      { ...afterUpdate, endpoint: `wss://127.0.0.1:${hostPort}` },
       10_000,
     );
     oldStillWorks = true;
   } catch {
     /* expected — the old CA no longer signs anything this daemon trusts */
   }
-  if (oldStillWorks) die("the old pairing token still dialled after `token regenerate`");
-
-  const withNew = await dialAndListProjects({
-    ...freshBlob,
-    endpoint: `wss://127.0.0.1:${hostPort}`,
-  });
-  if (!Array.isArray(withNew)) die("the regenerated pairing token could not dial the Core");
-  log("`actana token regenerate` invalidated the old credentials and issued working ones");
+  if (oldStillWorks) die("the old credential still dialled after `token regenerate`");
+  log("`actana token regenerate` invalidated every credential this Core had issued");
 
   // ─── uninstall ───
   mustAsOperator("actana uninstall --yes");

@@ -3,7 +3,8 @@
 // Before 0.4.0 an operator who ran `actana setup` on their own machine had to
 // take the pairing token setup printed and hand it back to the *same* machine's
 // `actana core add` before any client noun would work — a blob copied from one
-// half of a split command into the other half, on one box, by hand.
+// half of a split command into the other half, on one box, by hand. Both ends
+// of that copy are gone now (#287); this is what replaced the near end.
 //
 // The implementation lives in `@actana/shared/local-core-wiring` and is
 // re-exported here so `actana-setup.ts` keeps importing one name from one

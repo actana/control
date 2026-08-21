@@ -3,9 +3,10 @@
 // The claim #129 makes for the whole phase is that **a file dropped on a Project
 // is `cat`-able by a harness on that Core seconds later**, and there is only one
 // honest way to test that: put a real Core on a real mTLS port with its real
-// `/v1/…` routes, pair it through the Panel's own `/api/cores`, PUT bytes at the
-// Panel, and then read the file off that Core's disk with `fs`. Nothing here is
-// injected below the Panel's API router — no fake fetch, no stubbed link — so a
+// `/v1/…` routes, register its credential through the Panel's own Core service
+// the way pairing does, PUT bytes at the Panel, and then read the file off that
+// Core's disk with `fs`. Nothing below the Panel's API router is
+// injected — no fake fetch, no stubbed link — so a
 // pass means the certificate, the bearer, the URL shape, the capability gate and
 // the streams all actually lined up.
 //
@@ -23,7 +24,6 @@ import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
 import { buildCoreFileRoutes } from "@actana/core/core-files-wiring";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
 
 const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), "ac-core-files-api-test-"));
@@ -33,7 +33,10 @@ process.env.AC_PANEL_DATA_DIR = path.join(tmpRoot, "panel");
 const { handleApiRequest } = await import("../api-router");
 const { closePanelDb, getPanelDb } = await import("../panel-db");
 const { operatorSessionCookie } = await import("./_operator-session");
-const { resetCoreLinkManagerForTests } = await import("../services/core-link-manager");
+const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
+  "../services/core-link-manager"
+);
+const { registerCoreFromCredential } = await import("../services/cores");
 const { resetCoreFilesSendersForTests } = await import("../services/core-files-proxy");
 
 const ORIGIN = "http://panel.example.test";
@@ -95,7 +98,9 @@ function mockCore(): PtyCore {
   } as unknown as PtyCore;
 }
 
-type CoreFixture = { server: PtyCoreLinkServer; registrationBlob: string; projectRoot: string };
+type CoreCredential = Parameters<typeof registerCoreFromCredential>[0];
+
+type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential; projectRoot: string };
 
 /**
  * A Core on a real mTLS port.
@@ -129,15 +134,15 @@ async function startCore(label: string, opts: { withFiles?: boolean } = {}): Pro
         }
       : {}),
   });
-  const registrationBlob = encodeRegistrationBlob({
+  const credential = {
     endpoint: `wss://127.0.0.1:${port}`,
     label,
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_files", exp: Date.now() + 600_000 }, BEARER_SECRET),
-  });
-  return { server, registrationBlob, projectRoot };
+  };
+  return { server, credential, projectRoot };
 }
 
 const running: PtyCoreLinkServer[] = [];
@@ -145,16 +150,16 @@ const running: PtyCoreLinkServer[] = [];
 async function pair(opts: { withFiles?: boolean } = {}): Promise<{ id: string; projectRoot: string }> {
   const core = await startCore("files-vm", opts);
   running.push(core.server);
-  const response = await call("/api/cores", {
-    method: "POST",
-    headers: { "content-type": "application/json" },
-    body: JSON.stringify({ registrationBlob: core.registrationBlob }),
-  });
-  expect(response.status).toBe(201);
-  const body = (await response.json()) as { core: { id: string } };
+  // The two calls the pairing controller makes once a code has been redeemed.
+  // There is no add route to POST a blob at any more (#287). The Operator row
+  // is what the registry's foreign key points at, and an HTTP registration used
+  // to create it on the way past — so ask for it before registering.
+  operatorSessionCookie();
+  const registered = registerCoreFromCredential(core.credential);
+  coreLinkManager().dial(registered.id);
   await vi.waitFor(
     async () => {
-      const dial = await dialOf(body.core.id);
+      const dial = await dialOf(registered.id);
       expect(dial.state).toBe("connected");
       // The capability rides the dial status (#129 F9), so waiting on the state
       // alone would race the `ready` frame that carries it.
@@ -162,7 +167,7 @@ async function pair(opts: { withFiles?: boolean } = {}): Promise<{ id: string; p
     },
     { timeout: 15_000 },
   );
-  return { id: body.core.id, projectRoot: core.projectRoot };
+  return { id: registered.id, projectRoot: core.projectRoot };
 }
 
 async function dialOf(id: string): Promise<{ state: string; files?: { version: 1 } | null }> {

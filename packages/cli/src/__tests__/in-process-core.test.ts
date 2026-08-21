@@ -27,7 +27,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { probeCore } from "../core-probe.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { CORE_ID, startInProcessCore, type InProcessCore } from "./in-process-core.ts";
 
 let core: InProcessCore | null = null;
@@ -45,9 +49,9 @@ describe("actana core status, against a Core in this process", () => {
     core = await startInProcessCore();
     fixture = makeCliFixture();
 
-    // `core add` from stdin — the path the ticket names, and never a shell-out.
-    const added = await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
-    expect(added.code, added.err.join("\n")).toBe(EXIT_OK);
+    // The registry a pairing leaves behind — `core add` is gone (#287), and
+    // nothing here ever shelled out to fetch a credential.
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     // The real probe. This is the module no other unconditional suite runs.
     const status = await fixture.run(["core", "status", "--json"], { probe: probeCore });
@@ -67,7 +71,7 @@ describe("actana core status, against a Core in this process", () => {
   it("prints the same facts in the human table", async () => {
     core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const status = await fixture.run(["core", "status", "--verbose"], { probe: probeCore });
     expect(status.code, status.err.join("\n")).toBe(EXIT_OK);
@@ -82,7 +86,7 @@ describe("actana core status, against a Core in this process", () => {
     // the one path that has a live socket and a Core's answers to quote.
     core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const decoded = JSON.parse(Buffer.from(core.blobText, "base64").toString("utf8")) as {
       caCert: string;
@@ -115,7 +119,7 @@ describe("actana core status, against a Core in this process", () => {
     // drifted Core is a different build entirely.
     core = await startInProcessCore({ protocolVersion: "999.0.0" });
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const status = await fixture.run(["core", "status", "--json"], { probe: probeCore });
     expect(status.code).toBe(EXIT_FAILURE);
@@ -131,7 +135,7 @@ describe("actana core status, against a Core in this process", () => {
     // every assertion here would pass against a suite that never started a Core.
     core = await startInProcessCore();
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
     core.close();
     core = null;
 

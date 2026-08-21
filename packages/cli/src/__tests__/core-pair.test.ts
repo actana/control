@@ -4,8 +4,8 @@
 // The verb has three jobs and this suite is organised as those three. It has to
 // *get* a credential the way #280 says (a fingerprint confirmed before a code
 // moves, and a code the operator may type in any of the shapes a human types
-// one in); it has to *store* that credential exactly where and how `core add`
-// does, so that every verb downstream is unchanged; and it has to *refuse*
+// one in); it has to *store* that credential exactly where and how the registry
+// expects, so that every verb downstream is unchanged; and it has to *refuse*
 // legibly — one sentence, one next step and one exit code per failure the SDK
 // distinguishes.
 //
@@ -496,6 +496,6 @@ describe("actana core pair — what it says", () => {
   it("is named in the verb list an unknown verb prints", async () => {
     const run = await cli().run(["core", "wat"]);
     expect(run.code).toBe(EXIT_USAGE);
-    expect(run.err.join("\n")).toContain("Verbs: pair, add");
+    expect(run.err.join("\n")).toContain("Verbs: pair, ls");
   });
 });

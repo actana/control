@@ -10,7 +10,13 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { runActanaCli } from "../actana-cli.ts";
-import { registryPaths, type RegistryPaths } from "../blob-registry.ts";
+import {
+  readCurrentCore,
+  registryPaths,
+  writeCoreBlob,
+  writeCurrentCore,
+  type RegistryPaths,
+} from "../blob-registry.ts";
 import type { CoreProbe, CoreProbeFn } from "../core-probe.ts";
 import { nonInteractiveTerminal, type CliTerminal, type TerminalSignal } from "../cli-terminal.ts";
 import { stubMachineHalf, type MachineHalf } from "./machine-fixture.ts";
@@ -899,6 +905,25 @@ export function fakeAttachment(
       for (const cb of [...drops]) cb(error === undefined ? {} : { error });
     },
   };
+}
+
+/**
+ * Put a Core in a fixture's registry, the way a pairing leaves one.
+ *
+ * `actana core pair` writes the credential it was issued into
+ * `cores/<name>.txt` and points `current` at the first Core a machine learns
+ * about. This is those two writes with no Core to dial, and it is how every
+ * suite below arranges a registry now that #287 has removed `actana core add` —
+ * a test that still pasted a blob would be exercising a door the product does
+ * not have.
+ */
+export function registerCore(
+  paths: RegistryPaths,
+  name: string,
+  blobText: string = sentinelBlobText(),
+): void {
+  writeCoreBlob(paths, name, blobText);
+  if (readCurrentCore(paths) === null) writeCurrentCore(paths, name);
 }
 
 /** A base64 blob with the sentinel credentials in it. */

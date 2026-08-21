@@ -44,7 +44,7 @@ const SCHEMA = `
     -- modeling the ownership now is what keeps a later multi-account product
     -- from having to rewrite the registry.
     operator_id INTEGER NOT NULL REFERENCES operator(id) ON DELETE CASCADE,
-    -- One registration per endpoint: pasting the same pairing token twice is a
+    -- One registration per endpoint: pairing the same Core twice is a
     -- mistake to report, not a second Core to dial.
     endpoint TEXT NOT NULL UNIQUE,
     label TEXT NOT NULL,

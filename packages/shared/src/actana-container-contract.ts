@@ -33,7 +33,7 @@
 // picks the first routable IPv4, which is a good guess for a machine and a
 // trap for a container: a bare `docker run` has a container-ID hostname, and a
 // guessing default would silently change the certificate SAN — and therefore
-// every pairing token this Core ever printed — each time the container is
+// break every client this Core ever paired — each time the container is
 // recreated.
 //
 // Everything else the image needs (`AC_CORE_REMOTE`, `AC_CORE_LINK_HOST`,
@@ -60,7 +60,7 @@ export const DEFAULT_CONTAINER_PORT = 8443;
 
 /** What the operator's three variables resolve to. */
 export type ContainerContract = {
-  /** The cert SAN and the pairing token's endpoint host. Never guessed. */
+  /** The cert SAN, and the endpoint host a pairing hands back. Never guessed. */
   publicHost: string;
   port: number;
   label: string;
@@ -101,9 +101,9 @@ export function readContainerContract(
     return {
       error:
         `${CONTAINER_PUBLIC_HOST_ENV} is not set, and this Core will not guess it. The ` +
-        `address a Panel dials is baked into this Core's certificate and into every ` +
-        `pairing token it prints, so a guessed one would change each time the container ` +
-        `is recreated and break the pairing. Set it to the host or IP your Panel reaches ` +
+        `address a Panel dials is baked into this Core's certificate and into the ` +
+        `endpoint every pairing hands back, so a guessed one would change each time the ` +
+        `container is recreated and break the pairing. Set it to the host or IP your Panel reaches ` +
         `this container on:\n` +
         `  ${CONTAINER_PUBLIC_HOST_ENV}=core1.example.com`,
     };

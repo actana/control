@@ -6,14 +6,20 @@ import { Server } from "node:net";
 import { PtyCoreLinkServer, type WebSocketServerLike, type WebSocketLike } from "@actana/core/pty-core-link-server";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import { encodeRegistrationBlob } from "@actana/shared/registration-blob";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { EventLogPort } from "@actana/core/pty-core-link-server";
 import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
 
 /**
- * The Cores surface, driven the way a browser drives it: pair a Core by pasting
- * a token, watch the Panel service reach a real Core over mTLS, remove it.
+ * The Cores surface, driven the way a browser drives it: register the
+ * credential a pairing produced, watch the Panel service reach a real Core over
+ * mTLS, remove it.
+ *
+ * Registration goes through the service rather than an HTTP route, and that is
+ * the shape of the surface now: `POST /api/cores` was the blob-paste door and
+ * #287 removed it, so the only way in over HTTP is `POST /api/cores/pairing` —
+ * which needs a Core running the pre-auth pairing endpoint, not the bare
+ * core-link server this file stands up.
  *
  * The Core here is the real core-link server behind a real TLS socket, so
  * "the dial reached it" means the handshake, the pinned CA, the client cert,
@@ -30,6 +36,7 @@ const { operatorSessionCookie } = await import("./_operator-session");
 const { coreLinkManager, resetCoreLinkManagerForTests } = await import(
   "../services/core-link-manager"
 );
+const { registerCoreFromCredential } = await import("../services/cores");
 
 const ORIGIN = "http://panel.example.test";
 const BEARER_SECRET = "cores-api-test-secret-32-bytes-xxx";
@@ -173,9 +180,11 @@ function fakeEventLog(count: number): EventLogPort & { subscribedFrom: number[] 
   };
 }
 
+type CoreCredential = Parameters<typeof registerCoreFromCredential>[0];
+
 type CoreFixture = {
   server: PtyCoreLinkServer;
-  registrationBlob: string;
+  credential: CoreCredential;
   authAttempts: () => number;
   eventLog: ReturnType<typeof fakeEventLog>;
 };
@@ -204,15 +213,15 @@ async function startCore(label: string, eventCount = 0): Promise<CoreFixture> {
     },
   });
   await vi.waitFor(() => expect(bound.port).toBeGreaterThan(0));
-  const registrationBlob = encodeRegistrationBlob({
+  const credential: CoreCredential = {
     endpoint: `wss://127.0.0.1:${bound.port}`,
     label,
     caCert: material.ca.cert,
     clientCert: material.client.cert,
     clientKey: material.client.key,
     bearer: signBearer({ coreId: "core_fixture", exp: Date.now() + 600_000 }, BEARER_SECRET),
-  });
-  return { server, registrationBlob, authAttempts: () => authAttempts, eventLog };
+  };
+  return { server, credential, authAttempts: () => authAttempts, eventLog };
 }
 
 const running: PtyCoreLinkServer[] = [];
@@ -230,16 +239,26 @@ afterAll(() => {
   fs.rmSync(tmpRoot, { recursive: true, force: true });
 });
 
+/**
+ * Register a Core the way the pairing controller does — through the service,
+ * then start the dial. The controller does exactly these two calls; doing them
+ * here keeps the fixture honest about what a registration is without standing
+ * up a pre-auth pairing endpoint the core-link server does not have.
+ */
 async function pair(
   label = "prod-vm-1",
   eventCount = 0,
-): Promise<{ id: string; blob: string; core: CoreFixture }> {
+): Promise<{ id: string; core: CoreFixture }> {
   const core = await startCore(label, eventCount);
   running.push(core.server);
-  const response = await call("/api/cores", { method: "POST", json: { registrationBlob: core.registrationBlob } });
-  expect(response.status).toBe(201);
-  const body = (await response.json()) as { core: { id: string; label: string } };
-  return { id: body.core.id, blob: core.registrationBlob, core };
+  // The Operator row is what the registry's foreign key points at, and an HTTP
+  // registration used to create it on the way past. Without this the helper
+  // depends on some earlier test in file order having called `call()` first,
+  // and any pair-using test run on its own fails on the foreign key.
+  operatorSessionCookie();
+  const registered = registerCoreFromCredential(core.credential);
+  coreLinkManager().dial(registered.id);
+  return { id: registered.id, core };
 }
 
 async function dialOf(id: string): Promise<{ state: string; lastSeenAt: number | null }> {
@@ -358,40 +377,22 @@ describe("Cores API", () => {
     }, 30_000);
   });
 
-  describe("a token the Panel won't take", () => {
-    it("rejects garbage with a message and registers nothing", async () => {
-      const response = await call("/api/cores", { method: "POST", json: { registrationBlob: "nonsense" } });
-      expect(response.status).toBe(400);
-      expect((await response.json()) as { error: string }).toEqual({
-        error: expect.stringContaining("pairing token"),
-      });
-      expect(await (await call("/api/cores")).json()).toEqual({ cores: [] });
-    });
-
-    it("rejects a missing token", async () => {
-      expect((await call("/api/cores", { method: "POST", json: {} })).status).toBe(400);
-      expect(await (await call("/api/cores")).json()).toEqual({ cores: [] });
-    });
-
-    it("rejects a truncated paste and registers nothing", async () => {
-      const { blob } = await pair();
-      const response = await call("/api/cores", {
-        method: "POST",
-        json: { registrationBlob: blob.slice(0, blob.length - 40) },
-      });
-      expect(response.status).toBe(400);
+  describe("a registration the Panel won't take", () => {
+    // There is no `POST /api/cores` to reject a bad paste with any more (#287).
+    // What is left is the registry's own invariant, and it is the one that
+    // matters: an endpoint already spoken for is refused whichever door asks.
+    it("refuses to register the same Core twice", async () => {
+      const { core } = await pair();
+      expect(() => registerCoreFromCredential(core.credential)).toThrow(/already registered/);
       const body = (await (await call("/api/cores")).json()) as { cores: unknown[] };
       expect(body.cores).toHaveLength(1);
     }, 20_000);
 
-    it("refuses to pair the same Core twice", async () => {
-      const { blob } = await pair();
-      const response = await call("/api/cores", { method: "POST", json: { registrationBlob: blob } });
-      expect(response.status).toBe(400);
-      expect(((await response.json()) as { error: string }).error).toContain("already registered");
-      const body = (await (await call("/api/cores")).json()) as { cores: unknown[] };
-      expect(body.cores).toHaveLength(1);
-    }, 20_000);
+    it("has no add route at all — the paste door is gone", async () => {
+      const response = await call("/api/cores", { method: "POST", json: { registrationBlob: "x" } });
+      expect(response.status).toBe(404);
+      expect(await (await call("/api/cores")).json()).toEqual({ cores: [] });
+    });
   });
 
   describe("renaming a Core", () => {

@@ -18,11 +18,12 @@ brings this image up beside a Panel on one network:
 
 ```bash
 docker compose up -d
-docker compose logs core        # copy the registration blob it printed
+docker compose exec core actana pair new     # a code and a CA fingerprint
 ```
 
-Then open the Panel and paste that blob into **Add Core**. The Panel dials this
-container by its compose service name, so the Core publishes no port at all. A
+Then open the Panel and give **Add Core** the address `core:8443` and that code,
+checking the fingerprint the Panel shows against the one `pair new` printed. The
+Panel dials this container by its compose service name, so the Core publishes no port at all. A
 second Core is the same service block again with a different name, host and
 volume — nothing here is a singleton.
 
@@ -32,7 +33,7 @@ Three variables, and only the first is required.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `ACTANA_PUBLIC_HOST` | — **required** | The host your Panel will dial. It is in the server certificate's SAN and in the registration blob. |
+| `ACTANA_PUBLIC_HOST` | — **required** | The host your Panel will dial. It is in the server certificate's SAN and in the endpoint every pairing hands back. |
 | `ACTANA_PORT` | `8443` | The core-link port, and the port the image exposes. |
 | `ACTANA_LABEL` | — | The name the Panel shows for this Core. |
 
@@ -62,11 +63,10 @@ changes all keep it.
 Changing `ACTANA_PUBLIC_HOST` re-signs the server certificate for the new address, from the CA
 already in the volume. The Core ID, the CA, the bearer secret and your Panel's client certificate
 are untouched, so a Panel paired before the change still trusts this Core — but it is still dialling
-the old address, so point it at the new one. `registration-blob.txt` in the volume is rewritten with
-a token for the new address if you would rather re-pair:
+the old address, so point it at the new one. If you would rather pair it again, mint a fresh code:
 
 ```bash
-docker compose exec core cat /home/core/.config/actana/registration-blob.txt
+docker compose exec core actana pair new --label my-panel
 ```
 
 ## Harness CLIs

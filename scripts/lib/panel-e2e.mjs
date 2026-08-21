@@ -8,7 +8,7 @@
 // that the deployed artifact works.
 //
 // `scripts/lib/core-smoke.mjs` stays the home for the Core side (env,
-// boot sentinel, registration blob, the mTLS core-link dial); this module
+// boot sentinel, the material file, the mTLS core-link dial); this module
 // spawns and drives the Panel, and the e2e composes the two.
 
 import { spawn } from "node:child_process";
@@ -118,8 +118,8 @@ export function waitForPanelListening(child, timeoutMs, observer) {
  * The browser's HTTP half: JSON in, JSON out, cookies remembered.
  *
  * `post`/`get` never throw on a non-2xx — every status this test cares about
- * (401 before login, 409 on a second setup, 400 on a bad blob) is an assertion,
- * not an accident.
+ * (401 before login, 409 on a second setup, 400 on a spent pairing code, 404 on
+ * the add route #287 removed) is an assertion, not an accident.
  */
 export class PanelHttpClient {
   constructor(origin, jar = new CookieJar()) {

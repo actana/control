@@ -1,12 +1,17 @@
-// The decoder, on its own — the only module in this package that turns bytes
-// into credentials (#129 D9).
+// The registry codec, on its own — the only module in this package that turns
+// bytes into credentials (#129 D9).
+//
+// It survives #287 because the *storage* survives: `actana core pair` writes a
+// credential here and every client verb reads one back. What it no longer sees
+// is a paste — the hand-carry it also served is gone — so what is asserted
+// below is a file, or `ACTANA_CORE_BLOB`, and never an operator's clipboard.
 //
 // Everything else covers it through a verb, which proves the verbs and leaves
-// the decoder's own contract implicit. Its contract has two halves and they
-// pull in opposite directions: **say precisely what is wrong**, and **never
-// quote the input**. A blob is a credential, and a malformed one is very often
-// a nearly well-formed one, so the second half is the one under pressure every
-// time somebody improves an error message.
+// the codec's own contract implicit. Its contract has two halves and they pull
+// in opposite directions: **say precisely what is wrong**, and **never quote
+// the input**. A stored credential that will not decode is very often a nearly
+// well-formed one, so the second half is the one under pressure every time
+// somebody improves an error message.
 
 import { describe, it, expect } from "vitest";
 import {
@@ -83,7 +88,7 @@ describe("what it says when a blob is wrong", () => {
   it("tells base64url from base64 rather than decoding it into nonsense", () => {
     // `-` and `_` are the base64url alphabet. Skipped rather than rejected,
     // they used to silently corrupt the decode and surface as a JSON error
-    // about a blob that was pasted whole.
+    // about a file that was in fact intact.
     const result = decodeRegistrationBlobText("eyJlbmRwb2lu-dCI6_Q");
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.error).toBe("the blob is not base64");
@@ -119,7 +124,7 @@ describe("what it says when a blob is wrong", () => {
   it("never quotes what it was handed, on any failure path", () => {
     // The property the whole module exists to hold, asserted where the
     // messages are written rather than only where they are printed. Each of
-    // these is a *nearly* well-formed blob carrying real sentinel credentials,
+    // these is a *nearly* well-formed entry carrying real sentinel credentials,
     // which is exactly the input an error message is most tempted to echo.
     const nearly = [
       // Right shape, wrong scheme — the failure that has a valid blob behind it.

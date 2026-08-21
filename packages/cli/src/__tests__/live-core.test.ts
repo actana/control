@@ -24,7 +24,11 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { probeCore } from "../core-probe.ts";
 import { EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 
 /**
  * The blob text out of the environment: a paste, or a path to one. The same
@@ -52,10 +56,10 @@ describe.skipIf(blobText === null)("actana core, against a live Core", () => {
   it("registers the Core from stdin and reports the version it answers with", async () => {
     fixture = makeCliFixture();
 
-    // `core add` from a pipe — the path the ticket names, and never a shell-out.
-    const added = await fixture.run(["core", "add", "live"], { stdin: blobText! });
-    expect(added.code).toBe(EXIT_OK);
-
+    // The registry a pairing leaves behind — `core add` is gone (#287), and
+    // nothing here ever shelled out to fetch a credential.
+    registerCore(fixture.paths, "live", blobText!);
+  
     const status = await fixture.run(["core", "status", "--json", "--core", "live"], {
       probe: probeCore,
     });
@@ -73,7 +77,7 @@ describe.skipIf(blobText === null)("actana core, against a live Core", () => {
 
   it("prints the same facts in the human table, and no credential in either", async () => {
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "live"], { stdin: blobText! });
+    registerCore(fixture.paths, "live", blobText!);
 
     const status = await fixture.run(["core", "status", "--verbose"], { probe: probeCore });
     expect(status.code, status.err.join("\n")).toBe(EXIT_OK);
@@ -99,7 +103,7 @@ describe.skipIf(blobText === null)("actana core, against a live Core", () => {
       JSON.stringify({ ...blob, endpoint: "wss://127.0.0.1:1" }),
     ).toString("base64");
 
-    await fixture.run(["core", "add", "dead"], { stdin: unreachable });
+    registerCore(fixture.paths, "dead", unreachable);
     const status = await fixture.run(["core", "status", "--json", "--core", "dead"], {
       probe: probeCore,
     });

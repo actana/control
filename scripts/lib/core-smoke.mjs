@@ -13,13 +13,15 @@
 // file's `assertBootsAndDials` assertion against a path nothing ships, one
 // layer inside the tarball smoke that does ship.
 
+import * as crypto from "node:crypto";
+import * as fs from "node:fs";
 import * as net from "node:net";
+import * as path from "node:path";
 // `ws` is loaded lazily, inside dialAndRequest — see the note there.
 
 import { waitForSentinel } from "./child-sentinel.mjs";
 
 export const LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
-export const REGISTRATION_BLOB_SENTINEL = "@@AC_CORE_REGISTRATION_BLOB@@";
 
 /**
  * Log tags that indicate a boot regression. The presence of ANY of these
@@ -91,6 +93,11 @@ export function coreSmokeEnv({ home, userDataDir, port, extra = {} }) {
     AC_CORE_LINK_HOST: "127.0.0.1",
     AC_CORE_PUBLIC_HOST: "127.0.0.1",
     AC_USER_DATA_DIR: userDataDir,
+    // Required in remote mode since #287: the material file is where a Core's
+    // identity and its pairing sessions live, and a Core without one can issue
+    // no credential to anybody. It also gives this smoke the one thing it needs
+    // — see `materialFileFor` and `credentialFromMaterial`.
+    AC_CORE_MATERIAL_FILE: materialFileFor(home),
     ...extra,
   };
   // The Core must boot as PLAIN node: nothing inherited from the caller may
@@ -102,9 +109,10 @@ export function coreSmokeEnv({ home, userDataDir, port, extra = {} }) {
 /**
  * Watch a spawned Core until it prints the listening sentinel.
  *
- * Every line is mirrored into `observer.logLines` for failure triage, bad log
- * tags are collected into `observer.badTags`, and the Registration blob is
- * captured so the caller can dial the mTLS core-link.
+ * Every line is mirrored into `observer.logLines` for failure triage and bad log
+ * tags are collected into `observer.badTags`. It used to also capture a printed
+ * Registration blob; #287 removed that emission, and the credential now comes
+ * off disk — see `credentialAfterBoot`.
  *
  * Exported because the Panel e2e's Core fixture
  * (`scripts/lib/core-fixture.mjs`) boots a Core for a different reason
@@ -117,10 +125,6 @@ export function waitForListening(child, timeoutMs, observer) {
     observer,
     subject: "core",
     onLine: (raw) => {
-      const blobIdx = raw.indexOf(REGISTRATION_BLOB_SENTINEL);
-      if (blobIdx >= 0) {
-        observer.blob = raw.slice(blobIdx + REGISTRATION_BLOB_SENTINEL.length).trim();
-      }
       for (const tag of BAD_LOG_TAGS) {
         if (raw.includes(tag)) observer.badTags.push(tag);
       }
@@ -128,51 +132,86 @@ export function waitForListening(child, timeoutMs, observer) {
   });
 }
 
-/** Decode the base64 Registration blob the Core prints in remote mode. */
-export function decodeBlob(blob) {
-  const json = Buffer.from(blob.trim(), "base64").toString("utf8");
-  const parsed = JSON.parse(json);
-  if (
-    typeof parsed !== "object" ||
-    parsed === null ||
-    typeof parsed.endpoint !== "string" ||
-    typeof parsed.caCert !== "string" ||
-    typeof parsed.clientCert !== "string" ||
-    typeof parsed.clientKey !== "string" ||
-    typeof parsed.bearer !== "string"
-  ) {
-    throw new Error("registration blob missing expected fields");
-  }
-  return parsed;
+/** Where a smoked Core keeps its identity, under the throwaway home. */
+export function materialFileFor(home) {
+  return path.join(home, ".config", "actana", "material.json");
 }
 
 /**
- * The one line of an installer's output that decodes as a Registration blob.
+ * A client credential, built from the identity the Core just persisted.
  *
- * Deliberately structural rather than positional: the installer e2es assert
- * that a *usable* pairing token was printed, not that it appeared on a line
- * the output formatting could move.
+ * **Why not pair for it.** #287 removed the printed blob these smokes used to
+ * capture, and what replaced it is a short code redeemed over the Core's
+ * pre-auth endpoint — a keypair, a CSR and a fingerprint-verified dial, which
+ * is `@actana/sdk`'s job and is covered by its own suite and by the Panel e2e.
+ * The question *this* file asks is narrower and older: does a Core boot clean
+ * and accept an authenticated core-link dial? So it takes the client half of
+ * the identity the daemon wrote — which is exactly what `actana setup` puts in
+ * the machine's own registry — and signs itself a bearer.
+ *
+ * The bearer signer is a deliberate copy of `@actana/shared/core-link-bearer`,
+ * for the same reason `core-fixture.mjs` copies its encoder: these scripts drive
+ * a Core from outside, and importing the signer would let one bug in it cancel
+ * itself out against the verifier on the other end.
  */
-export function extractToken(stdout, context, die) {
-  for (const line of stdout.split("\n").map((l) => l.trim())) {
-    if (line.length < 100) continue;
-    try {
-      return { raw: line, blob: decodeBlob(line) };
-    } catch {
-      /* not the token line */
+export function credentialFromMaterial(materialFile, endpoint, { bearerDays = 365 } = {}) {
+  const material = JSON.parse(fs.readFileSync(materialFile, "utf8"));
+  for (const field of ["caCert", "clientCert", "clientKey", "bearerSecret", "coreId"]) {
+    if (typeof material[field] !== "string" || material[field] === "") {
+      throw new Error(`${materialFile} has no usable ${field}`);
     }
   }
-  die(`no pairing token in the output of ${context}`, stdout.split("\n"));
+  const payload = Buffer.from(
+    JSON.stringify({ coreId: material.coreId, exp: Date.now() + bearerDays * 86_400_000 }),
+    "utf8",
+  ).toString("base64url");
+  const sig = crypto
+    .createHmac("sha256", material.bearerSecret)
+    .update(payload)
+    .digest()
+    .toString("base64url");
+  return {
+    endpoint,
+    label: "",
+    caCert: material.caCert,
+    clientCert: material.clientCert,
+    clientKey: material.clientKey,
+    bearer: `${payload}.${sig}`,
+  };
 }
 
 /**
- * Dial the core-link with the blob's mTLS material + bearer, send one request
- * frame, and resolve the field the matching result frame carries.
+ * Wait for the material file to appear, then build a credential from it.
+ *
+ * A first boot mints and persists before it listens, so by the time the
+ * listening sentinel lands the file is there — but the write and the sentinel
+ * are two syscalls apart, and a poll is cheaper than a race.
+ */
+export async function credentialAfterBoot(home, endpoint, timeoutMs = 10_000) {
+  const file = materialFileFor(home);
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (fs.existsSync(file)) {
+      try {
+        return credentialFromMaterial(file, endpoint);
+      } catch (err) {
+        if (Date.now() >= deadline) throw err;
+      }
+    } else if (Date.now() >= deadline) {
+      throw new Error(`the Core never wrote ${file}`);
+    }
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+/**
+ * Dial the core-link with the credential's mTLS material + bearer, send one
+ * request frame, and resolve the field the matching result frame carries.
  *
  * Exported because the installer's container e2es make the same dial against a
  * Core they never spawned — "a test client dials the core-link with the
- * pairing token" is an acceptance criterion, and it should be the same client
- * for every frame a test needs to ask about.
+ * credential this machine holds" is an acceptance criterion, and it should be
+ * the same client for every frame a test needs to ask about.
  *
  * `ws` is required here rather than imported at module scope so that importing
  * this module costs nothing but node builtins. smoke-panel-image.mjs pulls in
@@ -279,16 +318,19 @@ export function dialAndListHarnessAvailability(blob, timeoutMs = DIAL_TIMEOUT_MS
 }
 
 /**
- * The assertion both smokes make about an already-spawned Core: it reaches
- * the listening marker, logs nothing from the degradation paths, hands over a
- * decodable Registration blob, and answers `projectsList` with `[]` against a
- * real migrated schema.
+ * The assertion both smokes make about an already-spawned Core: it reaches the
+ * listening marker, logs nothing from the degradation paths, prints no
+ * credential, and answers `projectsList` with `[]` against a real migrated
+ * schema over an authenticated mTLS dial.
+ *
+ * `home` is the throwaway home the Core was given, which is where it persisted
+ * the identity this dial borrows its client half from.
  *
  * `log` reports progress with the caller's own prefix; `die` ends the run with
  * the child's output attached.
  */
-export async function assertBootsAndDials(child, { port, timeoutMs, die, log }) {
-  const observer = { logLines: [], badTags: [], blob: null };
+export async function assertBootsAndDials(child, { home, port, timeoutMs, die, log }) {
+  const observer = { logLines: [], badTags: [] };
 
   try {
     await waitForListening(child, timeoutMs, observer);
@@ -300,19 +342,26 @@ export async function assertBootsAndDials(child, { port, timeoutMs, die, log }) 
   if (observer.badTags.length > 0) {
     die(`saw ${observer.badTags.length} bad log line(s): ${observer.badTags.join(", ")}`, observer.logLines);
   }
-  if (!observer.blob) {
-    die("no registration blob captured — cannot dial mTLS core-link", observer.logLines);
+
+  // #287: a Core emits no credential, on any boot. A PEM header on stdout means
+  // the hand-carry came back, and it is a failure here rather than a review
+  // comment somebody might miss.
+  const printed = observer.logLines.join("\n");
+  if (/BEGIN (CERTIFICATE|PRIVATE KEY|RSA PRIVATE KEY)/.test(printed)) {
+    die("the Core printed certificate material on stdout", observer.logLines);
+  }
+  if (printed.includes("@@AC_CORE_REGISTRATION_BLOB@@")) {
+    die("the Core printed a registration blob — the hand-carry is meant to be gone", observer.logLines);
   }
 
-  let blob;
-  try {
-    blob = decodeBlob(observer.blob);
-  } catch (err) {
-    die(`failed to decode registration blob: ${err.message}`, observer.logLines);
-  }
   // The Core bound to 127.0.0.1 regardless of the SAN host — dial there
   // directly so hostname verification lands on the cert's `127.0.0.1` SAN.
-  blob.endpoint = `wss://127.0.0.1:${port}`;
+  let blob;
+  try {
+    blob = await credentialAfterBoot(home, `wss://127.0.0.1:${port}`);
+  } catch (err) {
+    die(`could not build a client credential from the Core's material: ${err.message}`, observer.logLines);
+  }
 
   let projects;
   try {

@@ -29,7 +29,11 @@ import path from "node:path";
 import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
 import { CoreFiles } from "@actana/sdk/core-files.ts";
 import { createCoreFilesFetch } from "@actana/sdk/core-files-http.ts";
-import { makeCliFixture, sentinelBlobText, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import { bindProjectFiles, type OpenProjectFilesFn } from "../project-files-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
 
@@ -101,7 +105,7 @@ async function startCore(): Promise<{ root: string; open: OpenProjectFilesFn }> 
 }
 
 async function withRegisteredCore(): Promise<void> {
-  expect((await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() })).code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 /** A folder with an executable in it, which is the point of the ticket. */

@@ -21,6 +21,7 @@ import { EXIT_FAILURE, EXIT_USAGE } from "../exit-codes.ts";
 import {
   fakeTerminal,
   makeCliFixture,
+  registerCore,
   sentinelBlobText,
   type CliFixture,
   type FakeTerminal,
@@ -112,7 +113,7 @@ function fakeShell(): FakeShell {
 
 /** A registered Core, so resolution has something to find. */
 async function withRegisteredCore(): Promise<void> {
-  await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+  registerCore(cli().paths, "prod");
 }
 
 /**
@@ -406,8 +407,8 @@ describe("what it refuses", () => {
   });
 
   it("honours --core, like every other verb that leaves the machine", async () => {
-    await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText("wss://prod.test:9444") });
-    await cli().run(["core", "add", "staging"], { stdin: sentinelBlobText("wss://staging.test:9444") });
+    registerCore(cli().paths, "prod", sentinelBlobText("wss://prod.test:9444"));
+    registerCore(cli().paths, "staging", sentinelBlobText("wss://staging.test:9444"));
 
     let dialled: string | null = null;
     const terminal = fakeTerminal();

@@ -1,7 +1,7 @@
 {
   "name": "@actana/shared",
   "version": "0.4.0",
-  "description": "Actana Control shared internals — mutation/query contracts, registration-blob codec, event log, and the machine-side modules the Core daemon and the `actana` CLI both use. The core-link frames live in @actana/sdk.",
+  "description": "Actana Control shared internals — mutation/query contracts, the blob-registry codec, event log, pairing primitives, and the machine-side modules the Core daemon and the `actana` CLI both use. The core-link frames live in @actana/sdk.",
   "license": "MIT",
   "private": true,
   "type": "module",

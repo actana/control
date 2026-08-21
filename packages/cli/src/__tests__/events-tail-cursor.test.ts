@@ -17,7 +17,11 @@ import { describe, it, expect, afterEach } from "vitest";
 import { connectCore } from "../core-connection.ts";
 import { cursorsDir } from "../event-cursor-file.ts";
 import { EXIT_OK } from "../exit-codes.ts";
-import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
+import {
+  makeCliFixture,
+  registerCore,
+  type CliFixture,
+} from "./cli-harness.ts";
 import {
   arrayEventLog,
   freePort,
@@ -80,9 +84,7 @@ describe("actana events tail, across a Core restart", () => {
     const port = await freePort();
     const first = await coreOn(port, log);
     fixture = makeCliFixture();
-    expect((await fixture.run(["core", "add", "inproc"], { stdin: first.blobText })).code).toBe(
-      EXIT_OK,
-    );
+    registerCore(fixture.paths, "inproc", first.blobText);
 
     const printed: string[] = [];
     const tail = fixture.run(["events", "tail", "--json", "--since", "start", "--limit", "6"], {
@@ -129,7 +131,7 @@ describe("actana events tail, across a Core restart", () => {
     const port = await freePort();
     const core = await coreOn(port, log);
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     // History this operator has never asked to see.
     log.push("task:created");
@@ -216,7 +218,7 @@ describe("actana events tail, across a Core restart", () => {
     const port = await freePort();
     const core = await coreOn(port, log);
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     const printed: string[] = [];
     const notices: string[] = [];
@@ -257,7 +259,7 @@ describe("actana events tail, across a Core restart", () => {
     const port = await freePort();
     const core = await coreOn(port, log);
     fixture = makeCliFixture();
-    await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
+    registerCore(fixture.paths, "inproc", core.blobText);
 
     log.push("task:created");
     log.push("task:updated");

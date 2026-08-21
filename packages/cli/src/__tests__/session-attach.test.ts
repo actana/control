@@ -29,7 +29,7 @@ import {
   fakeAttachment,
   fakeTerminal,
   makeCliFixture,
-  sentinelBlobText,
+  registerCore,
   type CliFixture,
   type FakeAttachment,
   type FakeTerminal,
@@ -52,7 +52,7 @@ afterEach(() => {
 
 /** A registered Core, so resolution has something to find. */
 async function withRegisteredCore(): Promise<void> {
-  await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
+  registerCore(cli().paths, "prod");
 }
 
 type AttachOpts = {

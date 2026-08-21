@@ -23,7 +23,7 @@ import {
   fakeProjectFiles,
   fakeTerminal,
   makeCliFixture,
-  sentinelBlobText,
+  registerCore,
   streamOf,
   type CliFixture,
 } from "./cli-harness.ts";
@@ -52,8 +52,7 @@ afterEach(() => {
 });
 
 async function withRegisteredCore(): Promise<void> {
-  const added = await cli().run(["core", "add", "prod"], { stdin: sentinelBlobText() });
-  expect(added.code).toBe(EXIT_OK);
+  registerCore(cli().paths, "prod");
 }
 
 /** A folder with something executable in it, which is the point of the ticket. */

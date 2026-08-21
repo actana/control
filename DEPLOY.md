@@ -28,11 +28,13 @@ command. Prerequisite: a machine with Docker.
 git clone https://github.com/actana/control
 cd control/deploy
 docker compose up -d
-docker compose logs core        # copy the registration blob it printed
+docker compose exec core actana pair new     # a one-time code and a fingerprint
 ```
 
 Open `http://localhost:7420`: the first boot asks you to create the Operator
-(name + password), and after logging in you paste that blob into **Add Core**.
+(name + password), and after logging in you give **Add Core** the address
+`core:8443` and that code, checking the fingerprint the Panel shows against the
+one `pair new` printed.
 The Panel dials `wss://core:8443` over the compose network — which is why the
 Core's `ACTANA_PUBLIC_HOST` is the compose service name and not a DNS name,
 and why the Core publishes no port to your machine at all.

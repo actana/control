@@ -1,5 +1,4 @@
 import { randomBytes } from "node:crypto";
-import { decodeRegistrationBlob } from "@actana/shared/registration-blob";
 import { getPanelDb } from "../panel-db";
 import { OPERATOR_ID } from "./operator";
 import { openSecret, sealSecret } from "./secrets-at-rest";
@@ -14,17 +13,14 @@ import type { Core } from "~/shared/cores";
  * into `core_secrets`. The Panel does not accept a hand-typed endpoint,
  * because a Core without pinned mTLS material is a Core it cannot safely dial.
  *
- * Two doors lead here and they meet at {@link registerCoreFromCredential}:
- *
- *   • the pasted registration blob `core install` printed, decoded by
- *     {@link registerCoreFromRegistrationBlob} — the path #287 removes;
- *   • a short pairing code redeemed against the Core by
- *     `services/core-pairing.ts` (#286), which hands back the same
- *     `CoreRegistrationBlob` shape with a key that never crossed the wire.
- *
- * Everything past that function is one path, so a Core added by pairing is
- * indistinguishable downstream from one added by paste: same registry row,
- * same sealed secrets, same `core-link-manager.ts` dial.
+ * **One door leads here: {@link registerCoreFromCredential}.** A short pairing
+ * code is redeemed against the Core by `services/core-pairing.ts` (#286), which
+ * hands back a credential whose private key never crossed the wire, and that
+ * credential is registered. There is no second way in — the pasted registration
+ * blob `actana setup` used to print was the other door and #287 removed it,
+ * outright and with no compatibility shim (#280). A registration path nobody
+ * exercises is a second way to become a Core client with its own security
+ * properties, which is the thing that removal exists to prevent.
  */
 
 /** The secret half of a registration. Never leaves the service. */
@@ -40,24 +36,12 @@ export type CoreSecrets = {
 };
 
 /**
- * A registration blob the Panel won't accept. `expose` marks it caller-facing
- * so the API router returns the message rather than swallowing it into a 500 —
- * the operator needs to know *that* the paste was bad, and the messages here
- * deliberately say nothing about the blob's contents.
- */
-export class RegistrationBlobError extends Error {
-  readonly expose = true;
-  constructor(message: string) {
-    super(message);
-    this.name = "RegistrationBlobError";
-  }
-}
-
-/**
  * A credential the registry itself won't take — an endpoint already spoken
- * for, or material with a field missing. Caller-facing for the same reason
- * {@link RegistrationBlobError} is, and worded without reference to how the
- * credential arrived, because both doors throw it.
+ * for, or material with a field missing. `expose` marks it caller-facing so the
+ * API router returns the message rather than swallowing it into a 500, and it
+ * is worded without reference to how the credential arrived: pairing is the one
+ * door today, and a message naming it would have to be rewritten by whatever
+ * opens the next one.
  */
 export class CoreRegistryError extends Error {
   readonly expose = true;
@@ -68,12 +52,13 @@ export class CoreRegistryError extends Error {
 }
 
 /**
- * What a registration is made of, whichever door it came through.
+ * What a registration is made of.
  *
- * Structurally `CoreRegistrationBlob` from `@actana/sdk` and `RegistrationBlob`
- * from `@actana/shared` — declared here rather than imported from either so
- * the registry depends on the *shape* of a credential and not on the codec
- * #287 deletes.
+ * Structurally `CoreRegistrationBlob` from `@actana/sdk` — declared here rather
+ * than imported so the registry depends on the *shape* of a credential and not
+ * on any one producer of it. A **Registration blob** is still exactly this: the
+ * credential a paired client holds. What #287 removed is the base64 artifact a
+ * human used to carry, not the thing it carried.
  */
 export type CoreCredential = {
   /** `wss://host:port` — the core-link endpoint the dialer will use. */
@@ -115,8 +100,8 @@ function newCoreId(): string {
  * Normalize an alias for the registry: trimmed, capped at 120 characters, and
  * falling back to the endpoint's host when what's left is empty.
  *
- * Both ways in go through here — the label carried in a registration blob, and
- * whatever the operator types into a rename — so neither can leave a row with
+ * Both ways in go through here — the label a pairing produced, and whatever
+ * the operator types into a rename — so neither can leave a row with
  * nothing to identify it by. The host is the fallback because it is what the
  * operator recognizes about a machine they haven't named themselves.
  */
@@ -165,29 +150,7 @@ export function getCore(id: string): Core | null {
 }
 
 /**
- * Register a Core from a pasted registration blob — the hand-carry path #287
- * removes. It decodes, checks what the codec does not, and hands the result to
- * {@link registerCoreFromCredential} like every other door.
- */
-export function registerCoreFromRegistrationBlob(raw: unknown): Core {
-  if (typeof raw !== "string" || !raw.trim()) {
-    throw new RegistrationBlobError("Paste the pairing token from `core install`.");
-  }
-  const blob = decodeRegistrationBlob(raw);
-  // The codec only type-checks its fields, so a blob with an empty cert or
-  // bearer decodes cleanly. Registering one would produce a Core that can
-  // never connect and can't be re-paired (its endpoint is taken) — reject it
-  // here, where the operator still has the paste in front of them.
-  if (!blob || !blob.caCert.trim() || !blob.clientCert.trim() || !blob.clientKey.trim() || !blob.bearer.trim()) {
-    throw new RegistrationBlobError(
-      "That isn't a valid pairing token. Copy the whole line `core install` printed and paste it again.",
-    );
-  }
-  return registerCoreFromCredential(blob);
-}
-
-/**
- * Register a Core from a credential, whichever door produced it.
+ * Register a Core from the credential a pairing produced.
  *
  * Both rows go in under one transaction: a Core in the registry that the
  * dialer has no credentials for would sit in the fleet showing "unreachable"
@@ -214,6 +177,20 @@ export function registerCoreFromCredential(
 
   const endpoint = credential.endpoint.trim();
   if (!endpoint) throw new CoreRegistryError("That credential names no Core endpoint.");
+  // mTLS is mandatory for a Core (ADR 0002), so a `ws://` endpoint is a
+  // downgrade rather than a convenience — and this is the door that has to say
+  // so. The rule used to live one layer up, in the codec
+  // `registerCoreFromRegistrationBlob` decoded with; #287 deleted that function
+  // and the guarantee left with it. Today's only caller builds the endpoint as
+  // `wss://` itself (`core-pairing.ts`), so nothing is reachable through the
+  // gap — but this is the single exported way into the registry, and the next
+  // caller would inherit nothing. Held here, where it cannot be deleted with
+  // whatever surface happens to be in front of it.
+  if (!endpoint.startsWith("wss://")) {
+    throw new CoreRegistryError(
+      `That credential's endpoint is ${endpoint}, not wss:// — a Core's core link is mTLS.`,
+    );
+  }
 
   const id = newCoreId();
   const now = Date.now();
