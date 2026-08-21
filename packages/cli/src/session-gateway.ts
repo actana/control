@@ -155,8 +155,14 @@ export type SessionOutcome = {
 export type StartedSession = {
   taskId: string;
   ptyId: string;
-  /** The harness running in it, as the Core spells it. */
-  harness: string;
+  /**
+   * The harness running in it, as the Core spells it — `null` only when this
+   * invocation attached to a Session whose Task row the Core did not list, which
+   * is a row deleted out from under a live PTY. The wait does not need it; it is
+   * on the object because a caller reading the result wants to know what it was
+   * talking to.
+   */
+  harness: string | null;
   /**
    * The command the Core was asked to run, after defaulting — `null` on a
    * Session this invocation attached to rather than started, because the Core
@@ -463,8 +469,14 @@ class CoreLinkSessionGateway implements SessionGateway {
     taskId: string,
     deliver: { text: string; enter: boolean } | null,
   ): Promise<StartedSession> {
-    const task = await this.findTask(taskId);
-    const project = await this.projectFor(task.projectId).catch(() => null);
+    // The archived list as a fallback, because a Session can be archived while
+    // its harness is still running — and `tasksList` is active rows only by
+    // design (ADR 0019). Every other verb that names a live PTY works on such a
+    // Session; refusing it here would make `wait` the odd one out over a row
+    // this only reads two display fields off.
+    const task = await this.findAnyTask(taskId);
+    const project =
+      task === null ? null : await this.projectFor(task.projectId).catch(() => null);
 
     let session: CoreSession;
     try {
@@ -502,6 +514,31 @@ class CoreLinkSessionGateway implements SessionGateway {
           }
           afterEventId = Math.max(afterEventId, returned.deliveryEventId);
         }
+        // **A delivery that was not stamped has no cursor, and an uncursored
+        // wait after a delivery is the lie this whole design exists to
+        // prevent** — it would answer from the status the Session was already
+        // parked at, which is last turn's answer with a zero exit.
+        //
+        // The version gate refuses a Core too old to stamp before a frame goes
+        // out. This covers the ways a Core on this version still answers 0: no
+        // event-log port wired, or an `appendEvent` that failed. Both are
+        // documented on `recordSessionDelivery`, and neither is a reason to
+        // guess.
+        //
+        // The text **was delivered** and the message says so, because the next
+        // thing an operator does with a failure here must not be to send it
+        // again.
+        // Guarded on a write having happened at all: a delivery of nothing is
+        // not a delivery, and it leaves this exactly where a bare `wait` is —
+        // no cursor, because nothing was sent to count from.
+        if ((deliver.text.length > 0 || deliver.enter) && afterEventId === 0) {
+          throw new SessionGatewayError(
+            "refused",
+            `session ${taskId} took the text, but this Core did not record the delivery in its ` +
+              `event log — so there is no cursor to await this turn from, and waiting would report ` +
+              `the turn before it. The text was delivered; \`actana session logs ${taskId}\` shows it`,
+          );
+        }
       } catch (err) {
         session.dispose();
         throw err;
@@ -509,9 +546,9 @@ class CoreLinkSessionGateway implements SessionGateway {
     }
 
     return wrap(session, {
-      projectId: task.projectId,
+      projectId: task?.projectId ?? "",
       project: project?.name ?? null,
-      harness: task.agent,
+      harness: task?.agent ?? null,
       afterEventId,
     });
   }
@@ -556,6 +593,26 @@ class CoreLinkSessionGateway implements SessionGateway {
       );
     }
     return ptyId;
+  }
+
+  /**
+   * The Task row for a Session, active **or archived**, or null when this Core
+   * has neither.
+   *
+   * Null rather than a refusal, because the caller is a verb that acts on a live
+   * PTY and reads this row only for two display fields. `resume` still uses
+   * {@link findTask}, where a missing row is genuinely the end of the road: it
+   * needs the harness and the recorded session id to start anything at all.
+   *
+   * The archived list is asked only when the active one did not have it, so the
+   * ordinary path still costs one round trip.
+   */
+  private async findAnyTask(taskId: string): Promise<CoreLinkTaskSnapshot | null> {
+    const { tasks } = await this.client.tasksList();
+    const active = tasks.find((row) => row.taskId === taskId);
+    if (active) return active;
+    const archived = await this.client.archivedTasksList();
+    return archived.find((row) => row.taskId === taskId) ?? null;
   }
 
   private async findTask(taskId: string): Promise<CoreLinkTaskSnapshot> {
@@ -630,7 +687,7 @@ function wrap(
   opts: {
     projectId: string;
     project: string | null;
-    harness: string;
+    harness: string | null;
     afterEventId?: number;
   },
 ): StartedSession {

@@ -181,7 +181,19 @@ afterEach(() => {
 });
 
 /** A Core holding one live Session and one that has already stopped. */
-async function coreWithSessions(): Promise<{
+async function coreWithSessions(
+  opts: {
+    /**
+     * Wire no event log, which is one of the two ways a Core on this protocol
+     * version still answers a stamped write with no id — the other being an
+     * `appendEvent` that failed. Both are what the gateway's refusal covers,
+     * beyond the version gate that keeps an older Core off the wire entirely.
+     */
+    eventLog?: false;
+    /** Archive a row while its harness keeps running. */
+    archived?: string[];
+  } = {},
+): Promise<{
   writes: string[];
   killed: string[];
   resolutions: string[];
@@ -191,7 +203,7 @@ async function coreWithSessions(): Promise<{
 }> {
   const pty = livePtyCore();
   const tasks = [
-    task(),
+    task({ archived: opts.archived?.includes("task_live") ?? false }),
     task({ taskId: "task_done", title: "ship the changelog", status: "finished" }),
   ];
   // The uncounted lookup: `listSessions` resolves every row's PTY, and counting
@@ -203,7 +215,12 @@ async function coreWithSessions(): Promise<{
   // that id. Without one every write comes back unstamped, which is the
   // older-Core case and not the one these tests are about.
   const eventLog = arrayEventLog();
-  core = await startInProcessCore({ ptyCore: pty.core, queryPort, mutationPort, eventLog });
+  core = await startInProcessCore({
+    ptyCore: pty.core,
+    queryPort,
+    mutationPort,
+    ...(opts.eventLog === false ? {} : { eventLog }),
+  });
   fixture = makeCliFixture();
   await fixture.run(["core", "add", "inproc"], { stdin: core.blobText });
   const endTurn = (taskId: string, status: string): void => {
@@ -370,6 +387,49 @@ describe("actana session, against a Core in this process", () => {
     const stopped = await fixture!.run(["session", "wait", "task_done", "--json"], withCore());
     expect(stopped.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(stopped.out.join("\n")).error).toContain("no harness running");
+  }, 30_000);
+
+  it("refuses to wait after a delivery the Core did not stamp, rather than answering with the turn before", async () => {
+    // The Core here is on this protocol version and still cannot stamp: no
+    // event-log port is wired. Falling through to an uncursored wait would
+    // resolve from the status the Session was already parked at — last turn's
+    // answer, with a zero exit — which is the exact lie the cursor exists to
+    // prevent. It refuses instead.
+    const { writes } = await coreWithSessions({ eventLog: false });
+
+    const run = await fixture!.run(
+      ["session", "send", "task_live", "carry on", "--enter", "--wait", "--json"],
+      withCore(),
+    );
+
+    expect(run.code).toBe(EXIT_FAILURE);
+    const error = String(JSON.parse(run.out.join("\n")).error);
+    expect(error).toContain("did not record the delivery");
+    // And it says the text landed, because the next thing an operator does
+    // with this failure must not be to send it a second time.
+    expect(error).toContain("The text was delivered");
+    expect(writes).toEqual(["carry on", "\r"]);
+  }, 30_000);
+
+  it("waits on a Session that was archived while its harness kept running", async () => {
+    // `tasksList` is active rows only by design (ADR 0019), and every other
+    // verb that names a live PTY works on an archived Session. Refusing here
+    // would make `wait` the odd one out over a row it reads two display fields
+    // off.
+    const { endTurn, eventLog } = await coreWithSessions({ archived: ["task_live"] });
+
+    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    await waitFor(() => eventLog.tailReads > 0, "the wait subscribed to the event log");
+    endTurn("task_live", "finished");
+
+    const settled = await waiting;
+    expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
+      taskId: "task_live",
+      status: "finished",
+      // Read off the archived row rather than lost with it.
+      harness: "claude-code",
+    });
   }, 30_000);
 
   it("says a stopped Session has no transcript rather than printing an empty one", async () => {

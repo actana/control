@@ -812,9 +812,9 @@ async function readText(
  * because the failure this prevents is an operator reading a stalled `session
  * ls` as a stalled harness and killing a Session that was working.
  */
-function noTurnStartLine(harness: string): string {
+function noTurnStartLine(harness: string | null): string {
   return (
-    `Note: ${harness} does not report the start of a turn, so this session ` +
+    `Note: ${harness ?? "this harness"} does not report the start of a turn, so this session ` +
     `will not show as running until it stops. \`--wait\` and \`session logs\` ` +
     `are unaffected.`
   );
