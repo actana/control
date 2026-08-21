@@ -21,6 +21,31 @@ already exists — and a Harness standing in front of that CLI has no way to lea
 that they do, because the only place that knowledge lives is a file on one
 machine.
 
+> **Corrected 2026-08-21 by [#305](https://github.com/actana/control/issues/305).
+> The clause *"a Core cannot orchestrate its own Sessions at all"* above is
+> falsified**, and it was only ever true for a reason the sentence does not give.
+> A Core could not orchestrate its own Sessions because **the client CLI was
+> absent from Cores**: the container image shipped only the operator binary, so
+> every verb the installed skill taught — `core ls`, `harness ls --json`,
+> `session start` — was an `unknown command` on the machine the Core itself had
+> put that skill on. That is a **packaging** gap, not a capability gap, and it is
+> [#288](https://github.com/actana/control/issues/288)'s own §2.
+> **#288 closed it on `beta/0.4.0`**, via
+> [#293](https://github.com/actana/control/pull/293) (merged 2026-08-20 16:49
+> UTC) and [#294](https://github.com/actana/control/pull/294) (merged into
+> `beta/0.4.0` 2026-08-20 18:49 UTC as commit `8aa5b5b`).
+> `packages/core/src/actana-cli.ts` and `packages/core/src/actana-cli-entry.ts`
+> are deleted, the operator verbs and the client nouns dispatch from one program
+> ([ADR 0032](0032-one-actana-cli.md)), and the shipped skill text gained the
+> paragraph that says so
+> (`.agents/skills/actana-sessions/SKILL.md:32-36`, present on `beta/0.4.0` and
+> absent on `main`): *"On a machine that is itself a Core, that Core is already
+> registered and already selected."* **This describes the state of the branch,
+> not the state of the tracker** — #288 is still open there. Everything else in
+> the paragraph above stands as written, and **this note is repair, not
+> ratification**: the status line is unchanged and the beta gate's verdict on
+> this record is untouched.
+
 So the capability is a document, not a feature. What it costs is the thing
 0006 refused to pay: a file written into the operator's home directory, in a
 vendor's configuration namespace, without being asked.
@@ -275,7 +300,7 @@ bug.** On the machine the CLI is installed on there is nothing to do: the
 pre-dispatch ensure in `actana-cli.ts` runs before every `actana <noun>`, so
 the next command after the harness's first run repairs it, and `actana harness
 skills` is the explicit form. On a Core's machine there is no pre-dispatch
-ensure, so the automatic repair is **the next Core boot** — `core-entry.ts:302`
+ensure, so the automatic repair is **the next Core boot** — `core-entry.ts:299`
 runs the same ensure unconditionally — which an upgrade, a reboot or a
 deliberate `actana core exec -- actana restart` all reach. What the operator
 sees in the meantime is a harness that runs Sessions normally and does not know
