@@ -411,8 +411,15 @@ actana token regenerate
 This mints a fresh CA, certificates and bearer secret, then restarts the daemon
 onto them — so **every credential this Core ever issued stops working**. That is
 the one-command answer to a compromised Core: every client paired with it shows
-as unauthorized until you pair it again with a fresh `actana pair new`. It hands
-nothing out and there is nothing to reprint.
+as unauthorized until you pair it again with a fresh `actana pair new`.
+
+**Remove the Core from a Panel before pairing it again.** Rotation does not move
+the endpoint, so the Panel's registry row is still there, and pairing refuses at
+an address that is already registered — before it spends your code, so you have
+to mint another. `actana core pair` needs no such step: it replaces the stored
+credential in place.
+
+`token regenerate` hands nothing out and there is nothing to reprint.
 
 To take back one client without touching the rest, use `actana pair revoke`.
 

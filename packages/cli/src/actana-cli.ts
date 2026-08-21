@@ -800,6 +800,25 @@ async function cmdToken(deps: ActanaCliDeps, argv: string[]): Promise<number> {
 const REGENERATE_FLAGS: FlagSpec = { yes: { type: "boolean", alias: "y" } };
 
 /**
+ * How each kind of client comes back after this Core's identity is rotated.
+ *
+ * The two halves genuinely differ, and saying only "pair it again" is wrong for
+ * one of them. `actana core pair` replaces a registry entry in place, so the
+ * client end is one command. A Panel refuses before it spends the code — the
+ * endpoint has not moved, so `refuseIfAlreadyRegistered` in
+ * `packages/panel/src/server/services/core-pairing.ts` still finds the row and
+ * throws "already registered", burning nothing but wasting a one-time code the
+ * operator has to mint again. Forgetting the Core first is the missing step,
+ * and it is missing from nowhere else: this is the only place the product tells
+ * an operator to pair something that is already paired.
+ */
+const REPAIR_NOTE =
+  "  In a Panel, remove the Core first (Settings → Cores → Remove Core) — pairing refuses " +
+  "while a Core is still registered at that address, and it refuses *before* it spends " +
+  "your code.\n  With `actana core pair`, no such step: it replaces the stored " +
+  "credential in place.";
+
+/**
  * `actana token regenerate` — the one-command answer to a leaked credential.
  *
  * Fresh material means a new CA, new certs, a new bearer secret and a new
@@ -860,8 +879,8 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     deps.err(
       "New pairing credentials are written. This Core is still serving the old ones " +
         "until you restart the container — `docker compose restart`. After that, " +
-        "re-pair every client: `actana pair new` here, and spend the code it prints " +
-        "in the Panel's Add Core or with `actana core pair`.",
+        "pair every client again: `actana pair new` here, and spend the code it prints " +
+        `on the client.\n${REPAIR_NOTE}`,
     );
     return 0;
   }
@@ -887,8 +906,8 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
 
   deps.err(
     "This Core has a new identity, and every client paired with it is locked out. " +
-      "Pair each one again: `actana pair new` here, then spend the code it prints in " +
-      "the Panel's Add Core or with `actana core pair`.",
+      "Pair each one again: `actana pair new` here, then spend the code it prints on " +
+      `the client.\n${REPAIR_NOTE}`,
   );
 
   if (!listening) {

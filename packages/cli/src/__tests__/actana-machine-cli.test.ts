@@ -646,6 +646,12 @@ describe("token regenerate", () => {
     expect(out).toHaveLength(0);
     expect(err.join("\n")).toMatch(/locked out/i);
     expect(err.join("\n")).toContain("actana pair new");
+    // The step that makes the advice followable. A Panel already registered at
+    // this endpoint — which is every Panel this sentence is addressed to —
+    // refuses the pairing *before* it spends the code, so an operator who does
+    // as they are told loses a one-time code and learns nothing.
+    expect(err.join("\n")).toMatch(/remove the Core first/i);
+    expect(err.join("\n")).toContain("actana core pair");
     const fresh = readMaterial();
     const printed = [...out, ...err].join("\n");
     expect(printed).not.toContain(fresh.caCert);
@@ -1448,6 +1454,21 @@ describe("in a container", () => {
     expect(await runActanaCli(deps(["token"], fakeSystem(), { env }))).toBe(EXIT_USAGE);
     expect(out).toHaveLength(0);
     expect(err.join("\n")).toContain("actana pair new");
+  });
+
+  // The container path says the same thing about re-pairing as the metal path,
+  // and it has to carry the same caveat: a Panel refuses at an endpoint it
+  // already holds, and `docker compose restart` does not move the endpoint.
+  it("names the restart it owes and the removal a Panel needs, after regenerate", async () => {
+    const env = containerEnv();
+    writeContainerMaterial(env);
+
+    expect(await runActanaCli(deps(["token", "regenerate"], fakeSystem(), { env }))).toBe(0);
+
+    expect(out).toHaveLength(0);
+    expect(err.join("\n")).toContain("docker compose restart");
+    expect(err.join("\n")).toContain("actana pair new");
+    expect(err.join("\n")).toMatch(/remove the Core first/i);
   });
 
   it("refuses to boot the daemon without a public host, naming the variable", async () => {

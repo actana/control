@@ -70,7 +70,10 @@ private key it ends up holding is generated on the client and never crosses the
 wire.
 
 `pair revoke` takes back one client. `token regenerate` is the wider hammer — a
-new CA, and every client paired with this Core has to pair again.
+new CA, and every client paired with this Core has to pair again. Remove the Core
+from a Panel before you do: rotation does not move the endpoint, so pairing at an
+address that is already registered is refused, and refused *before* the code is
+spent. `actana core pair` replaces its stored credential in place instead.
 
 ## `ACTANA_PUBLIC_HOST` is the service name, and that is load-bearing
 

@@ -164,8 +164,12 @@ actana token regenerate
 
 - [ ] It says plainly that this locks out paired clients before doing it.
 - [ ] It prints no credential — only what to do next.
-- [ ] The Panel's Core goes unauthorized, and a fresh `actana pair new` plus a
-      second **Add Core** recovers it.
+- [ ] It says to remove the Core from the Panel before pairing it again.
+- [ ] The Panel's Core goes unauthorized. **Remove it** (Settings → Cores →
+      Remove Core), then a fresh `actana pair new` plus a second **Add Core**
+      recovers it. Pairing without removing it first is refused, because the
+      Core is still registered at that address — try it once, and check the
+      refusal says so rather than blaming the code.
 
 ---
 
