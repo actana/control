@@ -51,7 +51,6 @@ const api = {
   pairCore: vi.fn(async (_body: unknown): Promise<{ core: CoreWithDial }> => ({ core: paired() })),
   renameCore: vi.fn(),
   removeCore: vi.fn(async () => undefined),
-  addCore: vi.fn(),
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
 };
 

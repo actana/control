@@ -32,7 +32,7 @@ afterEach(() => {
  * `core-pair.test.ts` is where "a credential lands in the registry" is asserted
  * now, against the verb that actually puts one there.
  */
-function addCore(name: string, endpoint?: string): void {
+function haveCore(name: string, endpoint?: string): void {
   registerCore(cli().paths, name, sentinelBlobText(endpoint));
 }
 
@@ -59,7 +59,7 @@ describe("actana core add", () => {
   });
 
   it("leaves the registry it wrote readable by exactly its owner", async () => {
-    addCore("prod");
+    haveCore("prod");
     expect(statSync(coreBlobPath(cli().paths, "prod")).mode & 0o777).toBe(0o600);
   });
 });
@@ -77,8 +77,8 @@ describe("actana core ls", () => {
   });
 
   it("tabulates the registry and marks `current`", async () => {
-    addCore("prod", "wss://prod.test:9444");
-    addCore("dev", "wss://dev.test:9444");
+    haveCore("prod", "wss://prod.test:9444");
+    haveCore("dev", "wss://dev.test:9444");
 
     const run = await cli().run(["core", "ls"]);
     expect(run.out[0]).toContain("NAME");
@@ -89,7 +89,7 @@ describe("actana core ls", () => {
   });
 
   it("emits machine-readable rows for --json", async () => {
-    addCore("prod", "wss://prod.test:9444");
+    haveCore("prod", "wss://prod.test:9444");
     const run = await cli().run(["core", "ls", "--json"]);
 
     expect(run.code).toBe(EXIT_OK);
@@ -107,7 +107,7 @@ describe("actana core ls", () => {
   });
 
   it("keeps a corrupt entry in the listing, with the reason on the row", async () => {
-    addCore("good");
+    haveCore("good");
     mkdirSync(cli().paths.coresDir, { recursive: true });
     writeFileSync(coreBlobPath(cli().paths, "broken"), "not-a-blob");
 
@@ -121,8 +121,8 @@ describe("actana core ls", () => {
 
 describe("actana core use / rm", () => {
   it("moves the pointer", async () => {
-    addCore("first");
-    addCore("second");
+    haveCore("first");
+    haveCore("second");
 
     const run = await cli().run(["core", "use", "second"]);
     expect(run.code).toBe(EXIT_OK);
@@ -130,14 +130,14 @@ describe("actana core use / rm", () => {
   });
 
   it("refuses to point at a Core this machine does not have, and lists what it does", async () => {
-    addCore("first");
+    haveCore("first");
     const run = await cli().run(["core", "use", "absent"]);
     expect(run.code).toBe(EXIT_FAILURE);
     expect(run.err.join("\n")).toContain("first");
   });
 
   it("drops the pointer with the Core it named", async () => {
-    addCore("only");
+    haveCore("only");
     const run = await cli().run(["core", "rm", "only"]);
 
     expect(run.code).toBe(EXIT_OK);
@@ -146,8 +146,8 @@ describe("actana core use / rm", () => {
   });
 
   it("leaves the pointer alone when it removes a different Core", async () => {
-    addCore("first");
-    addCore("second");
+    haveCore("first");
+    haveCore("second");
 
     await cli().run(["core", "rm", "second"]);
     expect(readCurrentCore(cli().paths)).toBe("first");
@@ -161,7 +161,7 @@ describe("actana core use / rm", () => {
 
 describe("actana core status", () => {
   it("reaches the Core and reports the version it answered with", async () => {
-    addCore("prod", "wss://prod.test:9444");
+    haveCore("prod", "wss://prod.test:9444");
     const run = await cli().run(["core", "status"], {
       probe: healthyProbe({ protocolVersion: "1.2.3", coreId: "core_abc" }),
     });
@@ -175,7 +175,7 @@ describe("actana core status", () => {
   });
 
   it("emits the same facts as --json", async () => {
-    addCore("prod", "wss://prod.test:9444");
+    haveCore("prod", "wss://prod.test:9444");
     const run = await cli().run(["core", "status", "--json"], {
       probe: healthyProbe({ protocolVersion: "1.2.3", coreId: "core_abc" }),
     });
@@ -194,7 +194,7 @@ describe("actana core status", () => {
   });
 
   it("fails, and says the Core did not answer, when the dial throws", async () => {
-    addCore("prod");
+    haveCore("prod");
     const run = await cli().run(["core", "status", "--json"], {
       probe: async () => {
         throw new Error("connect ECONNREFUSED 10.0.0.1:9444");
@@ -208,7 +208,7 @@ describe("actana core status", () => {
   });
 
   it("fails on a protocol this build does not speak, rather than degrading", async () => {
-    addCore("prod");
+    haveCore("prod");
     const run = await cli().run(["core", "status"], {
       probe: healthyProbe({ protocolVersion: "99.0.0", compatible: false }),
     });
@@ -217,8 +217,8 @@ describe("actana core status", () => {
   });
 
   it("honours --core over the pointer", async () => {
-    addCore("pointed", "wss://pointed.test:9444");
-    addCore("flagged", "wss://flagged.test:9444");
+    haveCore("pointed", "wss://pointed.test:9444");
+    haveCore("flagged", "wss://flagged.test:9444");
 
     const run = await cli().run(["core", "status", "--json", "--core", "flagged"], {
       probe: healthyProbe(),
@@ -277,7 +277,7 @@ describe("usage errors", () => {
   });
 
   it("takes flags before the positionals too", async () => {
-    addCore("prod");
+    haveCore("prod");
     const run = await cli().run(["--json", "core", "ls"]);
     expect(Array.isArray(JSON.parse(run.out.join("\n")))).toBe(true);
   });
