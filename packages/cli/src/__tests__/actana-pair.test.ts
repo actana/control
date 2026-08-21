@@ -93,6 +93,19 @@ function paired(over: Partial<PairedClient> = {}): PairedClient {
   };
 }
 
+/**
+ * Record a paired client on the suite's clock rather than the wall clock.
+ *
+ * `PairingStore.recordClient` defaults `now` to `Date.now()` and prunes settled
+ * sessions past `PAIRING_SESSION_RETENTION_MS` on its way past. The fixture's
+ * `NOW` is a fixed date, so once the real clock walks a day beyond it every
+ * write here silently drops a pending code a test had just minted — a failure
+ * that arrives by the calendar, not by a change to the code under test.
+ */
+function record(client: PairedClient, now = NOW): void {
+  store().recordClient(client, now);
+}
+
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-pair-"));
   materialPath = materialFilePath(dir);
@@ -260,7 +273,7 @@ describe("actana pair ls", () => {
 
   it("shows pending codes and paired clients in two separate sections", () => {
     run(["new", "--label", "laptop"]);
-    store().recordClient(paired({ label: "desktop", certSubject: "CN=desktop" }));
+    record(paired({ label: "desktop", certSubject: "CN=desktop" }));
 
     expect(run(["ls"])).toBe(0);
     const text = out.join("\n");
@@ -318,7 +331,7 @@ describe("actana pair ls", () => {
   });
 
   it("says the file is unreadable rather than reporting a Core that paired nobody", () => {
-    store().recordClient(paired());
+    record(paired());
     fs.writeFileSync(pairingStorePath(materialPath), "{ not json");
     expect(run(["ls"])).toBe(1);
     expect(err.join("\n")).toMatch(/not valid JSON/);
@@ -326,7 +339,7 @@ describe("actana pair ls", () => {
   });
 
   it("keeps a revoked client visible, and says it is revoked", () => {
-    store().recordClient(paired());
+    record(paired());
     store().revokeClient("0a1b2c3d", NOW);
     run(["ls"]);
     expect(out.join("\n")).toMatch(/revoked 2026-08-20T12:00:00Z/);
@@ -337,14 +350,14 @@ describe("actana pair ls", () => {
 
 describe("actana pair revoke", () => {
   it("marks a paired client revoked, by label", () => {
-    store().recordClient(paired());
+    record(paired());
     expect(run(["revoke", "laptop"])).toBe(0);
     expect(store().listClients()[0]!.revokedAt).toBe(NOW);
     expect(out.join("\n")).toMatch(/Unpaired laptop/);
   });
 
   it("takes a certificate serial, including a prefix of one", () => {
-    store().recordClient(paired({ certSerial: "0a1b2c3d4e5f", label: "" }));
+    record(paired({ certSerial: "0a1b2c3d4e5f", label: "" }));
     expect(run(["revoke", "0a1b2c"])).toBe(0);
     expect(store().listClients()[0]!.revokedAt).toBe(NOW);
   });
@@ -354,7 +367,7 @@ describe("actana pair revoke", () => {
     // enforcement is tested where it lives; what is pinned here is that the
     // fact it enforces on is written, and written against the serial that
     // identifies the issuance rather than the label.
-    store().recordClient(paired({ certSerial: "0a1b2c3d" }));
+    record(paired({ certSerial: "0a1b2c3d" }));
     run(["revoke", "laptop"]);
     const row = store().listClients().find((c) => c.certSerial === "0a1b2c3d")!;
     expect(row.revokedAt).toBe(NOW);
@@ -379,15 +392,15 @@ describe("actana pair revoke", () => {
   });
 
   it("refuses to guess when a label matches more than one thing", () => {
-    store().recordClient(paired({ label: "laptop", certSerial: "aaaa" }));
-    store().recordClient(paired({ label: "laptop", certSerial: "bbbb" }));
+    record(paired({ label: "laptop", certSerial: "aaaa" }));
+    record(paired({ label: "laptop", certSerial: "bbbb" }));
     expect(run(["revoke", "laptop"])).toBe(1);
     expect(err.join("\n")).toMatch(/matches 2 of them/);
     expect(store().listClients().every((c) => c.revokedAt === null)).toBe(true);
   });
 
   it("says so when nothing matches, and revokes nothing", () => {
-    store().recordClient(paired());
+    record(paired());
     expect(run(["revoke", "nobody"])).toBe(1);
     expect(err.join("\n")).toMatch(/nothing here matches/i);
     expect(store().listClients()[0]!.revokedAt).toBe(null);
@@ -402,7 +415,7 @@ describe("actana pair revoke", () => {
     // `actana pair revoke "$SERIAL"` with `SERIAL` unset. `""` prefix-matches
     // every serial and every session id, and on a Core with exactly one client
     // the ambiguity check never fires — so it used to revoke it and exit 0.
-    store().recordClient(paired());
+    record(paired());
     expect(run(["revoke", ""])).toBe(2);
     expect(err.join("\n")).toMatch(/a target is required/);
     expect(store().listClients()[0]!.revokedAt).toBe(null);
@@ -419,7 +432,7 @@ describe("actana pair revoke", () => {
   });
 
   it("refuses to revoke against a pairing file it cannot read", () => {
-    store().recordClient(paired());
+    record(paired());
     const corrupt = '{"version":1,"sessions":[],"clients":[{"certSerial":7}]}';
     fs.writeFileSync(pairingStorePath(materialPath), corrupt);
     expect(run(["revoke", "laptop"])).toBe(1);
@@ -428,7 +441,7 @@ describe("actana pair revoke", () => {
   });
 
   it("audit-logs the revocation through the same auditor the endpoint uses", () => {
-    store().recordClient(paired());
+    record(paired());
     run(["revoke", "laptop"]);
     expect(audited).toEqual([
       {

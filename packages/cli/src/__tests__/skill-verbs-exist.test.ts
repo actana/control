@@ -1,5 +1,5 @@
-// Every verb the `actana-sessions` skill teaches exists on the binary the skill
-// lands beside (#288).
+// Every verb either shipped skill teaches exists on the binary they land beside
+// (#288).
 //
 // This is the complaint the ticket opens with, turned into a test. ADR 0031 D3
 // makes installing the skill mandatory, and two different programs installed
@@ -27,27 +27,45 @@ import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { CLIENT_NOUNS, USAGE } from "../actana-cli.ts";
-
-/** The authored skill, at the repository root. */
-const SKILL = path.resolve(
-  import.meta.dirname,
-  "../../../../.agents/skills/actana-sessions/SKILL.md",
-);
+import { ORCHESTRATION_SKILL_NAMES } from "../orchestration-skill-payload.ts";
 
 /**
- * Every `actana <name>` the skill shows an agent how to type.
+ * The authored skills, at the repository root.
+ *
+ * Both of them since #303, and read off the payload's own list rather than
+ * hardcoded: a third folder is covered by this guard the moment it ships. The
+ * sub-agent skill names `actana session start` — in a prohibition, which an
+ * agent reads as a verb all the same — and a skill that named a verb this build
+ * lacks would be installed onto every Core with nothing failing.
+ */
+const SKILL_ROOT = path.resolve(import.meta.dirname, "../../../../.agents/skills");
+const skillFile = (skillName: string) => path.join(SKILL_ROOT, skillName, "SKILL.md");
+
+/**
+ * Every `actana <name>` a skill shows an agent how to type.
  *
  * Deliberately over-inclusive: prose mentions in backticks count as well as
  * fenced blocks, because an agent reading "run `actana core use <name>`" will
  * run it. A false positive here is a name the skill should not have printed.
  */
-function namesTaughtBySkill(): string[] {
-  const text = readFileSync(SKILL, "utf8");
+function namesTaughtBy(skillName: string): string[] {
+  const text = readFileSync(skillFile(skillName), "utf8");
   const names = new Set<string>();
   for (const match of text.matchAll(/\bactana\s+([a-z][a-z-]*)/g)) {
     names.add(match[1]!);
   }
   return [...names].sort();
+}
+
+/**
+ * The orchestrator skill, which is the one whose subject is the whole CLI.
+ *
+ * Named rather than taken as the first of the list: the assertions below that
+ * use it are about *that* skill's job — teaching every client noun — and would
+ * be nonsense against the sub-agent skill, whose subject is one file.
+ */
+function namesTaughtBySkill(): string[] {
+  return namesTaughtBy("actana-sessions");
 }
 
 /** The names `actana --help` advertises, from both of its command blocks. */
@@ -64,6 +82,19 @@ function namesInHelp(): string[] {
 }
 
 describe("the skill only teaches verbs this binary has (#288)", () => {
+  it("reads every skill this build ships, not just the first", () => {
+    // The guard on the sweep's reach. #288's whole complaint was a skill that
+    // taught verbs the binary on that machine did not answer to; a guard that
+    // covered one of two shipped skills would let the next one through.
+    expect([...ORCHESTRATION_SKILL_NAMES].length).toBeGreaterThan(1);
+    for (const skillName of ORCHESTRATION_SKILL_NAMES) {
+      expect(
+        readFileSync(skillFile(skillName), "utf8").length,
+        `${skillName} has no SKILL.md to read`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
   it("finds something to check", () => {
     // The guard on the guard. A regex that stopped matching would make every
     // assertion below vacuously true, which is the failure mode a sweep has.
@@ -73,12 +104,15 @@ describe("the skill only teaches verbs this binary has (#288)", () => {
     expect(taught).toContain("session");
   });
 
-  it("teaches no name the CLI does not answer to", () => {
+  it("teaches no name the CLI does not answer to, in any shipped skill", () => {
     const known = new Set([...namesInHelp(), ...CLIENT_NOUNS, "daemon", "help"]);
-    for (const name of namesTaughtBySkill()) {
-      expect(known.has(name), `the skill teaches \`actana ${name}\`, which this build has no case for`).toBe(
-        true,
-      );
+    for (const skillName of ORCHESTRATION_SKILL_NAMES) {
+      for (const name of namesTaughtBy(skillName)) {
+        expect(
+          known.has(name),
+          `${skillName} teaches \`actana ${name}\`, which this build has no case for`,
+        ).toBe(true);
+      }
     }
   });
 
@@ -97,7 +131,7 @@ describe("the skill only teaches verbs this binary has (#288)", () => {
     // #288 D9. On a Core machine the local Core is registered by the install
     // itself, so "the operator has not paired this machine with a Core" is
     // false exactly where the Core put the skill.
-    const text = readFileSync(SKILL, "utf8");
+    const text = readFileSync(skillFile("actana-sessions"), "utf8");
     expect(text).not.toContain("the operator has not\n  paired this machine with a Core");
     expect(text).toContain("a machine running a Core registers it automatically");
   });
