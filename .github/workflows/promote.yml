@@ -4,12 +4,13 @@ name: Promote
 # that advances `main`, and it is where the design's central guarantee is
 # enforced.
 #
-#   pause ── resolve ── verify ── advance ── release ─┬─ release-line
-#   (human)                       (ff + tag) (call)   ├─ retire-train ─┬─ train-invariant
-#                                                     │                └─ rebase-train
-#                                                     └─
+#   pause ─ resolve ─┬─ verify ────┬─ advance ─── release ─┬─ release-line
+#   (human)           └─ preflight ─┘  (ff + tag)  (dispatch ├─ retire-train ─┬─ train-invariant
+#                                                   at the   │                └─ rebase-train
+#                                                   tag)     └─
 #
-# The order of the first four is the design (D15, D16, D5, D40):
+# The order of the first five is the design (D15, D16, D5, D40 as amended by
+# #326):
 #
 #   1. **The human pause is first.** A job declaring `environment:
 #      macos-release` and nothing else of consequence. Everything below is
@@ -20,12 +21,18 @@ name: Promote
 #      train merge, so promotion resolves it to a digest and asserts the
 #      image's `org.opencontainers.image.revision` label equals the promotion
 #      pull request's head SHA. The whole design reduces to this clause.
-#   3. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
+#   3. **Prove the release is runnable, while nothing has moved.** `preflight`
+#      asks the questions `release.yml` would otherwise not reach until after
+#      the fast-forward: does the promoted commit carry a dispatchable
+#      `release.yml`, are the registry credentials there, is `vx.y.z` free.
+#      Everything below this line is irreversible in practice (#326).
+#   4. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
 #      commit; a non-fast-forward is an error, never a merge (D5).
-#   4. **Push `vx.y.z`** as a record, *then* call `release.yml` by
-#      `workflow_call` (D40). The tag triggers nothing — `release.yml` has no
-#      tag trigger — but `release.yml`'s `resolve` requires it to exist and
-#      reads promote-vs-backport mode off where it lives, so the order is not
+#   5. **Push `vx.y.z`** as a record, *then* **dispatch `release.yml` at that
+#      tag** (D40, as amended by #326). The tag triggers nothing by itself —
+#      `release.yml` has no tag trigger — but it is the ref the release is
+#      dispatched on, and `release.yml`'s `resolve` requires it to exist and
+#      reads promote-vs-backport mode off where it lives. The order is not
 #      cosmetic.
 #
 # ── The identity, and the way this ships broken and looks fine (D39) ─────────
@@ -60,16 +67,49 @@ name: Promote
 #   Resolving the tag twice — asking the tag what it points at and then checking
 #   the tag points at it — is the bug D16 exists to prevent.
 #
+# ── The workflow files a promotion runs are not the train's (#326) ──────────
+#
+# A `workflow_dispatch` run resolves **every** workflow file it executes from
+# the ref it was dispatched on — for this file, the default branch as it stood
+# when the run was created. `github.sha` records exactly that commit, and it is
+# `main` *before* the promotion, never the train being promoted.
+#
+# So a train that changed `release.yml` — or that added anything `release.yml`
+# has to build — used to promote with the previous `release.yml`. Run
+# 32716466300 is what that costs. Its `github.sha` was `51164f1`, whose
+# `release.yml` built only the Core bundle; the commit it was promoting built
+# both, because `packages/cli` had arrived in that train (#288). `main`
+# fast-forwarded, `v0.4.0` was pushed, and all three tarball legs then died on
+# a missing `app/actana-cli.cjs`. Nothing was red until after the irreversible
+# half had run.
+#
+# Two changes close it, and neither is a rule about which files a train may
+# touch — that rule is unenforceable, and the 0.4.0 train broke it for a good
+# reason:
+#
+#   * **`release.yml` is no longer callable.** Its `workflow_call` trigger is
+#     gone, so no `uses:` can resolve it from a caller's SHA. The `release` job
+#     below *dispatches* it at `vx.y.z` — the tag `advance` has just pushed at
+#     the promoted commit — so the release runs the train's own `release.yml`,
+#     and the train's own `container-image.yml`, by construction rather than by
+#     luck.
+#   * **The run says so.** That job asserts the release run's `head_sha` equals
+#     the promoted commit — the same field #326's evidence was read out of —
+#     and `preflight` reports, before anything moves, which of the workflow
+#     files *this* run resolved differ from the train's.
+#
 # ── Re-running after a partial failure ──────────────────────────────────────
 #
-# Up to and including `advance`, a failed run is re-runnable from the top: the
-# promotion pull request is still open and nothing is published. **After**
+# Up to and including `preflight`, a failed run is re-runnable from the top:
+# the promotion pull request is still open and nothing is published. **After**
 # `advance`, it is not — `main` has moved, so GitHub has closed the promotion
 # pull request as merged and `resolve` will refuse (by design: the pull request
-# is the gate). From there the recovery is per-step and manual:
-# `gh workflow run release.yml -f tag=vx.y.z` re-runs the publish, and the
-# branch housekeeping below is a `git push` each. That is deliberate — a
-# promotion that could half-run twice is worse than one that stops and says so.
+# is the gate). From there the recovery is per-step and manual, and it is
+# written down: **docs/ci-cd.md § "When a promotion half-runs"** says what is
+# safe to re-run, what is burned and cannot be, how to finish a promotion whose
+# tag and `main` already moved, and how to retire the train this workflow left
+# behind. That the recovery is manual is deliberate — a promotion that could
+# half-run twice is worse than one that stops and says so.
 on:
   # D14. A dispatch, and nothing else. Auto-running on review approval was
   # considered and rejected: promotion publishes to the world, and "approved by
@@ -195,7 +235,7 @@ jobs:
             --json number,headRefOid,url --limit 10)"
           count="$(jq 'length' <<<"$pr_json")"
           if [[ "$count" == "0" ]]; then
-            echo "::error title=No open promotion pull request::There is no open pull request from \`$TRAIN\` into \`main\`. That pull request is the gate — its checks and its approval are what promotion consumes, and its head SHA is what the beta digest is verified against (ADR 0023 D5, D16). Open it, let its checks settle and get it approved — \`Promotion gate\` is red on it by design and stays red, because that is the check that makes GitHub's merge button fatal on a gate (#264); promotion does not read it. If this train has already promoted, re-run the publish with \`gh workflow run release.yml -f tag=v$version\` instead."
+            echo "::error title=No open promotion pull request::There is no open pull request from \`$TRAIN\` into \`main\`. That pull request is the gate — its checks and its approval are what promotion consumes, and its head SHA is what the beta digest is verified against (ADR 0023 D5, D16). Open it, let its checks settle and get it approved — \`Promotion gate\` is red on it by design and stays red, because that is the check that makes GitHub's merge button fatal on a gate (#264); promotion does not read it. If this train has already promoted, this is the half-run promotion case and re-dispatching promotion is not the fix: re-run the publish with \`gh workflow run release.yml --ref v$version -f tag=v$version\` — the \`--ref\` is what makes it run the promoted commit's own workflow files (#326) — and finish the rest by hand from docs/ci-cd.md § \"When a promotion half-runs\"."
             exit 1
           fi
           if [[ "$count" != "1" ]]; then
@@ -364,7 +404,199 @@ jobs:
           fi
           echo "✅ $ref at linux/$ARCH carries $EXPECTED — the digest about to be promoted is the one that was tested."
 
-  # ─────────────────────────────────── 4. the advance, and the record of it
+  # ─────────────────────── 4. the release, proven runnable before main moves
+  #
+  # #326. Everything below this job is irreversible in practice: `advance`
+  # fast-forwards `main` and pushes `vx.y.z`, and GitHub closes the promotion
+  # pull request as merged the moment the first of those lands — so a promotion
+  # that fails *after* here cannot be re-run from the top, by design, and what
+  # it leaves behind is a repository that is half-promoted.
+  #
+  # Run 32716466300 is what that costs. It was green through `advance` and red
+  # on everything that publishes, and the repository still carried the result
+  # for days: `v0.4.0` tagged, `main` advanced, no GitHub Release, npm topped
+  # out at 0.3.3, and the promoted train never retired.
+  #
+  # The stale-workflow trap that caused that run is closed by construction in
+  # `release` below. This job is the other half of the answer, and it is the
+  # general one: **`release.yml` refuses on facts that are already knowable
+  # here**, and every one of those refusals arrives after `main` has moved,
+  # because `release.yml` does not start until it has. So they are asked here,
+  # where the answer costs a dispatch and nothing else.
+  #
+  # It is deliberately cheap — git and secret emptiness tests, and no build.
+  # The train's own `ci.yml` built and smoked the tarball on every merge into
+  # it, with the train's own workflow file; re-running that here would re-prove
+  # the train's work, and the train's work is not what went wrong. What went
+  # wrong is that `release.yml` had no chance to say anything until the
+  # irreversible half had already run.
+  preflight:
+    name: Preflight the release before main moves
+    needs: [pause, resolve]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      # Every branch and every tag: the questions below are about the promoted
+      # commit's tree and about the tag namespace, and a shallow clone of this
+      # run's own ref can answer neither.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      # The fact #326 is about, said out loud on every promotion whether or not
+      # it is a problem. `github.sha` is the commit this run resolved its
+      # workflow files from — `main` before the promotion — and the train is
+      # what `main` is about to become. When the two differ, the difference
+      # used to be invisible and fatal; it is now visible and harmless, because
+      # the release below runs the train's copy either way. Saying it anyway is
+      # what keeps "harmless" honest: a silent mechanism is one edit away from
+      # being a silent trap again.
+      - name: Say which workflow files this run resolved from the old main
+        env:
+          RUN_SHA: ${{ github.sha }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+          TRAIN: ${{ needs.resolve.outputs.train }}
+        run: |
+          set -euo pipefail
+          git fetch --force --prune --tags origin '+refs/heads/*:refs/remotes/origin/*'
+          if ! git cat-file -e "$HEAD_SHA^{commit}" 2>/dev/null; then
+            echo "::error title=The promoted commit is not here::$HEAD_SHA is not reachable from any branch on origin. \`$TRAIN\` was deleted or rewritten while this promotion ran; nothing has been published."
+            exit 1
+          fi
+
+          # The three files this run would execute: itself, the release it
+          # invokes, and the reusable build that release calls. `ci.yml`,
+          # `housekeeping.yml` and `landing.yml` are deliberately not in the
+          # list — this run never executes them, so a train that changed one of
+          # them has changed nothing about its own promotion, and a check that
+          # went red on it would be the "do not touch these files" convention
+          # #326 rejects, wearing a different hat.
+          executed=(.github/workflows/promote.yml
+                    .github/workflows/release.yml
+                    .github/workflows/container-image.yml)
+          drift=()
+          for file in "${executed[@]}"; do
+            mine="$(git rev-parse -q --verify "$RUN_SHA:$file" || echo absent)"
+            theirs="$(git rev-parse -q --verify "$HEAD_SHA:$file" || echo absent)"
+            [[ "$mine" == "$theirs" ]] || drift+=("$file")
+          done
+
+          if [[ "${#drift[@]}" -eq 0 ]]; then
+            echo "::notice title=The workflow files match the train::This run resolved its workflow files from $RUN_SHA, and all three files it executes are identical at $HEAD_SHA. Nothing about this promotion depends on that — the release is dispatched at the tag either way (#326) — but which case this is belongs in the log."
+            exit 0
+          fi
+
+          echo "::notice title=The train changed the workflow files this run resolved::${drift[*]} differ between $RUN_SHA — what this dispatch resolved — and $HEAD_SHA, the commit being promoted. That is legitimate and expected: a train may change its own release workflow, and the 0.4.0 train did (#288). The release below runs the train's copy, because it is dispatched at the version tag rather than called from this run's SHA. Before #326 this difference was invisible, and it stranded the promotion after \`main\` had already moved."
+          {
+            echo "### The workflow files this run resolved differ from the train's (#326)"
+            echo ""
+            printf '  %s\n' "${drift[@]}"
+            echo ""
+            echo "\`release.yml\` is dispatched at the version tag, so the train's copy is what runs."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The dispatch in `release` is only possible if the promoted commit
+      # carries a `release.yml` that takes a `workflow_dispatch` with a `tag`
+      # input. A train that deleted the trigger, renamed the input or moved the
+      # file would leave this promotion with an advanced `main`, a pushed tag
+      # and no way to publish — the same half-promoted state #326 is about,
+      # reached by a different road.
+      - name: The promoted commit carries a dispatchable release workflow
+        env:
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          for file in .github/workflows/release.yml .github/workflows/container-image.yml; do
+            if ! git cat-file -e "$HEAD_SHA:$file" 2>/dev/null; then
+              echo "::error title=The promoted commit has no $file::$HEAD_SHA does not carry \`$file\`, and the release needs it. Nothing has been published: \`main\` has not moved and no tag exists."
+              exit 1
+            fi
+          done
+
+          release="$(git show "$HEAD_SHA:.github/workflows/release.yml")"
+          if ! grep -qE '^ {2}workflow_dispatch:' <<<"$release"; then
+            echo "::error title=The train's release.yml cannot be dispatched::\`release.yml\` at $HEAD_SHA has no \`workflow_dispatch:\` trigger, and the release below dispatches it at the version tag (#326). Without that trigger this promotion would fast-forward \`main\`, push the tag, and then have no way to publish anything at all. Nothing has been published."
+            exit 1
+          fi
+
+          # The `tag` the dispatch below passes has to be an **input of the
+          # `workflow_dispatch` trigger**, and indentation alone cannot say so.
+          # Six spaces is also the depth of `with:` keys on a reusable-workflow
+          # call, and `release.yml` already carries `image:` and `source_tag:`
+          # there — so a bare `grep '^ {6}tag:'` passes a train that renamed the
+          # input to `version:` while still passing a `tag:` to
+          # `container-image.yml`. That train would then fail at the dispatch
+          # with "unexpected inputs provided", **after** `advance`, which is the
+          # one outcome this step exists to prevent.
+          #
+          # So the block is walked rather than pattern-matched: `on:` →
+          # `workflow_dispatch:` at two spaces, its `inputs:` at four, and the
+          # input names at six inside that. `awk` and not a YAML parser because
+          # this job installs nothing; the shape it walks is the shape
+          # `actions/checkout` would refuse to run on if it were wrong.
+          dispatch_inputs="$(awk '
+            /^[^ ]/                                    { trigger = 0; inputs = 0 }
+            /^  workflow_dispatch:[ \t]*$/            { trigger = 1; inputs = 0; next }
+            trigger && /^  [^ ]/                       { trigger = 0; inputs = 0 }
+            trigger && /^    inputs:[ \t]*$/          { inputs = 1; next }
+            trigger && inputs && /^    [^ ]/           { inputs = 0 }
+            trigger && inputs && /^      [A-Za-z_][A-Za-z0-9_-]*:/ {
+              name = $1; sub(/:$/, "", name); print name
+            }
+          ' <<<"$release")"
+
+          if ! grep -qx 'tag' <<<"$dispatch_inputs"; then
+            echo "::error title=The train's release.yml takes no tag input::\`release.yml\` at $HEAD_SHA declares no \`tag\` input on its \`workflow_dispatch\` trigger — it declares [$(tr '\n' ' ' <<<"$dispatch_inputs")]. The dispatch below passes \`-f tag=\`, which GitHub would refuse with \"unexpected inputs provided\" after \`main\` had already moved. Nothing has been published: \`main\` has not moved and no tag exists."
+            exit 1
+          fi
+          echo "✅ release.yml at $HEAD_SHA is dispatchable and its workflow_dispatch declares a tag input."
+
+      # `release.yml`'s own `resolve` refuses on each of these, and it refuses
+      # after `main` has moved — which is the whole complaint. This is a copy
+      # rather than a shared script on purpose: this file cannot call into the
+      # train's workflow, and the point is to fail here instead of there.
+      # `release.yml` still checks them itself; a promotion is not the only way
+      # in.
+      - name: The credentials release.yml refuses without
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$DOCKERHUB_USERNAME" ]] || missing+=(DOCKERHUB_USERNAME)
+          [[ -n "$DOCKERHUB_TOKEN" ]] || missing+=(DOCKERHUB_TOKEN)
+          [[ -n "$NPM_TOKEN" ]] || missing+=(NPM_TOKEN)
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "::error title=A release credential is missing::${missing[*]} not set. \`release.yml\` refuses on exactly these in its own \`resolve\` job — but that job does not start until \`main\` has been fast-forwarded and \`vx.y.z\` pushed, so its refusal would arrive after the irreversible half of this promotion (#326). Nothing has been published. See docs/REPO_SETUP.md section 2."
+            exit 1
+          fi
+          echo "✅ Docker Hub and npm credentials are present. release.yml checks them again in its own resolve."
+
+      # `advance` makes this check too, immediately before it pushes the tag —
+      # and by then it has already fast-forwarded `main`. Asking here as well
+      # costs one `git rev-parse`, and turns "the promotion stopped with `main`
+      # moved and no tag" into "the promotion refused and nothing happened".
+      - name: The version tag is free, or already names this commit
+        env:
+          VERSION: ${{ needs.resolve.outputs.version }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
+          if ! existing="$(git rev-parse -q --verify "refs/tags/$tag^{commit}")"; then
+            echo "✅ $tag does not exist yet."
+            exit 0
+          fi
+          if [[ "$existing" == "$HEAD_SHA" ]]; then
+            echo "::notice title=Tag already pushed::$tag already names $HEAD_SHA, so a previous promotion of this train got at least as far as \`advance\`. See docs/ci-cd.md § \"When a promotion half-runs\" before re-dispatching."
+            exit 0
+          fi
+          echo "::error title=Tag exists on another commit::$tag already names $existing, not $HEAD_SHA. Release tags are immutable and are the record of what shipped (ADR 0023 D44), so this promotion cannot claim a version somebody else's commit already holds. Nothing has been published: \`main\` has not moved."
+          exit 1
+
+  # ────────────────────────────────── 5. the advance, and the record of it
   #
   # The only job in this repository that writes to `main`, and the reason the
   # App identity exists (D39). Two pushes, in this order:
@@ -384,7 +616,10 @@ jobs:
   # stopped deploying the landing page, with nothing red anywhere.
   advance:
     name: Fast-forward main and push the version tag
-    needs: [resolve, verify]
+    # `preflight` is in this list and is the reason it exists: every irreversible
+    # act in this file is in this job, and nothing reaches it until the release
+    # it is about to hand off to has been proven runnable (#326).
+    needs: [resolve, verify, preflight]
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -495,38 +730,198 @@ jobs:
           # prerequisite that bites after `main` has already moved.
           if ! output="$(git push origin "refs/tags/$tag" 2>&1)"; then
             echo "$output"
-            echo "::error title=The tag push was refused::Creating \`refs/tags/v*\` is restricted by the 'Release tags — only admins cut releases' ruleset, which needs the App added as a **bypass actor** (ADR 0023 D39). \`main\` has already been fast-forwarded to $HEAD_SHA and that is correct and keeps; only the tag and the release are missing. Add the bypass actor, then \`git tag $tag $HEAD_SHA && git push origin $tag\` and \`gh workflow run release.yml -f tag=$tag\`."
+            echo "::error title=The tag push was refused::Creating \`refs/tags/v*\` is restricted by the 'Release tags — only admins cut releases' ruleset, which needs the App added as a **bypass actor** (ADR 0023 D39). \`main\` has already been fast-forwarded to $HEAD_SHA and that is correct and keeps; only the tag and the release are missing. Add the bypass actor, then \`git tag $tag $HEAD_SHA && git push origin $tag\` and \`gh workflow run release.yml --ref $tag -f tag=$tag\` — the \`--ref\` is what runs the promoted commit's own release workflow (#326). Then finish from docs/ci-cd.md § \"When a promotion half-runs\"."
             exit 1
           fi
           echo "$output"
-          echo "✅ $tag is on origin, naming $HEAD_SHA. It triggers nothing (ADR 0023 D40) — the release below is invoked by workflow_call."
+          echo "✅ $tag is on origin, naming $HEAD_SHA. It triggers nothing (ADR 0023 D40) — the release below is dispatched at it."
 
-  # ────────────────────────────────────────────────────────── 5. the release
+  # ────────────────────────────────────────────────────────── 6. the release
   #
-  # D40. `release.yml` by `workflow_call`, with the tag pushed above.
+  # D40, **as amended by #326**: `release.yml` is *dispatched at the tag*, and
+  # not called from this run.
   #
-  # `permissions: contents: write` is required and is not a copy-paste of the
-  # caller's default: **a reusable workflow cannot exceed the grant its caller
-  # gives it**, this file's top-level grant is `contents: read`, and
-  # `release.yml`'s `github-release` job needs `contents: write` to create the
-  # Release and attach the four assets. Without this line the release runs to
-  # its last job and fails there, after both images have been published — the
-  # most expensive place in the design to discover a permissions typo.
+  # The clause's original shape — `uses: ./.github/workflows/release.yml` — is
+  # what made run 32716466300 publish nothing. A local `uses:` resolves the
+  # called file from the caller's own SHA, and for a `workflow_dispatch` that
+  # SHA is the default branch as it stood when the run was created, never the
+  # train being promoted. So the release ran `main`'s `release.yml`, and a
+  # train that had fixed `release.yml` promoted with the copy from before the
+  # fix.
   #
-  # `secrets: inherit` for the same reason in a different currency: the Docker
-  # Hub credential, without which `resolve` refuses before anything is built.
+  # Dispatching at `vx.y.z` inverts it. `advance` pushed that tag at the
+  # promoted commit a moment ago, and a dispatch resolves every workflow file
+  # from the ref it is given — so `release.yml` **and** the
+  # `container-image.yml` it calls are the train's, by construction. There is
+  # no version of this that can quietly run an older workflow, because there is
+  # no `uses:` left to do it with: `release.yml` lost its `workflow_call`
+  # trigger in the same change, so nothing can call it at all.
+  #
+  # What replaces the call is a dispatch and a wait, and both halves are
+  # asserted rather than assumed:
+  #
+  #   * the run this job created is identified by **head SHA and id together**.
+  #     Neither alone does it: two promotions of *different* trains may overlap,
+  #     because `concurrency` is keyed on the train, so an id window alone can
+  #     latch onto the other promotion's release run — and a re-dispatch of the
+  #     same tag carries the same head SHA as the run before it, so a head SHA
+  #     alone cannot tell those two apart;
+  #   * **its `head_sha` is asserted to equal the promoted commit.** That is
+  #     the observable fact this clause is written in terms of, and it is the
+  #     field #326's evidence came out of: `gh run view 32716466300 --json
+  #     headSha` answered `51164f1` when it should have answered the commit
+  #     being promoted.
+  #
+  # `GITHUB_TOKEN`, and `actions: write`. This is not a push, so D39 — *a push
+  # made with the default token triggers nothing* — is not the rule that
+  # applies here: `workflow_dispatch` is one of the two events GitHub exempts
+  # from it, and `rebase-train` below already relies on that. The App could not
+  # do this in any case, being provisioned with `contents: write` and nothing
+  # else (#108). Nor is the exemption left standing on trust: a dispatch that
+  # created no run fails this job with the recovery named.
   release:
     name: Release
     needs: [resolve, advance]
-    uses: ./.github/workflows/release.yml
+    runs-on: ubuntu-24.04
+    # Six hours, which is GitHub's own ceiling for a job and therefore the
+    # largest honest number this can be. It is deliberately far above what a
+    # release takes — both Linux tarball legs, the macOS leg at 10x and however
+    # long it queues, the arm64 installer e2e, both image jobs, the npm publish
+    # and the GitHub Release — because the two sides of this cap are not
+    # symmetrical. Too long costs an idle ubuntu runner. Too short **fails a
+    # promotion whose release succeeded**: the wait below exits non-zero,
+    # `release-line` and `retire-train` are skipped, and the repository is left
+    # in exactly the half-run state this change exists to prevent — a state the
+    # old `uses:` shape could not reach, because it had no aggregate wall-clock
+    # cap at all.
+    timeout-minutes: 360
     permissions:
-      contents: write
-      id-token: write
-    secrets: inherit
-    with:
-      tag: v${{ needs.resolve.outputs.version }}
+      contents: read
+      # `gh workflow run` and the polling below are both the Actions API.
+      actions: write
+    steps:
+      - name: Dispatch release.yml at the tag, and wait for it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          HEAD_SHA: ${{ needs.resolve.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          tag="v$VERSION"
 
-  # ──────────────────────────────────────────────────── 6. the line's branch
+          # Two axes, and the run is found by both. Either one alone picks the
+          # wrong run in a case this repository supports.
+          #
+          # **`head_sha`** narrows the listing to release runs for the commit
+          # this promotion is publishing. `concurrency` is keyed on the train
+          # (`promote-<train>`), so two promotions of *different* trains
+          # overlapping is a supported state — it is what the hotfix and
+          # `rebase-train` machinery below exists for. Without this parameter, a
+          # promotion whose `before` was snapshotted while the other one's run
+          # had not yet surfaced in the listing would adopt that run, fail its
+          # own head-SHA assertion, and abort **after** `advance` had moved
+          # `main` and pushed the tag — while the release it did dispatch ran on
+          # unwatched, so `release-line` and `retire-train` never fired for a
+          # release that published. That is precisely the half-run promotion
+          # this whole change exists to make impossible.
+          #
+          # **`id > $before`** is what tells a re-dispatch of the same tag apart
+          # from the run it replaces, which the head SHA cannot: they share it.
+          # `before` is the **maximum** id over a page and not element zero —
+          # the listing is ordered by `created_at`, and "newest created" is not
+          # "highest id" when two runs are queued at once. `max_by` on the way
+          # out for the same reason.
+          before="$(gh api \
+            "repos/$REPO/actions/workflows/release.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[].id] | max // 0')"
+
+          # `--ref "$tag"` is the whole fix (#326): it is what makes the run
+          # resolve `release.yml` — and the `container-image.yml` that file
+          # calls — from the promoted commit instead of from the default branch.
+          gh workflow run release.yml --repo "$REPO" --ref "$tag" -f tag="$tag"
+          echo "Dispatched release.yml at $tag; the run this created has an id above $before."
+
+          # `|| true` on the query and never on the answer: an API blip must
+          # read as "not yet", which is what the next poll is for, and must not
+          # kill a job that is standing between a pushed tag and a publish.
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id="$(gh api \
+              "repos/$REPO/actions/workflows/release.yml/runs?event=workflow_dispatch&head_sha=$HEAD_SHA&per_page=100" \
+              --jq "[.workflow_runs[] | select(.id > $before)] | max_by(.id) | .id // empty" \
+              2>/dev/null || true)"
+            [[ -n "$run_id" ]] && break
+            sleep 10
+          done
+          if [[ -z "$run_id" ]]; then
+            echo "::error title=The dispatch created no release run::No release.yml run appeared above id $before after five minutes. \`main\` has been fast-forwarded to $HEAD_SHA and $tag is pushed; both are correct and keep, and only the publish is missing. Re-run it by hand — \`gh workflow run release.yml --ref $tag -f tag=$tag\` — and finish the promotion from docs/ci-cd.md § \"When a promotion half-runs\"."
+            exit 1
+          fi
+
+          # No `|| true` here: this one read decides what is asserted below,
+          # and an unanswered query must not become an empty head SHA.
+          info="$(gh api "repos/$REPO/actions/runs/$run_id" \
+            --jq '"\(.head_sha) \(.html_url)"')"
+          read -r run_sha url <<<"$info"
+          echo "::notice title=The release is running::$url"
+
+          # The assertion #326 exists for, on the one field that records it. A
+          # release run whose head SHA is not the promoted commit is a run
+          # executing some other commit's workflow files — which is exactly
+          # what 32716466300 did, and this field said so the whole time.
+          #
+          # It is kept even though the query above already pins `head_sha`, and
+          # it is not redundant with it: an unknown query parameter is
+          # **silently ignored** by the GitHub API, so a misspelled or dropped
+          # filter widens the listing to every release run and says nothing.
+          # This line is what notices. The filter is the mechanism; this is the
+          # observable fact, and the fact is the acceptance criterion.
+          if [[ "$run_sha" != "$HEAD_SHA" ]]; then
+            echo "::error title=The release run is not the promoted commit::$url reports head_sha $run_sha, not $HEAD_SHA — so its workflow files come from another commit, which is the failure #326 is about. \`main\` and $tag are correct and keep; nothing has been published. See docs/ci-cd.md § \"When a promotion half-runs\"."
+            exit 1
+          fi
+          echo "✅ $url runs the promoted commit's own workflow files ($HEAD_SHA)."
+          {
+            echo "### Release"
+            echo ""
+            echo "[\`$tag\`]($url) — dispatched at the tag, running $HEAD_SHA's own \`release.yml\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # Ten minutes inside the job's own timeout, so this step's crafted
+          # message — which names the run and the runbook — is what an operator
+          # reads, rather than GitHub's bare "The job running on runner … has
+          # exceeded the maximum execution time".
+          deadline=$(( SECONDS + 21000 ))
+          status=""; conclusion=""
+          while (( SECONDS < deadline )); do
+            poll="$(gh api "repos/$REPO/actions/runs/$run_id" \
+              --jq '"\(.status) \(.conclusion // "pending")"' 2>/dev/null || true)"
+            if [[ -z "$poll" ]]; then
+              sleep 30
+              continue
+            fi
+            read -r status conclusion <<<"$poll"
+            [[ "$status" == "completed" ]] && break
+            echo "  $tag is $status ($url)"
+            sleep 30
+          done
+
+          if [[ "$status" != "completed" ]]; then
+            # Not a failed release, and the message must not read as one: the
+            # run is still going and may well publish everything. What has
+            # failed is this job's ability to keep watching it, and the only
+            # cost of that is the branch housekeeping downstream of it.
+            echo "::error title=The release outlived this job's wait::$url is still $status after six hours. **The release has not failed** — it is still running, and it may still publish everything. What is stranded is the housekeeping this job gates: \`release-line\` and \`retire-train\` will not run. \`main\` and $tag are correct and keep. Watch $url to its end; if it succeeds, only steps 3 to 5 of docs/ci-cd.md § \"When a promotion half-runs\" are outstanding, and the release itself needs nothing."
+            exit 1
+          fi
+          if [[ "$conclusion" != "success" ]]; then
+            echo "::error title=The release failed::$url concluded '$conclusion'. \`main\` is at $HEAD_SHA and $tag is pushed — both irreversible in practice — so this promotion is half-run. **Do not dispatch promote.yml again**: the promotion pull request is closed as merged and \`resolve\` refuses it by design. The recovery is docs/ci-cd.md § \"When a promotion half-runs\" — re-run the release on the same tag, then retire the train and cut the release line by hand."
+            exit 1
+          fi
+          echo "✅ $tag is released — $url"
+
+  # ──────────────────────────────────────────────────── 7. the line's branch
   #
   # D27. `release/x.y` — named for the *line*, not the patch: a branch cut at
   # 1.2.0 that then publishes 1.2.4 is not `release/1.2.0`. It is what a
@@ -582,7 +977,7 @@ jobs:
           git push origin "$HEAD_SHA:refs/heads/$LINE"
           echo "✅ cut \`$LINE\` at $HEAD_SHA."
 
-  # ────────────────────────────────────────────────────── 7. the train is gone
+  # ────────────────────────────────────────────────────── 8. the train is gone
   #
   # D4. A train is disposable and is deleted on promotion: its commits live on
   # `main` now, and the branch itself carries no information. Disposability is
@@ -650,7 +1045,7 @@ jobs:
           git push origin --delete "$TRAIN"
           echo "✅ \`$TRAIN\` is gone. Its commits are on \`main\`; the branch carried nothing else (ADR 0023 D4)."
 
-  # ────────────────────────────────────────── 8. the invariant, said out loud
+  # ────────────────────────────────────────── 9. the invariant, said out loud
   #
   # D25, **as amended by #325**. Nothing here cuts a train and nothing here
   # invents a version. A cut is an administrative decision — a person names the
@@ -794,7 +1189,7 @@ jobs:
             echo "**No train is open.** Filed: $number"
           } >> "$GITHUB_STEP_SUMMARY"
 
-  # ───────────────────────────────────────────────── 9. the post-hotfix rebase
+  # ──────────────────────────────────────────────── 10. the post-hotfix rebase
   #
   # D24. A hotfix is an expedited train (D22), so promoting one necessarily
   # happens while another train exists — and that train can no longer
