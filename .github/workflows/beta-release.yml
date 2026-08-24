@@ -803,6 +803,14 @@ jobs:
       # Release (D16); adding the upload without adding the name here would have
       # the prune step delete it on the next cut.
       #
+      # One ordering caveat for that ticket, so it is not found by debugging:
+      # `compose-core-shasums.mjs --expect 3` and the filename guard above both
+      # sweep `*.tar.gz` in `core-tarballs/`, and both are deliberately strict.
+      # `pnpm pack` produces a `.tgz`, which slips past both harmlessly — but a
+      # CLI asset staged into that directory under a `*.tar.gz` name before
+      # those steps would break `--expect 3` and trip the foreign-asset guard.
+      # Stage it after them, or give it a name that is not `*.tar.gz`.
+      #
       # `install.sh` is attached as a **copy, not a door** (D5). The canonical
       # installer stays on `raw.githubusercontent.com/actana/control/main/install.sh`
       # under ADR 0016 D29, so that a broken installer is fixable without cutting
