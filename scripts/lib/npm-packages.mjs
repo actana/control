@@ -33,6 +33,51 @@
 // that every publishable manifest already carries the one being released, which
 // is the property "in lockstep" reduces to at the moment of publishing.
 //
+// ── The beta path: an asset, not a publish (#320, ADR 0036 D15/D16) ──────────
+//
+// Everything above is about a *release*, and a release is the only thing this
+// module ever sent to a registry. A beta is not sent anywhere. Under ADR 0036
+// C1 a beta version string is `x.y.z-beta` exactly — no counter, ever — and a
+// beta is designed to be cut repeatedly as the train moves, so the same version
+// would have to be published more than once. The paragraph at the top of this
+// file is the reason that cannot work: the second cut gets a 403 from the
+// registry after the tag has already moved and every asset has already been
+// replaced. **So a beta publishes nothing to registry.npmjs.org, under any
+// dist-tag** (D15), and the CLI ships instead as a packed tarball attached to
+// the beta prerelease, installed from its asset URL (D16).
+//
+// That is a decision of the repository owner's, recorded in ADR 0036 and in
+// #315. It is not weighed here and it is not reopened here.
+//
+// What it costs this module is one narrowing, and `beta: true` on
+// `assertPackedManifest` is the whole of it. `@actana/cli` declares
+// `"@actana/sdk": "workspace:*"`, pnpm resolves that to a real version as it
+// packs, and under D15 that version is on no registry — so the beta manifest
+// drops the dependency rather than pinning it, on the grounds that
+// `packages/cli/build.mjs` inlines the SDK into the bundle already.
+// `assertBundleInlines` reads the packed bundle to check that the code the
+// manifest stopped naming is actually in the tarball.
+//
+// **What each branch actually holds, stated exactly, because a looser sentence
+// was here first.** The dependency check below iterates
+// `Object.entries(packed.dependencies)`, so it only ever speaks about a
+// dependency that is *present*:
+//
+//   * on the **release** path it refuses a `@actana/sdk` pinned to anything but
+//     the version being published — a CLI on another train's SDK. It says
+//     nothing about a release manifest that dropped the SDK altogether, and
+//     such a manifest passes here.
+//   * on the **beta** path it refuses a `@actana/sdk` at *any* range, correct
+//     one included, because under D15 no range of it resolves.
+//
+// So the beta branch is strictly narrower than the release branch on the
+// manifests it sees, and the release-side *presence* of the SDK is held
+// somewhere else — `packages/cli/src/__tests__/no-local-escape.test.ts` pins the
+// working-tree manifest's dependency set to exactly four names on every pull
+// request, and the release packs from that working tree. Two checks, one
+// invariant, and this comment names which is which so nobody reads the loop
+// below as guaranteeing more than it does.
+//
 // ── Why the set is discovered rather than listed ─────────────────────────────
 //
 // `PUBLISHABLE` below is the *intent* — D13's two packages. What actually gets
@@ -86,6 +131,81 @@ export const PUBLISHABLE = ["@actana/sdk", "@actana/cli"];
 
 /** D12's floor, quoted. A published package declares exactly this. */
 export const PUBLISHED_ENGINES = ">=22";
+
+/**
+ * ADR 0036 C1's beta version string, in full. `x.y.z-beta` and **nothing after
+ * the word `beta`** — no counter, no `.N`, no run number, no short sha.
+ *
+ * Anchored at both ends deliberately. The string this rejects is not a typo, it
+ * is the shape a workflow reaches for the second time it cuts the same beta and
+ * finds the first one already there — and C1 bans that outright rather than
+ * leaving it to a reviewer to notice a `.2` in an asset filename.
+ */
+export const BETA_VERSION = /^\d+\.\d+\.\d+-beta$/;
+
+/** `0.4.1` → `0.4.1-beta`, the only beta string C1 permits for a line. */
+export function betaVersion(line) {
+  if (!/^\d+\.\d+\.\d+$/.test(line)) {
+    throw new Error(
+      `${JSON.stringify(line)} is not a release line. A beta is cut for an \`x.y.z\` line and is named ` +
+        "`x.y.z-beta` (ADR 0036 C1); there is no counter to append and no prerelease to append one to.",
+    );
+  }
+  return `${line}-beta`;
+}
+
+/**
+ * The names an esbuild config marks `external`, across every `external:` array
+ * in it.
+ *
+ * The beta install path (#320, ADR 0036 D16) rests entirely on `@actana/sdk`
+ * being absent from this list in `packages/cli/build.mjs`: external means the
+ * bundle `import`s the name at runtime, and a name imported at runtime has to
+ * resolve from the registry — which under D15 will never carry the beta
+ * version. Inlined, it resolves from nothing at all.
+ *
+ * `packages/cli/src/__tests__/no-local-escape.test.ts` reads the same array
+ * with its own copy of this regex and asserts the same absence from the other
+ * side of the package boundary. Two readers rather than one import, because
+ * that test is the CLI package's own and does not reach into `scripts/`.
+ */
+export function externalNames(buildSource) {
+  return [...buildSource.matchAll(/external:\s*\[([^\]]*)\]/g)].flatMap(
+    (match) => match[1]?.match(/"([^"]+)"/g)?.map((quoted) => quoted.slice(1, -1)) ?? [],
+  );
+}
+
+/**
+ * That a bundle inlines a package rather than importing it — asserted on the
+ * bundle's own bytes, out of the tarball, rather than on the config that
+ * produced them.
+ *
+ * This is the assertion the beta route needs and `externalNames` only
+ * approximates: `build.mjs` says what was *asked for*, and this says what
+ * *came out*. A dependency dropped from the packed manifest is safe exactly
+ * when the shipped bundle never names it as a specifier, and nothing short of
+ * reading the shipped bundle can tell you that.
+ *
+ * **Specifier position, not a substring.** The CLI bundle inlines its own
+ * `package.json` — that is where `actana --version` gets its answer — so the
+ * text `"@actana/sdk": "workspace:*"` appears in the bytes of a bundle that
+ * imports nothing of the sort. A `bundle.includes(name)` here would fail every
+ * pack for a reason that is not a defect.
+ */
+export function assertBundleInlines(name, bundle, dependency) {
+  const quoted = dependency.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const specifier = new RegExp(
+    `(?:from|import|require)\\s*\\(?\\s*["'\`]${quoted}(?:/[^"'\`]*)?["'\`]`,
+  );
+  if (specifier.test(bundle)) {
+    throw new Error(
+      `${name}'s bundle imports ${dependency} at runtime rather than inlining it. The beta CLI tarball drops that ` +
+        "dependency from its manifest on the grounds that the bundle carries the code (ADR 0036 D16), so an " +
+        "external one is an install that resolves a version the registry does not have and never will (D15). " +
+        `Either keep ${dependency} out of \`build.mjs\`'s \`external\` array, or the beta route needs re-deciding.`,
+    );
+  }
+}
 
 /** D12's other half: what the monorepo, Core and Panel keep. */
 export const MONOREPO_ENGINES = ">=24.0.0 <25";
@@ -304,9 +424,31 @@ export function assertPublishSet(found, all) {
  *
  * `version` is the release being cut, and is optional — the rehearsal runs
  * before any tag exists.
+ *
+ * `beta` says this manifest is the one ADR 0036 D16 attaches to a beta
+ * prerelease as a Release asset rather than publishing to the registry. It
+ * **narrows** the rules rather than relaxing them, and it narrows exactly two:
+ * the version string has to be C1's `x.y.z-beta` and nothing else, and the
+ * sibling-package dependency has to be *absent* rather than pinned. Every other
+ * rule below is the same rule, because a beta tarball is installed by the same
+ * `npm i -g` on the same operator's machine and can fail in all the same ways.
+ * The release path is untouched: `beta` defaults to false and no line under it
+ * changed.
  */
-export function assertPackedManifest(packed, { version } = {}) {
+export function assertPackedManifest(packed, { version, beta = false } = {}) {
   const where = `${packed.name}@${packed.version}`;
+
+  // C1, on the artifact rather than on the workflow that named it. The beta
+  // string is fixed for the life of the line, so this is also what refuses the
+  // counter a second cut of the same beta would otherwise want to reach for.
+  if (beta && !BETA_VERSION.test(packed.version)) {
+    throw new Error(
+      `${where} is packed as a beta and its version is not \`x.y.z-beta\`. ADR 0036 C1 fixes that string on every ` +
+        "surface — the git tag, the Release, every image tag, every asset filename — with no counter, no dotted " +
+        "suffix, no run number and no short sha after the word `beta`. A version this shape reaches an asset " +
+        "filename an operator is told to curl, so it is refused here rather than at the download.",
+    );
+  }
 
   if (packed.private === true) {
     throw new Error(`${where} is marked private and cannot be published.`);
@@ -394,6 +536,21 @@ export function assertPackedManifest(packed, { version } = {}) {
       throw new Error(
         `${where} depends on ${dependency}@${range} — the \`workspace:\` protocol reached the packed manifest. pnpm ` +
           "replaces it with a real version at pack time and npm rejects what is left, so this manifest was not packed by pnpm.",
+      );
+    }
+    if (PUBLISHABLE.includes(dependency) && beta) {
+      // The beta narrowing, and it is a *stricter* rule than the release one
+      // rather than a hole in it. On this path there is no registry publish at
+      // all (ADR 0036 D15), so `@actana/sdk@x.y.z-beta` is a version npm will
+      // never be able to resolve — pinning it correctly and pinning it to
+      // another train fail identically, at the operator's `npm i -g`. What
+      // makes the absence honest is that the bundle carries the SDK's code:
+      // `assertBundleInlines` is where that is checked, on the packed bytes.
+      throw new Error(
+        `${where} is packed as a beta and still depends on ${dependency}@${range}. Nothing is published to ` +
+          "registry.npmjs.org by a beta cut (ADR 0036 D15), so that range resolves against a registry that has no " +
+          `such version and never will, and \`npm i -g <asset-url>\` fails on it. ${dependency} is inlined into the ` +
+          "bundle by `packages/cli/build.mjs`, so the beta manifest drops it (D16, route 2).",
       );
     }
     if (PUBLISHABLE.includes(dependency) && range !== packed.version) {
