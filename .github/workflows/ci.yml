@@ -1139,9 +1139,62 @@ jobs:
   # so a `workflow_dispatch` republishes a train — the images-edge.yml
   # affordance, kept — while a dispatch on any other branch runs the gates and
   # publishes nothing.
+  # The train's version, asserted on the push that publishes its image.
+  #
+  # `Train rules` above asserts the same six manifests, and carries
+  # `if: github.event_name == 'pull_request'` — so **the one commit whose entire
+  # purpose is writing six versions has never been asserted by anything.** A cut
+  # is a direct push (docs/ci-cd.md § "Cutting a train"), and every merge into a
+  # train is a push too. `beta/0.4.1`'s cut and `beta/0.4.0`'s were both verified
+  # by hand and by nothing else.
+  #
+  # This is that assertion on the other event, and it is deliberately a separate
+  # job rather than a relaxed `if:` on `Train rules`: that job's name is the
+  # check context pinned by all three files in `docs/rulesets/`, it runs a dozen
+  # other pull-request rules that have no meaning on a push — the base branch,
+  # the promotion gate, the supported-lines list — and widening its trigger to
+  # reach one of them would run the other eleven against a payload that has no
+  # pull request in it (ADR 0037 D3).
+  #
+  # **`train-tags` needs it, which is the point.** The `beta-x.y.z` image tag is
+  # computed from the branch name and reads no manifest, so a train whose six
+  # manifests all say `9.9.9` used to publish `actana/core:beta-0.4.1` green.
+  # Now the job that resolves that tag cannot start until the tree it is naming
+  # has been read (ADR 0037 D4).
+  train-versions:
+    name: Train versions
+    if: startsWith(github.ref, 'refs/heads/beta/')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      # No `pnpm install`: the checker imports nothing outside node: builtins,
+      # precisely so the check that gates every other version-bearing job in
+      # this file cannot be held up by a registry.
+      - name: The tree carries the train's version
+        env:
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version="${BRANCH#beta/}"
+          node scripts/assert-version-agreement.mjs \
+            --expected "$version" \
+            --source "the train branch $BRANCH"
+
   train-tags:
     name: Resolve train tags
     if: startsWith(github.ref, 'refs/heads/beta/')
+    # The image tag is derived from the branch name and reads no manifest, so
+    # this dependency is what ties it to the tree it was built from: no train
+    # image is published under a version the six manifests do not carry
+    # (ADR 0037 D4).
+    needs: train-versions
     runs-on: ubuntu-24.04
     outputs:
       version: ${{ steps.tags.outputs.version }}
@@ -1182,6 +1235,11 @@ jobs:
       image: panel
       ref: ${{ github.sha }}
       stage: ${{ needs.train-tags.outputs.stage }}
+      # The line these bytes must carry. The build asserts the six manifests
+      # against it and stamps it into the image, so `beta-x.y.z` stops being a
+      # name derived from a branch and starts being a claim about a tree
+      # (ADR 0037 D4).
+      version: ${{ needs.train-tags.outputs.version }}
       tags: ${{ needs.train-tags.outputs.tags }}
       dev_tags: ${{ needs.train-tags.outputs.dev_tags }}
       push: true
@@ -1198,6 +1256,11 @@ jobs:
       image: core
       ref: ${{ github.sha }}
       stage: ${{ needs.train-tags.outputs.stage }}
+      # The line these bytes must carry. The build asserts the six manifests
+      # against it and stamps it into the image, so `beta-x.y.z` stops being a
+      # name derived from a branch and starts being a claim about a tree
+      # (ADR 0037 D4).
+      version: ${{ needs.train-tags.outputs.version }}
       tags: ${{ needs.train-tags.outputs.tags }}
       dev_tags: ${{ needs.train-tags.outputs.dev_tags }}
       push: true
