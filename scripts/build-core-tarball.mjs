@@ -238,9 +238,20 @@ async function main() {
     { file: "core-entry.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
     { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/cli" },
   ];
+  // The message names `pnpm build:core-tarball-bundles` and not the single
+  // filter that would fix this one file, because naming the single filter is
+  // how the pair drifts apart. #326 is that drift read back: a release leg
+  // built only `@actana/core` and every tarball job died here, and the line an
+  // operator read told them to build one package rather than pointing at the
+  // one script every caller is asserted to use
+  // (`scripts/__tests__/core-tarball.test.mjs`).
   for (const { file, dist, pkg } of stagedBundles) {
     if (fs.existsSync(path.join(dist, file))) continue;
-    fail(`no ${file} at ${dist} — run \`pnpm --filter ${pkg} build\` first`);
+    fail(
+      `no ${file} at ${dist} — ${pkg} has not been bundled. Run ` +
+        "`pnpm build:core-tarball-bundles`, which builds every package this tarball stages; " +
+        "a pipeline that builds only one of them is what #326 was.",
+    );
   }
 
   const protocolVersion = parseCoreLinkProtocolVersion(
