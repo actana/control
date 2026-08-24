@@ -148,6 +148,21 @@ const readBundleEntry = (tarball, entry) =>
 const BETA_PACKAGE = "@actana/cli";
 const INLINED_SIBLING = "@actana/sdk";
 
+/**
+ * A refusal raised from inside the beta pack's `try`, so that the `finally`
+ * restores the manifest before anything exits.
+ *
+ * It exists because `fail` is `process.exit(1)` (`lib/cli.mjs`), and
+ * `process.exit` inside a `try` **skips the `finally` outright** — the restore
+ * never runs, and the working tree is left carrying `x.y.z-beta` with the SDK
+ * dropped. That is precisely the state this function exists to prevent, and it
+ * would be committed by the next person to `git add -A` in that checkout. So
+ * nothing between the manifest edit and the restore may call `fail`: a refusal
+ * throws, the `catch` records the message, the `finally` puts the bytes back,
+ * and only then does the process exit.
+ */
+class BetaPackRefused extends Error {}
+
 fs.mkdirSync(outDir, { recursive: true });
 
 // The beta mode is a different artifact for a different channel, so it takes
@@ -297,11 +312,20 @@ process.stdout.write(
  * The cost route 2 carries, stated rather than hidden: the beta manifest's
  * dependency set differs from the release manifest's by one name, which is the
  * kind of divergence the packing guards exist to catch. So it is not left to a
- * convention — `assertPackedManifest`'s `beta` branch *requires* the absence
- * exactly as the release branch requires the pin, and `assertBundleInlines`
- * reads the packed bundle to confirm the code the manifest stopped naming is
- * in the tarball. A future `build.mjs` that externalised the SDK would fail
- * here, on the artifact, rather than in a stranger's install.
+ * convention — `assertPackedManifest`'s `beta` branch *requires* the absence,
+ * refusing `@actana/sdk` at any range at all, and `assertBundleInlines` reads
+ * the packed bundle to confirm the code the manifest stopped naming is in the
+ * tarball. A future `build.mjs` that externalised the SDK would fail here, on
+ * the artifact, rather than in a stranger's install.
+ *
+ * The release side is not this module's mirror image, and saying so plainly is
+ * worth a sentence: `assertPackedManifest` only validates a dependency that is
+ * *present*, so it refuses a release CLI pinned to another train's SDK and has
+ * nothing to say about a release manifest that dropped the SDK entirely. That
+ * one is held by `packages/cli/src/__tests__/no-local-escape.test.ts`, which
+ * pins the working-tree manifest to exactly four names on every pull request —
+ * and the release packs from that working tree, while the edit below is made
+ * only here and never committed.
  *
  * ── The manifest edit, and why it is never committed ─────────────────────────
  *
@@ -375,11 +399,15 @@ function rehearseBeta(line) {
   const original = fs.readFileSync(manifestPath);
   const tarball = path.join(outDir, tarballName({ name: cli.name, version: betaString }));
 
+  // Nothing inside this block calls `fail`. See `BetaPackRefused`: `fail` is
+  // `process.exit`, and an exit here would step straight over the `finally`
+  // that puts the manifest back. The message is carried out instead.
+  let refusal;
   try {
     const manifest = JSON.parse(original.toString("utf8"));
     manifest.version = betaString;
     if (manifest.dependencies?.[INLINED_SIBLING] === undefined) {
-      fail(
+      throw new BetaPackRefused(
         `${BETA_PACKAGE} does not depend on ${INLINED_SIBLING} in the working tree, so there is nothing for the ` +
           "beta path to drop. Either the dependency moved and this narrowing is stale, or the manifest lost it on " +
           "the release path too — and the release path needs it.",
@@ -394,10 +422,18 @@ function rehearseBeta(line) {
     // the manifest, so there is no `workspace:` protocol left to resolve.
     run("pnpm", ["pack", "--pack-destination", outDir], cli.dir);
   } catch (error) {
-    fail(`\`pnpm pack\` failed for ${cli.name} at ${betaString}: ${error.stderr || error.message}`);
+    refusal =
+      error instanceof BetaPackRefused
+        ? error.message
+        : `\`pnpm pack\` failed for ${cli.name} at ${betaString}: ${error.stderr || error.message}`;
   } finally {
+    // Every path out of the `try` comes through here, which is the whole point:
+    // a pack that failed — `pnpm` not on PATH, a build error, a full disk — must
+    // leave the checkout exactly as it found it. The original bytes, not a
+    // re-serialisation, so `keywords` and every other array keep their shape.
     fs.writeFileSync(manifestPath, original);
   }
+  if (refusal !== undefined) fail(refusal);
 
   if (!fs.existsSync(tarball)) {
     fail(`\`pnpm pack\` produced no ${path.basename(tarball)} in ${outDir}`);
@@ -481,6 +517,17 @@ function rehearseBeta(line) {
  * `selfsigned` from registry.npmjs.org exactly as an operator's machine does,
  * and must resolve nothing else. `@actana/sdk` not being in that list is the
  * whole point — it is in the bundle.
+ *
+ * **Two commands, not one.** `--version` proves the shim resolved, the bundle
+ * loaded and every external in the manifest was there — a dropped `@actana/sdk`
+ * that was *not* inlined would be `ERR_MODULE_NOT_FOUND` before a byte is
+ * printed. What it does not prove is that a **client noun** dispatches, and the
+ * client nouns are the entire reason this install surface exists: the machine
+ * this asset is for drives Cores it does not host. So `actana core ls` is run
+ * too — the registry read, no dialling — on a machine with nothing registered,
+ * which is every machine a fresh `npm i -g` lands on. It is the shape of check
+ * that was made by hand while this was written; made by hand it proves nothing
+ * on anyone else's run, so it is made here.
  */
 function installCheck(tarball, betaString) {
   const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-prefix-"));
@@ -491,35 +538,52 @@ function installCheck(tarball, betaString) {
     XDG_DATA_HOME: path.join(home, ".local", "share"),
     XDG_CONFIG_HOME: path.join(home, ".config"),
   };
+  // As in `rehearseBeta`, nothing between here and the `finally` calls `fail`:
+  // `fail` is `process.exit`, and an exit inside the `try` would step over the
+  // cleanup and leave two temporary trees — one of them a whole global npm
+  // prefix — behind on every failed run.
+  let refusal;
+  const asked = (command, argv) =>
+    execFileSync(command, argv, { cwd: home, env, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
   try {
     note(`installing ${path.basename(tarball)} with \`npm i -g\` into a clean prefix`);
-    execFileSync("npm", ["install", "-g", "--prefix", prefix, tarball], {
-      cwd: home,
-      env,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    asked("npm", ["install", "-g", "--prefix", prefix, tarball]);
+
     const command = path.join(prefix, "bin", "actana");
     if (!fs.existsSync(command)) {
-      fail(`\`npm i -g\` installed ${path.basename(tarball)} and put no \`actana\` in ${prefix}/bin.`);
+      throw new BetaPackRefused(
+        `\`npm i -g\` installed ${path.basename(tarball)} and put no \`actana\` in ${prefix}/bin.`,
+      );
     }
-    const reported = execFileSync(command, ["--version"], {
-      cwd: home,
-      env,
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "pipe"],
-    }).trim();
+
+    const reported = asked(command, ["--version"]).trim();
     if (reported !== `actana ${betaString}`) {
-      fail(`the installed command answers \`${reported}\`, not \`actana ${betaString}\`.`);
+      throw new BetaPackRefused(`the installed command answers \`${reported}\`, not \`actana ${betaString}\`.`);
     }
+
+    // The client noun. `core ls` reads this machine's registry and dials
+    // nothing, so it is the one verb that answers the same way on every clean
+    // machine — and answering at all means the client half of the program
+    // dispatched out of a bundle whose manifest no longer names the SDK.
+    const listed = asked(command, ["core", "ls"]).trim();
+    if (!listed.includes("No Cores registered")) {
+      throw new BetaPackRefused(
+        `\`actana core ls\` on a machine with nothing registered answered \`${listed}\`. The client nouns are what ` +
+          "this install surface exists for, so one of them running is part of the criterion rather than a bonus.",
+      );
+    }
+
     note(`✅ \`npm i -g\` → ${command} → ${reported}`);
+    note(`✅ \`actana core ls\` → ${listed}`);
   } catch (error) {
-    fail(
-      `\`npm i -g\` on ${path.basename(tarball)} failed: ${error.stderr || error.message}. This is #320's whole ` +
-        "acceptance criterion — a beta asset that does not install is a URL nobody has run.",
-    );
+    refusal =
+      error instanceof BetaPackRefused
+        ? error.message
+        : `\`npm i -g\` on ${path.basename(tarball)} failed: ${error.stderr || error.message}. This is #320's whole ` +
+          "acceptance criterion — a beta asset that does not install is a URL nobody has run.";
   } finally {
     fs.rmSync(prefix, { recursive: true, force: true });
     fs.rmSync(home, { recursive: true, force: true });
   }
+  if (refusal !== undefined) fail(refusal);
 }

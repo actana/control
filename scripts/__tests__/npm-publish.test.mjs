@@ -357,10 +357,20 @@ describe("the beta asset's manifest (ADR 0036 C1, D15, D16)", () => {
     expect(() =>
       assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "0.2.2" } })),
     ).not.toThrow();
-    // And the release path refuses what the beta path requires, which is the
-    // proof the two are narrowings of one rule rather than a hole in it: a
-    // release CLI that dropped the SDK would publish a tarball whose bundle
-    // and whose manifest disagree about what a consumer is getting.
+    // **And the release path does NOT refuse a manifest with no SDK at all.**
+    // An earlier draft of this comment claimed it did — the assertion below is
+    // unchanged, only what it is said to mean. `assertPackedManifest` iterates
+    // `Object.entries(packed.dependencies)`, so a dependency that is absent is
+    // a loop body that never runs: the release branch validates a pin that is
+    // *present* and has nothing to say about one that is missing.
+    //
+    // That is not a hole, because the release-side presence is held somewhere
+    // else and always has been: `packages/cli/src/__tests__/no-local-escape.test.ts`
+    // pins the working-tree manifest's dependency set to exactly four names, on
+    // every pull request, and the release packs from that working tree. The
+    // invariant on record is therefore the true one — this module refuses a
+    // release pinned to the *wrong* SDK version, and that test refuses a release
+    // that lost the SDK entirely.
     expect(() =>
       assertPackedManifest(betaCommand({ version: "0.2.2" }), { version: "0.2.2" }),
     ).not.toThrow();
@@ -879,7 +889,11 @@ describe("packing the beta CLI asset for real (#320, ADR 0036 D16)", () => {
     expect(manifest.version).toBe(beta);
     expect(BETA_VERSION.test(manifest.version)).toBe(true);
     expect(path.basename(tarball)).toBe(`actana-cli-${beta}.tgz`);
-    expect(stdout).toMatch(new RegExp(`^asset=actana-cli-${beta.replace(".", "\\.")}\\.tgz$`, "m"));
+    // `/\./g`, not `"."` — a string argument to `replace` swaps the FIRST match
+    // only, so `0.4.1-beta` escaped one dot and left two live. The regex still
+    // matched, because `.` matches a dot, which is how a wrong escape survives
+    // a green test: it is loose, not broken.
+    expect(stdout).toMatch(new RegExp(`^asset=actana-cli-${beta.replace(/\./g, "\\.")}\\.tgz$`, "m"));
     expect(stdout).toMatch(new RegExp(`^version=${beta.replace(/\./g, "\\.")}$`, "m"));
     // The checksum row #318's SHA256SUMS carries, printed rather than left to
     // a second pass over the file — an asset hashed twice is an asset that can
@@ -933,4 +947,76 @@ describe("packing the beta CLI asset for real (#320, ADR 0036 D16)", () => {
   it.skipIf(offline && !process.env.CI)("installs with `npm i -g` and puts a working `actana` on PATH", () => {
     expect(stdout).toMatch(/^install=ok$/m);
   }, 900_000);
+});
+
+// Review r1, finding 1 — regression. `fail()` is `process.exit(1)`, and a
+// `process.exit` inside a `try` skips the `finally` outright. The beta pack
+// called it from its `catch`, *after* the manifest had been rewritten, so a
+// failed `pnpm pack` left `packages/cli/package.json` in the working tree
+// carrying `x.y.z-beta` with `@actana/sdk` gone and `keywords` reflowed — the
+// exact state ADR 0023 D3 says must never be committed, sitting there for the
+// next `git add -A`. The doc block and the PR both claimed the opposite.
+//
+// Asserted on the bytes rather than on the code shape: the script is run with a
+// `PATH` that has no `pnpm` on it, which is how the reviewer reproduced it, and
+// the manifest is compared byte-for-byte before and after. A refusal *before*
+// the edit and a failure *after* it are both covered — the first by the exit
+// code, the second by the bytes.
+describe("a failed beta pack leaves the working tree alone (review r1, finding 1)", () => {
+  const manifestPath = path.join(repoRoot, "packages/cli/package.json");
+  const line = JSON.parse(fs.readFileSync(manifestPath, "utf8")).version;
+
+  /** @type {Buffer} */ let original;
+  /** @type {string} */ let emptyPathDir;
+  /** @type {string} */ let outDir;
+
+  beforeAll(() => {
+    // The safety net under the thing being tested. If the restore is broken
+    // again, this test fails *and* puts the file back, rather than failing and
+    // leaving the repository in the state it was complaining about.
+    original = fs.readFileSync(manifestPath);
+    emptyPathDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-no-pnpm-"));
+    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-fail-"));
+  });
+
+  afterAll(() => {
+    if (original) fs.writeFileSync(manifestPath, original);
+    if (emptyPathDir) fs.rmSync(emptyPathDir, { recursive: true, force: true });
+    if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("restores the manifest byte-for-byte when `pnpm pack` cannot run", () => {
+    const before = fs.readFileSync(manifestPath);
+    let status = 0;
+    let stderr = "";
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"), "--beta", line, "--out-dir", outDir],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          // `node` is invoked by absolute path, so an empty `PATH` starves only
+          // the `pnpm` the pack shells out to. Everything before the edit —
+          // reading the manifests, reading `build.mjs` — needs no `PATH` at all,
+          // which is what puts the failure on the far side of the rewrite.
+          env: { PATH: emptyPathDir, HOME: process.env.HOME ?? emptyPathDir },
+        },
+      );
+    } catch (error) {
+      status = error.status ?? 1;
+      stderr = error.stderr ?? "";
+    }
+
+    expect(status, "the pack was supposed to fail with no `pnpm` on PATH").not.toBe(0);
+    expect(stderr).toMatch(/`pnpm pack` failed for @actana\/cli/);
+    // The assertion the finding is about. Bytes, not a parsed comparison: the
+    // rewrite also reflows `keywords`, so a JSON-equal check would have passed
+    // on a file that is visibly modified in `git status`.
+    expect(
+      fs.readFileSync(manifestPath).equals(before),
+      "a failed beta pack left packages/cli/package.json modified in the working tree",
+    ).toBe(true);
+  }, 120_000);
 });
