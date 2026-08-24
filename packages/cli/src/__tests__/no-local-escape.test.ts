@@ -64,7 +64,28 @@
 //
 // ─── 3. The private package, inlined (#288 D5) — rewritten, not deleted ──────
 //
-// See the two `describe` blocks below; each carries its own argument.
+// ─── And what the dependency pin now also holds up (#320, ADR 0036 D16) ──────
+//
+// The last `describe` in this file pins `dependencies` to four names, and that
+// pin acquired a second job with #320. The beta install path packs this CLI as
+// a Release asset and installs it with `npm i -g <asset-url>`, publishing
+// nothing to registry.npmjs.org — because a beta version string is `x.y.z-beta`
+// with no counter (ADR 0036 C1) and npm burns a version on first publish, so
+// the second cut of a beta could not publish at all (D15). That asset's packed
+// manifest **drops `@actana/sdk`**, on the grounds that esbuild inlines it, and
+// `scripts/rehearse-npm-publish.mjs` makes the edit in the workflow's checkout
+// and never commits it.
+//
+// So this file's list stays exactly four names — the *release* manifest needs
+// the SDK, and `scripts/lib/npm-packages.mjs` still fails a release that lost
+// it — and one assertion is added rather than any being relaxed: the invariant
+// that makes dropping it safe. The whole argument for the drop is that the code
+// is in the bundle, which is true only while `@actana/sdk` is absent from
+// `build.mjs`'s `external` array. That absence was already asserted here for
+// #288 D5's reasons; it now also decides whether a stranger's `npm i -g` of a
+// beta asset resolves a version that does not exist.
+//
+// See the three `describe` blocks below; each carries its own argument.
 
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
@@ -243,6 +264,12 @@ describe("the private package is inlined, not depended on (#288 D5)", () => {
     // (2). `external` is a list of names the bundle will `import` at runtime;
     // `@actana/shared` on it would turn an inlined copy into a resolvable
     // dependency, which is exactly what ADR 0025 D4 forbids.
+    //
+    // The `@actana/sdk` line is the same assertion for a different reason, and
+    // since #320 it carries a third: the beta asset's manifest drops that
+    // dependency because this array does not contain it (ADR 0036 D16). An
+    // external SDK would make the drop an install-time `ERR_MODULE_NOT_FOUND`
+    // on a version registry.npmjs.org has never had and, under D15, never will.
     const externals = externalsOf(build);
     expect(externals).not.toContain("@actana/shared");
     expect(externals).not.toContain("@actana/sdk");
@@ -312,6 +339,34 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     ]);
     expect(Object.keys(manifest.dependencies)).not.toContain("better-sqlite3");
     expect(Object.keys(manifest.dependencies)).not.toContain("node-pty");
+  });
+
+  it("keeps the SDK in the release manifest, and droppable from the beta one", () => {
+    // #320 / ADR 0036 D16, asserted here because this is the file that pins the
+    // dependency set and the pin is what the beta path edits around.
+    //
+    // Two facts, and they are opposite on purpose:
+    //
+    //   * a **release** declares `@actana/sdk` and publishes both packages to
+    //     the registry from one tag, so `scripts/lib/npm-packages.mjs` fails a
+    //     packed release manifest whose range is anything but the version being
+    //     published. The name below is that pin, in the working tree, where the
+    //     release path packs from.
+    //   * a **beta** publishes nothing (D15), so that same range would name a
+    //     version no registry has. The beta pack drops it — in the workflow's
+    //     checkout, never committed (ADR 0023 D3) — and what makes that honest
+    //     is that the bundle carries the SDK's code rather than importing it.
+    //
+    // That second fact is one line away from being false, and the line is in
+    // `build.mjs`. If `@actana/sdk` ever appears in an `external:` array, the
+    // beta asset stops installing for a stranger and this is where it is caught
+    // — before a pack, in this package's own tests, rather than in `npm i -g`.
+    expect(Object.keys(manifest.dependencies)).toContain("@actana/sdk");
+    const build = readFileSync(path.resolve(SRC, "..", "build.mjs"), "utf8");
+    expect(
+      externalsOf(build),
+      "@actana/sdk is external, so the beta asset's dropped dependency is a runtime import of a version npm does not have (ADR 0036 D16)",
+    ).not.toContain("@actana/sdk");
   });
 
   it("keeps that list and `build.mjs`'s externals in step", () => {
