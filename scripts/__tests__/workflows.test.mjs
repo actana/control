@@ -821,6 +821,24 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     .filter((line) => line.trimStart().startsWith("#"))
     .join("\n");
 
+  /**
+   * One shell invocation, from the line naming `command` through the last of
+   * its `\`-continued lines.
+   *
+   * The point is to assert against the command a runner will execute rather
+   * than against the job's text, which also contains error messages *quoting*
+   * commands. A flag counted over the whole job can be satisfied by a sentence
+   * telling an operator how to repair the thing the flag prevents.
+   */
+  const invocation = (text, command) => {
+    const lines = text.split("\n");
+    const start = lines.findIndex((line) => line.includes(command));
+    expect(start, `no \`${command}\` invocation`).toBeGreaterThan(-1);
+    const call = [lines[start]];
+    for (let i = start; lines[i].trimEnd().endsWith("\\"); i += 1) call.push(lines[i + 1]);
+    return call.join("\n");
+  };
+
   // C3. A beta cut is *requested*, the way a promotion is (ADR 0023 D14),
   // because "published by accident" is the failure worth designing out. A
   // `push:` on `beta/**` here would be one line and would turn every merge into
@@ -1023,20 +1041,57 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   });
 
   // ADR 0023 D9, kept in force by ADR 0036 D11, and the acceptance criterion
-  // for this workflow in that clause's own words. The assertion is **not**
-  // `--prerelease` on the command line — that is the thing that can be lost. It
-  // is the read-back, on the pattern release.yml already uses for an npm
-  // attestation that vanishes silently: the flag succeeded, the log looks
-  // identical, and only the API knows.
-  it("creates a prerelease that is never latest, and reads both flags back (D11)", () => {
+  // for this workflow in that clause's own words.
+  //
+  // Asserted against the **invocations**, not by counting matches over the job.
+  // The count was the shape this test had first and it did not hold: both of
+  // the step's `::error` remediation hints embed the literal
+  // `gh release edit $TAG --prerelease=true --latest=false`, so a
+  // `>= 2` over the whole job was satisfied by the error prose alone — deleting
+  // both flags from both `gh release` calls left the suite green. This is the
+  // *pre-merge* guard for the one flag D9 says must never be lost, and the
+  // runtime read-back below it fires only after the tag has moved and the beta
+  // is already published, which is why its own error text says "Fix it now".
+  // A guard that a sentence can satisfy is not one.
+  it("passes both flags on both `gh release` invocations, never defaulted (D11)", () => {
     const job = code(jobBlock(source, "publish"));
-    // Never defaulted, on either path: `gh release create` with no `--latest`
-    // defaults `make_latest` to true, which is the whole failure D9 describes.
-    expect(job.match(/--prerelease=true/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
-    expect(job.match(/--latest=false/g)?.length ?? 0).toBeGreaterThanOrEqual(2);
-    // The read-back, and the endpoint it is really about.
+    for (const verb of ["gh release create", "gh release edit"]) {
+      const call = invocation(job, verb);
+      // `gh release create` with no `--latest` defaults `make_latest` to true,
+      // which is the whole failure D9 describes; `edit` is the second cut's
+      // path to the same two fields.
+      expect(call, `${verb} does not pass --prerelease=true`).toContain("--prerelease=true");
+      expect(call, `${verb} does not pass --latest=false`).toContain("--latest=false");
+      // The body has to name *this* cut's commit on both paths, or a re-cut
+      // moves the tag and every asset while the Release page goes on naming the
+      // first cut's sha — the one thing ADR 0036 D7 calls a beta's immutable
+      // record.
+      expect(call, `${verb} does not write the notes`).toContain("--notes-file");
+    }
+    // Written before the branch, so both paths have it. A `printf … > notes.md`
+    // inside the create arm is exactly the bug above.
+    const publish = code(jobBlock(source, "publish"));
+    expect(publish.indexOf('> "$RUNNER_TEMP/notes.md"')).toBeGreaterThan(-1);
+    expect(
+      publish.indexOf('> "$RUNNER_TEMP/notes.md"'),
+      "the notes are written inside a branch, so a re-cut keeps the first cut's body",
+    ).toBeLessThan(publish.indexOf('if gh release view "$TAG"'));
+    // `draft` is the third field a person can pick by hand. The read-back
+    // detects it, but only after the tag has moved — so the repair is asserted
+    // beside the detection.
+    expect(invocation(job, "gh release edit")).toContain("--draft=false");
+  });
+
+  // The read-back itself, which is the assertion D9 asks for rather than the
+  // flag D9 warns can be lost. It runs after the Release is written, on the
+  // pattern release.yml already uses for an npm attestation that vanishes
+  // silently: the flag succeeded, the log looks identical, and only the API
+  // knows.
+  it("reads the flags back off the API, /releases/latest included (D11)", () => {
+    const job = code(jobBlock(source, "publish"));
     expect(job).toContain('gh api "repos/$GH_REPO/releases/tags/$TAG"');
     expect(job).toContain("jq -r '.prerelease'");
+    expect(job).toContain("jq -r '.draft'");
     expect(job).toContain('gh api "repos/$GH_REPO/releases/latest"');
     expect(job).toContain("The beta became the latest release");
   });
