@@ -28,7 +28,7 @@
 > > `prerelease: true` **and CI must assert the flag**, because `install.sh` and the
 > > in-product update checker both read `/releases/latest`, which excludes prereleases — a
 > > single missing flag would make every running Core and Panel advertise an unreleased
-> > build."* — `0023-…:63`
+> > build."* — `0023-…:65`, as this pull request's second commit leaves it
 >
 > D8's revisit is §C. D9's assertion is **D11** below, and D9's own sentence is the acceptance
 > criterion for `beta-release.yml`.
@@ -86,16 +86,29 @@ failure mode worth designing out.
 
 **C4 — The URL scheme is the ref.**
 
+The **Installs** column is written in D2's vocabulary rather than in prose, because this
+table is a specification #317 builds and the two must not be able to disagree.
+
 | Want | URL | Installs |
 | --- | --- | --- |
-| the latest release | `raw.githubusercontent.com/actana/control/main/install.sh` | newest release |
-| a specific release | `…/actana/control/v0.4.0/install.sh` | that release |
-| the current beta of a line | `…/actana/control/beta/0.4.1/install.sh` | whatever that line's beta tag points at now |
-| that exact beta | `…/actana/control/v0.4.1-beta/install.sh` | the same, pinned |
+| the latest release | `raw.githubusercontent.com/actana/control/main/install.sh` | the release of the line `main` is stamped with, which in steady state is the newest release — the one case where it is not is D24 |
+| a specific release | `…/actana/control/v0.4.0/install.sh` | that line's release, which at a release tag is that release. A release tag is immutable (D7), so this row is a pin |
+| the current beta of a line | `…/actana/control/beta/0.4.1/install.sh` | that line's beta. The train branch is deleted at promotion (0023 D4), so this URL stops existing rather than quietly changing meaning |
+| the same beta, by tag | `…/actana/control/v0.4.1-beta/install.sh` | **an alias of the row above, not a pin.** It follows the same line, and once that line has a release it installs the release |
 
-`--version` still overrides, and `--repo` / `--base-url` are untouched. **This table is the
-constraint**, and it is what forces D1 below: it is the reason routes (b) and (c) of #314 §4
-are not available, rather than being routes this record weighed and rejected on cost.
+`--version` still overrides, and `--repo` / `--base-url` are untouched.
+
+**There is no ref that pins a beta, and the fourth row does not claim to be one.** Two clauses
+of this record make that impossible: the beta tag *moves* per cut (D7), so the ref itself will
+not hold still, and the file at that ref carries the **line** rather than the beta (D1), so D2
+resolves it exactly as the train branch does. **The pinned form is `--version x.y.z-beta`**,
+which the sentence above already permits, which #317 keeps working, and which is the only
+thing in this design that pins a beta at all — the beta's own immutable record stays the
+commit sha, the image digest and `SHA256SUMS` (D7).
+
+**This table is the constraint**, and it is what forces D1 below: it is the reason routes (b)
+and (c) of #314 §4 are not available, rather than being routes this record weighed and
+rejected on cost.
 
 ---
 
@@ -129,25 +142,53 @@ The two rejected routes are recorded with their reasons, because both will be pr
   because C4 asks for the shorter URL by name.
 
 **D2 — The resolution rule is "the release of this line if it exists, else this line's beta",
-and it makes no listing call.** In order: an explicit `--version` / `ACTANA_VERSION` wins
-(unchanged, `install.sh:242-247`, `:31`); otherwise the release `v<line>` if that Release
-exists; otherwise `v<line>-beta`. On a train only the beta tag exists, so the beta resolves.
-On `main` after promotion the release tag exists, so the same bytes resolve to the release. On
-a tag checkout the stamp is that tag's own version, so the tag rows of C4's table work for
-free with no extra machinery.
+and it makes no listing call.** In order:
+
+1. an explicit `--version` / `ACTANA_VERSION` wins, unchanged (`install.sh:242-247`, `:31`);
+2. the release `v<line>`, if that Release exists;
+3. otherwise `v<line>-beta`, if that Release exists;
+4. otherwise `/releases/latest` — exactly what the script reads today, kept as the terminal
+   fallback.
+
+On a train only the beta tag exists, so step 3 resolves. On `main` after promotion the release
+exists, so the same bytes resolve to the release at step 2. At a release tag the stamp is that
+tag's own version and step 2 pins it, which is C4's second row working with no extra
+machinery. **C4's fourth row is not a fourth behaviour**: the file at a beta tag carries the
+line like every other copy, so it takes step 2 or step 3 exactly as the train branch does, and
+that is why the table calls it an alias.
+
+**Step 4 is not decoration.** A copy whose line has neither a release nor a beta is a real
+state, not a hypothetical: a train from which nobody has yet dispatched a beta cut (C3 makes
+that the normal state of a young train), and the failed-release case D3 names. Without step 4
+those installs fail outright; with it they get today's answer, which is the correct one when
+the line being asked about has published nothing.
 
 The rule is **per line, by construction**. `GET /repos/<repo>/releases` returns every release
 newest-first across *all* lines, so "the newest prerelease" would hand a machine installing
-one line's beta the beta of another. Under D2 the tag name is fully determined by the stamp
-and no listing call is made at all — **one fewer API call than the stable path makes today**.
+one line's beta the beta of another. Under D2 the tag name is fully determined by the stamp,
+**no step enumerates releases**, and the steady-state path is one endpoint read — the same
+number of calls the stable path makes today.
+
+**What D2 stops depending on, and what that costs.** Today the default install always reads
+`/releases/latest` (`install.sh:249`); under D2 it reads that endpoint only at step 4. The two
+answers are held equal in steady state by two different mechanisms — the endpoint by 0023
+D28's assertion that *a backport never moves `latest`, on either Docker Hub or GitHub*, and
+the stamp by the cut plus `ci.yml`'s `Train rules` (D4). **A backport therefore produces no
+divergence**: D28 already keeps the endpoint on the current line, and D2 reaches the same
+answer without depending on that assertion continuing to hold, which is a small strengthening
+rather than a change. There is exactly one state where the two genuinely disagree and D2's
+answer is the worse one — a rollback, which flips that flag and does not touch the stamp. It
+is not buried here; it is **D24**.
 
 **D3 — The promotion window is a real cost of D1, it is bounded, and it is accepted.**
 `promote.yml`'s `advance` job fast-forwards `main` and pushes the version tag *before* the
 `release` job runs (`promote.yml:385-387`, `:518-520`), and the GitHub Release is created at
 the end of `release.yml`. So between the fast-forward and `github-release` completing, `main`
-carries the new line's stamp while that line's Release does not yet exist, and D2 resolves to
-the line's beta. For the duration of one release run, the public one-liner serves a
-prerelease.
+carries the new line's stamp while that line's Release does not yet exist, so D2 falls past
+step 2. **If a beta of that line was ever cut**, step 3 answers and the public one-liner
+serves a prerelease for the duration of one release run; if none was, step 4 answers with
+today's newest release and there is no window at all. The rest of this clause is about the first
+case, which is the one a milestone that exists to publish betas should expect.
 
 This is unavoidable under D1 rather than a bug in it: after the fast-forward, `main`'s bytes
 and the train's bytes are *identical* (0023 D5), so no rule expressed in those bytes can
@@ -162,8 +203,25 @@ run. The window is accepted because of what it actually delivers and how it heal
   the update notice fires and `actana update` moves the machine forward;
 - it is reachable only by an install *started* inside the window.
 
-The only lever that would close it is reordering `release` ahead of `advance` inside
-`promote.yml`, which is a change to the promotion sequence 0023 D40 and D16 depend on.
+**The bound is one release run only when that run finishes, and the failure case is stated
+here rather than left to be met.** `release` is an ordinary job and can go red or be
+cancelled. When it does, `main` keeps the new line's stamp and that line still has no Release,
+so D2 does not stop at step 2 — and the public door serves that line's beta **for as long as
+the failure lasts, not for one run**, if a beta of the line was ever cut, or today's newest
+release at step 4 if none was. Nothing self-corrects: the stamp cannot be walked back, because
+0023 D5 lets `main` advance only by fast-forward, and `main` is already at the train tip.
+
+**The recovery is the one 0023 D40 already documents: re-dispatch the release.** The tag is
+pushed before the release runs (`promote.yml:385-387`), and `release.yml` carries a
+`workflow_dispatch` beside the `workflow_call` `promote.yml` uses (`release.yml:119`, `:133`)
+precisely so a release can be re-run without a new commit and without touching `main`. So a
+promotion whose release leg is red is **not a cosmetic failure and must be finished rather
+than abandoned** — it is a public door serving a prerelease until someone re-runs it. That is
+also the neighbourhood of [#326](https://github.com/actana/control/issues/326), and it is
+written down here rather than left inside a link to another ticket.
+
+The only lever that would close the window itself is reordering `release` ahead of `advance`
+inside `promote.yml`, which is a change to the promotion sequence 0023 D40 and D16 depend on.
 **This record does not order that change**, and a later ticket that wants the window closed is
 amending 0023, not implementing this clause.
 
@@ -244,8 +302,13 @@ that parses versions ever sees one."* After this milestone several things do:
 - `release.yml`'s tag regex — **already accepts it**
   (`^v[0-9]+[.][0-9]+[.][0-9]+(-[0-9A-Za-z.-]+)?$`, `.github/workflows/release.yml:202`).
 - `packages/shared/src/semver.ts` — **not correct.** `isNewerSemver` compares only the numeric
-  core, so a release is not newer than its own beta and a machine on a beta is silently
-  downgraded by a bare `actana update`. That is #322, and it is the reason #322 has no
+  core, so a release is not newer than its own beta: both parse to the same numbers and the
+  comparison answers `false`. The machine is therefore **stranded** on the beta, never moved
+  backwards by this function, and its update notice never fires for the release of its own
+  line — the population most in need of that notice. The downgrade is a **second and separate
+  path**: a bare `actana update` resolves `/releases/latest`, which excludes prereleases, and
+  the already-current guard compares two unequal strings, so the machine is moved back to the
+  newest release and told it was updated. Both are #322, and they are the reason #322 has no
   dependency on this record beyond the version shape in C1.
 
 **D9 — `beta-release.yml` is a separate workflow, not a third mode of `release.yml`.**
@@ -447,6 +510,56 @@ so. They are amended by dated notes appended under the clauses named in §G — 
 superseded, never renumbered, and no existing D-number in either file moves. The notes are
 appended, so a later amendment appends beside them rather than editing them.
 
+**D23 — Nothing sweeps the two new tag classes. They persist once the line promotes, and 0023
+D45's credential does not grow to reach them.** The `vx.y.z-beta` git tag and its prerelease
+Release stay after promotion, and so do the `x.y.z-beta` image tags D10 puts in `panel` and
+`core`. Neither is removed by anything, and that is a decision rather than an omission.
+
+For the git tag and the Release the reason is 0023 D44's principle — the record of what
+happened is not rewritten — plus a live use: the beta Release is the only place a beta's
+tarballs, its `SHA256SUMS`, its `install.sh` copy and its CLI asset exist, and a machine
+installed from a beta may still need to fetch them. Deleting it would break C4's fourth row
+and every `--version x.y.z-beta` pin at once.
+
+For the image tags the reason is a refusal that already exists and that this record does not
+reopen. 0023 D45 records that **Docker Hub has no tag garbage collection and no undelete**,
+and its weekly sweep covers `pr-*` and `sha-*` in the `-dev` repositories only. 0023 D36 and
+D38 (*the delete-capable credential*) keep that credential permanently out of the repositories
+holding `latest` — which is exactly where D10 puts `x.y.z-beta`. Sweeping a beta image tag
+would mean widening its reach, and D38's own words are *"do not revisit by widening the
+list."* **So they persist.**
+
+**The accumulation is bounded at one per line rather than one per cut**, and that is the
+moving tag (D7) paying for itself: however many times a line is cut, it has exactly one git
+tag, one prerelease Release and one `x.y.z-beta` image tag. The cost is that `actana/panel`
+and `actana/core` carry one extra tag per line beside the `x.y.z` they already carry — at
+worst a doubling of a list 0023 D36's `descriptions` argument wants presentable. That is worth
+one clause and is not worth a credential. **#318 and #319 do not have to invent this**, which
+is why it is here.
+
+**D24 — 0023 D44's rollback does not reach a `main` one-liner, and the hotfix train is what
+does.** Rollback re-points `latest` and flips the GitHub Release's latest flag, *"nothing
+else"* — by that clause's own design it does not rewrite `main`. D2 resolves from the stamp on
+`main` and not from that flag, so a fresh `curl …/main/install.sh | bash` **keeps installing
+the rolled-back release** while every Docker pull and the in-product update checker have
+already moved off it. This is the one state where D2 and `/releases/latest` genuinely
+disagree, and D2 has the worse answer. It is a real regression against today's script, which
+follows the flip immediately, and it is recorded here rather than found during an incident.
+
+It is accepted because the recovery is the one 0023 D44 already names in its own next
+sentence: *"the fix goes forward through a hotfix train"* (0023 D22). A hotfix train is cut
+from `main`, promoted, and **re-stamps `main` in the same fast-forward** — after which the
+one-liner follows with no further action and no new mechanism. The cost is the interval
+between the flag flip and that promotion, during which a *new metal install* gets the
+rolled-back version while every existing one is already being told to move. **The metal
+install path's rollback is therefore the hotfix train, not the flag flip**, and the rollback
+runbook 0023 D44 points at must say so ([#323](https://github.com/actana/control/issues/323)).
+
+Two smaller things follow and are stated so they are not read as gaps. A rollback does **not**
+need the beta Release deleted: D23 keeps it, and it is a prerelease, so `/releases/latest`
+never answers it. And an operator who needs the good version on metal *now*, before the
+hotfix, has `--version x.y.z`, which C4's note and D2's step 1 both keep working.
+
 ---
 
 ## G. The amendments this record carries, and the space left for the ones it does not
@@ -482,13 +595,26 @@ change what a cut writes.
 ## Consequences
 
 **A beta is installable on metal, and that is the whole point.** `install.sh` from a train's
-ref installs that train's current beta; the same script from `main` installs the newest
-release; a tag installs itself. The CLI-only surface has a beta too (D16). None of it
-activates anything (C2).
+ref installs that train's current beta; the same script from `main` installs the release of
+the line `main` carries, which in steady state is the newest release; a release tag installs
+itself. The CLI-only surface has a beta too (D16). None of it activates anything (C2).
+
+**Two of the three doors are pins and one is not.** A release tag pins (D7, D2 step 2); a beta
+ref does not and cannot, because the tag moves and the file carries the line — the pinned form
+for a beta is `--version x.y.z-beta` (C4, D2 step 1).
+
+**Rollback stops reaching the metal door, and the hotfix train is what reaches it.** D24
+carries the argument and the recovery. This is the second edge a reviewer should push on,
+beside D3.
+
+**Nothing sweeps a beta tag, in git or on Docker Hub.** One git tag, one prerelease Release
+and one `x.y.z-beta` image tag accumulate **per line**, not per cut, and the alternative is
+widening a credential 0023 D38 refuses to widen (D23).
 
 **The public one-liner serves a prerelease for the length of one release run, once per
-release.** D3 carries the argument. It is the sharpest edge in this record and it is the one
-consequence a reviewer should push on before ratifying.
+release — and for longer than that if the release run goes red.** D3 carries the argument, the failed-run case and the re-dispatch that clears it. It is the
+sharpest edge in this record and it is the first of the two a reviewer should push on before
+ratifying.
 
 **The workflow inventory grows to six entry points, and one test fails until it is extended.**
 `scripts/__tests__/workflows.test.mjs:71-79` asserts the directory is exactly six files —
@@ -515,12 +641,12 @@ the shape that was kept.
 | --- | --- |
 | [#316](https://github.com/actana/control/issues/316) — install stops activating | C2 |
 | [#317](https://github.com/actana/control/issues/317) — the installer's channel | C4, D1–D6 |
-| [#318](https://github.com/actana/control/issues/318) — `beta-release.yml` | C1, C3, D7, D9, D10, D11, D13, D14 |
-| [#319](https://github.com/actana/control/issues/319) — beta image retag | D12 |
+| [#318](https://github.com/actana/control/issues/318) — `beta-release.yml` | C1, C3, D7, D9, D10, D11, D13, D14, D23 |
+| [#319](https://github.com/actana/control/issues/319) — beta image retag | D12, D23 |
 | [#320](https://github.com/actana/control/issues/320) — the CLI-only beta path | D15, D16, D17 |
 | [#321](https://github.com/actana/control/issues/321) — tarball promotion | D18, D19, D20 |
 | [#322](https://github.com/actana/control/issues/322) — `actana update` and the beta | C1, D6, D8 |
-| [#323](https://github.com/actana/control/issues/323) — the operator-facing docs | all of it; rewrites `docs/ci-cd.md:325-333` |
+| [#323](https://github.com/actana/control/issues/323) — the operator-facing docs | all of it; rewrites `docs/ci-cd.md:325-333`, and D24 for the rollback runbook |
 | [#325](https://github.com/actana/control/issues/325) — delete the automatic cut | D1's wording, and §G's open structure |
-| [#326](https://github.com/actana/control/issues/326) — stale release workflow | D3's ordering discussion |
+| [#326](https://github.com/actana/control/issues/326) — stale release workflow | D3, including its failed-release case and the re-dispatch recovery |
 | [#327](https://github.com/actana/control/issues/327) — version handling | C1, D7, and §G's open structure |
