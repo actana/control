@@ -173,6 +173,13 @@ jobs:
         with:
           fetch-depth: 0
 
+      # For the version assertion below. The checker imports nothing outside
+      # node: builtins, so there is no install step behind it.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
       - id: facts
         env:
           GH_TOKEN: ${{ github.token }}
@@ -284,6 +291,36 @@ jobs:
             echo "survivor=$survivor"
           } | tee -a "$GITHUB_OUTPUT"
 
+      # The version this promotion is about to publish, held against the tree
+      # it came from — before the fast-forward, before the tag, before any
+      # image is re-pointed (ADR 0037 D3).
+      #
+      # `version` above is the train's own branch name with `beta/` cut off it,
+      # and until this step nothing on the push path ever compared that name to
+      # the six manifests inside the commit: `Train rules` does exactly this
+      # comparison and runs on `pull_request` only, so the cut commit — the one
+      # commit whose entire purpose is writing six versions — reached here
+      # unasserted. `ci.yml`'s `Train versions` now covers the push; this covers
+      # the promotion, which is the moment the name becomes `vx.y.z`.
+      #
+      # Against `head_sha`, not against the branch tip and not against the
+      # checkout: the head of the promotion pull request is the commit `main`
+      # becomes and the commit the tag names, and a train that moved after the
+      # gate was read is exactly the state D16 refuses rather than one this
+      # should quietly follow.
+      - name: The train's manifests carry the version being promoted
+        env:
+          VERSION: ${{ steps.facts.outputs.version }}
+          HEAD_SHA: ${{ steps.facts.outputs.head_sha }}
+          TRAIN: ${{ steps.facts.outputs.train }}
+          PR: ${{ steps.facts.outputs.pr }}
+        run: |
+          set -euo pipefail
+          node scripts/assert-version-agreement.mjs \
+            --expected "$VERSION" \
+            --git-ref "$HEAD_SHA" \
+            --source "the train $TRAIN at the head of promotion pull request #$PR"
+
   # ──────────────────────────────────────── 3. the clause the design reduces to
   #
   # D16. `beta-x.y.z` moves on every train merge, so "retag whatever it points
@@ -320,6 +357,17 @@ jobs:
         image: [panel, core]
         arch: [amd64, arm64]
     steps:
+      # For the version assertion at the end of the step below. Cheap against
+      # what it buys: this is the last check before `main` moves, and it is the
+      # one the issue this job's second assertion comes from describes as
+      # asserting a commit and never a version (ADR 0037 D4).
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
       - name: Assert the beta digest was built from the promoted commit
         env:
           DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
@@ -363,6 +411,24 @@ jobs:
             exit 1
           fi
           echo "✅ $ref at linux/$ARCH carries $EXPECTED — the digest about to be promoted is the one that was tested."
+
+          # The revision label says which commit these bytes came from. It says
+          # nothing about what version they think they are, and that silence is
+          # the gap: an image whose six manifests say `9.9.9` promoted to
+          # `x.y.z` and to `latest` with this job green, because the only thing
+          # compared was a SHA (ADR 0037 D4).
+          #
+          # The label is the line, so `beta-0.4.1` and the `0.4.1` it becomes
+          # are one comparison. A Core image built before the label existed
+          # reads `24.04` — inherited from the Ubuntu base — and a Panel image
+          # built before it reads nothing at all; both are refused here, with
+          # the remedy being to re-run the train's image jobs.
+          label="$(docker image inspect --format '{{json .Config.Labels}}' "$ref" \
+            | jq -r '.["org.opencontainers.image.version"] // ""')"
+          node scripts/assert-version-agreement.mjs \
+            --expected "$VERSION" \
+            --image-label "$label" \
+            --source "$ref at linux/$ARCH"
 
   # ─────────────────────────────────── 4. the advance, and the record of it
   #
