@@ -16,7 +16,9 @@
 //                                           [--corrupt <asset>]
 //
 // --dir      Directory of `actana-core-<version>-<target>.tar.gz` files.
-//            Versions come from the file names; the newest is `latest`.
+//            Versions come from the file names; the newest non-prerelease is
+//            `latest`, and a `x.y.z-beta` name is served on its own tag —
+//            which is what a beta line's installer asks for (ADR 0036 D2).
 // --port     Port to listen on (default 8788; 0 picks a free one).
 // --host     Address to bind (default 127.0.0.1; use 0.0.0.0 to serve a VM).
 // --repo     Repository slug the paths are shaped for.
@@ -27,7 +29,13 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { makeFail, parseArgs, stringFlag } from "./lib/cli.mjs";
-import { DEFAULT_REPO, indexReleases, startFixtureReleaseServer } from "./lib/fixture-release.mjs";
+import {
+  DEFAULT_REPO,
+  indexReleases,
+  isPrerelease,
+  latestRelease,
+  startFixtureReleaseServer,
+} from "./lib/fixture-release.mjs";
 import { rehearsalSetupCommand } from "./lib/rehearsal.mjs";
 
 const fail = makeFail("fixture-release");
@@ -67,8 +75,15 @@ async function main() {
     log(`warning: no Core tarballs in ${dir} — every release request will 404`);
   }
   for (const release of releases) {
-    log(`release v${release.version}: ${[...release.assets.keys()].sort().join(", ")}`);
+    // Prereleases are called out because `/releases/latest` skips them, the way
+    // GitHub's does — so a directory whose newest tarball is a beta still
+    // answers `latest` with the release under it, and the line that says so is
+    // cheaper than working out why the installer chose the other one.
+    const kind = isPrerelease(release.version) ? "prerelease" : "release";
+    log(`${kind} v${release.version}: ${[...release.assets.keys()].sort().join(", ")}`);
   }
+  const latest = latestRelease(releases);
+  log(latest ? `latest: v${latest.version}` : "latest: nothing — every version here is a prerelease");
   for (const asset of corruptAssets) {
     log(`serving ${asset} corrupted — its checksum will not verify`);
   }

@@ -12,6 +12,12 @@
 //   GET /<owner>/<repo>/releases/download/<tag>/<asset>
 //   GET /install.sh                                → the bootstrapper itself
 //
+// `latest` excludes prereleases, because GitHub's does — that exclusion is the
+// reason ADR 0036 D2 stopped making it the installer's default, and a fixture
+// that answered a beta there would make the two rules look interchangeable.
+// The tags route is what D2's steps 2 and 3 ask, and it answers a beta tag the
+// same way it answers a release one.
+//
 // The releases it serves are whatever tarballs are in a directory: the file
 // names carry version and target, so a directory holding two versions is a
 // two-release fixture with no manifest to keep in sync. `SHA256SUMS` is
@@ -74,10 +80,14 @@ export function compareVersions(a, b) {
 /**
  * Group release tarball names by version.
  *
- * Returns `[{ version, assets: Map<target, name> }]` ordered oldest first, so
- * the last entry is what `releases/latest` answers with. Names that are not
- * release tarballs (a stray `SHA256SUMS`, an editor's backup file) are ignored
- * rather than rejected — the directory is a build output dir, not a manifest.
+ * Returns `[{ version, assets: Map<target, name> }]` ordered oldest first.
+ * Names that are not release tarballs (a stray `SHA256SUMS`, an editor's
+ * backup file) are ignored rather than rejected — the directory is a build
+ * output dir, not a manifest.
+ *
+ * The last entry is the newest release *including* prereleases; `latestRelease`
+ * is what `releases/latest` answers with, and the two differ exactly when a
+ * beta is the newest thing present.
  */
 export function indexReleases(fileNames) {
   const byVersion = new Map();
@@ -90,6 +100,25 @@ export function indexReleases(fileNames) {
   return [...byVersion.entries()]
     .sort(([a], [b]) => compareVersions(a, b))
     .map(([version, assets]) => ({ version, assets }));
+}
+
+/** Is this a prerelease version — anything carrying a `-suffix`? */
+export function isPrerelease(version) {
+  return version.includes("-");
+}
+
+/**
+ * What `GET /releases/latest` answers with: the newest **release**, prereleases
+ * skipped.
+ *
+ * GitHub's endpoint excludes them by definition, which is the whole reason
+ * `install.sh` could not use it to find a beta (ADR 0036 D2) — so the fixture
+ * excludes them too, and a test that installs from a beta line cannot pass by
+ * accident on a fixture that was more generous than the real thing.
+ */
+export function latestRelease(releases) {
+  const stable = releases.filter((release) => !isPrerelease(release.version));
+  return stable[stable.length - 1];
 }
 
 /**
@@ -136,7 +165,7 @@ export function releaseJson({ repo, version, assets, baseUrl }) {
     tag_name: tag,
     name: tag,
     draft: false,
-    prerelease: version.includes("-"),
+    prerelease: isPrerelease(version),
     assets: names.map((name) => ({
       name,
       browser_download_url: `${baseUrl}/${repo}/releases/download/${tag}/${name}`,
@@ -193,7 +222,7 @@ export async function startFixtureReleaseServer({
 
     if (route.kind === "latest" || route.kind === "tag") {
       const all = releases();
-      const release = route.kind === "latest" ? all[all.length - 1] : findRelease(route.tag);
+      const release = route.kind === "latest" ? latestRelease(all) : findRelease(route.tag);
       if (!release) return notFound("release");
       const body = JSON.stringify(
         releaseJson({ repo, version: release.version, assets: release.assets, baseUrl }),
