@@ -266,6 +266,150 @@ describe("help and dispatch stay in sync", () => {
   });
 });
 
+// ─── `actana place` — install without activating (ADR 0036 C2, #316) ────────
+//
+// The verb `install.sh` hands the bundle to. The script used to end by running
+// `actana setup`, so one line both installed a Core and turned the machine
+// into one; this is the half that is left when activation is taken out of it.
+// What has to hold at this level is the whole of what an operator's next
+// command depends on: the bundle is on disk, the launcher is linked, nothing
+// is running, and the printed command is one they can actually run.
+
+describe("place", () => {
+  /** The layout paths a placement writes, for the scratch home under test. */
+  const placed = () => {
+    const layout = layoutForHome();
+    return { layout, installDir: installDirFor(layout, MANIFEST.version) };
+  };
+
+  it("places the bundle, points `current` at it, and links the launcher", async () => {
+    expect(await runActanaCli(deps(["place"], fakeSystem()))).toBe(0);
+
+    const { layout, installDir } = placed();
+    expect(fs.existsSync(path.join(installDir, "app", "core-entry.cjs"))).toBe(true);
+    expect(fs.realpathSync(layout.currentLink)).toBe(fs.realpathSync(installDir));
+    expect(fs.readlinkSync(layout.binLink)).toBe(path.join(layout.currentLink, "bin", "actana"));
+    expect(out.join("\n")).toContain(installDir);
+  });
+
+  // The sentence that stops an operator believing the machine is a Core.
+  it("says nothing is running, and prints the command that changes that", async () => {
+    await runActanaCli(deps(["place"], fakeSystem()));
+
+    const text = out.join("\n");
+    expect(text).toMatch(/not a Core until you set it up/i);
+    expect(text).toMatch(/^ {2}actana setup$/m);
+    // Once, so there is one command and not two free to disagree — the e2e
+    // reads this line back and runs it.
+    expect(text.match(/\bactana setup\b/g)).toHaveLength(1);
+  });
+
+  // Advice that does not work is worse than no advice: `actana setup --help`
+  // is a usage error, because `--help` is a global flag rather than one of
+  // setup's own. Whatever `place` points at has to be a command that runs.
+  it("names a help command that actually answers", async () => {
+    await runActanaCli(deps(["place"], fakeSystem()));
+    const advised = /`(actana[^`]*--help)`/.exec(out.join("\n"));
+    expect(advised, "place stopped naming a help command").not.toBeNull();
+
+    out.length = 0;
+    const argv = advised![1].split(" ").slice(1);
+    expect(await runActanaCli(deps(argv, fakeSystem()))).toBe(0);
+    expect(out.join("\n")).toMatch(/actana <command>/);
+  });
+
+  it("asks the init system for nothing at all", async () => {
+    const system = fakeSystem();
+    expect(await runActanaCli(deps(["place"], system))).toBe(0);
+
+    // No `systemctl`, no `loginctl`, no `launchctl`: placement is a copy and
+    // two symlinks, and a verb that touched the init system would be the
+    // removed tail growing back.
+    expect(system.calls).toEqual([]);
+    const { layout } = placed();
+    expect(fs.existsSync(layout.servicePath)).toBe(false);
+    expect(fs.existsSync(materialFilePath(layout.configDir))).toBe(false);
+    // Nothing was registered with this machine's own CLI either — that is
+    // setup's, and it needs a credential that does not exist yet.
+    expect(() => wiredCredential()).toThrow();
+  });
+
+  // #316's fourth criterion, and the case it exists for: on a fresh machine
+  // `~/.local/bin` does not exist at login, so the shell never put it on
+  // `PATH`, so a bare `actana setup` is a command that will not be found.
+  it("prints an absolute path when the launcher's directory is not on PATH", async () => {
+    await runActanaCli(deps(["place"], fakeSystem(), { env: { HOME: home, PATH: "/usr/bin" } }));
+
+    const { layout } = placed();
+    const absolute = `${path.join(layout.currentLink, "bin", "actana")} setup`;
+    expect(out.join("\n")).toContain(absolute);
+    expect(out.join("\n")).not.toMatch(/^ {2}actana setup$/m);
+  });
+
+  // The CLI-only install this milestone must not break (#288 / ADR 0032): an
+  // `npm i -g @actana/cli` shim sits at exactly `binLink` inside the Core
+  // image, because `NPM_CONFIG_PREFIX` makes that directory the npm prefix's
+  // bin. Placement reaches that path before setup does now.
+  it("does not clobber an `actana` somebody else installed at the same path", async () => {
+    const { layout } = placed();
+    const shim = path.join(home, ".local", "lib", "node_modules", "@actana", "cli", "bin", "actana.mjs");
+    fs.mkdirSync(path.dirname(shim), { recursive: true });
+    fs.writeFileSync(shim, "#!/usr/bin/env node\n");
+    fs.mkdirSync(layout.binDir, { recursive: true });
+    fs.symlinkSync(shim, layout.binLink);
+
+    expect(await runActanaCli(deps(["place"], fakeSystem()))).toBe(0);
+
+    expect(fs.readlinkSync(layout.binLink)).toBe(shim);
+    const text = out.join("\n");
+    expect(text).toContain(layout.binLink);
+    // And the printed command goes through this install's own launcher, not
+    // through the other program — which has no bundle around it and would
+    // download a release rather than activate the one just placed.
+    expect(text).toContain(`${path.join(layout.currentLink, "bin", "actana")} setup`);
+  });
+
+  it("takes no options, and says where the ones it refuses went", async () => {
+    expect(await runActanaCli(deps(["place", "--public-host", "10.0.0.7"], fakeSystem()))).toBe(
+      EXIT_USAGE,
+    );
+    expect(err.join("\n")).toContain("--public-host");
+    expect(err.join("\n")).toMatch(/actana setup/);
+    expect(fs.existsSync(placed().installDir)).toBe(false);
+  });
+
+  it("refuses when there is no bundle here, and names the verb that fetches one", async () => {
+    // The `npm i -g @actana/cli` shape: a CLI with no tarball around it.
+    const code = await runActanaCli(deps(["place"], fakeSystem(), { installRoot: "" }));
+    expect(code).toBe(1);
+    expect(err.join("\n")).toMatch(/actana install/);
+  });
+
+  it("reports a build for another machine as an error, not a stack trace", async () => {
+    const code = await runActanaCli(deps(["place"], fakeSystem(), { arch: "arm64" }));
+    expect(code).toBe(1);
+    expect(err.join("\n")).toMatch(/linux-x64/);
+    expect(err.join("\n")).not.toMatch(/at Object\.|node:internal/);
+    expect(fs.existsSync(placed().installDir)).toBe(false);
+  });
+
+  // The two-command install, end to end at this level: place, then set up
+  // over what was placed. `setup` finds its own tree as its source, so it
+  // copies nothing and the machine ends up exactly where the one-command
+  // install used to leave it.
+  it("leaves a machine `actana setup` can finish activating", async () => {
+    expect(await runActanaCli(deps(["place"], fakeSystem()))).toBe(0);
+    out.length = 0;
+
+    const { installDir } = placed();
+    expect(await runActanaCli(deps(["setup"], fakeSystem(), { installRoot: installDir }))).toBe(0);
+
+    expect(out.join("\n")).toContain("actana pair new");
+    expect(wiredCredential().endpoint).toBe("wss://10.0.0.5:8443");
+    expect(fs.existsSync(layoutForHome().servicePath)).toBe(true);
+  });
+});
+
 describe("setup", () => {
   it("installs, starts, and points the operator at `actana pair new`", async () => {
     expect(await setup(fakeSystem())).toBe(0);

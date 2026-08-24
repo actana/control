@@ -59,18 +59,31 @@ export function pointSymlink(linkPath: string, target: string): void {
   fs.renameSync(staging, linkPath);
 }
 
-/** Copy the extracted tree into its versioned home, replacing any existing one. */
+/**
+ * Copy the extracted tree into its versioned home, replacing any existing one.
+ *
+ * A copy that fails part-way takes its own staging directory with it, so the
+ * only states this leaves behind are "the old tree" and "the new tree" — never
+ * a `versions/<v>.incoming` for the next run to trip over. That matters more
+ * since #316: `install.sh` places before anything is activated, and a failed
+ * placement has to leave the machine as it was found.
+ */
 export function installTree(source: string, installDir: string): void {
   const staging = `${installDir}.incoming`;
   fs.rmSync(staging, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(installDir), { recursive: true });
-  // verbatimSymlinks so a symlink inside the tarball is copied as-is rather
-  // than resolved against this machine's paths.
-  fs.cpSync(source, staging, {
-    recursive: true,
-    preserveTimestamps: true,
-    verbatimSymlinks: true,
-  });
+  try {
+    // verbatimSymlinks so a symlink inside the tarball is copied as-is rather
+    // than resolved against this machine's paths.
+    fs.cpSync(source, staging, {
+      recursive: true,
+      preserveTimestamps: true,
+      verbatimSymlinks: true,
+    });
+  } catch (err) {
+    fs.rmSync(staging, { recursive: true, force: true });
+    throw err;
+  }
   // Replace wholesale rather than copying over the top: a half-written tree
   // from a crashed install must not survive as a merge.
   fs.rmSync(installDir, { recursive: true, force: true });

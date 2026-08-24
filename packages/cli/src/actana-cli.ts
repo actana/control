@@ -2,6 +2,7 @@
 //
 //   Machine-side verbs — what this machine's own Core is and does
 //     actana install   fetch a release, verify it, install and start a Core
+//     actana place     place an extracted bundle and stop — install, no setup
 //     actana setup     install from an extracted tarball, or fetch one first
 //     actana status    daemon state, versions, endpoint, Harness availability
 //     actana token regenerate   mint fresh credentials, invalidating the old ones
@@ -96,7 +97,13 @@ import {
   type ActanaServiceManager,
   type ServiceVerb,
 } from "./actana-service.ts";
-import { choosePublicHost, runActanaSetup } from "./actana-setup.ts";
+import {
+  choosePublicHost,
+  placeCoreBundle,
+  planCorePlacement,
+  runActanaSetup,
+  setupCommandFor,
+} from "./actana-setup.ts";
 import {
   harnessFlagNames,
   harnessFromFlagName,
@@ -170,6 +177,10 @@ Cores this machine can reach
 
 This machine's own Core
   install    Fetch a release, verify it, install the Core and start it
+  place      Put the extracted bundle here and link the launcher, and stop.
+             Installing is not activating: nothing is started, no identity is
+             minted, no service is written. This is what \`install.sh\` runs, and
+             \`actana setup\` is the command that follows it
   setup      Install from an extracted tarball — or fetch one when there is none
   status     Show daemon state, versions, endpoint, and Harness availability
   token regenerate
@@ -619,6 +630,85 @@ async function cmdSetup(
     );
     return 1;
   }
+  return 0;
+}
+
+/**
+ * `actana place` — the install half of the install, and nothing after it.
+ *
+ * The verb `install.sh` hands placement to (#316, ADR 0036 C2). The script has
+ * verified and unpacked a bundle into a temporary directory its own EXIT trap
+ * is about to delete; this is what makes any of it survive. It writes
+ * `versions/<v>`, points `current` at it, links `<binDir>/actana` unless
+ * somebody else owns that name — and then stops, because the mTLS material,
+ * the service unit, lingering and this machine's registration are `actana
+ * setup`'s to write and the operator's to ask for.
+ *
+ * **This is why the script does not learn the layout.** `ACTANA_HOME`,
+ * `ACTANA_CONFIG_DIR`, `ACTANA_DATA_DIR`, `ACTANA_BIN_DIR`, `XDG_DATA_HOME`
+ * and `XDG_CONFIG_HOME` resolve here, through `resolveActanaLayout`, against
+ * the same rules and the same unit tests every other verb resolves against. A
+ * second copy of them in POSIX sh would be a second front door.
+ *
+ * It takes no flags. Every flag the old tail forwarded belonged to `setup`,
+ * and `setup` is a separate command now.
+ */
+function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
+  const parsed = parseFlags(argv, {});
+  if ("error" in parsed) {
+    deps.err(parsed.error);
+    // The flags an operator is most likely to try here are setup's, and they
+    // have not been deleted — they moved to the command that uses them.
+    deps.err("`actana place` takes no options — `actana setup` is where the install's choices are made.");
+    return EXIT_USAGE;
+  }
+
+  // A CLI from `npm i -g @actana/cli` is not standing in a bundle, and there is
+  // nothing for it to place. That is not a broken install, it is the other
+  // door: `actana install` fetches a release and sets it up in one go.
+  const manifest = readCoreManifest(deps.installRoot);
+  if (!manifest) {
+    deps.err(
+      "there is no extracted Core bundle here to place. `actana place` runs from inside " +
+        "an unpacked release — `actana install` fetches one and sets it up instead.",
+    );
+    return 1;
+  }
+
+  const layout = resolveActanaLayout(deps.env, deps.home, deps.platform);
+  const placing = {
+    layout,
+    env: deps.env,
+    sourceRoot: deps.installRoot,
+    manifest,
+    platform: deps.platform,
+    arch: deps.arch,
+    out: deps.out,
+  };
+
+  let placed;
+  try {
+    placed = placeCoreBundle(placing, planCorePlacement(placing));
+  } catch (err) {
+    deps.err(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+
+  deps.out("");
+  deps.out(`Core ${placed.version} installed at ${placed.installDir}`);
+  deps.out(`  Launcher   ${placed.launcher.binLink}`);
+  deps.out(`  Current    ${layout.currentLink}`);
+  deps.out("");
+  // Installing is not activating, and an operator who is not told that has a
+  // machine they believe is a Core and a Panel that will never reach it.
+  deps.out("Nothing is running yet: this machine is not a Core until you set it up.");
+  deps.out("");
+  deps.out("  " + setupCommandFor(layout, placed.launcher, deps.env));
+  deps.out("");
+  deps.out(
+    "That writes this Core's identity, its auto-start service and its registration, and " +
+      "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
+  );
   return 0;
 }
 
@@ -1330,6 +1420,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   switch (head) {
     case "install":
       return cmdInstall(deps, rest);
+    case "place":
+      return cmdPlace(deps, rest);
     case "setup":
       return cmdSetup(deps, rest);
     case "status":

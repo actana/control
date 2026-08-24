@@ -1,4 +1,20 @@
-// `actana setup` — turning the extracted tarball into a running, pairable Core.
+// `actana setup` — turning a placed Core bundle into a running, pairable Core.
+//
+// **Install is not activation, and this file is where the seam is** (ADR 0036
+// C2, #316). Two jobs used to be one function: *placing* a bundle — the
+// versioned `versions/<v>` tree, the `current` symlink, the `~/.local/bin`
+// launcher — and *activating* the machine as a Core — mTLS material, a unit or
+// a LaunchAgent, lingering, the daemon, registration. `install.sh` wanted the
+// first without the second and had no way to ask for it, so it ran `setup` and
+// got both.
+//
+// So placement is `planCorePlacement` + `placeCoreBundle` below, `actana place`
+// is the verb that stops there, and `runActanaSetup` calls the same two
+// functions before it activates anything. One implementation, entered at two
+// points — the arrangement `actana-install.ts` already uses for the download
+// half. **The layout is never resolved anywhere but `actana-layout.ts`**: a
+// second copy of those rules in POSIX sh is the failure this repository
+// already refuses for release resolution.
 //
 // Everything happens under the operator's home and nothing shells to sudo, on
 // Linux and on macOS alike. The one privilege-adjacent step is Linux's
@@ -41,8 +57,14 @@ import {
 } from "@actana/shared/core-material-store";
 import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses.ts";
 import { endpointFor, readActanaConfig, writeActanaConfig } from "./actana-config.ts";
-import { installDirFor, type ActanaLayout } from "./actana-layout.ts";
-import { installTree, missingTreeFile, pointSymlink, realpathOrNull } from "./actana-tree.ts";
+import { binDirOnPath, installDirFor, type ActanaLayout } from "./actana-layout.ts";
+import {
+  installTree,
+  lstatOrNull,
+  missingTreeFile,
+  pointSymlink,
+  realpathOrNull,
+} from "./actana-tree.ts";
 import { claimLauncher, type LauncherClaim } from "./actana-launcher.ts";
 import { wireLocalCore, type LocalCoreWiring } from "./local-core-wiring.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
@@ -58,8 +80,30 @@ const BEARER_DAYS = 365;
 /** How long setup waits for the daemon's port to answer before saying so. */
 const LISTEN_TIMEOUT_MS = 30_000;
 
-export type SetupOptions = {
+/**
+ * What placing a bundle needs — and deliberately nothing more.
+ *
+ * No registry, no service manager, no port, no public host: placement writes a
+ * tree, a symlink and possibly a launcher, and none of those is a decision
+ * about what this machine *is*. `SetupOptions` is this plus the activation
+ * half, so `actana place` and `actana setup` cannot drift apart on where
+ * things go.
+ */
+export type PlacementOptions = {
   layout: ActanaLayout;
+  /** The `PATH` this run was given, for deciding who owns the launcher. */
+  env: NodeJS.ProcessEnv;
+  /** The extracted tarball tree being placed. */
+  sourceRoot: string;
+  /** That tree's `core-manifest.json`. */
+  manifest: CoreManifest;
+  platform: NodeJS.Platform;
+  arch: string;
+  /** Progress and warnings for the operator. */
+  out: (line: string) => void;
+};
+
+export type SetupOptions = PlacementOptions & {
   /**
    * Where this machine's client half keeps its Cores (#288 D9).
    *
@@ -68,20 +112,12 @@ export type SetupOptions = {
    * hand-carried from one half of this command into the other.
    */
   registry: RegistryPaths;
-  /** The `PATH` this run was given, for deciding who owns the launcher. */
-  env: NodeJS.ProcessEnv;
-  /** The extracted tarball tree setup is running from. */
-  sourceRoot: string;
-  /** That tree's `core-manifest.json`. */
-  manifest: CoreManifest;
   port: number;
   /** The address the daemon binds. */
   host: string;
   /** The address a client dials — goes in the cert SAN and the endpoint. */
   publicHost: string;
   label: string;
-  platform: NodeJS.Platform;
-  arch: string;
   /** Skip prompts and take the recommended answer. */
   assumeYes: boolean;
   /** Whether there is a terminal to prompt on. */
@@ -95,8 +131,29 @@ export type SetupOptions = {
   system: ActanaSystem;
   /** This machine's init system — systemd on Linux, launchd on macOS. */
   service: ActanaServiceManager;
-  /** Progress and warnings for the operator. */
-  out: (line: string) => void;
+};
+
+/** Where a bundle is going, and whether the tree itself has to be written. */
+export type PlacementPlan = {
+  /** `versions/<version>` under this layout's root. */
+  installDir: string;
+  /** The extracted tree, with symlinks resolved. */
+  source: string;
+  /**
+   * False when the source *is* the install directory — a `setup` run by the
+   * launcher of an install that `install.sh` already placed, which is the
+   * ordinary shape of the two-command install (ADR 0036 C2).
+   */
+  replacingTree: boolean;
+};
+
+/** What a placement put on the machine. Nothing here is running. */
+export type PlacementResult = {
+  /** The version that is now on disk — the tree's, not this CLI's (#288 D10). */
+  version: string;
+  installDir: string;
+  /** Whether `<binDir>/actana` was linked, or left to whoever owns it (#288 D10). */
+  launcher: LauncherClaim;
 };
 
 /** What `actana setup` did to this machine's pairing material. */
@@ -201,9 +258,19 @@ async function resolveMaterial(
   };
 }
 
-/** Install, register, start, and pair this machine. */
-export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
-  const { layout, manifest, service } = opts;
+// ─── placement: what `actana place` does, and what `setup` does first ───────
+
+/**
+ * Where a bundle is going, decided before a single byte is written.
+ *
+ * Split from {@link placeCoreBundle} so the caller can act between deciding
+ * and writing: `runActanaSetup` takes out a pre-rename unit and stops a running
+ * daemon in that gap, and neither belongs to placement. Every refusal —
+ * wrong platform, incomplete tree, unusable version string — happens here, so
+ * a plan that came back is a plan that can be carried out.
+ */
+export function planCorePlacement(opts: PlacementOptions): PlacementPlan {
+  const { layout, manifest } = opts;
 
   if (manifest.platform !== opts.platform || manifest.arch !== opts.arch) {
     throw new Error(
@@ -218,7 +285,71 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
 
   const installDir = installDirFor(layout, manifest.version);
   const source = realpathOrNull(opts.sourceRoot) ?? opts.sourceRoot;
-  const replacingTree = source !== realpathOrNull(installDir);
+  return { installDir, source, replacingTree: source !== realpathOrNull(installDir) };
+}
+
+/**
+ * Put the bundle where it lives and link the launcher. Activates nothing.
+ *
+ * This is the whole of what survives `install.sh`: without it the extracted
+ * tree is deleted by the script's own EXIT trap and the machine is exactly as
+ * it was found. Nothing here writes config, mints material, or asks an init
+ * system for anything — see the file header.
+ *
+ * **A failed placement leaves the machine as it was found.** The copy lands in
+ * `<installDir>.incoming` and is renamed into place, so a tree is either whole
+ * or absent; if the rename never happens, the staging directory goes, and a
+ * version directory this call created goes with it. `current` and the launcher
+ * are only touched once the tree is complete.
+ */
+export function placeCoreBundle(opts: PlacementOptions, plan: PlacementPlan): PlacementResult {
+  const { layout, manifest } = opts;
+  const hadInstallDir = lstatOrNull(plan.installDir) !== null;
+
+  try {
+    if (plan.replacingTree) installTree(plan.source, plan.installDir);
+  } catch (err) {
+    // `installTree` takes its own staging directory with it. What is left to
+    // undo is a version directory this call brought into existence — an
+    // install that was already there is not this failure's to delete.
+    if (!hadInstallDir) fs.rmSync(plan.installDir, { recursive: true, force: true });
+    throw err;
+  }
+
+  pointSymlink(layout.currentLink, plan.installDir);
+  // Not an unconditional symlink any more: `<binDir>/actana` may already be
+  // somebody else's, and in the Core image it is the very directory
+  // `NPM_CONFIG_PREFIX` puts npm's global shims in (#288 D10).
+  const launcher = claimLauncher(layout, opts.env);
+  if (launcher.note) opts.out(launcher.note);
+
+  return { version: manifest.version, installDir: plan.installDir, launcher };
+}
+
+/**
+ * The `actana setup` line to print after placing a bundle, runnable as printed.
+ *
+ * A bare `actana` is only correct when this install's own launcher is the one
+ * that answers to that name *and* its directory is on `PATH`. Otherwise the
+ * operator gets a path: through `current`, so it keeps working after the next
+ * update repoints that link. Today `setup` reports the not-on-PATH condition
+ * after it has already run; `install.sh` now reaches it first, and a next
+ * command that is not found is a dead end rather than a note (#316).
+ */
+export function setupCommandFor(
+  layout: ActanaLayout,
+  launcher: LauncherClaim,
+  env: NodeJS.ProcessEnv,
+): string {
+  const usable = launcher.outcome === "linked" && binDirOnPath(layout.binDir, env.PATH);
+  return usable ? "actana setup" : `${path.join(layout.currentLink, "bin", "actana")} setup`;
+}
+
+/** Install, register, start, and pair this machine. */
+export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
+  const { layout, manifest, service } = opts;
+
+  const plan = planCorePlacement(opts);
 
   // A machine installed before the Harness → Core rename has a second service
   // under the old name, running out of this same tree and binding this same
@@ -231,18 +362,16 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
   // Swapping the tree under a running daemon works on both platforms (the open
   // inodes survive) but leaves it executing a version that no longer exists on
   // disk. Stop first so the restart below is the only thing that brings it back.
-  if (replacingTree && service.isActive()) {
+  if (plan.replacingTree && service.isActive()) {
     opts.out("Stopping the running Core before upgrading it…");
     service.stop();
   }
 
-  if (replacingTree) installTree(source, installDir);
-  pointSymlink(layout.currentLink, installDir);
-  // Not an unconditional symlink any more: `<binDir>/actana` may already be
-  // somebody else's, and in the Core image it is the very directory
-  // `NPM_CONFIG_PREFIX` puts npm's global shims in (#288 D10).
-  const launcher = claimLauncher(layout, opts.env);
-  if (launcher.note) opts.out(launcher.note);
+  // The same placement `actana place` performs, and the same one `install.sh`
+  // has already performed when setup is the operator's second command: it is
+  // idempotent, so running it again over its own output is a no-op plus two
+  // symlink writes.
+  const { installDir, launcher } = placeCoreBundle(opts, plan);
   fs.mkdirSync(layout.dataDir, { recursive: true });
 
   const { material, outcome } = await resolveMaterial(opts);
