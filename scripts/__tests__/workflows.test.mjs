@@ -878,3 +878,192 @@ describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)
     expect(arrays[0][1].trim().split(/\s+/).sort()).toEqual([...MANIFESTS].sort());
   });
 });
+
+// #326 — a promotion must not be able to run a release workflow older than the
+// train it is promoting.
+//
+// This is the failure that looks perfect right up to the point where it is
+// unrecoverable. A `workflow_dispatch` run resolves **every** workflow file it
+// executes from the ref it was dispatched on, and for `promote.yml` that is the
+// default branch as it stood when the run was created — never the train. So
+// `uses: ./.github/workflows/release.yml` ran `main`'s release pipeline against
+// the train's commit. Run 32716466300 went green through the human pause, the
+// digest verification, the fast-forward and the tag, and red on every job that
+// publishes: `main` had moved and `v0.4.0` was tagged with nothing behind them.
+//
+// The fix is structural rather than a check, because a check cannot be the fix:
+// refusing a train that changed `release.yml` would be the convention "do not
+// change `release.yml` on a train", which is unenforceable, and the 0.4.0 train
+// changed it for a good reason. So `release.yml` loses the trigger that made a
+// caller's SHA reachable at all, and `promote.yml` dispatches it **at the tag**.
+//
+// Every assertion here is about a shape that is invisible in a green run. A
+// dispatch that lost its `--ref` publishes correctly for as long as the default
+// branch happens to agree with the train — which is exactly how this shipped.
+describe("the promotion runs the promoted commit's own release workflow (#326)", () => {
+  const promote = read("promote.yml");
+  const release = read("release.yml");
+  const runbook = fs.readFileSync(path.join(repoRoot, "docs/ci-cd.md"), "utf8");
+
+  // Half one: there is no `uses:` left that could resolve `release.yml` from a
+  // caller's SHA, because nothing can call it. Asserted over every workflow
+  // rather than over `promote.yml` alone — the trap is the local `uses:`, and
+  // it would be the same trap from any file.
+  it("leaves no way to call release.yml from another workflow's SHA", () => {
+    expect(code(release), "release.yml is callable again").not.toMatch(/^ {2}workflow_call:$/m);
+    for (const file of fs.readdirSync(workflowDir)) {
+      expect(
+        code(read(file)),
+        `${file} calls release.yml, which resolves it from ${file}'s own SHA`,
+      ).not.toContain("uses: ./.github/workflows/release.yml");
+    }
+  });
+
+  // Half two, and the line that decides which copy runs. `--ref` is the tag;
+  // without it a dispatch resolves `release.yml` — and the
+  // `container-image.yml` it calls — from the default branch, which is the
+  // whole of #326. Asserted over every invocation anywhere in the repository,
+  // including the ones inside error messages and the runbook, because a
+  // recovery that tells an operator to dispatch without a ref is the failure it
+  // is recovering from.
+  it("dispatches release.yml at the version tag, and says so everywhere", () => {
+    const job = code(jobBlock(promote, "release"));
+    expect(job).toContain('tag="v$VERSION"');
+    expect(job).toContain('gh workflow run release.yml --repo "$REPO" --ref "$tag" -f tag="$tag"');
+
+    const sources = [
+      ...fs.readdirSync(workflowDir).map((f) => [`.github/workflows/${f}`, read(f)]),
+      ["docs/ci-cd.md", runbook],
+      ["docs/REPO_SETUP.md", fs.readFileSync(path.join(repoRoot, "docs/REPO_SETUP.md"), "utf8")],
+      [
+        ".agents/skills/release/SKILL.md",
+        fs.readFileSync(path.join(repoRoot, ".agents/skills/release/SKILL.md"), "utf8"),
+      ],
+    ];
+    let seen = 0;
+    for (const [name, text] of sources) {
+      for (const line of text.split("\n")) {
+        if (!line.includes("gh workflow run release.yml")) continue;
+        seen += 1;
+        expect(line, `${name} dispatches release.yml with no --ref: ${line.trim()}`).toMatch(
+          /gh workflow run release\.yml[^\n]*--ref/,
+        );
+      }
+    }
+    // The guard on the guard: a renamed workflow would make the sweep above
+    // find nothing and pass.
+    expect(seen, "nothing dispatches release.yml anywhere").toBeGreaterThan(0);
+  });
+
+  // The observable fact the acceptance criterion asks for, on the one field
+  // that carries it. `gh run view 32716466300 --json headSha` answered
+  // `51164f1` — the old `main` — where it should have answered the commit being
+  // promoted, and nothing was reading it.
+  it("asserts the release run's head SHA is the commit being promoted", () => {
+    const job = code(jobBlock(promote, "release"));
+    expect(job).toContain(".head_sha");
+    expect(job).toMatch(/if \[\[ "\$run_sha" != "\$HEAD_SHA" \]\]/);
+    expect(job).toContain("::error title=The release run is not the promoted commit::");
+    // Found by run id, not by head SHA: a re-dispatch of the same tag carries
+    // the same head SHA as the run before it, so a head-SHA match would find
+    // the run it is replacing and assert against itself.
+    expect(job).toMatch(/select\(\.id > \$before\)/);
+    expect(job).toContain("min_by(.id)");
+  });
+
+  // A dispatch is fire-and-forget by nature, and a `release` job that returned
+  // as soon as it had dispatched would be green on the exact run this issue is
+  // about. It waits, and it carries the release's conclusion — which is what
+  // keeps `release-line` and `retire-train` behind a successful publish.
+  it("waits for the release and fails the promotion when it does not succeed", () => {
+    const job = code(jobBlock(promote, "release"));
+    expect(job).toContain('[[ "$status" == "completed" ]] && break');
+    expect(job).toContain("::error title=The release failed::");
+    expect(job).toContain("::error title=The release did not finish in time::");
+    expect(job).toContain("::error title=The dispatch created no release run::");
+    expect(job).not.toContain("continue-on-error");
+    for (const downstream of ["release-line", "retire-train"]) {
+      expect(jobBlock(promote, downstream), `${downstream} no longer waits on the release`).toMatch(
+        /needs: \[[^\]]*\brelease\b[^\]]*\]/,
+      );
+    }
+  });
+
+  // The ordering criterion. Everything irreversible is in `advance`, and the
+  // release's own refusals all arrive after it — because `release.yml` does not
+  // start until the tag exists. `preflight` is those refusals, asked while
+  // nothing has moved.
+  it("proves the release runnable before anything irreversible happens", () => {
+    expect(jobBlock(promote, "advance"), "advance does not wait on preflight").toMatch(
+      /needs: \[[^\]]*\bpreflight\b[^\]]*\]/,
+    );
+    const job = code(jobBlock(promote, "preflight"));
+    // Dispatchable, or the promotion strands after the fast-forward with no
+    // way to publish at all.
+    expect(job).toContain("::error title=The train's release.yml cannot be dispatched::");
+    expect(job).toContain("::error title=The train's release.yml takes no tag input::");
+    // The credentials `release.yml` refuses on, refused earlier.
+    for (const secret of ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "NPM_TOKEN"]) {
+      expect(job, `preflight does not check ${secret}`).toContain(`secrets.${secret}`);
+    }
+    expect(job).toContain("::error title=A release credential is missing::");
+    // And the tag, which `advance` only checks after `main` has already moved.
+    expect(job).toContain("::error title=Tag exists on another commit::");
+    // It is a preflight, not a second build: a build here would re-prove the
+    // train's own CI and would put the promotion's cost back up.
+    expect(job, "preflight builds something").not.toContain("pnpm install");
+  });
+
+  // The parity fact, reported on every promotion. It is no longer fatal — the
+  // dispatch makes it harmless — and it is still said out loud, because a
+  // silent mechanism is one edit away from being a silent trap again.
+  //
+  // The file list is asserted exactly. Widening it to the whole directory would
+  // make a train that touched `ci.yml` look like a promotion problem, which is
+  // the "do not change these files" convention #326 rejects; narrowing it would
+  // stop describing what the run actually executes.
+  it("reports which workflow files this run resolved from the old main", () => {
+    const job = code(jobBlock(promote, "preflight"));
+    expect(job).toContain("RUN_SHA: ${{ github.sha }}");
+    expect(job).toContain("::notice title=The train changed the workflow files this run resolved::");
+    expect(job).toContain("::notice title=The workflow files match the train::");
+    const executed = /executed=\(([^)]*)\)/.exec(job);
+    expect(executed, "preflight names no executed workflow set").not.toBeNull();
+    expect(executed[1].trim().split(/\s+/).sort()).toEqual([
+      ".github/workflows/container-image.yml",
+      ".github/workflows/promote.yml",
+      ".github/workflows/release.yml",
+    ]);
+  });
+
+  // The recovery, and where it lives. A promotion that stops after `advance`
+  // cannot be re-run from the top by design, so the way back is a document —
+  // and a document nobody can find is not a recovery. It is asserted to sit
+  // inside § "Cutting a release", which is the chapter an operator is already
+  // reading when it happens.
+  it("writes the half-run recovery down beside Cutting a release", () => {
+    const heading = "### When a promotion half-runs";
+    expect(runbook, "docs/ci-cd.md has no half-run recovery").toContain(heading);
+    const chapter = runbook.slice(
+      runbook.indexOf("\n## Cutting a release"),
+      runbook.indexOf("\n## ", runbook.indexOf("\n## Cutting a release") + 1),
+    );
+    expect(chapter, "the recovery is not inside § Cutting a release").toContain(heading);
+
+    const section = runbook.slice(runbook.indexOf(heading));
+    const recovery = section.slice(0, section.indexOf("\n### ", 1));
+    // The four things the recovery has to answer.
+    expect(recovery, "does not say what is safe to re-run").toMatch(
+      /gh workflow run release\.yml[^\n]*--ref/,
+    );
+    expect(recovery, "does not say an npm version number is burned").toMatch(/npm version number/i);
+    expect(recovery, "does not say how to finish a promotion whose tag already moved").toContain(
+      "git push origin --delete",
+    );
+    expect(recovery, "does not name the release line").toContain("refs/heads/$line");
+    // And the workflows point at it rather than leaving it to be found.
+    expect(code(promote), "promote.yml does not name the recovery").toContain(
+      "When a promotion half-runs",
+    );
+  });
+});
