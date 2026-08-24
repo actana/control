@@ -192,6 +192,18 @@ describe("placeCoreBundle — what `install.sh` leaves behind", () => {
   });
 
   // The other half of the contract, and the one the whole ticket is about.
+  // The consumer half of ADR 0036 D18: the tarball keeps stating its version in
+  // its manifest, so a beta bundle installs under the beta string and the
+  // machine reports that. Nothing here special-cases a beta, and that is the
+  // claim — the version is a string this side reads, not a channel it decides.
+  it("installs a beta under its own version, and reports it", () => {
+    const result = place({ manifest: { ...MANIFEST, version: "0.4.1-beta" } });
+
+    expect(result.installDir).toBe(path.join(layout.versionsDir, "0.4.1-beta"));
+    expect(result.version).toBe("0.4.1-beta");
+    expect(fs.existsSync(path.join(layout.versionsDir, "0.4.1"))).toBe(false);
+  });
+
   it("activates nothing: no config, no material, no unit, no data dir", () => {
     place();
 
