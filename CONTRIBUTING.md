@@ -198,6 +198,14 @@ git ls-remote --heads origin 'refs/heads/beta/*'
 There is only ever one. If you find two, a hotfix is in flight — see
 [`docs/ci-cd.md`](docs/ci-cd.md#hotfix-trains).
 
+**A train can publish.** Beside the `beta-x.y.z` images every merge republishes,
+a person can dispatch `beta-release.yml -f train=beta/x.y.z` to cut a beta —
+a prerelease at `x.y.z-beta` with the three Core tarballs, their checksums, the
+CLI and the matching image tags, so the train is installable rather than only
+pullable ([ADR 0036](docs/adr/0036-the-beta-release-channel.md),
+[`docs/ci-cd.md` §Cutting a beta](docs/ci-cd.md#cutting-a-beta)). Merging your
+pull request does not cut one; asking does.
+
 ### The freeze window
 
 **From the moment a train is frozen for approval until it promotes, nothing
