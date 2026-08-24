@@ -1,9 +1,10 @@
 # Core Installation Guide
 
 This guide covers turning a **Linux or macOS** machine into a **Core**:
-installing the Core bundle, running `actana setup` — a separate command,
-because installing is not activating — and pairing the machine with your Panel. The Core is the stateful daemon that runs harnesses and owns
-the PTY layer; the Panel is the web app you drive it from.
+installing the Core bundle, running `actana setup` — a separate command, because
+installing is not activating — and pairing the machine with your Panel. The Core
+is the stateful daemon that runs harnesses and owns the PTY layer; the Panel is
+the web app you drive it from.
 
 **There is one `actana`.** The command that installs and operates a Core is the
 same command that drives Cores — `actana core ls`, `actana session start` and
@@ -303,23 +304,27 @@ actana core pair prod <public-host>:<port> XXXX-XXXX \
 
 ## macOS, on the machine itself
 
-A Mac with Apple silicon is a Core like any other: the one-liner at the top of
-this page installs it, `actana setup` runs without sudo, and the machine pairs
-with your Panel the same way. What differs is the auto-start mechanism, and
-one property that follows from it.
+A Mac with Apple silicon is a Core like any other: the same two commands at the
+top of this page install it, both run without sudo, and the machine pairs with
+your Panel the same way. What differs is the auto-start mechanism, and one
+property that follows from it.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+actana setup
 ```
 
-The installer maps the machine to the `mac-arm64` release asset and hands over
-to `actana setup`, which writes a **LaunchAgent** at
+The first command maps the machine to the `mac-arm64` release asset, places the
+bundle and links the launcher — and stops. Nothing is running yet. Run the
+`actana setup` line it printed; that is what writes the **LaunchAgent** at
 `~/Library/LaunchAgents/com.actana.core.plist`, labelled `com.actana.core`, and
-loads it.
+loads it. On a Mac that has never had `~/.local/bin` on its `PATH`, the printed
+line is an absolute path rather than a bare `actana` — run it as printed.
 
 **An Intel Mac stops here, deliberately.** There is no `mac-x64` build and
-there will not be one; the installer refuses at detection and points you at the
-container image, which is the supported way to run a Core on that machine.
+there will not be one; the installer refuses at detection — before it downloads
+anything — and points you at the container image, which is the supported way to
+run a Core on that machine.
 
 ### The LaunchAgent is tied to your login session
 

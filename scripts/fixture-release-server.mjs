@@ -28,6 +28,7 @@ import * as path from "node:path";
 
 import { makeFail, parseArgs, stringFlag } from "./lib/cli.mjs";
 import { DEFAULT_REPO, indexReleases, startFixtureReleaseServer } from "./lib/fixture-release.mjs";
+import { rehearsalSetupCommand } from "./lib/rehearsal.mjs";
 
 const fail = makeFail("fixture-release");
 const log = (message) => console.log(`[fixture-release] ${message}`);
@@ -72,7 +73,12 @@ async function main() {
     log(`serving ${asset} corrupted — its checksum will not verify`);
   }
   log(`listening on ${server.url} (${server.repo})`);
-  log(`one-liner: curl -fsSL ${server.url}/install.sh | bash -s -- --base-url ${server.url}`);
+  // Two lines, because the one-liner installs and does not activate since #316
+  // (ADR 0036 C2). A hint that named only the first would leave a developer at
+  // an installed, inactive machine with nothing to run next — which is exactly
+  // the state the second command exists for.
+  log(`install:   curl -fsSL ${server.url}/install.sh | bash -s -- --base-url ${server.url}`);
+  log(`then:      ${rehearsalSetupCommand()}   (or the exact line the install printed)`);
 }
 
 void main().catch((err) => {

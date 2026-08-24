@@ -44,9 +44,9 @@ Mac runs its Core from the container image, and both `install.sh` and
 `actana update` refuse it at detection and say so.
 
 The Linux path is covered by
-[the one-liner rehearsal](core-linux-rehearsal.md): `pnpm core:rehearse` for a
-throwaway machine to run the real one-liner on. Same standing as this page
-now has, for the other half of the release.
+[the install rehearsal](core-linux-rehearsal.md): `pnpm core:rehearse` for a
+throwaway machine to run the real one-liner and the `actana setup` it prints on.
+Same standing as this page now has, for the other half of the release.
 
 ---
 
