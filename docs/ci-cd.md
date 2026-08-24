@@ -1456,6 +1456,22 @@ only by being promoted. Expect that one run to look like the runs before it,
 and read the paragraph above rather than this one if it stops. Every promotion
 after it has the guarantee.
 
+**A half-run promotion is not a cosmetic failure, and this is why.** The
+fast-forward and the version tag land *before* the release does, so between
+`advance` and the GitHub Release existing, `main` carries the new line while
+that line has no Release. `install.sh` resolves the line stamped on `main` and
+falls through to that line's beta when its release is missing, so **if a beta of
+that line was ever cut, the public one-liner serves that prerelease** ([ADR
+0036](adr/0036-the-beta-release-channel.md) D3). If none was, step 4 answers
+with today's newest release and there is no window at all — which is the state
+`v0.4.0` is in below.
+
+In the ordinary case the window is one release run long and closes when the run
+finishes. **A red or cancelled release is what makes it open-ended**, and
+nothing self-corrects: the stamp on `main` cannot be walked back, because `main`
+advances only by fast-forward and is already at the train tip. The recovery is
+finishing the release, below — not rolling anything back.
+
 #### What is safe to re-run, and what is burned
 
 | | | |
@@ -1557,19 +1573,6 @@ Closing it is the procedure above, run by a person with the credentials: steps
 2 through 5, with `version=0.4.0`. It is deliberately not done from a pull
 request — dispatching a release is a publish, and a publish is an operator's
 act, not a reviewer's.
-
-**Finish a red release; do not abandon it.** The fast-forward and the version
-tag land *before* `release.yml` runs, so between them and the Release being
-created, `main` carries the new line while that line has no Release yet. The
-installer resolves the line from `main` and falls through to the line's beta, so
-**if a beta of that line was ever cut, the public one-liner serves that
-prerelease for the length of one release run** ([ADR
-0036](adr/0036-the-beta-release-channel.md) D3). If none was, it serves today's
-newest release and there is no window at all. Neither case self-corrects when
-the `release` job goes red or is cancelled: the stamp on `main` cannot be walked
-back, so the door keeps serving the beta until somebody re-dispatches. That is
-what the dispatch above is for, and it is why a promotion whose release leg is
-red is an operational problem rather than a cosmetic one.
 
 ### What `release.yml` does with the tag
 

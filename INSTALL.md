@@ -97,7 +97,7 @@ actana setup
 | `--version <v>` | Install this exact version instead of the latest release. Takes a release (`0.4.0`) or a beta (`0.4.1-beta`) |
 | `--repo <slug>` | Install from another GitHub repository |
 | `--base-url <url>` | Fetch releases from somewhere else — how the tests run hermetically |
-| `--help` | Show what the script does and the options it owns |
+| `--help` | Show what the script does, the options it owns, and which line this copy installs from |
 
 **Anything else is refused, not ignored.** `--yes`, `--port`, `--public-host`,
 `--label`, `--with-<harness>` and `--no-harnesses` are `actana setup`'s options
@@ -410,7 +410,9 @@ which URL you fetch the script from.
 
 **The ref you fetch from is the channel.** A script read off a pipe cannot see
 the URL it came from, so what it installs is decided by the copy of the file on
-that ref rather than by a flag:
+that ref rather than by a flag. There is no `--channel` option and no
+environment variable that selects one — which copy you fetched is the whole of
+the choice:
 
 | Want | Fetch `install.sh` from | Installs |
 | --- | --- | --- |
@@ -418,6 +420,9 @@ that ref rather than by a flag:
 | a specific release | `raw.githubusercontent.com/actana/control/v0.4.0/install.sh` | that line's release. A release tag never moves, so this is a pin |
 | the current beta of a line | `raw.githubusercontent.com/actana/control/beta/0.4.1/install.sh` | that line's current beta |
 | the same beta, by tag | `raw.githubusercontent.com/actana/control/v0.4.1-beta/install.sh` | the same thing as the row above — an alias, **not** a pin |
+
+`install.sh --help` names the line the copy you fetched carries and the rule it
+resolves by, so if you are unsure which door you have, ask it.
 
 So installing the open train is the two commands you already know, from the
 train's own ref:
