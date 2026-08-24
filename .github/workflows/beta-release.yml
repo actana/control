@@ -856,6 +856,26 @@ jobs:
           printf 'Publishing %s at %s:\n' "$TAG" "$SHA"
           printf '  %s\n' "${files[@]}"
 
+          # Written before the branch, not inside one. The body names the commit
+          # this cut publishes, and ADR 0036 D7 makes that sha the immutable
+          # record a beta actually has — so a body written only at creation would
+          # go on naming the *first* cut's commit for the life of the line while
+          # the tag, the assets and the bytes moved underneath it. That is the
+          # one place a moving tag could still carry a mix of two cuts, and the
+          # comment below promises it does not.
+          printf '%s\n' \
+            "Beta of the \`$VERSION\` line, cut from \`$TRAIN\` at \`$SHA\`." \
+            "" \
+            "**This is a prerelease.** \`/releases/latest\` excludes it, so \`install.sh\` and" \
+            "the in-product update checker do not offer it by default (ADR 0023 D9)." \
+            "" \
+            "Verify with \`sha256sum -c SHA256SUMS\`. Published checksums are the integrity" \
+            "story here — there is no provenance attestation on the beta path (ADR 0036 D17)." \
+            "" \
+            "The tag \`$TAG\` moves on every cut of this line (ADR 0036 D7). To pin a beta," \
+            "install with \`--version $BETA_VERSION\`." \
+            > "$RUNNER_TEMP/notes.md"
+
           if gh release view "$TAG" >/dev/null 2>&1; then
             # A second cut. Anything the previous cut attached that this one does
             # not produce goes first, so the Release never carries a mix of two
@@ -874,26 +894,24 @@ jobs:
             done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
 
             gh release upload "$TAG" "${files[@]}" --clobber
-            # `upload` cannot express either flag, and a Release edited by hand
-            # carries whatever a person picked for it — so both are re-asserted
-            # on every cut rather than only at creation.
+            # `upload` expresses none of these, and a Release edited by hand
+            # carries whatever a person picked for it — so every field a cut
+            # decides is re-asserted on every cut rather than only at creation.
+            #
+            # All four, and each for its own reason. `--prerelease` and
+            # `--latest` are D9's pair. `--notes-file` is what keeps the body
+            # naming *this* cut's commit rather than the first one's. And
+            # `--draft` is the third thing a person can pick by hand: the
+            # read-back below detects a drafted Release, but only after the tag
+            # has already moved and the assets are up, so the repair belongs
+            # here beside the detection rather than only after it.
             gh release edit "$TAG" \
               --title "$BETA_VERSION" \
+              --draft=false \
               --prerelease=true \
-              --latest=false
+              --latest=false \
+              --notes-file "$RUNNER_TEMP/notes.md"
           else
-            printf '%s\n' \
-              "Beta of the \`$VERSION\` line, cut from \`$TRAIN\` at \`$SHA\`." \
-              "" \
-              "**This is a prerelease.** \`/releases/latest\` excludes it, so \`install.sh\` and" \
-              "the in-product update checker do not offer it by default (ADR 0023 D9)." \
-              "" \
-              "Verify with \`sha256sum -c SHA256SUMS\`. Published checksums are the integrity" \
-              "story here — there is no provenance attestation on the beta path (ADR 0036 D17)." \
-              "" \
-              "The tag \`$TAG\` moves on every cut of this line (ADR 0036 D7). To pin a beta," \
-              "install with \`--version $BETA_VERSION\`." \
-              > "$RUNNER_TEMP/notes.md"
             # `--verify-tag` refuses to invent a tag: the tag is pushed by the
             # step above, and a Release that created its own would name whatever
             # commit the default branch happened to be at.
