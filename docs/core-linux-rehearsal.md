@@ -1,18 +1,28 @@
-# Linux Core — the one-liner rehearsal
+# Linux Core — the install rehearsal
 
 CI installs a Core on Linux several times per pull request: `.github/workflows/ci.yml`'s
 `installer-e2e` job runs `scripts/e2e-actana-setup-linux.mjs` — the real
-one-liner, then the lifecycle verbs on the machine it produced — across Ubuntu
-and Debian at x64, and the `core-image` job pairs a Panel with the containerised
-Core. arm64 runs the same script on the release tag
-(`.github/workflows/release.yml`).
+one-liner, then `actana setup` as its own step, then the lifecycle verbs on the
+machine those two produced — across Ubuntu and Debian at x64, and the
+`core-image` job pairs a Panel with the containerised Core. arm64 runs the same
+script on the release tag (`.github/workflows/release.yml`).
 
 All of it runs with the prompts suppressed and nobody watching. That is the
 gap this fills: **once per release, a person pastes the real one-liner into a
-machine that has never seen it, answers the questions it asks, and takes a
-pairing code to a live Panel.** What it catches is the class of problem a green
-matrix cannot — a prompt that reads badly, a code that is awkward to read out
-loud, an instruction that is technically true and practically useless.
+machine that has never seen it, runs the second command it prints, answers the
+questions *that* asks, and takes a pairing code to a live Panel.** What it
+catches is the class of problem a green matrix cannot — a prompt that reads
+badly, a code that is awkward to read out loud, an instruction that is
+technically true and practically useless.
+
+**Two commands, because installing is not activating** (ADR 0036 C2, #316).
+`install.sh` places the Core bundle and the `actana` CLI and stops; `actana
+setup` is what turns the machine into a Core, and it is where every prompt this
+rehearsal exists to exercise now lives. The installer prints the exact `setup`
+line to run — an absolute path when `~/.local/bin` is not yet on `PATH` — and
+**that printed line is the one to paste**, not a retyped `actana setup`. A
+printed command that cannot be run is itself a release blocker, and this is the
+only place a person checks it.
 
 Fifteen minutes, and the only install rehearsal a release needs — Linux is the
 only platform a release publishes a Core for. [The macOS
@@ -57,10 +67,12 @@ pnpm core:rehearse
 ```
 
 That one command builds a systemd container with **no sudo on it**, starts a
-local release channel serving the tarball you just built, prints the one-liner
-to paste, and drops you into a shell inside the machine as `operator`.
+local release channel serving the tarball you just built, prints the two
+commands to paste, and drops you into a shell inside the machine as `operator`.
 
-- [ ] The banner prints a `curl -fsSL … | bash -s -- --base-url …` command.
+- [ ] The banner prints a `curl -fsSL … | bash -s -- --base-url …` command, and
+      an `actana setup` to follow it, and says that the first installs without
+      activating.
 - [ ] The prompt that follows is inside the machine (`whoami` says `operator`,
       `sudo` is not found).
 
@@ -78,8 +90,26 @@ re-enter it and how to destroy it.
 
 ## 2 — Install, the way an operator does
 
-Paste the printed one-liner. **Do not add `--yes`** — the prompts are the point.
+Paste the printed one-liner. `--base-url`, `--repo` and `--version` are the only
+options it still takes — `--yes` and the rest are `actana setup`'s now, and the
+script refuses them by name rather than ignoring them.
 
+- [ ] It downloads, says the checksum verified, and exits **without asking you
+      anything**. Nothing prompts, because nothing here decides anything.
+- [ ] It says plainly that nothing is running yet.
+- [ ] It prints one `actana setup` command, and only one.
+- [ ] `actana status` at this point says there is **no Core installed for this
+      user** — which is true, and is the machine being installed but not
+      activated. (If `actana` is not found yet, that is the case the printed
+      absolute path exists for; the next box checks it.)
+
+### Then the second command — this is the one with the prompts in it
+
+Paste **the line the installer printed**, exactly as printed. Do not retype it
+as a bare `actana setup`, and **do not add `--yes`** — the prompts are the point.
+
+- [ ] The printed line runs. If it was an absolute path, it worked as pasted;
+      a printed command that is not found is a release blocker on its own.
 - [ ] It asks about enabling lingering, and explains *why* before asking.
 - [ ] It offers to install the harness CLIs it found missing, one at a time.
       (Decline them all — this machine has no vendor logins on it, and CI
@@ -202,6 +232,7 @@ If 8443 is taken, `--port <n>` moves it — and then you pair against
 
 Note in the release PR: the distro you used, and which boxes did not tick.
 
-Unticked boxes in sections 2 and 3 are release blockers — "the one-liner ends
-with a Core a person can actually pair to a Panel" is the whole product promise
-this rehearsal exists to protect. Everything else is a bug report.
+Unticked boxes in sections 2 and 3 are release blockers — "the two commands end
+with a Core a person can actually pair to a Panel, and the first one prints a
+second one that runs" is the whole product promise this rehearsal exists to
+protect. Everything else is a bug report.

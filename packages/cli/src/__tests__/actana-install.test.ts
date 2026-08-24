@@ -179,15 +179,38 @@ describe("actana install (#288 D8)", () => {
   });
 
   it("leaves `install.sh` as the door for a machine with no Node", () => {
-    // Not a behaviour test — a boundary one. The shell script does the same
-    // three steps this verb does, and it stays because a bare machine has no
+    // Not a behaviour test — a boundary one. The shell script does the fetch
+    // half of what this verb does, and it stays because a bare machine has no
     // Node to run this verb with. Two doors, one implementation of the real
-    // work: what would be wrong is `install.sh` growing a fourth step.
+    // work: what would be wrong is `install.sh` growing a step of its own.
+    //
+    // Since #316 the third step is `place`, not `exec`: the script hands the
+    // verified bundle to the CLI inside it and stops, because installing is
+    // not activating (ADR 0036 C2). The phrase is asserted because it is the
+    // script's own statement of how much it is allowed to know.
     const script = fs.readFileSync(
       path.resolve(import.meta.dirname, "../../../../install.sh"),
       "utf8",
     );
-    expect(script).toContain("fetch, verify, exec");
+    expect(script).toContain("fetch, verify, place");
+    expect(script).not.toContain("fetch, verify, exec");
+  });
+
+  // #316: the two front doors part company here, and it is deliberate.
+  // `install.sh` installs and stops; `actana install` fetches *and* sets up,
+  // because an operator who already has the CLI and types `actana install` has
+  // asked for a Core rather than for a bundle on disk. `actana place` is the
+  // stopping-short verb, and it is the one the script runs.
+  it("still activates, unlike the shell script that no longer does", async () => {
+    expect(await install()).toBe(0);
+    expect(fs.existsSync(layout().servicePath)).toBe(true);
+
+    const script = fs.readFileSync(
+      path.resolve(import.meta.dirname, "../../../../install.sh"),
+      "utf8",
+    );
+    expect(script).toMatch(/bin\/actana" place/);
+    expect(script).not.toMatch(/bin\/actana" setup/);
   });
 });
 

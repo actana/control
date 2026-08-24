@@ -96,6 +96,10 @@ export const CORE_HOME = "/home/core";
  */
 export const CORE_REFUSED_VERBS = Object.freeze([
   "install",
+  // `place` is `setup`'s install half since #316 (ADR 0036 C2), and it refuses
+  // here for the first half of `setup`'s reason: the image *is* the versioned
+  // tree, so there is nothing to place and no launcher to link.
+  "place",
   "setup",
   "start",
   "stop",

@@ -2,6 +2,7 @@
 //
 //   Machine-side verbs — what this machine's own Core is and does
 //     actana install   fetch a release, verify it, install and start a Core
+//     actana place     place an extracted bundle and stop — install, no setup
 //     actana setup     install from an extracted tarball, or fetch one first
 //     actana status    daemon state, versions, endpoint, Harness availability
 //     actana token regenerate   mint fresh credentials, invalidating the old ones
@@ -96,7 +97,14 @@ import {
   type ActanaServiceManager,
   type ServiceVerb,
 } from "./actana-service.ts";
-import { choosePublicHost, runActanaSetup } from "./actana-setup.ts";
+import {
+  choosePublicHost,
+  placeCoreBundle,
+  planCorePlacement,
+  runActanaSetup,
+  setupCommandFor,
+  type PlacementPlan,
+} from "./actana-setup.ts";
 import {
   harnessFlagNames,
   harnessFromFlagName,
@@ -170,6 +178,10 @@ Cores this machine can reach
 
 This machine's own Core
   install    Fetch a release, verify it, install the Core and start it
+  place      Put the extracted bundle here and link the launcher, and stop.
+             Installing is not activating: nothing is started, no identity is
+             minted, no service is written. This is what \`install.sh\` runs, and
+             \`actana setup\` is the command that follows it
   setup      Install from an extracted tarball — or fetch one when there is none
   status     Show daemon state, versions, endpoint, and Harness availability
   token regenerate
@@ -620,6 +632,192 @@ async function cmdSetup(
     return 1;
   }
   return 0;
+}
+
+/**
+ * `actana place` — the install half of the install, and nothing after it.
+ *
+ * The verb `install.sh` hands placement to (#316, ADR 0036 C2). The script has
+ * verified and unpacked a bundle into a temporary directory its own EXIT trap
+ * is about to delete; this is what makes any of it survive. It writes
+ * `versions/<v>`, points `current` at it, links `<binDir>/actana` unless
+ * somebody else owns that name — and then stops, because the mTLS material,
+ * the service unit, lingering and this machine's registration are `actana
+ * setup`'s to write and the operator's to ask for.
+ *
+ * **This is why the script does not learn the layout.** `ACTANA_HOME`,
+ * `ACTANA_CONFIG_DIR`, `ACTANA_DATA_DIR`, `ACTANA_BIN_DIR`, `XDG_DATA_HOME`
+ * and `XDG_CONFIG_HOME` resolve here, through `resolveActanaLayout`, against
+ * the same rules and the same unit tests every other verb resolves against. A
+ * second copy of them in POSIX sh would be a second front door.
+ *
+ * It takes no flags. Every flag the old tail forwarded belonged to `setup`,
+ * and `setup` is a separate command now.
+ *
+ * **Two things it does touch that are not strictly placement**, both because
+ * the alternative is worse and neither is activation:
+ *
+ * - *It stops a daemon whose own tree it is about to delete.* Placement only
+ *   ever destroys a directory that is already at `installDir`, which means a
+ *   re-place of a version that is already installed — the documented "paste
+ *   both again" upgrade, when the version has not moved. `runActanaSetup`
+ *   stops the service first for exactly that case, and `installTree` would
+ *   otherwise rename a fresh tree over the one a live daemon is executing out
+ *   of, leaving every lazy `require` and asset read in the window until
+ *   `setup` restarts it pointing at nothing. So `place` stops it too, says so,
+ *   and the `setup` line it prints is what brings it back. The service is
+ *   consulted **only** when there is an existing tree at that path to
+ *   destroy — a fresh machine, which is the ordinary case, asks the init
+ *   system nothing at all — and a machine with no supported init system just
+ *   places, because refusing there would break the one job this verb has.
+ * - *It says when `current` has moved ahead of what is set up.* `current` is
+ *   what the unit's `ExecStart` resolves through, so on a machine that is
+ *   already a Core a placement that is never followed by `setup` leaves a
+ *   reboot starting a version `actana.json` does not describe. That is a
+ *   sentence in the output, not a refusal: the fix is the command already
+ *   printed below it.
+ */
+function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
+  const parsed = parseFlags(argv, {});
+  if ("error" in parsed) {
+    deps.err(parsed.error);
+    // The flags an operator is most likely to try here are setup's, and they
+    // have not been deleted — they moved to the command that uses them.
+    deps.err("`actana place` takes no options — `actana setup` is where the install's choices are made.");
+    return EXIT_USAGE;
+  }
+
+  // A CLI from `npm i -g @actana/cli` is not standing in a bundle, and there is
+  // nothing for it to place. That is not a broken install, it is the other
+  // door: `actana install` fetches a release and sets it up in one go.
+  const manifest = readCoreManifest(deps.installRoot);
+  if (!manifest) {
+    deps.err(
+      "there is no extracted Core bundle here to place. `actana place` runs from inside " +
+        "an unpacked release — `actana install` fetches one and sets it up instead.",
+    );
+    return 1;
+  }
+
+  const layout = resolveActanaLayout(deps.env, deps.home, deps.platform);
+  const placing = {
+    layout,
+    env: deps.env,
+    sourceRoot: deps.installRoot,
+    manifest,
+    platform: deps.platform,
+    arch: deps.arch,
+    out: deps.out,
+  };
+
+  // What was already here, read before anything moves: an activated install
+  // records itself in `actana.json`, and that is what makes the difference
+  // between "nothing is running yet" and "something is running, on the version
+  // this is about to move `current` off".
+  const existing = readActanaConfig(layout.configDir);
+
+  let placed;
+  try {
+    const plan = planCorePlacement(placing);
+    stopDaemonBeingReplaced(deps, layout, plan);
+    placed = placeCoreBundle(placing, plan);
+  } catch (err) {
+    deps.err(err instanceof Error ? err.message : String(err));
+    return 1;
+  }
+
+  deps.out("");
+  deps.out(`Core ${placed.version} installed at ${placed.installDir}`);
+  // Only when one was actually written. `claimLauncher` leaves `binLink`
+  // untouched — often absent entirely — when somebody else answers to
+  // `actana`, and a `Launcher` row naming a path with nothing at it would
+  // contradict the note it printed three lines earlier.
+  deps.out(
+    placed.launcher.outcome === "linked"
+      ? `  Launcher   ${placed.launcher.binLink}`
+      : `  Launcher   left alone — ${placed.launcher.foreignPath} owns \`actana\` here`,
+  );
+  deps.out(`  Current    ${layout.currentLink}`);
+  deps.out("");
+  if (existing) {
+    // The unit's `ExecStart` runs through `current`, which now points at the
+    // tree just placed. Until `setup` runs, `actana status` and `actana.json`
+    // still describe the old version, and a restart or a reboot would start
+    // the new one with none of its work done.
+    deps.out(
+      `This machine is already set up as a Core on ${existing.version}, and \`current\` now ` +
+        `points at ${placed.version}. Nothing has restarted, so it is still running ` +
+        `${existing.version} — finish the upgrade with:`,
+    );
+  } else {
+    // Installing is not activating, and an operator who is not told that has a
+    // machine they believe is a Core and a Panel that will never reach it.
+    deps.out("Nothing is running yet: this machine is not a Core until you set it up.");
+  }
+  deps.out("");
+  deps.out("  " + setupCommandFor(layout, placed.launcher, deps.env));
+  deps.out("");
+  deps.out(
+    existing
+      ? "That restarts the daemon on the version just placed. This Core's identity, its " +
+          "service and every client paired with it are kept."
+      : "That writes this Core's identity, its auto-start service and its registration, and " +
+          "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
+  );
+  return 0;
+}
+
+/**
+ * Stop a daemon whose own install directory is about to be replaced.
+ *
+ * The narrow case, and the only one placement can corrupt: `installTree`
+ * renames a fresh tree over `installDir`, so a daemon executing out of *that*
+ * directory loses the files behind it. Placing a different version writes a
+ * different directory and touches nothing running, which is why this asks the
+ * init system nothing on the ordinary path — a fresh machine has no tree there
+ * at all.
+ *
+ * Best effort in both directions. A platform with neither systemd nor launchd
+ * has no daemon to stop and must still be able to place a bundle, so a service
+ * manager that cannot be built is not an error here; and a `stop` that fails
+ * is reported rather than fatal, because the placement is still the better
+ * outcome than leaving the bundle in a temporary directory about to be
+ * deleted.
+ */
+function stopDaemonBeingReplaced(
+  deps: ActanaCliDeps,
+  layout: ActanaLayout,
+  plan: PlacementPlan,
+): void {
+  if (!plan.replacingTree) return;
+  if (!fs.existsSync(plan.installDir)) return;
+
+  let service: ActanaServiceManager;
+  try {
+    service = createServiceManager({
+      platform: deps.platform,
+      layout,
+      system: deps.system,
+      user: deps.user,
+      uid: deps.uid,
+    });
+  } catch {
+    return;
+  }
+
+  try {
+    if (!service.isActive()) return;
+    deps.out(
+      `Stopping the running Core: this install replaces ${plan.installDir}, which is the ` +
+        "tree it is executing from. The command printed below starts it again.",
+    );
+    service.stop();
+  } catch (err) {
+    deps.out(
+      `Could not stop the running Core (${err instanceof Error ? err.message : String(err)}). ` +
+        "Continuing — restart it with the command printed below.",
+    );
+  }
 }
 
 /** `actana install` — always the download path, even inside a tarball. */
@@ -1330,6 +1528,8 @@ export async function runActanaCli(deps: ActanaCliDeps): Promise<number> {
   switch (head) {
     case "install":
       return cmdInstall(deps, rest);
+    case "place":
+      return cmdPlace(deps, rest);
     case "setup":
       return cmdSetup(deps, rest);
     case "status":

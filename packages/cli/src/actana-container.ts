@@ -62,7 +62,7 @@ export {
 /**
  * The verbs the image owns, and what the operator runs on the host instead.
  *
- * `logs` is here for the same reason as the other seven: there is no journal
+ * `logs` is here for the same reason as the other eight: there is no journal
  * and no unit in the image, so `journalctl --user -u actana-core.service` has
  * nothing to read. `docker logs` reads the daemon's stdout, which is where the
  * container's Core writes.
@@ -84,6 +84,17 @@ const DOCKER_EQUIVALENT: Record<string, { why: string; run: string }> = {
   // module's header exists to refuse.
   install: {
     why: "this image is the install — there is no release to fetch and no tree to lay down",
+    run:
+      `set ${CONTAINER_PUBLIC_HOST_ENV} (and optionally ${CONTAINER_PORT_ENV}, ` +
+      `${CONTAINER_LABEL_ENV}) in your compose file, then:\n  docker compose up -d`,
+  },
+  // `place` is `setup`'s first half since #316, and it refuses for the first
+  // half of `setup`'s reason: the image *is* the versioned tree (ADR 0016 D13),
+  // so there is nowhere to place a bundle and no launcher to link. A `place`
+  // that ran here would lay a second Core down beside the image's own and
+  // repoint a `current` symlink nothing in the container reads.
+  place: {
+    why: "this image is the install — there is no tree to lay down and no launcher to link",
     run:
       `set ${CONTAINER_PUBLIC_HOST_ENV} (and optionally ${CONTAINER_PORT_ENV}, ` +
       `${CONTAINER_LABEL_ENV}) in your compose file, then:\n  docker compose up -d`,

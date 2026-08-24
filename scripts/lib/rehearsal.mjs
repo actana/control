@@ -46,10 +46,26 @@ export function pickTarball(fileNames, target, fail) {
 /**
  * The one-liner to paste inside the rehearsal machine.
  *
- * Deliberately carries no `--yes`, no `--with-<harness>` and no `--no-harnesses`:
- * the prompts are the whole point of doing this by hand, and a rehearsal that
- * skips them rehearses the unattended path CI already covers.
+ * It carries only `--base-url`, and since #316 that is the only kind of flag
+ * it *could* carry: install is not activation (ADR 0036 C2), so the script
+ * owns four options and refuses the rest. `--yes`, `--with-<harness>` and
+ * `--no-harnesses` were never wanted here anyway — the prompts are the whole
+ * point of doing this by hand, and they belong to the second command.
  */
 export function rehearsalOneLiner(baseUrl) {
   return `curl -fsSL ${baseUrl}/install.sh | bash -s -- --base-url ${baseUrl}`;
+}
+
+/**
+ * The second command of the rehearsal — the one that turns the machine into a
+ * Core, and the one with all the prompts in it.
+ *
+ * Printed as a hint rather than as gospel: `actana place` prints the runnable
+ * form itself, with an absolute path when `~/.local/bin` is not yet on the
+ * rehearser's `PATH`, and that printed line is the one to trust. Saying so
+ * here is the difference between a rehearsal that stalls at "it installed and
+ * nothing happened" and one that carries on.
+ */
+export function rehearsalSetupCommand() {
+  return "actana setup";
 }

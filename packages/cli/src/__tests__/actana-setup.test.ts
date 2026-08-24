@@ -7,9 +7,17 @@ import { X509Certificate, createPublicKey } from "node:crypto";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { readActanaConfig } from "../actana-config";
 import { resolveActanaLayout, type ActanaLayout } from "../actana-layout";
-import { loadMaterial, persistMaterial } from "@actana/shared/core-material-store";
+import { loadMaterial, materialFilePath, persistMaterial } from "@actana/shared/core-material-store";
 import { createServiceManager } from "../actana-service";
-import { runActanaSetup, choosePublicHost, type SetupOptions } from "../actana-setup";
+import {
+  runActanaSetup,
+  choosePublicHost,
+  placeCoreBundle,
+  planCorePlacement,
+  setupCommandFor,
+  type PlacementOptions,
+  type SetupOptions,
+} from "../actana-setup";
 import type { ActanaSystem, CommandResult } from "../actana-system";
 
 const MANIFEST = {
@@ -138,6 +146,290 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// ─── placement, without activation (ADR 0036 C2, #316) ──────────────────────
+//
+// `install.sh` places a bundle and stops, so placement is a function with its
+// own contract rather than the first third of `runActanaSetup`. What is
+// asserted here is both halves of "install is not activation": that the tree,
+// the `current` symlink and the launcher are all there, **and** that nothing
+// which makes this machine a Core is — no config, no material, no unit. A
+// placement that quietly did one more thing than it says would be the removed
+// tail growing back under a different name.
+
+/** The placement half of the setup options the rest of this file builds. */
+function placing(over: Partial<PlacementOptions> = {}): PlacementOptions {
+  return {
+    layout,
+    env: { HOME: home, PATH: layout.binDir },
+    sourceRoot,
+    manifest: MANIFEST,
+    platform: "linux",
+    arch: "x64",
+    out: () => {},
+    ...over,
+  };
+}
+
+/** Plan and place in one call, the way both callers do. */
+function place(over: Partial<PlacementOptions> = {}) {
+  const opts = placing(over);
+  return placeCoreBundle(opts, planCorePlacement(opts));
+}
+
+describe("placeCoreBundle — what `install.sh` leaves behind", () => {
+  it("lands the tree under versions/<v>, points current at it, links the launcher", () => {
+    const result = place();
+
+    expect(result.installDir).toBe(path.join(layout.versionsDir, "0.1.0"));
+    expect(result.version).toBe("0.1.0");
+    expect(fs.existsSync(path.join(result.installDir, "app", "core-entry.cjs"))).toBe(true);
+    expect(fs.existsSync(path.join(result.installDir, "node", "bin", "node"))).toBe(true);
+    expect(fs.realpathSync(layout.currentLink)).toBe(fs.realpathSync(result.installDir));
+    expect(fs.readlinkSync(layout.binLink)).toBe(path.join(layout.currentLink, "bin", "actana"));
+    expect(result.launcher.outcome).toBe("linked");
+  });
+
+  // The other half of the contract, and the one the whole ticket is about.
+  it("activates nothing: no config, no material, no unit, no data dir", () => {
+    place();
+
+    expect(readActanaConfig(layout.configDir)).toBeNull();
+    expect(fs.existsSync(materialFilePath(layout.configDir))).toBe(false);
+    expect(fs.existsSync(layout.servicePath)).toBe(false);
+    // The data dir is the daemon's, and there is no daemon yet.
+    expect(fs.existsSync(layout.dataDir)).toBe(false);
+  });
+
+  it("needs no init system, so it works where `setup` could not run at all", () => {
+    // `PlacementOptions` has no `service` and no `system` to give it one.
+    // Stated as a test because it is the reason placement is separable at all:
+    // a bundle can be put on a machine whose init system nothing here supports.
+    expect(Object.keys(placing())).not.toContain("service");
+    expect(() => place()).not.toThrow();
+  });
+
+  it("runs twice over its own output without copying anything", () => {
+    const first = place();
+    const marker = path.join(first.installDir, "app", "marker");
+    fs.writeFileSync(marker, "still here\n");
+
+    // The shape of the two-command install: `setup` runs from the launcher of
+    // the tree `install.sh` just placed, so its source *is* its destination.
+    const again = place({ sourceRoot: first.installDir });
+
+    expect(again.installDir).toBe(first.installDir);
+    expect(fs.readFileSync(marker, "utf8")).toBe("still here\n");
+    expect(fs.realpathSync(layout.currentLink)).toBe(fs.realpathSync(first.installDir));
+  });
+
+  it("refuses a tree that is not a Core build, before writing anything", () => {
+    fs.rmSync(path.join(sourceRoot, "node", "bin", "node"));
+
+    expect(() => place()).toThrow(/not an extracted Core tarball/);
+    expect(fs.existsSync(layout.versionsDir)).toBe(false);
+    expect(fs.existsSync(layout.currentLink)).toBe(false);
+  });
+
+  it("refuses a build for another machine, before writing anything", () => {
+    expect(() => place({ arch: "arm64" })).toThrow(/but the machine is/);
+    expect(fs.existsSync(layout.versionsDir)).toBe(false);
+  });
+
+  // #316's fifth criterion: a failed run leaves the machine as it was found.
+  // Two shapes, because they fail at different points and clean up different
+  // things — one before the copy starts, one with the staging tree already on
+  // disk.
+  it("leaves nothing behind when the install root cannot be written", () => {
+    // Something else owns `versions` — the shape a hand-made file or a stray
+    // mount leaves. `mkdir` refuses and no tree is begun.
+    fs.mkdirSync(layout.root, { recursive: true });
+    fs.writeFileSync(layout.versionsDir, "not a directory\n");
+
+    expect(() => place()).toThrow();
+    expect(fs.statSync(layout.versionsDir).isFile()).toBe(true);
+    // Neither link was touched, so nothing points at a tree that is not there.
+    expect(fs.existsSync(layout.currentLink)).toBe(false);
+    expect(fs.existsSync(layout.binLink)).toBe(false);
+  });
+
+  // Skipped as root, where a mode of 000 stops nothing. Everywhere else this
+  // is the real thing: the copy gets part way, throws, and has to take its own
+  // staging tree and the version directory it was about to become with it.
+  it.skipIf(process.getuid?.() === 0)(
+    "leaves nothing behind when the copy fails part-way through",
+    () => {
+      fs.chmodSync(path.join(sourceRoot, "app", "core-entry.cjs"), 0o000);
+
+      expect(() => place()).toThrow();
+
+      const installDir = path.join(layout.versionsDir, "0.1.0");
+      expect(fs.existsSync(installDir), "a half-placed tree survived").toBe(false);
+      expect(fs.existsSync(`${installDir}.incoming`), "the staging tree survived").toBe(false);
+      expect(fs.existsSync(layout.currentLink)).toBe(false);
+      expect(fs.existsSync(layout.binLink)).toBe(false);
+    },
+  );
+
+  // Skipped as root for the same reason as the test above. The failure has to
+  // happen *during the copy*: a source `planCorePlacement` refuses throws
+  // before `placeCoreBundle` is entered at all, and a test built that way would
+  // pass without ever entering the code it is about.
+  it.skipIf(process.getuid?.() === 0)(
+    "keeps the version that was already installed when a re-place fails mid-copy",
+    () => {
+      const first = place();
+      fs.writeFileSync(path.join(first.installDir, "app", "keep-me"), "installed\n");
+
+      // A second source, same version, well-formed enough to be planned and
+      // impossible to copy.
+      const second = path.join(tmp, "extract-2", "actana-core-0.1.0-linux-x64");
+      makeTarballTree(second);
+      fs.chmodSync(path.join(second, "app", "core-entry.cjs"), 0o000);
+
+      expect(() => place({ sourceRoot: second })).toThrow();
+
+      expect(fs.readFileSync(path.join(first.installDir, "app", "keep-me"), "utf8")).toBe(
+        "installed\n",
+      );
+      expect(fs.existsSync(`${first.installDir}.incoming`)).toBe(false);
+      expect(fs.existsSync(`${first.installDir}.previous`)).toBe(false);
+    },
+  );
+
+  // The swap moves the old tree aside rather than deleting it, so that the
+  // rename putting the new one in place has something to be undone with. Both
+  // scratch paths are this call's to clean up — a `versions/0.1.0.previous`
+  // left lying around is a full copy of a Core bundle nobody will ever look at.
+  it("leaves neither scratch directory behind when it replaces a tree", () => {
+    const first = place();
+    fs.writeFileSync(path.join(first.installDir, "app", "old-marker"), "old\n");
+
+    const second = path.join(tmp, "extract-2", "actana-core-0.1.0-linux-x64");
+    makeTarballTree(second);
+    const again = place({ sourceRoot: second });
+
+    expect(again.installDir).toBe(first.installDir);
+    expect(fs.existsSync(path.join(again.installDir, "app", "old-marker"))).toBe(false);
+    expect(fs.existsSync(`${again.installDir}.incoming`)).toBe(false);
+    expect(fs.existsSync(`${again.installDir}.previous`)).toBe(false);
+  });
+
+  it("does not adopt a `.previous` a crashed run left behind", () => {
+    const installDir = path.join(layout.versionsDir, "0.1.0");
+    fs.mkdirSync(`${installDir}.previous`, { recursive: true });
+    fs.writeFileSync(path.join(`${installDir}.previous`, "from-a-crash"), "junk\n");
+
+    const result = place();
+
+    expect(fs.existsSync(`${result.installDir}.previous`)).toBe(false);
+    expect(fs.existsSync(path.join(result.installDir, "from-a-crash"))).toBe(false);
+  });
+
+  it("does not adopt a staging directory a crashed run left behind", () => {
+    const installDir = path.join(layout.versionsDir, "0.1.0");
+    fs.mkdirSync(`${installDir}.incoming`, { recursive: true });
+    fs.writeFileSync(path.join(`${installDir}.incoming`, "half-copied"), "junk\n");
+
+    const result = place();
+
+    expect(fs.existsSync(`${installDir}.incoming`)).toBe(false);
+    expect(fs.existsSync(path.join(result.installDir, "half-copied"))).toBe(false);
+  });
+});
+
+// **The collision is tested, not reasoned about** (#288 D10, #316 landmine).
+// `deploy/core.Dockerfile` sets `NPM_CONFIG_PREFIX=/home/core/.local`, so
+// `npm i -g @actana/cli` puts its shim at `$HOME/.local/bin/actana` — the very
+// path `resolveActanaLayout` calls `binLink`. `install.sh` reaches that path
+// before `setup` does now, so the refusal to clobber has to hold on the
+// placement path too, or the CLI-only install this milestone must not break
+// gets its launcher deleted by the first bundle install on the same machine.
+describe("placeCoreBundle — the launcher path still has one owner", () => {
+  /** What `npm i -g` leaves at `<prefix>/bin/actana`: a symlink into its own tree. */
+  function plantNpmShim(): string {
+    const target = path.join(
+      layout.home, ".local", "lib", "node_modules", "@actana", "cli", "bin", "actana.mjs",
+    );
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, "#!/usr/bin/env node\n");
+    fs.mkdirSync(layout.binDir, { recursive: true });
+    fs.symlinkSync(target, layout.binLink);
+    return target;
+  }
+
+  it("does not clobber an `actana` npm put at the very same path", () => {
+    expect(layout.binLink).toBe(path.join(layout.home, ".local", "bin", "actana"));
+    const shim = plantNpmShim();
+
+    const result = place();
+
+    expect(result.launcher.outcome).toBe("foreign");
+    expect(fs.readlinkSync(layout.binLink)).toBe(shim);
+    // The bundle still landed: refusing the launcher is not refusing the install.
+    expect(fs.realpathSync(layout.currentLink)).toBe(fs.realpathSync(result.installDir));
+  });
+
+  it("says so, naming both programs", () => {
+    plantNpmShim();
+    const said: string[] = [];
+    place({ out: (line) => said.push(line) });
+
+    const text = said.join("\n");
+    expect(text).toContain(layout.binLink);
+    expect(text).toContain(path.join(layout.currentLink, "bin", "actana"));
+  });
+
+  it("leaves an `actana` that is only earlier on PATH alone too", () => {
+    const elsewhere = path.join(layout.home, "bin");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "actana"), "#!/bin/sh\n");
+
+    const result = place({ env: { HOME: home, PATH: `${elsewhere}:${layout.binDir}` } });
+
+    expect(result.launcher.outcome).toBe("foreign");
+    expect(fs.existsSync(layout.binLink)).toBe(false);
+  });
+});
+
+// #316's fourth criterion. The script reaches "is the launcher findable?"
+// *before* setup does now, so the answer has to be in the command it prints
+// rather than in a note setup makes afterwards.
+describe("setupCommandFor — the next command, runnable as printed", () => {
+  const linked = { outcome: "linked", binLink: "", foreignPath: null, note: null } as const;
+  const foreign = { outcome: "foreign", binLink: "", foreignPath: "/usr/bin/actana", note: null } as const;
+
+  it("is bare `actana setup` when this install's launcher is the one on PATH", () => {
+    expect(setupCommandFor(layout, linked, { PATH: layout.binDir })).toBe("actana setup");
+  });
+
+  it("is an absolute path when the launcher's directory is not on PATH", () => {
+    // The ordinary state of a fresh machine: `~/.local/bin` does not exist at
+    // login, so the shell never added it, so a bare `actana` is not found.
+    expect(setupCommandFor(layout, linked, { PATH: "/usr/bin:/bin" })).toBe(
+      `${path.join(layout.currentLink, "bin", "actana")} setup`,
+    );
+  });
+
+  it("is an absolute path when somebody else owns the name, even on PATH", () => {
+    // An `actana` from npm has no bundle around it, so `actana setup` there
+    // would resolve a release and download one — a different act from
+    // activating the bundle that was just placed.
+    expect(setupCommandFor(layout, foreign, { PATH: layout.binDir })).toBe(
+      `${path.join(layout.currentLink, "bin", "actana")} setup`,
+    );
+  });
+
+  it("goes through `current`, so it survives the next update", () => {
+    const command = setupCommandFor(layout, linked, { PATH: "/usr/bin" });
+    expect(command).toContain(layout.currentLink);
+    expect(command).not.toContain(layout.versionsDir);
+  });
+
+  it("names no PATH at all as not on PATH", () => {
+    expect(setupCommandFor(layout, linked, {})).toContain(layout.currentLink);
+  });
 });
 
 describe("runActanaSetup — the install layout", () => {

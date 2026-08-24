@@ -91,10 +91,14 @@ against the one on screen. [deploy/README.md](deploy/README.md) walks through
 the file itself — the volumes, the loopback port, adding a second Core.
 
 **Installer** — turn a Linux or macOS (arm64) machine into a Core, as your own
-user, without sudo:
+user, without sudo. Two commands, because installing is not activating: the
+first puts the Core bundle and the `actana` CLI on the machine, the second
+turns the machine into a Core. The first prints the second — run the line it
+printed.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+actana setup
 ```
 
 **Which one?** Compose if you want the whole thing on one host to try it;
