@@ -59,6 +59,21 @@ export const MANIFESTS = [
   "packages/shared/package.json",
 ];
 
+/**
+ * The seventh place a cut writes the line, and deliberately **not** a seventh
+ * manifest (ADR 0036 D4).
+ *
+ * `install.sh` carries the line so that the copy on a train installs that
+ * train's beta and the copy on `main` installs the release, out of bytes that
+ * become identical at the promotion fast-forward (0036 D1, D2). It is not a
+ * workspace package, so adding it to `MANIFESTS` would break the property
+ * `assert_manifest_set` exists to hold — every listed file exists, and every
+ * workspace package is listed. It gets its own assertion instead, which is
+ * what this pair is for.
+ */
+export const INSTALLER_STAMP_FILE = "install.sh";
+export const INSTALLER_STAMP_PATTERN = /^LINE="([^"]*)"$/m;
+
 /** A line: three numeric components and nothing else. */
 export const LINE_PATTERN = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -207,6 +222,12 @@ export const SURFACES = [
     authority: "tree",
   },
   {
+    id: "installer-stamp",
+    what: "install.sh's LINE stamp",
+    writtenBy: "the cut, docs/ci-cd.md § Cutting a train",
+    authority: "tree",
+  },
+  {
     id: "git-tag",
     what: "the git tag vx.y.z and vx.y.z-beta",
     writtenBy: "promote.yml advance, and a beta cut",
@@ -284,6 +305,33 @@ export function readManifestVersions({ root = process.cwd(), gitRef = null, mani
 }
 
 /**
+ * The line `install.sh` is stamped with, read the same two ways the manifests
+ * are.
+ *
+ * Three outcomes, and they are different failures: the file is not there, the
+ * file is there and carries no `LINE=` assignment at all — a cut that deleted
+ * the stamp, or a tree from before it existed — and the file carries one.
+ */
+export function readInstallerStamp({ root = process.cwd(), gitRef = null } = {}) {
+  const entry = { file: INSTALLER_STAMP_FILE, kind: "stamp", version: null, missing: false, unstamped: false };
+  let raw;
+  try {
+    raw = gitRef
+      ? execFileSync("git", ["show", `${gitRef}:${INSTALLER_STAMP_FILE}`], {
+          cwd: root,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+        })
+      : fs.readFileSync(path.join(root, INSTALLER_STAMP_FILE), "utf8");
+  } catch {
+    return { ...entry, missing: true };
+  }
+  const match = INSTALLER_STAMP_PATTERN.exec(raw);
+  if (!match) return { ...entry, unstamped: true };
+  return { ...entry, version: match[1] };
+}
+
+/**
  * Compare a version string on some surface against the manifests in the tree
  * it claims to describe.
  *
@@ -295,7 +343,7 @@ export function readManifestVersions({ root = process.cwd(), gitRef = null, mani
  * Returns every problem rather than the first: a cut that missed one manifest
  * and a cut that missed five should not read the same in a log.
  */
-export function checkAgreement({ expected, versions }) {
+export function checkAgreement({ expected, versions, stamp = null, stampRequired = false }) {
   const problems = [];
   const shape = versionProblem(expected);
   if (shape) {
@@ -336,6 +384,44 @@ export function checkAgreement({ expected, versions }) {
         detail:
           `${entry.file} says ${entry.version}; the line is ${line}. Every manifest carries the ` +
           "line the cut stamped, and every published string is that line or its beta (ADR 0023 D3, ADR 0037 D1).",
+      });
+    }
+  }
+  if (stamp) {
+    if (stamp.missing) {
+      if (stampRequired) {
+        problems.push({
+          kind: "missing-stamp",
+          file: stamp.file,
+          title: "The installer is missing",
+          detail: `${stamp.file} is not in this tree, so the line a fetched copy would install cannot be checked.`,
+        });
+      }
+    } else if (stamp.unstamped) {
+      // Silent unless the caller asked for it. A tree from before the stamp
+      // existed is a real thing to run this against — an old tag re-released —
+      // and refusing it there would be refusing history. On a train it is a
+      // cut that forgot, which is exactly what must go red (ADR 0036 D1, D4).
+      if (stampRequired) {
+        problems.push({
+          kind: "unstamped-installer",
+          file: stamp.file,
+          title: "The installer carries no line stamp",
+          detail:
+            `${stamp.file} has no \`LINE="x.y.z"\` assignment. A train cut without it serves the ` +
+            "previous line's beta from its own door, silently, because the resolution reads the stamp " +
+            "and nothing else (ADR 0036 D1, D2). See docs/ci-cd.md § \"Cutting a train\".",
+        });
+      }
+    } else if (stamp.version !== line) {
+      problems.push({
+        kind: "drift",
+        file: stamp.file,
+        title: `Version drift in ${stamp.file}`,
+        detail:
+          `${stamp.file} is stamped ${stamp.version}; the line is ${line}. The stamp is what decides ` +
+          "which release a fetched copy of the installer installs, so a stale one points this line's " +
+          "door at another line's build (ADR 0036 D1, D2).",
       });
     }
   }

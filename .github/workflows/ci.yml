@@ -286,6 +286,43 @@ jobs:
             fi
           }
 
+          # ADR 0036 D4, and it is deliberately **not** `MANIFESTS+=(install.sh)`.
+          # The stamp is a seventh file the cut writes and not a seventh
+          # manifest: `install.sh` is not a workspace package, so adding it to
+          # the list above would break the property `assert_manifest_set` exists
+          # to hold — every listed file exists, and every workspace package is
+          # listed. D4 says so in as many words, because "just add it to the
+          # list" is the obvious edit and it is the wrong one.
+          #
+          # What it protects is a silent failure rather than a noisy one. The
+          # stamp is what makes the copy of the installer on this train install
+          # this train's beta and the copy on `main` install the release, out of
+          # bytes the promotion fast-forward makes identical (0036 D1, D2). A
+          # train cut without it looks right, passes every other check, and
+          # serves the previous line's beta from its own door.
+          #
+          # #317 landed the stamp and the resolution that reads it and left this
+          # assertion undone — it touched no workflow file, which #327 owns —
+          # and docs/ci-cd.md § "Cutting a train" said so in as many words until
+          # this landed.
+          assert_installer_stamp() {
+            local expected="$1" stamp
+            if [[ ! -f install.sh ]]; then
+              fail "The installer is missing" "install.sh is not in this tree, so the line a fetched copy would install cannot be checked (ADR 0036 D1)."
+              return
+            fi
+            # One assignment on one line, which is the shape the cut's `sed`
+            # rewrites and the shape the file documents above the value.
+            stamp="$(sed -n 's/^LINE="\(.*\)"$/\1/p' install.sh | head -n1)"
+            if [[ -z "$stamp" ]]; then
+              fail "The installer carries no line stamp" "install.sh has no \`LINE=\"x.y.z\"\` assignment. A train cut without it serves the previous line's beta from its own door, silently, because the resolution reads the stamp and nothing else (ADR 0036 D1, D2, D4). See docs/ci-cd.md § \"Cutting a train\"."
+            elif [[ "$stamp" != "$expected" ]]; then
+              fail "Version drift in install.sh" "install.sh is stamped $stamp; the train is $expected. The stamp decides which release a fetched copy of the installer installs, so a stale one points this line's door at another line's build (ADR 0036 D1, D2)."
+            else
+              echo "  ✅ install.sh is stamped $stamp"
+            fi
+          }
+
           assert_versions() {
             local expected="$1" file version
             assert_manifest_set
@@ -297,6 +334,7 @@ jobs:
                 echo "  ✅ $file is $version"
               fi
             done
+            assert_installer_stamp "$expected"
           }
 
           # D21. When a train merge's image build fails, `beta-x.y.z` does not
@@ -1177,6 +1215,13 @@ jobs:
       # No `pnpm install`: the checker imports nothing outside node: builtins,
       # precisely so the check that gates every other version-bearing job in
       # this file cannot be held up by a registry.
+      # `--require-stamp` is the push half of ADR 0036 D4. `install.sh` carries
+      # the line so the copy on a train installs that train's beta and the copy
+      # on `main` installs the release, out of bytes the promotion fast-forward
+      # makes identical — so a cut that forgets it serves the previous line's
+      # beta from this line's door, silently. #317 landed the stamp and its
+      # resolution and left the assertion to this ticket, which owns
+      # `.github/workflows`.
       - name: The tree carries the train's version
         env:
           BRANCH: ${{ github.ref_name }}
@@ -1185,6 +1230,7 @@ jobs:
           version="${BRANCH#beta/}"
           node scripts/assert-version-agreement.mjs \
             --expected "$version" \
+            --require-stamp \
             --source "the train branch $BRANCH"
 
   train-tags:

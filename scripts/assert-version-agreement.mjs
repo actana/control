@@ -46,6 +46,7 @@ import {
   checkAgreement,
   imageVersionProblem,
   lineOf,
+  readInstallerStamp,
   readManifestVersions,
   versionFromGitTag,
 } from "./lib/version-agreement.mjs";
@@ -54,7 +55,14 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 const onGitHub = Boolean(process.env.GITHUB_ACTIONS);
 
 function parseArgs(argv) {
-  const options = { expected: null, source: null, gitRef: null, root: repoRoot, imageLabel: null };
+  const options = {
+    expected: null,
+    source: null,
+    gitRef: null,
+    root: repoRoot,
+    imageLabel: null,
+    requireStamp: false,
+  };
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i];
     const take = () => {
@@ -78,6 +86,9 @@ function parseArgs(argv) {
         break;
       case "--image-label":
         options.imageLabel = take();
+        break;
+      case "--require-stamp":
+        options.requireStamp = true;
         break;
       case "--root":
         options.root = path.resolve(take());
@@ -119,10 +130,23 @@ if (options.imageLabel !== null) {
 }
 
 const versions = readManifestVersions({ root: options.root, gitRef: options.gitRef });
-const { line, problems } = checkAgreement({ expected, versions });
+// The installer's stamp is checked wherever it exists and required only where a
+// caller says it must (ADR 0036 D4). A tree from before the stamp landed is a
+// real thing to run this against — an old tag re-released — and refusing it
+// there would be refusing history; a train cut without one is the failure.
+const stamp = readInstallerStamp({ root: options.root, gitRef: options.gitRef });
+const { line, problems } = checkAgreement({
+  expected,
+  versions,
+  stamp,
+  stampRequired: options.requireStamp,
+});
 
 const where = options.gitRef ? `at ${options.gitRef}` : "in the working tree";
-console.log(`Asserting ${MANIFESTS.length} manifests ${where} against ${expected}, from ${source}.`);
+console.log(
+  `Asserting ${MANIFESTS.length} manifests${options.requireStamp ? " and the installer's line stamp" : ""} ` +
+    `${where} against ${expected}, from ${source}.`,
+);
 
 // Two failures must not be dressed up as six drifting manifests. A bad version
 // string is one problem with the string, and a ref this clone does not have is
@@ -139,10 +163,15 @@ if (unreadableRef) {
     const said = entry.missing ? "<missing>" : (entry.version ?? "<no version field>");
     console.log(`  ${entry.version === line ? "✅" : "❌"} ${entry.file} is ${said}`);
   }
+  if (stamp.version !== null) {
+    console.log(`  ${stamp.version === line ? "✅" : "❌"} ${stamp.file} is stamped ${stamp.version}`);
+  } else if (options.requireStamp) {
+    console.log(`  ❌ ${stamp.file} ${stamp.missing ? "is missing" : "carries no LINE stamp"}`);
+  }
 }
 
 if (problems.length === 0) {
-  console.log(`✅ ${expected} agrees with the tree: every manifest carries the line ${line}.`);
+  console.log(`✅ ${expected} agrees with the tree: every version in it is the line ${line}.`);
   process.exit(0);
 }
 

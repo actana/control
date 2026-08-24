@@ -1060,11 +1060,15 @@ too late:
   in the file and the resolution that reads it, and
   `scripts/__tests__/install-sh.test.mjs` asserts that the stamp is a plain
   `x.y.z` equal to the workspace version and that nothing in the file names a
-  channel. **The separate `Train rules` assertion 0036 D4 asks for is not there
-  yet**: #317 landed without touching `.github/workflows`, which another ticket
-  held open across the same wave. Until it lands, nothing goes red on the train
-  when a cut forgets the stamp — the check is this step and the test above it,
-  so measure the `grep` output before you commit.
+  channel. **The separate `Train rules` assertion 0036 D4 asks for is now there**
+  ([#327](https://github.com/actana/control/issues/327), which owns
+  `.github/workflows`): `assert_installer_stamp` runs beside the six manifests on
+  every pull request into a train and on the promotion gate, and `Train versions`
+  makes the same assertion on the push a cut is. It is its own check and not a
+  seventh entry in `MANIFESTS`, because `install.sh` is not a workspace package
+  and that list refuses to grow past them (0036 D4). A cut that forgets the stamp
+  now goes red on the train rather than serving the previous line's beta from its
+  own door.
 - **Every body line of the message is at most 132 characters.** `commitlint`
   lints every commit in a pull request, not just its title — but no pull
   request puts a cut commit in front of it until the promotion gate, when the
