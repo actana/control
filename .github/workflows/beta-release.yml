@@ -16,7 +16,7 @@ name: Beta release
 # ── Why this is a file of its own (ADR 0036 D9) ──────────────────────────────
 #
 # `release.yml`'s `resolve` refuses any tag reachable from neither `main` nor a
-# `release/*` branch (`release.yml:219-231`):
+# `release/*` branch (`release.yml:241-246`):
 #
 # > `$ref ($sha) is not reachable from main and is on no origin/release/*
 # > branch, so there is neither a beta digest to promote nor a release line to
@@ -783,6 +783,15 @@ jobs:
       # under ADR 0016 D29, so that a broken installer is fixable without cutting
       # anything; the asset exists so the script and the bytes it fetches ship
       # together. Nothing points an operator at the asset as an install URL.
+      #
+      # The copy attached is the **train's own**, checked out at the commit
+      # being cut, and that is what makes it the right copy rather than merely
+      # the convenient one: since #317 the script carries the line it was cut
+      # from in its own bytes (`LINE="0.4.1"`, ADR 0036 D1), and D2 resolves
+      # that line to this beta while the line has no release. Stamping it is the
+      # cut's job and not this workflow's — a manual train cut writes it, and
+      # `ci.yml`'s `Train rules` asserts it (D4) — so this step attaches what
+      # the repository holds at that ref and re-stamps nothing.
       - name: Create or update the prerelease and replace its assets
         env:
           GH_TOKEN: ${{ github.token }}
