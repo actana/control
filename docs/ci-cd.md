@@ -250,9 +250,8 @@ the URLs that are doors.
 Three things a beta deliberately does not publish, each of which has been asked
 for and answered rather than overlooked:
 
-- **No Intel Mac build**, and nothing is being omitted. There has been no
-  `mac-x64` target since [ADR 0016](adr/0016-the-0-1-0-shape.md) D28 as amended;
-  the row does not exist for a release either.
+- **No Intel Mac build**, and nothing is being omitted: the row does not exist
+  for a release either, for the reason immediately below.
 - **No signing and no notarization**, exactly as a release — integrity is the
   published checksums, below.
 - **Nothing on registry.npmjs.org.** `latest` and `next` on `@actana/cli` and
@@ -394,8 +393,9 @@ between cuts however much the train moves underneath it.
 - **`beta-x.y.z` is not a semver prerelease, and that is still deliberate**
   (D8). Semver would put the suffix after the version rather than in front of
   it; this shape was chosen because it matches the branch that produced it, and
-  it names a *train*, not a version anything installs. D8's safety argument was that the mismatch costs nothing
-  because *"nothing that parses versions ever sees one"* — and things now do.
+  it names a *train*, not a version anything installs. D8's safety argument was
+  that the mismatch costs nothing because *"nothing that parses versions ever
+  sees one"* — and things now do.
   [ADR 0036](adr/0036-the-beta-release-channel.md) D8 is the revisit that clause
   demanded, and it answers every parser in the repository by name.
 - **`x.y.z-beta` is a semver prerelease, and it is the version a machine

@@ -71,12 +71,14 @@ Same standing as this page now has, for the other half of the release.
   which builds the host's own target and produces the same asset the leg will.
 
   **If this line has been cut as a beta, download that instead.** A beta cut
-  publishes a `mac-arm64` tarball at `x.y.z-beta` on its prerelease, built and
-  boot-smoked on an Apple-silicon runner, with `SHA256SUMS` beside it. It is the
-  same three targets a release builds. Use it only when the cut names the commit
-  you are approving — a beta is cut at whatever train tip somebody asked for,
-  which is not always the tip being promoted — and verify the checksum before
-  extracting, exactly as an operator would.
+  publishes a `mac-arm64` tarball on its prerelease, built and boot-smoked on an
+  Apple-silicon runner, with `SHA256SUMS` beside it. Its version string is
+  `x.y.z-beta`, so the asset and the extracted directory read `-beta` where a
+  release's read `x.y.z` — the bytes are otherwise built the same way. Use it
+  only when the cut names the commit you are approving: a beta is cut at
+  whatever train tip somebody asked for, which is not always the tip being
+  promoted. Verify the checksum before extracting, exactly as an operator
+  would.
 
 ---
 
