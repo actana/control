@@ -180,11 +180,19 @@ either means the Mac Core in front of you is not fit to run — as does the
 Gatekeeper box in section 1. Any of those three is a **reject**.
 
 **Rejecting stops everything a release would publish**, not just the macOS
-tarball: no GitHub Release, no Linux tarballs, no `actana/panel` or
-`actana/core` image, no moved `:latest`. With the pause at the head of
-promotion (ADR 0023 D15) it also stops the fast-forward itself, so `main` does
-not advance either. Nothing needs rolling back, because nothing left the
-repository — the fix rides the train and is promoted next time.
+tarball: no GitHub Release for `x.y.z`, no release tarballs, no `actana/panel`
+or `actana/core` image at that version, no moved `:latest`. With the pause at
+the head of promotion (ADR 0023 D15) it also stops the fast-forward itself, so
+`main` does not advance either. Nothing needs rolling back, because nothing the
+release publishes left the repository — the fix rides the train and is promoted
+next time.
+
+A **beta cut** of this line is the one thing rejecting does not reach. If
+somebody dispatched one, its prerelease and its `mac-arm64` tarball are already
+published at `x.y.z-beta` and they stay ([ADR
+0036](adr/0036-the-beta-release-channel.md) D23). That costs this gate nothing:
+a prerelease is never `/releases/latest`, so no operator reaches it by typing
+nothing, and the version you are refusing to ship still has not shipped.
 
 Approving spends the runner minutes, then releases the images and the four
 assets in one go. Nothing else is waiting on you afterwards.

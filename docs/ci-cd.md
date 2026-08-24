@@ -1665,6 +1665,14 @@ The gated job goes to **waiting** the moment the run starts.
 `:latest` moves, **no package reaches npm**, no GitHub Release appears, and
 `main` does not advance.
 
+That sentence is about the **promotion**. A beta cut of the same line, if one
+was dispatched, has already published its own prerelease and its own
+`x.y.z-beta` images, and rejecting here does not and cannot withdraw them
+([ADR 0036](adr/0036-the-beta-release-channel.md) C3, D23). What it withdraws
+is the release: nothing an operator gets by typing nothing has moved, `latest`
+is where it was, and the line is still unshipped. A prerelease is never
+`/releases/latest`, which is why it costs the reviewer's guarantee nothing.
+
 That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
 `:latest` is a pointer with no history to roll back to. A reviewer who hits a
