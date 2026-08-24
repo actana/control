@@ -107,9 +107,12 @@ on:
           v0.4.1). A build asserts the checked-out tree's six manifests carry
           its line before building, and `promote`/`verify` assert the published
           digest's `org.opencontainers.image.version` label equals that line
-          (ADR 0037 D4). Empty skips both, which is the pull request path: a
-          PR's tree carries the train's version and its image is tagged
-          `pr-<prid><YYYYMM>`, so there is no version claim to check.
+          (ADR 0037 D4). Empty skips both, and every caller publishing a
+          version-bearing tag passes one — including `ci.yml`'s pull request
+          image jobs on the promotion pull request, whose `verify` reads the
+          digest behind `beta-x.y.z`. Empty is the ordinary pull request: its
+          image is tagged `pr-<prid><YYYYMM>` and makes no version claim, and
+          the train's version in its tree is not a claim that build is making.
         type: string
         default: ""
       push:

@@ -456,8 +456,16 @@ export function checkAgreement({ expected, versions, stamp = null, stampRequired
  * and the Panel images carry no version label at all.
  */
 export function imageVersionProblem({ label, expected }) {
+  // The vocabulary, asked here and not only in `checkAgreement`. An image is
+  // compared through `lineOf`, which maps `0.4.1-beta.1` to the line `0.4.1` —
+  // so a counted beta with a correctly labelled digest would agree with itself
+  // and pass, on the one path `checkAgreement` and its `versionProblem` call
+  // are never reached. ADR 0036 C1 binds *every* image tag and ADR 0037 D7 puts
+  // the refusal wherever a version string is validated, which is what lets #319
+  // inherit it rather than write it (ADR 0037 D8).
+  const shape = versionProblem(expected);
+  if (shape) return shape;
   const line = lineOf(expected);
-  if (line === null) return `\`${expected}\` is not a version this repository publishes.`;
   if (!label) {
     return (
       "the image carries no `org.opencontainers.image.version` label, so its bytes say nothing " +

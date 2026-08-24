@@ -21,6 +21,7 @@
 // this ticket; the assertions below sit here instead, which is also why the
 // manifest-set binding is repeated from the other side rather than moved.
 
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -139,6 +140,24 @@ describe("the vocabulary (ADR 0036 C1, ADR 0037 D1)", () => {
     // The beta of a line carries the line, so the same digest satisfies both.
     expect(imageVersionProblem({ label: "0.4.1", expected: "0.4.1-beta" })).toBeNull();
     expect(imageVersionProblem({ label: "0.4.0", expected: "0.4.1" })).toMatch(/self-report/);
+  });
+
+  // The ban has to hold on this path *specifically*, and the test is here
+  // rather than only in the vocabulary block because image mode is the one
+  // caller that never reaches `checkAgreement` — the only other place
+  // `versionProblem` is consulted. A counted beta agrees with its own line:
+  // `lineOf("0.4.1-beta.1")` is `0.4.1`, which is exactly what a correctly
+  // labelled image says, so without this the digest passes and the string
+  // publishes. #319's beta retag is the image-mode caller ADR 0037 D8 promises
+  // inherits the check (ADR 0036 C1, ADR 0037 D7).
+  it("refuses a counted beta on the image path, where checkAgreement never runs", () => {
+    expect(imageVersionProblem({ label: "0.4.1", expected: "0.4.1-beta.1" })).toMatch(/counted beta/);
+    expect(imageVersionProblem({ label: "0.4.1", expected: "0.4.1-beta1" })).toMatch(/counted beta/);
+    // The label agreeing with the line is what made it pass, so pin that the
+    // agreement is no longer what decides it.
+    expect(lineOf("0.4.1-beta.1")).toBe("0.4.1");
+    // And the candidate is still not the beta: 0036 C1 binds one channel.
+    expect(imageVersionProblem({ label: "1.2.4", expected: "1.2.4-rc.1" })).toBeNull();
   });
 });
 
@@ -297,6 +316,36 @@ describe("every writer reads the tree before it writes (ADR 0037 D3)", () => {
     expect(code(jobBlock(source, "advance"))).toMatch(/needs: \[resolve, verify/);
   });
 
+  // A condition nothing satisfies is not a check. The `if:` on that assertion
+  // asks for `verify` *and* a non-empty version, and the only `verify`-mode
+  // callers there are are these two — so the condition and the callers have to
+  // be asserted together or the step is dead code with a test that passes.
+  // ADR 0037 §C row 3 says the assertion runs in verify as well as promote,
+  // and this is what makes that sentence true.
+  it("hands the promotion pull request's images the version they must self-report", () => {
+    const source = workflow("ci.yml");
+    const resolver = jobBlock(source, "pr-image-mode");
+    expect(resolver, "pr-image-mode exposes no version output").toContain(
+      "version: ${{ steps.mode.outputs.version }}",
+    );
+    // The line the promotion pull request would publish, taken off the head
+    // branch beside the tag that names the same line — not computed, and not
+    // read from the tree the check is about (ADR 0037 D1).
+    const resolve = code(resolver);
+    expect(resolve).toContain('tags="beta-${HEAD#beta/}"');
+    expect(resolve, "the verify branch resolves no version").toContain('version="${HEAD#beta/}"');
+    // Written before `why`, which stays the resolver's completion mark, and
+    // carried across the failure boundary into the outputs.
+    expect(resolve).toMatch(/echo "version=\$version"[\s\S]*echo "why=\$why"/);
+    expect(resolve).toMatch(/version="\$\(value version\)"/);
+
+    for (const image of ["panel-image", "core-image"]) {
+      expect(code(jobBlock(source, image)), `${image} passes no version`).toContain(
+        "version: ${{ needs.pr-image-mode.outputs.version }}",
+      );
+    }
+  });
+
   it("hands both images a version to be held to", () => {
     const source = workflow("release.yml");
     for (const job of ["panel", "core"]) {
@@ -355,6 +404,56 @@ describe("an image says what version it is (ADR 0037 D4)", () => {
     expect(verify).toContain("org.opencontainers.image.revision");
     expect(verify).toContain("org.opencontainers.image.version");
     expect(verify).toContain("--image-label");
+  });
+});
+
+// The unit tests above hold the vocabulary and the wiring tests hold the call
+// sites. Neither runs the thing a workflow actually runs, and both findings in
+// the first review of this change were reproduced from a command line rather
+// than from a unit — a check that returns the right value and exits zero is
+// still a green check.
+describe("the checker refuses from the command line, as a workflow runs it", () => {
+  const run = (args) =>
+    spawnSync(process.execPath, [path.join(repoRoot, "scripts/assert-version-agreement.mjs"), ...args], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      env: { ...process.env, GITHUB_ACTIONS: "true" },
+    });
+
+  it("exits non-zero on a counted beta in image mode", () => {
+    const bad = run(["--expected", "0.4.1-beta.1", "--image-label", "0.4.1", "--source", "actana/core:0.4.1-beta.1"]);
+    expect(bad.status, `exited ${bad.status}\n${bad.stdout}${bad.stderr}`).toBe(1);
+    expect(`${bad.stdout}${bad.stderr}`).toMatch(/counted beta/);
+    // The annotation names the failure it is: the label is fine, the string is
+    // not, and "rebuild the image" is the wrong remedy to headline.
+    expect(bad.stdout).toContain("::error title=Not a version this repository writes::");
+
+    const good = run(["--expected", "0.4.1-beta", "--image-label", "0.4.1", "--source", "actana/core:0.4.1-beta"]);
+    expect(good.status, `${good.stdout}${good.stderr}`).toBe(0);
+  });
+
+  // A ref this clone cannot read is one problem with the ref. Six annotations
+  // about six manifests point the reader at the wrong six files, immediately
+  // after an accurate one-line diagnosis says the ref is the problem.
+  it("reports an unreadable ref once, not once per manifest", () => {
+    const result = run(["--expected", "0.4.1", "--git-ref", "deadbeef".repeat(5)]);
+    expect(result.status).toBe(1);
+    const annotations = [...result.stdout.matchAll(/^::error /gm)];
+    expect(annotations, `six manifests annotated for one bad ref\n${result.stdout}`).toHaveLength(1);
+    expect(result.stdout).toContain("::error title=The git ref could not be read::");
+    expect(result.stdout).not.toContain("A manifest in the version set is missing");
+  });
+
+  // The other side of the same gate: a ref that *is* readable and disagrees
+  // must still name every manifest that drifted. Suppressing the loop on the
+  // wrong condition would silence the check this ticket exists to add.
+  it("still names every drifting manifest when the ref reads", () => {
+    const result = run(["--expected", "v9.9.9", "--git-ref", "HEAD"]);
+    expect(result.status).toBe(1);
+    // The six manifests and the installer's stamp: seven surfaces in this tree
+    // carry the line, and every one that disagrees is named (ADR 0036 D4).
+    expect([...result.stdout.matchAll(/^::error /gm)]).toHaveLength(MANIFESTS.length + 1);
+    expect(result.stdout).toContain(INSTALLER_STAMP_FILE);
   });
 });
 
