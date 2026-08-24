@@ -13,7 +13,7 @@
 // Usage:
 //   node scripts/fixture-release-server.mjs --dir <dir> [--port <n>]
 //                                           [--host <addr>] [--repo <slug>]
-//                                           [--corrupt <asset>]
+//                                           [--corrupt <asset>] [--script <file>]
 //
 // --dir      Directory of `actana-core-<version>-<target>.tar.gz` files.
 //            Versions come from the file names; the newest non-prerelease is
@@ -24,6 +24,10 @@
 // --repo     Repository slug the paths are shaped for.
 // --corrupt  Serve these assets (comma-separated) with a flipped byte, so
 //            their checksums fail — for rehearsing a tampered download.
+// --script   The copy of `install.sh` to serve (default: this repository's).
+//            The script's channel is the line stamped into its own bytes
+//            (ADR 0036 D1), so serving a restamped copy is how a channel other
+//            than this checkout's is put in front of a real machine.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
@@ -66,7 +70,7 @@ async function main() {
     port,
     host: stringFlag(args, "host", fail, "127.0.0.1"),
     repo: stringFlag(args, "repo", fail, DEFAULT_REPO),
-    scriptPath: path.join(repoRoot, "install.sh"),
+    scriptPath: path.resolve(stringFlag(args, "script", fail, path.join(repoRoot, "install.sh"))),
     corruptAssets,
   });
 
@@ -88,6 +92,7 @@ async function main() {
     log(`serving ${asset} corrupted — its checksum will not verify`);
   }
   log(`listening on ${server.url} (${server.repo})`);
+  log(`install.sh: ${server.scriptPath}, stamped with the ${server.scriptStamp} line`);
   // Two lines, because the one-liner installs and does not activate since #316
   // (ADR 0036 C2). A hint that named only the first would leave a developer at
   // an installed, inactive machine with nothing to run next — which is exactly

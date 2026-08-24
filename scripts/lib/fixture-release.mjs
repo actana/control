@@ -102,6 +102,51 @@ export function indexReleases(fileNames) {
     .map(([version, assets]) => ({ version, assets }));
 }
 
+// ─── the installer's line stamp (ADR 0036 D1) ────────────────────────────────
+//
+// `install.sh` carries the line it was cut from, and that stamp is its channel:
+// the copy on a train installs that train's beta, the copy on `main` installs
+// the release. Nothing at runtime can select one — there is no flag and no
+// environment variable — so a harness that wants to stand at a different door
+// has to serve a differently stamped copy, which is exactly what a cut writes.
+//
+// This lives here, once, because two harnesses need it and they must not drift:
+// the hermetic suite (`scripts/__tests__/install-sh.test.mjs`) and the container
+// e2e (`scripts/e2e-actana-setup-linux.mjs`), whose install channel serves a
+// copy stamped with the line its own "latest" release is on.
+
+/**
+ * The stamp, anchored exactly as the cut's `sed` anchors it — one assignment on
+ * one line (docs/ci-cd.md § "Cutting a train"). Written as the same shape
+ * rather than a loose search, so a stamp that stopped being rewritable by that
+ * command fails here rather than in a train's first pull request.
+ */
+export const INSTALLER_STAMP_PATTERN = /^LINE="([^"]*)"$/m;
+
+/** The line a copy of `install.sh` is stamped with, given its text. */
+export function installerStamp(text) {
+  const found = INSTALLER_STAMP_PATTERN.exec(text);
+  if (!found) throw new Error("no LINE stamp in the installer");
+  return found[1];
+}
+
+/**
+ * Write a copy of `install.sh` restamped onto another line — the cut's one-line
+ * edit, performed by a harness.
+ *
+ * Everything else about the copy is the shipped article, which is what makes a
+ * case that runs it evidence about the real script rather than about a fake.
+ */
+export function writeRestampedInstaller({ source, outPath, line }) {
+  const before = fs.readFileSync(source, "utf8");
+  const after = before.replace(INSTALLER_STAMP_PATTERN, `LINE="${line}"`);
+  if (after === before) throw new Error(`restamping ${source} to ${line} changed nothing`);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, after);
+  fs.chmodSync(outPath, 0o755);
+  return outPath;
+}
+
 /** Is this a prerelease version — anything carrying a `-suffix`? */
 export function isPrerelease(version) {
   return version.includes("-");
@@ -190,9 +235,17 @@ export async function startFixtureReleaseServer({
   port = 0,
   scriptPath,
   corruptAssets = [],
+  /**
+   * `{ "v0.4.1": 403 }` — answer this tag with that status instead of looking
+   * it up. The installer's resolution has to tell "no such release" apart from
+   * "the question could not be asked", and a fixture that could only 404 or 200
+   * could not put the second case in front of it.
+   */
+  tagStatus = {},
 } = {}) {
   const releaseDir = path.resolve(dir);
   if (!fs.existsSync(releaseDir)) throw new Error(`no such release directory: ${releaseDir}`);
+  if (scriptPath && !fs.existsSync(scriptPath)) throw new Error(`no such install.sh: ${scriptPath}`);
   const corrupt = new Set(corruptAssets);
   const requests = [];
 
@@ -218,6 +271,11 @@ export async function startFixtureReleaseServer({
     if (route.kind === "script") {
       if (!scriptPath) return notFound("install.sh");
       return send(200, fs.readFileSync(scriptPath), "text/x-shellscript");
+    }
+
+    if (route.kind === "tag" && Object.hasOwn(tagStatus, route.tag)) {
+      const status = tagStatus[route.tag];
+      return send(status, `${route.tag}: forced ${status}\n`, "text/plain");
     }
 
     if (route.kind === "latest" || route.kind === "tag") {
@@ -260,6 +318,9 @@ export async function startFixtureReleaseServer({
     port: actualPort,
     repo,
     requests,
+    scriptPath,
+    /** The line the served copy of `install.sh` is stamped with — its channel. */
+    scriptStamp: scriptPath ? installerStamp(fs.readFileSync(scriptPath, "utf8")) : undefined,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -329,7 +390,19 @@ export function bumpPatch(version) {
  * in-process server could not answer a download while one of those is blocking
  * the event loop. The machine would hang on the fetch, not fail.
  */
-export async function startFixtureServerProcess({ dir, port, host = "0.0.0.0", corrupt = [], die }) {
+export async function startFixtureServerProcess({
+  dir,
+  port,
+  host = "0.0.0.0",
+  corrupt = [],
+  /**
+   * The copy of `install.sh` this channel serves. Defaults to the repository's
+   * own, and a caller passes a restamped one when the door it is standing at is
+   * not `main`'s (ADR 0036 D1).
+   */
+  script,
+  die,
+}) {
   const argv = [
     path.join(import.meta.dirname, "..", "fixture-release-server.mjs"),
     "--dir",
@@ -339,6 +412,7 @@ export async function startFixtureServerProcess({ dir, port, host = "0.0.0.0", c
     "--host",
     host,
   ];
+  if (script) argv.push("--script", script);
   if (corrupt.length > 0) argv.push("--corrupt", corrupt.join(","));
 
   const child = spawn(process.execPath, argv, { stdio: ["ignore", "inherit", "inherit"] });
