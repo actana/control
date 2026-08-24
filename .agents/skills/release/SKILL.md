@@ -120,23 +120,32 @@ Full account, including what the reviewer does:
 [`docs/ci-cd.md` § "The approval pause"](../../../docs/ci-cd.md#the-approval-pause--a-release-waits-for-a-person)
 and [§ "Promotion"](../../../docs/ci-cd.md#promotion).
 
-## Cutting a train by hand skips the version stamp
+## Cutting a train is a hand cut, and the stamp is the part people miss
 
-The sanctioned cut is what writes the version. `promote.yml`'s `next-train` job
-creates `beta/x.y.z` from `main` and, in the same commit, rewrites the version
-in **all six manifests** — `package.json`, `packages/cli`, `packages/core`,
-`packages/panel`, `packages/sdk`, `packages/shared`. That commit *is* the
-stamp, and it is the only thing that produces one. Its subject is
-`chore(release): cut beta/x.y.z`, and it is Conventional Commits on purpose:
-the commit reaches `main` through the next promotion pull request, where
-`ci.yml`'s `Conventions` job lints every commit in it, not just the title.
+**A person cuts the train, and no workflow does.** Since
+[#325](https://github.com/actana/control/issues/325) there is no automatic cut:
+the job that used to guess `beta/<next-minor>.0` after a promotion and push it
+is deleted, along with the arithmetic that produced the guess. Nothing in
+`.github/workflows/` computes a next version. That is the design, not a gap —
+the version *is* the decision, and the guess was wrong on the first promotion
+after the clause that licensed it was written.
+
+The procedure is
+[`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train).
+Follow it rather than improvising: **the cut is the version stamp.** It rewrites
+the version in **all six manifests** — `package.json`, `packages/cli`,
+`packages/core`, `packages/panel`, `packages/sdk`, `packages/shared` — in one
+commit whose subject is `chore(release): cut beta/x.y.z`, Conventional Commits
+on purpose, because that commit reaches `main` through the next promotion pull
+request where `ci.yml`'s `Conventions` job lints every commit in it, not just
+the title.
 
 `git branch beta/0.3.2 main && git push -u origin beta/0.3.2` produces a branch
 that looks right and carries no stamp. Every manifest still reads the previous
 train's version.
 
 Nothing goes red at that moment, which is the trap. `Train rules` is
-`if: github.event_name == 'pull_request'`, so a hand-cut train sits green and
+`if: github.event_name == 'pull_request'`, so an unstamped train sits green and
 empty until somebody opens the first pull request into it — and then
 `assert_versions` compares each manifest against the version in the branch name
 and calls `fail` once per manifest. **Six errors, one per manifest**, on the
@@ -144,13 +153,26 @@ pull request of whoever happened to be first, who did not cut the branch and
 has no reason to connect the two. This has already cost a train an hour.
 
 The count is the tell: **six errors is a missing stamp; one is real drift in one
-file.** The fix is not to hand-edit the six files back — hand-editing them is
-the failure mode D3 exists to prevent. Delete the branch and let a promotion cut
-it, or reproduce the cut commit exactly: the same version rewritten in the same
-six manifests, as one commit, with the subject above.
+file.** The fix is not to hand-edit the six files back one at a time — it is to
+redo the cut commit exactly: the same version rewritten in the same six
+manifests, as one commit, with the subject above. Before anything has merged,
+deleting the branch and cutting again is cheaper and is the documented path.
 
-There is no workflow you can dispatch to do this for you. See "Where ADR 0023
-and the workflows disagree" below.
+## Nothing has to remember to cut
+
+The invariant behind all of this — *a train is always open, so work can always
+be proposed* (D25) — used to be held by the automatic cut. Since #325 it is held
+by two jobs that cut nothing and name no version, and both of them file the
+**same** issue title so they cannot produce a pair:
+
+- `promote.yml`'s `train-invariant` reports, at the end of every promotion, that
+  the run cut no branch and computed no version, and opens
+  *"No open train: nothing can be proposed until one is cut"* when none is left.
+- `housekeeping.yml`'s daily `open-train` chore asks the same question every
+  morning, so closing that issue without cutting buys exactly one day.
+
+Neither goes red, deliberately: every non-hotfix promotion *ends* with no train
+open, so a job that failed on it would be red after every good release.
 
 ## Two rules
 
@@ -238,10 +260,12 @@ has never been rewritten. What sits directly under it has: D3 is amended twice,
 by [#152](https://github.com/actana/control/issues/152), which added
 `packages/sdk` as the fifth when the core-link frames moved out of
 `packages/shared`, and by [#157](https://github.com/actana/control/issues/157),
-which added `packages/cli` as the sixth. Both `promote.yml`'s cut and `ci.yml`'s
-`Train rules` carry the six-entry list and annotate it "as amended by #152 and
-#157", and [`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train)
-already says six. So the number is stale, not uncorrected — and stale by
+which added `packages/cli` as the sixth. Both `ci.yml`'s `Train rules` and the
+cut procedure in
+[`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train)
+carry the six-entry list — the second of those was `promote.yml`'s cut until
+#325 moved the cut into a person's hands, and a test still binds the two lists
+to each other. So the number is stale, not uncorrected — and stale by
 design: D3 asks you to read its count as "derived rather than declared", says
 the next package "does not need to amend this clause to stay correct" because
 `Train rules` asserts the list covers every workspace package, and calls the
@@ -249,12 +273,12 @@ written number documentation against the assertion in `ci.yml` as the
 mechanism. **Read the count off `${#MANIFESTS[@]}` in `ci.yml`, never off D3's
 first sentence** — which is what D3 asks for too.
 
-**D3 says "a workflow does it" — and there is no workflow you can dispatch to
-cut a train.** The only sanctioned cut is `promote.yml`'s `next-train` job,
-which runs automatically after a promotion and skips itself when a train
-already exists (D25). D25 and `docs/ci-cd.md` both tell an administrator to
-"delete and re-cut" a train whose guessed version is wrong — the guess is
-`beta/<next-minor>.0`, a default and not a commitment — and neither names a
-mechanism, because there is not one: nothing in `.github/workflows/` cuts a
-train on dispatch. That gap is what the hand-cut trap above is made of, and it
-is worth knowing before you go looking for the button.
+**D3's headline says "a workflow does it" — and since #325 no workflow does.**
+That is no longer a disagreement between the record and the code: the clause
+carries a dated note saying the cut is a human act, and D22 and D25 carry theirs
+(all appended 2026-08-24, none of the clauses rewritten or renumbered). The
+sentence in the headline stayed where it was because this repository amends
+clauses rather than editing them, so read the note under a clause as well as the
+clause. There is still no button to look for, and now there is not supposed to
+be one: the cut is a person, following
+[`docs/ci-cd.md` § "Cutting a train"](../../../docs/ci-cd.md#cutting-a-train).

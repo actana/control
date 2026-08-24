@@ -13,7 +13,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `beta/**` | `beta-x.y.z` in `panel` / `core`, `sha-<short>` in `panel-dev` / `core-dev` |
-| [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, the next train |
+| [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, retiring the promoted train |
 | [`release.yml`](../.github/workflows/release.yml) | `workflow_call` from the promotion, or a dispatch — **not** a `v*` tag (D40) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a `NODE_VERSION` bump PR, the `-dev` tag sweep, the four Docker Hub pages, and an issue for anything the release detector, the dev-tree audit or the Harness canary found |
@@ -959,59 +959,72 @@ D45.
 
 A release is a **promotion**, not a tag push. Nothing is rebuilt: the images an
 operator pulls are the ones a person already ran. The whole flow is four
-things, and only the first and third need a human.
+things, and three of them are a person's: the cut names the version, the
+acceptance approves the bytes, and the dispatch asks for the publish.
 
 ```
   cut the train  ──▶  merge PRs into it  ──▶  freeze + accept  ──▶  promote
-   (workflow)          (each publishes         (a person)           (dispatch)
+   (a person)          (each publishes         (a person)           (dispatch)
                         beta-x.y.z)
 ```
 
 ### Cutting a train
 
-Normally you do not: `promote.yml` cuts the next one automatically after every
-promotion, so a train is always open and work can always be proposed (D25). The
-guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
-the next release is a patch, or a major, delete the branch and re-cut it before
-anything merges into it — by hand, because there is no cut workflow to
-dispatch. *Re-cutting a train, by hand* below is what to run instead.
+**A person cuts the train, by hand, and that is the normal path.** No workflow
+cuts one and nothing guesses a version, because the version *is* the decision:
+the next release may be a patch, a minor or a major, and only a person knows
+which (D3, D22 and D25, all as amended by
+[#325](https://github.com/actana/control/issues/325)). Until #325 a promotion
+cut `beta/<next-minor>.0` on its way out and the runbook told you to delete and
+re-cut it when the guess was wrong — which it was on the first promotion after
+the clause was written.
 
 The cut creates `beta/x.y.z` from `main` and writes that version into every
-manifest in its first commit (D3, amended by #152 and #157). Do not hand-edit
-those files: hand-editing six manifests is how five of them end up disagreeing,
-and the one that disagrees is found at promotion, by a person. A required check
-on the train asserts every one of them equals the branch's version.
-
-A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
-still has an image to promote, because **the cut itself publishes one** (D7).
-
-#### Re-cutting a train, by hand
-
-**There is no dispatchable cut workflow.** The cut exists only as
-`promote.yml`'s `next-train` job, which runs as a consequence of a promotion
-and takes no version input, so a re-cut is hand work until one exists. That is
-the single exception to "do not hand-edit those files" above, and the way to
-survive it is to write exactly what `next-train` writes and nothing else:
+manifest in one commit (D3, amended by #152 and #157). A required check on the
+train asserts every one of them equals the branch's version, so drift afterwards
+is impossible rather than merely discouraged. That commit **is** the stamp: a
+branch created without it is a train that looks right and carries the previous
+train's versions, and it stays quiet until the first pull request into it goes
+red with six errors at once, on whoever happened to open it.
 
 ```bash
-git push origin --delete beta/<guessed>        # before anything merges into it
 git fetch origin --prune
 git switch -c beta/x.y.z origin/main
 
-# The six manifests, one line changed in each. Edited in place on purpose:
-# `jq` and most editors reserialise the whole file, and a cut whose diff is
-# not six lines is a cut a reviewer cannot check at a glance.
-node -e 'const fs=require("node:fs"), v=process.argv[1];
-  for (const f of process.argv.slice(2)) fs.writeFileSync(f,
-    fs.readFileSync(f,"utf8").replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${v}"`));
-' x.y.z package.json packages/{cli,core,panel,sdk,shared}/package.json
+# The six manifests. This list and `MANIFESTS` in `ci.yml`'s `Train rules` job
+# are the same set by construction, and a test asserts it: the array below is
+# read out of this file by `scripts/__tests__/workflows.test.mjs`, which fails
+# when the two drift. Extending one without the other is the bug that assertion
+# exists to catch — a seventh package would be cut unstamped and found by
+# `Train rules` afterwards, on somebody else's pull request.
+files=(package.json packages/cli/package.json packages/core/package.json
+       packages/panel/package.json packages/sdk/package.json packages/shared/package.json)
+
+# One line changed in each, edited in place on purpose: `jq` and most editors
+# reserialise the whole file, and a cut whose diff is not six lines is a cut a
+# reviewer cannot check at a glance.
+VERSION=x.y.z node -e '
+  const fs = require("node:fs");
+  const version = process.env.VERSION;
+  for (const file of process.argv.slice(1)) {
+    const before = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(file, before.replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${version}"`));
+  }
+' "${files[@]}"
+
+for file in "${files[@]}"; do jq -r --arg f "$file" '"\($f): \(.version)"' "$file"; done
 
 git commit -a -F cut-message.txt               # Conventional Commits, see below
 git push --no-verify origin beta/x.y.z         # --no-verify: see below
 ```
 
-Three things this has to get right, because nothing checks any of them until
-far too late:
+The push is what publishes `beta-x.y.z`, so the train has an image before
+anything merges into it and a zero-merge train is still promotable (D7). It also
+needs an actor that bypasses the `beta/*` ruleset — the repository owner does;
+[`docs/rulesets/beta.json`](rulesets/beta.json) is what it is being bypassed.
+
+Four things this has to get right, because nothing checks any of them until far
+too late:
 
 - **`--no-verify` on that push, or the hooks off for the cut.**
   `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
@@ -1024,6 +1037,13 @@ far too late:
   as #269; when the hook learns the class, drop the `--no-verify`.
 - **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
   those six manifests and six lines.
+- **The line stamp, once it exists.** [ADR 0036](adr/0036-the-beta-release-channel.md)
+  D1 gives `install.sh` a stamped line version and says it is *"written by the
+  cut exactly as the six manifests are"*. That is this procedure — the cut is
+  the hand that writes it, and [#317](https://github.com/actana/control/issues/317)
+  is what puts the stamp in the file and adds `Train rules`' separate assertion
+  for it (0036 D4). Until #317 lands there is no stamp in `install.sh` and this
+  is six files; when it does, this list and that assertion move together.
 - **Every body line of the message is at most 132 characters.** `commitlint`
   lints every commit in a pull request, not just its title — but no pull
   request puts a cut commit in front of it until the promotion gate, when the
@@ -1034,6 +1054,57 @@ far too late:
 awk 'length($0) > 132 { print FILENAME " line " FNR ": " length($0) }' cut-message.txt
 git log origin/main..beta/x.y.z --pretty=%B | awk 'length($0) > 132 { print FNR ": " length($0) }'
 ```
+
+The commit message is the one the cut has always carried, and it is
+Conventional Commits because it reaches `main` through the next promotion pull
+request, where `ci.yml`'s `Conventions` job lints every commit in it:
+
+```
+chore(release): cut beta/x.y.z
+
+Every manifest carries the train's version (ADR 0023 D3). Cut from main after
+promoting <previous>, so a train is always open and work can always be
+proposed (D25).
+```
+
+#### Nothing lets you forget
+
+The invariant D25 protects — *a train is always open, so work can always be
+proposed* — used to be held by the automatic cut. It is now held by two jobs
+that cut nothing and name no version:
+
+- **`promote.yml`'s `train-invariant`** runs at the end of every promotion. It
+  says in the run's own log that the promotion cut no branch and computed no
+  version, then asks origin whether a `beta/*` exists. When none does — the
+  ordinary state one second after the promoted train is deleted — it opens the
+  tracking issue *"No open train: nothing can be proposed until one is cut"*,
+  carrying a link to this section.
+- **`housekeeping.yml`'s `open-train`** asks the same question every morning
+  and reuses that exact title, so the state cannot be closed away: an issue
+  closed while no train exists is filed again on the next daily tick, and the
+  one you cut the train for is closed by you, in the same gesture.
+
+Neither is a red run. Every non-hotfix promotion ends with no train open, so a
+job that failed on it would be red after every good release — which is how a
+team learns that red means nothing.
+
+#### Re-cutting a train
+
+The version was wrong, or the train is being abandoned. **Before anything has
+merged into it** this is one delete and one cut:
+
+```bash
+git push origin --delete beta/x.y.z            # nothing has merged into it
+```
+
+then the procedure above, with the name you actually want. There is no
+delete-and-re-cut *dance* any more, because nothing guessed the name in the
+first place — this is the same cut, done again.
+
+**After something has merged into it**, the branch carries work and deleting it
+throws that work away. Retarget the open pull requests, cherry-pick the squash
+commits onto the new train, and only then delete the old one. That is also the
+fallback when a post-hotfix rebase conflicts (D24).
 
 ### Working the train, and the freeze window
 
@@ -1074,9 +1145,8 @@ assertion that is the same commit, and it is available earlier.
 `promote.yml`'s *Resolve* job globs `refs/heads/beta/*` and subtracts the train
 being promoted: one branch surviving that subtraction *is* the hotfix condition
 (D23), so a train that was merely abandoned is rebased onto the new `main` and
-force-pushed, its images republished and the next train not cut — see
-[§Hotfix trains](#hotfix-trains) — while two survivors refuse the dispatch
-outright.
+force-pushed and its images republished — see [§Hotfix trains](#hotfix-trains)
+— while two survivors refuse the dispatch outright.
 
 Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
 it approved — then dispatch:
@@ -1119,8 +1189,10 @@ check names, still green.
    commit; a non-fast-forward is an error, never a fallback.
 4. **Push `vx.y.z`** as a record — it triggers nothing — then call `release.yml`
    by `workflow_call`.
-5. **Cut `release/x.y`** if the line has none, **delete the promoted train**,
-   and **cut the next train**.
+5. **Cut `release/x.y`** if the line has none and **delete the promoted train**.
+   Nothing cuts the next one: the run says so in its own log and opens the
+   tracking issue when no train is left open — see
+   [§ Nothing lets you forget](#nothing-lets-you-forget).
 
 Every push in that workflow is made with the GitHub App identity and never with
 `GITHUB_TOKEN`, and that is not a preference. **GitHub does not trigger
@@ -1278,12 +1350,14 @@ both because neither is the natural way to write one:
   rewritten without it being asked. Approvals survive — they attach to the head
   — but conflicts can appear, and only the author can resolve them.
 
-No next train is cut after a hotfix promotion: a train already exists, so the
-invariant already holds (D25).
+Nothing is cut after a hotfix promotion, and nothing is cut after any other
+one either (D25, as amended by #325) — but the hotfix case is the one where the
+invariant needs nothing done about it: the surviving train *is* the open train,
+so `train-invariant` reports it and files nothing.
 
 **If the rebase conflicts**, the workflow fails loudly and does not try to
 resolve anything. The fallback is: abandon the surviving train, re-cut it from
-`main` — by hand, per *Re-cutting a train, by hand* — and cherry-pick its
+`main` — per [§ Re-cutting a train](#re-cutting-a-train) — and cherry-pick its
 squash commits. `main`, the tag and the release are
 unaffected and correct — only that train needs the work.
 
