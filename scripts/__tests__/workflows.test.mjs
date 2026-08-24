@@ -901,12 +901,23 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   // first thing to look at a commit. Pinned to the tip's own run rather than to
   // the newest run on the branch, or "the train is green" is a statement about
   // somebody else's commit.
-  it("cuts nothing from a tip whose own CI run is not green (ADR 0023 D21)", () => {
+  //
+  // **And to the push run.** `gh run list --branch` returns `pull_request` runs
+  // beside `push` runs, and once a train's promotion pull request is open its
+  // head sha *is* the train tip while its run is newer than the push run — so
+  // selecting by sha alone selects the wrong gate. On a `pull_request` event
+  // the train image jobs are skipped and, under ADR 0023 D33, a draft resolves
+  // both image checks to `pass` without building, so the selected run may never
+  // have published the `beta-x.y.z` digest #319 will retag from in this file.
+  // Both filters are pinned: the flag is what makes the query right, and the
+  // `select` is what survives a later edit dropping the flag.
+  it("cuts nothing from a tip whose own CI push run is not green (D21, D41)", () => {
     const job = jobBlock(source, "resolve");
     const ran = code(job);
     expect(ran).toContain("gh run list");
     expect(ran).toContain("--workflow ci.yml");
-    expect(ran).toContain('select(.headSha == $sha)');
+    expect(ran, "a pull_request run is a different gate (D33)").toContain("--event push");
+    expect(ran).toContain("select(.headSha == $sha and .event == \"push\")");
     // `gh run list` is a 403 without it, and the top-level grant is
     // `contents: read`.
     expect(job).toMatch(/permissions:\n(?: +.*\n)*? +actions: read/);

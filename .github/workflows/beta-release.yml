@@ -319,7 +319,26 @@ jobs:
       # asserted the head sha by other means; here the run has to be the run for
       # `$SHA`, or "the train is green" is a statement about somebody else's
       # commit.
-      - name: The train tip's own CI run is green
+      #
+      # ── And to the **push** run, which is a different gate (D41, D33) ──────
+      #
+      # `gh run list --branch` returns `pull_request` runs beside `push` runs,
+      # and once the promotion pull request for a train is open its head sha
+      # *is* the train tip while its run is *newer* than the push run — so
+      # picking by sha alone picks the pull request's. The two are not the same
+      # gate. On a `pull_request` event `Resolve train tags`, `Core image
+      # (train)` and `Panel image (train)` are skipped, and under ADR 0023 D33 a
+      # draft resolves both image checks to `pass` without building anything.
+      # A cut could therefore be gated by a run that never published the train's
+      # `beta-x.y.z` digest — which is exactly the digest #319 retags from, in
+      # this same file, one ticket from now.
+      #
+      # So the event is filtered at the API, the way `ci.yml:309-311` already
+      # does it, **and** asserted again in the `jq` and printed in the log. Two
+      # filters for one fact is deliberate: the flag is what makes the query
+      # right, and the `select` is what stops a later edit dropping the flag and
+      # leaving a query that still returns something.
+      - name: The train tip's own CI push run is green
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -328,23 +347,29 @@ jobs:
         run: |
           set -euo pipefail
           runs="$(gh run list --repo "$REPO" --branch "$TRAIN" --workflow ci.yml \
-                    --limit 30 --json headSha,conclusion,status,url,event)"
-          run="$(jq -c --arg sha "$SHA" '[.[] | select(.headSha == $sha)] | .[0] // empty' <<<"$runs")"
+                    --event push --limit 30 --json headSha,conclusion,status,url,event)"
+          run="$(jq -c --arg sha "$SHA" \
+                   '[.[] | select(.headSha == $sha and .event == "push")] | .[0] // empty' <<<"$runs")"
           if [[ -z "$run" ]]; then
-            echo "::error title=No CI run for the train tip::No ci.yml run on \`$TRAIN\` has head sha $SHA. Every push to a train runs ci.yml (ADR 0023 D41), so a tip with no run is a tip whose typecheck, unit tests, lint, audit, secret scan, tarball smokes and installer e2e nobody has seen. A beta cut publishes a prerelease to the world; it does not gate a commit for the first time (D21)."
+            echo "::error title=No CI push run for the train tip::No ci.yml **push** run on \`$TRAIN\` has head sha $SHA. Every push to a train runs ci.yml (ADR 0023 D41), so a tip with no push run is a tip whose typecheck, unit tests, lint, audit, secret scan, tarball smokes, installer e2e and train image publish nobody has seen. A green run on the promotion pull request is not this gate and does not substitute for it: on a pull_request event the train image jobs are skipped, and a draft resolves both image checks to \`pass\` without building (ADR 0023 D33). A beta cut publishes a prerelease to the world; it does not gate a commit for the first time (D21)."
             exit 1
           fi
           conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
           status="$(jq -r '.status // ""' <<<"$run")"
           url="$(jq -r '.url // ""' <<<"$run")"
+          event="$(jq -r '.event // ""' <<<"$run")"
+          if [[ "$event" != "push" ]]; then
+            echo "::error title=Not a push run::the selected ci.yml run on $SHA is a '$event' run ($url), not a push run. Only the push run publishes the train's beta-x.y.z digest and runs the train image jobs (ADR 0023 D41); a pull_request run skips them, and a draft passes both image checks without building (D33)."
+            exit 1
+          fi
           case "$conclusion" in
             success)
-              echo "✅ $TRAIN at $SHA is green ($url)" ;;
+              echo "✅ $TRAIN at $SHA is green — ci.yml's $event run ($url)" ;;
             "")
-              echo "::error title=The train tip is still building::ci.yml on $SHA is $status ($url). Wait for it: this cut would publish bytes whose gates have not finished (ADR 0023 D21)."
+              echo "::error title=The train tip is still building::ci.yml's $event run on $SHA is $status ($url). Wait for it: this cut would publish bytes whose gates have not finished (ADR 0023 D21)."
               exit 1 ;;
             *)
-              echo "::error title=The train tip is red::ci.yml on $SHA concluded '$conclusion' ($url). A beta cut from a tip whose checks failed is a published prerelease nobody gated (ADR 0023 D21). Fix the train, let it go green, and cut from the tip that did."
+              echo "::error title=The train tip is red::ci.yml's $event run on $SHA concluded '$conclusion' ($url). A beta cut from a tip whose checks failed is a published prerelease nobody gated (ADR 0023 D21). Fix the train, let it go green, and cut from the tip that did."
               exit 1 ;;
           esac
 
