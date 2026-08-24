@@ -77,9 +77,13 @@
 // and never commits it.
 //
 // So this file's list stays exactly four names — the *release* manifest needs
-// the SDK, and `scripts/lib/npm-packages.mjs` still fails a release that lost
-// it — and one assertion is added rather than any being relaxed: the invariant
-// that makes dropping it safe. The whole argument for the drop is that the code
+// the SDK, and **this file is what says so**. `scripts/lib/npm-packages.mjs`
+// refuses a release CLI pinned to the *wrong* SDK version, but its check
+// iterates the packed dependencies and therefore has nothing to say about a
+// release manifest that dropped the SDK entirely; the pin below, on the working
+// tree the release packs from, is the only thing that refuses that. One
+// assertion is added rather than any being relaxed: the invariant that makes
+// dropping it on the beta path safe. The whole argument for the drop is that the code
 // is in the bundle, which is true only while `@actana/sdk` is absent from
 // `build.mjs`'s `external` array. That absence was already asserted here for
 // #288 D5's reasons; it now also decides whether a stranger's `npm i -g` of a
@@ -348,10 +352,15 @@ describe("the dependency list stays short (#129 D8, amended by #288 C2)", () => 
     // Two facts, and they are opposite on purpose:
     //
     //   * a **release** declares `@actana/sdk` and publishes both packages to
-    //     the registry from one tag, so `scripts/lib/npm-packages.mjs` fails a
+    //     the registry from one tag. `scripts/lib/npm-packages.mjs` fails a
     //     packed release manifest whose range is anything but the version being
-    //     published. The name below is that pin, in the working tree, where the
-    //     release path packs from.
+    //     published — but only when the range is *there*: that check iterates
+    //     the packed dependencies, so a release manifest that dropped the SDK
+    //     altogether passes it. **This assertion is what refuses that**, on the
+    //     working tree the release packs from, and it is the only thing that
+    //     does. Deleting the name below would not turn a check red anywhere
+    //     else; it would publish a CLI whose manifest and whose bundle disagree
+    //     about what a consumer is getting.
     //   * a **beta** publishes nothing (D15), so that same range would name a
     //     version no registry has. The beta pack drops it — in the workflow's
     //     checkout, never committed (ADR 0023 D3) — and what makes that honest

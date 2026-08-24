@@ -54,11 +54,29 @@
 // `"@actana/sdk": "workspace:*"`, pnpm resolves that to a real version as it
 // packs, and under D15 that version is on no registry — so the beta manifest
 // drops the dependency rather than pinning it, on the grounds that
-// `packages/cli/build.mjs` inlines the SDK into the bundle already. The
-// narrowing is **stricter than the release rule, not looser**: a release
-// requires the pin, and a beta requires the absence. Neither accepts what the
-// other does, and `assertBundleInlines` reads the packed bundle to check that
-// the code the manifest stopped naming is actually in the tarball.
+// `packages/cli/build.mjs` inlines the SDK into the bundle already.
+// `assertBundleInlines` reads the packed bundle to check that the code the
+// manifest stopped naming is actually in the tarball.
+//
+// **What each branch actually holds, stated exactly, because a looser sentence
+// was here first.** The dependency check below iterates
+// `Object.entries(packed.dependencies)`, so it only ever speaks about a
+// dependency that is *present*:
+//
+//   * on the **release** path it refuses a `@actana/sdk` pinned to anything but
+//     the version being published — a CLI on another train's SDK. It says
+//     nothing about a release manifest that dropped the SDK altogether, and
+//     such a manifest passes here.
+//   * on the **beta** path it refuses a `@actana/sdk` at *any* range, correct
+//     one included, because under D15 no range of it resolves.
+//
+// So the beta branch is strictly narrower than the release branch on the
+// manifests it sees, and the release-side *presence* of the SDK is held
+// somewhere else — `packages/cli/src/__tests__/no-local-escape.test.ts` pins the
+// working-tree manifest's dependency set to exactly four names on every pull
+// request, and the release packs from that working tree. Two checks, one
+// invariant, and this comment names which is which so nobody reads the loop
+// below as guaranteeing more than it does.
 //
 // ── Why the set is discovered rather than listed ─────────────────────────────
 //
