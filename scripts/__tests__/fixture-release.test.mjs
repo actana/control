@@ -18,6 +18,8 @@ import {
   SHASUMS_ASSET,
   compareVersions,
   indexReleases,
+  isPrerelease,
+  latestRelease,
   parseAssetName,
   releaseJson,
   routeFixtureRequest,
@@ -54,6 +56,39 @@ describe("compareVersions", () => {
   it("sorts a prerelease before the release it leads to", () => {
     expect(compareVersions("1.0.0-rc.1", "1.0.0")).toBe(-1);
     expect(compareVersions("1.0.0-rc.1", "1.0.0-rc.2")).toBe(-1);
+  });
+});
+
+// `/releases/latest` excludes prereleases, and that exclusion is the whole
+// reason ADR 0036 D2 stopped making it the installer's default: a beta could
+// never be found through it. The fixture has to exclude them for the same
+// reason a `uname` shim has to answer like `uname` — a fixture more generous
+// than the real endpoint would let a beta install pass here and fail on
+// github.com.
+describe("latestRelease", () => {
+  const index = (versions) =>
+    indexReleases(versions.map((version) => tarballName(version, "linux-x64")));
+
+  it("skips prereleases, however new they are", () => {
+    expect(latestRelease(index(["0.1.0", "0.2.0", "0.3.0-beta"])).version).toBe("0.2.0");
+    expect(latestRelease(index(["0.1.0", "9.9.0-beta"])).version).toBe("0.1.0");
+  });
+
+  it("answers the newest release when there is no prerelease to skip", () => {
+    expect(latestRelease(index(["0.1.0", "0.2.0"])).version).toBe("0.2.0");
+  });
+
+  it("has no answer at all for a repository that has published only betas", () => {
+    // A young line, before its first release: GitHub's endpoint 404s here, and
+    // so does the fixture, which is what sends `install.sh` into the failure
+    // path rather than into a prerelease it never asked for.
+    expect(latestRelease(index(["0.9.0-beta", "1.0.0-beta"]))).toBeUndefined();
+  });
+
+  it("calls exactly the `-suffix` versions prereleases", () => {
+    expect(isPrerelease("0.4.1-beta")).toBe(true);
+    expect(isPrerelease("1.2.3-rc.1")).toBe(true);
+    expect(isPrerelease("0.4.1")).toBe(false);
   });
 });
 
@@ -141,6 +176,28 @@ describe("the fixture server", () => {
     const { status, body } = await get(`/repos/${DEFAULT_REPO}/releases/latest`);
     expect(status).toBe(200);
     expect(JSON.parse(body.toString()).tag_name).toBe("v0.2.0");
+  });
+
+  it("answers a beta on its own tag, and never on `latest`", async () => {
+    // The two halves of ADR 0036 D2 over a socket: step 3 reaches a beta by
+    // naming its tag, and step 4 cannot reach one at all. Both matter — the
+    // first is how a train installs, the second is why the public one-liner
+    // does not become a beta installer the day a beta is published.
+    writeStubRelease({
+      dir,
+      version: "0.3.0-beta",
+      target: "linux-x64",
+      script: "#!/bin/sh\nexit 0\n",
+    });
+
+    const tagged = await get(`/repos/${DEFAULT_REPO}/releases/tags/v0.3.0-beta`);
+    expect(tagged.status).toBe(200);
+    const json = JSON.parse(tagged.body.toString());
+    expect(json.tag_name).toBe("v0.3.0-beta");
+    expect(json.prerelease).toBe(true);
+
+    const latest = await get(`/repos/${DEFAULT_REPO}/releases/latest`);
+    expect(JSON.parse(latest.body.toString()).tag_name).toBe("v0.2.0");
   });
 
   it("answers a pinned tag with that exact release", async () => {

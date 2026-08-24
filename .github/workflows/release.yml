@@ -99,33 +99,48 @@ name: Release
 # *is*. An npm version is not a pointer. It is consumed on first publish and
 # never returns.
 
-# ── The trigger (ADR 0023 D40) ───────────────────────────────────────────────
+# ── The trigger (ADR 0023 D40, as amended by #326) ───────────────────────────
 #
-# There is no `push: tags: v*` trigger, and its absence is load-bearing.
-# `promote.yml` invokes this workflow by `workflow_call` and *also* pushes
-# `vx.y.z` as a record. Keeping the tag trigger would fire **two release runs**
-# for one promotion, and they would not even block each other: `github.ref_name`
-# is the tag under a tag push and the *caller's* ref under a `workflow_call`,
-# so the two runs would take different concurrency keys and race to build the
-# same tarballs and create the same GitHub Release.
+# **A dispatch, and nothing else.** Two triggers are absent and each absence is
+# load-bearing.
 #
-# It also removes the need for a guard rather than adding one: a stray
-# hand-pushed `v*` tag now does nothing at all, which is a stronger property
-# than a check that catches it.
+# `workflow_call` is gone, and that is the fix for #326. A local
+# `uses: ./.github/workflows/release.yml` resolves this file from the
+# **caller's** SHA, and for a `workflow_dispatch` promotion that SHA is the
+# default branch as it stood when the run was created — never the train being
+# promoted. Run 32716466300 published nothing because of it: the 0.4.0 train
+# had already fixed the tarball legs in this file, and the promotion ran the
+# copy from before the fix, so all three legs died on a bundle the train built
+# and `main` did not. Without the trigger there is no `uses:` that can do that,
+# so the mismatch is not detected — it is unreachable.
+#
+# `promote.yml` now **dispatches** this workflow at `vx.y.z`, the tag it pushed
+# a moment earlier at the promoted commit. A dispatch resolves every workflow
+# file from the ref it is handed, this one and the `container-image.yml` it
+# calls alike, so the release runs the promoted commit's own workflows by
+# construction. The run's `head_sha` records which commit that was, and
+# `promote.yml` asserts it equals the commit being promoted — the same field
+# #326's evidence was read out of.
+#
+# `push: tags: v*` is gone too, and that absence is older. A tag push beside
+# the dispatch would fire **two release runs** for one promotion, and they
+# would not even block each other: `github.ref_name` differs between them, so
+# the two would take different concurrency keys and race to build the same
+# tarballs and create the same GitHub Release. It also removes the need for a
+# guard rather than adding one — a stray hand-pushed `v*` tag does nothing at
+# all, which is a stronger property than a check that catches it.
 on:
-  # promote.yml, after the human pause and the fast-forward (D15, D40). The
-  # tag is pushed as a record before this is called, and `resolve` requires it
-  # to exist — every job downstream checks it out.
-  workflow_call:
-    inputs:
-      tag:
-        description: "Tag to release (e.g. v0.1.0). Must already exist on origin."
-        type: string
-        required: true
-  # Re-runs a whole release: re-resolves the mode, rebuilds the tarballs,
-  # retags or rebuilds the images, re-attaches the assets. It is also the only
-  # way a backport releases at all (D26) and how its release candidate goes out
-  # (D30) — no promotion calls this for a `release/*` tag.
+  # Three ways in, one trigger. `promote.yml` dispatches this at the version
+  # tag it has just pushed (D15, D40, #326); a person dispatches it to re-run a
+  # release whose publish stopped — see docs/ci-cd.md § "When a promotion
+  # half-runs" — and it is the only way a backport releases at all (D26) or its
+  # release candidate goes out (D30).
+  #
+  # **Dispatch it at the tag**, not at the default branch: `gh workflow run
+  # release.yml --ref vx.y.z -f tag=vx.y.z`. Both halves matter and they are
+  # not the same thing — `--ref` decides which copy of this file runs, and
+  # `-f tag` decides what it releases. `resolve` requires the tag to exist on
+  # origin either way; every job downstream checks it out.
   #
   # A Docker Hub description typo is no longer fixed from here — merge the fix
   # and the weekly `descriptions` chore publishes it, or `gh workflow run
@@ -135,15 +150,16 @@ on:
       tag:
         description: "Tag to (re)release (e.g. v0.1.0). Must already exist on origin."
         required: true
+        type: string
 
 concurrency:
   # Derived from the version, never from `github.ref_name` (D40). That
-  # expression resolves differently depending on how this workflow was
-  # entered, so two invocations for one version would take two different keys
-  # and run at the same time — which is exactly the race the dropped tag
-  # trigger would have caused. `inputs.tag` is the same string on both
-  # triggers, and `resolve` rejects anything that is not `vx.y.z`, so it *is*
-  # the version.
+  # expression is the tag when a promotion dispatches this at `vx.y.z` and the
+  # default branch when a person dispatches it from the Actions tab, so two
+  # invocations for one version would take two different keys and run at the
+  # same time — which is exactly the race the dropped tag trigger would have
+  # caused. `inputs.tag` is the same string however this run was created, and
+  # `resolve` rejects anything that is not `vx.y.z`, so it *is* the version.
   group: release-${{ inputs.tag }}
   cancel-in-progress: false
 
@@ -183,9 +199,9 @@ jobs:
           package-manager-cache: false
 
       # The checkout brings the refs that existed when this job started, and
-      # `promote.yml` pushes the tag immediately before invoking this workflow.
-      # A second fetch costs a moment and removes a race that would otherwise
-      # read as "no such tag" on a perfectly good promotion.
+      # `promote.yml` pushes the tag immediately before dispatching this
+      # workflow at it. A second fetch costs a moment and removes a race that
+      # would otherwise read as "no such tag" on a perfectly good promotion.
       - name: Fetch every branch and tag
         run: git fetch --force --prune --tags origin "+refs/heads/*:refs/remotes/origin/*"
 
@@ -209,7 +225,7 @@ jobs:
           # downstream checks it out. Deciding its absence here means one
           # actionable error rather than four checkout failures at once.
           if ! sha="$(git rev-parse -q --verify "refs/tags/$ref^{commit}")"; then
-            echo "::error title=No such tag::$ref is not on origin. A release publishes an existing tag — promotion pushes it as a record before calling this workflow (ADR 0023 D40), and a dispatch needs it pushed first."
+            echo "::error title=No such tag::$ref is not on origin. A release publishes an existing tag — promotion pushes it as a record before dispatching this workflow at it (ADR 0023 D40, as amended by #326), and a hand-driven dispatch needs it pushed first."
             exit 1
           fi
 

@@ -13,21 +13,33 @@
 // Usage:
 //   node scripts/fixture-release-server.mjs --dir <dir> [--port <n>]
 //                                           [--host <addr>] [--repo <slug>]
-//                                           [--corrupt <asset>]
+//                                           [--corrupt <asset>] [--script <file>]
 //
 // --dir      Directory of `actana-core-<version>-<target>.tar.gz` files.
-//            Versions come from the file names; the newest is `latest`.
+//            Versions come from the file names; the newest non-prerelease is
+//            `latest`, and a `x.y.z-beta` name is served on its own tag —
+//            which is what a beta line's installer asks for (ADR 0036 D2).
 // --port     Port to listen on (default 8788; 0 picks a free one).
 // --host     Address to bind (default 127.0.0.1; use 0.0.0.0 to serve a VM).
 // --repo     Repository slug the paths are shaped for.
 // --corrupt  Serve these assets (comma-separated) with a flipped byte, so
 //            their checksums fail — for rehearsing a tampered download.
+// --script   The copy of `install.sh` to serve (default: this repository's).
+//            The script's channel is the line stamped into its own bytes
+//            (ADR 0036 D1), so serving a restamped copy is how a channel other
+//            than this checkout's is put in front of a real machine.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { makeFail, parseArgs, stringFlag } from "./lib/cli.mjs";
-import { DEFAULT_REPO, indexReleases, startFixtureReleaseServer } from "./lib/fixture-release.mjs";
+import {
+  DEFAULT_REPO,
+  indexReleases,
+  isPrerelease,
+  latestRelease,
+  startFixtureReleaseServer,
+} from "./lib/fixture-release.mjs";
 import { rehearsalSetupCommand } from "./lib/rehearsal.mjs";
 
 const fail = makeFail("fixture-release");
@@ -58,7 +70,7 @@ async function main() {
     port,
     host: stringFlag(args, "host", fail, "127.0.0.1"),
     repo: stringFlag(args, "repo", fail, DEFAULT_REPO),
-    scriptPath: path.join(repoRoot, "install.sh"),
+    scriptPath: path.resolve(stringFlag(args, "script", fail, path.join(repoRoot, "install.sh"))),
     corruptAssets,
   });
 
@@ -67,12 +79,20 @@ async function main() {
     log(`warning: no Core tarballs in ${dir} — every release request will 404`);
   }
   for (const release of releases) {
-    log(`release v${release.version}: ${[...release.assets.keys()].sort().join(", ")}`);
+    // Prereleases are called out because `/releases/latest` skips them, the way
+    // GitHub's does — so a directory whose newest tarball is a beta still
+    // answers `latest` with the release under it, and the line that says so is
+    // cheaper than working out why the installer chose the other one.
+    const kind = isPrerelease(release.version) ? "prerelease" : "release";
+    log(`${kind} v${release.version}: ${[...release.assets.keys()].sort().join(", ")}`);
   }
+  const latest = latestRelease(releases);
+  log(latest ? `latest: v${latest.version}` : "latest: nothing — every version here is a prerelease");
   for (const asset of corruptAssets) {
     log(`serving ${asset} corrupted — its checksum will not verify`);
   }
   log(`listening on ${server.url} (${server.repo})`);
+  log(`install.sh: ${server.scriptPath}, stamped with the ${server.scriptStamp} line`);
   // Two lines, because the one-liner installs and does not activate since #316
   // (ADR 0036 C2). A hint that named only the first would leave a developer at
   // an installed, inactive machine with nothing to run next — which is exactly
