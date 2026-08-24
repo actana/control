@@ -238,6 +238,28 @@ async function main() {
     return { run, setupCommand: nextSetupCommand(run.stdout, die) };
   };
 
+  /**
+   * Run the `actana setup` the installer printed, on the machine it printed it
+   * on.
+   *
+   * **`</dev/null` is load-bearing, and it is what `install.sh` used to do.**
+   * The old tail handed setup an empty stdin on every path, so setup saw no
+   * terminal, prompted for nothing, and took the recommended answer to
+   * everything — which is the unattended install this file has always
+   * asserted, right down to `Linger=yes` with no `--yes` passed. Now that setup
+   * is its own step it runs through `machinectl shell`, which pipes the session
+   * through a **PTY** — so without this redirect setup is interactive, asks
+   * about lingering and offers the Harness CLIs one at a time, and waits
+   * forever for an answer nobody is there to give. That is a 30-minute job
+   * timeout, not a failed assertion.
+   *
+   * The interactive path is not untested; it is tested by a person, once per
+   * release, in `docs/core-linux-rehearsal.md` §2. What belongs here is the
+   * unattended one.
+   */
+  const activate = (setupCommand, flags = "") =>
+    mustAsOperator(`${setupCommand} ${flags} </dev/null`.replace(/\s+/g, " ").trim());
+
   // ─── the real thing, pinned: install, and only install ───
   log(`running the one-liner pinned to v${pinnedVersion}`);
   const placed = installOnly(installChannel.url, `--version ${pinnedVersion}`);
@@ -266,7 +288,7 @@ async function main() {
   // Not a retyped `actana setup`: #316's criterion is that the printed command
   // is runnable *as printed*, and the launcher's directory being absent from
   // `PATH` is precisely the case a hard-coded bare `actana` would hide.
-  const install = mustAsOperator(`${placed.setupCommand} --public-host 127.0.0.1`);
+  const install = activate(placed.setupCommand, "--public-host 127.0.0.1");
   // #287: setup emits no credential. A PEM header or a base64 blob on stdout
   // would be the hand-carry back, and this is where an operator would find it.
   if (/BEGIN (CERTIFICATE|PRIVATE KEY|RSA PRIVATE KEY)/.test(install.stdout)) {
@@ -405,7 +427,7 @@ async function main() {
 
   log("re-running the install with no version pinned, then setup over it");
   const upgraded = installOnly(installChannel.url, "");
-  mustAsOperator(`${upgraded.setupCommand} --public-host 127.0.0.1`);
+  activate(upgraded.setupCommand, "--public-host 127.0.0.1");
   // Not byte equality: the bearer inside carries a fresh expiry every time it
   // is signed. What must not change is the material the Panel pinned — a new
   // CA or client cert means the paired Panel is locked out.
@@ -598,7 +620,7 @@ async function main() {
   // Both commands, because uninstall removed the install and not just the
   // service: the first puts the bundle back, the second makes it a Core again.
   const reinstalled = installOnly(updateChannel.url, "");
-  mustAsOperator(`${reinstalled.setupCommand} --public-host 127.0.0.1`);
+  activate(reinstalled.setupCommand, "--public-host 127.0.0.1");
   await waitForPort(hostPort, die);
   log("the one-liner and `actana setup` reinstalled a machine that had been uninstalled");
 
