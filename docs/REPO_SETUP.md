@@ -144,11 +144,13 @@ nothing is unpublishable in between:
 ```bash
 gh secret set DOCKERHUB_USERNAME --repo actana/control
 gh secret set DOCKERHUB_TOKEN    --repo actana/control
-gh workflow run release.yml --repo actana/control -f tag=<the latest tag>
+gh workflow run release.yml --repo actana/control --ref <the latest tag> -f tag=<the latest tag>
 ```
 
 The dispatch re-runs the whole tag, which is what proves the new token pushes
-images. `gh workflow run housekeeping.yml --repo actana/control -f
+images. `--ref` is the tag as well as `-f tag`, and the two are not the same
+thing: `--ref` decides which copy of `release.yml` runs, and dispatching without
+it resolves the file from the default branch (#326). `gh workflow run housekeeping.yml --repo actana/control -f
 chore=descriptions` proves it still updates the Docker Hub pages. Then delete
 the old token in Docker Hub.
 
