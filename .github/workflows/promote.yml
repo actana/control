@@ -518,11 +518,38 @@ jobs:
             echo "::error title=The train's release.yml cannot be dispatched::\`release.yml\` at $HEAD_SHA has no \`workflow_dispatch:\` trigger, and the release below dispatches it at the version tag (#326). Without that trigger this promotion would fast-forward \`main\`, push the tag, and then have no way to publish anything at all. Nothing has been published."
             exit 1
           fi
-          if ! grep -qE '^ {6}tag:' <<<"$release"; then
-            echo "::error title=The train's release.yml takes no tag input::\`release.yml\` at $HEAD_SHA declares no \`tag:\` input, and the dispatch below passes one. Nothing has been published."
+
+          # The `tag` the dispatch below passes has to be an **input of the
+          # `workflow_dispatch` trigger**, and indentation alone cannot say so.
+          # Six spaces is also the depth of `with:` keys on a reusable-workflow
+          # call, and `release.yml` already carries `image:` and `source_tag:`
+          # there — so a bare `grep '^ {6}tag:'` passes a train that renamed the
+          # input to `version:` while still passing a `tag:` to
+          # `container-image.yml`. That train would then fail at the dispatch
+          # with "unexpected inputs provided", **after** `advance`, which is the
+          # one outcome this step exists to prevent.
+          #
+          # So the block is walked rather than pattern-matched: `on:` →
+          # `workflow_dispatch:` at two spaces, its `inputs:` at four, and the
+          # input names at six inside that. `awk` and not a YAML parser because
+          # this job installs nothing; the shape it walks is the shape
+          # `actions/checkout` would refuse to run on if it were wrong.
+          dispatch_inputs="$(awk '
+            /^[^ ]/                                    { trigger = 0; inputs = 0 }
+            /^  workflow_dispatch:[ \t]*$/            { trigger = 1; inputs = 0; next }
+            trigger && /^  [^ ]/                       { trigger = 0; inputs = 0 }
+            trigger && /^    inputs:[ \t]*$/          { inputs = 1; next }
+            trigger && inputs && /^    [^ ]/           { inputs = 0 }
+            trigger && inputs && /^      [A-Za-z_][A-Za-z0-9_-]*:/ {
+              name = $1; sub(/:$/, "", name); print name
+            }
+          ' <<<"$release")"
+
+          if ! grep -qx 'tag' <<<"$dispatch_inputs"; then
+            echo "::error title=The train's release.yml takes no tag input::\`release.yml\` at $HEAD_SHA declares no \`tag\` input on its \`workflow_dispatch\` trigger — it declares [$(tr '\n' ' ' <<<"$dispatch_inputs")]. The dispatch below passes \`-f tag=\`, which GitHub would refuse with \"unexpected inputs provided\" after \`main\` had already moved. Nothing has been published: \`main\` has not moved and no tag exists."
             exit 1
           fi
-          echo "✅ release.yml at $HEAD_SHA is dispatchable and takes a tag input."
+          echo "✅ release.yml at $HEAD_SHA is dispatchable and its workflow_dispatch declares a tag input."
 
       # `release.yml`'s own `resolve` refuses on each of these, and it refuses
       # after `main` has moved — which is the whole complaint. This is a copy
@@ -733,9 +760,12 @@ jobs:
   # What replaces the call is a dispatch and a wait, and both halves are
   # asserted rather than assumed:
   #
-  #   * the run this job created is identified by **id**, not by head SHA — a
-  #     re-dispatch of the same tag carries the same head SHA as the run before
-  #     it, so a head-SHA match would find the wrong run;
+  #   * the run this job created is identified by **head SHA and id together**.
+  #     Neither alone does it: two promotions of *different* trains may overlap,
+  #     because `concurrency` is keyed on the train, so an id window alone can
+  #     latch onto the other promotion's release run — and a re-dispatch of the
+  #     same tag carries the same head SHA as the run before it, so a head SHA
+  #     alone cannot tell those two apart;
   #   * **its `head_sha` is asserted to equal the promoted commit.** That is
   #     the observable fact this clause is written in terms of, and it is the
   #     field #326's evidence came out of: `gh run view 32716466300 --json
@@ -753,9 +783,18 @@ jobs:
     name: Release
     needs: [resolve, advance]
     runs-on: ubuntu-24.04
-    # A whole release: both Linux tarball legs, the macOS leg at 10x, the arm64
-    # installer e2e, both image jobs, the npm publish and the GitHub Release.
-    timeout-minutes: 180
+    # Six hours, which is GitHub's own ceiling for a job and therefore the
+    # largest honest number this can be. It is deliberately far above what a
+    # release takes — both Linux tarball legs, the macOS leg at 10x and however
+    # long it queues, the arm64 installer e2e, both image jobs, the npm publish
+    # and the GitHub Release — because the two sides of this cap are not
+    # symmetrical. Too long costs an idle ubuntu runner. Too short **fails a
+    # promotion whose release succeeded**: the wait below exits non-zero,
+    # `release-line` and `retire-train` are skipped, and the repository is left
+    # in exactly the half-run state this change exists to prevent — a state the
+    # old `uses:` shape could not reach, because it had no aggregate wall-clock
+    # cap at all.
+    timeout-minutes: 360
     permissions:
       contents: read
       # `gh workflow run` and the polling below are both the Actions API.
@@ -771,13 +810,31 @@ jobs:
           set -euo pipefail
           tag="v$VERSION"
 
-          # Run ids increase monotonically across a repository, so "the run
-          # this step created" is "the lowest release run whose id is above the
-          # newest one that existed a moment ago". The head SHA cannot identify
-          # it: a re-run of a stopped promotion dispatches the same tag at the
-          # same commit, and would match the run it is replacing.
-          before="$(gh api "repos/$REPO/actions/workflows/release.yml/runs?per_page=1" \
-            --jq '.workflow_runs[0].id // 0')"
+          # Two axes, and the run is found by both. Either one alone picks the
+          # wrong run in a case this repository supports.
+          #
+          # **`head_sha`** narrows the listing to release runs for the commit
+          # this promotion is publishing. `concurrency` is keyed on the train
+          # (`promote-<train>`), so two promotions of *different* trains
+          # overlapping is a supported state — it is what the hotfix and
+          # `rebase-train` machinery below exists for. Without this parameter, a
+          # promotion whose `before` was snapshotted while the other one's run
+          # had not yet surfaced in the listing would adopt that run, fail its
+          # own head-SHA assertion, and abort **after** `advance` had moved
+          # `main` and pushed the tag — while the release it did dispatch ran on
+          # unwatched, so `release-line` and `retire-train` never fired for a
+          # release that published. That is precisely the half-run promotion
+          # this whole change exists to make impossible.
+          #
+          # **`id > $before`** is what tells a re-dispatch of the same tag apart
+          # from the run it replaces, which the head SHA cannot: they share it.
+          # `before` is the **maximum** id over a page and not element zero —
+          # the listing is ordered by `created_at`, and "newest created" is not
+          # "highest id" when two runs are queued at once. `max_by` on the way
+          # out for the same reason.
+          before="$(gh api \
+            "repos/$REPO/actions/workflows/release.yml/runs?per_page=100" \
+            --jq '[.workflow_runs[].id] | max // 0')"
 
           # `--ref "$tag"` is the whole fix (#326): it is what makes the run
           # resolve `release.yml` — and the `container-image.yml` that file
@@ -791,8 +848,8 @@ jobs:
           run_id=""
           for _ in $(seq 1 30); do
             run_id="$(gh api \
-              "repos/$REPO/actions/workflows/release.yml/runs?event=workflow_dispatch&per_page=30" \
-              --jq "[.workflow_runs[] | select(.id > $before)] | min_by(.id) | .id // empty" \
+              "repos/$REPO/actions/workflows/release.yml/runs?event=workflow_dispatch&head_sha=$HEAD_SHA&per_page=100" \
+              --jq "[.workflow_runs[] | select(.id > $before)] | max_by(.id) | .id // empty" \
               2>/dev/null || true)"
             [[ -n "$run_id" ]] && break
             sleep 10
@@ -813,6 +870,13 @@ jobs:
           # release run whose head SHA is not the promoted commit is a run
           # executing some other commit's workflow files — which is exactly
           # what 32716466300 did, and this field said so the whole time.
+          #
+          # It is kept even though the query above already pins `head_sha`, and
+          # it is not redundant with it: an unknown query parameter is
+          # **silently ignored** by the GitHub API, so a misspelled or dropped
+          # filter widens the listing to every release run and says nothing.
+          # This line is what notices. The filter is the mechanism; this is the
+          # observable fact, and the fact is the acceptance criterion.
           if [[ "$run_sha" != "$HEAD_SHA" ]]; then
             echo "::error title=The release run is not the promoted commit::$url reports head_sha $run_sha, not $HEAD_SHA — so its workflow files come from another commit, which is the failure #326 is about. \`main\` and $tag are correct and keep; nothing has been published. See docs/ci-cd.md § \"When a promotion half-runs\"."
             exit 1
@@ -824,7 +888,11 @@ jobs:
             echo "[\`$tag\`]($url) — dispatched at the tag, running $HEAD_SHA's own \`release.yml\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
-          deadline=$(( SECONDS + 10200 ))
+          # Ten minutes inside the job's own timeout, so this step's crafted
+          # message — which names the run and the runbook — is what an operator
+          # reads, rather than GitHub's bare "The job running on runner … has
+          # exceeded the maximum execution time".
+          deadline=$(( SECONDS + 21000 ))
           status=""; conclusion=""
           while (( SECONDS < deadline )); do
             poll="$(gh api "repos/$REPO/actions/runs/$run_id" \
@@ -840,7 +908,11 @@ jobs:
           done
 
           if [[ "$status" != "completed" ]]; then
-            echo "::error title=The release did not finish in time::$url is still $status. This job stopped waiting; the release itself may still be running. \`main\` and $tag are correct and keep, and this promotion is half-run — the train is not retired and the release line is not cut. Watch that run, then finish by hand from docs/ci-cd.md § \"When a promotion half-runs\"."
+            # Not a failed release, and the message must not read as one: the
+            # run is still going and may well publish everything. What has
+            # failed is this job's ability to keep watching it, and the only
+            # cost of that is the branch housekeeping downstream of it.
+            echo "::error title=The release outlived this job's wait::$url is still $status after six hours. **The release has not failed** — it is still running, and it may still publish everything. What is stranded is the housekeeping this job gates: \`release-line\` and \`retire-train\` will not run. \`main\` and $tag are correct and keep. Watch $url to its end; if it succeeds, only steps 3 to 5 of docs/ci-cd.md § \"When a promotion half-runs\" are outstanding, and the release itself needs nothing."
             exit 1
           fi
           if [[ "$conclusion" != "success" ]]; then
