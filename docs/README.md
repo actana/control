@@ -91,6 +91,7 @@ routing around it.
 | [0032](adr/0032-one-actana-cli.md) | There is one `actana`, and it is both the Core manager and the client — supersedes #265 §6 and 0031 D8's two-binaries premise |
 | [0033](adr/0033-turn-end-is-the-one-mandatory-harness-signal.md) | Turn-end reporting is the one mandatory harness signal; turn-start, auto-mode flags and resume ids may never gate a feature |
 | [0035](adr/0035-a-second-skill-for-the-sub-agent-role.md) | A second skill for the sub-agent role, and it is eager — **PROPOSED**, depends on 0031 |
+| [0036](adr/0036-the-beta-release-channel.md) | The beta release channel: a beta installs like a release, and the ref is the channel — **PROPOSED**, amends 0016 (D28, D29, D34, D35) and 0023 (D8, D9) |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files
