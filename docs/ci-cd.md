@@ -980,12 +980,22 @@ re-cut it when the guess was wrong — which it was on the first promotion after
 the clause was written.
 
 The cut creates `beta/x.y.z` from `main` and writes that version into every
-manifest in one commit (D3, amended by #152 and #157). A required check on the
-train asserts every one of them equals the branch's version, so drift afterwards
-is impossible rather than merely discouraged. That commit **is** the stamp: a
-branch created without it is a train that looks right and carries the previous
-train's versions, and it stays quiet until the first pull request into it goes
-red with six errors at once, on whoever happened to open it.
+manifest in one commit (D3, amended by #152 and #157), **and into `install.sh`'s
+line stamp beside them** ([ADR 0036](adr/0036-the-beta-release-channel.md) D1). A
+required check on the train asserts every manifest equals the branch's version,
+so drift afterwards is impossible rather than merely discouraged. That commit
+**is** the stamp: a branch created without it is a train that looks right and
+carries the previous train's versions, and it stays quiet until the first pull
+request into it goes red with six errors at once, on whoever happened to open it.
+
+The stamp in `install.sh` is a seventh file and **not** a seventh manifest. It is
+what makes the copy of the installer on this train install this train's beta and
+the copy on `main` install the release, out of bytes that become identical at the
+promotion fast-forward (0036 D1 and D2) — so a train cut without it serves the
+previous line's beta from its own door, silently. It is edited on its own line
+below rather than added to `files=()` because `install.sh` is not a workspace
+package, and `Train rules`' manifest set deliberately refuses to grow past the
+packages (0036 D4).
 
 ```bash
 git fetch origin --prune
@@ -1014,6 +1024,12 @@ VERSION=x.y.z node -e '
 
 for file in "${files[@]}"; do jq -r --arg f "$file" '"\($f): \(.version)"' "$file"; done
 
+# The line stamp (ADR 0036 D1) — one assignment on one line, so this is a `sed`
+# and the diff stays one line like the six above. `-i.bak` because BSD `sed` on
+# macOS requires an argument to `-i` and GNU `sed` accepts one.
+sed -i.bak 's/^LINE=".*"$/LINE="x.y.z"/' install.sh && rm -f install.sh.bak
+grep -n '^LINE=' install.sh                    # must print LINE="x.y.z"
+
 git commit -a -F cut-message.txt               # Conventional Commits, see below
 git push --no-verify origin beta/x.y.z         # --no-verify: see below
 ```
@@ -1036,14 +1052,19 @@ too late:
   and ran `git config core.hooksPath .husky`, which you should have. Tracked
   as #269; when the hook learns the class, drop the `--no-verify`.
 - **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
-  those six manifests and six lines.
-- **The line stamp, once it exists.** [ADR 0036](adr/0036-the-beta-release-channel.md)
-  D1 gives `install.sh` a stamped line version and says it is *"written by the
-  cut exactly as the six manifests are"*. That is this procedure — the cut is
-  the hand that writes it, and [#317](https://github.com/actana/control/issues/317)
-  is what puts the stamp in the file and adds `Train rules`' separate assertion
-  for it (0036 D4). Until #317 lands there is no stamp in `install.sh` and this
-  is six files; when it does, this list and that assertion move together.
+  those six manifests, `install.sh`'s stamp, and seven lines.
+- **The line stamp.** [ADR 0036](adr/0036-the-beta-release-channel.md) D1 gives
+  `install.sh` a stamped line version and says it is *"written by the cut exactly
+  as the six manifests are"*. That is this procedure — the cut is the hand that
+  writes it. [#317](https://github.com/actana/control/issues/317) put the stamp
+  in the file and the resolution that reads it, and
+  `scripts/__tests__/install-sh.test.mjs` asserts that the stamp is a plain
+  `x.y.z` equal to the workspace version and that nothing in the file names a
+  channel. **The separate `Train rules` assertion 0036 D4 asks for is not there
+  yet**: #317 landed without touching `.github/workflows`, which another ticket
+  held open across the same wave. Until it lands, nothing goes red on the train
+  when a cut forgets the stamp — the check is this step and the test above it,
+  so measure the `grep` output before you commit.
 - **Every body line of the message is at most 132 characters.** `commitlint`
   lints every commit in a pull request, not just its title — but no pull
   request puts a cut commit in front of it until the promotion gate, when the
