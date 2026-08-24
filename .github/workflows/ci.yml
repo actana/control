@@ -230,9 +230,19 @@ jobs:
           # the sixth (#157): the `actana` command's client half, and the second
           # package #129 publishes.
           #
-          # The list below and the one in `promote.yml`'s cut are the same set
-          # by construction, and the assertion under it is what keeps them that
+          # The list below and the one a train is cut from are the same set by
+          # construction, and the assertion under it is what keeps them that
           # way — read the count off `${#MANIFESTS[@]}`, never off this comment.
+          #
+          # That other list moved in #325. It was `files=()` inside
+          # `promote.yml`'s automatic cut; cuts are manual now — a person names
+          # the train and cuts it, and no job guesses a version — so it is the
+          # `files=()` array in docs/ci-cd.md § "Cutting a train", which
+          # `scripts/__tests__/workflows.test.mjs` reads out of the document and
+          # asserts equal to this one. A change to either that misses the other
+          # is the drift that assertion exists to catch, and it fails in the
+          # test rather than on the first pull request into a train that was cut
+          # with a manifest missed.
           MANIFESTS=(package.json packages/cli/package.json \
                      packages/core/package.json packages/panel/package.json \
                      packages/sdk/package.json packages/shared/package.json)
@@ -261,7 +271,7 @@ jobs:
               done
               if [[ "$found" != "1" ]]; then
                 intact=0
-                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to \`promote.yml\`'s cut, and amend ADR 0023 D3 — that is what #152 did for \`packages/sdk\` and #157 for \`packages/cli\`."
+                fail "A workspace package is outside the version set" "$file is a workspace package and is not in this check's list, so nothing asserts it carries the train's version. Add it here and to the \`files=()\` array in docs/ci-cd.md § \"Cutting a train\", and amend ADR 0023 D3 — that is what #152 did for \`packages/sdk\` and #157 for \`packages/cli\`."
               fi
             done
             # An `if`, not `[[ … ]] && echo`: the `&&` form makes the function

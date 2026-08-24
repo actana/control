@@ -5,7 +5,7 @@ name: Promote
 # enforced.
 #
 #   pause ── resolve ── verify ── advance ── release ─┬─ release-line
-#   (human)                       (ff + tag) (call)   ├─ retire-train ─┬─ next-train
+#   (human)                       (ff + tag) (call)   ├─ retire-train ─┬─ train-invariant
 #                                                     │                └─ rebase-train
 #                                                     └─
 #
@@ -163,7 +163,6 @@ jobs:
       head_sha: ${{ steps.facts.outputs.head_sha }}
       pr: ${{ steps.facts.outputs.pr }}
       release_line: ${{ steps.facts.outputs.release_line }}
-      next_train: ${{ steps.facts.outputs.next_train }}
       hotfix: ${{ steps.facts.outputs.hotfix }}
       survivor: ${{ steps.facts.outputs.survivor }}
     steps:
@@ -262,16 +261,18 @@ jobs:
           if [[ "$survivor_count" == "1" ]]; then
             hotfix=true
             survivor="$survivors"
-            echo "::notice title=Hotfix promotion::\`$survivor\` exists, so this promotion strands it: \`main\` moves past its ancestor and it can no longer fast-forward (ADR 0023 D2). It will be rebased onto the new \`main\` and force-pushed, its images republished, and every open pull request into it told (D24). No auto-cut: a train already exists (D25)."
+            echo "::notice title=Hotfix promotion::\`$survivor\` exists, so this promotion strands it: \`main\` moves past its ancestor and it can no longer fast-forward (ADR 0023 D2). It will be rebased onto the new \`main\` and force-pushed, its images republished, and every open pull request into it told (D24). It is also the train that keeps D25's invariant open after this promotion — nothing here cuts one (D25, as amended by #325)."
           fi
 
           # `x.y` — the line, not the patch (D27). A branch cut at 1.2.0 that
           # then publishes 1.2.4 is not `release/1.2.0`.
+          #
+          # This is the only version this job derives, and it derives it from
+          # the train's own name rather than inventing one. **Nothing in this
+          # file computes a next version** (D25, as amended by #325): a
+          # promotion reads a version off the branch it was handed, and the
+          # next train's version is an administrative decision a person makes.
           release_line="release/${version%.*}"
-          # The next minor, as a default rather than a commitment (D25).
-          major="${version%%.*}"
-          minor="${version#*.}"; minor="${minor%%.*}"
-          next_train="beta/${major}.$((minor + 1)).0"
 
           {
             echo "train=$TRAIN"
@@ -279,7 +280,6 @@ jobs:
             echo "head_sha=$head_sha"
             echo "pr=$pr"
             echo "release_line=$release_line"
-            echo "next_train=$next_train"
             echo "hotfix=$hotfix"
             echo "survivor=$survivor"
           } | tee -a "$GITHUB_OUTPUT"
@@ -650,143 +650,149 @@ jobs:
           git push origin --delete "$TRAIN"
           echo "✅ \`$TRAIN\` is gone. Its commits are on \`main\`; the branch carried nothing else (ADR 0023 D4)."
 
-  # ─────────────────────────────────────────────────────── 8. the next train
+  # ────────────────────────────────────────── 8. the invariant, said out loud
   #
-  # D25. A train is always open, so the repository never enters a state where
-  # work cannot be proposed. The cut writes the version into every manifest
-  # in its first commit (D3, amended by #152 and #157) — an administrative
-  # decision written by a machine, because hand-editing six files is how five of
-  # them end up disagreeing, and `ci.yml`'s train rules assert every one of them
-  # equals the branch's version.
+  # D25, **as amended by #325**. Nothing here cuts a train and nothing here
+  # invents a version. A cut is an administrative decision — a person names the
+  # branch and cuts it — and the job that used to guess `beta/<next-minor>.0`
+  # and push it is gone, along with the arithmetic that produced the guess.
   #
-  # **Skipped when a train already exists**, which is exactly the post-hotfix
-  # case: the invariant already holds and there is nothing to cut. The condition
-  # is the observed hotfix state from `resolve` (D23), re-checked here against
-  # origin because the two are minutes apart and an administrator may have cut
-  # one by hand in between.
+  # What is not gone is the invariant D25 exists for: *a train is always open,
+  # so work can always be proposed*. It was held by the automatic cut, and
+  # deleting that without putting something in its place would leave it resting
+  # on somebody remembering. So this job asks origin the one question the
+  # invariant is about — **is a train open?** — and files the answer where it
+  # cannot be missed:
   #
-  # The guessed version is a default, not a commitment: an administrator may
-  # delete this branch and re-cut it before anything merges.
-  next-train:
-    name: Cut the next train
+  #   * a train exists (the ordinary post-hotfix case, or an administrator who
+  #     cut one already): a notice, and the invariant holds;
+  #   * none exists (the ordinary state one second after `retire-train`): the
+  #     tracking issue is opened, carrying the hand-cut procedure, and it stays
+  #     open until a person cuts.
+  #
+  # **An issue and not a red run.** Every non-hotfix promotion ends with no
+  # train open — that is the correct outcome of a successful promotion, not a
+  # broken one, and a job that went red on it would be red on every good
+  # release. A permanently red run is how a team learns that red means nothing;
+  # `housekeeping.yml` makes the same argument for its own detectors.
+  #
+  # **The standing check is `housekeeping.yml`'s daily `open-train` chore**,
+  # which asks this question every day and reuses the very same issue title. So
+  # the promotion is not the only thing that will say it, and closing the issue
+  # without cutting does not make the state go away — tomorrow's tick opens it
+  # again. That pair is the mechanism that replaces the cut.
+  #
+  # `GITHUB_TOKEN`, deliberately: this job reads refs and writes an issue, and
+  # neither is a push. D39's App requirement is about pushes triggering
+  # workflows, and there is nothing here to trigger.
+  train-invariant:
+    name: Report the open-train invariant
     needs: [resolve, release, retire-train]
-    if: needs.resolve.outputs.hotfix == 'false'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
+    permissions:
+      contents: read
+      issues: write
     steps:
-      # Same guard as `advance`. `create-github-app-token` does error on an
-      # empty `app-id`, so this is not the difference between failing and
-      # falling back — it is the difference between an operator reading the
-      # action's generic message and reading why `GITHUB_TOKEN` is not the
-      # answer (D39). Every job that pushes says it.
-      - name: Require the App credentials
-        env:
-          APP_ID: ${{ secrets.APP_ID }}
-          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          if [[ -z "$APP_ID" || -z "$APP_PRIVATE_KEY" ]]; then
-            echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. Promotion pushes with the GitHub App and never with GITHUB_TOKEN: pushes made with the default token do not trigger workflows, so this branch would appear with nothing built from it — silently (ADR 0023 D39). See docs/REPO_SETUP.md."
-            exit 1
-          fi
-
-      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        id: app-token
-        with:
-          app-id: ${{ secrets.APP_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-        with:
-          ref: main
-          fetch-depth: 0
-          token: ${{ steps.app-token.outputs.token }}
 
-      - name: Cut beta/<next-minor>.0 from main with every version written
+      - name: Say what this promotion did not cut, and whether a train is open
         env:
-          NEXT: ${{ needs.resolve.outputs.next_train }}
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           PROMOTED: ${{ needs.resolve.outputs.version }}
-          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+          TRAIN: ${{ needs.resolve.outputs.train }}
+          LINE: ${{ needs.resolve.outputs.release_line }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           set -euo pipefail
+
+          # Said first, and said whatever the answer below turns out to be: a
+          # promotion states in its own log that it left no branch behind that
+          # nobody asked for, rather than leaving an operator to notice.
+          # `release/x.y` is the one branch a promotion still creates, and
+          # dispatching the promotion is how it was asked for.
+          echo "::notice title=Nothing was cut::This promotion created no train. \`$LINE\` is the only branch it may have created, and \`$TRAIN\` was deleted (ADR 0023 D4). No version was computed anywhere in this run: a promotion reads a version, it never invents one (D25, as amended by #325)."
+
           # No `|| true`: an `ls-remote` that failed must not read as "no train
-          # exists", which is the answer that cuts a second one (D2, D25).
+          # exists". That answer files an issue for a state that may not be
+          # real, and — worse — the same wrong answer is what used to cut a
+          # second train (D2, D25).
           existing="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
+
+          {
+            echo "### The open-train invariant (ADR 0023 D25, as amended by #325)"
+            echo ""
+            echo "\`$PROMOTED\` was promoted. This run cut no train and computed no version."
+          } >> "$GITHUB_STEP_SUMMARY"
+
           if [[ -n "${existing// }" ]]; then
-            echo "::notice title=A train already exists::$(tr '\n' ' ' <<<"$existing")— the invariant D25 protects already holds, so nothing is cut. This is the ordinary post-hotfix case."
+            echo "::notice title=A train is open::$(tr '\n' ' ' <<<"$existing")— the invariant D25 protects holds and there is nothing to ask for. This is the ordinary post-hotfix case, and it is also what an administrator who cut ahead of the promotion looks like."
+            {
+              echo ""
+              echo "A train is open, so work can be proposed:"
+              echo ""
+              echo '```'
+              echo "$existing"
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
 
-          version="${NEXT#beta/}"
-          git fetch --force origin '+refs/heads/main:refs/remotes/origin/main'
-          git checkout -B "$NEXT" refs/remotes/origin/main
+          # One issue, one title, shared verbatim with `housekeeping.yml`'s
+          # `open-train` chore so the two cannot file a pair. The title carries
+          # no version on purpose — the state is "no train", which is the same
+          # state whoever notices it first, and a version in the title would
+          # make the daily tick open a second issue for the same gap.
+          TITLE="No open train: nothing can be proposed until one is cut"
+          open="$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
 
-          # D3, as amended by #152 and #157. Every manifest, edited in place
-          # rather than reserialised: `jq` would reformat files it was only
-          # asked to change one line of, and the diff a reviewer reads on the
-          # promotion pull request should be one line per manifest.
-          #
-          # `packages/sdk` is the fifth (ADR 0025) and `packages/cli` the sixth
-          # (#157). This list and the one in `ci.yml`'s `Train rules` job are
-          # the same set by construction — the check asserts it covers every
-          # workspace package, so the next package fails there rather than being
-          # silently skipped here.
-          files=(package.json packages/cli/package.json packages/core/package.json packages/panel/package.json packages/sdk/package.json packages/shared/package.json)
-          VERSION="$version" node -e '
-            const fs = require("node:fs");
-            const version = process.env.VERSION;
-            let changed = 0;
-            for (const file of process.argv.slice(1)) {
-              const before = fs.readFileSync(file, "utf8");
-              const after = before.replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${version}"`);
-              if (after === before) continue;
-              fs.writeFileSync(file, after);
-              changed += 1;
-            }
-            console.log(`rewrote ${changed} of ${process.argv.length - 1} manifests`);
-          ' "${files[@]}"
+          echo "::error title=No open train::\`$PROMOTED\` promoted and no \`beta/*\` branch exists on origin, so nothing can be proposed until somebody cuts one. Cuts are manual: a person names the train and cuts it (ADR 0023 D3, D22 and D25, as amended by #325). See docs/ci-cd.md § \"Cutting a train\"."
 
-          for file in "${files[@]}"; do
-            found="$(jq -r .version "$file")"
-            if [[ "$found" != "$version" ]]; then
-              echo "::error title=The cut did not write a version::$file says $found, not $version. Every manifest carries the train's version and a required check on the train asserts it (ADR 0023 D3, amended by #152 and #157), so a train cut with a manifest missed cannot merge anything."
-              exit 1
-            fi
-            echo "  ✅ $file is $version"
-          done
-
-          # Conventional Commits, because this commit reaches `main` through
-          # the next promotion pull request and `ci.yml`'s Conventions job
-          # lints every commit in it — not just the title. Body lines stay
-          # inside commitlint's 100-column `body-max-line-length`.
-          printf '%s\n' \
-            "chore(release): cut $NEXT" \
-            "" \
-            "Every manifest carries the train's version (ADR 0023 D3). Cut from main" \
-            "after promoting $PROMOTED, so a train is always open and work can always be" \
-            "proposed (D25)." \
-            "" \
-            "The version is a default, not a commitment: delete and re-cut this branch" \
-            "before anything merges if the next release is not $version." \
-            > "$RUNNER_TEMP/cut-message.txt"
-
-          # Nothing to rewrite is not nothing to do. If the manifests
-          # already read `$version` — a re-run after the push below failed, or
-          # `main` already sitting on the guessed next minor — the loop above
-          # has just confirmed the state this commit exists to reach, and the
-          # only work left is the push. `git commit -a` exits non-zero on an
-          # empty commit, so under `set -e` it would turn that recoverable
-          # re-run into a red job one line short of finishing.
-          if git diff --quiet; then
-            echo "::notice title=The manifests already carry $version::Nothing to rewrite, so nothing to commit. Cutting \`$NEXT\` at the commit that already satisfies D3."
-          else
-            git -c user.name="${APP_SLUG}[bot]" \
-                -c user.email="${APP_SLUG}[bot]@users.noreply.github.com" \
-                commit -a -F "$RUNNER_TEMP/cut-message.txt"
+          if [[ -n "$open" ]]; then
+            echo "::notice title=Already tracked::#$open is open for this. Not filing another."
+            {
+              echo ""
+              echo "**No train is open.** Tracked by #$open."
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
           fi
 
-          git push origin "HEAD:refs/heads/$NEXT"
-          echo "✅ cut \`$NEXT\` from main. Its first push publishes beta-$version, so the train has an image before anything merges into it (ADR 0023 D7)."
+          {
+            echo "\`$PROMOTED\` has been promoted and \`$TRAIN\` is gone (ADR 0023 D4). No \`beta/*\`"
+            echo "branch exists on origin, so **there is nowhere for a pull request to go** until"
+            echo "somebody cuts one."
+            echo ""
+            echo "This is not a failure of the promotion. It is the state a promotion ends in now"
+            echo "that cuts are manual: **a person names the train and cuts it, and no job guesses a"
+            echo "version** (ADR 0023 D3, D22 and D25, as amended by"
+            echo "[#325](https://github.com/actana/control/issues/325)). This issue is how the"
+            echo "invariant those clauses protect — *a train is always open, so work can always be"
+            echo "proposed* — is kept honest without a workflow that invents a number."
+            echo ""
+            echo "**The procedure is [\`docs/ci-cd.md\` § \"Cutting a train\"](https://github.com/${GH_REPO}/blob/main/docs/ci-cd.md#cutting-a-train).**"
+            echo "It is six manifests, one commit, one push, and the version in the branch name is"
+            echo "the decision being made — the next release may be a patch, a minor or a major, and"
+            echo "only a person knows which."
+            echo ""
+            echo "Close this once the train is on origin. \`housekeeping.yml\`'s daily \`open-train\`"
+            echo "chore asks the same question every morning and re-opens an issue with this exact"
+            echo "title if the state has not changed, so closing it without cutting buys one day."
+            echo ""
+            echo "[The promotion run]($RUN_URL)"
+          } > "$RUNNER_TEMP/issue.md"
+
+          # `needs-triage` and nothing else. `gh issue create` fails outright on
+          # a label the repo does not have, which would turn "file the issue"
+          # into a red promotion.
+          number="$(gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
+            --label needs-triage)"
+          echo "::notice title=Filed::$number"
+          {
+            echo ""
+            echo "**No train is open.** Filed: $number"
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # ───────────────────────────────────────────────── 9. the post-hotfix rebase
   #
