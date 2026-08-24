@@ -101,6 +101,17 @@ on:
           that thinks it is promoting.
         type: string
         default: ""
+      version:
+        description: >-
+          The version these bytes must self-report (e.g. 0.4.1, 0.4.1-beta,
+          v0.4.1). A build asserts the checked-out tree's six manifests carry
+          its line before building, and `promote`/`verify` assert the published
+          digest's `org.opencontainers.image.version` label equals that line
+          (ADR 0037 D4). Empty skips both, which is the pull request path: a
+          PR's tree carries the train's version and its image is tagged
+          `pr-<prid><YYYYMM>`, so there is no version claim to check.
+        type: string
+        default: ""
       push:
         description: "Publish the image. False builds and smokes only."
         type: boolean
@@ -307,6 +318,43 @@ jobs:
               ;;
           esac
 
+      # ------------------------------------------------------- the version
+
+      # What version are these bytes? Asked here, once, before either image is
+      # built, and answered from the checked-out tree rather than from any
+      # name (ADR 0037 D1, D4).
+      #
+      # Two things come out of it. The **line** is stamped into both images as
+      # `org.opencontainers.image.version`, which is what makes an image able
+      # to say what it is — today the Core images say `24.04`, inherited from
+      # the Ubuntu base, and the Panel images say nothing. And when the caller
+      # named a version, the tree is asserted against it *before* anything is
+      # built, so a train or a release whose manifests disagree with the tag it
+      # is about to publish under fails at the cheapest point rather than after
+      # the images are out.
+      #
+      # `inputs.version` is empty on the pull request path, and the step still
+      # runs: a PR's tree carries the train's version, which is not a claim
+      # about anything, but the six manifests still have to agree *with each
+      # other* for the label to mean anything at all. So the root manifest
+      # stands in as the expected value and the other five are compared to it.
+      - name: Read the version these bytes carry
+        if: inputs.mode == 'build'
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          line="$(jq -r .version package.json)"
+          node scripts/assert-version-agreement.mjs \
+            --expected "${INPUT_VERSION:-$line}" \
+            --source "the tree at $(git rev-parse HEAD)"
+          # Read back out of the tree and not out of the input: the label has to
+          # be what the bytes say, and the assertion above is what makes the two
+          # the same. A label taken from the input would be the tautology this
+          # whole chain exists to remove.
+          echo "IMAGE_VERSION=$line" >> "$GITHUB_ENV"
+          echo "These bytes are line $line."
+
       # D16, the design's central claim, asserted on both the paths that reach
       # it. On a promotion pull request (`verify`, D19) it replaces an hour of
       # rebuilding bytes that already exist; on the release itself (`promote`)
@@ -377,6 +425,52 @@ jobs:
           fi
           echo "✅ $ref at linux/$ARCH carries $EXPECTED — the promoted digest is the tested one."
 
+      # D16's assertion says the bytes came from the right *commit*. It says
+      # nothing about what version those bytes think they are, and until this
+      # step that was the whole of the story: an image whose six manifests say
+      # `9.9.9` promoted cleanly to `x.y.z` and to `latest`, because the only
+      # thing compared was a SHA (ADR 0037 D4).
+      #
+      # So the version label is asserted beside the revision, on the same
+      # already-pulled image, before anything is re-pointed. The label is the
+      # **line** the bytes carry, which is why one comparison covers all four
+      # version-bearing tags: `beta-x.y.z` from a train, `x.y.z` and `latest`
+      # from a promotion, and `x.y.z-beta` from a beta retag are the same bytes
+      # and the same line.
+      #
+      # **Two wrong answers are live today and both fail here rather than
+      # silently**: the Core images inherit `org.opencontainers.image.version=24.04`
+      # from the Ubuntu base through `FROM`, and the Panel images carry no
+      # version label at all. An image built before this step existed is
+      # therefore refused with the remedy named — re-run the train's image jobs
+      # so the tag names bytes that were labelled from their own manifests.
+      - name: Assert the published digest self-reports this version
+        if: (inputs.mode == 'verify' || inputs.mode == 'promote') && inputs.version != ''
+        env:
+          IMAGE: ${{ needs.resolve.outputs.image }}
+          MODE: ${{ inputs.mode }}
+          TAGS: ${{ inputs.tags }}
+          SOURCE_TAG: ${{ inputs.source_tag }}
+          ARCH: ${{ matrix.arch }}
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ "$MODE" == "promote" ]]; then
+            ref="$IMAGE:$SOURCE_TAG"
+          else
+            ref="$IMAGE:${TAGS%% *}"
+          fi
+          # Already pulled by the step above, which is why this one needs no
+          # credential and no network: the two assertions are about the same
+          # bytes and must never be able to read different bytes.
+          label="$(docker image inspect --format '{{json .Config.Labels}}' "$ref" \
+            | jq -r '.["org.opencontainers.image.version"] // ""')"
+          echo "$ref at linux/$ARCH would be published as '$TAGS'."
+          node scripts/assert-version-agreement.mjs \
+            --expected "$VERSION" \
+            --image-label "$label" \
+            --source "$ref at linux/$ARCH"
+
       # ---------------------------------------------------------------- panel
 
       # The OCI labels live in the Dockerfile so a local build carries them too;
@@ -406,6 +500,7 @@ jobs:
             --file deploy/panel.Dockerfile \
             --build-arg "IMAGE_SOURCE=https://github.com/$REPO" \
             --build-arg "IMAGE_REVISION=$revision" \
+            --build-arg "IMAGE_VERSION=$IMAGE_VERSION" \
             --tag "$IMAGE:$STAGE-$ARCH" .
 
       # The acceptance criterion, against the exact bytes being released:
@@ -464,6 +559,7 @@ jobs:
             --label "org.opencontainers.image.description=The Actana Control Core: the daemon a Panel pairs with, and the machine your agentic coding sessions run on. Set ACTANA_PUBLIC_HOST to the host your Panel will dial and mount a volume at /home/core, which holds the pairing identity, the database and each Harness's credentials. Harnesses (claude-code, codex, cursor-cli, opencode) install at runtime into that volume, not into the image." \
             --label "org.opencontainers.image.source=https://github.com/$REPO" \
             --label "org.opencontainers.image.revision=$revision" \
+            --label "org.opencontainers.image.version=$IMAGE_VERSION" \
             --label "org.opencontainers.image.licenses=MIT" \
             --tag "$IMAGE:$STAGE-$ARCH" \
             deploy
