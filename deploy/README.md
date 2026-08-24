@@ -210,7 +210,7 @@ clocks.** That is the one thing to get right here:
   names the git tag, the prerelease and its Core tarballs.
 
 Neither is `latest`, and neither ever will be. The version string of a beta is
-`x.y.z-beta` exactly — no counter, no `.1`, no suffix — so `0.2.0-beta` is the
+`x.y.z-beta` exactly — no counter, no dotted suffix — so `0.2.0-beta` is the
 whole tag for the 0.2.0 line's beta however many times that line is cut. Both
 tags persist after the line promotes; nothing sweeps them.
 

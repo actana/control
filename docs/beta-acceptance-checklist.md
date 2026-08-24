@@ -115,7 +115,7 @@ docker compose exec core actana status
 
 Those versions are `x.y.z` — the train's version, with no suffix. A beta *cut*
 of this line, if one has been dispatched, publishes `x.y.z-beta` instead, and
-that string is exactly `x.y.z-beta` with no counter and no `.1` after it. The
+that string is exactly `x.y.z-beta`, with nothing appended after `beta`. The
 two are the same bytes under two names, and neither is `latest`.
 
 A beta is no longer testable only as a container. The same train installs on

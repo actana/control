@@ -403,8 +403,8 @@ between cuts however much the train moves underneath it.
   tarballs, the CLI asset and the two image tags — **exactly `x.y.z-beta`, on
   every one of them.** There is no counter, no dotted suffix, no run number and
   no short sha: a beta of the 0.4.1 line is `0.4.1-beta` and stays that string
-  however many times it is cut (0036 C1). A counted form such as `0.4.1-beta.1`
-  is not a supported shape anywhere in this repository.
+  however many times it is cut (0036 C1). A counted form is not a supported
+  shape anywhere in this repository, and the cut refuses to publish one.
 - **Betas are no longer Docker-only.** 0023 D9 made them so, and 0036 reverses
   it: a beta cut publishes a prerelease GitHub Release with the three Core
   tarballs and their checksums, so a train is installable on metal. What D9

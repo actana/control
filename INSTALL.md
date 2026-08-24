@@ -440,10 +440,10 @@ anything on its own.
 
 **A beta version is `x.y.z-beta`, exactly.** The beta of the 0.4.1 line is
 `0.4.1-beta`, and it stays that string however many times that line is cut.
-There is no counter, no `.1`, no run number and no short sha after the word
-`beta`, on the git tag, the Release, the tarball names, the image tags or
-anywhere else. If you have seen a form like `0.4.1-beta.1`, it is not something
-this project publishes.
+There is no counter, no dotted suffix, no run number and no short sha after
+the word `beta`, on the git tag, the Release, the tarball names, the image tags
+or anywhere else. Anything with something appended after `beta` is not a version
+this project publishes, and `--version` will not find it.
 
 **That train branch stops existing when the line promotes.** It is deleted by
 the promotion rather than left to quietly change meaning, so a URL that worked
