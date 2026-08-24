@@ -362,14 +362,17 @@ describe("reference compose", () => {
 
 describe("release workflow", () => {
   // The Panel image ships on a version tag — but the tag no longer *triggers*
-  // anything (ADR 0023 D40). `promote.yml` calls this workflow and pushes the
-  // tag as a record; a `push: tags` trigger beside that would fire a second
-  // release run that the first could not even block. What is asserted here is
-  // what did not change: the release is still entered with a `v*` tag, and it
-  // is that tag the image jobs publish under. The trigger itself is pinned in
-  // scripts/__tests__/workflows.test.mjs.
+  // anything (ADR 0023 D40, as amended by #326). `promote.yml` pushes the tag
+  // as a record and then dispatches this workflow *at* it; a `push: tags`
+  // trigger beside that would fire a second release run the first could not
+  // even block, and the `workflow_call` that used to be the entry is gone
+  // because it resolved this file from the caller's SHA. What is asserted here
+  // is what did not change: the release is still entered with a `v*` tag, and
+  // it is that tag the image jobs publish under. The triggers themselves are
+  // pinned in scripts/__tests__/workflows.test.mjs.
   it("publishes the image for a version tag it is handed, not one it watches", () => {
-    expect(workflow).toMatch(/^ {2}workflow_call:$/m);
+    expect(workflow).toMatch(/^ {2}workflow_dispatch:$/m);
+    expect(workflow).not.toMatch(/^ {2}workflow_call:$/m);
     expect(workflow).not.toMatch(/tags:\s*\n\s*- "v\*"/);
     expect(workflow).toMatch(/description: "Tag to .*\(e\.g\. v0\.1\.0\)/);
   });
