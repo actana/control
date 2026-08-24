@@ -392,9 +392,9 @@ between cuts however much the train moves underneath it.
   because the sweep that deletes it needs a delete-capable credential, and that
   credential is kept permanently out of the repositories holding `latest`.
 - **`beta-x.y.z` is not a semver prerelease, and that is still deliberate**
-  (D8). Semver's own form is `1.2.3-beta.1`; this shape was chosen because it
-  matches the branch that produced it, and it names a *train*, not a version
-  anything installs. D8's safety argument was that the mismatch costs nothing
+  (D8). Semver would put the suffix after the version rather than in front of
+  it; this shape was chosen because it matches the branch that produced it, and
+  it names a *train*, not a version anything installs. D8's safety argument was that the mismatch costs nothing
   because *"nothing that parses versions ever sees one"* — and things now do.
   [ADR 0036](adr/0036-the-beta-release-channel.md) D8 is the revisit that clause
   demanded, and it answers every parser in the repository by name.
