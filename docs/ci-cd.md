@@ -39,6 +39,16 @@ gate and must never be merged by hand (#264).
 that writes to `main`. It is described under [Cutting a
 release](#cutting-a-release).
 
+**Where a version string is written, and what is authoritative for each place,
+is catalogued in [ADR 0037](adr/0037-one-version-per-line.md) §B.** The short
+version: a line is `x.y.z`, the six manifests and `install.sh`'s stamp carry it,
+and every other string — the branch name, the git tag, all four version-bearing
+image tags, the version label inside both images, the npm versions and the
+tarball's filename — is asserted against that tree by
+[`scripts/assert-version-agreement.mjs`](../scripts/assert-version-agreement.mjs)
+before it is written. `pnpm versions:assert --expected x.y.z` runs the same
+check by hand.
+
 `housekeeping.yml` is everything on a clock and nothing that gates. Its seven
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
@@ -397,6 +407,26 @@ and a half-verified release is not a verified one.
 
 If the train moved after the approver tested it, the assertion fails with *"the
 train moved; re-approve"* and nothing is published. That is the design working.
+
+**A second assertion runs beside it, and it is about the version rather than
+the commit** ([ADR 0037](adr/0037-one-version-per-line.md) D4). The revision
+label says which commit these bytes came from and is silent about what version
+they think they are, so an image whose six manifests said `9.9.9` used to
+promote cleanly to `x.y.z` and to `latest`. Both images now carry
+`org.opencontainers.image.version`, holding the **line** — which is one label
+for all four version-bearing tags, because `beta-x.y.z`, `x.y.z`, `latest` and
+`x.y.z-beta` are the same bytes carrying the same line. It is read back off the
+pulled image in the same two places the revision is, and a digest that
+self-reports something else is refused before any tag is re-pointed at it.
+
+Two things about that label are worth knowing before you meet them. It is
+written from the checkout's manifests and never from the tag being published,
+because a label taken from the tag would be the tautology the whole chain
+exists to remove. And **an image built before it existed is refused rather than
+tolerated**: the Core images inherit `org.opencontainers.image.version=24.04`
+from the Ubuntu base through `FROM`, and the Panel images carried no version
+label at all, so the first promotion of a train whose images predate this asks
+for a re-run of the train's image jobs and says so on screen.
 
 ## The pull request image, and what it is not
 
