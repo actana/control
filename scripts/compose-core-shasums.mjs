@@ -7,8 +7,15 @@
 // the tool already on their machine — and `install.sh` / `actana update` can
 // verify it with the same file.
 //
+// Every tarball in the directory has to belong to the same release: one
+// version, one tarball per target. `SHA256SUMS` is an asset of a single
+// Release, and a beta's assets and a release's are never confusable
+// (ADR 0036 D20) — a checksum file listing `0.4.1-beta` beside `0.4.1` would
+// be exactly that confusion, published under one name.
+//
 // Usage:
 //   node scripts/compose-core-shasums.mjs --dir <dir> [--expect <n>]
+//                                         [--version <v>]
 //
 // --dir     Directory holding the tarballs (searched one level deep, so
 //           GitHub's per-artifact subdirectories work unflattened).
@@ -16,13 +23,18 @@
 //           full target count (`CORE_TARGETS.length`, spelled out in
 //           release.yml) so a silently missing platform is a red build, not a
 //           checksum file that quietly covers two of three.
+// --version Fail unless the tarballs are that version. Optional: the set is
+//           already required to agree with itself, and this is for a caller
+//           that knows which version it asked for — a beta cut naming
+//           `x.y.z-beta` proves the assets it is about to publish are the
+//           beta's rather than a stale release build left in the directory.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { makeFail, parseArgs, stringFlag } from "./lib/cli.mjs";
 import { digestFile } from "./lib/hash.mjs";
-import { formatShasums } from "./lib/core-tarball.mjs";
+import { assertShasumsSet, formatShasums } from "./lib/core-tarball.mjs";
 
 const fail = makeFail("core-shasums");
 const log = (message) => console.log(`[core-shasums] ${message}`);
@@ -69,11 +81,24 @@ async function main() {
     }
   }
 
+  // One release's worth of tarballs, or nothing. This rejects a stray archive,
+  // a second copy of a target, and — the case this file exists to refuse — a
+  // directory holding two versions at once.
+  let covered;
+  try {
+    covered = assertShasumsSet(tarballs.map((t) => path.basename(t)));
+  } catch (err) {
+    fail(`${err.message} (under ${dir})`);
+  }
+
+  const versionFlag = stringFlag(args, "version", fail);
+  if (versionFlag !== undefined && versionFlag !== covered.version) {
+    fail(`--version ${versionFlag} but the tarballs are ${covered.version}`);
+  }
+
   const entries = new Map();
   for (const tarball of tarballs) {
-    const name = path.basename(tarball);
-    if (entries.has(name)) fail(`two tarballs named ${name} under ${dir}`);
-    entries.set(name, await digestFile(tarball, "sha256"));
+    entries.set(path.basename(tarball), await digestFile(tarball, "sha256"));
   }
 
   // The checksum file sits next to the assets it covers, with bare basenames,
@@ -81,7 +106,7 @@ async function main() {
   const outPath = path.join(dir, "SHA256SUMS");
   fs.writeFileSync(outPath, formatShasums(entries));
 
-  log(`wrote ${outPath}`);
+  log(`wrote ${outPath} — ${covered.version}, covering ${covered.targets.join(", ")}`);
   for (const [name, digest] of [...entries].sort(([a], [b]) => (a < b ? -1 : 1))) {
     log(`  ${digest}  ${name}`);
   }
