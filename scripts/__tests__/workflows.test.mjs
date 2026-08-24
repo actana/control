@@ -11,7 +11,8 @@
 //   ci.yml           gates every pull request, and publishes the train's image
 //                    on every push to `beta/**` (ADR 0023 D41)
 //   release.yml      the tarballs, the images and the GitHub Release — entered
-//                    by `workflow_call` or a dispatch, never by a tag (D40)
+//                    by a dispatch and nothing else: never by a tag, and no
+//                    longer by a `workflow_call` (D40, amended by #326)
 //   promote.yml      the fifth file, and the only thing that advances `main`:
 //                    pause, verify the digest, fast-forward, tag, release
 //                    (ADR 0023, amending D34)
@@ -219,15 +220,20 @@ describe("release.yml's trigger and its two modes (ADR 0023 D17, D26, D28, D40)"
   const source = read("release.yml");
   const body = code(source);
 
-  // D40. The tag trigger is gone and its absence is load-bearing: promote.yml
-  // calls this workflow *and* pushes the tag, so a `push: tags` trigger would
-  // fire a second run — one that would not even serialise against the first,
-  // because the two resolve `github.ref_name` differently.
-  it("has no tag trigger, takes a workflow_call, and keeps its dispatch", () => {
+  // D40, as amended by #326. Two triggers are absent and each absence is
+  // load-bearing. The tag trigger is gone because promote.yml pushes the tag
+  // *and* enters this workflow, so a `push: tags` trigger would fire a second
+  // run that would not even serialise against the first — the two resolve
+  // `github.ref_name` differently. `workflow_call` is gone because a local
+  // `uses:` resolves this file from the caller's SHA; the whole of #326 is
+  // asserted in the block at the bottom of this file.
+  it("takes a dispatch and nothing else — no tag trigger, no workflow_call", () => {
     expect(body).not.toMatch(/^ {2}push:$/m);
     expect(body).not.toMatch(/^ {6}- "v\*"$/m);
-    expect(body).toMatch(/^ {2}workflow_call:$/m);
+    expect(body).not.toMatch(/^ {2}workflow_call:$/m);
     expect(body).toMatch(/^ {2}workflow_dispatch:$/m);
+    // Still entered with a tag, whichever way it was dispatched.
+    expect(body).toMatch(/^ {6}tag:$/m);
   });
 
   // The other half of D40's trap, and the reason the trigger alone is not
