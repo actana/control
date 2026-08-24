@@ -69,7 +69,7 @@ RUN mkdir -p /staged/data
 # `nonroot:x:65532:65532` in /etc/passwd, so the USER below drops privilege
 # exactly as the tag would — and states the posture here instead of inheriting
 # it from a tag name.
-FROM gcr.io/distroless/nodejs24@sha256:2e3b3a96d1d7286c3e4727f9c84b4dc32b6b33e7d7d4425c5a5c8186ad85fa93
+FROM gcr.io/distroless/nodejs24@sha256:2768f33c39e8781c17c9ab9b95c219978774795ac0a68ad7c8392dde89407e91
 
 # `image.source` is what links the image back to its repository for
 # `docker image inspect` and any label-reading registry UI. An ARG rather than
