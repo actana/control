@@ -89,6 +89,7 @@ decides nothing. The four options it takes are its own:
 
 ```bash
 curl -fsSL <install-script-url> | bash -s -- --version 0.1.0
+actana setup
 ```
 
 | Flag | Meaning |
