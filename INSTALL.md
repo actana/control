@@ -65,6 +65,10 @@ npm i -g @actana/cli
 actana install
 ```
 
+**A beta has an equivalent, and it is not a registry version** — the CLI is
+attached to the beta prerelease as a packed tarball and installed from its asset
+URL. See [The CLI on its own](#the-cli-on-its-own).
+
 `install.sh` stays the door for a machine with no Node — the tarball carries its
 own pinned runtime, so the script cannot be replaced by the CLI it installs.
 Both fetch the same way: resolve the release, download it, check it against the
@@ -418,11 +422,22 @@ the choice:
 | --- | --- | --- |
 | the latest release | `raw.githubusercontent.com/actana/control/main/install.sh` | the release of the line `main` carries — in steady state, the newest release |
 | a specific release | `raw.githubusercontent.com/actana/control/v0.4.0/install.sh` | that line's release. A release tag never moves, so this is a pin |
-| the current beta of a line | `raw.githubusercontent.com/actana/control/beta/0.4.1/install.sh` | that line's current beta |
+| the current beta of a line | `raw.githubusercontent.com/actana/control/beta/0.4.1/install.sh` | that line's current beta — **or the newest release, if nobody has cut one yet** |
 | the same beta, by tag | `raw.githubusercontent.com/actana/control/v0.4.1-beta/install.sh` | the same thing as the row above — an alias, **not** a pin |
 
 `install.sh --help` names the line the copy you fetched carries and the rule it
 resolves by, so if you are unsure which door you have, ask it.
+
+**A train with no cut yet falls through to the newest release, quietly.** A beta
+cut is dispatched by a person and never happens on a merge, so *no cut yet* is
+the ordinary state of a young train, not an edge case. The script asks for that
+line's release, then for that line's beta, and if neither exists it installs the
+newest release — a correct answer to *"the line you asked about has published
+nothing"*, but not the beta you went to that URL for. **The script tells you
+which it is before it downloads anything**: its first line is `Installing the
+Actana Core <version> for <target>.`, and a bare `x.y.z` there where you expected
+`x.y.z-beta` is the fall-through. Nothing is wrong with the machine; that line
+has not been cut.
 
 So installing the open train is the two commands you already know, from the
 train's own ref:
@@ -437,6 +452,13 @@ it does for a release, and prints the `actana setup` line to run next. **Run the
 line it printed** — on a machine where `~/.local/bin` is not on your `PATH` it
 is an absolute path rather than a bare `actana`. Nothing about a beta activates
 anything on its own.
+
+**A beta lands beside the release of its line, not on top of it.** The bundle
+goes to `~/.local/share/actana/versions/0.4.1-beta` and `current` points at it;
+`versions/0.4.1` is a different directory and is untouched. The machine reports
+`0.4.1-beta` and cannot report `0.4.1` — the tarball carries its own version in
+its name, its archive root and its manifest, and the CLI installs into whatever
+the manifest says.
 
 **A beta version is `x.y.z-beta`, exactly.** The beta of the 0.4.1 line is
 `0.4.1-beta`, and it stays that string however many times that line is cut.

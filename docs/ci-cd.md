@@ -10,6 +10,14 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 0016](adr/0016-the-0-1-0-shape.md) D34; the sixth is [ADR
 0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again):
 
+> **The sixth arrives with [#318](https://github.com/actana/control/issues/318),
+> which has not merged.** `beta-release.yml` is decided (0036 D9, D10) and not
+> yet written to `.github/workflows/`, so its row below and its link describe
+> the workflow that lands rather than one that runs today —
+> `scripts/__tests__/workflows.test.mjs` still asserts the five-plus-one
+> inventory and turns red on that file's first commit, which is the same
+> sentence from the other side. Everything else in this table is live.
+
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
@@ -353,7 +361,11 @@ it.
 
 Seven published tag classes, each answering exactly one question ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md) D7, extended by [ADR
-0036](adr/0036-the-beta-release-channel.md) D7):
+0036](adr/0036-the-beta-release-channel.md) D7). **The two `-beta` rows are
+decided rather than live**: the git tag arrives with
+[#318](https://github.com/actana/control/issues/318) and the image tag with
+[#319](https://github.com/actana/control/issues/319). The other five are
+published by merged workflows today.
 
 | Tag | Repository | Published when | Moves | Arch |
 | --- | --- | --- | --- | --- |
@@ -413,6 +425,14 @@ between cuts however much the train moves underneath it.
   fails the run if it is not set. `install.sh` and the in-product update checker
   both read `/releases/latest`, which excludes prereleases, so a single missing
   flag would make every running Core and Panel advertise an unreleased build.
+  D11 states that as one sentence because it is 0023 D9's own; after
+  [#317](https://github.com/actana/control/issues/317) the two readers no longer
+  reach the endpoint the same way. The update checker still reads it directly
+  and is exposed in full. `install.sh` reaches it only at D2's **step 4**, once
+  `v<line>` and `v<line>-beta` have both 404'd — so a metal install on a line
+  that has a release never sees the flag at all, and the exposure is the update
+  checker's. Which is the reader that reaches every running machine, so nothing
+  about the requirement softens.
 - **"Version tags in this repository are immutable" is no longer true as a
   sentence**, and 0036 D7 says which half survives: a **release** tag is
   immutable and is the record of what shipped (0023 D44); a **beta** tag is a
