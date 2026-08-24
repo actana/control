@@ -93,7 +93,7 @@ curl -fsSL <install-script-url> | bash -s -- --version 0.1.0
 
 | Flag | Meaning |
 |---|---|
-| `--version <v>` | Install this exact release instead of the latest |
+| `--version <v>` | Install this exact version instead of the latest release. Takes a release (`0.4.0`) or a beta (`0.4.1-beta`) |
 | `--repo <slug>` | Install from another GitHub repository |
 | `--base-url <url>` | Fetch releases from somewhere else — how the tests run hermetically |
 | `--help` | Show what the script does and the options it owns |
@@ -125,6 +125,10 @@ a checksum that does not match — the installer stops before extracting or
 running a single byte of the download, and says what to do about it. A failed
 run leaves the machine as it found it: nothing under the install root, no
 launcher, no half-placed tree.
+
+**To install a beta instead of a release**, fetch the script from the train's
+own ref rather than from `main`. It is the same two commands — see [Installing a
+beta](#installing-a-beta).
 
 The rest of this page is the same install done by hand, and how to operate a
 Core afterwards.
@@ -164,6 +168,10 @@ you already have, or work on a machine with no outbound network to GitHub.
 Pick the tarball matching the machine's architecture from the GitHub Release —
 `linux-x64`, `linux-arm64` or `mac-arm64` — plus the `SHA256SUMS` asset from
 the same release. Those four files are the whole release.
+
+A beta prerelease carries the same four plus a copy of `install.sh` and the CLI
+tarball, and the version in every asset name is `x.y.z-beta`. Verify it exactly
+as below — `SHA256SUMS` covers the three Core tarballs there too.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -392,6 +400,146 @@ System Settings → Network → Firewall → Options if you dismissed it.
 
 ---
 
+## Installing a beta
+
+A beta train installs on metal exactly the way a release does — same two
+commands, same checksum verification, same layout — and the model is [ADR
+0036](docs/adr/0036-the-beta-release-channel.md). The only thing that changes is
+which URL you fetch the script from.
+
+**The ref you fetch from is the channel.** A script read off a pipe cannot see
+the URL it came from, so what it installs is decided by the copy of the file on
+that ref rather than by a flag:
+
+| Want | Fetch `install.sh` from | Installs |
+| --- | --- | --- |
+| the latest release | `raw.githubusercontent.com/actana/control/main/install.sh` | the release of the line `main` carries — in steady state, the newest release |
+| a specific release | `raw.githubusercontent.com/actana/control/v0.4.0/install.sh` | that line's release. A release tag never moves, so this is a pin |
+| the current beta of a line | `raw.githubusercontent.com/actana/control/beta/0.4.1/install.sh` | that line's current beta |
+| the same beta, by tag | `raw.githubusercontent.com/actana/control/v0.4.1-beta/install.sh` | the same thing as the row above — an alias, **not** a pin |
+
+So installing the open train is the two commands you already know, from the
+train's own ref:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/actana/control/beta/0.4.1/install.sh | bash
+actana setup
+```
+
+`install.sh` places the bundle and the `actana` launcher and stops, exactly as
+it does for a release, and prints the `actana setup` line to run next. **Run the
+line it printed** — on a machine where `~/.local/bin` is not on your `PATH` it
+is an absolute path rather than a bare `actana`. Nothing about a beta activates
+anything on its own.
+
+**A beta version is `x.y.z-beta`, exactly.** The beta of the 0.4.1 line is
+`0.4.1-beta`, and it stays that string however many times that line is cut.
+There is no counter, no `.1`, no run number and no short sha after the word
+`beta`, on the git tag, the Release, the tarball names, the image tags or
+anywhere else. If you have seen a form like `0.4.1-beta.1`, it is not something
+this project publishes.
+
+**That train branch stops existing when the line promotes.** It is deleted by
+the promotion rather than left to quietly change meaning, so a URL that worked
+yesterday and 404s today is the line having shipped — install the release from
+`main`.
+
+### The only way to pin a beta is `--version`
+
+The two beta rows in the table above are **not pins, and cannot be**. The
+`vx.y.z-beta` tag moves to a new commit on every cut, and the file at that ref
+carries the *line* rather than the beta, so once the line has a release both
+rows install the release. That is the design, not a wrinkle in it.
+
+The pinned form is the explicit version flag, which wins over everything and is
+unaffected by any of the above:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash -s -- --version 0.4.1-beta
+actana setup
+```
+
+`ACTANA_VERSION=0.4.1-beta` does the same thing for a provisioning system where
+flags are awkward. A beta's own immutable record is what it has always been —
+the commit sha, the image digest and the published `SHA256SUMS`.
+
+### `actana update` will not move a beta machine off its line
+
+A bare `actana update` on a machine running `0.4.1-beta` **does not** replace
+the tree, and this is worth knowing before you install one. `update` resolves
+the newest *release*, and a machine on a prerelease that is newer than every
+release is left where it is and told so rather than being quietly moved
+backwards onto an older version.
+
+What does happen is the notice: when `0.4.1` — the release of the line this
+machine is on — is published, `actana status` says so, once, on its usual
+throttle. That is the moment to move, and the ordinary `actana update` is what
+moves you.
+
+Two consequences worth stating plainly:
+
+- **`actana update` is not a way to follow a beta line.** There is no "update me
+  to the newest beta of my train". To take a newer cut of the same beta, run the
+  install one-liner again from the train's ref — re-running is always safe, and
+  every paired client stays paired.
+- **An explicit pin is still honoured.** `actana update --version 0.4.0` on a
+  beta machine does exactly what you asked, including going backwards. An
+  operator's explicit decision is not second-guessed.
+
+### The CLI on its own
+
+A machine that only *drives* Cores — no daemon, no Core on the box — installs
+the CLI from npm, and a beta has an equivalent. It is **not** a registry
+version: nothing is published to registry.npmjs.org by a beta cut, and `latest`
+and `next` on `@actana/cli` are untouched by one. The CLI is packed and attached
+to the beta prerelease, and npm installs a tarball URL exactly as it installs a
+registry spec:
+
+```bash
+npm i -g https://github.com/actana/control/releases/download/v0.4.1-beta/actana-cli-0.4.1-beta.tgz
+```
+
+Compare that with the release path, which is the ordinary one:
+
+```bash
+npm i -g @actana/cli
+```
+
+The reason for the asymmetry is npm's, not this project's: a version number is
+burned by its first publish and cannot be reused, and a beta string is fixed for
+the life of its line and is designed to be cut repeatedly. A registry publish
+would work once per train and fail every time after it.
+
+### What a beta ships, and what it does not
+
+A beta cut is requested by a person — it never happens on a merge — and it
+publishes a prerelease GitHub Release on the `vx.y.z-beta` tag, never marked
+latest, with every asset replaced in place on each cut:
+
+- the same **three Core tarballs** a release builds — `linux-x64`,
+  `linux-arm64`, `mac-arm64` — at version `x.y.z-beta`,
+- **`SHA256SUMS`** over exactly those three,
+- a copy of **`install.sh`**, so the script and the bytes it fetches ship
+  together. It is a copy and not a door: the install URLs are the ones in the
+  table above,
+- the **CLI tarball** described above,
+- **`x.y.z-beta` container images** in `actana/panel` and `actana/core`,
+  retagged from the train's own `beta-x.y.z` digest with nothing rebuilt.
+
+And what it does not:
+
+- **No Intel Mac build.** There is no `mac-x64` asset on a beta for the same
+  reason there is none on a release — there is no such target, and an Intel Mac
+  runs its Core from the container image.
+- **No signing and no notarization**, exactly as a release. Integrity is the
+  published checksums, which `install.sh` verifies before it extracts anything.
+- **No provenance attestation of any kind.** A release's npm packages carry one;
+  a beta publishes nothing to the registry, so there is nothing attested on this
+  path. `SHA256SUMS` is what stands in its place, and nothing here should be
+  read as more than that.
+
+---
+
 ## Operating a Core
 
 ```bash
@@ -427,11 +575,16 @@ a health check in scripts.
 actana update
 ```
 
-`update` asks the release channel for the newest version, downloads the tarball
-for this machine, **verifies it against the release's published `SHA256SUMS`**,
-installs it beside the running one, and repoints `current` at it before
-restarting the daemon. A download that fails its checksum aborts before
+`update` asks the release channel for the newest **release**, downloads the
+tarball for this machine, **verifies it against the release's published
+`SHA256SUMS`**, installs it beside the running one, and repoints `current` at it
+before restarting the daemon. A download that fails its checksum aborts before
 anything is touched — the Core keeps running the version it was on.
+
+A machine running a beta is left alone by a bare `update` rather than moved back
+onto an older release, and is told when its own line's release arrives — see
+[`actana update` will not move a beta machine off its
+line](#actana-update-will-not-move-a-beta-machine-off-its-line).
 
 Pair a Panel that reports "needs update" with the exact version it wants:
 
@@ -449,8 +602,11 @@ You do not have to go looking. Once a day this Core asks
 `https://api.github.com/repos/actana/control/releases/latest` whether a newer
 release exists; if there is one, `actana status` gains an availability line
 naming it and the command above, and the daemon writes the same fact to its log
-once. Nothing else happens — there is no updater running in the background, and
-nothing is downloaded until you type `actana update` yourself.
+once. That endpoint excludes prereleases, so a beta never shows up here as
+something to move to — but the release of a beta machine's own line does, which
+is exactly the notice an operator running a beta needs. Nothing else happens —
+there is no updater running in the background, and nothing is downloaded until
+you type `actana update` yourself.
 
 The answer is cached for 24 hours under your data directory, so asking `status`
 a hundred times costs one request. If the check fails — no network, the request
