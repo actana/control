@@ -964,11 +964,42 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     expect(job).toContain(".head_sha");
     expect(job).toMatch(/if \[\[ "\$run_sha" != "\$HEAD_SHA" \]\]/);
     expect(job).toContain("::error title=The release run is not the promoted commit::");
-    // Found by run id, not by head SHA: a re-dispatch of the same tag carries
-    // the same head SHA as the run before it, so a head-SHA match would find
-    // the run it is replacing and assert against itself.
+  });
+
+  // The run is found by head SHA **and** id, and neither alone is enough — each
+  // of the two is the other's blind spot, and each blind spot lands the
+  // repository in a half-run promotion, which is the state this whole change
+  // exists to make unreachable.
+  //
+  // Without `head_sha`: `concurrency` is keyed on the train, so two promotions
+  // of different trains legitimately overlap — the hotfix path is exactly that
+  // — and the later one can adopt the earlier one's release run, fail its own
+  // head-SHA assertion, and abort *after* `advance`, while the release it did
+  // dispatch runs unwatched and `retire-train` never fires for a release that
+  // published.
+  //
+  // Without the id window: a re-dispatch of the same tag shares its head SHA
+  // with the run it replaces, so the query would match the run being replaced.
+  //
+  // And `before` has to be a maximum over a page rather than element zero. The
+  // listing is ordered by `created_at`, and "created last" is not "highest id"
+  // when two runs are queued at once — an id above a stale watermark is how a
+  // foreign run qualifies in the first place.
+  it("finds its own release run by head SHA and id together, not by either alone", () => {
+    const job = code(jobBlock(promote, "release"));
+    expect(job, "the run query is not pinned to the promoted commit").toContain(
+      "head_sha=$HEAD_SHA",
+    );
     expect(job).toMatch(/select\(\.id > \$before\)/);
-    expect(job).toContain("min_by(.id)");
+    expect(job, "min_by takes the oldest qualifying run, not this job's own").toContain(
+      "max_by(.id)",
+    );
+    expect(job, "min_by is the pre-#326-review shape").not.toContain("min_by(.id)");
+    // The watermark: a maximum over a page, never `[0]`.
+    expect(job).toContain("[.workflow_runs[].id] | max // 0");
+    expect(job, "before is element zero, which is newest-created and not highest id").not.toMatch(
+      /workflow_runs\[0\]\.id/,
+    );
   });
 
   // A dispatch is fire-and-forget by nature, and a `release` job that returned
@@ -979,7 +1010,7 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     const job = code(jobBlock(promote, "release"));
     expect(job).toContain('[[ "$status" == "completed" ]] && break');
     expect(job).toContain("::error title=The release failed::");
-    expect(job).toContain("::error title=The release did not finish in time::");
+    expect(job).toContain("::error title=The release outlived this job's wait::");
     expect(job).toContain("::error title=The dispatch created no release run::");
     expect(job).not.toContain("continue-on-error");
     for (const downstream of ["release-line", "retire-train"]) {
@@ -1002,6 +1033,19 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     // way to publish at all.
     expect(job).toContain("::error title=The train's release.yml cannot be dispatched::");
     expect(job).toContain("::error title=The train's release.yml takes no tag input::");
+    // Scoped to the `workflow_dispatch:` → `inputs:` block, never matched by
+    // indent alone. Six spaces is also the depth of `with:` keys on a
+    // reusable-workflow call, and `release.yml` carries `image:` and
+    // `source_tag:` there — so a bare indent match passes a train that renamed
+    // the input while still passing a `tag:` to `container-image.yml`, which is
+    // the one thing this step exists to refuse.
+    expect(job, "the tag-input check matches on indent alone").not.toMatch(
+      /grep -qE '\^ \{6\}tag:'/,
+    );
+    expect(job).toContain("dispatch_inputs=");
+    expect(job).toMatch(/\/\^ {2}workflow_dispatch:\[ \\t\]\*\$\//);
+    expect(job).toMatch(/\/\^ {4}inputs:\[ \\t\]\*\$\//);
+    expect(job).toContain("grep -qx 'tag'");
     // The credentials `release.yml` refuses on, refused earlier.
     for (const secret of ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN", "NPM_TOKEN"]) {
       expect(job, `preflight does not check ${secret}`).toContain(`secrets.${secret}`);
@@ -1036,6 +1080,43 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
     ]);
   });
 
+  // The cap on the wait, and the job that carries it. A wait that outlives its
+  // own job, or a job whose timeout fires first, both turn a *successful* slow
+  // release into a stranded promotion: the step exits non-zero and
+  // `release-line` and `retire-train` are skipped for a release that published
+  // everything. The old `uses:` shape had no aggregate wall-clock cap at all,
+  // so this is a failure mode the change introduced and has to carry.
+  //
+  // Asserted as a relationship rather than as two literals: what has to hold is
+  // that the deadline fires first — so this step's message, which names the run
+  // and the runbook, is what an operator reads instead of GitHub's bare
+  // execution-time error — and that the ceiling is generous enough that a
+  // queued macOS runner cannot reach it.
+  it("waits inside the job that carries the wait, and not up to its edge", () => {
+    const block = jobBlock(promote, "release");
+    const timeout = /^ {4}timeout-minutes: (\d+)$/m.exec(block);
+    expect(timeout, "the release job declares no timeout").not.toBeNull();
+    const deadline = /SECONDS \+ (\d+)/.exec(code(block));
+    expect(deadline, "the wait has no deadline").not.toBeNull();
+    const timeoutSeconds = Number(timeout[1]) * 60;
+    const deadlineSeconds = Number(deadline[1]);
+    expect(deadlineSeconds, "the wait outlives its own job").toBeLessThan(timeoutSeconds);
+    expect(
+      timeoutSeconds - deadlineSeconds,
+      "the wait leaves no room for its own error message",
+    ).toBeGreaterThanOrEqual(300);
+    // Four hours is already past any plausible release; six is GitHub's own
+    // ceiling for a job. A number below this is one a queued macOS runner can
+    // reach, and reaching it strands a promotion that succeeded.
+    expect(timeoutSeconds, "the release wait is capped below a plausible release").toBeGreaterThanOrEqual(
+      4 * 60 * 60,
+    );
+    // And the timeout is not reported as a failed release, because it is not
+    // one — the run may still publish everything.
+    expect(code(block)).toContain("::error title=The release outlived this job's wait::");
+    expect(code(block)).toContain("**The release has not failed**");
+  });
+
   // The recovery, and where it lives. A promotion that stops after `advance`
   // cannot be re-run from the top by design, so the way back is a document —
   // and a document nobody can find is not a recovery. It is asserted to sit
@@ -1061,6 +1142,21 @@ describe("the promotion runs the promoted commit's own release workflow (#326)",
       "git push origin --delete",
     );
     expect(recovery, "does not name the release line").toContain("refs/heads/$line");
+    // Re-running the retire step is the normal thing to do, and `ls-remote`
+    // answers empty once the branch is gone. Without this arm the ancestry
+    // check errors into the failure branch and tells an operator that work is
+    // at risk when there is nothing left to do.
+    expect(recovery, "the retire step misreports an already-retired train").toContain(
+      'if [[ -z "$tip" ]]; then',
+    );
+    expect(recovery).toContain("already retired");
+    // And the caveat that the guarantee arrives one promotion late. A promotion
+    // runs the default branch's workflow files as they stood when the run was
+    // created, so the promotion that ships this change still runs the shape it
+    // removes. Harmless, and invisible unless it is written down.
+    expect(recovery, "does not say the first promotion after this still runs the old shape").toContain(
+      "first promotion after this change",
+    );
     // And the workflows point at it rather than leaving it to be found.
     expect(code(promote), "promote.yml does not name the recovery").toContain(
       "When a promotion half-runs",
