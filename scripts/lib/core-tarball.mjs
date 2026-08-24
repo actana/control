@@ -222,16 +222,134 @@ export function formatShasums(entries) {
 }
 
 /**
+ * The version string a Core tarball is allowed to carry.
+ *
+ * `x.y.z` is a release. `x.y.z-beta` is a beta, and it is exactly that on
+ * every surface — the git tag, the Release, the image tags, the asset filename
+ * — with no counter, no run number and no short sha after the word (ADR 0036
+ * C1). A backport's release candidate keeps its identifier (`1.2.4-rc.1`, ADR
+ * 0023 D30), so the rule is not "no prerelease": it is that a prerelease which
+ * calls itself a beta is the one fixed string and nothing longer.
+ *
+ * The `v` prefix belongs to tags. It is not part of a version here — the asset
+ * name, the archive root and the manifest all carry the bare string — so a
+ * caller reading a tag strips it before this.
+ */
+const CORE_VERSION_PATTERN = /^(\d+\.\d+\.\d+)(?:-([0-9A-Za-z.-]+))?$/;
+
+/** The beta channel's whole prerelease identifier (ADR 0036 C1). */
+export const BETA_PRERELEASE = "beta";
+
+/**
+ * Split a Core version into `{ version, line, prerelease }`, or throw naming
+ * the rule it broke.
+ *
+ * Every surface goes through this: `tarballName`, `tarballRootDirName` and
+ * `buildManifest` all call it. The version appears in three places at once and
+ * that is the property ADR 0036 D18 keeps rather than removes — so the one
+ * thing that must not exist is a path by which a string reaches one of the
+ * three without passing the same gate as the other two.
+ */
+export function assertCoreVersion(version) {
+  const match = typeof version === "string" ? CORE_VERSION_PATTERN.exec(version) : null;
+  if (!match) {
+    throw new Error(
+      `unusable Core version: ${JSON.stringify(version)} — expected x.y.z, x.y.z-beta or ` +
+        `x.y.z-<prerelease>, with no leading v`,
+    );
+  }
+  const [, line, prerelease] = match;
+  if (
+    prerelease !== undefined &&
+    prerelease.toLowerCase().startsWith(BETA_PRERELEASE) &&
+    prerelease !== BETA_PRERELEASE
+  ) {
+    throw new Error(
+      `counted beta version: ${version} — a beta is exactly ${line}-${BETA_PRERELEASE}, with ` +
+        `nothing after the word, on every surface (ADR 0036 C1)`,
+    );
+  }
+  return { version, line, prerelease: prerelease ?? null };
+}
+
+/** Whether a version names this line's beta rather than its release. */
+export function isBetaVersion(version) {
+  return assertCoreVersion(version).prerelease === BETA_PRERELEASE;
+}
+
+/**
  * Tarball basename for a release. `version` is the bare semver (no `v` prefix)
- * so the name matches what `actana --version` reports.
+ * so the name matches what `actana --version` reports — and, for a beta, the
+ * `x.y.z-beta` the tag and the manifest carry unchanged.
  */
 export function tarballName(version, target) {
+  assertCoreVersion(version);
   return `actana-core-${version}-${target}.tar.gz`;
 }
 
 /** Top-level directory inside a tarball — extraction never litters the CWD. */
 export function tarballRootDirName(version, target) {
+  assertCoreVersion(version);
   return `actana-core-${version}-${target}`;
+}
+
+/**
+ * A target name as it appears in an asset name: two lowercase words. Kept
+ * loose, because `findTarget` below is what decides which of them exist.
+ */
+const TARBALL_NAME_PATTERN = /^actana-core-(.+)-([a-z]+-[a-z0-9]+)\.tar\.gz$/;
+
+/**
+ * Split a tarball basename back into `{ version, target }`, or null when the
+ * name is not one this build could have produced — an unknown target, a
+ * version this repository refuses to build, or a file that is simply not ours.
+ *
+ * The inverse of `tarballName`, which the unit test pins by round-tripping the
+ * pair. `install.sh` derives the same two fields from the same name in POSIX
+ * sh (ADR 0016 D29), which is why this is a parser rather than a `split`.
+ */
+export function parseTarballName(name) {
+  const match = TARBALL_NAME_PATTERN.exec(name);
+  if (!match) return null;
+  const [, version, target] = match;
+  if (!findTarget(target)) return null;
+  try {
+    assertCoreVersion(version);
+  } catch {
+    return null;
+  }
+  return { version, target };
+}
+
+/**
+ * The one version a `SHA256SUMS` covers, and the targets it covers it for.
+ *
+ * A release's checksum file and a beta's are the same shape over different
+ * bytes, and the one thing neither may be is a mixture: `SHA256SUMS` is an
+ * asset of a single Release, and a file listing `0.4.1` and `0.4.1-beta` side
+ * by side is exactly the confusion ADR 0036 D20 rules out. Two tarballs
+ * claiming one target are refused for a duller reason — one of them is a
+ * leftover, and there is no way to tell which.
+ */
+export function assertShasumsSet(names) {
+  const byTarget = new Map();
+  let version;
+  for (const name of names) {
+    const parsed = parseTarballName(name);
+    if (!parsed) throw new Error(`not a Core tarball asset name: ${name}`);
+    if (version === undefined) {
+      version = parsed.version;
+    } else if (parsed.version !== version) {
+      throw new Error(
+        `two versions in one checksum set: ${version} and ${parsed.version} (${name})`,
+      );
+    }
+    const seen = byTarget.get(parsed.target);
+    if (seen) throw new Error(`two ${parsed.target} tarballs: ${seen} and ${name}`);
+    byTarget.set(parsed.target, name);
+  }
+  if (version === undefined) throw new Error("no Core tarballs to cover");
+  return { version, targets: [...byTarget.keys()] };
 }
 
 /**
@@ -262,6 +380,7 @@ export function parseCoreLinkProtocolVersion(source) {
 export function buildManifest({ version, protocolVersion, target, nodeVersion }) {
   const descriptor = findTarget(target);
   if (!descriptor) throw new Error(`unknown target: ${target}`);
+  assertCoreVersion(version);
   return {
     name: "actana-core",
     version,
@@ -271,6 +390,51 @@ export function buildManifest({ version, protocolVersion, target, nodeVersion })
     arch: descriptor.arch,
     nodeVersion,
   };
+}
+
+/**
+ * Assert that a built tarball says one thing about itself in all three of the
+ * places it says anything: the asset name, the directory the archive extracts
+ * to, and the `core-manifest.json` at that directory's root.
+ *
+ * This is the invariant ADR 0036 D18 leaves standing. A Core tarball
+ * self-identifies — that is why a beta's bytes cannot be promoted to a release
+ * by renaming them — and the value of a self-identifying artifact is exactly
+ * zero if the three statements can disagree. Both consumers rely on them
+ * agreeing: `install.sh` extracts and then looks for `bin/actana` under
+ * `actana-core-$VERSION-$TARGET`, refusing the download if it is not there
+ * (ADR 0016 D29), and `runActanaSetup` installs into `versions/<version>` off
+ * the manifest and refuses a tree whose platform disagrees with the machine.
+ * Split those two apart and an operator who downloaded a beta could end up
+ * with a machine reporting a release version, which is the one outcome
+ * ADR 0036 D20 rules out.
+ *
+ * Returns the `{ version, target }` all three agree on.
+ */
+export function assertTarballSurfaces({ assetName, rootDirName, manifest }) {
+  const parsed = parseTarballName(assetName);
+  if (!parsed) throw new Error(`not a Core tarball asset name: ${assetName}`);
+
+  const expectedRoot = tarballRootDirName(parsed.version, parsed.target);
+  if (rootDirName !== expectedRoot) {
+    throw new Error(
+      `${assetName} extracts to ${rootDirName}, not ${expectedRoot} — the asset name and the ` +
+        `archive root disagree`,
+    );
+  }
+  if (manifest.version !== parsed.version) {
+    throw new Error(
+      `${assetName} carries a manifest for ${manifest.version} — the asset name and the ` +
+        `manifest disagree about the version`,
+    );
+  }
+  if (manifest.target !== parsed.target) {
+    throw new Error(
+      `${assetName} carries a manifest for ${manifest.target} — the asset name and the ` +
+        `manifest disagree about the target`,
+    );
+  }
+  return parsed;
 }
 
 /**

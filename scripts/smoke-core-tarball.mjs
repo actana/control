@@ -6,6 +6,14 @@
 // Node scrubbed from PATH, then makes the shared boot-and-dial assertion
 // (see scripts/lib/core-smoke.mjs).
 //
+// It also checks the thing a Core tarball is that a container image is not:
+// self-identifying. The asset name, the directory the archive extracts to and
+// the `core-manifest.json` at its root each state the version and the target,
+// the two consumers read different ones, and this is where they are proven to
+// be the same string on real bytes rather than in the builder's own variables
+// (ADR 0036 D18, D20). A beta is where it matters most — `0.4.1-beta` on all
+// three surfaces is what stops a beta install reporting `0.4.1`.
+//
 // This is the acceptance criterion of the per-platform tarball work stated as
 // a test: "extracting a tarball on its target platform and running the
 // launcher boots a dialable Core with no system Node." If a future change
@@ -34,6 +42,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
+import { assertTarballSurfaces } from "./lib/core-tarball.mjs";
 import {
   assertBootsAndDials,
   coreSmokeEnv,
@@ -128,6 +137,21 @@ async function main() {
   const installRoot = extractTarball(tarball, extractDir);
   const manifest = readManifest(installRoot);
 
+  // `install.sh` finds the extracted tree by rebuilding its name from the
+  // version and target it downloaded, and `actana setup` installs into
+  // `versions/<manifest.version>`. The two consumers therefore agree only for
+  // as long as the three surfaces do.
+  let surfaces;
+  try {
+    surfaces = assertTarballSurfaces({
+      assetName: path.basename(tarball),
+      rootDirName: path.basename(installRoot),
+      manifest,
+    });
+  } catch (err) {
+    die(err.message);
+  }
+
   const launcher = path.join(installRoot, "bin", "actana");
   if (!fs.existsSync(launcher)) die("tarball has no bin/actana launcher");
   if (!(fs.statSync(launcher).mode & 0o111)) {
@@ -137,6 +161,7 @@ async function main() {
   const scrubbedPath = pathWithoutNode(process.env.PATH);
 
   log(`tarball=${tarball}`);
+  log(`asset name, archive root and manifest agree: ${surfaces.version} ${surfaces.target}`);
   log(
     `manifest version=${manifest.version} protocol=${manifest.protocolVersion} ` +
       `target=${manifest.target} node=${manifest.nodeVersion}`,

@@ -47,6 +47,27 @@
 // because the Core's own bundle has always treated it that way and the tarball
 // already ships one copy in `app/node_modules`.
 //
+// **Since #320 the `external` array also decides whether a beta installs at
+// all**, and that is worth knowing here rather than only in `scripts/`. ADR
+// 0036 D15 publishes nothing to registry.npmjs.org on the beta path — a beta
+// version string is `x.y.z-beta` with no counter (C1) and npm burns a version
+// on its first publish, so the second cut of the same beta could not publish —
+// and D16 attaches the packed CLI to the prerelease as an asset instead,
+// installed with `npm i -g <asset-url>`. `scripts/rehearse-npm-publish.mjs`
+// drops `@actana/sdk` from that asset's manifest, in the workflow's checkout
+// and never committed, precisely because this array does not name it and the
+// SDK's code is therefore *in* the bundle below.
+//
+// So adding `@actana/sdk` here would not merely turn a bundle into a
+// dependency, as it would for `@actana/shared`: it would turn a stranger's
+// `npm i -g` of a beta asset into a resolution of `@actana/sdk@x.y.z-beta`
+// against a registry that has never had that version and, under D15, never
+// will. Three checks stand in the way — `no-local-escape.test.ts` in this
+// package, `externalNames` in `scripts/lib/npm-packages.mjs`, and
+// `assertBundleInlines` on the packed bundle's own bytes — and the last of
+// them reads the artifact rather than this file, because what ships is what
+// matters.
+//
 // `bin/actana.mjs` is the shim npm links as `actana`; it loads the ESM file
 // this writes. Two files rather than one because the shim is a *published
 // path* — renaming it renames the command's entry point in every
