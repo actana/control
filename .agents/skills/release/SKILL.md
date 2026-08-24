@@ -20,18 +20,21 @@ gh workflow run promote.yml --repo actana/control -f train=beta/0.1.0
 ```
 
 Pushing `v0.1.0` by hand does nothing at all. `release.yml` has no `push: tags`
-trigger and is reached by `workflow_call` from `promote.yml` (D40) — the tag is
-pushed by the promotion, as a record, *after* the fast-forward and *before* the
-call. Keeping a tag trigger beside the `workflow_call` would fire two release
-runs for one promotion that could not even block each other, because
-`github.ref_name` is the tag under a tag push and the caller's ref under a
-`workflow_call`, so the two would take different concurrency keys and race to
-build the same tarballs and create the same Release.
+trigger and no `workflow_call` trigger either (D40, as amended by
+[#326](https://github.com/actana/control/issues/326)) — `promote.yml` pushes
+the tag as a record *after* the fast-forward, and then **dispatches
+`release.yml` at that tag**, which is what makes the release run the promoted
+commit's own workflow files rather than the default branch's. Keeping a tag trigger beside the dispatch would fire two release runs for
+one promotion that could not even block each other, because `github.ref_name`
+differs between them, so the two would take different concurrency keys and race
+to build the same tarballs and create the same Release.
 
-The by-hand entry point that does exist is `release.yml`'s own dispatch —
-`gh workflow run release.yml -f tag=v0.1.0`. It re-runs a whole release, and it
-is the only way a backport releases at all. It is not how a normal release
-starts. See
+`release.yml` has **one** trigger — its dispatch — and `promote.yml` uses it
+too, at the tag it has just pushed (D40, as amended by #326). The by-hand form
+is `gh workflow run release.yml --ref v0.1.0 -f tag=v0.1.0`, and the `--ref` is
+not optional: it decides which copy of `release.yml` runs, where `-f tag`
+decides what is released. It re-runs a whole release, and it is the only way a
+backport releases at all. It is not how a normal release starts. See
 [`docs/ci-cd.md` § "What `release.yml` does with the tag"](../../../docs/ci-cd.md#what-releaseyml-does-with-the-tag).
 
 ## Before you dispatch the promotion
@@ -92,7 +95,7 @@ consequence, so the run enters **waiting** within seconds of the dispatch and
 stays there until a required reviewer approves it in the run's UI.
 
 **Nothing has happened yet when it waits.** No digest is verified, `main` does
-not advance, no tag is pushed, `release.yml` is never called — so no image
+not advance, no tag is pushed, `release.yml` is never dispatched — so no image
 moves, no `:latest` moves, no package reaches npm, and no GitHub Release
 appears. The old shape published everything downstream of the approval; this
 shape *decides* everything downstream of it, and that is the difference that
@@ -238,10 +241,17 @@ rather than a checksum file that quietly covers part of one.
 - **Red on `advance`** — something moved `main` while the promotion was
   running, so the fast-forward is no longer possible. A squash is not the
   fallback (D5); the train needs re-cutting from `main`.
-- **Red before anything builds, inside `release.yml`** — a missing Docker Hub
-  or npm secret; `resolve` says so. By this point `main` has already advanced
-  and the tag exists, so recovery is `gh workflow run release.yml -f tag=vx.y.z`
-  once the secret is there, not a re-run of the promotion.
+- **Red on `preflight`** — the release could not have run: a missing Docker Hub
+  or npm secret, a promoted commit with no dispatchable `release.yml`, a version
+  tag already naming another commit. Nothing has been published and `main` has
+  not moved; that is the point of the job (#326).
+- **Red before anything builds, inside `release.yml`** — the same class of
+  cause, reached on a hand-driven dispatch rather than a promotion. On the
+  promotion path `preflight` gets there first; if it did not, `main` has already
+  advanced and the tag exists, so recovery is
+  `gh workflow run release.yml --ref vx.y.z -f tag=vx.y.z` once the secret is
+  there, not a re-run of the promotion — see
+  [`docs/ci-cd.md` § "When a promotion half-runs"](../../../docs/ci-cd.md#when-a-promotion-half-runs).
 - **Red on `installer-e2e`** — the arm64 one-liner could not install the tarball
   it just built. `github-release` needs it, so no assets are attached.
 - **Nothing red, nothing finishing** — `pause` is waiting for a reviewer. That
