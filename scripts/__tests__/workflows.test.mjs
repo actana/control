@@ -598,8 +598,9 @@ describe("housekeeping.yml", () => {
     expect(crons).toEqual([DAILY, WEEKLY]);
   });
 
-  it("runs stale daily and everything else weekly", () => {
+  it("runs stale and open-train daily, everything else weekly", () => {
     expect(jobBlock(source, "stale")).toContain(DAILY);
+    expect(jobBlock(source, "open-train")).toContain(DAILY);
     for (const job of [
       "base-pins",
       "release-ref",
@@ -664,7 +665,7 @@ describe("housekeeping.yml", () => {
 
   // D37, D38 and D42. All three are red for reasons no PR author caused and no
   // PR author can fix, so the output is an issue, not a failed build.
-  it.each(["dev-audit", "harness-canary", "release-detector"])(
+  it.each(["dev-audit", "harness-canary", "release-detector", "open-train"])(
     "opens an issue rather than gating (%s)",
     (name) => {
       const job = jobBlock(source, name);
@@ -688,6 +689,78 @@ describe("housekeeping.yml", () => {
   });
 });
 
+// ADR 0023 D25, as amended by #325 — nothing cuts a train, and the invariant is
+// a mechanism rather than a sentence in a runbook.
+//
+// The cut used to be a job here that guessed `beta/<next-minor>.0` from the
+// version it had just promoted and pushed it. Cuts are administrative — a
+// person names the train — so the job, the guess and the output that carried it
+// are gone. What the job was holding up is not: *a train is always open, so work
+// can always be proposed*. These tests assert both halves, because "we deleted
+// it" and "we deleted it and something still holds the invariant" look
+// identical in a diff.
+//
+// The assertions are written positively wherever they can be. #325's last
+// acceptance criterion is that the deleted output's name appears nowhere in the
+// repository outside the ADR amendments that record it, and a test that greps
+// for the string in order to refuse it would be the one place it survived.
+describe("no automatic train cut (ADR 0023 D25, as amended by #325)", () => {
+  const source = read("promote.yml");
+
+  it("resolves facts and invents no version", () => {
+    const outputs = [...jobBlock(source, "resolve").matchAll(/^ {6}([a-z_]+): \$\{\{ steps\.facts/gm)].map(
+      (m) => m[1],
+    );
+    // `release_line` is derived — from the train's own name, which is a fact
+    // about the branch that was handed in rather than a version invented from
+    // it (D27). Every other entry is read. Asserted as an exact list: an added
+    // output is how a computed version would come back.
+    expect(outputs).toEqual(["train", "version", "head_sha", "pr", "release_line", "hotfix", "survivor"]);
+  });
+
+  it("does the minor-bump arithmetic nowhere", () => {
+    expect(code(source)).not.toMatch(/minor \+ 1/);
+  });
+
+  it("pushes no beta branch", () => {
+    // `retire-train` pushes a deletion of the train it was handed, and
+    // `rebase-train` force-pushes a train that already exists; neither names
+    // the class in a literal. A `git push` line that does is a cut.
+    expect(code(source)).not.toMatch(/git push[^\n]*beta/);
+  });
+
+  it("reports the invariant instead, and files an issue rather than going red", () => {
+    const job = jobBlock(source, "train-invariant");
+    expect(job).toContain("issues: write");
+    expect(job).toContain("gh issue create");
+    expect(code(job)).toContain("git ls-remote --heads origin 'refs/heads/beta/*'");
+    // The whole job hangs on that listing being trusted only when it worked:
+    // `|| true` over it turns "origin did not answer" into "no train exists".
+    expect(code(job)).not.toMatch(/ls-remote[^\n]*\|\| true/);
+    // A red run on the correct outcome of a good promotion is how a team
+    // learns that red means nothing. The failure path is an issue.
+    expect(code(job)).not.toMatch(/^\s*exit 1$/m);
+  });
+
+  it("shares one issue title with the daily chore, so the two cannot file a pair", () => {
+    const title = /TITLE="([^"]+)"/.exec(code(jobBlock(source, "train-invariant")));
+    expect(title, "the promotion files no titled issue").not.toBeNull();
+    const chore = code(jobBlock(read("housekeeping.yml"), "open-train"));
+    expect(chore, "housekeeping files a different title").toContain(`TITLE="${title[1]}"`);
+  });
+
+  it("points a person at the procedure rather than at a button", () => {
+    for (const [file, job] of [
+      ["promote.yml", "train-invariant"],
+      ["housekeeping.yml", "open-train"],
+    ]) {
+      expect(code(jobBlock(read(file), job)), `${job} does not name the runbook`).toContain(
+        "docs/ci-cd.md",
+      );
+    }
+  });
+});
+
 // ADR 0023 D3, as amended by #152 and #157 — the manifest set, and the wiring
 // that makes asserting it non-vacuous.
 //
@@ -704,6 +777,12 @@ describe("housekeeping.yml", () => {
 // and the manifest list is asserted against the workspace rather than against a
 // count. `packages/sdk` is the fifth (#152, ADR 0025) and `packages/cli` the
 // sixth (#157); the seventh fails here, which is the design working.
+//
+// The second half of that wiring moved in #325. The set the *cut* writes used
+// to be an array inside `promote.yml`, and is now the array in the runbook a
+// person cuts from — cuts are manual, and nothing guesses a version. The
+// binding is unchanged in what it protects: the list that gates the train and
+// the list a train is cut from are the same set, or something goes red.
 describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)", () => {
   const MANIFESTS = [
     "package.json",
@@ -770,10 +849,26 @@ describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)
     expect(job).toMatch(/for file in packages\/\*\/package\.json/);
   });
 
-  it("writes every one of them in the cut, which is where the versions come from", () => {
-    const job = code(jobBlock(read("promote.yml"), "next-train"));
-    const files = /files=\(([^)]*)\)/.exec(job);
-    expect(files, "no files=() array in the cut").not.toBeNull();
-    expect(files[1].trim().split(/\s+/).sort()).toEqual([...MANIFESTS].sort());
+  // The binding that used to live in a workflow, following the cut to where the
+  // cut now is (#325).
+  //
+  // This test read `files=()` out of `promote.yml`'s automatic cut until that
+  // job was deleted, and asserted it equalled the list `Train rules` gates on.
+  // **That assertion is the only thing that has ever bound the two sets**, and
+  // deleting the job without moving it would have deleted the binding — a
+  // seventh package added to `ci.yml` alone would then be cut unstamped and
+  // found by `Train rules` afterwards, on the pull request of whoever opened
+  // the first one into the new train. Six errors, on somebody who did not cut
+  // the branch: exactly the failure this has always existed to catch.
+  //
+  // Cuts are manual now, so the list a cut is performed from is the array in
+  // the runbook the person follows, and this reads that array. One `files=()`
+  // in the whole document, asserted, because a second one appearing later
+  // would make which of them is bound a coin toss.
+  it("writes every one of them in the documented cut, which is where the versions come from", () => {
+    const runbook = fs.readFileSync(path.join(repoRoot, "docs/ci-cd.md"), "utf8");
+    const arrays = [...runbook.matchAll(/^files=\(([^)]*)\)/gm)];
+    expect(arrays.length, "docs/ci-cd.md § Cutting a train has no single files=() array").toBe(1);
+    expect(arrays[0][1].trim().split(/\s+/).sort()).toEqual([...MANIFESTS].sort());
   });
 });

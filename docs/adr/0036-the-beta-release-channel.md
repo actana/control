@@ -141,6 +141,8 @@ The two rejected routes are recorded with their reasons, because both will be pr
   D1 is worth: **the mechanism buys a shorter URL, not a capability.** It is not chosen
   because C4 asks for the shorter URL by name.
 
+> **Amended 2026-08-24 by [#325](https://github.com/actana/control/issues/325): the cut named here is a person, and the line reference is a job that no longer exists.** This clause cites `.github/workflows/promote.yml:724-756` for *"written by the cut exactly as the six manifests are"*, and those lines were inside the automatic `next-train` job, which #325 deleted: cuts are manual, a human names the train branch and cuts it, and no job guesses a version or cuts a train ([ADR 0023](0023-release-trains-and-digest-promotion.md) D3, D22 and D25, each amended the same day). **This clause is unchanged in substance, and §G already said why**: it says *the cut* writes the stamp rather than naming a job, and *"whether the cut is a job that runs after a promotion or a person following a documented procedure, the stamp is written by whatever performs the cut."* The procedure is now [`docs/ci-cd.md` § "Cutting a train"](../ci-cd.md#cutting-a-train), and its manifest list is bound to `ci.yml`'s by a test, exactly as the job's was. So the answer to *where does the line get stamped* is **a manual cut stamps it, and [#317](https://github.com/actana/control/issues/317) implements it** — this record already assigns the installer's diff to #317 (D6), and #317 is what puts the stamp in `install.sh` and adds the separate `Train rules` assertion D4 requires. #325 touches neither `install.sh` nor `ci.yml`'s manifest set; what it leaves behind is a cut procedure that names the stamp among the things a cut has to get right, and a citation that reads correctly once D4's assertion lands beside the six. Until #317 lands there is no stamp in the file and a cut writes six manifests, which is the same number it wrote before this record.
+
 **D2 — The resolution rule is "the release of this line if it exists, else this line's beta",
 and it makes no listing call.** In order:
 
@@ -589,6 +591,12 @@ will need to amend.
 person following a documented procedure, the stamp is written by whatever performs the cut and
 is asserted on the train by `Train rules` (D4) either way. #325 changes who cuts; it does not
 change what a cut writes.
+
+> **Noted 2026-08-24: #325 has landed, and the paragraph above held.** The cut is a person
+> following [`docs/ci-cd.md` § "Cutting a train"](../ci-cd.md#cutting-a-train); D1 carries a
+> dated note saying so and saying that a manual cut stamps the line, with #317 implementing it;
+> 0023 D3, D22, D25 and D39 carry theirs. No clause of this record was rewritten or renumbered,
+> and the amendment #327 will need is still open.
 
 ---
 
