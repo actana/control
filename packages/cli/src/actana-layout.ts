@@ -125,6 +125,15 @@ export function resolveActanaLayout(
  * The version string comes from a downloaded tarball's manifest, so it is
  * treated as untrusted input: anything that is not a plain path segment is
  * rejected rather than allowed to escape `versionsDir`.
+ *
+ * A beta's version is `x.y.z-beta` (ADR 0036 C1) and gets a directory of its
+ * own, beside the release of the same line rather than on top of it. That is
+ * the whole of what this side of the tarball contract has to do about a beta,
+ * and it is why it needs no change: the tarball keeps carrying its version in
+ * the manifest (0036 D18), a beta's string differs from its line's, and two
+ * different strings are two different directories. A machine installed from
+ * `actana-core-0.4.1-beta-linux-x64.tar.gz` therefore lands in
+ * `versions/0.4.1-beta` and reports that — never `0.4.1` (0036 D20).
  */
 export function installDirFor(layout: ActanaLayout, version: string): string {
   if (!version || version !== path.basename(version) || version === "." || version === "..") {

@@ -107,6 +107,17 @@ describe("installDirFor", () => {
     expect(installDirFor(l, "0.2.0")).toBe("/home/op/.local/share/actana/versions/0.2.0");
   });
 
+  // ADR 0036 D20: a beta and its line are different strings, so they are
+  // different directories — an install from a beta tarball cannot land where
+  // the release's would, or be reported as it.
+  it("gives a beta a directory of its own, beside its line's release", () => {
+    const l = resolveActanaLayout({}, HOME, "linux");
+    expect(installDirFor(l, "0.4.1-beta")).toBe(
+      "/home/op/.local/share/actana/versions/0.4.1-beta",
+    );
+    expect(installDirFor(l, "0.4.1-beta")).not.toBe(installDirFor(l, "0.4.1"));
+  });
+
   it("refuses a version that would escape the versions dir", () => {
     const l = resolveActanaLayout({}, HOME, "linux");
     expect(() => installDirFor(l, "../../etc")).toThrow(/version/i);
