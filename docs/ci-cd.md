@@ -1315,23 +1315,32 @@ What the run does, in order:
    whose gates and bytes came from different commits; and the tip's own `ci.yml`
    push run must be green — a beta cut from a red tip is a published prerelease
    nobody gated, and the run names the failing run's URL and stops (0023 D21).
-2. **Moves `vx.y.z-beta`** to the train tip, force-updating the ref on purpose
-   and logging the sha it moved off. A beta tag is a handle, not a record.
-3. **Builds three tarballs** at `x.y.z-beta` — `linux-x64`, `linux-arm64` and
-   `mac-arm64`, each boot-smoked on a runner of its own architecture — composes
-   `SHA256SUMS` over exactly those three, and runs the installer e2e once, on
-   Ubuntu x64.
-4. **Publishes the prerelease**, `prerelease: true` and never `latest`, with
+2. **Builds three tarballs** at `x.y.z-beta` — `linux-x64`, `linux-arm64` and
+   `mac-arm64`, each boot-smoked on a runner of its own architecture — and
+   **runs the installer e2e once**, on Ubuntu x64, against the `linux-x64`
+   tarball it just built.
+3. **Composes `SHA256SUMS`** over exactly those three, verifies it the way an
+   operator would, and checks that every asset filename carries the bare beta
+   version and nothing else.
+4. **Moves `vx.y.z-beta`** to the train tip — force-updating the ref on purpose
+   and logging the sha it moved off — and it happens *here*, with every gate
+   above already green, rather than at the front of the run. A beta tag is a
+   handle, not a record.
+5. **Publishes the prerelease**, `prerelease: true` and never `latest`, with
    every asset clobbered in place, then **reads the flags back off the API** and
    fails if they are not what it asked for (0036 D11).
-5. **Retags the images.** `x.y.z-beta` in `panel` and `core`, created from the
+6. **Retags the images.** `x.y.z-beta` in `panel` and `core`, created from the
    train's `beta-x.y.z` digest with `docker buildx imagetools create` — nothing
    is rebuilt, so the bytes a person tested are the bytes that are published
    (0036 D12).
 
-**A red leg publishes nothing, the tag move included.** A second cut of the same
-beta is a supported operation and not a repair: it moves the tag, replaces every
-asset, and leaves nothing behind from the cut before it.
+**A red leg publishes nothing, the tag move included** — which is what step 4's
+position in that list buys. Every build, every smoke and the e2e are `needs:` of
+the one job that writes anything, so a `mac-arm64` leg that goes red leaves
+`vx.y.z-beta` naming exactly the commit it named before the dispatch. There is
+no tag to reset and nothing to clean up. A second cut of the same beta is a
+supported operation and not a repair: it moves the tag, replaces every asset,
+and leaves nothing behind from the cut before it.
 
 **A cut pushes its tag as the App, and it checks for that identity first.** The
 tag ruleset restricts *creation* under `refs/tags/v*` — a pattern `vx.y.z-beta`
