@@ -207,7 +207,11 @@ clocks.** That is the one thing to get right here:
 - **`0.2.0-beta`** is a published beta cut. It moves **only when somebody
   dispatches one**, and it stands still between cuts however much the train
   moves underneath it. It is the version a machine reports, and the same string
-  names the git tag, the prerelease and its Core tarballs.
+  names the git tag, the prerelease and its Core tarballs. **The image tag is
+  not published yet** — a cut publishes the tag, the prerelease and the tarballs
+  today, and retagging the images is
+  [#319](https://github.com/actana/control/issues/319). Until it lands, use
+  `beta-x.y.z` for a container and take the row above.
 
 Neither is `latest`, and neither ever will be. The version string of a beta is
 `x.y.z-beta` exactly — no counter, no dotted suffix — so `0.2.0-beta` is the

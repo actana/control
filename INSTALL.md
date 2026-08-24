@@ -527,6 +527,11 @@ registry spec:
 npm i -g https://github.com/actana/control/releases/download/v0.4.1-beta/actana-cli-0.4.1-beta.tgz
 ```
 
+> **Not yet, on a real cut.** The pack and the name are shipped and asserted, and
+> the beta cut does not attach the tarball to its prerelease yet
+> ([#320](https://github.com/actana/control/issues/320)). Until it does, that URL
+> is a 404 on any beta you cut today. The form is the one it will take.
+
 Compare that with the release path, which is the ordinary one:
 
 ```bash
@@ -550,7 +555,8 @@ latest, with every asset replaced in place on each cut:
 - a copy of **`install.sh`**, so the script and the bytes it fetches ship
   together. It is a copy and not a door: the install URLs are the ones in the
   table above,
-- the **CLI tarball** described above,
+- the **CLI tarball** described above — the one item on this list that a cut
+  does not attach yet ([#320](https://github.com/actana/control/issues/320)),
 - **`x.y.z-beta` container images** in `actana/panel` and `actana/core`,
   retagged from the train's own `beta-x.y.z` digest with nothing rebuilt.
 

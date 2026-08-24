@@ -10,13 +10,17 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 0016](adr/0016-the-0-1-0-shape.md) D34; the sixth is [ADR
 0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again):
 
-> **The sixth arrives with [#318](https://github.com/actana/control/issues/318),
-> which has not merged.** `beta-release.yml` is decided (0036 D9, D10) and not
-> yet written to `.github/workflows/`, so its row below and its link describe
-> the workflow that lands rather than one that runs today —
-> `scripts/__tests__/workflows.test.mjs` still asserts the five-plus-one
-> inventory and turns red on that file's first commit, which is the same
-> sentence from the other side. Everything else in this table is live.
+> **The sixth is in the tree and its asset set is not finished.**
+> `beta-release.yml` landed with
+> [#318](https://github.com/actana/control/issues/318) and publishes the moving
+> tag, the prerelease, three Core tarballs, `SHA256SUMS` and `install.sh`. Two
+> things its row promises are still decided rather than running: the **CLI
+> tarball**, whose packing half merged with
+> [#320](https://github.com/actana/control/issues/320) and whose attach step is
+> the `EXPECTED` array that ticket still has to extend, and the **`x.y.z-beta`
+> image tags**, which are
+> [#319](https://github.com/actana/control/issues/319). Both are D10's, so the
+> row states the contract; neither is published by a run today.
 
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
@@ -247,8 +251,8 @@ is clobbered in place on each cut:
 | Core tarballs | `linux-x64`, `linux-arm64`, `mac-arm64` — the same three targets a release builds |
 | `SHA256SUMS` | over exactly those three |
 | `install.sh` | attached as a **copy**, so the script and the bytes it fetches ship together |
-| CLI | `pnpm pack`ed and attached as `actana-cli-<x.y.z>-beta.tgz`, installed from its asset URL (D16) |
-| Images | `x.y.z-beta` in `panel` / `core`, retagged from the train's `beta-x.y.z` digest — nothing rebuilt (D12) |
+| CLI | `pnpm pack`ed and attached as `actana-cli-<x.y.z>-beta.tgz`, installed from its asset URL (D16). **[#320](https://github.com/actana/control/issues/320) packs it; the attach step is still to come** |
+| Images | `x.y.z-beta` in `panel` / `core`, retagged from the train's `beta-x.y.z` digest — nothing rebuilt (D12). **[#319](https://github.com/actana/control/issues/319), not yet in the workflow** |
 
 The attached `install.sh` is a copy and **not a door**. The canonical installer
 stays on `main` under D29's rule, and nothing points an operator at the asset as
@@ -361,11 +365,11 @@ it.
 
 Seven published tag classes, each answering exactly one question ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md) D7, extended by [ADR
-0036](adr/0036-the-beta-release-channel.md) D7). **The two `-beta` rows are
-decided rather than live**: the git tag arrives with
-[#318](https://github.com/actana/control/issues/318) and the image tag with
-[#319](https://github.com/actana/control/issues/319). The other five are
-published by merged workflows today.
+0036](adr/0036-the-beta-release-channel.md) D7). Six of the seven are published
+by merged workflows, `vx.y.z-beta` since
+[#318](https://github.com/actana/control/issues/318). **The `x.y.z-beta` image
+row is decided rather than live** — it is
+[#319](https://github.com/actana/control/issues/319), which has not landed.
 
 | Tag | Repository | Published when | Moves | Arch |
 | --- | --- | --- | --- | --- |
@@ -1352,7 +1356,8 @@ What the run does, in order:
 6. **Retags the images.** `x.y.z-beta` in `panel` and `core`, created from the
    train's `beta-x.y.z` digest with `docker buildx imagetools create` — nothing
    is rebuilt, so the bytes a person tested are the bytes that are published
-   (0036 D12).
+   (0036 D12). **This step is [#319](https://github.com/actana/control/issues/319)
+   and is not in the workflow yet**; a cut run today stops after step 5.
 
 **A red leg publishes nothing, the tag move included** — which is what step 4's
 position in that list buys. Every build, every smoke and the e2e are `needs:` of
