@@ -177,6 +177,21 @@ export function versionFromGitTag(tag) {
   return channelOf(version) ? version : null;
 }
 
+/**
+ * A version string with a tag's `v` taken off, whether or not what is left is
+ * a version this repository publishes.
+ *
+ * `versionFromGitTag` answers `null` for a bad tag, which is the right answer
+ * when the question is "what does this tag name". It is the wrong one when the
+ * question is "what is wrong with this string": `v0.4.1-beta.1` would be
+ * reported as *not a version* rather than as the counted beta it is, and the
+ * counted-beta message is the one a person needs.
+ */
+export function stripTagPrefix(value) {
+  const string = String(value ?? "");
+  return /^v\d/.test(string) ? string.slice(1) : string;
+}
+
 /** The moving image tag a train publishes on every merge (ADR 0023 D7). */
 export function trainImageTagFor(line) {
   if (!isLine(line)) throw new TypeError(`not a line: ${JSON.stringify(line)}`);

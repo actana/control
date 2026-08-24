@@ -48,7 +48,7 @@ import {
   lineOf,
   readInstallerStamp,
   readManifestVersions,
-  versionFromGitTag,
+  stripTagPrefix,
 } from "./lib/version-agreement.mjs";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -109,8 +109,11 @@ if (!options.expected) {
 
 // `v0.4.1` and `0.4.1` are the same fact under two names, and which one a
 // caller has depends on whether it is holding a tag or a branch. Normalising
-// here is what lets every caller pass its own surface's spelling.
-const expected = versionFromGitTag(options.expected) ?? options.expected;
+// here is what lets every caller pass its own surface's spelling — and it is
+// done unconditionally rather than only for strings that parse, so that
+// `v0.4.1-beta.1` is reported as the counted beta it is rather than as an
+// unrecognisable string.
+const expected = stripTagPrefix(options.expected);
 const source = options.source ?? "the version handed to this check";
 
 // The image mode. An image is the one surface whose claim about itself lives

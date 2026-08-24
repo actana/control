@@ -42,6 +42,7 @@ import {
   lineOf,
   readInstallerStamp,
   readManifestVersions,
+  stripTagPrefix,
   trainImageTagFor,
   versionFromGitTag,
   versionProblem,
@@ -103,6 +104,17 @@ describe("the vocabulary (ADR 0036 C1, ADR 0037 D1)", () => {
     expect(lineOf("v0.4.1")).toBeNull();
     expect(versionFromGitTag("v0.4.1-beta")).toBe("0.4.1-beta");
     expect(gitTagFor("0.4.1-beta")).toBe("v0.4.1-beta");
+    // `versionFromGitTag` answers what a tag names, structurally — a counted
+    // beta is a well-formed prerelease and it says so. The ban lives in
+    // `versionProblem` and nowhere else, which is what keeps the two questions
+    // apart: what does this name, and may we publish it.
+    expect(versionFromGitTag("v0.4.1-beta.1")).toBe("0.4.1-beta.1");
+    expect(versionProblem("0.4.1-beta.1")).toMatch(/counted beta/);
+    // A string that names nothing still loses its `v`, so the message a person
+    // gets is about the string they typed rather than about a `v`.
+    expect(versionFromGitTag("v0.4")).toBeNull();
+    expect(stripTagPrefix("v0.4")).toBe("0.4");
+    expect(stripTagPrefix("verify")).toBe("verify");
   });
 
   // The two beta spellings are different tags in the same repositories and both
