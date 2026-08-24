@@ -4,9 +4,18 @@
 // Everything CI does to the installer, it does with the prompts suppressed and
 // nobody watching. This is the other half: a throwaway systemd machine, a
 // fixture release channel serving the tarball you just built, and an
-// interactive root-less shell inside the machine with the real one-liner
-// printed above the prompt. Paste it, answer the questions, take the pairing
-// token to a live Panel, and work the Core the way an operator would.
+// interactive root-less shell inside the machine with the real commands
+// printed above the prompt. Paste them, answer the questions, pair a live
+// Panel with the code `actana pair new` prints, and work the Core the way an
+// operator would.
+//
+// **Two commands, because install is not activation** (ADR 0036 C2, #316).
+// The one-liner places the Core bundle and the CLI and stops; `actana setup`
+// is what turns the machine into a Core, and it is where every prompt this
+// rehearsal exists to exercise now lives. The installer prints the exact
+// `actana setup` line to run — including an absolute path when the launcher's
+// directory is not yet on `PATH` — so the line to paste second is the line it
+// printed, not the one below.
 //
 // Usage:
 //   pnpm core:rehearse
@@ -34,7 +43,12 @@ import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { distroDockerfile, distroFlag, imageTag } from "./lib/container-matrix.mjs";
 import { startFixtureServerProcess } from "./lib/fixture-release.mjs";
 import { makeDie } from "./lib/core-smoke.mjs";
-import { hostTarget, pickTarball, rehearsalOneLiner } from "./lib/rehearsal.mjs";
+import {
+  hostTarget,
+  pickTarball,
+  rehearsalOneLiner,
+  rehearsalSetupCommand,
+} from "./lib/rehearsal.mjs";
 import { OPERATOR, pickHostPort, run, startSystemdContainer } from "./lib/systemd-container.mjs";
 
 const die = makeDie("rehearse");
@@ -143,6 +157,15 @@ async function main() {
     "  release channel serving the build you just made:",
     "",
     `    ${oneLiner}`,
+    "",
+    "  It installs the Core bundle and the CLI and stops. Nothing is running",
+    "  yet: installing is not activating. It prints the command that turns",
+    "  this machine into a Core — run that one next, exactly as printed:",
+    "",
+    `    ${rehearsalSetupCommand()}`,
+    "",
+    "  That is the command with the prompts in it — lingering, the Harness",
+    "  offers — which is what you are here to work through by hand.",
     "",
     `  Serving: ${path.basename(tarball)}`,
     `  The Core will be reachable from this machine on port ${hostPort}.`,

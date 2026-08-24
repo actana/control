@@ -7,14 +7,19 @@
 // machine the one-liner produced instead of on a second machine that a
 // duplicated install phase set up:
 //
-//   • the one-liner ends with a running Core, registered in this machine's own
-//     `actana`, whose credential a test client can dial the core-link with —
-//     with no `--yes` passed, because a piped (non-TTY) run must prompt for
-//     nothing, and **printing no credential of its own** (#287);
+//   • the one-liner ends with a machine that is **installed and not
+//     activated** (ADR 0036 C2, #316): the versioned tree, the `current`
+//     symlink and the launcher are there, no unit is running, and the exact
+//     `actana setup` command to run next has been printed;
+//   • that printed command, run as printed, ends with a running Core,
+//     registered in this machine's own `actana`, whose credential a test
+//     client can dial the core-link with — with no `--yes` passed, because a
+//     non-TTY run must prompt for nothing, and **printing no credential of its
+//     own** (#287);
 //   • `--version` installs that exact release; with no flag, the latest;
 //   • `status` / `start` / `stop` / `restart` / `logs` control and report the
 //     daemon, and `pair new` mints a code on it;
-//   • re-running the one-liner upgrades in place — one unit, same pairing
+//   • re-running the two commands upgrades in place — one unit, same pairing
 //     credentials, and a pre-rename `actana-harness.service` is taken out on
 //     the way;
 //   • lingering is on, and the daemon comes back after the machine reboots;
@@ -29,8 +34,8 @@
 //     dir; `--purge-data` removes that too.
 //
 // install-sh's negative cases — a bad checksum, an unknown platform,
-// `--version` pinning, non-TTY behaviour, flag passthrough, exit codes — are
-// covered hermetically and in under a second by
+// `--version` pinning, non-TTY behaviour, the refusal of `actana setup`'s
+// flags, exit codes — are covered hermetically and in under a second by
 // `scripts/__tests__/install-sh.test.mjs`, and are deliberately not repeated
 // here: each one costs a whole extra one-liner run on a real container. What
 // only a real machine can prove is that the script works against a real init
@@ -77,6 +82,7 @@ import {
 } from "./lib/fixture-release.mjs";
 import { dialAndListProjects, makeDie } from "./lib/core-smoke.mjs";
 import { tarballName as releaseAssetName } from "./lib/core-tarball.mjs";
+import { nextSetupCommand } from "./lib/setup-e2e.mjs";
 import {
   OPERATOR,
   pickHostPort,
@@ -193,18 +199,76 @@ async function main() {
     return parsed;
   };
 
-  /** The one-liner, exactly as the docs print it. */
-  const oneLiner = (url, flags) =>
-    `curl -fsSL ${url}/install.sh | bash -s -- --base-url ${url} ${flags}`;
+  /**
+   * The one-liner, exactly as the docs print it.
+   *
+   * It carries only the flags the script still owns. Since #316 it installs
+   * and does not activate, so `--public-host`, `--yes` and the rest are not
+   * merely unnecessary here — the script refuses them, and
+   * `scripts/__tests__/install-sh.test.mjs` holds that refusal.
+   */
+  const oneLiner = (url, flags = "") =>
+    `curl -fsSL ${url}/install.sh | bash -s -- --base-url ${url} ${flags}`.trimEnd();
 
-  // ─── the real thing, pinned, with no flag that suppresses prompts ───
+  /**
+   * Run the one-liner, assert it installed without activating, and hand back
+   * the `actana setup` command it printed.
+   *
+   * The two halves of #316's contract, checked together because either alone
+   * is passable by a broken script: a run that activated nothing but also
+   * placed nothing would satisfy the first, and a run that placed a bundle and
+   * started a daemon would satisfy the second.
+   */
+  const installOnly = (url, flags) => {
+    const run = mustAsOperator(oneLiner(url, flags));
+
+    // Placed: the tree, the `current` symlink and the launcher all survived
+    // the script's own EXIT trap, which is the whole of what `install.sh` now
+    // leaves behind.
+    for (const check of [
+      "test -d ~/.local/share/actana/versions",
+      "test -L ~/.local/share/actana/current",
+      "test -x ~/.local/share/actana/current/bin/actana",
+      "test -e ~/.local/bin/actana",
+    ]) {
+      if (asOperator(check).status !== 0) {
+        die(`the one-liner installed nothing: \`${check}\` failed`, run.stdout.split("\n"));
+      }
+    }
+    return { run, setupCommand: nextSetupCommand(run.stdout, die) };
+  };
+
+  // ─── the real thing, pinned: install, and only install ───
   log(`running the one-liner pinned to v${pinnedVersion}`);
-  const install = mustAsOperator(
-    oneLiner(installChannel.url, `--version ${pinnedVersion} --public-host 127.0.0.1`),
-  );
-  // #287: the install emits no credential. A PEM header or a base64 blob on
-  // stdout would be the hand-carry back, and the one-liner is where an operator
-  // would find it.
+  const placed = installOnly(installChannel.url, `--version ${pinnedVersion}`);
+
+  // **Install is not activation** (ADR 0036 C2). Nothing is running, no
+  // identity has been minted, and no unit has been written — an installer that
+  // did any of those would be the tail this ticket removed, back under another
+  // name.
+  const beforeSetup = asOperator("systemctl --user is-active actana-core.service");
+  if (beforeSetup.stdout.trim() === "active") {
+    die("the one-liner started a Core — install.sh must not activate", placed.run.stdout.split("\n"));
+  }
+  for (const trace of [
+    "~/.config/systemd/user/actana-core.service",
+    "~/.config/actana/actana.json",
+    "~/.config/actana/material.json",
+  ]) {
+    if (asOperator(`test -e ${trace}`).status === 0) {
+      die(`the one-liner wrote ${trace} — that is \`actana setup\`'s to write`);
+    }
+  }
+  log(`the one-liner installed without activating, and printed \`${placed.setupCommand}\``);
+
+  // ─── the second command, run exactly as the installer printed it ───
+  //
+  // Not a retyped `actana setup`: #316's criterion is that the printed command
+  // is runnable *as printed*, and the launcher's directory being absent from
+  // `PATH` is precisely the case a hard-coded bare `actana` would hide.
+  const install = mustAsOperator(`${placed.setupCommand} --public-host 127.0.0.1`);
+  // #287: setup emits no credential. A PEM header or a base64 blob on stdout
+  // would be the hand-carry back, and this is where an operator would find it.
   if (/BEGIN (CERTIFICATE|PRIVATE KEY|RSA PRIVATE KEY)/.test(install.stdout)) {
     die("the install printed certificate material", install.stdout.split("\n"));
   }
@@ -217,7 +281,7 @@ async function main() {
   if (/\[Y\/n\]|\(y\/n\)/i.test(install.stdout)) {
     die("a piped install prompted for input", install.stdout.split("\n"));
   }
-  log("the one-liner installed unattended, printed no credential, and named `pair new`");
+  log("`actana setup` activated the machine unattended, printed no credential, and named `pair new`");
 
   const active = mustAsOperator("systemctl --user is-active actana-core.service");
   if (active.stdout.trim() !== "active") {
@@ -339,8 +403,9 @@ async function main() {
     die(`the planted pre-rename unit is ${plantedState.stdout.trim()}, expected active`);
   }
 
-  log("re-running the one-liner with no version pinned");
-  mustAsOperator(oneLiner(installChannel.url, "--public-host 127.0.0.1"));
+  log("re-running the install with no version pinned, then setup over it");
+  const upgraded = installOnly(installChannel.url, "");
+  mustAsOperator(`${upgraded.setupCommand} --public-host 127.0.0.1`);
   // Not byte equality: the bearer inside carries a fresh expiry every time it
   // is signed. What must not change is the material the Panel pinned — a new
   // CA or client cert means the paired Panel is locked out.
@@ -530,9 +595,12 @@ async function main() {
   // The launcher is gone, so getting a CLI back means running the one-liner
   // again — which is also what an operator who uninstalled and changed their
   // mind does, and the only route left once nothing is extracted on the disk.
-  mustAsOperator(oneLiner(updateChannel.url, "--public-host 127.0.0.1"));
+  // Both commands, because uninstall removed the install and not just the
+  // service: the first puts the bundle back, the second makes it a Core again.
+  const reinstalled = installOnly(updateChannel.url, "");
+  mustAsOperator(`${reinstalled.setupCommand} --public-host 127.0.0.1`);
   await waitForPort(hostPort, die);
-  log("the one-liner reinstalled onto a machine that had been uninstalled");
+  log("the one-liner and `actana setup` reinstalled a machine that had been uninstalled");
 
   mustAsOperator("actana uninstall --purge-data --yes");
   const dataTraces = asOperator("ls -d ~/.local/share/actana ~/.config/actana 2>/dev/null; true");
@@ -544,7 +612,8 @@ async function main() {
   updateChannel.stop();
   tamperedServer.stop();
   log(
-    `OK — on ${distro.label} the one-liner installs, pins, upgrades in place, and the lifecycle verbs work`,
+    `OK — on ${distro.label} the one-liner installs without activating, \`actana setup\` activates, ` +
+      "pinning and in-place upgrades work, and so do the lifecycle verbs",
   );
   process.exit(0);
 }
