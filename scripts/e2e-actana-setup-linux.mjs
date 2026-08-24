@@ -79,6 +79,7 @@ import {
   parseAssetName,
   repackWithVersion,
   startFixtureServerProcess,
+  writeRestampedInstaller,
 } from "./lib/fixture-release.mjs";
 import { dialAndListProjects, makeDie } from "./lib/core-smoke.mjs";
 import { tarballName as releaseAssetName } from "./lib/core-tarball.mjs";
@@ -123,6 +124,18 @@ async function main() {
   // while the one-liner is being re-run and v${latestVersion} once `update` is
   // the thing under test, and a channel cannot serve two answers to the same
   // question.
+  //
+  // **Each channel also serves a copy of `install.sh` stamped with its own
+  // line** (ADR 0036 D1, #317). Since #317 the script's channel is the line
+  // stamped into its own bytes and nothing at runtime can move it, so the
+  // unpinned one-liner installs *the stamp's* release rather than whatever
+  // `/releases/latest` answers. The tarball is built from this workspace, so
+  // the repository copy is stamped `pinnedVersion` on every run — serving it
+  // here would ask the machine to install `pinnedVersion` unpinned and then
+  // assert it got `firstLatest`, which is a fixture asking for the impossible
+  // rather than a script misbehaving. Stamping the served copy with
+  // `firstLatest` is what makes this channel `main` *after* v${firstLatest} was
+  // promoted, which is the door the assertion is about.
   const workDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-installer-e2e-"));
   process.on("exit", () => fs.rmSync(workDir, { recursive: true, force: true }));
 
@@ -144,13 +157,40 @@ async function main() {
   repackWithVersion(updateSeed, latestVersion, workDir, die);
   fs.rmSync(updateSeed);
 
-  const startChannel = async (dir) => {
-    const server = await startFixtureServerProcess({ dir, port: await pickHostPort(), die });
+  /**
+   * The copy of `install.sh` each channel serves: the shipped script, restamped
+   * onto the line that channel's newest release is on.
+   *
+   * `writeRestampedInstaller` is the cut's one-line `sed`, shared with
+   * `scripts/__tests__/install-sh.test.mjs` so the hermetic suite and this one
+   * cannot disagree about what a cut writes. Everything else in the copy is the
+   * shipped article, which is what keeps this a test of the real script.
+   */
+  const servedInstaller = (name, line) =>
+    writeRestampedInstaller({
+      source: installSh,
+      outPath: path.join(workDir, `${name}-install.sh`),
+      line,
+    });
+
+  const startChannel = async (dir, script) => {
+    const server = await startFixtureServerProcess({
+      dir,
+      script,
+      port: await pickHostPort(),
+      die,
+    });
     return { url: `http://${HOST_ALIAS}:${server.port}`, stop: server.stop };
   };
 
-  const installChannel = await startChannel(installDir);
-  log(`install channel serving v${pinnedVersion} (pinned) and v${firstLatest} (latest)`);
+  const installChannel = await startChannel(
+    installDir,
+    servedInstaller("install-channel", firstLatest),
+  );
+  log(
+    `install channel serving v${pinnedVersion} (pinned) and v${firstLatest} (latest), ` +
+      `with an install.sh stamped ${firstLatest}`,
+  );
 
   // ─── the machine ───
   log(`installing on ${distro.label}`);
@@ -484,7 +524,14 @@ async function main() {
   installChannel.stop();
 
   // ─── update ───
-  const updateChannel = await startChannel(updateDir);
+  // Nothing fetches `install.sh` from this channel — `actana update` is the CLI
+  // resolving on its own — but it is stamped with its own newest line all the
+  // same, so that a channel is never serving an installer that disagrees with
+  // the releases beside it.
+  const updateChannel = await startChannel(
+    updateDir,
+    servedInstaller("update-channel", latestVersion),
+  );
   log(`update channel serving v${nextVersion} and v${latestVersion} (latest)`);
 
   // The same releases, served by a second process that flips one byte of every
