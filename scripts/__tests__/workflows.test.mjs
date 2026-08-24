@@ -6,7 +6,7 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
-// **D34's count is now five entry points**, and both revisions were deliberate:
+// **D34's count is now six entry points**, and every revision was deliberate:
 //
 //   ci.yml           gates every pull request, and publishes the train's image
 //                    on every push to `beta/**` (ADR 0023 D41)
@@ -19,6 +19,18 @@
 //   housekeeping.yml everything on a clock and nothing that gates
 //   landing.yml      the fourth file: `landing/` to the CDN behind
 //                    control.actana.ai (docs/landing-page.md §7)
+//   beta-release.yml the sixth file, and the newest revision: a requested beta
+//                    cut — the moving `vx.y.z-beta` tag, a prerelease GitHub
+//                    Release, three tarballs, `SHA256SUMS` and `install.sh`
+//                    (ADR 0036 D9, D10, amending 0016 D34 in its turn)
+//
+// `beta-release.yml` is an entry point rather than a third mode of
+// `release.yml`, and ADR 0036 D9 records the refactor that would merge them as
+// **refused**: `release.yml`'s `resolve` rejects any tag reachable from neither
+// `main` nor a `release/*` branch, a beta tag is on a train and is reachable
+// from neither, so a third mode would mean loosening the one guard that keeps
+// the other two modes readable off the ref graph. One extra file is the price
+// of keeping it.
 //
 // plus the one reusable `container-image.yml`, which every path that builds an
 // image calls and which is not an entry point because it has no trigger of its
@@ -69,8 +81,9 @@ const code = (block) =>
     .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is five entry points plus one reusable workflow — nothing else", () => {
+  it("is six entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
+      "beta-release.yml",
       "ci.yml",
       "container-image.yml",
       "housekeeping.yml",
@@ -789,6 +802,322 @@ describe("no automatic train cut (ADR 0023 D25, as amended by #325)", () => {
 // person cuts from — cuts are manual, and nothing guesses a version. The
 // binding is unchanged in what it protects: the list that gates the train and
 // the list a train is cut from are the same set, or something goes red.
+// The beta cut (ADR 0036), and the five shapes in it that a green run cannot
+// show you.
+//
+// Every assertion below is about something invisible while it is working. A
+// version string that grew a counter publishes perfectly and 404s only for the
+// operator who pins it; a `push:` trigger added here looks like a helpful
+// automation until a merge publishes a prerelease nobody asked for; a lost
+// `--prerelease` flag succeeds, logs nothing, and tells every running Core and
+// Panel to move to an unreleased build; a macOS e2e leg looks like thoroughness
+// until the bill arrives at 10×; and a tag move that happened before a gate went
+// red leaves a published beta pointing at bytes that failed.
+describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
+  const source = read("beta-release.yml");
+  const body = code(source);
+  const comments = source
+    .split("\n")
+    .filter((line) => line.trimStart().startsWith("#"))
+    .join("\n");
+
+  /**
+   * One shell invocation, from the line naming `command` through the last of
+   * its `\`-continued lines.
+   *
+   * The point is to assert against the command a runner will execute rather
+   * than against the job's text, which also contains error messages *quoting*
+   * commands. A flag counted over the whole job can be satisfied by a sentence
+   * telling an operator how to repair the thing the flag prevents.
+   */
+  const invocation = (text, command) => {
+    const lines = text.split("\n");
+    const start = lines.findIndex((line) => line.includes(command));
+    expect(start, `no \`${command}\` invocation`).toBeGreaterThan(-1);
+    const call = [lines[start]];
+    for (let i = start; lines[i].trimEnd().endsWith("\\"); i += 1) call.push(lines[i + 1]);
+    return call.join("\n");
+  };
+
+  // C3. A beta cut is *requested*, the way a promotion is (ADR 0023 D14),
+  // because "published by accident" is the failure worth designing out. A
+  // `push:` on `beta/**` here would be one line and would turn every merge into
+  // the train into a publish.
+  it("is entered by a person naming a train, and by nothing else (C3)", () => {
+    expect(body).toMatch(/^ {2}workflow_dispatch:$/m);
+    expect(body).toMatch(/^ {6}train:$/m);
+    expect(body, "a merge into the train would publish a beta").not.toMatch(/^ {2}push:$/m);
+    expect(body).not.toMatch(/^ {2}schedule:$/m);
+    expect(body).not.toMatch(/^ {2}pull_request:$/m);
+    expect(body, "nothing may reach this file without a person naming a train").not.toMatch(
+      /^ {2}workflow_call:$/m,
+    );
+  });
+
+  // C1, which is a recorded operator constraint and not a default to improve
+  // on. The version is one concatenation from the train name, and the shape it
+  // is allowed to have is asserted in the file itself — before anything is
+  // built, and again on the asset filenames before anything is published.
+  it("builds the version by concatenation and refuses any counter (C1)", () => {
+    const job = code(jobBlock(source, "resolve"));
+    expect(job).toContain('version="${train#beta/}"');
+    expect(job).toContain('beta_version="$version-beta"');
+    expect(job).toContain("=~ ^[0-9]+\\.[0-9]+\\.[0-9]+-beta$");
+    expect(job).toContain('tag="v$beta_version"');
+    // The three dialects a counter actually arrives in. None of them belongs
+    // anywhere in this file, so this is asserted over the whole of it rather
+    // than over the job that composes the string.
+    for (const counter of ["github.run_number", "github.run_attempt", "github.run_id"]) {
+      expect(body, `${counter} is a counter, and C1 bans every counter`).not.toContain(counter);
+    }
+  });
+
+  // The same constraint at the surface that reaches an operator. The asset name
+  // is half the installer contract ADR 0016 D29 prices — `install.sh` fetches
+  // `actana-core-<version>-<target>.tar.gz` and refuses a tree whose root
+  // directory is not `actana-core-<version>-<target>/` — so a suffix that got
+  // this far would publish a beta that `--version x.y.z-beta` cannot install,
+  // with every other check green.
+  it("asserts the bare version on the asset filenames too (C1, ADR 0016 D29)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain('name="actana-core-$BETA_VERSION-$target.tar.gz"');
+    for (const { target } of CORE_TARGETS) expect(job).toContain(target);
+  });
+
+  // #326, reached in this file by a different road. A `workflow_dispatch` run
+  // resolves every workflow file it executes from the ref it was dispatched on,
+  // so `--ref main -f train=beta/0.4.1` would cut the train with main's copy of
+  // this workflow. A promotion closes that by dispatching `release.yml` at the
+  // tag it just pushed; there is no second workflow here to dispatch, so it is
+  // closed by refusing the mismatch outright.
+  it("refuses to cut a train with another ref's copy of itself (#326)", () => {
+    const job = jobBlock(source, "resolve");
+    expect(job).toContain("RUN_REF: ${{ github.ref_name }}");
+    expect(code(job)).toContain('if [[ "$RUN_REF" != "$train" ]]; then');
+    // Dispatching nothing is what makes that refusal sufficient: this file runs
+    // the workflow it was dispatched as and calls no other, so there is no
+    // second copy for a caller's SHA to resolve.
+    expect(body, "a local uses: resolves from the caller's SHA (#326)").not.toMatch(
+      /uses: \.\/\.github\/workflows\//,
+    );
+    // The re-dispatch this file prints when it refuses is the one an operator
+    // will paste, so it carries the `--ref` for the same reason #326 requires it
+    // on every `gh workflow run release.yml` in the repository: a dispatch
+    // without one resolves the workflow from the default branch.
+    let seen = 0;
+    for (const line of source.split("\n")) {
+      if (!line.includes("gh workflow run")) continue;
+      seen += 1;
+      expect(line, `dispatches with no --ref: ${line.trim()}`).toMatch(
+        /gh workflow run[^\n]*--ref/,
+      );
+    }
+    expect(seen, "the refusal no longer tells an operator how to re-dispatch").toBeGreaterThan(0);
+  });
+
+  // ADR 0023 D21. A beta cut publishes a prerelease to the world; it is not the
+  // first thing to look at a commit. Pinned to the tip's own run rather than to
+  // the newest run on the branch, or "the train is green" is a statement about
+  // somebody else's commit.
+  //
+  // **And to the push run.** `gh run list --branch` returns `pull_request` runs
+  // beside `push` runs, and once a train's promotion pull request is open its
+  // head sha *is* the train tip while its run is newer than the push run — so
+  // selecting by sha alone selects the wrong gate. On a `pull_request` event
+  // the train image jobs are skipped and, under ADR 0023 D33, a draft resolves
+  // both image checks to `pass` without building, so the selected run may never
+  // have published the `beta-x.y.z` digest #319 will retag from in this file.
+  // Both filters are pinned: the flag is what makes the query right, and the
+  // `select` is what survives a later edit dropping the flag.
+  it("cuts nothing from a tip whose own CI push run is not green (D21, D41)", () => {
+    const job = jobBlock(source, "resolve");
+    const ran = code(job);
+    expect(ran).toContain("gh run list");
+    expect(ran).toContain("--workflow ci.yml");
+    expect(ran, "a pull_request run is a different gate (D33)").toContain("--event push");
+    expect(ran).toContain("select(.headSha == $sha and .event == \"push\")");
+    // `gh run list` is a 403 without it, and the top-level grant is
+    // `contents: read`.
+    expect(job).toMatch(/permissions:\n(?: +.*\n)*? +actions: read/);
+  });
+
+  // D13 and D14, and the one place in this repository where a cost argument is
+  // load-bearing enough to be pinned. ADR 0016 D35 took macOS off every trigger
+  // but the release because three macOS legs were 72% of the bill at 10×
+  // billing; a beta cut is a *more frequent* trigger than a release, so the one
+  // leg it does spend is owned out loud and the e2e leg it does not spend is
+  // refused out loud. `workflows.test.mjs` cannot price a runner, so it pins
+  // the count and the sentence.
+  it("spends exactly one macOS leg, and no macOS end-to-end (D13, D14)", () => {
+    expect(source.match(/runs-on: macos-/g)).toHaveLength(1);
+    const mac = jobBlock(source, "tarball-macos");
+    expect(mac).toContain("TARGET: mac-arm64");
+    expect(mac).toMatch(/runs-on: macos-/);
+    expect(mac).not.toContain("e2e-actana-setup");
+    expect(comments, "the file must say why there is no macOS e2e").toMatch(/10×/);
+    expect(comments).toMatch(/macOS install(er)? e2e/);
+  });
+
+  // D14. One leg, ubuntu, x64 — deliberately not a matrix and deliberately not
+  // the release's. What the distro axis catches (PAM, polkit, logind) is
+  // already green on this exact commit from the train's own run, on both
+  // distros; what is not yet proved is that the artifact about to be attached
+  // installs at all. It is also, at 10× billing, the shape that keeps a second
+  // macOS job out of a job that never had one.
+  it("runs the installer end-to-end once, on ubuntu at x64 (D14)", () => {
+    const job = jobBlock(source, "installer-e2e");
+    expect(job).toContain("runs-on: ubuntu-24.04");
+    expect(job).toContain("scripts/e2e-actana-setup-linux.mjs");
+    expect(job).toContain("--distro ubuntu");
+    expect(job).toContain("core-tarball-linux-x64");
+    expect(job, "a beta cut runs one leg, not a matrix").not.toMatch(/^ {4}strategy:$/m);
+    expect(job).not.toMatch(/macos/);
+    expect(job, "debian is the train's leg, not the cut's").not.toMatch(/debian/);
+  });
+
+  // D14's other half: everything above `publish` is a gate, so a red leg leaves
+  // `vx.y.z-beta` naming the commit it named before the run started. The tag
+  // move is the one that has to be inside the gated job — a tag moved by an
+  // early job would survive a failure further down and leave a published beta
+  // pointing at bytes that never passed.
+  it("holds every write behind every gate, the tag move included", () => {
+    expect(jobBlock(source, "publish")).toMatch(
+      /needs: \[resolve, tarball, tarball-macos, installer-e2e\]/,
+    );
+    for (const job of ["resolve", "tarball", "tarball-macos", "installer-e2e"]) {
+      const block = code(jobBlock(source, job));
+      expect(block, `${job} writes to origin ahead of the gates`).not.toContain("git push");
+      expect(block, `${job} writes a Release ahead of the gates`).not.toContain("gh release");
+    }
+  });
+
+  // D7. The tag is a moving handle, force-updated per cut, and the previous sha
+  // is named because that is the one fact a reader of the run needs and the one
+  // git will not tell them afterwards. ADR 0023 D44's immutability is untouched:
+  // it is about release tags, and `refs/tags/vx.y.z-beta` is a different name.
+  it("moves the beta tag on purpose and says where it moved from (D7)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain('tag -f -a "$TAG" "$SHA"');
+    expect(job).toContain('git push --force origin "refs/tags/$TAG"');
+    expect(job).toContain('previous="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}"');
+    expect(job).toContain("moves from $previous to $SHA");
+  });
+
+  // D10. Derived from `CORE_TARGETS`, never a literal: `--expect` is a co-edit
+  // in core-tarball.mjs's own header, and a bare `3` here would let a fourth
+  // target land with every other co-edit done and this one missed — a green run
+  // publishing a `SHA256SUMS` that covers less than the cut does.
+  it("checksums exactly the Core targets, and verifies the file it wrote", () => {
+    const job = jobBlock(source, "publish");
+    expect(job).toContain(
+      `compose-core-shasums.mjs --dir core-tarballs --expect ${CORE_TARGETS.length}`,
+    );
+    expect(job).toContain("sha256sum -c SHA256SUMS");
+  });
+
+  // D10 and D5. `install.sh` ships as an asset so the script and the bytes it
+  // fetches travel together; it stays a **copy**, and the canonical door stays
+  // on `main` under ADR 0016 D29. The expected set is also what the prune step
+  // reads, which is why #320 has to extend it when it attaches the CLI tarball.
+  it("attaches every Core tarball, SHA256SUMS and install.sh (D5, D10)", () => {
+    const job = code(jobBlock(source, "publish"));
+    for (const { target } of CORE_TARGETS) {
+      expect(job).toContain(`"actana-core-$BETA_VERSION-${target}.tar.gz"`);
+    }
+    expect(job).toContain('"SHA256SUMS"');
+    expect(job).toContain('"install.sh"');
+    expect(job).toContain("cp install.sh core-tarballs/install.sh");
+  });
+
+  // D7 again, from the operator's side: a second cut of the same beta is a
+  // supported operation and not a repair. Every asset is clobbered, and
+  // anything the previous cut left that this one does not produce is deleted —
+  // otherwise a moving tag can accumulate a Release that is a mix of two cuts,
+  // which is the one failure an immutable release tag cannot have.
+  it("replaces every asset and leaves none of the previous cut behind (D7)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain("--clobber");
+    expect(job).toContain("gh release delete-asset");
+  });
+
+  // ADR 0023 D9, kept in force by ADR 0036 D11, and the acceptance criterion
+  // for this workflow in that clause's own words.
+  //
+  // Asserted against the **invocations**, not by counting matches over the job.
+  // The count was the shape this test had first and it did not hold: both of
+  // the step's `::error` remediation hints embed the literal
+  // `gh release edit $TAG --prerelease=true --latest=false`, so a
+  // `>= 2` over the whole job was satisfied by the error prose alone — deleting
+  // both flags from both `gh release` calls left the suite green. This is the
+  // *pre-merge* guard for the one flag D9 says must never be lost, and the
+  // runtime read-back below it fires only after the tag has moved and the beta
+  // is already published, which is why its own error text says "Fix it now".
+  // A guard that a sentence can satisfy is not one.
+  it("passes both flags on both `gh release` invocations, never defaulted (D11)", () => {
+    const job = code(jobBlock(source, "publish"));
+    for (const verb of ["gh release create", "gh release edit"]) {
+      const call = invocation(job, verb);
+      // `gh release create` with no `--latest` defaults `make_latest` to true,
+      // which is the whole failure D9 describes; `edit` is the second cut's
+      // path to the same two fields.
+      expect(call, `${verb} does not pass --prerelease=true`).toContain("--prerelease=true");
+      expect(call, `${verb} does not pass --latest=false`).toContain("--latest=false");
+      // The body has to name *this* cut's commit on both paths, or a re-cut
+      // moves the tag and every asset while the Release page goes on naming the
+      // first cut's sha — the one thing ADR 0036 D7 calls a beta's immutable
+      // record.
+      expect(call, `${verb} does not write the notes`).toContain("--notes-file");
+    }
+    // Written before the branch, so both paths have it. A `printf … > notes.md`
+    // inside the create arm is exactly the bug above.
+    const publish = code(jobBlock(source, "publish"));
+    expect(publish.indexOf('> "$RUNNER_TEMP/notes.md"')).toBeGreaterThan(-1);
+    expect(
+      publish.indexOf('> "$RUNNER_TEMP/notes.md"'),
+      "the notes are written inside a branch, so a re-cut keeps the first cut's body",
+    ).toBeLessThan(publish.indexOf('if gh release view "$TAG"'));
+    // `draft` is the third field a person can pick by hand. The read-back
+    // detects it, but only after the tag has moved — so the repair is asserted
+    // beside the detection.
+    expect(invocation(job, "gh release edit")).toContain("--draft=false");
+  });
+
+  // The read-back itself, which is the assertion D9 asks for rather than the
+  // flag D9 warns can be lost. It runs after the Release is written, on the
+  // pattern release.yml already uses for an npm attestation that vanishes
+  // silently: the flag succeeded, the log looks identical, and only the API
+  // knows.
+  it("reads the flags back off the API, /releases/latest included (D11)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain('gh api "repos/$GH_REPO/releases/tags/$TAG"');
+    expect(job).toContain("jq -r '.prerelease'");
+    expect(job).toContain("jq -r '.draft'");
+    expect(job).toContain('gh api "repos/$GH_REPO/releases/latest"');
+    expect(job).toContain("The beta became the latest release");
+  });
+
+  // D15. An npm version is burned by its first publish, and C1 fixes the beta
+  // string for the life of the line — so a registry publish would work once per
+  // train and then 403 the second cut, after the tag had already moved. The
+  // route is dropped rather than counted around, and the CLI reaches a beta as
+  // an asset instead (D16, #320).
+  it("publishes nothing to the npm registry (D15)", () => {
+    expect(body).not.toContain("npm publish");
+    expect(body).not.toContain("--provenance");
+    expect(body).not.toContain("NPM_TOKEN");
+  });
+
+  // D9, from the other side. This workflow exists *because* release.yml refuses
+  // a tag on a train, and that refusal is what it routes around rather than
+  // removes: it is the guard that keeps release.yml's two modes readable off
+  // the ref graph instead of off a flag. Deleting it and adding a third mode is
+  // the obvious refactor a later reader proposes, and 0036 D9 refuses it — so
+  // the sentence is pinned here, in the file whose existence depends on it.
+  it("leaves release.yml's refusal of a tag on a train in place (D9)", () => {
+    expect(code(read("release.yml"))).toContain("Tag is on neither main nor a release line");
+  });
+});
+
 describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)", () => {
   const MANIFESTS = [
     "package.json",
