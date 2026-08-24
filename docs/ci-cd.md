@@ -1241,6 +1241,16 @@ fixed — the release is dispatched at the tag now — but a promotion can still
 stop after `advance` for reasons that have nothing to do with it: a CVE gate
 that fires, a registry that is down, an installer e2e that goes red.
 
+**The fix arrives one promotion late, and this is the section where that
+matters.** A promotion executes the workflow files on the default branch as
+they stood when the run was created — that is the whole of #326 — so **the
+first promotion after this change lands still runs the old `promote.yml` and
+the old `release.yml`**: no `preflight`, no `--ref` on the release, and no
+`head_sha` assertion. It cannot be otherwise, because the change reaches `main`
+only by being promoted. Expect that one run to look like the runs before it,
+and read the paragraph above rather than this one if it stops. Every promotion
+after it has the guarantee.
+
 #### What is safe to re-run, and what is burned
 
 | | | |
@@ -1295,11 +1305,19 @@ git ls-remote --exit-code --heads origin "$line" \
 # 4. Retire the promoted train. The guard is the one `retire-train` makes:
 #    everything on the train is on `main`, unless something merged into it
 #    after the fast-forward — in which case deleting it throws real work away.
+#
+#    The empty-tip arm is not defensive noise: re-running this step is the
+#    normal thing to do, and `ls-remote` answers with an empty string once the
+#    branch is gone. Without it `--is-ancestor ""` errors into the last arm and
+#    tells you work is at risk when there is nothing left to do at all.
 tip="$(git ls-remote --heads origin "$train" | cut -f1)"
-if git merge-base --is-ancestor "$tip" origin/main; then
+if [[ -z "$tip" ]]; then
+  echo "$train is already retired — nothing to do"
+elif git merge-base --is-ancestor "$tip" origin/main; then
   git push origin --delete "$train"
 else
-  echo "$train grew past $tip after the promotion — retarget that work first"
+  echo "$train is at $tip, which is not reachable from main — something merged"
+  echo "into it after the fast-forward. Retarget that work before deleting it."
 fi
 ```
 
