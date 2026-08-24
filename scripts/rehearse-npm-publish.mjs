@@ -24,6 +24,23 @@
 //     the tarballs that are then published — so what was asserted and what
 //     goes to the registry are the same bytes rather than the same intent.
 //
+// ── Two modes, and only one of them is a rehearsal for a publish ─────────────
+//
+// **`--beta <x.y.z>`** packs the same CLI as a Release *asset* and publishes
+// nothing at all. ADR 0036 D15 drops the registry from the beta path outright:
+// a beta version string is `x.y.z-beta` with no counter (C1), a beta is cut
+// repeatedly as the train moves, and the second cut of the same string is a 403
+// from a registry that has already burned it — see the paragraph above, which
+// is the same fact from the other end. So `@actana/cli` is packed and attached
+// to the `v<x.y.z>-beta` prerelease and installed with `npm i -g <asset-url>`
+// (D16), and the version namespace is never touched. `rehearseBeta` below
+// carries the route, the one dependency question it has to answer, and why the
+// answer is the one it is.
+//
+// Everything else is shared, and deliberately: a beta asset is installed by the
+// same `npm i -g` onto the same operator's machine, so it is asserted by the
+// same module. The only rules that differ are the two `beta: true` narrows.
+//
 // `pnpm pack` and not `npm pack`, and this is load-bearing: the SDK's working
 // `exports` map points at TypeScript source, because inside the workspace it is
 // consumed as source and Node strips the types. What npm installs is compiled
@@ -35,6 +52,7 @@
 // Usage:
 //   node scripts/rehearse-npm-publish.mjs
 //   node scripts/rehearse-npm-publish.mjs --out-dir artifacts/npm --version 0.2.2 --npm-dry-run
+//   node scripts/rehearse-npm-publish.mjs --beta 0.4.1 --out-dir artifacts/beta --install-check
 //
 // --out-dir <dir>   where the tarballs land. Default: a fresh temp directory.
 // --version <x.y.z> the release being cut; every publishable manifest must
@@ -42,26 +60,45 @@
 // --npm-dry-run     additionally run `npm publish <tarball> --dry-run`, which
 //                   proves npm accepts the tarball spec and the flags. Off by
 //                   default so the test that calls this needs no network.
+// --beta <x.y.z>    the beta mode: pack `@actana/cli` alone, at `<x.y.z>-beta`,
+//                   as the asset ADR 0036 D16 attaches to the prerelease.
+//                   Publishes nothing and rehearses no publish. The line is
+//                   `x.y.z`; the `-beta` is appended here and carries no
+//                   counter, because C1 does not have one to carry.
+// --install-check   with `--beta`, actually run `npm i -g <the tarball>` into a
+//                   fresh prefix under an empty HOME and ask the installed
+//                   `actana` for its version. Needs the public registry. This
+//                   is #320's acceptance criterion, run rather than assumed.
 //
 // Output, on stdout:
 //   tarballs=<path> <path>              the packed tarballs, in publish order
 //   packages=@actana/sdk @actana/cli    the names they carry
 //   absent=                             intended by D13 and not written yet
+//
+// and, under `--beta`, additionally:
+//   asset=actana-cli-0.4.1-beta.tgz     the Release asset's filename
+//   version=0.4.1-beta                  what C1 fixes, on every surface
+//   sha256=<hex>                        the row #318's SHA256SUMS carries
+//   install=ok                          only with `--install-check`
 
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
 import { makeFail, parseArgs, stringFlag } from "./lib/cli.mjs";
 import {
+  assertBundleInlines,
   assertMonorepoKeepsTheGuard,
   assertPackedBin,
   assertPackedFiles,
   assertPackedManifest,
   assertPublishSet,
+  betaVersion,
   binTargets,
   discoverPublishable,
+  externalNames,
   publishOrder,
   workspaceManifests,
 } from "./lib/npm-packages.mjs";
@@ -89,7 +126,38 @@ const listEntries = (tarball) =>
   run("tar", ["-tzf", tarball]).split("\n").filter(Boolean).sort();
 const readEntry = (tarball, entry) => run("tar", ["-xzOf", tarball, entry]);
 
+/**
+ * The same read, with room for a bundle.
+ *
+ * `run` takes `execFileSync`'s default `maxBuffer`, which is 1 MiB, and every
+ * entry the release path reads — a manifest, a `bin/` shim — is far under it.
+ * The beta path reads `dist/actana-cli.mjs`, which is past 1 MiB today because
+ * it has the SDK and `@actana/shared` inlined into it — the very property
+ * `assertBundleInlines` is being asked to confirm. So the check that exists
+ * because the bundle is large was the one call that could not read it, and it
+ * failed as `spawnSync tar ENOBUFS` rather than as anything about packaging.
+ */
+const readBundleEntry = (tarball, entry) =>
+  execFileSync("tar", ["-xzOf", tarball, entry], {
+    encoding: "utf8",
+    maxBuffer: 128 * 1024 * 1024,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+
+/** The one package the beta path ships, and the one dependency it has to lose. */
+const BETA_PACKAGE = "@actana/cli";
+const INLINED_SIBLING = "@actana/sdk";
+
 fs.mkdirSync(outDir, { recursive: true });
+
+// The beta mode is a different artifact for a different channel, so it takes
+// the whole script rather than adding a branch to every step below. Nothing
+// under it publishes, rehearses a publish, or touches a registry.
+const betaLine = stringFlag(args, "beta", fail);
+if (betaLine !== undefined) {
+  rehearseBeta(betaLine);
+  process.exit(0);
+}
 
 // D12's other half first: the guard the monorepo keeps is the thing the tarball
 // must not have, so a repository that had quietly dropped it would make every
@@ -188,3 +256,270 @@ process.stdout.write(
     "",
   ].join("\n"),
 );
+
+
+/**
+ * Pack the CLI as a beta Release asset and assert it — the whole of #320's
+ * route, and it publishes nothing.
+ *
+ * ── Which of #320's three routes this is, and why ────────────────────────────
+ *
+ * The route is fixed by the operator and by ADR 0036 D16 and is not reopened
+ * here: the CLI is **packed and attached to the `v<x.y.z>-beta` prerelease as
+ * an asset**, installed with `npm i -g <asset-url>`, and **never published to
+ * registry.npmjs.org under a beta version**. D15 gives the reason in one line —
+ * an npm version is burned by its first publish (see this file's own header),
+ * a beta string carries no counter (C1), and a beta is designed to be cut
+ * repeatedly, so the second cut of `0.4.1-beta` would 403 after the tag has
+ * moved and every asset has been replaced.
+ *
+ * What that route leaves open is one question, and #320 lists three answers.
+ * `@actana/cli` declares `"@actana/sdk": "workspace:*"`; pnpm resolves it to a
+ * real version as it packs; under D15 that version is on no registry, so
+ * `npm i -g <asset-url>` would fail resolving it. **This is route 2: the beta
+ * manifest drops the dependency**, because `packages/cli/build.mjs` marks only
+ * `ws`, `undici` and `selfsigned` external and therefore inlines the SDK into
+ * the bundle already.
+ *
+ * Route 2 rather than route 1 (attach the SDK tarball too and point the CLI's
+ * range at its asset URL) for a reason that is about the acceptance criterion
+ * rather than about elegance. #320 asks that `npm i -g <asset-url>` be
+ * **asserted in CI, not assumed** — *"that assertion is the whole ticket"*. A
+ * URL range can only be asserted once the Release exists to serve it, so on a
+ * pull request the check would have to install from a `file:` URL and hope the
+ * `https:` one behaves the same. Route 2's tarball resolves nothing that is
+ * not on the public registry, so the bytes CI installs are the bytes the
+ * operator installs, and `--install-check` below runs that install for real.
+ * Route 3 (attach both and document a two-step install) is refused
+ * deliberately: it is honest and it is worse for the operator, which is
+ * exactly how #320 lists it.
+ *
+ * The cost route 2 carries, stated rather than hidden: the beta manifest's
+ * dependency set differs from the release manifest's by one name, which is the
+ * kind of divergence the packing guards exist to catch. So it is not left to a
+ * convention — `assertPackedManifest`'s `beta` branch *requires* the absence
+ * exactly as the release branch requires the pin, and `assertBundleInlines`
+ * reads the packed bundle to confirm the code the manifest stopped naming is
+ * in the tarball. A future `build.mjs` that externalised the SDK would fail
+ * here, on the artifact, rather than in a stranger's install.
+ *
+ * ── The manifest edit, and why it is never committed ─────────────────────────
+ *
+ * Both edits — the version and the dropped dependency — happen to the manifest
+ * **in this checkout** and are restored in a `finally` before anything else
+ * runs. ADR 0023 D3 is why: the train's six manifests carry `x.y.z`, and
+ * `ci.yml`'s `Train rules` job asserts them on every pull request into the
+ * train. A committed `0.4.1-beta` would fail that job, and a committed
+ * dependency drop would fail `no-local-escape.test.ts`'s pin on the CLI's
+ * dependency set — which is the pin doing its job, because on the *release*
+ * path that dependency has to be there.
+ *
+ * This also fixes an ordering the caller cannot see: `pnpm install` runs
+ * **before** this, because dropping the dependency from the manifest does not
+ * remove the `node_modules` link esbuild resolves the SDK's source through. A
+ * beta packed in a checkout that had never been installed would fail in the
+ * build, loudly, which is the right way round.
+ */
+function rehearseBeta(line) {
+  // C1, at the first opportunity: a line is `x.y.z` and the beta of it is
+  // `x.y.z-beta`. There is no counter to pass in and nowhere to put one.
+  let betaString;
+  try {
+    betaString = betaVersion(line);
+  } catch (error) {
+    fail(error.message);
+  }
+
+  const cli = discoverPublishable(repoRoot).find((pkg) => pkg.name === BETA_PACKAGE);
+  if (cli === undefined) {
+    fail(
+      `${BETA_PACKAGE} is not a publishable workspace package, so there is nothing to pack for a beta. The beta ` +
+        "asset is the same artifact a release publishes, minus the registry — if this package has gone private or " +
+        "gone missing, the beta path is broken in the same way the release path is.",
+    );
+  }
+
+  // Asserted before the manifest is touched rather than after the pack: the
+  // dependency is only droppable because the bundle carries the SDK's code,
+  // and `build.mjs`'s `external` array is where that stops being true first.
+  const externals = externalNames(fs.readFileSync(path.join(cli.dir, "build.mjs"), "utf8"));
+  if (externals.includes(INLINED_SIBLING)) {
+    fail(
+      `packages/cli/build.mjs marks ${INLINED_SIBLING} external, so the bundle imports it at runtime. The beta ` +
+        `manifest drops that dependency on the grounds that it is inlined (ADR 0036 D16), and dropping an external ` +
+        "one publishes an asset whose `npm i -g` fails on a version no registry has. Fix the external array or " +
+        "re-decide the route with the owner.",
+    );
+  }
+  note(`${INLINED_SIBLING} is not external in build.mjs — externals are ${externals.join(", ")}`);
+
+  // The line the caller named against the line this checkout actually is. The
+  // beta workflow's one input is the train branch (`beta/0.4.1`), and `x.y.z`
+  // comes out of that name — while the manifests carry the line because the
+  // cut wrote it there (ADR 0023 D3). Those are two independent statements of
+  // one fact, and a beta cut from the wrong branch, or from a train whose
+  // manifests were never stamped, is exactly where they come apart. Silently
+  // trusting the flag would attach `actana-cli-0.4.1-beta.tgz` to a checkout of
+  // the 0.4.2 line, which installs perfectly and is the wrong program.
+  if (cli.manifest.version !== line) {
+    fail(
+      `--beta names the ${line} line and ${cli.relative} carries ${cli.manifest.version}. The train's manifests are ` +
+        "stamped with the line by the cut (ADR 0023 D3) and the beta is named after the branch, so these disagreeing " +
+        "means one of the two is not the train you think it is. Nothing is packed until they agree.",
+    );
+  }
+
+  const manifestPath = path.join(cli.dir, "package.json");
+  // The original bytes, restored verbatim. Not a re-serialisation: a `finally`
+  // that reformats the file is a `finally` that leaves a diff behind.
+  const original = fs.readFileSync(manifestPath);
+  const tarball = path.join(outDir, tarballName({ name: cli.name, version: betaString }));
+
+  try {
+    const manifest = JSON.parse(original.toString("utf8"));
+    manifest.version = betaString;
+    if (manifest.dependencies?.[INLINED_SIBLING] === undefined) {
+      fail(
+        `${BETA_PACKAGE} does not depend on ${INLINED_SIBLING} in the working tree, so there is nothing for the ` +
+          "beta path to drop. Either the dependency moved and this narrowing is stale, or the manifest lost it on " +
+          "the release path too — and the release path needs it.",
+      );
+    }
+    delete manifest.dependencies[INLINED_SIBLING];
+    fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+
+    note(`packing ${cli.name} at ${betaString}, without ${INLINED_SIBLING} (ADR 0036 D16, route 2)`);
+    // `pnpm pack`, not `npm pack`, for the reason this file's header gives —
+    // and here it is also what rewrites nothing: the dependency is gone from
+    // the manifest, so there is no `workspace:` protocol left to resolve.
+    run("pnpm", ["pack", "--pack-destination", outDir], cli.dir);
+  } catch (error) {
+    fail(`\`pnpm pack\` failed for ${cli.name} at ${betaString}: ${error.stderr || error.message}`);
+  } finally {
+    fs.writeFileSync(manifestPath, original);
+  }
+
+  if (!fs.existsSync(tarball)) {
+    fail(`\`pnpm pack\` produced no ${path.basename(tarball)} in ${outDir}`);
+  }
+
+  // C1 on the filename, which is the surface an operator actually reads: the
+  // asset is `actana-cli-<x.y.z>-beta.tgz` and the URL it hangs off is
+  // `.../releases/download/v<x.y.z>-beta/`. pnpm names a tarball after the
+  // manifest, so this is really a second reading of the version — asserted
+  // anyway, because the filename is what gets pasted into an install command.
+  const asset = path.basename(tarball);
+  if (asset !== `actana-cli-${betaString}.tgz`) {
+    fail(`the packed asset is named ${asset}, not actana-cli-${betaString}.tgz (ADR 0036 C1).`);
+  }
+
+  try {
+    const packed = JSON.parse(readEntry(tarball, "package/package.json"));
+    const entries = listEntries(tarball);
+    assertPackedManifest(packed, { version: betaString, beta: true });
+    assertPackedFiles(packed, entries);
+    for (const target of binTargets(packed)) {
+      assertPackedBin(packed.name, target, readEntry(tarball, target));
+    }
+    // The assertion the dropped dependency rests on, read off the shipped
+    // bundle rather than off the config that produced it.
+    assertBundleInlines(
+      packed.name,
+      readBundleEntry(tarball, "package/dist/actana-cli.mjs"),
+      INLINED_SIBLING,
+    );
+    note(
+      `${packed.name}@${packed.version} — command \`${Object.keys(packed.bin).join("`, `")}\`, engines ` +
+        `${packed.engines.node}, ${entries.length} files, dependencies ` +
+        `${Object.keys(packed.dependencies ?? {}).join(" ")}, ${INLINED_SIBLING} inlined not imported.`,
+    );
+  } catch (error) {
+    fail(`${cli.name}: ${error.message}`);
+  }
+
+  const digest = createHash("sha256").update(fs.readFileSync(tarball)).digest("hex");
+
+  const installed = args["install-check"] === true;
+  if (installed) installCheck(tarball, betaString);
+
+  note(`✅ beta asset rehearsed in ${outDir} at ${betaString}`);
+
+  // `writeSync`, not `process.stdout.write`: this path exits immediately after,
+  // and a write to a pipe is not guaranteed to have flushed by then.
+  fs.writeSync(
+    1,
+    [
+      `tarballs=${tarball}`,
+      `packages=${cli.name}`,
+      `asset=${asset}`,
+      `version=${betaString}`,
+      `sha256=${digest}`,
+      `absent=`,
+      // Emitted only when the install actually ran, never as a default: a
+      // caller that greps for this line must not find it on a run that skipped
+      // the one assertion #320 calls the whole ticket.
+      ...(installed ? ["install=ok"] : []),
+      "",
+    ].join("\n"),
+  );
+}
+
+/**
+ * The acceptance criterion, run rather than reasoned about: `npm i -g <the
+ * tarball>` on a machine with nothing installed, and the `actana` that lands on
+ * `PATH` answers with the beta version.
+ *
+ * It is the packed bytes and the public registry and nothing else. The prefix
+ * and the home are both fresh temporary directories, and the environment is
+ * built from nothing rather than spread from `process.env` — for the reason
+ * `npm-publish.test.mjs` gives about a CI runner that is itself a container
+ * Core, and because a machine with a Core installed under it would answer
+ * `--version` with a second line about that install (ADR 0032 D10).
+ *
+ * `PATH` carries `node`, which the shim's `#!/usr/bin/env node` needs, and
+ * nothing carries a registry override: this must resolve `ws`, `undici` and
+ * `selfsigned` from registry.npmjs.org exactly as an operator's machine does,
+ * and must resolve nothing else. `@actana/sdk` not being in that list is the
+ * whole point — it is in the bundle.
+ */
+function installCheck(tarball, betaString) {
+  const prefix = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-prefix-"));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-home-"));
+  const env = {
+    PATH: process.env.PATH ?? "",
+    HOME: home,
+    XDG_DATA_HOME: path.join(home, ".local", "share"),
+    XDG_CONFIG_HOME: path.join(home, ".config"),
+  };
+  try {
+    note(`installing ${path.basename(tarball)} with \`npm i -g\` into a clean prefix`);
+    execFileSync("npm", ["install", "-g", "--prefix", prefix, tarball], {
+      cwd: home,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const command = path.join(prefix, "bin", "actana");
+    if (!fs.existsSync(command)) {
+      fail(`\`npm i -g\` installed ${path.basename(tarball)} and put no \`actana\` in ${prefix}/bin.`);
+    }
+    const reported = execFileSync(command, ["--version"], {
+      cwd: home,
+      env,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    }).trim();
+    if (reported !== `actana ${betaString}`) {
+      fail(`the installed command answers \`${reported}\`, not \`actana ${betaString}\`.`);
+    }
+    note(`✅ \`npm i -g\` → ${command} → ${reported}`);
+  } catch (error) {
+    fail(
+      `\`npm i -g\` on ${path.basename(tarball)} failed: ${error.stderr || error.message}. This is #320's whole ` +
+        "acceptance criterion — a beta asset that does not install is a URL nobody has run.",
+    );
+  } finally {
+    fs.rmSync(prefix, { recursive: true, force: true });
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+}
