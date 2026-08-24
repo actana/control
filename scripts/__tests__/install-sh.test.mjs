@@ -8,8 +8,19 @@
 // container e2e (`scripts/e2e-actana-setup-linux.mjs`) runs the same script
 // against a real tarball on a real init system; this file covers the decisions
 // the bootstrapper itself makes — platform mapping, version resolution,
-// checksum verification, flag passthrough, exit codes — in under a second, on
-// every platform CI runs.
+// checksum verification, which verb it hands the bundle to, exit codes — in
+// under a second, on every platform CI runs.
+//
+// **Install is not activation** (ADR 0036 C2, #316). The script places the
+// bundle and stops: it runs `actana place`, never `actana setup`, and the
+// flags it used to forward to setup are refused rather than ignored. Two
+// things follow for this file, and they are what the placement block below is
+// for. First, "did not run setup" is only half a contract — the other half is
+// that something *was* placed, outside the temp directory the EXIT trap
+// deletes, or a successful run would leave the machine as it was found.
+// Second, the next command is printed by the CLI (which knows the layout) and
+// never by the script, so what is asserted here is that the script adds no
+// second copy of it.
 //
 // Platform mapping is tested by putting a `uname` shim first on PATH. It looks
 // like a trick and is the opposite: `uname` is precisely the input the script
@@ -48,8 +59,16 @@ const BROKEN_VERSION = "0.0.9";
 
 /**
  * Stands in for the tarball's `bin/actana`: prints what it was called with and
- * whether it got a terminal, so the tests can assert both the flags that
- * reached `actana setup` and that a piped run has no TTY to prompt on.
+ * whether it got a terminal, so the tests can assert both the verb the
+ * bootstrapper handed the bundle to and that no run has a TTY to prompt on.
+ *
+ * It also does the smallest honest version of what `actana place` does — write
+ * one file *outside* the script's temp directory. That is the property the
+ * whole ticket turns on: before #316 the extracted tree survived only because
+ * `actana setup` copied it into the install layout, so a script that stopped
+ * calling setup and placed nothing would install nothing at all and still
+ * exit 0. The real placement is unit-tested in `packages/cli` and exercised
+ * for real by the container e2e; here it only has to be observable.
  */
 const stubActana = (version, target) => `#!/bin/sh
 printf 'stub-actana version=%s target=%s\\n' '${version}' '${target}'
@@ -59,6 +78,13 @@ if [ -t 0 ]; then printf 'tty=yes\\n'; else printf 'tty=no\\n'; fi
 # /dev/null, which is what stops a piped install being eaten by its own child.
 printf 'stdin=%s\\n' "$(cat)"
 if [ -n "\${ACTANA_STUB_LOG:-}" ]; then printf '%s\\n' "$*" >> "\${ACTANA_STUB_LOG}"; fi
+if [ -n "\${ACTANA_STUB_PLACED:-}" ] && [ "\${ACTANA_STUB_EXIT:-0}" = "0" ]; then
+  mkdir -p "$(dirname "\${ACTANA_STUB_PLACED}")"
+  printf 'placed by: %s\\n' "$*" > "\${ACTANA_STUB_PLACED}"
+fi
+# The CLI is the half that knows the layout, so the CLI is the half that
+# prints the next command. \`NEXT\` stands in for that line.
+printf 'NEXT %s/bin/actana setup\\n' "\${ACTANA_STUB_CURRENT:-/home/op/.local/share/actana/current}"
 exit \${ACTANA_STUB_EXIT:-0}
 `;
 
@@ -175,12 +201,17 @@ describeOnPosix("install.sh", () => {
     const tmpDir = path.join(caseDir, "tmp");
     fs.mkdirSync(tmpDir, { recursive: true });
     const stubLog = path.join(caseDir, "actana-args.log");
+    // Outside `tmpDir` on purpose: this is the stand-in for the install layout,
+    // and the whole question is whether what the CLI wrote outlives the temp
+    // directory the script's EXIT trap removes.
+    const placed = path.join(caseDir, "placed", "marker");
 
     const env = {
       ...process.env,
       PATH: `${unameShim(caseDir, uname[0], uname[1], rosetta)}:${process.env.PATH}`,
       TMPDIR: tmpDir,
       ACTANA_STUB_LOG: stubLog,
+      ACTANA_STUB_PLACED: placed,
       ...extraEnv,
     };
     let stdin = "ignore";
@@ -203,6 +234,9 @@ describeOnPosix("install.sh", () => {
       /** The argv `actana` was execed with, or null when it never ran. */
       actanaArgs: fs.existsSync(stubLog) ? fs.readFileSync(stubLog, "utf8").trim() : null,
       tmpDir,
+      /** Whether anything survived the script — see `stubActana`. */
+      placed: fs.existsSync(placed),
+      placedPath: placed,
     };
   }
 
@@ -224,11 +258,11 @@ describeOnPosix("install.sh", () => {
   const withServer = (args = []) => ["--base-url", server.url, ...args];
 
   describe("resolving a release", () => {
-    it("installs the latest release and hands off to `actana setup`", async () => {
-      const run = await runInstaller({ args: withServer(["--yes"]) });
+    it("installs the latest release and places it with `actana place`", async () => {
+      const run = await runInstaller({ args: withServer([]) });
       expect(run.status, run.output).toBe(0);
       expect(run.stdout).toContain(`version=${NEW_VERSION}`);
-      expect(run.actanaArgs).toBe("setup --yes");
+      expect(run.actanaArgs).toBe("place");
 
       const fetched = traffic();
       expect(fetched).toContain(`/repos/${DEFAULT_REPO}/releases/latest`);
@@ -379,16 +413,64 @@ describeOnPosix("install.sh", () => {
     });
   });
 
-  describe("handing off to `actana setup`", () => {
-    it("forwards every flag it does not own, in order", async () => {
-      const run = await runInstaller({
-        args: withServer(["--yes", "--public-host", "10.0.0.7", "--label", "build-box", "--no-harnesses"]),
-      });
+  // ─── install is not activation (ADR 0036 C2, #316) ─────────────────────────
+  //
+  // This block replaces the `handing off to \`actana setup\`` one it is the same
+  // size as. The old contract was "the flags reach setup, the exit code comes
+  // back, and stdin is not eaten"; the new one is "the bundle is placed, setup
+  // is not run, setup's flags are refused, the failure still comes back, and
+  // stdin is still not eaten". Deleting the old cases without replacing them
+  // would have left the negative space around the tail thinner than the tail
+  // it removed.
+  describe("placing the bundle, and stopping there", () => {
+    it.each([[[]], [["--version", OLD_VERSION]]])(
+      "runs `actana place`, and never `actana setup`, with %j",
+      async (args) => {
+        const run = await runInstaller({ args: withServer(args) });
+        expect(run.status, run.output).toBe(0);
+        expect(run.actanaArgs).toBe("place");
+        expect(run.actanaArgs).not.toMatch(/setup/);
+      },
+    );
+
+    it("runs `actana place` with no terminal, the same as when piped", async () => {
+      // The one shape that used to take the other branch: run as a file, so
+      // the old tail's `[ -t 0 ]` test would have handed stdin straight
+      // through. There is no branch left — nothing the script runs prompts.
+      const run = await runInstaller({ args: withServer([]), piped: false });
       expect(run.status, run.output).toBe(0);
-      expect(run.actanaArgs).toBe("setup --yes --public-host 10.0.0.7 --label build-box --no-harnesses");
+      expect(run.actanaArgs).toBe("place");
+      expect(run.stdout).toContain("tty=no");
     });
 
-    it("hands setup an empty stdin when there is no terminal", async () => {
+    // The property the whole ticket turns on. Before #316 the extracted tree
+    // survived only because `actana setup` copied it out of the temp
+    // directory, so a script that stopped calling setup and placed nothing
+    // would install nothing and still exit 0 — the most expensive way to pass
+    // a test suite.
+    it("leaves something behind: the placement outlives the temp dir", async () => {
+      const run = await runInstaller({ args: withServer([]) });
+      expect(run.status, run.output).toBe(0);
+      expect(run.placed, `nothing was placed at ${run.placedPath}`).toBe(true);
+      expect(fs.readFileSync(run.placedPath, "utf8")).toContain("place");
+      // And the download itself did not survive with it.
+      expect(fs.readdirSync(run.tmpDir)).toEqual([]);
+    });
+
+    it("prints the next command once — the CLI's copy, not a second one", async () => {
+      const run = await runInstaller({ args: withServer([]) });
+      expect(run.status, run.output).toBe(0);
+      // The stub stands in for the CLI, which is the half that knows the
+      // layout and therefore the half that prints the runnable command. A
+      // script that printed its own `actana setup` line would be a second
+      // copy free to disagree with it — about the launcher's path, most of
+      // all, which is exactly what an operator whose bin dir is not on PATH
+      // needs to be right.
+      expect(run.stdout).toMatch(/^NEXT \S+\/bin\/actana setup$/m);
+      expect(run.stdout.match(/\bsetup\b/g)).toHaveLength(1);
+    });
+
+    it("hands the CLI an empty stdin, so a piped install is not eaten by its child", async () => {
       // The installer is run as a file with real data waiting on its stdin —
       // the shape a `curl | bash` run has, where that data is the rest of the
       // script. If it passed stdin through, the stub would read LEFTOVER and
@@ -403,19 +485,63 @@ describeOnPosix("install.sh", () => {
       expect(run.stdout).not.toContain("LEFTOVER");
     });
 
-    it("gives setup no terminal to prompt on when piped", async () => {
-      const run = await runInstaller({ args: withServer([]), piped: true });
-      expect(run.stdout).toContain("tty=no");
+    // Every flag `usage()` used to advertise as passthrough, one case each: an
+    // operator pasting last month's command line has to be told where their
+    // flag went, and a loop inside one `it` would stop at the first one that
+    // regressed.
+    const SETUP_FLAGS = [
+      ["--yes"],
+      ["--public-host", "10.0.0.7"],
+      ["--public-host=10.0.0.7"],
+      ["--label", "build-box"],
+      ["--port", "9443"],
+      ["--host", "0.0.0.0"],
+      ["--no-harnesses"],
+      ["--with-codex"],
+    ];
+
+    it.each(SETUP_FLAGS)("refuses %s, and says it belongs to `actana setup`", async (...flag) => {
+      const run = await runInstaller({ args: withServer(flag) });
+      expect(run.status, `${flag.join(" ")}: ${run.output}`).not.toBe(0);
+      expect(run.output).toContain(flag[0].split("=")[0]);
+      expect(run.output).toMatch(/actana setup/);
+      // Refused while parsing, so nothing was fetched and nothing was run.
+      expect(run.actanaArgs).toBeNull();
+      expect(run.placed).toBe(false);
+      expect(traffic()).toEqual([]);
     });
 
-    it("propagates setup's exit code", async () => {
+    it("refuses a flag nobody owns rather than passing it on", async () => {
+      // The old script swallowed every unrecognised token and handed it to
+      // setup, so `--pubic-host 10.0.0.7` reached the CLI and was rejected
+      // there. There is nothing downstream to reject it now, and silently
+      // dropping the one flag that decides whether a Panel can reach this
+      // machine is the failure this refusal exists for.
+      const run = await runInstaller({ args: withServer(["--pubic-host", "10.0.0.7"]) });
+      expect(run.status).not.toBe(0);
+      expect(run.output).toContain("--pubic-host");
+      expect(run.actanaArgs).toBeNull();
+      expect(traffic()).toEqual([]);
+    });
+
+    it("comes back with the placement's own failure status", async () => {
+      // There is no `setup` exit code to propagate any more, and `set -e` is
+      // what carries this one out. A placement that failed and an install that
+      // reported success would be the worst of the two.
       const run = await runInstaller({ args: withServer([]), env: { ACTANA_STUB_EXIT: "7" } });
       expect(run.status).toBe(7);
+      expect(run.placed).toBe(false);
     });
 
     it("leaves no temporary files behind", async () => {
       const run = await runInstaller({ args: withServer([]) });
       expect(run.status, run.output).toBe(0);
+      expect(fs.readdirSync(run.tmpDir)).toEqual([]);
+    });
+
+    it("leaves no temporary files behind when the placement fails either", async () => {
+      const run = await runInstaller({ args: withServer([]), env: { ACTANA_STUB_EXIT: "7" } });
+      expect(run.status).toBe(7);
       expect(fs.readdirSync(run.tmpDir)).toEqual([]);
     });
   });
@@ -428,6 +554,32 @@ describeOnPosix("install.sh", () => {
       expect(traffic()).toEqual([]);
     });
 
+    it("describes what it does now: two commands, and no passthrough", async () => {
+      const run = await runInstaller({ args: ["--help"] });
+      const text = run.stdout;
+      // The help is the only place an operator learns there is a second
+      // command, so it has to name it and it has to stop advertising the
+      // flags the script no longer carries.
+      expect(text).toMatch(/actana setup/);
+      expect(text).toMatch(/Installing is not activating/i);
+      expect(text).not.toMatch(/passed through|passthrough/i);
+      for (const gone of ["--with-", "--no-harnesses"]) {
+        // Named only as somebody else's, never as this script's own option.
+        const owned = new RegExp(`^\\s{2}${gone.replace("-", "\\-")}\\S*\\s{2,}\\S`, "m");
+        expect(text, `${gone} is still documented as an installer option`).not.toMatch(owned);
+      }
+    });
+
+    it("does not claim to hand over to `actana setup` in its own header", () => {
+      // The header is the first thing anyone reading the script sees, and it
+      // said the job was "fetch, verify, exec" for as long as that was true.
+      const source = fs.readFileSync(INSTALL_SH, "utf8");
+      const header = source.slice(0, source.indexOf("set -eu"));
+      expect(header).not.toMatch(/hand over to/i);
+      expect(header).not.toMatch(/fetch, verify, exec/);
+      expect(header).toMatch(/fetch, verify, place/);
+    });
+
     it("rejects a flag of its own that was given no value", async () => {
       const run = await runInstaller({ args: withServer(["--version"]) });
       expect(run.status).not.toBe(0);
@@ -436,9 +588,9 @@ describeOnPosix("install.sh", () => {
     });
 
     it("rejects a flag whose value is the next flag, rather than eating it", async () => {
-      // `--version --yes` pinning a release called "--yes" and swallowing the
-      // flag that was meant for setup is the quiet kind of wrong.
-      for (const args of [["--version", "--yes"], ["--repo", "--yes"], ["--version="]]) {
+      // `--version --repo` pinning a release called "--repo" and swallowing
+      // the flag behind it is the quiet kind of wrong.
+      for (const args of [["--version", "--repo"], ["--repo", "--base-url"], ["--version="]]) {
         const run = await runInstaller({ args: withServer(args) });
         expect(run.status, `${args.join(" ")}: ${run.output}`).not.toBe(0);
         expect(run.output).toMatch(/needs a value/);
@@ -463,11 +615,11 @@ describeOnPosix("install.sh", () => {
       const stubLog = path.join(caseDir, "actana-args.log");
       const result = await runToCompletion(
         "/bin/sh",
-        ["-c", `curl -fsSL "$0/install.sh" | sh -s -- --base-url "$0" --yes`, server.url],
+        ["-c", `curl -fsSL "$0/install.sh" | sh -s -- --base-url "$0"`, server.url],
         { ...process.env, TMPDIR: caseDir, ACTANA_STUB_LOG: stubLog },
       );
       expect(result.status, `${result.stdout}${result.stderr}`).toBe(0);
-      expect(fs.readFileSync(stubLog, "utf8").trim()).toBe("setup --yes");
+      expect(fs.readFileSync(stubLog, "utf8").trim()).toBe("place");
     });
   });
 });

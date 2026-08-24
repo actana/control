@@ -1,25 +1,39 @@
 #!/bin/sh
-# actana — turn this machine into a Core.
+# actana — install the Core bundle and the CLI on this machine.
 #
 #   curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+#   actana setup
 #
-# This script is a bootstrapper and nothing more: detect the platform, resolve
-# the release, download the matching tarball, verify it against the release's
-# published SHA256SUMS, extract it, and hand over to `actana setup`. Every real
-# decision — where to install, the systemd unit, lingering, Harnesses, wiring
-# the Core into this machine's own registry — lives in that CLI, where it is
-# unit-tested. Anything this
-# script grows beyond "fetch, verify, exec" belongs there instead.
+# **Two commands, because installing is not activating** (ADR 0036 C2). This
+# script detects the platform, resolves the release, downloads the matching
+# tarball, verifies it against the release's published SHA256SUMS, extracts it,
+# places the bundle, links the launcher, prints the `actana setup` line to run
+# next, and exits. It does not turn this machine into a Core: the mTLS
+# material, the systemd unit or LaunchAgent, lingering, the Harness offers, the
+# daemon and this machine's own registration are all `actana setup`, which the
+# operator runs afterwards. There is no flag for this — it is what the script
+# does.
 #
-# Flags it does not own are forwarded verbatim to `actana setup`, so
-# `… | bash -s -- --yes --public-host 10.0.0.7` works and stays working as the
-# CLI gains flags.
+# **It does not know the install layout, and must not learn it.** Placement is
+# `"$extracted/bin/actana" place` — the CLI in the tree that was just verified,
+# running on the Node pinned inside it. ACTANA_HOME, ACTANA_CONFIG_DIR,
+# ACTANA_DATA_DIR, ACTANA_BIN_DIR, XDG_DATA_HOME and XDG_CONFIG_HOME resolve
+# there, in `packages/cli/src/actana-layout.ts`, where they are unit-tested
+# against a fake home. A second, subtly different copy of those rules in POSIX
+# sh is exactly the failure this repository refuses for release resolution.
+# So: "fetch, verify, place" — and anything this script grows beyond that
+# belongs in the CLI instead.
+#
+# Flags this script does not own are refused rather than forwarded. Every one
+# it used to forward belonged to `actana setup`, and `actana setup` is a
+# separate command now — passing `--yes` to an installer that prompts for
+# nothing would be a flag that quietly did nothing.
 #
 # POSIX sh: runs under bash, dash and ash. Tested by
 # `scripts/__tests__/install-sh.test.mjs` (the real script against a fixture
 # release server) and by `scripts/e2e-actana-setup-linux.mjs`, which enters at
-# the real one-liner on a real systemd machine and carries on into the
-# lifecycle verbs.
+# the real one-liner on a real systemd machine, runs `actana setup` as its own
+# next step, and carries on into the lifecycle verbs.
 
 set -eu
 
@@ -52,48 +66,61 @@ have() {
 
 usage() {
   cat <<'EOF'
-Install an Actana Control Core and turn this machine into a Core.
+Install the Actana Control Core bundle and the `actana` CLI on this machine.
+
+Installing is not activating. This script places the bundle and links the
+launcher; it starts nothing and configures nothing. It prints the
+`actana setup` command to run next, which is what turns this machine into a
+Core: the pairing material, the auto-start service, lingering, the Harness
+offers and the daemon.
 
 Usage:
   curl -fsSL <install-script-url> | bash
   curl -fsSL <install-script-url> | bash -s -- [options]
 
-Installer options:
+and then, as a separate command this script does not run for you:
+  actana setup [options]
+
+Options:
   --version <v>     Install this exact release (default: the latest release)
   --repo <slug>     GitHub repository to install from
   --base-url <url>  Fetch releases from here instead of GitHub (testing)
   --help            Show this help
 
-Every other option is passed through to `actana setup`, including:
-  --yes                 Take the recommended answer to every prompt, which
-                        includes installing every missing Harness
-  --with-<harness>        Install this Harness without asking (repeatable)
-  --no-harnesses           Do not install or offer any Harness
-  --port <n>            Port the daemon listens on
-  --public-host <addr>  Address your Panel dials
-  --label <name>        Alias shown in your Panel
-
-Piped into bash there is no terminal, so no Harness is installed unless one
-of the first two flags says to. Run `actana harnesses install <id>` later instead.
+These four are the whole of it. Options this script does not own are refused
+rather than ignored: `--yes`, `--port`, `--public-host`, `--label`,
+`--with-<harness>` and `--no-harnesses` are `actana setup`'s, and belong on the
+command this one prints. `actana setup --help` lists them.
 
 Environment: ACTANA_VERSION, ACTANA_REPO, ACTANA_BASE_URL set the same three
 installer options, for provisioning systems where flags are awkward.
+ACTANA_HOME, ACTANA_BIN_DIR, ACTANA_CONFIG_DIR, ACTANA_DATA_DIR and the XDG
+variables move where the bundle lands; they are read by the CLI, so this
+script and `actana setup` cannot disagree about where anything is.
 EOF
 }
 
 # ─── argument parsing ────────────────────────────────────────────────────────
 
-# Options this script owns are consumed; everything else is collected, shell-
-# quoted, and restored into "$@" for `actana setup`. Quoting through `eval` is
-# how a POSIX shell carries an argument list that may contain spaces without
-# arrays — `--label "my build box"` has to survive the round trip.
-quote() {
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+# This script owns four options and refuses everything else.
+#
+# It used to collect the rest, shell-quote them and restore them into "$@" for
+# `actana setup`. That machinery is gone with the call it fed: the flags it
+# carried are decisions about how this machine is configured as a Core, and
+# they belong on the command the operator runs next. Refusing is the honest
+# answer — an installer that accepted `--public-host core1.example.com` and
+# then did nothing with it would silently drop the one setting that decides
+# whether a Panel can ever reach this machine.
+setup_flag_refusal() {
+  die "$1 is an \`actana setup\` option, and this script no longer runs setup.
+  It installs the Core bundle and the CLI, then prints the \`actana setup\` line
+  to run next — pass $1 to that command instead. \`--help\` lists the four
+  options this script does own."
 }
 
 # A flag's value must be present and must not itself look like a flag:
-# `--version --yes` silently pinning a release called "--yes" and swallowing
-# the `--yes` is the kind of quiet wrong that only shows up as "why did it
+# `--version --repo` silently pinning a release called "--repo" and swallowing
+# the `--repo` is the kind of quiet wrong that only shows up as "why did it
 # install nothing" much later.
 need_value() {
   case ${2-} in
@@ -102,7 +129,6 @@ need_value() {
 }
 
 parse_args() {
-  FORWARD=""
   while [ $# -gt 0 ]; do
     case $1 in
       --version)
@@ -139,9 +165,16 @@ parse_args() {
         usage
         exit 0
         ;;
+      # Named one by one rather than swept up by the wildcard below, so an
+      # operator pasting a command line from before the split is told where
+      # their flag went instead of reading "unknown option".
+      --yes | -y | --port | --port=* | --public-host | --public-host=* | \
+        --label | --label=* | --host | --host=* | --no-harnesses | --with-*)
+        setup_flag_refusal "${1%%=*}"
+        ;;
       *)
-        FORWARD="$FORWARD $(quote "$1")"
-        shift
+        die "unknown option: $1. \`--help\` lists the four options this script owns;
+  everything else belongs on the \`actana setup\` line it prints when it is done."
         ;;
     esac
   done
@@ -289,8 +322,9 @@ main() {
   say "Installing the Actana Core $VERSION for $TARGET."
 
   work_dir=$(mktemp -d 2>/dev/null || mktemp -d -t actana-install)
-  # Whatever happens next — a bad checksum, a failed setup, Ctrl-C — the
-  # download does not outlive this script.
+  # Whatever happens next — a bad checksum, a refused placement, Ctrl-C — the
+  # download does not outlive this script. What does outlive it is whatever
+  # `place` copied out of here, which is the point of the call at the bottom.
   trap 'rm -rf "$work_dir"' EXIT
   trap 'rm -rf "$work_dir"; exit 130' INT
   trap 'rm -rf "$work_dir"; exit 143' TERM
@@ -333,28 +367,30 @@ main() {
   [ -x "$extracted/bin/actana" ] ||
     die "$asset does not contain bin/actana — the release asset looks wrong."
 
-  # Restore the flags meant for the CLI.
-  eval "set -- $FORWARD"
-
   say ""
-  # Run rather than `exec`: the EXIT trap above is what removes the download,
-  # and an exec'd process has no trap to run. Setup's exit code is propagated
-  # below, so a caller sees the same status either way.
-  # Piped runs (the one-liner) have the script itself on stdin; handing that to
-  # the CLI would let it eat the rest of the script. It has nothing to read
-  # there anyway — with no terminal, `setup` prompts for nothing and takes its
-  # answers from the flags above. A run from a real terminal keeps its stdin,
-  # so the prompts still work when a person is there to answer them.
-  set +e
-  if [ -t 0 ]; then
-    "$extracted/bin/actana" setup "$@"
-  else
-    "$extracted/bin/actana" setup "$@" </dev/null
-  fi
-  status=$?
-  set -e
-
-  exit $status
+  # **The line that makes any of this survive.** The tree above is inside
+  # `work_dir`, which the EXIT trap deletes; `place` copies it into
+  # `versions/<version>`, points `current` at it and links the launcher. Take
+  # this call away and a successful run leaves the machine exactly as it was
+  # found.
+  #
+  # Run rather than `exec`: the EXIT trap is what removes the download, and an
+  # exec'd process has no trap to run. `set -e` carries a failure out with its
+  # own status, so a caller still sees what went wrong — there is no longer a
+  # separate exit code to propagate, because there is no longer a `setup` run
+  # to propagate one from.
+  #
+  # stdin is /dev/null on every path, terminal or not. In the one-liner the
+  # rest of this script is still on stdin, and handing that to a child would
+  # let it eat the script; `place` has nothing to read there in any case. It is
+  # `actana setup` that talks to an operator, and that is their next command,
+  # run with their own terminal attached.
+  #
+  # What it prints — including the exact `actana setup` line to run next, as an
+  # absolute path when `<binDir>` is not on PATH — is printed by the CLI, which
+  # is the half that knows the layout. This script deliberately does not print
+  # a second copy of it.
+  "$extracted/bin/actana" place </dev/null
 }
 
 # Everything above is a definition, so the shell has read this whole script
