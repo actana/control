@@ -1,0 +1,949 @@
+name: Beta release
+
+# A requested beta cut: the moving `vx.y.z-beta` tag, a prerelease GitHub
+# Release, three Core tarballs, their `SHA256SUMS`, and `install.sh` beside
+# them (ADR 0036 D10).
+#
+#   resolve ─┬─ tarball (linux-x64, linux-arm64) ─┬─ installer-e2e ─┬─ publish
+#            │                                    │   (ubuntu x64)  │
+#            └─ tarball-macos (mac-arm64) ────────┴─────────────────┘
+#
+# `publish` is the only job that writes anything: it moves the tag, creates or
+# updates the Release, replaces every asset, and then reads the Release back to
+# prove the prerelease flag survived. Everything above it is a gate, so a red
+# leg leaves `vx.y.z-beta` exactly where it was.
+#
+# ── Why this is a file of its own (ADR 0036 D9) ──────────────────────────────
+#
+# `release.yml`'s `resolve` refuses any tag reachable from neither `main` nor a
+# `release/*` branch (`release.yml:219-231`):
+#
+# > `$ref ($sha) is not reachable from main and is on no origin/release/*
+# > branch, so there is neither a beta digest to promote nor a release line to
+# > build from.`
+#
+# A beta tag is on a train and is reachable from neither, so it hits that
+# refusal. **That refusal is not a bug and is not relaxed by this file.** It is
+# what makes `release.yml`'s two modes readable off the ref graph rather than
+# off a flag, and D9 records the third-mode refactor as refused rather than
+# unconsidered. This workflow routes around the guard by being a separate entry
+# point; `release.yml` is not touched, and a beta tag dispatched at it must keep
+# failing exactly as it does today.
+#
+# ── The version string, and the one shape it is allowed to have (ADR 0036 C1)
+#
+# The version this publishes is `<train version>-beta` — `0.4.1-beta` for
+# `beta/0.4.1` — **exactly, on every surface**: the git tag, the Release title
+# and tag name, all three asset filenames, the string handed to
+# `scripts/build-core-tarball.mjs --version`, and the image tag #319 adds next.
+#
+# **There is no counter.** No `.1`, no `github.run_number`, no
+# `github.run_attempt`, no short sha, nothing at all after the word `beta`. C1
+# is a recorded operator constraint, not a default to improve on: a counted
+# beta string is a defect on any surface it reaches. `resolve` asserts the
+# shape before anything is built and `publish` asserts it again on the asset
+# names, because a version that grew a suffix would be discovered by an
+# operator whose `--version 0.4.1-beta` 404s.
+#
+# What the fixed string costs is the npm registry, and it is spent knowingly:
+# an npm version is burned by its first publish, so a fixed string could be
+# published exactly once per train and the second cut would 403 after the tag
+# had already moved. **Nothing here publishes to registry.npmjs.org, under any
+# dist-tag** (D15). The CLI reaches a beta as a packed tarball attached to this
+# Release, which #320 adds to this file (D16).
+#
+# ── The trigger is a person, never a merge (ADR 0036 C3) ─────────────────────
+#
+# `workflow_dispatch` and nothing else. A merge into the train keeps doing
+# exactly what it does today — `ci.yml`'s checks and the moving `beta-x.y.z`
+# images — and publishes nothing. This mirrors ADR 0023 D14's posture for
+# promotion: the consequential action is requested, because "published by
+# accident" is a failure mode worth designing out. A `push:` trigger on
+# `beta/**` here would be that failure, and `scripts/__tests__/workflows.test.mjs`
+# fails if one appears.
+#
+# ── Dispatch it **on the train** (#326) ──────────────────────────────────────
+#
+#     gh workflow run beta-release.yml --ref beta/0.4.1 -f train=beta/0.4.1
+#
+# The `--ref` is not decoration and it is not optional. A `workflow_dispatch`
+# run resolves every workflow file it executes from the ref it was dispatched
+# on, so `--ref main -f train=beta/0.4.1` would cut the train with **main's**
+# copy of this file — the trap #326 is about, in a new dialect: run 32716466300
+# promoted `beta/0.4.0` with an older `release.yml` and died after `main` had
+# already moved. #326's answer for a promotion is to dispatch `release.yml` at
+# the tag it just pushed; the answer here is stronger, because there is no
+# second workflow to dispatch: `resolve` **refuses to run at all** unless
+# `github.ref_name` equals the `train` input, so the copy that runs is always
+# the train's own.
+#
+# ── The gates are deliberately lighter than a release's (ADR 0036 D13, D14) ──
+#
+# The train tip has already proved most of this on the commit being cut.
+# `ci.yml` on every push to `beta/**` runs typecheck, unit tests, lint, the
+# dependency audit, the secret scan, both Linux tarball builds with their boot
+# smoke, `SHA256SUMS` composition, and the installer e2e on Ubuntu *and* Debian
+# at x64. `resolve` refuses to cut unless that run is green on this exact
+# commit (ADR 0023 D21's reason: a beta cut from a tip whose checks failed is a
+# published prerelease nobody gated), so the table for a cut is:
+#
+#   typecheck, unit, lint, audit, secret scan   already green on the train tip
+#   linux-x64 / linux-arm64 tarball + smoke     rebuilt here — the assets must exist
+#   mac-arm64 tarball + smoke                   new macOS minutes, see below
+#   installer e2e                               **ubuntu x64 only**
+#   macOS install e2e                           **none — there has never been one**
+#
+# **The installer e2e runs once, on Ubuntu at x64, and that is a decision.**
+# `release.yml` crosses two distros at arm64 and `ci.yml` crosses two distros at
+# x64; a beta cut runs one leg. What only that matrix can catch — PAM, polkit,
+# the logind rules behind a sudo-less `systemctl --user` and `loginctl
+# enable-linger` — varies by distro rather than by architecture and is already
+# covered on every merge into the train, and the arch-sensitive risk (prebuilt
+# native modules) is covered by the tarball boot smoke on all three legs here.
+# One leg is what a cut adds on top of that, and it still gates `publish`: a
+# tarball the one-liner cannot install is not an asset worth attaching.
+#
+# **There is no macOS end-to-end leg, on purpose, because the macOS runner
+# bills at 10×.** ADR 0016 D35 took macOS off every trigger but the release
+# when three macOS legs were 72% of the CI bill, and `e2e-actana-setup-macos.mjs`
+# has stayed deleted since; `docs/core-macos-prerelease-checklist.md` is what a
+# person runs instead. Nothing is being omitted that a release has: a release
+# has no macOS install e2e either.
+#
+# The one macOS leg that *is* here — `tarball-macos` — is the recurring spend
+# D13 owns rather than hides. A beta cut is dispatched by a person and is
+# expected to run several times per train, so this is a real, repeated 10×
+# charge that D35's per-PR cost argument never priced. It is accepted because a
+# beta without a `mac-arm64` tarball is not "installable the same way a release
+# is" on the one platform where the Core is an on-device product, and because
+# C3 keeps the frequency under a human's control rather than a merge's.
+#
+# ── The tag moves, and that is the point (ADR 0036 D7) ───────────────────────
+#
+# `vx.y.z-beta` is force-updated to the train tip on every cut, and the step
+# says which sha it moved off. This is the fifth published tag class and the
+# first git tag in D7's table that moves. ADR 0023 D44's *"never rewritten"*
+# survives for **release** tags — `promote.yml`'s immutability check reads
+# `refs/tags/vx.y.z`, a different name — and a beta tag is a handle, exactly as
+# `beta-x.y.z` already is on Docker Hub. A beta's immutable record stays what it
+# has always been: the commit sha, the image digest, and `SHA256SUMS`.
+#
+# A second cut of the same beta is therefore a supported operation and not a
+# repair: the tag moves, every asset is replaced, and any asset the previous cut
+# left that this one does not produce is deleted before the new ones go up.
+#
+# ── The prerelease flag is read back, not trusted (ADR 0023 D9, ADR 0036 D11)
+#
+# > Should a beta ever publish a GitHub Release, it must be created with
+# > `prerelease: true` **and CI must assert the flag**, because `install.sh` and
+# > the in-product update checker both read `/releases/latest`, which excludes
+# > prereleases — a single missing flag would make every running Core and Panel
+# > advertise an unreleased build.
+#
+# `docs/adr/0023-release-trains-and-digest-promotion.md`, D9. The assertion is
+# not `--prerelease` on the command line — that is the thing that can be lost.
+# It is the read-back in `publish`, on the pattern `release.yml` already uses
+# for an attestation that vanishes silently: ask the API afterwards, and fail
+# the run if the answer is wrong.
+on:
+  # A dispatch and nothing else (C3). No `push:`, no `schedule:`, no
+  # `workflow_call:` — nothing that could reach this file without a person
+  # naming a train.
+  workflow_dispatch:
+    inputs:
+      train:
+        description: "Train to cut, e.g. beta/0.4.1 — dispatch this workflow ON that same branch (--ref)"
+        required: true
+
+concurrency:
+  # Keyed on the train, and `cancel-in-progress: false` for the reason ADR 0023
+  # D7 gives for the train's images: the tag this publishes *moves*, so two cuts
+  # of one train finishing out of order would leave `vx.y.z-beta` on older bytes
+  # with both runs green.
+  #
+  # `inputs.train` rather than `github.ref_name`, even though `resolve` asserts
+  # the two are equal: concurrency is evaluated before any job runs, so it must
+  # not depend on an assertion a job has not made yet.
+  group: beta-release-${{ inputs.train }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  resolve:
+    name: Resolve the train
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      # `gh run list`, for the train-greenness gate below (ADR 0023 D21). The
+      # top-level grant is `contents: read`; without this line the query is a
+      # 403 and the gate cannot answer at all.
+      actions: read
+    outputs:
+      train: ${{ steps.facts.outputs.train }}
+      version: ${{ steps.facts.outputs.version }}
+      beta_version: ${{ steps.facts.outputs.beta_version }}
+      tag: ${{ steps.facts.outputs.tag }}
+      sha: ${{ steps.facts.outputs.sha }}
+      prerelease: ${{ steps.prerelease.outputs.prerelease }}
+    steps:
+      # Every branch and every tag: this job asks where the train tip is, what
+      # the beta tag currently names, and whether the branch has moved since the
+      # dispatch — all questions about refs rather than about a working tree.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - name: Fetch every branch and tag
+        run: git fetch --force --prune --tags origin "+refs/heads/*:refs/remotes/origin/*"
+
+      - id: facts
+        env:
+          INPUT_TRAIN: ${{ inputs.train }}
+          # The ref this run resolved its own workflow file from. Unambiguous
+          # here in a way it is not in `release.yml`: that file is entered two
+          # ways and `github.ref_name` means something different in each, which
+          # is why it reads none of it. This file has exactly one trigger, so
+          # `github.ref_name` is the branch a person dispatched — which is
+          # precisely the fact #326 is about.
+          RUN_REF: ${{ github.ref_name }}
+          RUN_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          train="$INPUT_TRAIN"
+
+          # Validated the way `promote.yml`'s pause validates it: a train's name
+          # is its version (ADR 0023 D3), and the version is what this cut
+          # publishes.
+          if [[ ! "$train" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error title=Not a train branch::'$train' is not \`beta/x.y.z\`. A train's name is its version (ADR 0023 D3), and this cut publishes that version with \`-beta\` appended."
+            exit 1
+          fi
+          version="${train#beta/}"
+
+          # ── C1, asserted rather than assumed ────────────────────────────────
+          #
+          # One concatenation, no counter, and the result is checked against the
+          # only shape it is allowed to have. A run number, a short sha or a
+          # `.1` appended anywhere is a defect (ADR 0036 C1), and it would reach
+          # the tag, the Release, three asset filenames and #319's image tags at
+          # once — so it is refused here, before anything is built.
+          beta_version="$version-beta"
+          if [[ ! "$beta_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta$ ]]; then
+            echo "::error title=Not a bare beta version::'$beta_version' is not \`x.y.z-beta\`. The beta version string is fixed, with no counter, no dotted suffix, no run number and no short sha after the word beta (ADR 0036 C1). It is the tag, the Release, every asset filename and #319's image tag."
+            exit 1
+          fi
+          tag="v$beta_version"
+
+          # ── #326, in this file's dialect ────────────────────────────────────
+          #
+          # A dispatch runs the copy of this file that lives on the ref it was
+          # dispatched on. Dispatched on `main` with `-f train=beta/0.4.1`, this
+          # would cut the train with main's workflow — the stale-workflow trap
+          # that stranded run 32716466300 after `main` had already moved. A
+          # promotion closes it by dispatching `release.yml` at the tag it just
+          # pushed; there is no second workflow here to dispatch, so it is
+          # closed by refusing the mismatch outright.
+          if [[ "$RUN_REF" != "$train" ]]; then
+            echo "::error title=Dispatched on the wrong ref::This run resolved its workflow files from \`$RUN_REF\`, but was asked to cut \`$train\`. A dispatch runs the workflow file on the ref it was dispatched on (#326), so this would cut the train with another ref's copy of beta-release.yml. Re-dispatch on the train: \`gh workflow run beta-release.yml --repo actana/control --ref $train -f train=$train\`."
+            exit 1
+          fi
+
+          # The tip, taken from `github.sha` — the commit whose copy of this
+          # file is running — and then required to still be the branch. A merge
+          # that landed between the dispatch and this step would otherwise give
+          # a cut whose gates, greenness check and published bytes came from
+          # three different commits. Re-dispatching costs one command and
+          # nothing has been published.
+          sha="$RUN_SHA"
+          tip="$(git rev-parse -q --verify "refs/remotes/origin/${train}^{commit}" || true)"
+          if [[ -z "$tip" ]]; then
+            echo "::error title=No such train::\`$train\` is not a branch on origin. A beta is cut from an open train (ADR 0023 D2)."
+            exit 1
+          fi
+          if [[ "$tip" != "$sha" ]]; then
+            echo "::error title=The train moved::This run was dispatched at $sha and \`$train\` now names $tip. The cut would publish $sha while its greenness is read off the branch, and the workflow file running is $sha's. Nothing has been published — re-dispatch on the train to cut $tip."
+            exit 1
+          fi
+
+          echo "::notice title=Cutting $train::$sha is the tip of $train. This cut publishes $beta_version on the moving tag $tag (ADR 0036 C1, D7). No counter is appended to that string on any surface."
+          {
+            echo "train=$train"
+            echo "version=$version"
+            echo "beta_version=$beta_version"
+            echo "tag=$tag"
+            echo "sha=$sha"
+          } >> "$GITHUB_OUTPUT"
+
+      # The prerelease decision comes out of the module that already owns it
+      # rather than out of a shell test on the presence of a hyphen. ADR 0036 D8
+      # records `scripts/lib/release-latest.mjs` as **already correct** for the
+      # beta form — `parseReleaseVersion` accepts it and `isPrerelease` answers
+      # true — and re-deciding it here would be a second implementation of a
+      # rule whose failure is silent and reaches every running Core and Panel
+      # (ADR 0023 D9). `publish` passes this to `gh release create --prerelease=`
+      # and then reads the flag back off the API.
+      - id: prerelease
+        env:
+          BETA_VERSION: ${{ steps.facts.outputs.beta_version }}
+        run: |
+          set -euo pipefail
+          node --input-type=module -e '
+            import { isPrerelease, parseReleaseVersion } from "./scripts/lib/release-latest.mjs";
+            const version = process.env.BETA_VERSION;
+            if (!parseReleaseVersion(version)) {
+              console.error(`[beta-release] ${version} is not a version release-latest.mjs can parse`);
+              process.exit(1);
+            }
+            process.stdout.write(`prerelease=${isPrerelease(version)}\n`);
+          ' | tee -a "$GITHUB_OUTPUT"
+
+      # ADR 0023 D21, in the place it matters most. `ci.yml`'s `Train rules`
+      # runs this assertion on the promotion pull request; a beta cut needs it
+      # too, and needs it harder: a promotion at least verifies a digest built
+      # from the commit it promotes, while a cut publishes bytes it builds here
+      # from a tip whose own checks nobody has looked at.
+      #
+      # Pinned to **this commit** rather than to the newest run on the branch.
+      # `ci.yml`'s copy takes `--limit 1` because a promotion has already
+      # asserted the head sha by other means; here the run has to be the run for
+      # `$SHA`, or "the train is green" is a statement about somebody else's
+      # commit.
+      - name: The train tip's own CI run is green
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          TRAIN: ${{ steps.facts.outputs.train }}
+          SHA: ${{ steps.facts.outputs.sha }}
+        run: |
+          set -euo pipefail
+          runs="$(gh run list --repo "$REPO" --branch "$TRAIN" --workflow ci.yml \
+                    --limit 30 --json headSha,conclusion,status,url,event)"
+          run="$(jq -c --arg sha "$SHA" '[.[] | select(.headSha == $sha)] | .[0] // empty' <<<"$runs")"
+          if [[ -z "$run" ]]; then
+            echo "::error title=No CI run for the train tip::No ci.yml run on \`$TRAIN\` has head sha $SHA. Every push to a train runs ci.yml (ADR 0023 D41), so a tip with no run is a tip whose typecheck, unit tests, lint, audit, secret scan, tarball smokes and installer e2e nobody has seen. A beta cut publishes a prerelease to the world; it does not gate a commit for the first time (D21)."
+            exit 1
+          fi
+          conclusion="$(jq -r '.conclusion // ""' <<<"$run")"
+          status="$(jq -r '.status // ""' <<<"$run")"
+          url="$(jq -r '.url // ""' <<<"$run")"
+          case "$conclusion" in
+            success)
+              echo "✅ $TRAIN at $SHA is green ($url)" ;;
+            "")
+              echo "::error title=The train tip is still building::ci.yml on $SHA is $status ($url). Wait for it: this cut would publish bytes whose gates have not finished (ADR 0023 D21)."
+              exit 1 ;;
+            *)
+              echo "::error title=The train tip is red::ci.yml on $SHA concluded '$conclusion' ($url). A beta cut from a tip whose checks failed is a published prerelease nobody gated (ADR 0023 D21). Fix the train, let it go green, and cut from the tip that did."
+              exit 1 ;;
+          esac
+
+      # Decided here, fifteen seconds in, with nothing built and nothing
+      # published — the same argument `release.yml` makes for its two registry
+      # credentials, and worth more here because the leg it saves bills at 10×.
+      #
+      # The App is required rather than preferred. `refs/tags/v*` is governed by
+      # the "Release tags — only admins cut releases" ruleset, whose one rule is
+      # `creation`, and `vx.y.z-beta` matches that pattern — so the **first** cut
+      # of a line creates a tag that `GITHUB_TOKEN` cannot create, however much
+      # `contents: write` it carries. Later cuts of the same line only update the
+      # ref and would slip through, which is the worst version of this failure:
+      # it would work for every cut but the first.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            exit 0
+          fi
+          echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. The beta tag is created under \`refs/tags/v*\`, whose ruleset restricts creation to bypass actors, and the App is the bypass actor (ADR 0023 D39, docs/REPO_SETUP.md §3). Checked here so a missing secret costs one dispatch rather than three tarball builds and a macOS runner."
+          exit 1
+
+  # The two Linux legs, split from the mac leg for the reason `release.yml`
+  # splits them: the mac runner bills at 10×, and keeping it out of this matrix
+  # is what lets these two and the installer e2e run without waiting on it.
+  #
+  # Every target builds on a runner of its own architecture — the tarballs carry
+  # prebuilt native modules (node-pty, better-sqlite3) copied from the build
+  # host's own install, so a cross-compiled leg would be a guess, not a build.
+  tarball:
+    name: Core tarball (${{ matrix.target }})
+    needs: resolve
+    strategy:
+      # Let both legs finish so one failure surfaces both in a single run. The
+      # publish still requires the pair: a SHA256SUMS covering one architecture
+      # is worse than no beta at all.
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: linux-x64
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Both bundles, not just the daemon's: the tarball stages
+      # `app/core-entry.cjs` from `packages/core/dist` and `app/actana-cli.cjs`
+      # from `packages/cli/dist-tarball`, and `scripts/build-core-tarball.mjs`
+      # fails without either. One script names the pair so this step and
+      # `pnpm core:tarball` cannot drift apart.
+      - name: Build the Core tarball's bundles
+        run: pnpm build:core-tarball-bundles
+
+      # `--version 0.4.1-beta`, which is the string C1 fixes and the string that
+      # ends up in the asset name, in the archive's root directory and in the
+      # `core-manifest.json` the CLI reads back. Bytes built as a beta say beta
+      # all the way down (ADR 0036 D18), which is exactly why a beta tarball can
+      # never be promoted into a release asset and why this job exists at all.
+      - name: Build the tarball
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          node scripts/build-core-tarball.mjs \
+            --target "$TARGET" \
+            --version "$BETA_VERSION" \
+            --out-dir artifacts/core
+
+      # The acceptance criterion, run on the platform it is about: extract the
+      # tarball and boot it through its own launcher with no system Node.
+      - name: Smoke — extracted tarball boots a dialable Core
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          node scripts/smoke-core-tarball.mjs \
+            --tarball "artifacts/core/actana-core-$BETA_VERSION-$TARGET.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-tarball-${{ matrix.target }}
+          path: artifacts/core/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # The macOS leg — the only macOS minutes a beta cut spends, and the recurring
+  # 10× charge ADR 0036 D13 owns out loud.
+  #
+  # ADR 0016 D35 took macOS off every trigger but the release, on a cost
+  # argument about *per-PR* CI where three macOS legs were 72% of the bill. A
+  # beta cut is a third trigger that argument never priced: it is dispatched by
+  # a person (C3) and is expected to run several times per train, so this leg is
+  # a real, repeated spend rather than a release-cadence one. It is accepted
+  # because a beta without a `mac-arm64` tarball is not "installable the same way
+  # a release is" on the one platform where the Core is an on-device product.
+  #
+  # **The cost is also why there is no macOS installer e2e below.** At 10× a
+  # second macOS job on this trigger is the expensive half of a matrix that has
+  # never existed: there has been no macOS install e2e since D35,
+  # `e2e-actana-setup-macos.mjs` stays deleted, and
+  # `docs/core-macos-prerelease-checklist.md` is what a person runs against the
+  # train tip instead. A release does not have one either, so a beta is not
+  # short of anything a release has.
+  #
+  # `macos-15` is Apple silicon (`macos-15-intel` is the Intel label), which is
+  # what makes this a build rather than a cross-compile: node-pty's darwin-arm64
+  # prebuild and the better-sqlite3 binding both come off the build host. There
+  # is no `mac-x64` row here or in `CORE_TARGETS`, and none is missing — ADR 0016
+  # D28 as amended dropped Intel Mac, and `install.sh` refuses one at detection.
+  tarball-macos:
+    name: Core tarball (mac-arm64)
+    needs: resolve
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      TARGET: mac-arm64
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build the Core tarball's bundles
+        run: pnpm build:core-tarball-bundles
+
+      - name: Build the tarball
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+        run: |
+          node scripts/build-core-tarball.mjs \
+            --target "$TARGET" \
+            --version "$BETA_VERSION" \
+            --out-dir artifacts/core
+
+      # The same acceptance criterion the Linux legs run, on the platform it is
+      # about. It is not a substitute for the human checklist — a runner cannot
+      # reboot, log out, or meet Gatekeeper.
+      - name: Smoke — extracted tarball boots a dialable Core
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+        run: |
+          node scripts/smoke-core-tarball.mjs \
+            --tarball "artifacts/core/actana-core-$BETA_VERSION-$TARGET.tar.gz"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: core-tarball-mac-arm64
+          path: artifacts/core/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
+
+  # One installer end-to-end leg: Ubuntu, x64, against the `linux-x64` tarball
+  # this run just built (ADR 0036 D14).
+  #
+  # **Deliberately not a matrix, and deliberately not the release's matrix.**
+  # `ci.yml` crosses `[ubuntu, debian] × [x64]` on every push to the train and
+  # `release.yml` crosses `[ubuntu, debian] × [arm64]` once per release; the
+  # axes live in `scripts/lib/container-matrix.mjs` and
+  # `scripts/__tests__/container-matrix.test.mjs` binds those two jobs to them.
+  # This job is a single leg rather than a third declared trigger because a beta
+  # cut adds nothing those axes are about: what the distro axis catches — PAM,
+  # polkit, the logind rules behind a sudo-less `systemctl --user` and
+  # `loginctl enable-linger` — is already green on this exact commit, on both
+  # distros, from the train's own run that `resolve` insisted on. What is *not*
+  # already proved is that the artifact this cut is about to attach installs at
+  # all, and one leg proves that.
+  #
+  # It gates `publish` on purpose: a tarball the one-liner cannot install is not
+  # an asset worth attaching, and the tag has not moved yet when this is red.
+  #
+  # There is no macOS counterpart, at any cost — see `tarball-macos` above.
+  installer-e2e:
+    name: E2E — installer (ubuntu, x64)
+    needs: [resolve, tarball]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ needs.resolve.outputs.sha }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      # Only `ws` is needed — the e2e's core-link dial is the sole dependency it
+      # has on the repo's own node_modules.
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `linux-x64` written out rather than carried in a job-level `env:`, in
+      # both places it appears: the `env` context is not one a step's `with:`
+      # can be relied on to see, and one job with one target does not need an
+      # indirection that would have to be right in two different evaluation
+      # contexts to work.
+      - name: Download the tarball
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: core-tarball-linux-x64
+          path: artifacts/core
+
+      - name: E2E — the one-liner and the lifecycle on a fresh systemd machine
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+        run: |
+          set -euo pipefail
+          node scripts/e2e-actana-setup-linux.mjs \
+            --tarball "artifacts/core/actana-core-$BETA_VERSION-linux-x64.tar.gz" \
+            --distro ubuntu
+
+  # The only job that writes anything. Everything above it is a gate, so a red
+  # leg leaves `vx.y.z-beta` naming the commit it named before this run started.
+  #
+  # The order inside the job is the same principle one level down: the assets
+  # are assembled and verified *before* the tag moves, so a broken SHA256SUMS or
+  # a mis-versioned filename also leaves the tag where it was. The tag moves,
+  # and only then does the Release get written.
+  publish:
+    name: Move the tag and publish the prerelease
+    needs: [resolve, tarball, tarball-macos, installer-e2e]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      # For the Release and its assets. The tag is pushed with the App's
+      # credential, not this one — see `Require the App credentials` in
+      # `resolve`.
+      contents: write
+    steps:
+      # Re-asserted at the surface it protects, the way `release.yml` re-asserts
+      # its `latest` decision in `github-release`: a job that trusted an
+      # upstream check to still be right is how the one guard that mattered gets
+      # bypassed by a later edit.
+      - name: Require the App credentials
+        env:
+          APP_ID: ${{ secrets.APP_ID }}
+          APP_PRIVATE_KEY: ${{ secrets.APP_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -n "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then
+            exit 0
+          fi
+          echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set — creating \`refs/tags/v*\` is restricted to the App as a bypass actor (ADR 0023 D39, docs/REPO_SETUP.md §3)."
+          exit 1
+
+      - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        id: app-token
+        with:
+          app-id: ${{ secrets.APP_ID }}
+          private-key: ${{ secrets.APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          # The commit being cut, and its whole history and tags: the tag move
+          # below needs to name the sha the beta tag currently points at.
+          ref: ${{ needs.resolve.outputs.sha }}
+          fetch-depth: 0
+          # The push identity for the tag. `persist-credentials` defaults to
+          # true; it is named because this is the line that decides whether the
+          # tag move works at all.
+          persist-credentials: true
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 24.15.0
+          package-manager-cache: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: core-tarball-*
+          path: core-tarballs
+          merge-multiple: true
+
+      # `--expect 3` is the guard and the 3 is deliberate: a silently missing
+      # architecture must be a red run, not a checksum file that quietly covers
+      # part of the cut (ADR 0016 D28 as amended). It is the count of
+      # `CORE_TARGETS`, and `scripts/__tests__/workflows.test.mjs` derives the
+      # number from that array rather than reading a literal, so a fourth target
+      # cannot land with this co-edit missed.
+      #
+      # Exactly the three Core tarballs. `install.sh` is an asset but is not a
+      # row here: `SHA256SUMS` is the Core tarball contract `install.sh` itself
+      # reads back, and a script that checksums itself proves nothing about the
+      # copy that ran. If #320 sends the CLI down the asset route, #315 decides
+      # whether its tarball gets a row or a checksum of its own; this file owns
+      # the three Core rows.
+      - name: Compose SHA256SUMS
+        run: node scripts/compose-core-shasums.mjs --dir core-tarballs --expect 3
+
+      - name: Verify SHA256SUMS the way an operator would
+        working-directory: core-tarballs
+        run: sha256sum -c SHA256SUMS
+
+      # C1's last surface, checked against the bytes rather than against the
+      # variable that produced them. The asset name is half the installer
+      # contract ADR 0016 D29 prices — `install.sh` fetches
+      # `actana-core-$VERSION-$TARGET.tar.gz` and refuses a tree whose root
+      # directory is not `actana-core-$VERSION-$TARGET/` — so a counter that
+      # reached the filename would publish a beta that `--version 0.4.1-beta`
+      # cannot install, with everything else green.
+      - name: Every asset filename carries the bare beta version
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+        run: |
+          set -euo pipefail
+          missing=()
+          for target in linux-x64 linux-arm64 mac-arm64; do
+            name="actana-core-$BETA_VERSION-$target.tar.gz"
+            [[ -f "core-tarballs/$name" ]] || missing+=("$name")
+          done
+          if (( ${#missing[@]} > 0 )); then
+            echo "::error title=A tarball is missing or misnamed::expected ${missing[*]} in core-tarballs. The filename is \`actana-core-<version>-<target>.tar.gz\` at exactly \`$BETA_VERSION\` — the installer contract reads it back (ADR 0016 D29), and a version that grew a suffix is refused here rather than by an operator (ADR 0036 C1)."
+            ls -1 core-tarballs >&2
+            exit 1
+          fi
+          # The inverse: nothing in the directory carries a version that is not
+          # this one. A leftover artifact from another run would otherwise ride
+          # along into SHA256SUMS and onto the Release.
+          while IFS= read -r file; do
+            base="$(basename "$file")"
+            case "$base" in
+              actana-core-"$BETA_VERSION"-*.tar.gz) ;;
+              *)
+                echo "::error title=A foreign asset is in the tarball directory::$base is not \`actana-core-$BETA_VERSION-<target>.tar.gz\`. Every asset this cut publishes carries the bare beta version and nothing else (ADR 0036 C1)."
+                exit 1 ;;
+            esac
+          done < <(find core-tarballs -maxdepth 1 -type f -name '*.tar.gz')
+          echo "✅ three tarballs, all at $BETA_VERSION, no counter on any of them"
+
+      # ── The tag move (ADR 0036 D7) ─────────────────────────────────────────
+      #
+      # Deliberately force-updated, and the previous sha is named in the log
+      # because "the tag moved" is the one fact a reader of this run needs and
+      # the one git will not tell them afterwards. A beta tag is a handle, like
+      # `beta-x.y.z` on Docker Hub; the immutable record of a beta stays the
+      # commit sha, the image digest and `SHA256SUMS`.
+      #
+      # ADR 0023 D44's *"never rewritten"* is untouched: it is about **release**
+      # tags, and `promote.yml`'s immutability check reads `refs/tags/vx.y.z` —
+      # a different ref name from `refs/tags/vx.y.z-beta`, so nothing collides
+      # mechanically either.
+      #
+      # This runs after every gate and after the assets are built and verified,
+      # so a red run leaves the tag where it was.
+      - name: Move the beta tag to the train tip
+        env:
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          TRAIN: ${{ needs.resolve.outputs.train }}
+          APP_SLUG: ${{ steps.app-token.outputs.app-slug }}
+        run: |
+          set -euo pipefail
+          git fetch --force --prune --tags origin >/dev/null 2>&1 || true
+          previous="$(git rev-parse -q --verify "refs/tags/$TAG^{commit}" || true)"
+          if [[ -z "$previous" ]]; then
+            echo "::notice title=First cut of this line::$TAG does not exist yet and is created at $SHA. Creating \`refs/tags/v*\` is restricted by the release-tag ruleset, which is why this pushes with the App (ADR 0023 D39)."
+          elif [[ "$previous" == "$SHA" ]]; then
+            echo "::notice title=The tag is already here::$TAG already names $SHA. Re-pushing it is a no-op; this is a second cut of the same commit, and every asset below is replaced regardless."
+          else
+            echo "::notice title=Moving $TAG::$TAG moves from $previous to $SHA (tip of $TRAIN). This is deliberate: a beta tag is a moving handle and is force-updated on every cut (ADR 0036 D7). $previous stays the immutable record of the previous cut, together with its image digest and its SHA256SUMS."
+          fi
+
+          # Annotated, so the record carries who cut what and when. `-f` because
+          # moving it is the design.
+          git -c user.name="${APP_SLUG:-actana-release}[bot]" \
+              -c user.email="${APP_SLUG:-actana-release}[bot]@users.noreply.github.com" \
+              tag -f -a "$TAG" "$SHA" -m "$TAG — beta cut of $TRAIN at $SHA"
+          if ! output="$(git push --force origin "refs/tags/$TAG" 2>&1)"; then
+            echo "$output"
+            echo "::error title=The tag push was refused::\`refs/tags/v*\` is governed by the 'Release tags — only admins cut releases' ruleset, which needs the App as a **bypass actor** (ADR 0023 D39, docs/REPO_SETUP.md §3). Nothing has been published: no Release has been created or updated in this run."
+            exit 1
+          fi
+          echo "$output"
+          echo "✅ $TAG names $SHA. It triggers nothing — no workflow in this repository has a tag trigger (ADR 0023 D40)."
+
+      # ── The Release (ADR 0036 D10, D11) ────────────────────────────────────
+      #
+      # `--prerelease=true` and `--latest=false`, always passed explicitly and
+      # never defaulted: `gh release create` with no `--latest` defaults
+      # `make_latest` to **true**, and that default is the whole failure D9
+      # describes. Both flags are re-read from the API in the next step, because
+      # a flag that was lost still leaves a green `gh` invocation behind.
+      #
+      # Assets are clobbered in place, and any asset a previous cut left that
+      # this one does not produce is deleted first — a second cut of the same
+      # beta is a supported operation, not a repair, and must leave nothing of
+      # the previous one behind (ADR 0036 D7).
+      #
+      # **`EXPECTED` is the asset contract of this file, and it is the line #320
+      # extends.** That ticket attaches the packed CLI tarball to this same
+      # Release (D16); adding the upload without adding the name here would have
+      # the prune step delete it on the next cut.
+      #
+      # `install.sh` is attached as a **copy, not a door** (D5). The canonical
+      # installer stays on `raw.githubusercontent.com/actana/control/main/install.sh`
+      # under ADR 0016 D29, so that a broken installer is fixable without cutting
+      # anything; the asset exists so the script and the bytes it fetches ship
+      # together. Nothing points an operator at the asset as an install URL.
+      - name: Create or update the prerelease and replace its assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          TRAIN: ${{ needs.resolve.outputs.train }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          set -euo pipefail
+          # The flag is never defaulted and never inferred here: it comes from
+          # scripts/lib/release-latest.mjs by way of `resolve`, and anything but
+          # `true` on a beta is a bug in that module or in this wiring — either
+          # way it is not something to publish through.
+          if [[ "$PRERELEASE" != "true" ]]; then
+            echo "::error title=The beta did not resolve as a prerelease::resolve produced prerelease='$PRERELEASE' for $BETA_VERSION. A beta Release is created with \`prerelease: true\` or it is not created: install.sh and the in-product update checker both read /releases/latest, which excludes prereleases, so a missing flag would make every running Core and Panel advertise an unreleased build (ADR 0023 D9, ADR 0036 D11)."
+            exit 1
+          fi
+
+          cp install.sh core-tarballs/install.sh
+          EXPECTED=("actana-core-$BETA_VERSION-linux-x64.tar.gz"
+                    "actana-core-$BETA_VERSION-linux-arm64.tar.gz"
+                    "actana-core-$BETA_VERSION-mac-arm64.tar.gz"
+                    "SHA256SUMS"
+                    "install.sh")
+          files=()
+          for name in "${EXPECTED[@]}"; do
+            if [[ ! -f "core-tarballs/$name" ]]; then
+              echo "::error title=An expected asset is missing::core-tarballs/$name was not produced by this run. The beta asset set is three Core tarballs, SHA256SUMS and install.sh (ADR 0036 D10)."
+              exit 1
+            fi
+            files+=("core-tarballs/$name")
+          done
+
+          printf 'Publishing %s at %s:\n' "$TAG" "$SHA"
+          printf '  %s\n' "${files[@]}"
+
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            # A second cut. Anything the previous cut attached that this one does
+            # not produce goes first, so the Release never carries a mix of two
+            # cuts — the failure a moving tag makes possible and a release tag
+            # does not.
+            while IFS= read -r existing; do
+              [[ -n "$existing" ]] || continue
+              keep=0
+              for name in "${EXPECTED[@]}"; do
+                [[ "$existing" == "$name" ]] && keep=1 && break
+              done
+              if (( keep == 0 )); then
+                echo "::notice title=Deleting a stale asset::$existing is on $TAG from a previous cut and is not produced by this one. A second cut leaves nothing of the first behind (ADR 0036 D7)."
+                gh release delete-asset "$TAG" "$existing" --yes
+              fi
+            done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+
+            gh release upload "$TAG" "${files[@]}" --clobber
+            # `upload` cannot express either flag, and a Release edited by hand
+            # carries whatever a person picked for it — so both are re-asserted
+            # on every cut rather than only at creation.
+            gh release edit "$TAG" \
+              --title "$BETA_VERSION" \
+              --prerelease=true \
+              --latest=false
+          else
+            printf '%s\n' \
+              "Beta of the \`$VERSION\` line, cut from \`$TRAIN\` at \`$SHA\`." \
+              "" \
+              "**This is a prerelease.** \`/releases/latest\` excludes it, so \`install.sh\` and" \
+              "the in-product update checker do not offer it by default (ADR 0023 D9)." \
+              "" \
+              "Verify with \`sha256sum -c SHA256SUMS\`. Published checksums are the integrity" \
+              "story here — there is no provenance attestation on the beta path (ADR 0036 D17)." \
+              "" \
+              "The tag \`$TAG\` moves on every cut of this line (ADR 0036 D7). To pin a beta," \
+              "install with \`--version $BETA_VERSION\`." \
+              > "$RUNNER_TEMP/notes.md"
+            # `--verify-tag` refuses to invent a tag: the tag is pushed by the
+            # step above, and a Release that created its own would name whatever
+            # commit the default branch happened to be at.
+            gh release create "$TAG" "${files[@]}" \
+              --title "$BETA_VERSION" \
+              --verify-tag \
+              --prerelease=true \
+              --latest=false \
+              --notes-file "$RUNNER_TEMP/notes.md"
+          fi
+
+      # ── ADR 0023 D9's assertion, in its own words (ADR 0036 D11) ───────────
+      #
+      # > Should a beta ever publish a GitHub Release, it must be created with
+      # > `prerelease: true` **and CI must assert the flag**, because
+      # > `install.sh` and the in-product update checker both read
+      # > `/releases/latest`, which excludes prereleases — a single missing flag
+      # > would make every running Core and Panel advertise an unreleased build.
+      #
+      # The assertion is **not** `--prerelease` on the command line above — that
+      # is the thing that can be lost. It is this read-back, on the pattern
+      # `release.yml` already uses for a silently-lost npm attestation: the flag
+      # succeeded silently and only the API knows.
+      #
+      # Three questions, and the third is the one D9 actually cares about:
+      #
+      #   1. `prerelease` is `true` on the Release itself;
+      #   2. `draft` is `false` — a draft has no public assets, so a drafted beta
+      #      would be a tag pointing at a Release nobody can download;
+      #   3. **`/releases/latest` does not answer this tag.** `--latest=false`
+      #      sets a write-only field, so the only way to know it took is to ask
+      #      the endpoint `install.sh` actually reads. A 404 there is a pass, not
+      #      an error: a repository whose only releases are prereleases has no
+      #      latest, which is exactly the correct answer.
+      - name: The Release is a prerelease, and /releases/latest does not answer it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+        run: |
+          set -euo pipefail
+          release="$(gh api "repos/$GH_REPO/releases/tags/$TAG")"
+          prerelease="$(jq -r '.prerelease' <<<"$release")"
+          draft="$(jq -r '.draft' <<<"$release")"
+          assets="$(jq -r '[.assets[].name] | sort | join(", ")' <<<"$release")"
+
+          fail=0
+          if [[ "$prerelease" != "true" ]]; then
+            echo "::error title=The beta Release is not marked prerelease::The API reports prerelease=$prerelease for $TAG. install.sh and the in-product update checker both read /releases/latest, which excludes prereleases — this flag is the only thing keeping every running Core and Panel from advertising an unreleased build (ADR 0023 D9, ADR 0036 D11). Fix it now: \`gh release edit $TAG --prerelease=true --latest=false\`."
+            fail=1
+          fi
+          if [[ "$draft" != "false" ]]; then
+            echo "::error title=The beta Release is a draft::The API reports draft=$draft for $TAG. A draft Release publishes no assets, so the tag names a beta nobody can download."
+            fail=1
+          fi
+
+          # The endpoint itself, not a field about it. A 404 means there is no
+          # latest release at all, which a repository publishing only
+          # prereleases legitimately has.
+          latest_tag=""
+          if latest="$(gh api "repos/$GH_REPO/releases/latest" 2>/dev/null)"; then
+            latest_tag="$(jq -r '.tag_name // ""' <<<"$latest")"
+          else
+            echo "  /releases/latest answers 404 — no non-prerelease Release exists yet, which is a pass."
+          fi
+          if [[ -n "$latest_tag" && "$latest_tag" == "$TAG" ]]; then
+            echo "::error title=The beta became the latest release::/releases/latest answers $latest_tag. That endpoint is what install.sh installs by default and what the in-product update checker compares against, so every running Core and Panel would be told to move to a prerelease (ADR 0023 D9, ADR 0036 D11). Fix it now: \`gh release edit $TAG --prerelease=true --latest=false\`."
+            fail=1
+          fi
+          if (( fail != 0 )); then
+            exit 1
+          fi
+
+          echo "✅ $TAG: prerelease=true, draft=false, /releases/latest answers ${latest_tag:-nothing}"
+          echo "   assets: $assets"
+          {
+            echo "### Beta \`$BETA_VERSION\` published"
+            echo ""
+            echo "- tag \`$TAG\` → \`$SHA\` (moving handle, ADR 0036 D7)"
+            echo "- prerelease: \`true\`, asserted against the API (ADR 0023 D9)"
+            echo "- \`/releases/latest\` answers \`${latest_tag:-nothing}\`, which is not this tag"
+            echo "- assets: $assets"
+            echo ""
+            echo "Nothing was published to npm — a beta is invisible to registry.npmjs.org (ADR 0036 D15)."
+          } >> "$GITHUB_STEP_SUMMARY"

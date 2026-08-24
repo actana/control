@@ -6,7 +6,7 @@
 // file added next year — or `stale.yml` quietly restored — fails here instead
 // of being noticed by whoever happens to look.
 //
-// **D34's count is now five entry points**, and both revisions were deliberate:
+// **D34's count is now six entry points**, and every revision was deliberate:
 //
 //   ci.yml           gates every pull request, and publishes the train's image
 //                    on every push to `beta/**` (ADR 0023 D41)
@@ -18,6 +18,18 @@
 //   housekeeping.yml everything on a clock and nothing that gates
 //   landing.yml      the fourth file: `landing/` to the CDN behind
 //                    control.actana.ai (docs/landing-page.md §7)
+//   beta-release.yml the sixth file, and the newest revision: a requested beta
+//                    cut — the moving `vx.y.z-beta` tag, a prerelease GitHub
+//                    Release, three tarballs, `SHA256SUMS` and `install.sh`
+//                    (ADR 0036 D9, D10, amending 0016 D34 in its turn)
+//
+// `beta-release.yml` is an entry point rather than a third mode of
+// `release.yml`, and ADR 0036 D9 records the refactor that would merge them as
+// **refused**: `release.yml`'s `resolve` rejects any tag reachable from neither
+// `main` nor a `release/*` branch, a beta tag is on a train and is reachable
+// from neither, so a third mode would mean loosening the one guard that keeps
+// the other two modes readable off the ref graph. One extra file is the price
+// of keeping it.
 //
 // plus the one reusable `container-image.yml`, which every path that builds an
 // image calls and which is not an entry point because it has no trigger of its
@@ -68,8 +80,9 @@ const code = (block) =>
     .join("\n");
 
 describe("the workflow inventory (ADR 0016 D34)", () => {
-  it("is five entry points plus one reusable workflow — nothing else", () => {
+  it("is six entry points plus one reusable workflow — nothing else", () => {
     expect(fs.readdirSync(workflowDir).sort()).toEqual([
+      "beta-release.yml",
       "ci.yml",
       "container-image.yml",
       "housekeeping.yml",
