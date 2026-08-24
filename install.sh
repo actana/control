@@ -53,6 +53,9 @@ SHASUMS_ASSET="SHA256SUMS"
 
 REPO="${ACTANA_REPO:-$DEFAULT_REPO}"
 VERSION="${ACTANA_VERSION:-}"
+# Where $VERSION came from, in words, for the one message that has to say so:
+# a failed download can no longer assume a flag was passed (see `main`).
+VERSION_ORIGIN=""
 # One base URL replaces both of GitHub's hosts. That is what lets CI run the
 # real one-liner against locally built artifacts, with no published release and
 # no network.
@@ -68,9 +71,12 @@ BASE_URL="${ACTANA_BASE_URL:-}"
 # fast-forward has made those bytes main's own.
 #
 # One assignment on one line, so the cut can rewrite it in place and a reviewer
-# can see the whole of the change:
+# can see the whole of the change. Copied verbatim from docs/ci-cd.md, down to
+# the `-i.bak`, because this comment sits one line above the value being edited
+# and is the copy-paste source a person cutting a train reaches for first —
+# BSD `sed` on macOS requires an argument to `-i` and GNU `sed` accepts one:
 #
-#   sed -i 's/^LINE=".*"$/LINE="x.y.z"/' install.sh
+#   sed -i.bak 's/^LINE=".*"$/LINE="x.y.z"/' install.sh && rm -f install.sh.bak
 LINE="0.4.1"
 
 say() {
@@ -304,12 +310,106 @@ sha256_of() {
 
 # ─── release resolution ──────────────────────────────────────────────────────
 
-# Does $REPO publish a Release on this tag? Existence is the whole question —
-# the tag itself is fully determined by the stamp — so the body is discarded
-# and a 404 is the answer rather than an error. Both curl and wget already
-# report one as a failure, which is why this needs no parsing.
+# The HTTP status of one GET, as three digits, or the empty string when the
+# request never reached an answer at all — DNS, TLS, or a refused connection.
+#
+# **This exists because absence and failure are different answers, and an exit
+# code cannot tell them apart.** curl and wget fail a 404, a 403 rate limit, a
+# 502 and a dead resolver identically, so a probe that read the exit code would
+# call all of them "no such release" — and under D2 that turns one transient
+# failure on the step-2 probe into a beta served from the public door, which is
+# the outcome D1 exists to prevent, and turns C4's pinned second row into a
+# floating install. Nothing here parses a body; the status is the whole answer.
+#
+# No `--retry` on the curl call, deliberately: `--retry` cannot rewind
+# `-o /dev/null`, so a retried 5xx ends as a write error with **no code
+# printed** — the one input this function exists to return. Retrying is
+# `http_status`'s job, one line down, where a status can be looked at first.
+http_status_once() {
+  if have curl; then
+    # No `-f`: the body is discarded either way, and `-f` would hide the very
+    # status this is here to read. `%{http_code}` is the last response's, so a
+    # redirect is followed to the answer that matters, and a transport failure
+    # prints `000` — which this reports as no answer rather than as one.
+    status=$(curl -sSL -o /dev/null -w '%{http_code}' "$1" 2>/dev/null || true)
+    case $status in
+      000 | "" | *[!0-9]*) status="" ;;
+    esac
+    printf '%s' "$status"
+    return 0
+  fi
+
+  # wget has no `-w`, so the status is read out of what it says. GNU wget
+  # prints the response headers under `-S`; busybox's rejects `-S` outright but
+  # names the code in its own line. So the header form is tried first, the bare
+  # run is the fallback, and both shapes are matched — and when neither yields
+  # a code, this returns nothing and the caller stops rather than guessing.
+  for wget_opt in -S ""; do
+    status=$(
+      LC_ALL=C wget $wget_opt -O /dev/null "$1" 2>&1 |
+        LC_ALL=C sed -n \
+          -e 's|.*HTTP/[0-9.]*[[:space:]]\{1,\}\([0-9][0-9][0-9]\).*|\1|p' \
+          -e 's|.*response\.\.\.[[:space:]]*\([0-9][0-9][0-9]\).*|\1|p' |
+        tail -n 1
+    )
+    if [ -n "$status" ]; then
+      break
+    fi
+  done
+  printf '%s' "$status"
+}
+
+# The same, retried while the answer looks transient.
+#
+# `fetch_url` gets its retries from curl; this one cannot (see above), so the
+# loop is here and it is the better place for it anyway: a 404 is an answer and
+# is returned at once, while a 429, a 5xx or no answer at all is worth asking
+# again before an install is refused over a blip.
+http_status() {
+  attempt=1
+  while :; do
+    status=$(http_status_once "$1")
+    case $status in
+      "" | 429 | 5[0-9][0-9]) ;;
+      *) break ;;
+    esac
+    if [ "$attempt" -ge 3 ]; then
+      break
+    fi
+    sleep "$attempt"
+    attempt=$((attempt + 1))
+  done
+  printf '%s' "$status"
+}
+
+# Does $REPO publish a Release on this tag?
+#
+# Three answers, not two: yes, no, and "the question could not be asked". Only
+# a clean 404 is absence. Anything else stops the install here, because every
+# other status is a statement about the connection or about GitHub rather than
+# about this release — and falling through on one would pick a *different*
+# version to install, silently. `--version` needs none of this and is what the
+# messages point at.
 release_exists() {
-  fetch_url "$API_BASE/repos/$REPO/releases/tags/$1" >/dev/null 2>&1
+  tag_url="$API_BASE/repos/$REPO/releases/tags/$1"
+  tag_status=$(http_status "$tag_url")
+  case $tag_status in
+    200) return 0 ;;
+    404) return 1 ;;
+    "")
+      die "could not reach $tag_url while resolving the $LINE line.
+  That is not the same as \"there is no such release\", so nothing is installed
+  rather than something else being chosen — check the network, or name the
+  version you want with --version, which asks nothing."
+      ;;
+    *)
+      die "$tag_url answered HTTP $tag_status while resolving the $LINE line.
+  403 is usually GitHub's unauthenticated rate limit, 60 requests an hour per
+  IP; 5xx is GitHub. Neither means the release is missing, so nothing is
+  installed rather than a different version being chosen — retry later, or name
+  the version you want with --version, which asks nothing."
+      ;;
+  esac
 }
 
 # **The mechanism is ADR 0036 D1's stamped line, and this is the whole of D2.**
@@ -340,16 +440,23 @@ release_exists() {
 resolve_version() {
   if [ -n "$VERSION" ]; then
     VERSION=${VERSION#v}
+    VERSION_ORIGIN="That version came from --version or ACTANA_VERSION — check it, or drop it to
+  take the version this copy of the script installs by default."
     return 0
   fi
 
   if [ -n "$LINE" ]; then
     if release_exists "v$LINE"; then
       VERSION=$LINE
+      VERSION_ORIGIN="Nothing chose that version: it is the $LINE line this copy of the script is
+  stamped with, and there is no flag to drop. Name another with --version."
       return 0
     fi
     if release_exists "v$LINE-beta"; then
       VERSION="$LINE-beta"
+      VERSION_ORIGIN="Nothing chose that version: it is the current beta of the $LINE line this copy
+  of the script is stamped with, and there is no flag to drop. Name another
+  with --version."
       return 0
     fi
   fi
@@ -370,6 +477,8 @@ resolve_version() {
       head -n 1
   )
   [ -n "$VERSION" ] || die "no release tag in the answer from $latest_url — is $REPO the right repository?"
+  VERSION_ORIGIN="Nothing chose that version: it is the newest release $REPO publishes, and there
+  is no flag to drop. Name another with --version."
 }
 
 # ─── main ────────────────────────────────────────────────────────────────────
@@ -387,6 +496,12 @@ main() {
   fi
 
   have tar || die "tar is not installed — it is needed to unpack the Core."
+  # Asked once, here, rather than left to the first fetch. `http_status`
+  # redirects wget's own stderr into a pipe it parses, so a `die` raised from
+  # inside a probe would be swallowed on its way out; asking up front means the
+  # machine that has neither tool is told so instead of exiting silently.
+  have curl || have wget ||
+    die "neither curl nor wget is installed — one of them is needed to download the Core."
 
   detect_target
   resolve_version
@@ -411,8 +526,9 @@ main() {
   sums_file="$work_dir/$SHASUMS_ASSET"
   fetch_url "$release_url/$SHASUMS_ASSET" "$sums_file" ||
     die "could not fetch $release_url/$SHASUMS_ASSET. Either there is no release $tag,
-  or this machine cannot reach $DOWNLOAD_BASE — check the version, or drop
-  --version to install the latest."
+  or it publishes no checksums, or this machine cannot reach $DOWNLOAD_BASE.
+  Nothing was installed.
+  $VERSION_ORIGIN"
 
   expected=$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1 }' "$sums_file" | head -n 1)
   [ -n "$expected" ] || die "release $tag has no build for $TARGET.
