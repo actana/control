@@ -140,3 +140,53 @@ describe("the daemon's update notice", () => {
     expect(logged).toHaveLength(2);
   });
 });
+
+// #322. A Core installed from a beta is a prerelease of a line (ADR 0036 D1),
+// and the release it is waiting for is that same line's. The old comparison
+// compared only the numeric core, called `0.4.1` and `0.4.1-beta` equal, and
+// so said nothing to the population most in need of the notice.
+describe("a Core running a beta", () => {
+  const BETA = "0.4.1-beta";
+
+  it("is told when its own line's release lands", async () => {
+    await notice({ current: BETA, fetcher: answering("0.4.1") });
+
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("Actana 0.4.1 is available");
+    expect(logged[0]).toContain(`on ${BETA}`);
+    expect(logged[0]).toContain("actana update");
+  });
+
+  it("is told once, on the same throttle as everyone else", async () => {
+    await notice({ current: BETA, fetcher: answering("0.4.1") });
+    await notice({ current: BETA, fetcher: answering("0.4.1"), now: () => NOW + 60_000 });
+    await notice({
+      current: BETA,
+      fetcher: answering("0.4.1"),
+      now: () => NOW + UPDATE_CHECK_TTL_MS - 1,
+    });
+
+    expect(logged).toHaveLength(1);
+  });
+
+  // The channel's newest release is the *previous* line's while a beta is out
+  // ahead of it — `/releases/latest` excludes prereleases. Announcing it would
+  // be telling an operator that an older version is available.
+  it("says nothing about a release older than the beta it is running", async () => {
+    await notice({ current: BETA, fetcher: answering("0.4.0") });
+    expect(logged).toEqual([]);
+  });
+
+  // A beta tag is re-cut at a new commit per cut and publishes the same
+  // version string (ADR 0036 D7). Nothing may read that as news.
+  it("says nothing when the channel answers with the beta's own version", async () => {
+    await notice({ current: BETA, fetcher: answering(BETA) });
+    expect(logged).toEqual([]);
+  });
+
+  it("is still told about a later line's release", async () => {
+    await notice({ current: BETA, fetcher: answering("0.5.0") });
+    expect(logged).toHaveLength(1);
+    expect(logged[0]).toContain("Actana 0.5.0 is available");
+  });
+});

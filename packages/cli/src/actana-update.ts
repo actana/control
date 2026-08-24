@@ -30,11 +30,13 @@ import { writeActanaConfig, type ActanaConfig } from "./actana-config.ts";
 import { installDirFor, type ActanaLayout } from "./actana-layout.ts";
 import type { CoreManifest } from "./actana-manifest.ts";
 import {
+  lineOf,
   releaseTargetFor,
   resolveReleaseVersion,
   type ReleaseChannel,
   type ReleaseFetcher,
 } from "./actana-release.ts";
+import { isNewerSemver, isPrereleaseVersion } from "@actana/shared/semver";
 import { fetchVerifiedRelease } from "./actana-fetch-release.ts";
 import type { ActanaServiceManager } from "./actana-service.ts";
 import type { ActanaSystem } from "./actana-system.ts";
@@ -95,6 +97,34 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   }
 
   const version = await resolveReleaseVersion(opts.fetcher, opts.channel, opts.requestedVersion);
+
+  // The downgrade guard (#322). A bare update resolves `/releases/latest`,
+  // which excludes prereleases, so a machine installed from `0.4.1-beta` is
+  // answered with `0.4.0` — an older version, and one the already-current
+  // guard below waves straight through because the two strings simply differ.
+  // What followed was a stop, a tree swap and a restart, reported to the
+  // operator as an update.
+  //
+  // Nothing is changed and nothing is downloaded: the refusal is a sentence on
+  // stdout and `updated: false`, which is the same shape "already current"
+  // returns and which `actana update` renders as exit 0. Silence was the other
+  // option and is worse — an operator who ran `update` is owed the reason it
+  // did nothing.
+  //
+  // An explicit `--version` is never second-guessed. Pinning an older version
+  // is how a Panel↔Core version lock is recovered, and an operator who named
+  // one has already made this decision.
+  if (!opts.requestedVersion && isNewerSemver(config.version, version)) {
+    opts.out(refusedDowngrade(config.version, version));
+    return {
+      updated: false,
+      version: config.version,
+      previousVersion: config.version,
+      installDir: config.installDir,
+      listening: null,
+    };
+  }
+
   const installDir = installDirFor(layout, version);
 
   // "Already current" is about the tree, not just the recorded version: an
@@ -167,4 +197,30 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
     installDir,
     listening: await opts.system.waitForPort(config.port, LISTEN_TIMEOUT_MS),
   };
+}
+
+/**
+ * What the operator is told when a bare update would move them backwards.
+ *
+ * The prerelease case gets its own opening sentence because it is the one an
+ * operator has no other way to make sense of: they installed a beta on
+ * purpose, ran `update`, and it did nothing. Naming the line — `0.4.1-beta` is
+ * the beta of the 0.4.1 line (ADR 0036 D1, D2) — is what makes the next
+ * sentence land, because the release they are waiting for is that line's, and
+ * `actana update` will take it the day it exists.
+ */
+function refusedDowngrade(installed: string, resolved: string): string {
+  const opening = isPrereleaseVersion(installed)
+    ? `This Core is on ${installed}, a prerelease of the ${lineOf(installed)} line, and the ` +
+      `newest release is ${resolved} — older than what is installed.`
+    : `This Core is on ${installed} and the newest release is ${resolved} — older than what ` +
+      "is installed.";
+  return [
+    `${opening} Nothing was changed: updating would move this machine backwards.`,
+    isPrereleaseVersion(installed)
+      ? `A bare \`actana update\` will move this Core as soon as ${lineOf(installed)} is ` +
+        "released."
+      : "A bare `actana update` will move this Core again as soon as a newer release exists.",
+    `To install ${resolved} anyway, pin it: \`actana update --version ${resolved}\`.`,
+  ].join(" ");
 }
