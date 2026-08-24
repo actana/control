@@ -11,6 +11,18 @@
 // and shared with the CLI — so a Core that reboots hourly still asks GitHub
 // once. Nothing here runs an update; the line names the command its operator
 // runs (ADR 0016 D16 decides which one).
+//
+// **A Core running a beta is inside this, not outside it.** `0.4.1-beta` is a
+// prerelease of the 0.4.1 line (ADR 0036 D1, D2), and the release it is
+// waiting for is that same line's — `0.4.1`. Until #322 the comparison
+// underneath compared only the numeric core, called `0.4.1` and `0.4.1-beta`
+// equal, and so said nothing to the one population that most needed telling:
+// the operators who had installed a beta on metal. Nothing in this file
+// special-cases them; `isNewerSemver` learning semver §11.4 is the whole fix,
+// and it reaches here through `checkForUpdate`. The throttle below is
+// unchanged and applies to that line exactly as to any other — the release of
+// your own line is a *different* release from the last one announced, so it
+// speaks once and then holds for a day.
 
 import * as fs from "node:fs";
 import * as path from "node:path";

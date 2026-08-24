@@ -65,3 +65,93 @@ export function parseLatestTag(json: string): string | null {
   if (typeof tag !== "string" || tag === "") return null;
   return tag.replace(/^v/, "");
 }
+
+// -- Lines ---------------------------------------------------------------------
+//
+// A **line** is `x.y.z`, and it resolves to either its release or its beta
+// (ADR 0036 D1, D2). It is deliberately not a second meaning for
+// {@link ReleaseChannel} above: that type already means *which repository and
+// which hosts releases are read from*, and overloading it with
+// stable-versus-beta would make the two meanings indistinguishable in exactly
+// the code that resolves both (ADR 0036 D6).
+//
+// This half is created here and consumed twice — by the CLI through
+// `actana-release.ts`, and by `install.sh`, which mirrors the same rule in
+// POSIX sh (#317). The module's own header rule is why they live together:
+// an installer that resolved releases differently from the CLI would be a
+// second, subtly different front door.
+
+/**
+ * The suffix a beta version carries. Exactly `-beta`, and never a counter.
+ *
+ * A beta tag *moves* — it is re-cut at a new commit on every beta cut of the
+ * line (ADR 0036 D7) — so the version string stays the same across cuts and
+ * there is no `.N` to order. Nothing that compares versions may be built
+ * around ordering counters, because there are none to order.
+ */
+export const BETA_SUFFIX = "-beta";
+
+/** `0.4.1` → `0.4.1-beta`. The one beta version a line can have. */
+export function betaVersionForLine(line: string): string {
+  return `${line}${BETA_SUFFIX}`;
+}
+
+/** Whether a version is a line's beta — `0.4.1-beta`, and nothing else. */
+export function isBetaVersion(version: string): boolean {
+  return version.endsWith(BETA_SUFFIX) && version.length > BETA_SUFFIX.length;
+}
+
+/** The line a version belongs to: `0.4.1-beta` → `0.4.1`, `0.4.1` → `0.4.1`. */
+export function lineOf(version: string): string {
+  return version.replace(/^v/i, "").split(/[-+]/)[0];
+}
+
+/** The releases-API URL for one named tag — `/releases/tags/v<version>`. */
+export function releaseTagUrl(channel: ReleaseChannel, version: string): string {
+  return `${channel.apiBase}/repos/${channel.repo}/releases/tags/v${version}`;
+}
+
+/**
+ * How a line resolved, and to what.
+ *
+ * The kind is carried rather than inferred from the string so a caller can say
+ * *why* it is installing what it is installing — "this line has no release yet,
+ * so you are getting its beta" is a different sentence from "this is the
+ * release", and an operator on a train deserves the difference.
+ */
+export type LineResolution =
+  | { kind: "pinned"; version: string }
+  | { kind: "release"; version: string }
+  | { kind: "beta"; version: string }
+  | { kind: "latest" };
+
+/**
+ * ADR 0036 D2's resolution rule, as a decision over answers already gathered.
+ *
+ * In order: an explicit pin wins; then the release `v<line>` if that Release
+ * exists; then `v<line>-beta` if that one does; otherwise `/releases/latest`,
+ * which is what the installer and `actana update` read today and which stays
+ * the terminal fallback for a line that has published nothing at all.
+ *
+ * **No step enumerates releases, and this signature is what makes that
+ * structural.** `GET /repos/<repo>/releases` returns every release across
+ * *all* lines newest-first, so "the newest prerelease" would hand a machine
+ * installing one line's beta the beta of another. The two inputs here are
+ * existence answers about two *named* tags, so there is no listing to be
+ * tempted by and no ordering to get wrong — which is also why this is pure and
+ * lives beside the URL builders rather than behind a fetcher.
+ */
+export function resolveLine(opts: {
+  line: string;
+  /** An explicit `--version` / `ACTANA_VERSION`, unchanged and never second-guessed. */
+  requested?: string;
+  /** Whether the Release `v<line>` exists. */
+  releaseExists: boolean;
+  /** Whether the Release `v<line>-beta` exists. */
+  betaExists: boolean;
+}): LineResolution {
+  if (opts.requested) return { kind: "pinned", version: opts.requested.replace(/^v/i, "") };
+  if (opts.releaseExists) return { kind: "release", version: opts.line };
+  if (opts.betaExists) return { kind: "beta", version: betaVersionForLine(opts.line) };
+  return { kind: "latest" };
+}

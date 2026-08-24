@@ -30,12 +30,19 @@ import type { ReleaseFetcher } from "@actana/shared/actana-release-fetch";
 export { nodeReleaseFetcher, type ReleaseFetcher } from "@actana/shared/actana-release-fetch";
 
 export {
+  BETA_SUFFIX,
+  betaVersionForLine,
   DEFAULT_API_BASE,
   DEFAULT_DOWNLOAD_BASE,
   DEFAULT_REPO,
+  isBetaVersion,
   latestReleaseUrl,
+  lineOf,
   parseLatestTag,
   releaseChannel,
+  releaseTagUrl,
+  resolveLine,
+  type LineResolution,
   type ReleaseChannel,
 } from "@actana/shared/actana-release-channel";
 
@@ -106,6 +113,19 @@ export function sha256OfFile(filePath: string): string {
  * A pinned version costs no API call — an update that still asked what the
  * latest release was would be one API change away from quietly installing
  * something else than the operator named.
+ *
+ * **`/releases/latest` cannot see a prerelease**, by GitHub's definition of
+ * that endpoint, so on a machine installed from a beta this answers with the
+ * *previous* release — `0.4.0` for a machine running `0.4.1-beta`. That is not
+ * corrected here, because it is the right answer to the question this function
+ * asks ("what is the newest release?"). Deciding that installing it would move
+ * the machine backwards is a different question, and it is answered by
+ * `runActanaUpdate`'s downgrade guard in `actana-update.ts` (#322).
+ *
+ * Resolving a *line* to its release or its beta is a third question again —
+ * ADR 0036 D2's rule, spelled as `resolveLine` in the shared channel module
+ * and re-exported above. `actana update` does not use it yet: teaching it a
+ * beta channel of its own is explicitly not #322.
  */
 export async function resolveReleaseVersion(
   fetcher: ReleaseFetcher,

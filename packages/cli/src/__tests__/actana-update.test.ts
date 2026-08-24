@@ -384,3 +384,110 @@ describe("releases this machine cannot use", () => {
     await expect(update()).rejects.toThrow(/releases\/latest|no release/i);
   });
 });
+
+// #322. `/releases/latest` cannot see a prerelease, so on a machine installed
+// from a beta a bare `actana update` resolves the *previous* release. Before
+// the guard, "0.4.0" !== "0.4.1-beta" waved straight past the already-current
+// check and the machine was stopped, swapped and restarted onto an older
+// version — and told it had been updated.
+describe("a machine running a beta", () => {
+  const BETA = "0.4.1-beta";
+
+  beforeEach(() => {
+    existingInstall(BETA);
+  });
+
+  describe("when the newest release is older than the beta", () => {
+    beforeEach(() => {
+      writeRelease({ dir: releaseDir, version: "0.4.0", target: TARGET });
+    });
+
+    it("does not replace the tree", async () => {
+      const service = fakeService();
+      const result = await update({ service });
+
+      expect(result.updated).toBe(false);
+      expect(result.version).toBe(BETA);
+      expect(fs.realpathSync(layout.currentLink)).toBe(
+        fs.realpathSync(installDirFor(layout, BETA)),
+      );
+      expect(fs.existsSync(installDirFor(layout, "0.4.0"))).toBe(false);
+      expect(readActanaConfig(layout.configDir)!.version).toBe(BETA);
+      // The daemon never noticed: no stop, no restart.
+      expect(service.verbs).toEqual([]);
+      expect(service.stops).toBe(0);
+    });
+
+    it("says what it is on, what the release is, and what to do about it", async () => {
+      await update();
+      const said = out.join("\n");
+      expect(said).toContain(BETA);
+      expect(said).toContain("prerelease");
+      // The line, in ADR 0036 D1's vocabulary — the release this machine is
+      // actually waiting for is its own line's.
+      expect(said).toContain("0.4.1 line");
+      expect(said).toContain("0.4.0");
+      expect(said).toContain("actana update --version 0.4.0");
+    });
+
+    it("downloads nothing — the refusal is a decision, not a failed attempt", async () => {
+      const fetcher = fixtureFetcher(releaseDir, CHANNEL);
+      await update({ fetcher });
+      expect(fetcher.asked.some((url) => url.endsWith(".tar.gz"))).toBe(false);
+      expect(fetcher.asked.some((url) => url.endsWith("SHA256SUMS"))).toBe(false);
+    });
+
+    // An explicit pin is an operator's decision and is not second-guessed:
+    // this is how a Panel↔Core version lock is recovered.
+    it("still installs an older release when the operator pins it", async () => {
+      const result = await update({ requestedVersion: "0.4.0" });
+
+      expect(result.updated).toBe(true);
+      expect(result.version).toBe("0.4.0");
+      expect(result.previousVersion).toBe(BETA);
+      expect(fs.realpathSync(layout.currentLink)).toBe(
+        fs.realpathSync(installDirFor(layout, "0.4.0")),
+      );
+      expect(readActanaConfig(layout.configDir)!.version).toBe("0.4.0");
+    });
+  });
+
+  // The other direction, and the reason the guard is a comparison rather than
+  // "never move off a prerelease": the beta's own line releasing is exactly
+  // what this machine is waiting for, and it must not be stranded.
+  it("takes its own line's release the day it exists", async () => {
+    writeRelease({ dir: releaseDir, version: "0.4.0", target: TARGET });
+    writeRelease({ dir: releaseDir, version: "0.4.1", target: TARGET });
+
+    const result = await update();
+    expect(result.updated).toBe(true);
+    expect(result.previousVersion).toBe(BETA);
+    expect(result.version).toBe("0.4.1");
+    expect(readActanaConfig(layout.configDir)!.version).toBe("0.4.1");
+  });
+
+  it("takes a later line's release too", async () => {
+    writeRelease({ dir: releaseDir, version: "0.4.2", target: TARGET });
+    expect((await update()).version).toBe("0.4.2");
+  });
+});
+
+// The guard is about ordering, not about prereleases: a `latest` that has been
+// moved backwards would walk a release-running machine back just as silently.
+describe("a bare update that would move any machine backwards", () => {
+  beforeEach(() => {
+    existingInstall("0.5.0");
+    writeRelease({ dir: releaseDir, version: "0.4.0", target: TARGET });
+  });
+
+  it("refuses, and does not call the installed version a prerelease", async () => {
+    const result = await update();
+    expect(result.updated).toBe(false);
+    expect(result.version).toBe("0.5.0");
+    const said = out.join("\n");
+    expect(said).toContain("0.5.0");
+    expect(said).toContain("0.4.0");
+    expect(said).not.toContain("prerelease");
+    expect(said).toContain("actana update --version 0.4.0");
+  });
+});
