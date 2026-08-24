@@ -14,6 +14,15 @@
 # operator runs afterwards. There is no flag for this — it is what the script
 # does.
 #
+# **The copy you fetched decides what it installs** (ADR 0036 D1). A script
+# read from a pipe cannot know its own URL — there is no `$0`, no BASH_SOURCE,
+# no argv naming one — so "the ref is the channel" can only mean that the copy
+# of this file on that ref differs. Each copy therefore carries the *line* it
+# was cut from, written by the cut; `resolve_version` turns that line into a
+# release tag or into that line's beta tag. There is no `--channel` flag and no
+# environment variable for it: promotion is a fast-forward, so a channel
+# constant committed on a train would become `main`'s own bytes.
+#
 # **It does not know the install layout, and must not learn it.** Placement is
 # `"$extracted/bin/actana" place` — the CLI in the tree that was just verified,
 # running on the Node pinned inside it. ACTANA_HOME, ACTANA_CONFIG_DIR,
@@ -49,6 +58,21 @@ VERSION="${ACTANA_VERSION:-}"
 # no network.
 BASE_URL="${ACTANA_BASE_URL:-}"
 
+# ─── the line this copy installs (ADR 0036 D1) ───────────────────────────────
+#
+# The one value a cut writes into this file, alongside the six manifests
+# (docs/ci-cd.md § "Cutting a train"). It is a **line** — `x.y.z` — and not a
+# channel: `resolve_version` below turns it into either that line's release or
+# that line's beta, which is what makes the same bytes correct on a train,
+# where only the beta tag exists, and on `main` after the promotion
+# fast-forward has made those bytes main's own.
+#
+# One assignment on one line, so the cut can rewrite it in place and a reviewer
+# can see the whole of the change:
+#
+#   sed -i 's/^LINE=".*"$/LINE="x.y.z"/' install.sh
+LINE="0.4.1"
+
 say() {
   printf '%s\n' "$*"
 }
@@ -82,7 +106,8 @@ and then, as a separate command this script does not run for you:
   actana setup [options]
 
 Options:
-  --version <v>     Install this exact release (default: the latest release)
+  --version <v>     Install this exact version, release or beta. Overrides
+                    everything below; the default is this copy's own line
   --repo <slug>     GitHub repository to install from
   --base-url <url>  Fetch releases from here instead of GitHub (testing)
   --help            Show this help
@@ -98,6 +123,15 @@ ACTANA_HOME, ACTANA_BIN_DIR, ACTANA_CONFIG_DIR, ACTANA_DATA_DIR and the XDG
 variables move where the bundle lands; they are read by the CLI, so this
 script and `actana setup` cannot disagree about where anything is.
 EOF
+  # The channel this copy installs from — printed rather than written into the
+  # heredoc above, because it is the one line of this help that differs between
+  # copies of the script (ADR 0036 D1, D2).
+  printf '\n'
+  printf 'This copy is stamped with the %s line, and that stamp is its channel:\n' "$LINE"
+  printf 'it installs v%s if that release exists, otherwise v%s-beta, and\n' "$LINE" "$LINE"
+  printf 'otherwise the newest release. Which copy you fetched is the whole of\n'
+  printf 'the choice: there is no --channel option and no environment variable\n'
+  printf 'that selects one.\n'
 }
 
 # ─── argument parsing ────────────────────────────────────────────────────────
@@ -270,19 +304,61 @@ sha256_of() {
 
 # ─── release resolution ──────────────────────────────────────────────────────
 
-# `latest` is one API call; a pinned version is none. A pinned install that
-# still asked what the latest release was would be one API change away from
-# quietly installing something else.
+# Does $REPO publish a Release on this tag? Existence is the whole question —
+# the tag itself is fully determined by the stamp — so the body is discarded
+# and a 404 is the answer rather than an error. Both curl and wget already
+# report one as a failure, which is why this needs no parsing.
+release_exists() {
+  fetch_url "$API_BASE/repos/$REPO/releases/tags/$1" >/dev/null 2>&1
+}
+
+# **The mechanism is ADR 0036 D1's stamped line, and this is the whole of D2.**
+# In order:
+#
+#   1. an explicit --version / ACTANA_VERSION wins, and asks nothing;
+#   2. the release `v<line>`, if that Release exists;
+#   3. otherwise `v<line>-beta`, if that Release exists;
+#   4. otherwise `/releases/latest` — exactly what this script read before the
+#      stamp existed, kept as the terminal fallback.
+#
+# On a train only the beta tag exists, so step 3 answers. On `main` after a
+# promotion the release exists, so the same bytes answer at step 2. At a
+# release tag the stamp is that tag's own version and step 2 pins it, and at a
+# beta tag the file carries the line like every other copy — which is why that
+# ref is an alias for the train's door and not a pin. The pinned beta form is
+# `--version x.y.z-beta`, and step 1 is where it is served.
+#
+# **No step lists releases.** `GET /repos/<repo>/releases` answers every line
+# newest-first, so "the newest prerelease" would hand a machine installing the
+# beta of one line the beta of another. Resolution is per line by construction
+# instead: the stamp names the tag, and the steady-state path is the single
+# call at step 2 — the same number the stable path made before this.
+#
+# **Step 4 is not decoration.** A line with neither a release nor a beta cut
+# from it yet is a real state, not a hypothetical, and today's answer is the
+# right one for a line that has published nothing.
 resolve_version() {
   if [ -n "$VERSION" ]; then
     VERSION=${VERSION#v}
     return 0
   fi
 
+  if [ -n "$LINE" ]; then
+    if release_exists "v$LINE"; then
+      VERSION=$LINE
+      return 0
+    fi
+    if release_exists "v$LINE-beta"; then
+      VERSION="$LINE-beta"
+      return 0
+    fi
+  fi
+
   latest_url="$API_BASE/repos/$REPO/releases/latest"
   latest_json=$(fetch_url "$latest_url") ||
-    die "could not fetch $latest_url. Either $REPO has no releases, or this machine
-  cannot reach it — check the network, or pin a version with --version."
+    die "the $LINE line has neither a release nor a beta, and $latest_url could not
+  be fetched either. Either $REPO has no releases, or this machine cannot reach
+  it — check the network, or pin a version with --version."
 
   # Splitting on the JSON punctuation first keeps this honest whether the API
   # answers pretty-printed or on one line. LC_ALL=C because the release body is
