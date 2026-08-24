@@ -35,7 +35,7 @@
 // else either; `restamp` below is the cut's `sed`, and every case that claims
 // to be a different door runs a genuinely different copy of the script.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -44,7 +44,9 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import {
   DEFAULT_REPO,
   SHASUMS_ASSET,
+  installerStamp,
   startFixtureReleaseServer,
+  writeRestampedInstaller,
   writeStubRelease,
 } from "../lib/fixture-release.mjs";
 import { tarballName } from "../lib/core-tarball.mjs";
@@ -52,19 +54,9 @@ import { tarballName } from "../lib/core-tarball.mjs";
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 const INSTALL_SH = path.join(repoRoot, "install.sh");
 
-/**
- * The stamp the cut writes, matched exactly as the cut's `sed` matches it —
- * `^LINE="..."$`, one assignment on one line (docs/ci-cd.md § "Cutting a
- * train"). Written here as the same anchored shape rather than a loose search,
- * so a stamp that stopped being rewritable by that command fails here.
- */
-const STAMP_PATTERN = /^LINE="([^"]*)"$/m;
-
 /** The line a copy of the installer is stamped with. */
 function stampOf(scriptPath) {
-  const found = STAMP_PATTERN.exec(fs.readFileSync(scriptPath, "utf8"));
-  if (!found) throw new Error(`no LINE stamp in ${scriptPath}`);
-  return found[1];
+  return installerStamp(fs.readFileSync(scriptPath, "utf8"));
 }
 
 /**
@@ -76,16 +68,14 @@ function stampOf(scriptPath) {
  * that wanted to run "the copy on `beta/0.9.0`" has to produce that copy.
  * Everything else about the script is the shipped article, which is what makes
  * these cases evidence about it rather than about a fake.
+ *
+ * The edit itself is `writeRestampedInstaller`, shared with the container e2e
+ * (`scripts/e2e-actana-setup-linux.mjs`), whose install channel serves a copy
+ * stamped with the line its own newest release is on. Two harnesses restamping
+ * the same file by two different rules is drift waiting to happen.
  */
 function restamp(dir, line) {
-  fs.mkdirSync(dir, { recursive: true });
-  const source = fs.readFileSync(INSTALL_SH, "utf8");
-  const stamped = source.replace(STAMP_PATTERN, `LINE="${line}"`);
-  if (stamped === source) throw new Error(`restamping to ${line} changed nothing`);
-  const out = path.join(dir, "install.sh");
-  fs.writeFileSync(out, stamped);
-  fs.chmodSync(out, 0o755);
-  return out;
+  return writeRestampedInstaller({ source: INSTALL_SH, outPath: path.join(dir, "install.sh"), line });
 }
 
 /** The version every manifest in this workspace carries — the line, per ADR 0023 D3. */
@@ -1049,6 +1039,192 @@ describeOnPosix("install.sh", () => {
         expect(run.stdout).toContain("v0.9.0-beta");
         expect(run.stdout).not.toContain(`v${WORKSPACE_VERSION}-beta`);
       });
+    });
+
+    // ─── a failed probe is not an absent release ──────────────────────────
+    //
+    // The resolution asks "does this Release exist" over the network, and the
+    // question can fail as well as be answered. An exit code cannot tell the
+    // two apart — curl and wget fail a 404, a 403 rate limit, a 502 and a dead
+    // resolver identically — so a probe that read one would call every failure
+    // "no such release" and *pick a different version to install*. On the
+    // public door that is a beta served from `main` (the outcome D1 exists to
+    // prevent, by a route the record does not carry); at a release ref it is
+    // C4's second row quietly ceasing to be a pin.
+    //
+    // Unauthenticated GitHub allows 60 requests an hour per IP, so 403 is not
+    // hypothetical: it is what a shared NAT gets on a busy afternoon.
+    describe("a probe that fails is not a release that is missing", () => {
+      /** A door whose tag probes answer with forced statuses. */
+      async function flakyChannel({ line, versions, tagStatus }) {
+        const id = ++channelCases;
+        const dir = path.join(root, `flaky-${id}`);
+        fs.mkdirSync(dir, { recursive: true });
+        for (const version of versions) {
+          const built = pool.get(version);
+          if (!built) throw new Error(`${version} is not in POOL_VERSIONS`);
+          fs.linkSync(built, path.join(dir, path.basename(built)));
+        }
+        const script = line === null ? INSTALL_SH : restamp(path.join(root, `flaky-copy-${id}`), line);
+        const srv = await startFixtureReleaseServer({ dir, scriptPath: script, tagStatus });
+        channelServers.push(srv);
+        return {
+          run: (args = []) => runInstaller({ script, args: ["--base-url", srv.url, ...args] }),
+          paths: () => srv.requests.slice(),
+        };
+      }
+
+      it.each([[403], [500]])(
+        "refuses to serve a beta from the public door when the release probe answers %i",
+        async (status) => {
+          const line = WORKSPACE_VERSION;
+          const door = await flakyChannel({
+            line: null,
+            versions: [line, `${line}-beta`],
+            tagStatus: { [`v${line}`]: status },
+          });
+          const run = await door.run();
+          expect(run.status, run.output).not.toBe(0);
+          expect(run.output).toContain(String(status));
+          expect(run.output, "it fell through to the beta").not.toContain("-beta for");
+          expect(run.actanaArgs, "something was installed anyway").toBeNull();
+          expect(run.placed).toBe(false);
+          // It stopped at the failure rather than asking the next question.
+          expect(door.paths()).not.toContain(`/repos/${DEFAULT_REPO}/releases/tags/v${line}-beta`);
+          expect(door.paths()).not.toContain(`/repos/${DEFAULT_REPO}/releases/latest`);
+        },
+      );
+
+      it("keeps a release ref a pin when its probe fails and the beta is genuinely absent", async () => {
+        // The exact shape the deleted comment warned about: one transient
+        // failure on the release probe, a real 404 on the beta, and step 4
+        // installs whatever is newest — from a ref whose whole purpose is to
+        // pin. It must refuse instead.
+        const door = await flakyChannel({
+          line: OLD_VERSION,
+          versions: [OLD_VERSION, NEW_VERSION, WORKSPACE_VERSION],
+          tagStatus: { [`v${OLD_VERSION}`]: 403 },
+        });
+        const run = await door.run();
+        expect(run.status, run.output).not.toBe(0);
+        expect(run.stdout).not.toContain(`version=${WORKSPACE_VERSION}`);
+        expect(run.actanaArgs).toBeNull();
+        expect(door.paths()).not.toContain(`/repos/${DEFAULT_REPO}/releases/latest`);
+      });
+
+      it("says which line and which status, and points at the flag that asks nothing", async () => {
+        const line = WORKSPACE_VERSION;
+        const door = await flakyChannel({
+          line: null,
+          versions: [line],
+          tagStatus: { [`v${line}`]: 403 },
+        });
+        const run = await door.run();
+        expect(run.output).toContain(`HTTP 403`);
+        expect(run.output).toContain(`the ${line} line`);
+        expect(run.output).toMatch(/--version/);
+        // The step-4 message would have claimed the line has neither a release
+        // nor a beta, which under a uniform rate limit is simply false.
+        expect(run.output).not.toMatch(/neither a release nor a beta/);
+      });
+
+      it("still treats a clean 404 as absence, which is the whole point of reading the status", async () => {
+        // The other half: a forced 404 must behave exactly like a missing
+        // release, or the fix above would have turned every young line into a
+        // failed install.
+        const line = WORKSPACE_VERSION;
+        const door = await flakyChannel({
+          line: null,
+          versions: [line, `${line}-beta`],
+          tagStatus: { [`v${line}`]: 404 },
+        });
+        const run = await door.run();
+        expect(run.status, run.output).toBe(0);
+        expect(run.stdout).toContain(`version=${line}-beta`);
+      });
+    });
+
+    // ─── the download failure says where the version came from ────────────
+    //
+    // The message under `SHA256SUMS` is unchanged in shape but newly reachable
+    // by two paths that never had a flag in play: steps 2 and 3 can now say a
+    // Release exists while its checksums are missing or unreachable. Telling
+    // that operator to "drop --version to install the latest" names a flag they
+    // never passed, and on a beta door names a behaviour that door does not
+    // have.
+    describe("a failed download names the version's origin, not a flag", () => {
+      async function brokenRelease({ line, tag, versions }) {
+        const id = ++channelCases;
+        const dir = path.join(root, `broken-${id}`);
+        fs.mkdirSync(dir, { recursive: true });
+        for (const version of versions) {
+          fs.linkSync(pool.get(version), path.join(dir, path.basename(pool.get(version))));
+        }
+        // The tag resolves, and then there is nothing behind it: a release
+        // whose assets never finished uploading looks exactly like this.
+        const script = line === null ? INSTALL_SH : restamp(path.join(root, `broken-copy-${id}`), line);
+        const srv = await startFixtureReleaseServer({
+          dir,
+          scriptPath: script,
+          tagStatus: { [tag]: 200 },
+        });
+        channelServers.push(srv);
+        return { run: () => runInstaller({ script, args: ["--base-url", srv.url] }) };
+      }
+
+      it("tells a beta door there is no flag to drop", async () => {
+        const line = "0.9.0";
+        const door = await brokenRelease({
+          line,
+          tag: `v${line}-beta`,
+          versions: [WORKSPACE_VERSION],
+        });
+        const run = await door.run();
+        expect(run.status, run.output).not.toBe(0);
+        expect(run.output).toContain(`current beta of the ${line} line`);
+        expect(run.output).toContain("there is no flag to drop");
+        expect(run.output, "it advised dropping a flag nobody passed").not.toMatch(
+          /drop\s+--version to install the latest/,
+        );
+      });
+
+      it("tells a release door the same, naming the line it is stamped with", async () => {
+        const line = WORKSPACE_VERSION;
+        const door = await brokenRelease({ line: null, tag: `v${line}`, versions: [] });
+        const run = await door.run();
+        expect(run.status, run.output).not.toBe(0);
+        expect(run.output).toContain(`the ${line} line this copy of the script is`);
+        expect(run.output).toContain("there is no flag to drop");
+      });
+
+      it("does tell a pinned install to drop the flag, because there is one", async () => {
+        const run = await runInstaller({ args: withServer(["--version", "9.9.9"]) });
+        expect(run.status).not.toBe(0);
+        expect(run.output).toMatch(/came from --version or ACTANA_VERSION/);
+      });
+    });
+
+    it("says so when the machine has neither curl nor wget", async () => {
+      // The diagnostic used to reach the operator because the first fetch was
+      // unredirected. The probe's own redirection would swallow it, so the
+      // question is asked up front instead — a machine that exits 1 with no
+      // output at all is the least debuggable failure an installer has.
+      const caseDir = path.join(root, `no-fetcher-${++channelCases}`);
+      const binDir = path.join(caseDir, "bin");
+      fs.mkdirSync(binDir, { recursive: true });
+      for (const tool of ["uname", "tar"]) {
+        const found = spawnSync("sh", ["-c", `command -v ${tool}`], { encoding: "utf8" });
+        fs.symlinkSync(found.stdout.trim(), path.join(binDir, tool));
+      }
+      // Run as a file, not piped: the piped form looks `sh` and `cat` up on
+      // this PATH too, and the shell is not what is under test here.
+      const run = await runInstaller({
+        args: ["--base-url", "http://127.0.0.1:1"],
+        piped: false,
+        env: { PATH: binDir },
+      });
+      expect(run.status).not.toBe(0);
+      expect(run.output).toMatch(/neither curl nor wget/);
     });
 
     it("still replaces both GitHub hosts with one `--base-url`", async () => {
