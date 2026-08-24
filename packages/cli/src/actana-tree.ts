@@ -62,15 +62,27 @@ export function pointSymlink(linkPath: string, target: string): void {
 /**
  * Copy the extracted tree into its versioned home, replacing any existing one.
  *
- * A copy that fails part-way takes its own staging directory with it, so the
- * only states this leaves behind are "the old tree" and "the new tree" — never
- * a `versions/<v>.incoming` for the next run to trip over. That matters more
- * since #316: `install.sh` places before anything is activated, and a failed
- * placement has to leave the machine as it was found.
+ * **Either the old tree or the new one, at every instant, on every path.** The
+ * copy lands in `<installDir>.incoming` and a failure there takes that
+ * directory with it. The swap then moves the existing tree aside to
+ * `<installDir>.previous` rather than deleting it, so the rename that puts the
+ * new tree in place has something to be undone with: if it throws, the old
+ * tree goes straight back. `rmSync(installDir)` followed by a rename would
+ * have destroyed a working install to make room for one that then failed to
+ * arrive — rare, but it is the one failure with no recovery, and it is the
+ * failure the two callers' docstrings promise cannot happen.
+ *
+ * That promise matters more since #316: `install.sh` places before anything is
+ * activated, and a failed placement has to leave the machine as it was found.
+ *
+ * Both scratch paths are cleared on entry as well as on exit, so a process
+ * killed mid-swap leaves nothing for the next run to trip over or adopt.
  */
 export function installTree(source: string, installDir: string): void {
   const staging = `${installDir}.incoming`;
+  const previous = `${installDir}.previous`;
   fs.rmSync(staging, { recursive: true, force: true });
+  fs.rmSync(previous, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(installDir), { recursive: true });
   try {
     // verbatimSymlinks so a symlink inside the tarball is copied as-is rather
@@ -84,8 +96,20 @@ export function installTree(source: string, installDir: string): void {
     fs.rmSync(staging, { recursive: true, force: true });
     throw err;
   }
-  // Replace wholesale rather than copying over the top: a half-written tree
-  // from a crashed install must not survive as a merge.
-  fs.rmSync(installDir, { recursive: true, force: true });
-  fs.renameSync(staging, installDir);
+
+  // Aside, not away: `rename` cannot replace a non-empty directory, so the old
+  // tree has to leave `installDir` before the new one can arrive — but it does
+  // not have to stop existing until the new one has.
+  const displaced = lstatOrNull(installDir) !== null;
+  if (displaced) fs.renameSync(installDir, previous);
+  try {
+    fs.renameSync(staging, installDir);
+  } catch (err) {
+    if (displaced) fs.renameSync(previous, installDir);
+    fs.rmSync(staging, { recursive: true, force: true });
+    throw err;
+  }
+  // Replace wholesale rather than merging: a half-written tree from a crashed
+  // install must not survive inside the new one.
+  fs.rmSync(previous, { recursive: true, force: true });
 }

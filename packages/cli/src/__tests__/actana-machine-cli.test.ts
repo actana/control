@@ -369,6 +369,111 @@ describe("place", () => {
     expect(text).toContain(`${path.join(layout.currentLink, "bin", "actana")} setup`);
   });
 
+  // Review finding 7. `claimLauncher` writes nothing at `binLink` when another
+  // `actana` is earlier on `PATH` — often there is no such file at all — so a
+  // `Launcher <binLink>` row would name a path with nothing at it, three lines
+  // under a note saying the launcher was left alone.
+  it("does not claim a launcher it did not write", async () => {
+    const elsewhere = path.join(home, "usr", "bin");
+    fs.mkdirSync(elsewhere, { recursive: true });
+    fs.writeFileSync(path.join(elsewhere, "actana"), "#!/bin/sh\n");
+    const { layout } = placed();
+
+    expect(
+      await runActanaCli(
+        deps(["place"], fakeSystem(), {
+          env: { HOME: home, PATH: `${elsewhere}:${layout.binDir}` },
+        }),
+      ),
+    ).toBe(0);
+
+    expect(fs.existsSync(layout.binLink)).toBe(false);
+    const text = out.join("\n");
+    expect(text).not.toMatch(new RegExp(`Launcher\\s+${layout.binLink}$`, "m"));
+    expect(text).toContain(path.join(elsewhere, "actana"));
+    expect(text).toMatch(/Launcher\s+left alone/);
+  });
+
+  // Review finding 5. `installTree` renames a fresh tree over `installDir`, so
+  // a daemon executing out of *that* directory loses the files behind it —
+  // which is the documented "paste both again" upgrade whenever the version
+  // has not moved. `runActanaSetup` stops the service first for exactly this;
+  // `place` has to as well, or the guard has a hole the size of the new front
+  // door.
+  it("stops a running Core whose own tree it is about to replace", async () => {
+    await runActanaCli(deps(["place"], fakeSystem()));
+    out.length = 0;
+
+    const system = fakeSystem({
+      "systemctl --user is-active": { status: 0, stdout: "active\n", stderr: "" },
+    });
+    expect(await runActanaCli(deps(["place"], system))).toBe(0);
+
+    const commands = system.calls.map((call) => call.join(" "));
+    expect(commands).toContain("systemctl --user stop actana-core.service");
+    expect(out.join("\n")).toMatch(/Stopping the running Core/);
+    // And the bundle still landed.
+    expect(fs.existsSync(path.join(placed().installDir, "app", "core-entry.cjs"))).toBe(true);
+  });
+
+  it("asks the init system nothing when there is no tree at that path to destroy", async () => {
+    // The ordinary case — a fresh machine — and the reason the guard above is
+    // not simply "always consult the service": `install.sh` runs this on
+    // machines whose init system this CLI may not support at all.
+    const system = fakeSystem({
+      "systemctl --user is-active": { status: 0, stdout: "active\n", stderr: "" },
+    });
+    expect(await runActanaCli(deps(["place"], system))).toBe(0);
+    expect(system.calls).toEqual([]);
+  });
+
+  it("stops it through whatever this machine's init system is, not through systemd", async () => {
+    // The same guard on the other platform, because the hazard is the
+    // filesystem rename and not the init system: a LaunchAgent's job is
+    // executing out of the tree being replaced just as a systemd unit's is.
+    const mac = { platform: "darwin" as NodeJS.Platform, arch: "arm64" };
+    const macManifest = { ...MANIFEST, target: "mac-arm64", platform: "darwin", arch: "arm64" };
+    const macRoot = path.join(tmp, "extract-mac", "actana-core-0.1.0-mac-arm64");
+    makeTarballTree(macRoot, macManifest);
+    await runActanaCli(deps(["place"], fakeSystem(), { ...mac, installRoot: macRoot }));
+    out.length = 0;
+
+    const system = fakeSystem({
+      "launchctl print": { status: 0, stdout: "state = running\npid = 4211\n", stderr: "" },
+    });
+    expect(await runActanaCli(deps(["place"], system, { ...mac, installRoot: macRoot }))).toBe(0);
+
+    const commands = system.calls.map((call) => call.join(" "));
+    expect(commands.some((command) => command.startsWith("launchctl bootout"))).toBe(true);
+    expect(commands.some((command) => command.startsWith("systemctl"))).toBe(false);
+    expect(out.join("\n")).toMatch(/Stopping the running Core/);
+  });
+
+  // Review finding 6. The unit's `ExecStart` resolves through `current`, so a
+  // placement on a machine that is already a Core moves what a restart would
+  // start while `actana.json` and `actana status` still describe the old
+  // version. Saying so is the difference between an operator who finishes the
+  // upgrade and one who reboots into a Core nothing has set up.
+  it("says the running Core is still on the old version until setup finishes", async () => {
+    await setup(fakeSystem());
+    out.length = 0;
+
+    const newer = { ...MANIFEST, version: "0.2.0" };
+    const newRoot = path.join(tmp, "extract-2", "actana-core-0.2.0-linux-x64");
+    makeTarballTree(newRoot, newer);
+    expect(await runActanaCli(deps(["place"], fakeSystem(), { installRoot: newRoot }))).toBe(0);
+
+    const text = out.join("\n");
+    expect(text).toMatch(/already set up as a Core on 0\.1\.0/);
+    expect(text).toContain("0.2.0");
+    expect(text).toMatch(/still running 0\.1\.0/);
+    expect(text).toMatch(/finish the upgrade with/);
+    // Not the fresh-machine sentence — this machine is a Core, and telling it
+    // "nothing is running yet" would be false.
+    expect(text).not.toMatch(/Nothing is running yet/);
+    expect(text).toMatch(/^ {2}actana setup$/m);
+  });
+
   it("takes no options, and says where the ones it refuses went", async () => {
     expect(await runActanaCli(deps(["place", "--public-host", "10.0.0.7"], fakeSystem()))).toBe(
       EXIT_USAGE,

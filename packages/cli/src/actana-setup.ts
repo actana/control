@@ -296,11 +296,14 @@ export function planCorePlacement(opts: PlacementOptions): PlacementPlan {
  * it was found. Nothing here writes config, mints material, or asks an init
  * system for anything — see the file header.
  *
- * **A failed placement leaves the machine as it was found.** The copy lands in
- * `<installDir>.incoming` and is renamed into place, so a tree is either whole
- * or absent; if the rename never happens, the staging directory goes, and a
- * version directory this call created goes with it. `current` and the launcher
- * are only touched once the tree is complete.
+ * **A failed placement leaves the machine as it was found.** `installTree` owns
+ * that: the copy lands in `<installDir>.incoming`, the tree it replaces is
+ * moved aside rather than deleted, and either the new tree arrives or the old
+ * one is put back. What is left here is the one thing that module cannot know
+ * — whether the version directory existed before this call — so a directory
+ * this call brought into being does not survive a failure. `current` and the
+ * launcher are only touched once the tree is complete, so neither can end up
+ * pointing at something that is not there.
  */
 export function placeCoreBundle(opts: PlacementOptions, plan: PlacementPlan): PlacementResult {
   const { layout, manifest } = opts;
@@ -309,9 +312,10 @@ export function placeCoreBundle(opts: PlacementOptions, plan: PlacementPlan): Pl
   try {
     if (plan.replacingTree) installTree(plan.source, plan.installDir);
   } catch (err) {
-    // `installTree` takes its own staging directory with it. What is left to
-    // undo is a version directory this call brought into existence — an
-    // install that was already there is not this failure's to delete.
+    // `installTree` cleans up after itself and restores what it displaced, so
+    // this is the belt to its braces: a version directory that did not exist
+    // before this call does not exist after it failed. An install that was
+    // already there is never this failure's to delete.
     if (!hadInstallDir) fs.rmSync(plan.installDir, { recursive: true, force: true });
     throw err;
   }

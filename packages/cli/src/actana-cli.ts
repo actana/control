@@ -103,6 +103,7 @@ import {
   planCorePlacement,
   runActanaSetup,
   setupCommandFor,
+  type PlacementPlan,
 } from "./actana-setup.ts";
 import {
   harnessFlagNames,
@@ -652,6 +653,29 @@ async function cmdSetup(
  *
  * It takes no flags. Every flag the old tail forwarded belonged to `setup`,
  * and `setup` is a separate command now.
+ *
+ * **Two things it does touch that are not strictly placement**, both because
+ * the alternative is worse and neither is activation:
+ *
+ * - *It stops a daemon whose own tree it is about to delete.* Placement only
+ *   ever destroys a directory that is already at `installDir`, which means a
+ *   re-place of a version that is already installed — the documented "paste
+ *   both again" upgrade, when the version has not moved. `runActanaSetup`
+ *   stops the service first for exactly that case, and `installTree` would
+ *   otherwise rename a fresh tree over the one a live daemon is executing out
+ *   of, leaving every lazy `require` and asset read in the window until
+ *   `setup` restarts it pointing at nothing. So `place` stops it too, says so,
+ *   and the `setup` line it prints is what brings it back. The service is
+ *   consulted **only** when there is an existing tree at that path to
+ *   destroy — a fresh machine, which is the ordinary case, asks the init
+ *   system nothing at all — and a machine with no supported init system just
+ *   places, because refusing there would break the one job this verb has.
+ * - *It says when `current` has moved ahead of what is set up.* `current` is
+ *   what the unit's `ExecStart` resolves through, so on a machine that is
+ *   already a Core a placement that is never followed by `setup` leaves a
+ *   reboot starting a version `actana.json` does not describe. That is a
+ *   sentence in the output, not a refusal: the fix is the command already
+ *   printed below it.
  */
 function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
   const parsed = parseFlags(argv, {});
@@ -686,9 +710,17 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
     out: deps.out,
   };
 
+  // What was already here, read before anything moves: an activated install
+  // records itself in `actana.json`, and that is what makes the difference
+  // between "nothing is running yet" and "something is running, on the version
+  // this is about to move `current` off".
+  const existing = readActanaConfig(layout.configDir);
+
   let placed;
   try {
-    placed = placeCoreBundle(placing, planCorePlacement(placing));
+    const plan = planCorePlacement(placing);
+    stopDaemonBeingReplaced(deps, layout, plan);
+    placed = placeCoreBundle(placing, plan);
   } catch (err) {
     deps.err(err instanceof Error ? err.message : String(err));
     return 1;
@@ -696,20 +728,96 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
 
   deps.out("");
   deps.out(`Core ${placed.version} installed at ${placed.installDir}`);
-  deps.out(`  Launcher   ${placed.launcher.binLink}`);
+  // Only when one was actually written. `claimLauncher` leaves `binLink`
+  // untouched — often absent entirely — when somebody else answers to
+  // `actana`, and a `Launcher` row naming a path with nothing at it would
+  // contradict the note it printed three lines earlier.
+  deps.out(
+    placed.launcher.outcome === "linked"
+      ? `  Launcher   ${placed.launcher.binLink}`
+      : `  Launcher   left alone — ${placed.launcher.foreignPath} owns \`actana\` here`,
+  );
   deps.out(`  Current    ${layout.currentLink}`);
   deps.out("");
-  // Installing is not activating, and an operator who is not told that has a
-  // machine they believe is a Core and a Panel that will never reach it.
-  deps.out("Nothing is running yet: this machine is not a Core until you set it up.");
+  if (existing) {
+    // The unit's `ExecStart` runs through `current`, which now points at the
+    // tree just placed. Until `setup` runs, `actana status` and `actana.json`
+    // still describe the old version, and a restart or a reboot would start
+    // the new one with none of its work done.
+    deps.out(
+      `This machine is already set up as a Core on ${existing.version}, and \`current\` now ` +
+        `points at ${placed.version}. Nothing has restarted, so it is still running ` +
+        `${existing.version} — finish the upgrade with:`,
+    );
+  } else {
+    // Installing is not activating, and an operator who is not told that has a
+    // machine they believe is a Core and a Panel that will never reach it.
+    deps.out("Nothing is running yet: this machine is not a Core until you set it up.");
+  }
   deps.out("");
   deps.out("  " + setupCommandFor(layout, placed.launcher, deps.env));
   deps.out("");
   deps.out(
-    "That writes this Core's identity, its auto-start service and its registration, and " +
-      "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
+    existing
+      ? "That restarts the daemon on the version just placed. This Core's identity, its " +
+          "service and every client paired with it are kept."
+      : "That writes this Core's identity, its auto-start service and its registration, and " +
+          "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
   );
   return 0;
+}
+
+/**
+ * Stop a daemon whose own install directory is about to be replaced.
+ *
+ * The narrow case, and the only one placement can corrupt: `installTree`
+ * renames a fresh tree over `installDir`, so a daemon executing out of *that*
+ * directory loses the files behind it. Placing a different version writes a
+ * different directory and touches nothing running, which is why this asks the
+ * init system nothing on the ordinary path — a fresh machine has no tree there
+ * at all.
+ *
+ * Best effort in both directions. A platform with neither systemd nor launchd
+ * has no daemon to stop and must still be able to place a bundle, so a service
+ * manager that cannot be built is not an error here; and a `stop` that fails
+ * is reported rather than fatal, because the placement is still the better
+ * outcome than leaving the bundle in a temporary directory about to be
+ * deleted.
+ */
+function stopDaemonBeingReplaced(
+  deps: ActanaCliDeps,
+  layout: ActanaLayout,
+  plan: PlacementPlan,
+): void {
+  if (!plan.replacingTree) return;
+  if (!fs.existsSync(plan.installDir)) return;
+
+  let service: ActanaServiceManager;
+  try {
+    service = createServiceManager({
+      platform: deps.platform,
+      layout,
+      system: deps.system,
+      user: deps.user,
+      uid: deps.uid,
+    });
+  } catch {
+    return;
+  }
+
+  try {
+    if (!service.isActive()) return;
+    deps.out(
+      `Stopping the running Core: this install replaces ${plan.installDir}, which is the ` +
+        "tree it is executing from. The command printed below starts it again.",
+    );
+    service.stop();
+  } catch (err) {
+    deps.out(
+      `Could not stop the running Core (${err instanceof Error ? err.message : String(err)}). ` +
+        "Continuing — restart it with the command printed below.",
+    );
+  }
 }
 
 /** `actana install` — always the download path, even inside a tarball. */

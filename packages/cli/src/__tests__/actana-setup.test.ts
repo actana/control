@@ -272,18 +272,59 @@ describe("placeCoreBundle — what `install.sh` leaves behind", () => {
     },
   );
 
-  it("does not delete a version that was already installed when a re-place fails", () => {
+  // Skipped as root for the same reason as the test above. The failure has to
+  // happen *during the copy*: a source `planCorePlacement` refuses throws
+  // before `placeCoreBundle` is entered at all, and a test built that way would
+  // pass without ever entering the code it is about.
+  it.skipIf(process.getuid?.() === 0)(
+    "keeps the version that was already installed when a re-place fails mid-copy",
+    () => {
+      const first = place();
+      fs.writeFileSync(path.join(first.installDir, "app", "keep-me"), "installed\n");
+
+      // A second source, same version, well-formed enough to be planned and
+      // impossible to copy.
+      const second = path.join(tmp, "extract-2", "actana-core-0.1.0-linux-x64");
+      makeTarballTree(second);
+      fs.chmodSync(path.join(second, "app", "core-entry.cjs"), 0o000);
+
+      expect(() => place({ sourceRoot: second })).toThrow();
+
+      expect(fs.readFileSync(path.join(first.installDir, "app", "keep-me"), "utf8")).toBe(
+        "installed\n",
+      );
+      expect(fs.existsSync(`${first.installDir}.incoming`)).toBe(false);
+      expect(fs.existsSync(`${first.installDir}.previous`)).toBe(false);
+    },
+  );
+
+  // The swap moves the old tree aside rather than deleting it, so that the
+  // rename putting the new one in place has something to be undone with. Both
+  // scratch paths are this call's to clean up — a `versions/0.1.0.previous`
+  // left lying around is a full copy of a Core bundle nobody will ever look at.
+  it("leaves neither scratch directory behind when it replaces a tree", () => {
     const first = place();
-    fs.writeFileSync(path.join(first.installDir, "app", "keep-me"), "installed\n");
-    // A second source, same version, that cannot be copied.
+    fs.writeFileSync(path.join(first.installDir, "app", "old-marker"), "old\n");
+
     const second = path.join(tmp, "extract-2", "actana-core-0.1.0-linux-x64");
     makeTarballTree(second);
-    fs.rmSync(path.join(second, "node", "bin", "node"));
+    const again = place({ sourceRoot: second });
 
-    expect(() => place({ sourceRoot: second })).toThrow();
-    expect(fs.readFileSync(path.join(first.installDir, "app", "keep-me"), "utf8")).toBe(
-      "installed\n",
-    );
+    expect(again.installDir).toBe(first.installDir);
+    expect(fs.existsSync(path.join(again.installDir, "app", "old-marker"))).toBe(false);
+    expect(fs.existsSync(`${again.installDir}.incoming`)).toBe(false);
+    expect(fs.existsSync(`${again.installDir}.previous`)).toBe(false);
+  });
+
+  it("does not adopt a `.previous` a crashed run left behind", () => {
+    const installDir = path.join(layout.versionsDir, "0.1.0");
+    fs.mkdirSync(`${installDir}.previous`, { recursive: true });
+    fs.writeFileSync(path.join(`${installDir}.previous`, "from-a-crash"), "junk\n");
+
+    const result = place();
+
+    expect(fs.existsSync(`${result.installDir}.previous`)).toBe(false);
+    expect(fs.existsSync(path.join(result.installDir, "from-a-crash"))).toBe(false);
   });
 
   it("does not adopt a staging directory a crashed run left behind", () => {
