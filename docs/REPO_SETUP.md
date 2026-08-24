@@ -769,6 +769,17 @@ the promotion fails at the tag after it has already fast-forwarded `main` — th
 worst place in the sequence to stop. The `creation` rule and the ref pattern
 are untouched by the payload.
 
+**That pattern now governs beta tags too, and no payload changes.**
+`refs/tags/v*` matches `v0.4.1-beta` exactly as it matches `v0.4.1`, so the
+`vx.y.z-beta` tag a beta cut publishes is created under this ruleset ([ADR
+0036](adr/0036-the-beta-release-channel.md) D7). The App bypass is therefore
+what makes the **first** cut of a line possible at all — later cuts of the same
+line only *update* an existing ref, which `creation` does not restrict, so a
+missing App identity would fail one cut per line and pass every other. That is
+the worst shape a credential problem can have, and it is why `beta-release.yml`
+refuses to start without the App secrets rather than discovering it at the push
+([`ci-cd.md` §Cutting a beta](ci-cd.md#cutting-a-beta)).
+
 > [!WARNING]
 > **Open decision — this apply deletes a live bypass actor, and the pre-flight
 > will refuse until someone resolves it.**

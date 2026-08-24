@@ -1274,21 +1274,47 @@ container cannot give you: a train that installs on metal, and a CLI-only
 machine that can drive it.
 
 ```bash
-gh workflow run beta-release.yml --repo actana/control -f train=beta/0.4.1
+gh workflow run beta-release.yml --repo actana/control --ref beta/0.4.1 -f train=beta/0.4.1
 ```
 
-One input, the train branch, validated as `beta/x.y.z` the way a promotion
-validates it. The version published is that branch's version with `-beta` after
-it — `0.4.1-beta` — and **that string is fixed for the life of the line** (0036
-C1). Cut the same beta ten times and it is `0.4.1-beta` all ten. Nothing appends
-a counter, a run number or a short sha, and a form such as `0.4.1-beta.1` is not
-something this repository publishes or accepts.
+**The train is named twice, and both are load-bearing.** `-f train=` is the
+input; `--ref` is the branch the run resolves its own workflow file from. A
+dispatch executes the copy of the file that lives on the ref it was dispatched
+on, so `--ref main -f train=beta/0.4.1` would cut the train with `main`'s copy
+of the workflow — the stale-workflow trap
+[#326](https://github.com/actana/control/issues/326) closed for a promotion, in
+a new dialect. Here there is no second workflow to dispatch at the right ref,
+so it is closed by refusal instead: the run stops unless the ref it is on *is*
+the train it was asked to cut, and the error names the corrected command.
+
+The input is validated as `beta/x.y.z` the way a promotion validates it. The
+version published is that branch's version with `-beta` after it — `0.4.1-beta`
+— and **that string is fixed for the life of the line** (0036 C1). Cut the same
+beta ten times and it is `0.4.1-beta` all ten. Nothing appends a counter, a
+dotted suffix, a run number or a short sha, on the tag, the Release, any asset
+name or either image tag; the run asserts the shape before it builds anything
+and refuses a version that grew one.
+
+> **`beta-release.yml` has to exist on `main` before any of this can be typed.**
+> GitHub resolves a dispatchable workflow from the **default branch**: a file
+> that is only on a train is not offered by `gh workflow run` or by the Actions
+> UI, and the dispatch fails before a run is created. `--ref` chooses which copy
+> *executes* — it does not make an undispatchable workflow dispatchable. So beta
+> cuts become possible on the line after the one that ships this workflow: the
+> milestone promotes, `beta-release.yml` lands on `main` in that fast-forward,
+> and the next train can be cut. It is the same one-promotion-late shape [ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) D40 records for #326's
+> own amendment, and it is a property of the trigger rather than of this file.
 
 What the run does, in order:
 
-1. **Refuses to cut a train whose tip is not green.** A beta cut from a tip
-   whose own `ci.yml` push run failed is a published prerelease nobody gated;
-   the run names the failing run's URL and stops.
+1. **Refuses anything it cannot cut cleanly, before it builds a byte.** The
+   train must be a real `beta/x.y.z` branch on origin; the ref the run is on
+   must be that train; the train's tip must still be the commit the dispatch
+   named, so a merge landing in between costs a re-dispatch rather than a cut
+   whose gates and bytes came from different commits; and the tip's own `ci.yml`
+   push run must be green — a beta cut from a red tip is a published prerelease
+   nobody gated, and the run names the failing run's URL and stops (0023 D21).
 2. **Moves `vx.y.z-beta`** to the train tip, force-updating the ref on purpose
    and logging the sha it moved off. A beta tag is a handle, not a record.
 3. **Builds three tarballs** at `x.y.z-beta` — `linux-x64`, `linux-arm64` and
@@ -1306,6 +1332,16 @@ What the run does, in order:
 **A red leg publishes nothing, the tag move included.** A second cut of the same
 beta is a supported operation and not a repair: it moves the tag, replaces every
 asset, and leaves nothing behind from the cut before it.
+
+**A cut pushes its tag as the App, and it checks for that identity first.** The
+tag ruleset restricts *creation* under `refs/tags/v*` — a pattern `vx.y.z-beta`
+matches as squarely as `vx.y.z` does — and the App is the bypass actor ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D39,
+[`REPO_SETUP.md` §3e](REPO_SETUP.md#3e-the-tag-ruleset)). Without those
+credentials the *first* cut of a line fails at the tag and every later cut of
+that line succeeds, because a later cut only updates a ref that already exists —
+which is why the missing secret is refused up front rather than met after three
+tarball builds and a macOS runner.
 
 The gates are lighter than a release's, deliberately, because the train has
 already proved most of them on the commit being cut — typecheck, unit tests,
