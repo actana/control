@@ -878,6 +878,30 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   };
 
   /**
+   * A named step's `run:` script, as the shell receives it — comment lines
+   * dropped, blank lines dropped, every line trimmed.
+   *
+   * Step-scoped on purpose. `resolve` runs four `exit 1`s across three steps,
+   * so a `toContain("exit 1")` over the whole job is satisfied by the
+   * greenness gate's refusal while the credential preflight has none — the
+   * same class of assertion this file has now been reviewed for twice.
+   */
+  const stepRun = (text, job, stepName) => {
+    const lines = code(jobBlock(text, job)).split("\n");
+    const start = lines.findIndex((line) => line === `      - name: ${stepName}`);
+    expect(start, `no \`${stepName}\` step in ${job}`).toBeGreaterThan(-1);
+    const runAt = lines.findIndex((line, i) => i > start && line === "        run: |");
+    expect(runAt, `\`${stepName}\` has no run: block`).toBeGreaterThan(start);
+    const script = [];
+    for (const line of lines.slice(runAt + 1)) {
+      if (line.trim() === "") continue;
+      if (!/^ {10}/.test(line)) break;
+      script.push(line.trim());
+    }
+    return script;
+  };
+
+  /**
    * Every job in the file whose `uses:` is `container-image.yml`, in file
    * order — the jobs that can put a tag on Docker Hub.
    *
@@ -1400,14 +1424,58 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
         `missing+=(${secret})`,
       );
     }
-    expect(job).toContain("::error title=A Docker Hub credential is missing::");
     // The App identity, checked in the same job for the same reason — the beta
     // tag is created under a ruleset only the App can bypass. Pinned here
     // beside the registry credential because the argument is one argument.
     for (const secret of ["APP_ID", "APP_PRIVATE_KEY"]) {
       expect(job, `resolve does not preflight ${secret}`).toContain(`secrets.${secret}`);
     }
-    expect(job).toContain("::error title=No App identity::");
+
+    // Both preflights, held to the **refusal** and not to the annotation.
+    //
+    // A `::error` annotation does not fail a step — it decorates one. So a
+    // step that emits the message and then falls through to its success line
+    // exits 0, the cut proceeds, and every assertion above it still passes:
+    // the secrets are wired, the arms append, the title is present, the job is
+    // `resolve`. Review r2 mutated exactly that — the annotation kept, `exit 1`
+    // dropped — and the suite stayed at 95 passed. It is r1's finding 3 in the
+    // test written to answer r1's finding 1, so it is held to the same bar.
+    //
+    // Pinned structurally, in three links, per step: the guard that routes to
+    // the refusal, the annotation, and the `exit 1` on the line after it.
+    for (const [step, title, guard] of [
+      [
+        "The Docker Hub credentials the retag refuses without",
+        "A Docker Hub credential is missing",
+        'if [[ "${#missing[@]}" -gt 0 ]]; then',
+      ],
+      [
+        "Require the App credentials",
+        "No App identity",
+        'if [[ -n "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then',
+      ],
+    ]) {
+      const script = stepRun(source, "resolve", step);
+      // The condition that decides whether the refusal is reached. Without
+      // this, a guard mutated to one that can never hold leaves an `exit 1`
+      // that is present and unreachable.
+      expect(script, `${step}: the guard that reaches the refusal is gone`).toContain(guard);
+      let annotations = 0;
+      script.forEach((line, i) => {
+        if (!line.includes("::error title=")) return;
+        annotations += 1;
+        // Asserted inside the step rather than over the job: the title is what
+        // an operator reads, and it has to belong to the refusal that fires.
+        expect(line, `${step}: wrong ::error title`).toContain(`::error title=${title}::`);
+        expect(
+          script[i + 1],
+          `${step}: the ::error annotation is not followed by \`exit 1\` — an annotation decorates a step, it does not fail one, so this preflight would print its complaint and let the cut proceed`,
+        ).toBe("exit 1");
+      });
+      expect(annotations, `${step} emits no ::error annotation`).toBe(1);
+      expect(script, `${step} cannot fail`).toContain("exit 1");
+      expect(script[0], `${step} does not set -e`).toBe("set -euo pipefail");
+    }
     // Both refusals are in `resolve`, which is upstream of every job that
     // builds, publishes or retags — so a missing secret costs one dispatch
     // rather than three tarball builds, a macOS runner and a published
