@@ -244,11 +244,21 @@ green.
 
 #### What the App does with it
 
-Six operations, all of them in `promote.yml` where they can be read: it writes
-the train-cut commit, fast-forwards `main`, pushes the `vx.y.z` tag, creates
-the `release/x.y` line, deletes the promoted train, and force-pushes the
-post-hotfix rebase of a surviving train — commenting on that train's open pull
-requests as it does (D24). Nothing else in the repository uses it. `ci.yml`,
+Five operations, all of them in `promote.yml` where they can be read: it
+fast-forwards `main`, pushes the `vx.y.z` tag, creates the `release/x.y` line,
+deletes the promoted train, and force-pushes the post-hotfix rebase of a
+surviving train — commenting on that train's open pull requests as it does
+(D24). Nothing else in the repository uses it.
+
+> **Corrected 2026-08-25: it was six, and the sixth was the train-cut commit.**
+> [#325](https://github.com/actana/control/issues/325) deleted `promote.yml`'s
+> `next-train` job, so **a train is now cut by a person** ([ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and D25 as amended,
+> [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train)). The cut commit
+> carries that person's identity, and it is their push — not the App's — that
+> needs an actor bypassing the `beta/*` ruleset. Everything else in the list is
+> unchanged, and so is the argument: every push `promote.yml` makes is still
+> the App's. `ci.yml`,
 `release.yml`, `housekeeping.yml` and `landing.yml` all run on `GITHUB_TOKEN`,
 because none of them writes to a protected ref.
 
@@ -273,7 +283,7 @@ The four permissions:
 
 | Permission | Level | Why |
 | --- | --- | --- |
-| Contents | Read & write | Every push: the train-cut commit, the branches, the tag |
+| Contents | Read & write | Every push `promote.yml` makes: the fast-forward of `main`, the branches, the tag. **Not** the train-cut commit — a person cuts a train now (#325) |
 | Workflows | Read & write | **The one that is easy to miss.** Without it, any promotion whose train touched `.github/workflows/` is rejected — and only that one, so it looks like an unrelated fault |
 | Pull requests | Read & write | The comment on each open pull request into a rebased train (D24) |
 | Metadata | Read-only | Mandatory; GitHub adds it for you |
@@ -599,12 +609,31 @@ fast set plus both image builds — the same list `main` has minus the slow legs
 smoke (amd64)`, `Core image / Resolve registries`, `Core image / Build + smoke
 (amd64)`.
 
-**The GitHub App is the sole bypass actor** (D24, D39). It needs to be, and for
-three named operations only: it writes the train-cut commit, it force-pushes
-the post-hotfix rebase, and it deletes the promoted train. That is the
-documented exception to "no force-push" — one non-human identity, three
-operations, all of them in `promote.yml` where they can be read. No human and
-no admin role is a bypass actor on this ruleset.
+**The GitHub App bypasses this ruleset** (D24, D39), for two named operations:
+it force-pushes the post-hotfix rebase, and it deletes the promoted train. Both
+are in `promote.yml` where they can be read, and together they are the
+documented exception to "no force-push".
+
+> **Corrected 2026-08-25: the App is no longer the *sole* bypass actor here,
+> and it no longer writes the train-cut commit.** This paragraph named three
+> operations and one non-human identity.
+> [#325](https://github.com/actana/control/issues/325) moved the cut off the
+> App: `promote.yml`'s `next-train` job is deleted and **a train is cut by a
+> person** ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and
+> D25 as amended; 0023:179's own amendment already says so). That person pushes
+> the cut commit directly to a new `beta/x.y.z` branch, with `--no-verify`, for
+> the reason [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) gives — so
+> **a human identity must also bypass this ruleset**, or no train can be cut at
+> all. Two operations stay the App's; the third became a person's.
+>
+> **This is a live gap between the prose and the payload, and it is named here
+> rather than closed here.**
+> [`rulesets/beta.json`](rulesets/beta.json) still lists the App as its only
+> bypass actor, and so does live ruleset **20685265**. Adding the human actor
+> is a protection change and therefore the repository owner's, on the same
+> terms as everything else in §3: nothing on a branch applies a ruleset. Until
+> it is made, the cut in `ci-cd.md` §Cutting a train works only for an identity
+> that already bypasses `beta/*`.
 
 ### 3b. `release/*` — the maintenance lines
 

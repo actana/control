@@ -17,7 +17,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, retiring the promoted train |
 | [`release.yml`](../.github/workflows/release.yml) | a dispatch and only a dispatch: `promote.yml` dispatches it **at `vx.y.z`**, or a person does — **not** a `v*` tag, and no longer a `workflow_call` (D40, as amended by [#326](https://github.com/actana/control/issues/326)) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`beta-release.yml`](../.github/workflows/beta-release.yml) | dispatch, naming a train | a beta cut: the moving `vx.y.z-beta` tag, a prerelease Release, three Core tarballs + `SHA256SUMS`, `install.sh` and the CLI tarball as assets, `x.y.z-beta` in `panel` / `core`. Never `latest` |
-| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures, and the issue that says no train is open |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a `NODE_VERSION` bump PR, the `-dev` tag sweep, the four Docker Hub pages, and an issue for anything the release detector, the dev-tree audit or the Harness canary found |
 | [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
 
@@ -63,7 +63,7 @@ tarball's filename — is asserted against that tree by
 before it is written. `pnpm versions:assert --expected x.y.z` runs the same
 check by hand.
 
-`housekeeping.yml` is everything on a clock and nothing that gates. Its seven
+`housekeeping.yml` is everything on a clock and nothing that gates. Its eight
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
 described in full under [Housekeeping](#housekeeping).
@@ -1026,11 +1026,12 @@ Two registries are therefore in play, doing two different jobs:
 ## Housekeeping
 
 [`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the only entry
-point that is not a check and not a publish. Seven chores on two crons:
+point that is not a check and not a publish. Eight chores on two crons:
 
 | Job | Cron | What it does |
 | --- | --- | --- |
 | `stale` | daily, 03:17 UTC | labels and closes inactive issues and PRs |
+| `open-train` | daily, 03:17 UTC | asks origin whether a `beta/*` train is open — **opens an issue** when none is, which is the backstop for a promotion that stopped before `train-invariant` (D25) |
 | `base-pins` | Mondays, 07:00 UTC | opens the `NODE_VERSION` bump PR, reports digest drift |
 | `release-detector` | Mondays, 07:00 UTC | base drift or a new fixable CVE in a *released* image, both images — **opens an issue**, publishes nothing |
 | `dev-tag-sweep` | Mondays, 07:00 UTC | deletes stale `pr-*` and `sha-*` tags from `panel-dev` and `core-dev` |
@@ -1038,17 +1039,17 @@ point that is not a check and not a publish. Seven chores on two crons:
 | `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
 | `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
 
-An eighth job, `release-ref`, resolves the newest published release for
+A ninth job, `release-ref`, resolves the newest published release for
 `release-detector`; it is a job rather than a step only because a matrix job
 cannot compute its own inputs.
 
 One file, because a workflow file's unit is not a subject but a relationship to
-a pull request, and these seven share one: no PR causes them and no PR fixes
+a pull request, and these eight share one: no PR causes them and no PR fixes
 them. Jobs are gated on `github.event.schedule`, which is how one file carries
 two cadences; `workflow_dispatch` takes a `chore` input naming one of them, or
 `weekly` for the six that share the Monday tick.
 `scripts/__tests__/workflows.test.mjs` reads the file and asserts each job is on
-the cron it claims — and that the directory still holds exactly five entry
+the cron it claims — and that the directory still holds exactly six entry
 points plus `container-image.yml`.
 
 **Nothing on a clock publishes an image.** This file used to rebuild the newest

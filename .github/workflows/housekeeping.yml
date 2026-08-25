@@ -401,10 +401,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # `--exclude-pre-releases` is the same invariant D9 depends on
-          # elsewhere: a beta is Docker-only and never becomes a GitHub
-          # Release, so the newest non-prerelease Release *is* the newest thing
-          # an operator can be running.
+          # `--exclude-pre-releases` is what makes this read the newest
+          # *release*, and it became load-bearing rather than incidental.
+          #
+          # It used to be justified by "a beta is Docker-only and never becomes
+          # a GitHub Release". ADR 0036 reverses that: a beta cut publishes a
+          # real GitHub Release on a moving `vx.y.z-beta` tag, marked
+          # `prerelease: true` and never `latest` (0036 D9, D10, D11). So a
+          # prerelease Release *is* now something an operator can be running,
+          # and this flag is the only thing keeping the release detector from
+          # treating a beta as the newest shipped version and scanning it.
+          #
+          # The invariant this depends on is therefore no longer "no beta
+          # Releases exist" but "every beta Release is flagged prerelease" —
+          # which `beta-release.yml` asserts by reading both flags back off the
+          # API after creating them (0036 D11).
           ref="$(gh release list \
             --exclude-drafts --exclude-pre-releases \
             --limit 1 --json tagName --jq '.[0].tagName // empty')"

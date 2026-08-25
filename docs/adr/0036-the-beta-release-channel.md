@@ -214,9 +214,21 @@ release at step 4 if none was. Nothing self-corrects: the stamp cannot be walked
 0023 D5 lets `main` advance only by fast-forward, and `main` is already at the train tip.
 
 **The recovery is the one 0023 D40 already documents: re-dispatch the release.** The tag is
-pushed before the release runs (`promote.yml:385-387`), and `release.yml` carries a
-`workflow_dispatch` beside the `workflow_call` `promote.yml` uses (`release.yml:119`, `:133`)
-precisely so a release can be re-run without a new commit and without touching `main`. So a
+pushed before the release runs, and `release.yml`'s trigger is a `workflow_dispatch` precisely
+so a release can be re-run without a new commit and without touching `main` — dispatched **at
+the tag**, `gh workflow run release.yml --ref vx.y.z -f tag=vx.y.z`.
+
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342): there is no `workflow_call` any more.**
+> This paragraph described the `workflow_dispatch` as sitting *"beside the `workflow_call`
+> `promote.yml` uses"*. That was true when it was written and stopped being true six commits
+> later in the same branch: [#326](https://github.com/actana/control/issues/326) deleted the
+> `workflow_call` trigger outright, because a local `uses:` resolves the called file from the
+> *caller's* SHA — the default branch, never the train — and `promote.yml` now **dispatches**
+> `release.yml` at the version tag instead ([0023](0023-release-trains-and-digest-promotion.md)
+> D40 as amended). So the dispatch is not one entry point beside another; it is the only one,
+> and the line references that pointed at it are gone with the trigger. **The recovery this
+> clause names is unchanged and is now the only shape it could have taken.** So a
 promotion whose release leg is red is **not a cosmetic failure and must be finished rather
 than abandoned** — it is a public door serving a prerelease until someone re-runs it. That is
 also the neighbourhood of [#326](https://github.com/actana/control/issues/326), and it is
