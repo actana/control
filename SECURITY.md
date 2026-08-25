@@ -23,6 +23,14 @@ Only the **latest release** is supported. There are no backport branches — if
 you are on an older tag, the fix is to upgrade. The Panel upgrades by pulling a
 new image; a Core upgrades with `actana update` on its machine.
 
+A **beta** is not a release. The open train is installable — as the
+`beta-x.y.z` and `x.y.z-beta` images, and on metal from the train's own ref
+([ADR 0036](docs/adr/0036-the-beta-release-channel.md)) — and none of it is a
+supported version. Report what you find on one anyway: it is the cheapest place
+to fix a problem, and a beta report is a report against the next release. The
+answer to *"which version is fixed"* will be a release, and a machine on a beta
+gets there by moving to that release.
+
 ## What is in scope
 
 The things this project actually controls:
@@ -33,7 +41,11 @@ The things this project actually controls:
   short-code pairing that issues a client its certificate, and the credential
   that establishes the link.
 - The **Core** — the daemon, `actana setup`, the installer (`install.sh`),
-  and the release tarballs and their checksums.
+  and the published tarballs and their checksums. `install.sh` installs and
+  stops; `actana setup` is the separate command that activates a machine, and
+  both are in scope. The tarballs of a beta prerelease are the same artifact,
+  built by the same scripts and verified against the same `SHA256SUMS`, and are
+  in scope on the same terms.
 - The **published container image**, [`actana/panel`](https://hub.docker.com/r/actana/panel) on Docker Hub.
 
 ## What is out of scope

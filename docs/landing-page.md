@@ -62,8 +62,10 @@ every product claim.
      git clone https://github.com/actana/control && cd control
      docker compose -f deploy/docker-compose.yml up -d
 
-     # Tab 2 — Installer (turn this machine into a Core)
+     # Tab 2 — Installer (turn this machine into a Core; two commands,
+     #         because installing is not activating)
      curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+     actana setup
      ```
    - Screenshot: `panel-project-dark.png` / `panel-project-light.png`,
      theme-matched, `loading="eager"`, width-capped like the README's 900px.

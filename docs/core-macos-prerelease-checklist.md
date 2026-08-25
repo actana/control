@@ -35,8 +35,17 @@ The `tarball-macos` leg does the part a runner *can* do: it builds the
 launcher with no system Node. There has been no macOS setup e2e since
 [ADR 0016](adr/0016-the-0-1-0-shape.md) D35 deleted it — macOS runners bill at
 10×, and those legs plus the macOS `panel-e2e` were 72% of the CI bill — and
-that stays deleted. **Zero macOS in per-PR CI**; one leg, on a release, behind
-this list.
+that stays deleted. **Zero macOS in per-PR CI** still holds and is the half of
+D35 that mattered.
+
+What changed is how often the one leg runs. A **beta cut** builds and
+boot-smokes a `mac-arm64` tarball too, so the leg now runs on a request as well
+as on a release ([ADR 0036](adr/0036-the-beta-release-channel.md) D13). That is
+real recurring spend against the budget D35 cut, accepted deliberately: a beta
+without a macOS tarball is not installable the same way a release is on the one
+platform where the Core is an on-device product, and a cut is dispatched by a
+person rather than caused by a merge. **There is still no macOS install e2e on
+any trigger** — that is what this list is.
 
 Run this on **one Apple-silicon Mac**. Ten minutes. There is nothing to run on
 an Intel Mac: there is no `mac-x64` asset and there will not be one — an Intel
@@ -56,10 +65,20 @@ Same standing as this page now has, for the other half of the release.
 - No Actana Core installed yet (`launchctl print gui/$(id -u)/com.actana.core`
   should fail). If one is installed, this is an upgrade rehearsal instead —
   note that in the results.
-- A `mac-arm64` tarball **built from the tagged commit**. The waiting leg has
-  not run, so there is nothing to download yet: check the tag out on the Mac
-  and run `pnpm core:tarball`, which builds the host's own target and produces
-  the same asset the leg will.
+- A `mac-arm64` tarball **built from the commit you are approving**. The
+  release's own leg is waiting on you, so there is nothing on the release to
+  download: check the train tip out on the Mac and run `pnpm core:tarball`,
+  which builds the host's own target and produces the same asset the leg will.
+
+  **If this line has been cut as a beta, download that instead.** A beta cut
+  publishes a `mac-arm64` tarball on its prerelease, built and boot-smoked on an
+  Apple-silicon runner, with `SHA256SUMS` beside it. Its version string is
+  `x.y.z-beta`, so the asset and the extracted directory read `-beta` where a
+  release's read `x.y.z` — the bytes are otherwise built the same way. Use it
+  only when the cut names the commit you are approving: a beta is cut at
+  whatever train tip somebody asked for, which is not always the tip being
+  promoted. Verify the checksum before extracting, exactly as an operator
+  would.
 
 ---
 
@@ -161,11 +180,19 @@ either means the Mac Core in front of you is not fit to run — as does the
 Gatekeeper box in section 1. Any of those three is a **reject**.
 
 **Rejecting stops everything a release would publish**, not just the macOS
-tarball: no GitHub Release, no Linux tarballs, no `actana/panel` or
-`actana/core` image, no moved `:latest`. With the pause at the head of
-promotion (ADR 0023 D15) it also stops the fast-forward itself, so `main` does
-not advance either. Nothing needs rolling back, because nothing left the
-repository — the fix rides the train and is promoted next time.
+tarball: no GitHub Release for `x.y.z`, no release tarballs, no `actana/panel`
+or `actana/core` image at that version, no moved `:latest`. With the pause at
+the head of promotion (ADR 0023 D15) it also stops the fast-forward itself, so
+`main` does not advance either. Nothing needs rolling back, because nothing the
+release publishes left the repository — the fix rides the train and is promoted
+next time.
+
+A **beta cut** of this line is the one thing rejecting does not reach. If
+somebody dispatched one, its prerelease and its `mac-arm64` tarball are already
+published at `x.y.z-beta` and they stay ([ADR
+0036](adr/0036-the-beta-release-channel.md) D23). That costs this gate nothing:
+a prerelease is never `/releases/latest`, so no operator reaches it by typing
+nothing, and the version you are refusing to ship still has not shipped.
 
 Approving spends the runner minutes, then releases the images and the four
 assets in one go. Nothing else is waiting on you afterwards.

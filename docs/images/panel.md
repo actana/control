@@ -64,9 +64,12 @@ The Panel runs nothing itself — it is a connection broker. The work happens on
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+actana setup
 ```
 
-See [INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md). The
+Two commands, because installing is not activating: the first places the Core
+bundle and the `actana` CLI, the second turns the machine into a Core. See
+[INSTALL.md](https://github.com/actana/control/blob/main/INSTALL.md). The
 `actana/core` image is the other supported way to run one, and the reference
 compose above brings both up together.
 
