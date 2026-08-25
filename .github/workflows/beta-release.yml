@@ -201,6 +201,39 @@ name: Beta release
 # this file is idempotent: the tag is force-moved, the assets are clobbered,
 # and a retag re-points a name that is already a name.
 #
+# **The two retags are not atomic with each other, and that state is named
+# rather than implied.** `core-image` and `panel-image` are independent
+# `promote` calls with no mutual gate, so one can fail where the other
+# succeeded — most plausibly on D16's or ADR 0037 D4's assertion, whose own
+# *Consequences* predict the trigger: *"the first promotion of a train whose
+# images predate this refuses."* The outcome is `core:x.y.z-beta` created and
+# `panel:x.y.z-beta` absent, beside a Release that is already published, with
+# the Core tag unwithdrawable under ADR 0023 D45. The *"they run last"*
+# argument above is about publish-versus-retag ordering and says nothing about
+# this split. Re-dispatching converges — the retag is idempotent — but only
+# while the train tip has not moved, which is the same caveat the paragraph
+# above carries. Making the pair atomic would need a barrier that does not
+# exist in `container-image.yml` and is not #319's to build.
+#
+# ── What #319 asks for and this file does not do (deferred to #315) ──────────
+#
+# #319's last criterion is *"a second cut re-points the tag, and says in the
+# log which digest it was moved off."* The first half is met: the tag moves,
+# and `container-image.yml` prints the source digest and inspects the result.
+# **The second half is not, and it is deferred rather than met.** Nothing on
+# this path reads `$IMAGE:x.y.z-beta`'s *existing* digest before `docker buildx
+# imagetools create` overwrites it: the tag-move step prints a git commit and
+# not an image digest, `build` prints the digest being moved **onto**, and the
+# `imagetools inspect` runs **after** the create. So on a second cut — the case
+# the criterion is about — the log does not say what was displaced.
+#
+# Meeting it properly needs a read in `container-image.yml`'s promote path,
+# before the create, and #319 puts that file out of scope in as many words
+# (*"that is a finding for #315, not a patch here"*). This file cannot do it
+# from the calling side: it never touches the registry itself. So the gap is
+# recorded here, in the pull request, and on #315, rather than left for a
+# reader to assume met.
+#
 # **The counted-beta ban reaches this path, and it is not this file's ban to
 # write** (ADR 0036 C1, ADR 0037 D7, D8). Two halves:
 #
