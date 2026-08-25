@@ -1201,6 +1201,15 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
       ["panel-image", "panel"],
     ]) {
       expect(jobKey(source, job, "uses")).toBe("./.github/workflows/container-image.yml");
+      // Without this the reusable workflow sees no `DOCKERHUB_*` and the retag
+      // fails at its credential check — after `publish` has already moved the
+      // tag and published the Release. It fails closed, but it fails late,
+      // which is the whole of finding 1 below; assert it here so the two
+      // halves of "the credential is present and reaches the call" are both
+      // pinned rather than only the first.
+      expect(jobKey(source, job, "secrets"), `${job} does not pass its secrets on`).toBe(
+        "inherit",
+      );
       // `version` is #327's input and is governed exclusively by the binding
       // test below, which is the one that knows whether it exists yet. It is
       // held out here so that wiring it correctly the day #327 lands does not
@@ -1243,7 +1252,18 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   // does not appear" is both false and beside the point. One tag, no space, no
   // second entry.
   it("puts exactly one tag on each repository, and latest is never it (D10)", () => {
-    for (const job of ["core-image", "panel-image"]) {
+    // Every job that calls `container-image.yml`, not the two named ones. The
+    // claim this pins is file-wide — *`latest` is never in the tag list, on
+    // either repository* — and a loop over a hard-coded pair is not that
+    // claim: a third `uses: ./.github/workflows/container-image.yml` job with
+    // `tags: latest` would satisfy it while breaking the invariant. So the
+    // list is derived from the file.
+    const promoters = imageCallers(source);
+    expect(promoters, "no job calls container-image.yml").toEqual([
+      "core-image",
+      "panel-image",
+    ]);
+    for (const job of promoters) {
       const tags = withInputs(source, job).tags;
       expect(tags).toBe("${{ needs.resolve.outputs.beta_version }}");
       // `tags` is space-separated, so one whole expression and nothing beside
@@ -1330,7 +1350,19 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     expect(gate, "the gate no longer asserts the event it selected").toContain(
       'select(.headSha == $sha and .event == "push")',
     );
-    expect(gate).toContain("Not a push run");
+    // The refusal itself, by its **condition** and not by its error title.
+    // "Not a push run" is the `::error title=` of the very block this means to
+    // pin, so a `toContain` on the message is satisfied by the message —
+    // rewriting the test to `if [[ "$event" == "neverever" ]]` leaves the
+    // string in place, the block unreachable and the suite green. That is #339
+    // review r1's finding 3 in this same file, and the reason every #319
+    // assertion beside it reads structure through `withInputs` / `jobKey`.
+    expect(gate, "the non-push refusal can no longer fire").toContain(
+      'if [[ "$event" != "push" ]]; then',
+    );
+    // And the message stays too, because it is what an operator reads when it
+    // does fire — asserted after the condition, not instead of it.
+    expect(gate).toContain("::error title=Not a push run::");
     for (const job of ["core-image", "panel-image"]) {
       expect(jobKey(source, job, "needs"), `${job} does not depend on the gate`).toContain(
         "resolve",
