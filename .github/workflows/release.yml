@@ -259,6 +259,39 @@ jobs:
             echo "source_tag=$source_tag"
           } >> "$GITHUB_OUTPUT"
 
+      # The tag, held against the tree it names — before a tarball is built,
+      # before an image moves, before a version number is burned (ADR 0037 D3).
+      #
+      # `version` above is `${ref#v}` and nothing else. Every string this
+      # release publishes is derived from it: the docker tags, `RELEASE_VERSION`
+      # into the tarball's filename, its archive root and its
+      # `core-manifest.json`, and the npm versions of both packages. Not one of
+      # those derivations reads a manifest, so **`v9.9.9` pushed onto any commit
+      # reachable from `main` used to resolve, name its tarballs `9.9.9`, publish
+      # both images and only then fail** — at `scripts/lib/npm-packages.mjs`'s
+      # packed-manifest comparison, the single place in the repository that
+      # compared a version against a different representation of itself, and the
+      # last thing in the pipeline to run.
+      #
+      # That comparison keeps its place; it is now the second content check
+      # rather than the only one, and this is the first. A beta tag is checked
+      # by exactly the same call: the manifests carry the line, and
+      # `v0.4.1-beta` is the beta of the line `0.4.1` (ADR 0036 C1, D1).
+      #
+      # Read at `sha` rather than by checking the tag out: this job has the
+      # whole ref graph already, and moving the working tree to ask what a
+      # manifest says is the expensive way to ask.
+      - name: The tag agrees with the tree it names
+        env:
+          RELEASE_REF: ${{ steps.ref.outputs.ref }}
+          SHA: ${{ steps.ref.outputs.sha }}
+        run: |
+          set -euo pipefail
+          node scripts/assert-version-agreement.mjs \
+            --expected "$RELEASE_REF" \
+            --git-ref "$SHA" \
+            --source "the tag $RELEASE_REF"
+
       # The `latest` guard (D28) — the one that reaches end users. All three
       # surfaces come from here: `tags` below feeds the docker tag list,
       # `latest` feeds `gh release create --latest=` in `github-release`, and
@@ -641,6 +674,12 @@ jobs:
       # say less.
       ref: ${{ needs.resolve.outputs.sha }}
       stage: ${{ needs.resolve.outputs.version }}
+      # Promote mode asserts the beta digest's own version label equals this
+      # line before re-pointing anything at it; backport mode asserts the tree
+      # it is about to build carries it (ADR 0037 D4). `resolve` already
+      # asserted the tag against the tree, so this is the same fact checked on
+      # the bytes rather than on the ref.
+      version: ${{ needs.resolve.outputs.version }}
       mode: ${{ needs.resolve.outputs.image_mode }}
       source_tag: ${{ needs.resolve.outputs.source_tag }}
       tags: ${{ needs.resolve.outputs.tags }}
@@ -657,6 +696,12 @@ jobs:
       image: core
       ref: ${{ needs.resolve.outputs.sha }}
       stage: ${{ needs.resolve.outputs.version }}
+      # Promote mode asserts the beta digest's own version label equals this
+      # line before re-pointing anything at it; backport mode asserts the tree
+      # it is about to build carries it (ADR 0037 D4). `resolve` already
+      # asserted the tag against the tree, so this is the same fact checked on
+      # the bytes rather than on the ref.
+      version: ${{ needs.resolve.outputs.version }}
       mode: ${{ needs.resolve.outputs.image_mode }}
       source_tag: ${{ needs.resolve.outputs.source_tag }}
       tags: ${{ needs.resolve.outputs.tags }}
