@@ -1,17 +1,26 @@
 name: Beta release
 
 # A requested beta cut: the moving `vx.y.z-beta` tag, a prerelease GitHub
-# Release, three Core tarballs, their `SHA256SUMS`, and `install.sh` beside
-# them (ADR 0036 D10).
+# Release, three Core tarballs, their `SHA256SUMS`, the packed CLI asset with
+# its checksum, `install.sh` beside them, and the two `x.y.z-beta` image tags
+# retagged from the train's own digests (ADR 0036 D10).
 #
-#   resolve ─┬─ tarball (linux-x64, linux-arm64) ─┬─ installer-e2e ─┬─ publish
-#            │                                    │   (ubuntu x64)  │
-#            └─ tarball-macos (mac-arm64) ────────┴─────────────────┘
+#   resolve ─┬─ tarball (linux-x64, linux-arm64) ─┬─ installer-e2e ─┬─ publish ─┬─ core-image
+#            │                                    │   (ubuntu x64)  │            │
+#            └─ tarball-macos (mac-arm64) ────────┴─────────────────┘            └─ panel-image
 #
-# `publish` is the only job that writes anything: it moves the tag, creates or
-# updates the Release, replaces every asset, and then reads the Release back to
-# prove the prerelease flag survived. Everything above it is a gate, so a red
-# leg leaves `vx.y.z-beta` exactly where it was.
+# Two stages write, and they are ordered by what cannot be taken back.
+# `publish` packs and verifies every asset, moves the tag, creates or updates
+# the Release, and then reads the Release back to prove the prerelease flag
+# survived. `core-image` and `panel-image` run after it and re-point
+# `x.y.z-beta` at the digest the train already published — the one act in this
+# file that nothing can undo (ADR 0023 D45: Docker Hub has no tag garbage
+# collection and no undelete; ADR 0036 D23: nothing sweeps a beta image tag,
+# and the delete-capable credential is not widened to reach one).
+#
+# Everything above `publish` is a gate, so a red leg leaves `vx.y.z-beta`
+# exactly where it was — and because the retag is downstream of `publish`, a
+# red publish leaves the image tags where they were too.
 #
 # ── Why this is a file of its own (ADR 0036 D9) ──────────────────────────────
 #
@@ -131,6 +140,168 @@ name: Beta release
 # A second cut of the same beta is therefore a supported operation and not a
 # repair: the tag moves, every asset is replaced, and any asset the previous cut
 # left that this one does not produce is deleted before the new ones go up.
+#
+# ── The images are retagged, never rebuilt (#319, ADR 0036 D12, ADR 0023 D17)
+#
+# `core-image` and `panel-image` call `container-image.yml` in `promote` mode,
+# which is the machinery ADR 0023 D16 and D17 already built and which this file
+# calls rather than re-implements. **Nothing is built**: no `docker build`, no
+# Dockerfile, no Trivy leg, no per-arch scaffolding. Every build step in that
+# workflow is gated on `inputs.mode == 'build'`, and `resolve` there refuses a
+# `promote` without a `source_tag` and a `promote` with `push: false` before
+# anything is pulled.
+#
+# The bytes already exist. `ci.yml`'s `train-tags` → `*-image-train` jobs
+# published them as `beta-x.y.z` on the merge that made this tip, and the
+# greenness gate above refused to cut unless that **push** run was green —
+# which is precisely the run that publishes them. A `pull_request` run has the
+# same head sha and skips those jobs, and a draft resolves both image checks to
+# `pass` without building (ADR 0023 D33); that is why the gate filters the
+# event at the API *and* asserts it again in the `jq`, and it is why these jobs
+# hang off `resolve`. Retagging from a digest a `pull_request` run never
+# published is the hole that filter exists to close.
+#
+# What the two jobs do is give that digest a second name, `x.y.z-beta`, with
+# `docker buildx imagetools create` — one source, no rewritten config blob.
+# Standing between that and publishing bytes nobody cut is D16's assertion,
+# which `container-image.yml` makes on **every architecture the manifest
+# lists**, in the `build` job that `publish` there needs:
+#
+#     if [[ "$revision" != "$EXPECTED" ]]; then
+#       echo "::error title=Refusing to promote a digest built from another
+#       commit::…"
+#
+# It is the point, not a formality. `beta-x.y.z` moves on every train merge, so
+# between `resolve` reading the tip and these jobs retagging it somebody may
+# have merged, and D16 refuses that digest by name rather than publishing bytes
+# nobody cut.
+#
+# **`latest` is never in the tag list**, on either repository, and no `-dev`
+# handle is either — `promote` mode refuses `dev_tags` outright (ADR 0023 D36).
+# The tag list is exactly `x.y.z-beta`, one entry.
+#
+# **The two pinned check names are not reused.** `Panel image` / `Core image`
+# are required checks in the "Protect main" ruleset and are used by `ci.yml` on
+# pull requests and by `release.yml` on the release. These jobs are `Core image
+# (beta)` and `Panel image (beta)`, following the `Core image (train)`
+# convention `ci.yml` adopted for the same reason.
+#
+# **They run last, and that ordering is the irreversibility argument.** An
+# image tag cannot be taken back: ADR 0023 D45 records that Docker Hub has no
+# tag garbage collection and no undelete, D36 and D38 keep the delete-capable
+# credential permanently out of the repositories that hold `latest` — which is
+# exactly where these tags go — and ADR 0036 D23 settles the consequence: the
+# `x.y.z-beta` tags persist once the line promotes, nothing sweeps them, and
+# *"do not revisit by widening the list."* So this file puts the un-absorbable
+# act last, the way `release.yml` argues for its own final job. A retag that
+# ran before `publish` and then met a red `publish` would leave `x.y.z-beta` on
+# Docker Hub beside a Release that does not exist, permanently and with no
+# credential able to remove it. The reverse — a Release whose images are not
+# yet retagged — is repaired by re-dispatching the cut, because every step in
+# this file is idempotent: the tag is force-moved, the assets are clobbered,
+# and a retag re-points a name that is already a name.
+#
+# **The two retags are not atomic with each other, and that state is named
+# rather than implied.** `core-image` and `panel-image` are independent
+# `promote` calls with no mutual gate, so one can fail where the other
+# succeeded — most plausibly on D16's or ADR 0037 D4's assertion, whose own
+# *Consequences* predict the trigger: *"the first promotion of a train whose
+# images predate this refuses."* The outcome is `core:x.y.z-beta` created and
+# `panel:x.y.z-beta` absent, beside a Release that is already published, with
+# the Core tag unwithdrawable under ADR 0023 D45. The *"they run last"*
+# argument above is about publish-versus-retag ordering and says nothing about
+# this split. Re-dispatching converges — the retag is idempotent — but only
+# while the train tip has not moved, which is the same caveat the paragraph
+# above carries. Making the pair atomic would need a barrier that does not
+# exist in `container-image.yml` and is not #319's to build.
+#
+# ── What #319 asks for and this file does not do (deferred to #315) ──────────
+#
+# #319's last criterion is *"a second cut re-points the tag, and says in the
+# log which digest it was moved off."* The first half is met: the tag moves,
+# and `container-image.yml` prints the source digest and inspects the result.
+# **The second half is not, and it is deferred rather than met.** Nothing on
+# this path reads `$IMAGE:x.y.z-beta`'s *existing* digest before `docker buildx
+# imagetools create` overwrites it: the tag-move step prints a git commit and
+# not an image digest, `build` prints the digest being moved **onto**, and the
+# `imagetools inspect` runs **after** the create. So on a second cut — the case
+# the criterion is about — the log does not say what was displaced.
+#
+# Meeting it properly needs a read in `container-image.yml`'s promote path,
+# before the create, and #319 puts that file out of scope in as many words
+# (*"that is a finding for #315, not a patch here"*). This file cannot do it
+# from the calling side: it never touches the registry itself. So the gap is
+# recorded here, in the pull request, and on #315, rather than left for a
+# reader to assume met.
+#
+# **The counted-beta ban reaches this path, and it is not this file's ban to
+# write** (ADR 0036 C1, ADR 0037 D7, D8). Two halves:
+#
+#   1. `resolve` refuses anything but `x.y.z-beta` before a single job starts,
+#      and these jobs publish `needs.resolve.outputs.beta_version` verbatim —
+#      the same string the tag, the Release and every asset filename carry. A
+#      counter cannot reach the image tag without failing the cut outright.
+#   2. The digest's own `org.opencontainers.image.version` label, held to that
+#      string by `scripts/lib/version-agreement.mjs` — #327's module, reached
+#      here by passing `version: <beta_version>` to `container-image.yml` (ADR
+#      0037 D3, D4). Image mode is exactly where that ban had a hole: it
+#      short-circuits before `checkAgreement`, which was the only caller of
+#      `versionProblem`, and `lineOf("0.4.1-beta.1")` is `0.4.1` — which agrees
+#      with a correctly labelled digest, so the counted string published green.
+#      #327 moved the ban into `imageVersionProblem` itself *"which is what lets
+#      #319's beta retag inherit it"*, and this is the caller that inherits it.
+#
+# **The beta string is passed, not the line.** `--expected 0.4.1 --image-label
+# 0.4.1` exits zero for a digest tagged `0.4.1-beta.1`; `--expected 0.4.1-beta.1`
+# exits one and names the counted beta. Handing this the line would restore the
+# hole while looking like a version check, so `workflows.test.mjs` pins the
+# value rather than the presence — and it pins it conditionally, on whether
+# `container-image.yml` declares the input at all, because passing one a
+# reusable workflow does not declare is a hard failure. That binding is what
+# turned red the moment #327 merged under this branch, which is how the wiring
+# above came to be written rather than remembered.
+#
+# ── The CLI is a Release asset, never an npm version (#320, D15, D16) ────────
+#
+# `publish` packs `@actana/cli` with `scripts/rehearse-npm-publish.mjs --beta`
+# and attaches `actana-cli-x.y.z-beta.tgz` to this Release with its checksum
+# beside it. **Nothing is published to registry.npmjs.org, under any dist-tag**
+# (D15): a beta string carries no counter (C1) and npm burns a version on its
+# first publish, so a fixed string could go out once per train and the second
+# cut of the same beta would 403 after the tag had already moved.
+#
+# `--beta` takes the **line** (`0.4.1`), not the beta string: the `-beta` is
+# appended by the script, so there is no parameter a counter could arrive
+# through. The script also holds that line against the one
+# `packages/cli/package.json` carries, so a cut from the wrong branch fails
+# there rather than attaching the right filename to the wrong program. The
+# manifest edits it makes — the version, and the dropped `@actana/sdk`, which
+# is inlined into the bundle — are restored from the original bytes in a
+# `finally` before the step returns. Nothing is committed: the train's six
+# manifests carry `x.y.z` and `ci.yml`'s `Train rules` asserts them on every
+# pull request into the train (ADR 0023 D3).
+#
+# `--install-check` runs a real `npm i -g` into a fresh prefix under an empty
+# HOME and asks the installed `actana` its version. It is #320's acceptance
+# criterion, and it is run here as well as in `pnpm test` so the assertion is
+# made against the bytes that are actually attached. The staging step refuses
+# to continue unless the script reported `install=ok`, which it emits only when
+# the flag was really passed — a flag dropped from the invocation would
+# otherwise leave the check unmade and the run green.
+#
+# **The checksum is its own file, not a fourth `SHA256SUMS` row.** ADR 0036 D10
+# puts `SHA256SUMS` over *exactly* the three Core tarballs, and this file's
+# `--expect` is derived from `CORE_TARGETS` in `workflows.test.mjs` rather than
+# written as a literal — so a fourth row would contradict the record and break
+# the derivation at once. #320 asks for *"a row in `SHA256SUMS` or its own
+# file"*; this is its own file, `actana-cli-x.y.z-beta.tgz.sha256`, in
+# `sha256sum`'s two-space format, verified here the way an operator verifies
+# it, and named in `EXPECTED` so the prune step does not delete it on the next
+# cut.
+#
+# There is no provenance attestation on this path and the printed instructions
+# say so in as many words (D17). An attestation is a registry artifact and an
+# asset has none; the integrity story for a beta is the published checksums.
 #
 # ── The prerelease flag is read back, not trusted (ADR 0023 D9, ADR 0036 D11)
 #
@@ -395,6 +566,42 @@ jobs:
           fi
           echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. The beta tag is created under \`refs/tags/v*\`, whose ruleset restricts creation to bypass actors, and the App is the bypass actor (ADR 0023 D39, docs/REPO_SETUP.md §3). Checked here so a missing secret costs one dispatch rather than three tarball builds and a macOS runner."
           exit 1
+
+      # The same argument as the step above, applied to the other half of what
+      # this cut writes. `core-image` and `panel-image` push to Docker Hub, and
+      # `container-image.yml`'s own `resolve` refuses a missing credential —
+      # *"decided here, before anything is built"* — but that job does not
+      # start until `publish` has force-moved `vx.y.z-beta`, created the
+      # prerelease and uploaded all seven assets. Its refusal would arrive
+      # after the irreversible half of this cut, leaving a published beta
+      # Release advertising `x.y.z-beta` image tags that do not exist.
+      #
+      # That is the half-state the retag's placement after `publish` is meant
+      # to prevent, arriving from the other side — and the repair the header
+      # names, re-dispatching because every write here is idempotent, only
+      # converges while the train tip has not moved.
+      #
+      # `promote.yml:626-641` (*The credentials release.yml refuses without*)
+      # is the in-repo precedent and gives the reason in the same words: the
+      # downstream refusal is real, it is just too late. This is a copy rather
+      # than a shared script for the same reason it is there — the point is to
+      # fail in `resolve`, fifteen seconds in, instead of after the Release
+      # exists. `container-image.yml` still checks them itself; a beta cut is
+      # not the only way in.
+      - name: The Docker Hub credentials the retag refuses without
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$DOCKERHUB_USERNAME" ]] || missing+=(DOCKERHUB_USERNAME)
+          [[ -n "$DOCKERHUB_TOKEN" ]] || missing+=(DOCKERHUB_TOKEN)
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "::error title=A Docker Hub credential is missing::${missing[*]} not set. \`core-image\` and \`panel-image\` retag \`beta-x.y.z\` as \`x.y.z-beta\` on Docker Hub, which is the only registry images are published to (ADR 0018), and \`container-image.yml\` refuses on exactly these in its own \`resolve\` — but that job does not start until this cut has moved \`vx.y.z-beta\`, published the prerelease and uploaded every asset, so its refusal would arrive after the irreversible half. Nothing has been published. One personal access token (Read & Write) serves the push; see docs/REPO_SETUP.md section 2."
+            exit 1
+          fi
+          echo "✅ Docker Hub credentials are present. container-image.yml checks them again in its own resolve."
 
   # The two Linux legs, split from the mac leg for the reason `release.yml`
   # splits them: the mac runner bills at 10×, and keeping it out of this matrix
@@ -677,6 +884,19 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
+      # The CLI asset is packed in this job (#320, D16), and `pnpm pack` runs
+      # `packages/cli`'s `prepack` — `node build.mjs` — so the workspace has to
+      # be installed. This is the same pair `release.yml`'s `npm` job carries
+      # for the same script, and it is the only reason this job needs pnpm at
+      # all: nothing else here builds anything.
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: core-tarball-*
@@ -739,6 +959,82 @@ jobs:
           done < <(find core-tarballs -maxdepth 1 -type f -name '*.tar.gz')
           echo "✅ three tarballs, all at $BETA_VERSION, no counter on any of them"
 
+      # ── The CLI asset (#320, ADR 0036 D16) ─────────────────────────────────
+      #
+      # The step #337 wrote out as YAML in its own pull request comment,
+      # because #318 owned this file at the time and that ticket owned none of
+      # it. Landed here, adjusted to the file as it now exists: `resolve`'s
+      # output is `version` rather than `line`, the Release ref is this job's
+      # `$TAG` rather than one re-derived from the pack's output, and the
+      # upload folds into `EXPECTED` — the single list the create, the clobber
+      # and the prune all read — instead of being a second `gh release upload`.
+      # That last one is not a preference: an asset attached outside `EXPECTED`
+      # is an asset the prune step deletes on the next cut.
+      #
+      # It runs **before the tag moves**, which is this job's own ordering
+      # principle rather than a change of mind about #337's: the assets are
+      # assembled and verified first, so a failed pack, a failed
+      # `--install-check` or a mis-named artifact leaves `vx.y.z-beta` naming
+      # the commit it named before the run started.
+      #
+      # `--out-dir artifacts/beta`, not `core-tarballs`: the two steps above
+      # sweep `*.tar.gz` there and are deliberately strict. A `.tgz` slips past
+      # both harmlessly, but staging the CLI asset into that directory before
+      # them is the debugging round this file's `EXPECTED` comment warned #320
+      # about, and there is no reason to walk up to the line.
+      #
+      # No `contents: write` is added for it — this job already has it for the
+      # Release — and no `id-token` at all: there is no provenance attestation
+      # on this path (D17).
+      - id: beta-cli
+        name: Pack the CLI as a beta Release asset
+        env:
+          # The LINE (`0.4.1`), not the beta string. The script appends
+          # `-beta`, which is why there is no parameter a counter could arrive
+          # through, and it holds this value against the line
+          # `packages/cli/package.json` carries before it packs anything.
+          BETA_LINE: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/rehearse-npm-publish.mjs \
+            --beta "$BETA_LINE" \
+            --out-dir artifacts/beta \
+            --install-check | tee -a "$GITHUB_OUTPUT"
+
+      # C1 and #320's acceptance criterion, both asserted against what the pack
+      # actually produced rather than against the variable that asked for it.
+      #
+      # `install=ok` is emitted only when `--install-check` really ran, so this
+      # is the guard on the flag itself: dropped from the invocation above, the
+      # pack still succeeds, the asset is still attached, and the one assertion
+      # #320 calls the whole ticket would simply not have been made.
+      #
+      # The checksum is written here as its own file rather than as a fourth
+      # `SHA256SUMS` row (ADR 0036 D10 — that file is over exactly the three
+      # Core tarballs), in `sha256sum`'s two-space format, and verified the way
+      # an operator verifies it.
+      - name: Stage the CLI asset and its checksum beside the Core assets
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+          ASSET: ${{ steps.beta-cli.outputs.asset }}
+          TARBALL: ${{ steps.beta-cli.outputs.tarballs }}
+          SHA256: ${{ steps.beta-cli.outputs.sha256 }}
+          INSTALL: ${{ steps.beta-cli.outputs.install }}
+        run: |
+          set -euo pipefail
+          if [[ "$INSTALL" != "ok" ]]; then
+            echo "::error title=The CLI asset was packed but never installed::scripts/rehearse-npm-publish.mjs reported install='$INSTALL'. It emits \`install=ok\` only when \`--install-check\` actually ran the \`npm i -g\` into a fresh prefix and asked the installed \`actana\` its version — #320's acceptance criterion, made here against the bytes that are attached rather than against a copy of them. Restore \`--install-check\` on the pack step."
+            exit 1
+          fi
+          if [[ "$ASSET" != "actana-cli-$BETA_VERSION.tgz" ]]; then
+            echo "::error title=The CLI asset is misnamed::the pack produced '$ASSET', not \`actana-cli-$BETA_VERSION.tgz\`. The asset filename is the URL an operator pastes into \`npm i -g\`, and it carries the bare beta version with no counter (ADR 0036 C1)."
+            exit 1
+          fi
+          cp "$TARBALL" "core-tarballs/$ASSET"
+          printf '%s  %s\n' "$SHA256" "$ASSET" > "core-tarballs/$ASSET.sha256"
+          ( cd core-tarballs && sha256sum -c "$ASSET.sha256" )
+          echo "✅ $ASSET staged at $BETA_VERSION, installed for real, checksum verified"
+
       # ── The tag move (ADR 0036 D7) ─────────────────────────────────────────
       #
       # Deliberately force-updated, and the previous sha is named in the log
@@ -798,18 +1094,20 @@ jobs:
       # beta is a supported operation, not a repair, and must leave nothing of
       # the previous one behind (ADR 0036 D7).
       #
-      # **`EXPECTED` is the asset contract of this file, and it is the line #320
-      # extends.** That ticket attaches the packed CLI tarball to this same
-      # Release (D16); adding the upload without adding the name here would have
-      # the prune step delete it on the next cut.
+      # **`EXPECTED` is the asset contract of this file**, read by the create,
+      # by the clobbering upload and by the prune, so a name that is not here
+      # is a name the next cut deletes. It is seven now: the three Core
+      # tarballs, `SHA256SUMS`, `install.sh`, and #320's packed CLI tarball
+      # with its own `.sha256` beside it (D16, and D10 for why the CLI's
+      # checksum is a file rather than a fourth `SHA256SUMS` row).
       #
-      # One ordering caveat for that ticket, so it is not found by debugging:
-      # `compose-core-shasums.mjs --expect 3` and the filename guard above both
-      # sweep `*.tar.gz` in `core-tarballs/`, and both are deliberately strict.
-      # `pnpm pack` produces a `.tgz`, which slips past both harmlessly — but a
-      # CLI asset staged into that directory under a `*.tar.gz` name before
-      # those steps would break `--expect 3` and trip the foreign-asset guard.
-      # Stage it after them, or give it a name that is not `*.tar.gz`.
+      # The ordering caveat this comment used to leave for #320 has been taken
+      # rather than left: `compose-core-shasums.mjs --expect 3` and the
+      # filename guard above both sweep `*.tar.gz` in `core-tarballs/` and both
+      # are deliberately strict, so the CLI asset is packed into
+      # `artifacts/beta` and staged in after them. A `.tgz` would have slipped
+      # past both harmlessly; staging it in before them under a `*.tar.gz` name
+      # would break `--expect 3` and trip the foreign-asset guard.
       #
       # `install.sh` is attached as a **copy, not a door** (D5). The canonical
       # installer stays on `raw.githubusercontent.com/actana/control/main/install.sh`
@@ -851,11 +1149,13 @@ jobs:
                     "actana-core-$BETA_VERSION-linux-arm64.tar.gz"
                     "actana-core-$BETA_VERSION-mac-arm64.tar.gz"
                     "SHA256SUMS"
+                    "actana-cli-$BETA_VERSION.tgz"
+                    "actana-cli-$BETA_VERSION.tgz.sha256"
                     "install.sh")
           files=()
           for name in "${EXPECTED[@]}"; do
             if [[ ! -f "core-tarballs/$name" ]]; then
-              echo "::error title=An expected asset is missing::core-tarballs/$name was not produced by this run. The beta asset set is three Core tarballs, SHA256SUMS and install.sh (ADR 0036 D10)."
+              echo "::error title=An expected asset is missing::core-tarballs/$name was not produced by this run. The beta asset set is three Core tarballs, SHA256SUMS, the packed CLI tarball with its .sha256, and install.sh (ADR 0036 D10, D16)."
               exit 1
             fi
             files+=("core-tarballs/$name")
@@ -1007,3 +1307,133 @@ jobs:
             echo ""
             echo "Nothing was published to npm — a beta is invisible to registry.npmjs.org (ADR 0036 D15)."
           } >> "$GITHUB_STEP_SUMMARY"
+
+      # #320's last criterion: the instructions in the summary are the exact
+      # command an operator runs, built from the pack's own outputs and this
+      # job's `$TAG` rather than re-derived — so the string a reader copies and
+      # the string on the Release cannot drift.
+      #
+      # `npm i -g <asset URL>`, and nothing about an attestation, because there
+      # is not one on this path (D17). Integrity is the checksum row, which is
+      # named here and shipped beside the asset.
+      - name: Print the CLI install command
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          ASSET: ${{ steps.beta-cli.outputs.asset }}
+          SHA256: ${{ steps.beta-cli.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/$REPO/releases/download/$TAG/$ASSET"
+          {
+            echo "### Install the CLI half of this beta"
+            echo ""
+            echo "For a machine that drives Cores it does not host — no daemon, no Core on the box."
+            echo ""
+            echo '```'
+            echo "npm i -g $url"
+            echo '```'
+            echo ""
+            echo "Verify first, if you want to: \`$SHA256  $ASSET\` — the same row is in \`$ASSET.sha256\`, attached beside it."
+            echo ""
+            echo "_No npm registry version is published for a beta, and an asset carries no provenance attestation (ADR 0036 D15, D17)._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── The two beta image tags (#319) ──────────────────────────────────────────
+  #
+  # The argument for these two jobs — retag never rebuild, D16's assertion on
+  # every architecture, why `latest` cannot appear, why the check names carry
+  # `(beta)`, why they run after `publish`, and how the counted-beta ban
+  # reaches them — is at the head of this file under *"The images are
+  # retagged, never rebuilt"*. What is left here is the wiring.
+  #
+  # Both are `uses:` calls into the same reusable workflow `ci.yml` and
+  # `release.yml` call, in the mode that exists for exactly this
+  # (`container-image.yml`'s `promote`, ADR 0023 D16, D17). Nothing is
+  # re-implemented, and nothing about D16's refusal is weakened: this file
+  # cannot weaken it, because it does not contain it.
+  #
+  # `needs:` names every gate rather than only `publish`, which subsumes them.
+  # That is deliberate: #319's last acceptance criterion is about the tarball
+  # and installer-e2e legs specifically, and a later edit that took `publish`
+  # off this list must not silently take those with it.
+  #
+  # No `matrix:` override. The default is `amd64` + `arm64`, which is what the
+  # train publishes and therefore what the manifest lists — and the revision
+  # assertion runs once per row, so narrowing the matrix here would narrow the
+  # assertion rather than the work (there is no work: nothing is built).
+  #
+  # No `dev_tags:`. A promotion publishes to the release repository only, and
+  # `promote` mode refuses one outright (ADR 0023 D36).
+  #
+  # `push_required` is left at its default `true`. A registry outage must fail
+  # a cut: the alternative is a green run whose Release advertises an image tag
+  # that does not exist.
+  core-image:
+    name: Core image (beta)
+    needs: [resolve, tarball, tarball-macos, installer-e2e, publish]
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+    secrets: inherit
+    with:
+      image: core
+      # The commit, not the tag. This is the value D16 compares the digest's
+      # `org.opencontainers.image.revision` label against, and it is the same
+      # sha `publish` just moved `vx.y.z-beta` onto — so the image the beta
+      # advertises and the bytes the beta names are one commit by assertion
+      # rather than by coincidence.
+      ref: ${{ needs.resolve.outputs.sha }}
+      # Unused in this mode — nothing is built, so there are no per-arch
+      # scaffolding tags to discriminate (ADR 0023 D12) — but the input is
+      # required, and the honest value is the version this cut publishes.
+      stage: ${{ needs.resolve.outputs.beta_version }}
+      # ADR 0037 D4, and the half of C1's ban this file does not own. The
+      # **beta string**, not the line: `container-image.yml` holds the
+      # digest's `org.opencontainers.image.version` label to `lineOf` this,
+      # and refuses a counted beta by name before the comparison — which is
+      # the check that reaches image mode at all, because image mode
+      # short-circuits before `checkAgreement` and `lineOf("0.4.1-beta.1")`
+      # is `0.4.1`, agreeing with a correctly labelled digest. Passing the
+      # line here would hand it the string that already agrees and lose the
+      # ban (ADR 0037 D7, D8).
+      version: ${{ needs.resolve.outputs.beta_version }}
+      mode: promote
+      # `beta-0.4.1`, the moving handle `ci.yml`'s train jobs publish on every
+      # merge. It moves on a different clock from the tag below: this one per
+      # train merge, `0.4.1-beta` per cut (ADR 0036 D7). Lagging between cuts
+      # is what makes a cut a cut, and D16 is what stops the lag becoming a
+      # publish of bytes this run never gated.
+      source_tag: beta-${{ needs.resolve.outputs.version }}
+      # Exactly one tag, and `latest` is not in it — on either repository, ever
+      # (ADR 0036 D10). `beta_version` is the string `resolve` already refused
+      # to let carry a counter, and it is the same string the git tag, the
+      # Release and every asset filename carry (C1).
+      tags: ${{ needs.resolve.outputs.beta_version }}
+      push: true
+
+  panel-image:
+    name: Panel image (beta)
+    needs: [resolve, tarball, tarball-macos, installer-e2e, publish]
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+    secrets: inherit
+    with:
+      image: panel
+      ref: ${{ needs.resolve.outputs.sha }}
+      stage: ${{ needs.resolve.outputs.beta_version }}
+      # ADR 0037 D4, and the half of C1's ban this file does not own. The
+      # **beta string**, not the line: `container-image.yml` holds the
+      # digest's `org.opencontainers.image.version` label to `lineOf` this,
+      # and refuses a counted beta by name before the comparison — which is
+      # the check that reaches image mode at all, because image mode
+      # short-circuits before `checkAgreement` and `lineOf("0.4.1-beta.1")`
+      # is `0.4.1`, agreeing with a correctly labelled digest. Passing the
+      # line here would hand it the string that already agrees and lose the
+      # ban (ADR 0037 D7, D8).
+      version: ${{ needs.resolve.outputs.beta_version }}
+      mode: promote
+      source_tag: beta-${{ needs.resolve.outputs.version }}
+      tags: ${{ needs.resolve.outputs.beta_version }}
+      push: true

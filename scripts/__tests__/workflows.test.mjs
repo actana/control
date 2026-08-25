@@ -136,8 +136,13 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
     expect(source).not.toMatch(/^ {2}(?:push|pull_request|schedule|workflow_dispatch):/m);
   });
 
+  // `beta-release.yml` joined the list with #319. It calls the same reusable
+  // workflow in the one mode that builds nothing (`promote`, ADR 0023 D17), so
+  // "every path that touches an image" is the honest reading of this test now:
+  // three callers, one implementation, and no second place for D16's refusal
+  // to be weakened.
   it("calls the reusable build from every path that builds an image", () => {
-    for (const file of ["ci.yml", "release.yml"]) {
+    for (const file of ["ci.yml", "release.yml", "beta-release.yml"]) {
       expect(read(file)).toContain("uses: ./.github/workflows/container-image.yml");
     }
   });
@@ -839,6 +844,77 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     return call.join("\n");
   };
 
+  /**
+   * The `with:` mapping a reusable-workflow job hands `container-image.yml`,
+   * as `key -> value`, read off the comment-stripped job the way the runner
+   * reads it.
+   *
+   * Same reason as `invocation` above: the inputs decide what is published,
+   * and a `toContain` over the job's text is satisfied by a comment or an
+   * error message naming the same string. This returns the mapping, so an
+   * assertion can say `tags` **is** one thing rather than that the word
+   * appears somewhere in the job.
+   */
+  const withInputs = (text, job) => {
+    const block = code(jobBlock(text, job));
+    const lines = block.split("\n");
+    const start = lines.findIndex((line) => line === "    with:");
+    expect(start, `no with: block in ${job}`).toBeGreaterThan(-1);
+    const inputs = {};
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim() === "") continue;
+      if (!/^ {6}\S/.test(line)) break;
+      const pair = /^ {6}([a-z_]+): (.+)$/.exec(line);
+      expect(pair, `unparsed input line in ${job}: ${line}`).not.toBeNull();
+      inputs[pair[1]] = pair[2].trim();
+    }
+    return inputs;
+  };
+
+  /** A job's own scalar key (`name`, `uses`, `secrets`) at the job's indent. */
+  const jobKey = (text, job, key) => {
+    const match = new RegExp(`^ {4}${key}: (.+)$`, "m").exec(code(jobBlock(text, job)));
+    return match === null ? undefined : match[1].trim();
+  };
+
+  /**
+   * A named step's `run:` script, as the shell receives it — comment lines
+   * dropped, blank lines dropped, every line trimmed.
+   *
+   * Step-scoped on purpose. `resolve` runs four `exit 1`s across three steps,
+   * so a `toContain("exit 1")` over the whole job is satisfied by the
+   * greenness gate's refusal while the credential preflight has none — the
+   * same class of assertion this file has now been reviewed for twice.
+   */
+  const stepRun = (text, job, stepName) => {
+    const lines = code(jobBlock(text, job)).split("\n");
+    const start = lines.findIndex((line) => line === `      - name: ${stepName}`);
+    expect(start, `no \`${stepName}\` step in ${job}`).toBeGreaterThan(-1);
+    const runAt = lines.findIndex((line, i) => i > start && line === "        run: |");
+    expect(runAt, `\`${stepName}\` has no run: block`).toBeGreaterThan(start);
+    const script = [];
+    for (const line of lines.slice(runAt + 1)) {
+      if (line.trim() === "") continue;
+      if (!/^ {10}/.test(line)) break;
+      script.push(line.trim());
+    }
+    return script;
+  };
+
+  /**
+   * Every job in the file whose `uses:` is `container-image.yml`, in file
+   * order — the jobs that can put a tag on Docker Hub.
+   *
+   * Derived rather than listed, because the invariants below are stated about
+   * the file and not about two names: a third promoting job added later must
+   * fall under them automatically, or the assertion is narrower than the claim
+   * it is written to defend.
+   */
+  const imageCallers = (text) =>
+    [...code(text).matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)]
+      .map((match) => match[1])
+      .filter((job) => jobKey(text, job, "uses") === "./.github/workflows/container-image.yml");
+
   // C3. A beta cut is *requested*, the way a promotion is (ADR 0023 D14),
   // because "published by accident" is the failure worth designing out. A
   // `push:` on `beta/**` here would be one line and would turn every merge into
@@ -894,12 +970,24 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     const job = jobBlock(source, "resolve");
     expect(job).toContain("RUN_REF: ${{ github.ref_name }}");
     expect(code(job)).toContain('if [[ "$RUN_REF" != "$train" ]]; then');
-    // Dispatching nothing is what makes that refusal sufficient: this file runs
-    // the workflow it was dispatched as and calls no other, so there is no
-    // second copy for a caller's SHA to resolve.
-    expect(body, "a local uses: resolves from the caller's SHA (#326)").not.toMatch(
-      /uses: \.\/\.github\/workflows\//,
-    );
+    // Dispatching nothing is what makes that refusal sufficient, and #319's two
+    // retag jobs do not weaken it. This assertion used to read "no local
+    // `uses:` at all", which was true of a file that called nothing and is the
+    // wrong rule now: a reusable workflow named by **path** resolves from the
+    // *same commit* as its caller, so once the refusal above has held
+    // `github.ref_name` to the train, `core-image` and `panel-image` run the
+    // train's own copy of `container-image.yml`. That is the inverse of #326's
+    // trap rather than an instance of it.
+    //
+    // What resolves from somewhere else is a `owner/repo/....yml@ref` call —
+    // pinned to a ref this run did not choose — and a *dispatch*. The first is
+    // banned here; the second is covered by the loop below, which holds every
+    // `gh workflow run` in the file to its `--ref`.
+    for (const [, target] of body.matchAll(/uses: (\S*\.github\/workflows\/\S+)/g)) {
+      expect(target, "a reusable call that is not a local path (#326)").toMatch(
+        /^\.\/\.github\/workflows\/[a-z-]+\.yml$/,
+      );
+    }
     // The re-dispatch this file prints when it refuses is the one an operator
     // will paste, so it carries the `--ref` for the same reason #326 requires it
     // on every `gh workflow run release.yml` in the repository: a dispatch
@@ -1115,6 +1203,420 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   // the sentence is pinned here, in the file whose existence depends on it.
   it("leaves release.yml's refusal of a tag on a train in place (D9)", () => {
     expect(code(read("release.yml"))).toContain("Tag is on neither main nor a release line");
+  });
+
+  // ── #319: the beta image tags ───────────────────────────────────────────────
+  //
+  // Every assertion below reads the `with:` mapping or a job's own keys rather
+  // than searching the file for a string. That is the shape the review of #318
+  // asked for after a flag count over a whole job was satisfied by two error
+  // messages quoting the flag: this file's header names `promote`, `latest`,
+  // `beta-x.y.z` and `x.y.z-beta` dozens of times in prose, so a `toContain`
+  // here would pass against a file that publishes nothing at all.
+
+  // #319's first and second criteria. The mode that retags is
+  // `container-image.yml`'s and this file calls it — the machinery is not
+  // re-implemented, so there is no second place for D16's refusal to be
+  // weakened. `mode: promote` refuses `push: false` and a missing `source_tag`
+  // in its own `resolve`, so a malformed call here fails before a pull.
+  it("retags both images from the train's digest, and builds nothing (#319, D12)", () => {
+    for (const [job, image] of [
+      ["core-image", "core"],
+      ["panel-image", "panel"],
+    ]) {
+      expect(jobKey(source, job, "uses")).toBe("./.github/workflows/container-image.yml");
+      // Without this the reusable workflow sees no `DOCKERHUB_*` and the retag
+      // fails at its credential check — after `publish` has already moved the
+      // tag and published the Release. It fails closed, but it fails late,
+      // which is the whole of finding 1 below; assert it here so the two
+      // halves of "the credential is present and reaches the call" are both
+      // pinned rather than only the first.
+      expect(jobKey(source, job, "secrets"), `${job} does not pass its secrets on`).toBe(
+        "inherit",
+      );
+      // `version` is #327's input and is governed exclusively by the binding
+      // test below, which is the one that knows whether it exists yet. It is
+      // held out here so that wiring it correctly the day #327 lands does not
+      // make this test red for the right change.
+      const { version: _version, ...inputs } = withInputs(source, job);
+      expect(inputs).toEqual({
+        image,
+        ref: "${{ needs.resolve.outputs.sha }}",
+        stage: "${{ needs.resolve.outputs.beta_version }}",
+        mode: "promote",
+        // `beta-0.4.1` — the train's moving handle, from the line, not from
+        // the beta string. `beta-${{ … beta_version }}` would be
+        // `beta-0.4.1-beta`, a tag nothing publishes.
+        source_tag: "beta-${{ needs.resolve.outputs.version }}",
+        tags: "${{ needs.resolve.outputs.beta_version }}",
+        push: "true",
+      });
+      // The exhaustive `toEqual` above is what pins the absences, and each one
+      // is a real failure rather than tidiness: `dev_tags` is refused outright
+      // by promote mode (ADR 0023 D36), and a narrowed `matrix` would narrow
+      // D16's per-architecture assertion rather than any work — a promotion
+      // builds nothing, so there is nothing to save.
+      expect(inputs.dev_tags).toBeUndefined();
+      expect(inputs.matrix).toBeUndefined();
+      // `push_required` left at its default `true`: a registry outage must
+      // fail a cut rather than leave a Release advertising a tag that is not
+      // there.
+      expect(inputs.push_required).toBeUndefined();
+    }
+    // Nothing in this file builds an image or scans one. The retag is a
+    // second name for bytes the train already gated (#319's second criterion).
+    expect(body).not.toContain("docker build");
+    expect(body).not.toContain("Dockerfile");
+    expect(body).not.toMatch(/trivy/i);
+  });
+
+  // #319's fourth criterion, on the surface it is about. Asserted as the whole
+  // value of `tags` rather than as the absence of the word: this file says
+  // `--latest=false` and `/releases/latest` in the Release steps, so "latest
+  // does not appear" is both false and beside the point. One tag, no space, no
+  // second entry.
+  it("puts exactly one tag on each repository, and latest is never it (D10)", () => {
+    // Every job that calls `container-image.yml`, not the two named ones. The
+    // claim this pins is file-wide — *`latest` is never in the tag list, on
+    // either repository* — and a loop over a hard-coded pair is not that
+    // claim: a third `uses: ./.github/workflows/container-image.yml` job with
+    // `tags: latest` would satisfy it while breaking the invariant. So the
+    // list is derived from the file.
+    const promoters = imageCallers(source);
+    expect(promoters, "no job calls container-image.yml").toEqual([
+      "core-image",
+      "panel-image",
+    ]);
+    for (const job of promoters) {
+      const tags = withInputs(source, job).tags;
+      expect(tags).toBe("${{ needs.resolve.outputs.beta_version }}");
+      // `tags` is space-separated, so one whole expression and nothing beside
+      // it is what "exactly one tag" means at this level. A second entry —
+      // `latest`, or a literal — would sit outside the braces.
+      expect(tags, "a second tag would ride along on the same retag").toMatch(
+        /^\$\{\{[^{}]*\}\}$/,
+      );
+    }
+    // And the string that expands there cannot be `latest` or anything else:
+    // `resolve` builds it by one concatenation and refuses any other shape.
+    expect(code(jobBlock(source, "resolve"))).toContain('beta_version="$version-beta"');
+    expect(code(jobBlock(source, "resolve"))).toContain(
+      '^[0-9]+\\.[0-9]+\\.[0-9]+-beta$',
+    );
+  });
+
+  // #319's fifth criterion. `Panel image` / `Core image` are required checks in
+  // the "Protect main" ruleset; reusing either name here would make a beta cut
+  // report under a check the ruleset gates pull requests on. `ci.yml`'s train
+  // jobs solved this with `(train)` and this file follows with `(beta)`.
+  it("does not reuse the pinned Panel image / Core image check names", () => {
+    expect(jobKey(source, "core-image", "name")).toBe("Core image (beta)");
+    expect(jobKey(source, "panel-image", "name")).toBe("Panel image (beta)");
+    // The pinned names, unqualified, must not appear as a job name anywhere in
+    // this file — the check the ruleset knows is the bare one.
+    expect(source).not.toMatch(/^ {4}name: (?:Panel|Core) image$/m);
+    // And they are still where the ruleset expects them, so this test fails if
+    // the convention it is following is the thing that moved.
+    expect(read("release.yml")).toMatch(/^ {4}name: Core image$/m);
+    expect(read("ci.yml")).toMatch(/^ {4}name: Core image \(train\)$/m);
+  });
+
+  // #319's sixth criterion, and the irreversibility argument behind it. An
+  // image tag cannot be taken back: Docker Hub has no tag garbage collection
+  // and no undelete (ADR 0023 D45), the delete-capable credential is kept out
+  // of the repositories holding `latest` (D36, D38), and ADR 0036 D23 refuses
+  // to widen it — so `x.y.z-beta` persists, and a retag that ran beside a
+  // failed publish would persist beside a Release that does not exist.
+  //
+  // `publish` subsumes the three gate jobs, and they are named anyway: the
+  // criterion is about those legs, and an edit that drops `publish` must not
+  // silently drop them with it.
+  it("retags only after every gate and after the Release exists (#319)", () => {
+    const gates = ["resolve", "tarball", "tarball-macos", "installer-e2e", "publish"];
+    // Derived, not listed — the ordering is a property of every promoting job
+    // in this file, so a third one added later inherits it (see `imageCallers`).
+    const promoters = imageCallers(source);
+    expect(promoters).toEqual(["core-image", "panel-image"]);
+    for (const job of promoters) {
+      const needs = jobKey(source, job, "needs");
+      for (const gate of gates) {
+        expect(needs, `${job} does not wait for ${gate}`).toContain(gate);
+      }
+    }
+    // The other direction: nothing upstream of `publish` may reach the
+    // registry, or the ordering above is decoration. Asserted as *is not a
+    // caller* rather than *does not contain the string*, because `resolve`
+    // legitimately **names** `container-image.yml` — its credential preflight
+    // exists to refuse early on behalf of exactly that call, and quotes the
+    // file to say so. A string ban would forbid the reference rather than the
+    // reach; what makes a job reach the registry is its `uses:`.
+    for (const gate of gates) {
+      expect(promoters, `${gate} calls container-image.yml ahead of the gates`).not.toContain(
+        gate,
+      );
+    }
+  });
+
+  // #318's review named this as the hole that opens the moment #319 lands: a
+  // promotion pull request run has the same head sha as the train tip and
+  // skips `Resolve train tags` / `Core image (train)` / `Panel image (train)`,
+  // and under ADR 0023 D33 a draft resolves both image checks to `pass`
+  // without building. The digest this retag re-points is exactly the one such
+  // a run never publishes.
+  //
+  // So the filter and the dependency are asserted together. Either alone is
+  // satisfiable while the hole is open: a filter nothing depends on gates
+  // nothing, and a dependency on an unfiltered gate is a dependency on a
+  // pull_request run.
+  it("retags only behind the greenness gate that filters the push event (D21, D41)", () => {
+    const gate = code(jobBlock(source, "resolve"));
+    expect(gate, "the gate no longer filters the event at the API").toContain("--event push");
+    expect(gate, "the gate no longer asserts the event it selected").toContain(
+      'select(.headSha == $sha and .event == "push")',
+    );
+    // The refusal itself, by its **condition** and not by its error title.
+    // "Not a push run" is the `::error title=` of the very block this means to
+    // pin, so a `toContain` on the message is satisfied by the message —
+    // rewriting the test to `if [[ "$event" == "neverever" ]]` leaves the
+    // string in place, the block unreachable and the suite green. That is #339
+    // review r1's finding 3 in this same file, and the reason every #319
+    // assertion beside it reads structure through `withInputs` / `jobKey`.
+    expect(gate, "the non-push refusal can no longer fire").toContain(
+      'if [[ "$event" != "push" ]]; then',
+    );
+    // And the message stays too, because it is what an operator reads when it
+    // does fire — asserted after the condition, not instead of it.
+    expect(gate).toContain("::error title=Not a push run::");
+    for (const job of ["core-image", "panel-image"]) {
+      expect(jobKey(source, job, "needs"), `${job} does not depend on the gate`).toContain(
+        "resolve",
+      );
+    }
+  });
+
+  // The credential preflight, which exists because of the two jobs above.
+  //
+  // `container-image.yml`'s own `resolve` refuses a missing `DOCKERHUB_*` —
+  // and it refuses **after** `publish` has force-moved `vx.y.z-beta`, created
+  // the prerelease and uploaded every asset, because that is where these jobs
+  // sit in the graph. A cut with an unset, rotated or expired token would
+  // therefore end green through the macOS leg and the installer e2e, publish a
+  // beta Release, and only then fail — leaving the Release advertising image
+  // tags that do not exist. That is the half-state the retag's placement after
+  // `publish` exists to prevent, arriving from the other side, and the repair
+  // the header names (re-dispatch; every write is idempotent) converges only
+  // while the train tip has not moved.
+  //
+  // `promote.yml`'s *The credentials release.yml refuses without* is the
+  // in-repo precedent for moving exactly this refusal earlier, for exactly
+  // this reason, and it is asserted in this file already.
+  //
+  // Asserted on the **secret names and the refusal**, in `resolve`, and paired
+  // with the App check beside it: what matters is that both irreversible
+  // halves of a cut are decided before either one starts.
+  it("refuses a cut whose Docker Hub credentials are missing, before anything is published", () => {
+    const job = code(jobBlock(source, "resolve"));
+    for (const secret of ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"]) {
+      expect(job, `resolve does not preflight ${secret}`).toContain(`secrets.${secret}`);
+      // The check itself, not just the wiring: an `env:` line with nothing
+      // reading it is a secret that is passed and never asked about.
+      expect(job, `resolve does not refuse on a missing ${secret}`).toContain(
+        `missing+=(${secret})`,
+      );
+    }
+    // The App identity, checked in the same job for the same reason — the beta
+    // tag is created under a ruleset only the App can bypass. Pinned here
+    // beside the registry credential because the argument is one argument.
+    for (const secret of ["APP_ID", "APP_PRIVATE_KEY"]) {
+      expect(job, `resolve does not preflight ${secret}`).toContain(`secrets.${secret}`);
+    }
+
+    // Both preflights, held to the **refusal** and not to the annotation.
+    //
+    // A `::error` annotation does not fail a step — it decorates one. So a
+    // step that emits the message and then falls through to its success line
+    // exits 0, the cut proceeds, and every assertion above it still passes:
+    // the secrets are wired, the arms append, the title is present, the job is
+    // `resolve`. Review r2 mutated exactly that — the annotation kept, `exit 1`
+    // dropped — and the suite stayed at 95 passed. It is r1's finding 3 in the
+    // test written to answer r1's finding 1, so it is held to the same bar.
+    //
+    // Pinned structurally, in three links, per step: the guard that routes to
+    // the refusal, the annotation, and the `exit 1` on the line after it.
+    for (const [step, title, guard] of [
+      [
+        "The Docker Hub credentials the retag refuses without",
+        "A Docker Hub credential is missing",
+        'if [[ "${#missing[@]}" -gt 0 ]]; then',
+      ],
+      [
+        "Require the App credentials",
+        "No App identity",
+        'if [[ -n "$APP_ID" && -n "$APP_PRIVATE_KEY" ]]; then',
+      ],
+    ]) {
+      const script = stepRun(source, "resolve", step);
+      // The condition that decides whether the refusal is reached. Without
+      // this, a guard mutated to one that can never hold leaves an `exit 1`
+      // that is present and unreachable.
+      expect(script, `${step}: the guard that reaches the refusal is gone`).toContain(guard);
+      let annotations = 0;
+      script.forEach((line, i) => {
+        if (!line.includes("::error title=")) return;
+        annotations += 1;
+        // Asserted inside the step rather than over the job: the title is what
+        // an operator reads, and it has to belong to the refusal that fires.
+        expect(line, `${step}: wrong ::error title`).toContain(`::error title=${title}::`);
+        expect(
+          script[i + 1],
+          `${step}: the ::error annotation is not followed by \`exit 1\` — an annotation decorates a step, it does not fail one, so this preflight would print its complaint and let the cut proceed`,
+        ).toBe("exit 1");
+      });
+      expect(annotations, `${step} emits no ::error annotation`).toBe(1);
+      expect(script, `${step} cannot fail`).toContain("exit 1");
+      expect(script[0], `${step} does not set -e`).toBe("set -euo pipefail");
+    }
+    // Both refusals are in `resolve`, which is upstream of every job that
+    // builds, publishes or retags — so a missing secret costs one dispatch
+    // rather than three tarball builds, a macOS runner and a published
+    // Release.
+    for (const later of ["tarball", "tarball-macos", "installer-e2e", "publish"]) {
+      expect(
+        jobKey(source, later, "needs"),
+        `${later} does not hang off the preflight`,
+      ).toContain("resolve");
+    }
+  });
+
+  // ADR 0037 D7 and D8: a counted beta is refused wherever a version string is
+  // validated, and #319 *inherits* that check rather than writing one. #327
+  // moved the ban into `imageVersionProblem` precisely because image mode
+  // short-circuits before `checkAgreement` and `lineOf("0.4.1-beta.1")` is
+  // `0.4.1`, which agrees with a correctly labelled digest.
+  //
+  // That module and `container-image.yml`'s `version:` input are #327's and
+  // are not in this branch's base. Passing an input a reusable workflow does
+  // not declare is a hard failure, so this test binds the two rather than
+  // asserting one of them: while the input does not exist the retag must not
+  // pass it, and the moment it does exist the retag must pass the beta string
+  // — `beta_version`, not the line, because the line is what a correctly
+  // labelled digest already says and the counter is what has to be caught.
+  it("passes the version the counted-beta ban is applied to, once #327 declares it", () => {
+    const declared = /^ {6}version:$/m.test(read("container-image.yml"));
+    for (const job of ["core-image", "panel-image"]) {
+      const { version } = withInputs(source, job);
+      if (declared) {
+        expect(
+          version,
+          `${job} does not hand container-image.yml the string ADR 0037 D7 bans a counter in`,
+        ).toBe("${{ needs.resolve.outputs.beta_version }}");
+      } else {
+        expect(
+          version,
+          `${job} passes a version input container-image.yml does not declare — the call would fail to start`,
+        ).toBeUndefined();
+      }
+    }
+  });
+
+  // ── #320: the CLI asset, landed from #337's pull request comment ────────────
+
+  // D15 and D16. The line, never the beta string — the script appends `-beta`,
+  // which is what leaves no parameter a counter could arrive through — and the
+  // real `npm i -g`, run against the bytes that are attached rather than
+  // against a copy of them.
+  it("packs the CLI as an asset from the line, and installs it for real (D16)", () => {
+    const job = code(jobBlock(source, "publish"));
+    const call = invocation(job, "rehearse-npm-publish.mjs");
+    expect(call).toContain('--beta "$BETA_LINE"');
+    expect(call, "the pack must not reach the release path's publish flags").not.toContain(
+      "--version",
+    );
+    expect(call, "the asset must not be staged where the Core guards sweep").toContain(
+      "--out-dir artifacts/beta",
+    );
+    expect(call, "#320's acceptance criterion is the install, not the pack").toContain(
+      "--install-check",
+    );
+    // `BETA_LINE` is the line (`0.4.1`), not `beta_version` (`0.4.1-beta`).
+    // `betaVersion("0.4.1-beta")` throws, so the wrong one is caught at
+    // runtime — but only after a macOS leg and three tarballs have been paid
+    // for, and the point of C1 is that no surface derives a second time.
+    expect(job).toContain("BETA_LINE: ${{ needs.resolve.outputs.version }}");
+    expect(job).not.toContain("BETA_LINE: ${{ needs.resolve.outputs.beta_version }}");
+  });
+
+  // The guard on the flag rather than on the artifact. `install=ok` is emitted
+  // by the script only when `--install-check` actually ran, so dropping the
+  // flag leaves a green run with an attached asset and the one assertion #320
+  // calls the whole ticket never made.
+  it("refuses an asset that was packed but never installed (D16)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain("INSTALL: ${{ steps.beta-cli.outputs.install }}");
+    expect(job).toContain('if [[ "$INSTALL" != "ok" ]]; then');
+    // And the filename, which is what an operator pastes into a terminal (C1).
+    expect(job).toContain('if [[ "$ASSET" != "actana-cli-$BETA_VERSION.tgz" ]]; then');
+  });
+
+  // ADR 0036 D10 puts `SHA256SUMS` over exactly the three Core tarballs and
+  // this file's `--expect` is derived from `CORE_TARGETS`, so #320's checksum
+  // is its own file rather than a fourth row — the option that ticket names
+  // beside the row and leaves both the record and the derivation intact.
+  //
+  // Ordering is asserted, not assumed: `compose-core-shasums.mjs` and the
+  // foreign-asset guard both sweep `core-tarballs/`, so the CLI asset is
+  // staged in after them.
+  it("gives the CLI asset its own checksum file, staged after the Core guards (D10)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain(
+      `compose-core-shasums.mjs --dir core-tarballs --expect ${CORE_TARGETS.length}`,
+    );
+    expect(job).toContain(`printf '%s  %s\\n' "$SHA256" "$ASSET" > "core-tarballs/$ASSET.sha256"`);
+    expect(job, "the sidecar is verified the way an operator verifies it").toContain(
+      'sha256sum -c "$ASSET.sha256"',
+    );
+    const compose = job.indexOf("compose-core-shasums.mjs");
+    const guard = job.indexOf("A foreign asset is in the tarball directory");
+    const stage = job.indexOf('cp "$TARBALL" "core-tarballs/$ASSET"');
+    expect(compose).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(-1);
+    expect(stage, "the CLI asset is staged before the Core guards sweep the directory")
+      .toBeGreaterThan(Math.max(compose, guard));
+    // And before the tag moves, which is this job's own ordering principle: a
+    // failed pack must leave `vx.y.z-beta` where it was.
+    expect(stage, "the asset is assembled after the tag has already moved").toBeLessThan(
+      job.indexOf('git push --force origin "refs/tags/$TAG"'),
+    );
+  });
+
+  // `EXPECTED` is the one list the create, the clobbering upload and the prune
+  // all read. An asset uploaded outside it is an asset the next cut deletes,
+  // which is the trap this file's own comment warned #320 about.
+  it("names the CLI asset and its checksum in the asset contract (D7, D16)", () => {
+    const job = code(jobBlock(source, "publish"));
+    const expected = /EXPECTED=\(([\s\S]*?)\)\n/.exec(job);
+    expect(expected, "no EXPECTED list").not.toBeNull();
+    const names = [...expected[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(names).toEqual([
+      ...CORE_TARGETS.map(({ target }) => `actana-core-$BETA_VERSION-${target}.tar.gz`),
+      "SHA256SUMS",
+      "actana-cli-$BETA_VERSION.tgz",
+      "actana-cli-$BETA_VERSION.tgz.sha256",
+      "install.sh",
+    ]);
+  });
+
+  // #320's last criterion: the printed command is the one an operator runs,
+  // built from the pack's own outputs and this job's tag rather than
+  // re-derived — and it says there is no attestation, because ADR 0036 D17
+  // says #323's instructions must not imply one.
+  it("prints the exact install command, and claims no attestation (D17)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain('url="https://github.com/$REPO/releases/download/$TAG/$ASSET"');
+    expect(job).toContain('echo "npm i -g $url"');
+    expect(job).toContain("ASSET: ${{ steps.beta-cli.outputs.asset }}");
+    expect(job).toContain("SHA256: ${{ steps.beta-cli.outputs.sha256 }}");
+    expect(job).toMatch(/no provenance attestation/);
   });
 });
 
