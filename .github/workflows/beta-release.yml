@@ -534,6 +534,42 @@ jobs:
           echo "::error title=No App identity::APP_ID and APP_PRIVATE_KEY must both be set. The beta tag is created under \`refs/tags/v*\`, whose ruleset restricts creation to bypass actors, and the App is the bypass actor (ADR 0023 D39, docs/REPO_SETUP.md §3). Checked here so a missing secret costs one dispatch rather than three tarball builds and a macOS runner."
           exit 1
 
+      # The same argument as the step above, applied to the other half of what
+      # this cut writes. `core-image` and `panel-image` push to Docker Hub, and
+      # `container-image.yml`'s own `resolve` refuses a missing credential —
+      # *"decided here, before anything is built"* — but that job does not
+      # start until `publish` has force-moved `vx.y.z-beta`, created the
+      # prerelease and uploaded all seven assets. Its refusal would arrive
+      # after the irreversible half of this cut, leaving a published beta
+      # Release advertising `x.y.z-beta` image tags that do not exist.
+      #
+      # That is the half-state the retag's placement after `publish` is meant
+      # to prevent, arriving from the other side — and the repair the header
+      # names, re-dispatching because every write here is idempotent, only
+      # converges while the train tip has not moved.
+      #
+      # `promote.yml:626-641` (*The credentials release.yml refuses without*)
+      # is the in-repo precedent and gives the reason in the same words: the
+      # downstream refusal is real, it is just too late. This is a copy rather
+      # than a shared script for the same reason it is there — the point is to
+      # fail in `resolve`, fifteen seconds in, instead of after the Release
+      # exists. `container-image.yml` still checks them itself; a beta cut is
+      # not the only way in.
+      - name: The Docker Hub credentials the retag refuses without
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          missing=()
+          [[ -n "$DOCKERHUB_USERNAME" ]] || missing+=(DOCKERHUB_USERNAME)
+          [[ -n "$DOCKERHUB_TOKEN" ]] || missing+=(DOCKERHUB_TOKEN)
+          if [[ "${#missing[@]}" -gt 0 ]]; then
+            echo "::error title=A Docker Hub credential is missing::${missing[*]} not set. \`core-image\` and \`panel-image\` retag \`beta-x.y.z\` as \`x.y.z-beta\` on Docker Hub, which is the only registry images are published to (ADR 0018), and \`container-image.yml\` refuses on exactly these in its own \`resolve\` — but that job does not start until this cut has moved \`vx.y.z-beta\`, published the prerelease and uploaded every asset, so its refusal would arrive after the irreversible half. Nothing has been published. One personal access token (Read & Write) serves the push; see docs/REPO_SETUP.md section 2."
+            exit 1
+          fi
+          echo "✅ Docker Hub credentials are present. container-image.yml checks them again in its own resolve."
+
   # The two Linux legs, split from the mac leg for the reason `release.yml`
   # splits them: the mac runner bills at 10×, and keeping it out of this matrix
   # is what lets these two and the installer e2e run without waiting on it.

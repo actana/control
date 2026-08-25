@@ -877,6 +877,20 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     return match === null ? undefined : match[1].trim();
   };
 
+  /**
+   * Every job in the file whose `uses:` is `container-image.yml`, in file
+   * order — the jobs that can put a tag on Docker Hub.
+   *
+   * Derived rather than listed, because the invariants below are stated about
+   * the file and not about two names: a third promoting job added later must
+   * fall under them automatically, or the assertion is narrower than the claim
+   * it is written to defend.
+   */
+  const imageCallers = (text) =>
+    [...code(text).matchAll(/^ {2}([a-z][a-z0-9-]*):$/gm)]
+      .map((match) => match[1])
+      .filter((job) => jobKey(text, job, "uses") === "./.github/workflows/container-image.yml");
+
   // C3. A beta cut is *requested*, the way a promotion is (ADR 0023 D14),
   // because "published by accident" is the failure worth designing out. A
   // `push:` on `beta/**` here would be one line and would turn every merge into
@@ -1274,18 +1288,27 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   // criterion is about those legs, and an edit that drops `publish` must not
   // silently drop them with it.
   it("retags only after every gate and after the Release exists (#319)", () => {
-    for (const job of ["core-image", "panel-image"]) {
+    const gates = ["resolve", "tarball", "tarball-macos", "installer-e2e", "publish"];
+    // Derived, not listed — the ordering is a property of every promoting job
+    // in this file, so a third one added later inherits it (see `imageCallers`).
+    const promoters = imageCallers(source);
+    expect(promoters).toEqual(["core-image", "panel-image"]);
+    for (const job of promoters) {
       const needs = jobKey(source, job, "needs");
-      for (const gate of ["resolve", "tarball", "tarball-macos", "installer-e2e", "publish"]) {
+      for (const gate of gates) {
         expect(needs, `${job} does not wait for ${gate}`).toContain(gate);
       }
     }
     // The other direction: nothing upstream of `publish` may reach the
-    // registry, or the ordering above is decoration.
-    for (const job of ["resolve", "tarball", "tarball-macos", "installer-e2e"]) {
-      const block = code(jobBlock(source, job));
-      expect(block, `${job} touches an image ahead of the gates`).not.toContain(
-        "container-image.yml",
+    // registry, or the ordering above is decoration. Asserted as *is not a
+    // caller* rather than *does not contain the string*, because `resolve`
+    // legitimately **names** `container-image.yml` — its credential preflight
+    // exists to refuse early on behalf of exactly that call, and quotes the
+    // file to say so. A string ban would forbid the reference rather than the
+    // reach; what makes a job reach the registry is its `uses:`.
+    for (const gate of gates) {
+      expect(promoters, `${gate} calls container-image.yml ahead of the gates`).not.toContain(
+        gate,
       );
     }
   });
@@ -1312,6 +1335,56 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
       expect(jobKey(source, job, "needs"), `${job} does not depend on the gate`).toContain(
         "resolve",
       );
+    }
+  });
+
+  // The credential preflight, which exists because of the two jobs above.
+  //
+  // `container-image.yml`'s own `resolve` refuses a missing `DOCKERHUB_*` —
+  // and it refuses **after** `publish` has force-moved `vx.y.z-beta`, created
+  // the prerelease and uploaded every asset, because that is where these jobs
+  // sit in the graph. A cut with an unset, rotated or expired token would
+  // therefore end green through the macOS leg and the installer e2e, publish a
+  // beta Release, and only then fail — leaving the Release advertising image
+  // tags that do not exist. That is the half-state the retag's placement after
+  // `publish` exists to prevent, arriving from the other side, and the repair
+  // the header names (re-dispatch; every write is idempotent) converges only
+  // while the train tip has not moved.
+  //
+  // `promote.yml`'s *The credentials release.yml refuses without* is the
+  // in-repo precedent for moving exactly this refusal earlier, for exactly
+  // this reason, and it is asserted in this file already.
+  //
+  // Asserted on the **secret names and the refusal**, in `resolve`, and paired
+  // with the App check beside it: what matters is that both irreversible
+  // halves of a cut are decided before either one starts.
+  it("refuses a cut whose Docker Hub credentials are missing, before anything is published", () => {
+    const job = code(jobBlock(source, "resolve"));
+    for (const secret of ["DOCKERHUB_USERNAME", "DOCKERHUB_TOKEN"]) {
+      expect(job, `resolve does not preflight ${secret}`).toContain(`secrets.${secret}`);
+      // The check itself, not just the wiring: an `env:` line with nothing
+      // reading it is a secret that is passed and never asked about.
+      expect(job, `resolve does not refuse on a missing ${secret}`).toContain(
+        `missing+=(${secret})`,
+      );
+    }
+    expect(job).toContain("::error title=A Docker Hub credential is missing::");
+    // The App identity, checked in the same job for the same reason — the beta
+    // tag is created under a ruleset only the App can bypass. Pinned here
+    // beside the registry credential because the argument is one argument.
+    for (const secret of ["APP_ID", "APP_PRIVATE_KEY"]) {
+      expect(job, `resolve does not preflight ${secret}`).toContain(`secrets.${secret}`);
+    }
+    expect(job).toContain("::error title=No App identity::");
+    // Both refusals are in `resolve`, which is upstream of every job that
+    // builds, publishes or retags — so a missing secret costs one dispatch
+    // rather than three tarball builds, a macOS runner and a published
+    // Release.
+    for (const later of ["tarball", "tarball-macos", "installer-e2e", "publish"]) {
+      expect(
+        jobKey(source, later, "needs"),
+        `${later} does not hang off the preflight`,
+      ).toContain("resolve");
     }
   });
 
