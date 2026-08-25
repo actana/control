@@ -11,6 +11,11 @@ import { CORE_UPDATE_COMMAND, coreDriftDirection, type CoreDialStatus } from "~/
 // on a different machine — usually from a phone or a second laptop, which is
 // the whole point of the Panel being a web service.
 //
+// **The command has to leave the daemon running the new version**, or the
+// button is decoration: the Core would keep announcing the old protocol and
+// this notice would keep saying the same thing. `CORE_UPDATE_COMMAND`'s
+// docstring says which command does that and which two do not.
+//
 // Everything else about the Core — its projects, sessions, terminals — is
 // suppressed at the panel-link router, so this notice stands where that data
 // would have been rather than beside it.
@@ -73,7 +78,7 @@ export function CoreNeedsUpdateNotice({
       <div style={{ fontSize: 12, color: "var(--text-dim)", lineHeight: 1.45 }}>
         {panelBehind
           ? "This Core is ahead of this Panel. Its sessions stay hidden until the Panel itself is upgraded — pull a newer Panel and restart it."
-          : "Its sessions stay hidden until the Core on that machine is updated. Run this there — it upgrades in place and keeps the pairing:"}
+          : "Its sessions stay hidden until the Core on that machine is updated. Run this there — it lands the new version, restarts the daemon, and keeps the pairing:"}
       </div>
       {!panelBehind && (
       <div

@@ -12,6 +12,12 @@
 //   GET /<owner>/<repo>/releases/download/<tag>/<asset>
 //   GET /install.sh                                → the bootstrapper itself
 //
+// `latest` excludes prereleases, because GitHub's does — that exclusion is the
+// reason ADR 0036 D2 stopped making it the installer's default, and a fixture
+// that answered a beta there would make the two rules look interchangeable.
+// The tags route is what D2's steps 2 and 3 ask, and it answers a beta tag the
+// same way it answers a release one.
+//
 // The releases it serves are whatever tarballs are in a directory: the file
 // names carry version and target, so a directory holding two versions is a
 // two-release fixture with no manifest to keep in sync. `SHA256SUMS` is
@@ -74,10 +80,14 @@ export function compareVersions(a, b) {
 /**
  * Group release tarball names by version.
  *
- * Returns `[{ version, assets: Map<target, name> }]` ordered oldest first, so
- * the last entry is what `releases/latest` answers with. Names that are not
- * release tarballs (a stray `SHA256SUMS`, an editor's backup file) are ignored
- * rather than rejected — the directory is a build output dir, not a manifest.
+ * Returns `[{ version, assets: Map<target, name> }]` ordered oldest first.
+ * Names that are not release tarballs (a stray `SHA256SUMS`, an editor's
+ * backup file) are ignored rather than rejected — the directory is a build
+ * output dir, not a manifest.
+ *
+ * The last entry is the newest release *including* prereleases; `latestRelease`
+ * is what `releases/latest` answers with, and the two differ exactly when a
+ * beta is the newest thing present.
  */
 export function indexReleases(fileNames) {
   const byVersion = new Map();
@@ -90,6 +100,70 @@ export function indexReleases(fileNames) {
   return [...byVersion.entries()]
     .sort(([a], [b]) => compareVersions(a, b))
     .map(([version, assets]) => ({ version, assets }));
+}
+
+// ─── the installer's line stamp (ADR 0036 D1) ────────────────────────────────
+//
+// `install.sh` carries the line it was cut from, and that stamp is its channel:
+// the copy on a train installs that train's beta, the copy on `main` installs
+// the release. Nothing at runtime can select one — there is no flag and no
+// environment variable — so a harness that wants to stand at a different door
+// has to serve a differently stamped copy, which is exactly what a cut writes.
+//
+// This lives here, once, because two harnesses need it and they must not drift:
+// the hermetic suite (`scripts/__tests__/install-sh.test.mjs`) and the container
+// e2e (`scripts/e2e-actana-setup-linux.mjs`), whose install channel serves a
+// copy stamped with the line its own "latest" release is on.
+
+/**
+ * The stamp, anchored exactly as the cut's `sed` anchors it — one assignment on
+ * one line (docs/ci-cd.md § "Cutting a train"). Written as the same shape
+ * rather than a loose search, so a stamp that stopped being rewritable by that
+ * command fails here rather than in a train's first pull request.
+ */
+export const INSTALLER_STAMP_PATTERN = /^LINE="([^"]*)"$/m;
+
+/** The line a copy of `install.sh` is stamped with, given its text. */
+export function installerStamp(text) {
+  const found = INSTALLER_STAMP_PATTERN.exec(text);
+  if (!found) throw new Error("no LINE stamp in the installer");
+  return found[1];
+}
+
+/**
+ * Write a copy of `install.sh` restamped onto another line — the cut's one-line
+ * edit, performed by a harness.
+ *
+ * Everything else about the copy is the shipped article, which is what makes a
+ * case that runs it evidence about the real script rather than about a fake.
+ */
+export function writeRestampedInstaller({ source, outPath, line }) {
+  const before = fs.readFileSync(source, "utf8");
+  const after = before.replace(INSTALLER_STAMP_PATTERN, `LINE="${line}"`);
+  if (after === before) throw new Error(`restamping ${source} to ${line} changed nothing`);
+  fs.mkdirSync(path.dirname(outPath), { recursive: true });
+  fs.writeFileSync(outPath, after);
+  fs.chmodSync(outPath, 0o755);
+  return outPath;
+}
+
+/** Is this a prerelease version — anything carrying a `-suffix`? */
+export function isPrerelease(version) {
+  return version.includes("-");
+}
+
+/**
+ * What `GET /releases/latest` answers with: the newest **release**, prereleases
+ * skipped.
+ *
+ * GitHub's endpoint excludes them by definition, which is the whole reason
+ * `install.sh` could not use it to find a beta (ADR 0036 D2) — so the fixture
+ * excludes them too, and a test that installs from a beta line cannot pass by
+ * accident on a fixture that was more generous than the real thing.
+ */
+export function latestRelease(releases) {
+  const stable = releases.filter((release) => !isPrerelease(release.version));
+  return stable[stable.length - 1];
 }
 
 /**
@@ -136,7 +210,7 @@ export function releaseJson({ repo, version, assets, baseUrl }) {
     tag_name: tag,
     name: tag,
     draft: false,
-    prerelease: version.includes("-"),
+    prerelease: isPrerelease(version),
     assets: names.map((name) => ({
       name,
       browser_download_url: `${baseUrl}/${repo}/releases/download/${tag}/${name}`,
@@ -161,9 +235,17 @@ export async function startFixtureReleaseServer({
   port = 0,
   scriptPath,
   corruptAssets = [],
+  /**
+   * `{ "v0.4.1": 403 }` — answer this tag with that status instead of looking
+   * it up. The installer's resolution has to tell "no such release" apart from
+   * "the question could not be asked", and a fixture that could only 404 or 200
+   * could not put the second case in front of it.
+   */
+  tagStatus = {},
 } = {}) {
   const releaseDir = path.resolve(dir);
   if (!fs.existsSync(releaseDir)) throw new Error(`no such release directory: ${releaseDir}`);
+  if (scriptPath && !fs.existsSync(scriptPath)) throw new Error(`no such install.sh: ${scriptPath}`);
   const corrupt = new Set(corruptAssets);
   const requests = [];
 
@@ -191,9 +273,14 @@ export async function startFixtureReleaseServer({
       return send(200, fs.readFileSync(scriptPath), "text/x-shellscript");
     }
 
+    if (route.kind === "tag" && Object.hasOwn(tagStatus, route.tag)) {
+      const status = tagStatus[route.tag];
+      return send(status, `${route.tag}: forced ${status}\n`, "text/plain");
+    }
+
     if (route.kind === "latest" || route.kind === "tag") {
       const all = releases();
-      const release = route.kind === "latest" ? all[all.length - 1] : findRelease(route.tag);
+      const release = route.kind === "latest" ? latestRelease(all) : findRelease(route.tag);
       if (!release) return notFound("release");
       const body = JSON.stringify(
         releaseJson({ repo, version: release.version, assets: release.assets, baseUrl }),
@@ -231,6 +318,9 @@ export async function startFixtureReleaseServer({
     port: actualPort,
     repo,
     requests,
+    scriptPath,
+    /** The line the served copy of `install.sh` is stamped with — its channel. */
+    scriptStamp: scriptPath ? installerStamp(fs.readFileSync(scriptPath, "utf8")) : undefined,
     close: () =>
       new Promise((resolve) => {
         server.closeAllConnections();
@@ -300,7 +390,19 @@ export function bumpPatch(version) {
  * in-process server could not answer a download while one of those is blocking
  * the event loop. The machine would hang on the fetch, not fail.
  */
-export async function startFixtureServerProcess({ dir, port, host = "0.0.0.0", corrupt = [], die }) {
+export async function startFixtureServerProcess({
+  dir,
+  port,
+  host = "0.0.0.0",
+  corrupt = [],
+  /**
+   * The copy of `install.sh` this channel serves. Defaults to the repository's
+   * own, and a caller passes a restamped one when the door it is standing at is
+   * not `main`'s (ADR 0036 D1).
+   */
+  script,
+  die,
+}) {
   const argv = [
     path.join(import.meta.dirname, "..", "fixture-release-server.mjs"),
     "--dir",
@@ -310,6 +412,7 @@ export async function startFixtureServerProcess({ dir, port, host = "0.0.0.0", c
     "--host",
     host,
   ];
+  if (script) argv.push("--script", script);
   if (corrupt.length > 0) argv.push("--corrupt", corrupt.join(","));
 
   const child = spawn(process.execPath, argv, { stdio: ["ignore", "inherit", "inherit"] });

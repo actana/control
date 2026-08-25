@@ -6,12 +6,13 @@ name: Housekeeping
 # entry points plus the reusable `container-image.yml`; see docs/ci-cd.md
 # § "At a glance".
 #
-# Seven chores on two schedules. What they have in common is not their subject —
+# Eight chores on two schedules. What they have in common is not their subject —
 # they share nothing — but their relationship to a pull request: **none of them
 # gates one, and none of them can be caused or fixed by one.** That is the whole
 # reason they are here rather than in `ci.yml`.
 #
 #   stale             daily   labels and closes an inactive issue or PR
+#   open-train        daily   no `beta/*` on origin — opens an issue, cuts nothing
 #   base-pins         weekly  opens the NODE_VERSION bump PR, reports digest drift
 #   release-detector  weekly  base drift or a new fixable CVE in a released
 #                             image — opens an issue, publishes nothing
@@ -21,15 +22,17 @@ name: Housekeeping
 #   dev-audit         weekly  `pnpm audit` over the dev tree — opens an issue
 #   harness-canary    weekly  the vendors' real installers — opens an issue
 #
-# Three of them deliberately end in `gh issue create` rather than a red run.
+# Four of them deliberately end in `gh issue create` rather than a red run.
 # `dev-audit` (ADR 0016 D37) is red for advisories in packages that never ship,
 # `harness-canary` (D38) is red when a vendor changes their installer, and
 # `release-detector` (ADR 0023 D42) is red when a base image someone else
 # maintains grows a CVE — none is payable by the person whose PR happens to be
 # open, and a permanently red scheduled workflow is how a team learns that red
-# means nothing.
+# means nothing. `open-train` (ADR 0023 D25, as amended by #325) is the fourth,
+# and it is the one whose red state is *expected*: every promotion ends with no
+# train open, and cutting the next one is a person's decision.
 #
-# Eight jobs, seven chores: `release-ref` is `release-detector`'s resolver
+# Nine jobs, eight chores: `release-ref` is `release-detector`'s resolver
 # rather than a chore of its own — it is a separate job only because a matrix
 # job cannot run a step to work out its own inputs.
 #
@@ -79,6 +82,7 @@ on:
         options:
           - weekly
           - stale
+          - open-train
           - base-pins
           - release-detector
           - dev-tag-sweep
@@ -136,6 +140,103 @@ jobs:
             This PR has been automatically marked as stale due to 30 days of
             inactivity. It will be closed in 14 days unless there is new activity.
             Please rebase and address review feedback, or convert to draft.
+
+  # ADR 0023 D25, as amended by #325 — the standing half of the open-train
+  # invariant.
+  #
+  # Cuts are manual: a person names the train and cuts it, and no job in this
+  # repository guesses a version or cuts a train. What that costs is the one
+  # thing the deleted automatic cut was buying — *a train is always open, so
+  # work can always be proposed* — and this chore is what buys it back without
+  # inventing a number.
+  #
+  # `promote.yml`'s `train-invariant` job asks the same question at the moment
+  # of a promotion, which is when the gap opens. This one asks it every morning,
+  # which is what makes the answer a state rather than a log line somebody had
+  # to be watching for: an issue closed without a train being cut comes back
+  # tomorrow.
+  #
+  # **The title is shared verbatim with `promote.yml`** so the two dedupe
+  # against each other rather than filing a pair, and it carries no version —
+  # "no train" is one state however many days it lasts, and a dated title would
+  # open a fresh issue every morning, which is the shape of a chore people mute.
+  #
+  # An issue and not a red run, for this file's usual reason and one of its own:
+  # the state is the correct outcome of a good promotion, so a red run here
+  # would be red after every release.
+  open-train:
+    name: An open train exists
+    if: >-
+      github.event.schedule == '17 3 * * *'
+      || (github.event_name == 'workflow_dispatch' && inputs.chore == 'open-train')
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Ask origin whether a train is open
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          # No `|| true`: "origin did not answer" must not read as "no train
+          # exists". That is the same failure the promotion workflow refuses,
+          # and here it would file an issue about a train that is in fact open.
+          existing="$(git ls-remote --heads origin 'refs/heads/beta/*' | sed 's#.*refs/heads/##')"
+
+          TITLE="No open train: nothing can be proposed until one is cut"
+          open="$(gh issue list --state open --search "\"$TITLE\" in:title" \
+            --json number,title --jq "map(select(.title == \"$TITLE\")) | .[0].number // empty")"
+
+          if [[ -n "${existing// }" ]]; then
+            echo "✅ a train is open: $(tr '\n' ' ' <<<"$existing")"
+            # Not closed automatically. The issue is closed by whoever cut the
+            # train, in the same gesture — a chore that closed other people's
+            # issues on a schedule would also close one somebody had reopened
+            # deliberately, and there is nothing here worth that.
+            if [[ -n "$open" ]]; then
+              echo "::notice title=Tracked issue can be closed::#$open says no train is open, and one is. Close it."
+            fi
+            exit 0
+          fi
+
+          echo "::warning title=No open train::No \`beta/*\` branch exists on origin, so there is nowhere for a pull request to go. Cuts are manual (ADR 0023 D3, D22 and D25, as amended by #325) — see docs/ci-cd.md § \"Cutting a train\"."
+
+          if [[ -n "$open" ]]; then
+            echo "::notice title=Already tracked::#$open is open for this. Not filing another."
+            exit 0
+          fi
+
+          {
+            echo "No \`beta/*\` branch exists on origin, so **there is nowhere for a pull request"
+            echo "to go** until somebody cuts one."
+            echo ""
+            echo "Cuts are manual: **a person names the train and cuts it, and no job guesses a"
+            echo "version** (ADR 0023 D3, D22 and D25, as amended by"
+            echo "[#325](https://github.com/actana/control/issues/325)). This chore is how the"
+            echo "invariant those clauses protect — *a train is always open, so work can always be"
+            echo "proposed* — is kept honest without a workflow that invents a number."
+            echo ""
+            echo "**The procedure is [\`docs/ci-cd.md\` § \"Cutting a train\"](https://github.com/${GH_REPO}/blob/main/docs/ci-cd.md#cutting-a-train).**"
+            echo "The version in the branch name is the decision being made: the next release may be"
+            echo "a patch, a minor or a major, and only a person knows which."
+            echo ""
+            echo "Close this once the train is on origin. This chore runs daily and will file it"
+            echo "again if it is closed while the state has not changed."
+            echo ""
+            echo "[Run]($RUN_URL)"
+          } > "$RUNNER_TEMP/issue.md"
+
+          # `needs-triage` and nothing else. `gh issue create` fails outright on
+          # a label the repo does not have, which would turn "open an issue"
+          # into the red run this job exists to avoid.
+          gh issue create --title "$TITLE" --body-file "$RUNNER_TEMP/issue.md" \
+            --label needs-triage
 
   # ----------------------------------------------------------------- weekly
 
@@ -300,10 +401,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          # `--exclude-pre-releases` is the same invariant D9 depends on
-          # elsewhere: a beta is Docker-only and never becomes a GitHub
-          # Release, so the newest non-prerelease Release *is* the newest thing
-          # an operator can be running.
+          # `--exclude-pre-releases` is what makes this read the newest
+          # *release*, and it became load-bearing rather than incidental.
+          #
+          # It used to be justified by "a beta is Docker-only and never becomes
+          # a GitHub Release". ADR 0036 reverses that: a beta cut publishes a
+          # real GitHub Release on a moving `vx.y.z-beta` tag, marked
+          # `prerelease: true` and never `latest` (0036 D9, D10, D11). So a
+          # prerelease Release *is* now something an operator can be running,
+          # and this flag is the only thing keeping the release detector from
+          # treating a beta as the newest shipped version and scanning it.
+          #
+          # The invariant this depends on is therefore no longer "no beta
+          # Releases exist" but "every beta Release is flagged prerelease" —
+          # which `beta-release.yml` asserts by reading both flags back off the
+          # API after creating them (0036 D11).
           ref="$(gh release list \
             --exclude-drafts --exclude-pre-releases \
             --limit 1 --json tagName --jq '.[0].tagName // empty')"

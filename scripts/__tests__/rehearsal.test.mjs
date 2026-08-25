@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { hostTarget, pickTarball, rehearsalOneLiner } from "../lib/rehearsal.mjs";
+import {
+  hostTarget,
+  pickTarball,
+  rehearsalOneLiner,
+  rehearsalSetupCommand,
+} from "../lib/rehearsal.mjs";
 
 import { captureFailure } from "./capture-failure.mjs";
 
@@ -62,5 +67,30 @@ describe("rehearsalOneLiner", () => {
   it("passes nothing that suppresses a prompt — the prompts are the rehearsal", () => {
     const command = rehearsalOneLiner(url);
     expect(command).not.toMatch(/--yes|--no-harnesses|--with-/);
+  });
+
+  // Since #316 those flags are not merely unwanted here: `install.sh` refuses
+  // them, so a one-liner carrying one would end the rehearsal at the first
+  // paste. This is the same claim as the test above, bound to the script's
+  // own option list rather than to a preference.
+  it("carries only options `install.sh` still owns", () => {
+    const flags = rehearsalOneLiner(url).match(/--[a-z-]+/g) ?? [];
+    for (const flag of flags) {
+      expect(["--base-url"], `${flag} is not an installer option`).toContain(flag);
+    }
+  });
+});
+
+describe("rehearsalSetupCommand", () => {
+  // The rehearsal is two commands now — install is not activation (ADR 0036
+  // C2). A rehearsal that printed only the first would stall at an installed
+  // machine with nothing running on it, which is exactly what the operator
+  // is there to avoid discovering in production.
+  it("is the second command, and it is the one with the prompts in it", () => {
+    expect(rehearsalSetupCommand()).toBe("actana setup");
+  });
+
+  it("suppresses no prompt either", () => {
+    expect(rehearsalSetupCommand()).not.toMatch(/--yes|--no-harnesses|--with-/);
   });
 });

@@ -144,11 +144,13 @@ nothing is unpublishable in between:
 ```bash
 gh secret set DOCKERHUB_USERNAME --repo actana/control
 gh secret set DOCKERHUB_TOKEN    --repo actana/control
-gh workflow run release.yml --repo actana/control -f tag=<the latest tag>
+gh workflow run release.yml --repo actana/control --ref <the latest tag> -f tag=<the latest tag>
 ```
 
 The dispatch re-runs the whole tag, which is what proves the new token pushes
-images. `gh workflow run housekeeping.yml --repo actana/control -f
+images. `--ref` is the tag as well as `-f tag`, and the two are not the same
+thing: `--ref` decides which copy of `release.yml` runs, and dispatching without
+it resolves the file from the default branch (#326). `gh workflow run housekeeping.yml --repo actana/control -f
 chore=descriptions` proves it still updates the Docker Hub pages. Then delete
 the old token in Docker Hub.
 
@@ -242,11 +244,21 @@ green.
 
 #### What the App does with it
 
-Six operations, all of them in `promote.yml` where they can be read: it writes
-the train-cut commit, fast-forwards `main`, pushes the `vx.y.z` tag, creates
-the `release/x.y` line, deletes the promoted train, and force-pushes the
-post-hotfix rebase of a surviving train — commenting on that train's open pull
-requests as it does (D24). Nothing else in the repository uses it. `ci.yml`,
+Five operations, all of them in `promote.yml` where they can be read: it
+fast-forwards `main`, pushes the `vx.y.z` tag, creates the `release/x.y` line,
+deletes the promoted train, and force-pushes the post-hotfix rebase of a
+surviving train — commenting on that train's open pull requests as it does
+(D24). Nothing else in the repository uses it.
+
+> **Corrected 2026-08-25: it was six, and the sixth was the train-cut commit.**
+> [#325](https://github.com/actana/control/issues/325) deleted `promote.yml`'s
+> `next-train` job, so **a train is now cut by a person** ([ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and D25 as amended,
+> [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train)). The cut commit
+> carries that person's identity, and it is their push — not the App's — that
+> needs an actor bypassing the `beta/*` ruleset. Everything else in the list is
+> unchanged, and so is the argument: every push `promote.yml` makes is still
+> the App's. `ci.yml`,
 `release.yml`, `housekeeping.yml` and `landing.yml` all run on `GITHUB_TOKEN`,
 because none of them writes to a protected ref.
 
@@ -271,7 +283,7 @@ The four permissions:
 
 | Permission | Level | Why |
 | --- | --- | --- |
-| Contents | Read & write | Every push: the train-cut commit, the branches, the tag |
+| Contents | Read & write | Every push `promote.yml` makes: the fast-forward of `main`, the branches, the tag. **Not** the train-cut commit — a person cuts a train now (#325) |
 | Workflows | Read & write | **The one that is easy to miss.** Without it, any promotion whose train touched `.github/workflows/` is rejected — and only that one, so it looks like an unrelated fault |
 | Pull requests | Read & write | The comment on each open pull request into a rebased train (D24) |
 | Metadata | Read-only | Mandatory; GitHub adds it for you |
@@ -597,12 +609,31 @@ fast set plus both image builds — the same list `main` has minus the slow legs
 smoke (amd64)`, `Core image / Resolve registries`, `Core image / Build + smoke
 (amd64)`.
 
-**The GitHub App is the sole bypass actor** (D24, D39). It needs to be, and for
-three named operations only: it writes the train-cut commit, it force-pushes
-the post-hotfix rebase, and it deletes the promoted train. That is the
-documented exception to "no force-push" — one non-human identity, three
-operations, all of them in `promote.yml` where they can be read. No human and
-no admin role is a bypass actor on this ruleset.
+**The GitHub App bypasses this ruleset** (D24, D39), for two named operations:
+it force-pushes the post-hotfix rebase, and it deletes the promoted train. Both
+are in `promote.yml` where they can be read, and together they are the
+documented exception to "no force-push".
+
+> **Corrected 2026-08-25: the App is no longer the *sole* bypass actor here,
+> and it no longer writes the train-cut commit.** This paragraph named three
+> operations and one non-human identity.
+> [#325](https://github.com/actana/control/issues/325) moved the cut off the
+> App: `promote.yml`'s `next-train` job is deleted and **a train is cut by a
+> person** ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D3 and
+> D25 as amended; 0023:179's own amendment already says so). That person pushes
+> the cut commit directly to a new `beta/x.y.z` branch, with `--no-verify`, for
+> the reason [`ci-cd.md` §Cutting a train](ci-cd.md#cutting-a-train) gives — so
+> **a human identity must also bypass this ruleset**, or no train can be cut at
+> all. Two operations stay the App's; the third became a person's.
+>
+> **This is a live gap between the prose and the payload, and it is named here
+> rather than closed here.**
+> [`rulesets/beta.json`](rulesets/beta.json) still lists the App as its only
+> bypass actor, and so does live ruleset **20685265**. Adding the human actor
+> is a protection change and therefore the repository owner's, on the same
+> terms as everything else in §3: nothing on a branch applies a ruleset. Until
+> it is made, the cut in `ci-cd.md` §Cutting a train works only for an identity
+> that already bypasses `beta/*`.
 
 ### 3b. `release/*` — the maintenance lines
 
@@ -767,6 +798,53 @@ the promotion fails at the tag after it has already fast-forwarded `main` — th
 worst place in the sequence to stop. The `creation` rule and the ref pattern
 are untouched by the payload.
 
+**That pattern now governs beta tags too, and no payload changes.**
+`refs/tags/v*` matches `v0.4.1-beta` exactly as it matches `v0.4.1`, so the
+`vx.y.z-beta` tag a beta cut publishes is created under this ruleset ([ADR
+0036](adr/0036-the-beta-release-channel.md) D7). The App bypass is therefore
+what makes the **first** cut of a line possible at all, and it is why
+`beta-release.yml` refuses to start without the App secrets rather than meeting
+the problem at a push that comes after three tarball builds and a macOS runner
+([`ci-cd.md` §Cutting a beta](ci-cd.md#cutting-a-beta)).
+
+> [!CAUTION]
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342): a *second* cut of a line
+> is refused today, and this paragraph used to say the opposite.**
+>
+> What stood here was: *"later cuts of the same line only **update** an
+> existing ref, which `creation` does not restrict, so a missing App identity
+> would fail one cut per line and pass every other."* Read against 20390424
+> alone that sentence is true, which is how it survived review. It is false
+> against the repository, because 20390424 is not the only ruleset on
+> `refs/tags/v*`.
+>
+> Ruleset **20390423** ("Release tags are immutable") is `active` on the *same*
+> `refs/tags/v*` pattern, with rules `update`, `deletion` and
+> `non_fast_forward`, and **no bypass actors** — `bypass_actors` is absent from
+> the API read, which is how GitHub renders the empty list (`gh api
+> repos/actana/control/rulesets/20390423`, captured as
+> [`rulesets/tag-immutable.json`](rulesets/tag-immutable.json)).
+> `v0.4.1-beta` matches that pattern as squarely as it matches 20390424's. The
+> two rulesets therefore divide the two cases between them:
+>
+> | The cut | The git operation | Which ruleset decides | Result today |
+> | --- | --- | --- | --- |
+> | the **first** of a line | *creates* `refs/tags/v0.4.1-beta` | 20390424 — rule `creation`, App bypass `always` | **passes** |
+> | every **later** one | *force-updates* that same ref | 20390423 — rule `update`, no bypass actors | **refused, for every identity, the App included** |
+>
+> `creation` does not restrict a second cut. `update` does, and `update` is
+> 20390423's rule, not 20390424's. The `git push --force origin
+> refs/tags/vx.y.z-beta` in `beta-release.yml`'s *publish* job is that update.
+>
+> **The failure is clean, and it is still a failure.** The tag move is the
+> first write in `publish`, so a refused second cut creates no Release, uploads
+> no asset and retags no image — it stops with the previous cut intact. But
+> until the change in §3e-i is made, **a beta line can be cut exactly once**,
+> and [ADR 0036](adr/0036-the-beta-release-channel.md) D7's moving handle is
+> false against the repository as configured. Nothing on the cut path
+> preflights this; the run discovers it at the push.
+
 > [!WARNING]
 > **Open decision — this apply deletes a live bypass actor, and the pre-flight
 > will refuse until someone resolves it.**
@@ -804,8 +882,8 @@ are untouched by the payload.
 > 20390424 has zero bypass actors was an artifact of reading it without admin
 > rights.
 
-Ruleset **20390423** ("Release tags are immutable") is not touched by this
-effort — nothing here applies it and nothing here changes it. Its payload is
+Ruleset **20390423** ("Release tags are immutable") is not applied by this
+effort — nothing here applies it and no payload here changes it. Its payload is
 committed anyway, as
 [`rulesets/tag-immutable.json`](rulesets/tag-immutable.json), captured verbatim
 from the live ruleset. The point of `rulesets/` is that a clone can restore the
@@ -813,6 +891,88 @@ repository's protection; leaving one of the five out meant the fifth existed
 only in the web form, which is the thing this section is against. Restoring it
 is a `POST` if it has been deleted and a `PUT` over 20390423 if it has been
 edited — a deliberate act, not a cutover step.
+
+**It does now need one change, and that change is the repository owner's to
+make.** It is written down here rather than made here, for the reason the whole
+of §3 exists: these files are data, no branch applies them, and CI never may
+([`rulesets/README.md`](rulesets/README.md)). Nothing in
+[#342](https://github.com/actana/control/pull/342) touches any ruleset.
+
+#### 3e-i. The change ruleset 20390423 needs, and the alternative that is wrong
+
+- [ ] **Repository owner only.** Exclude `refs/tags/v*-beta` from ruleset
+      **20390423**'s conditions, then re-capture
+      [`rulesets/tag-immutable.json`](rulesets/tag-immutable.json).
+
+**The change is one array entry.** 20390423 keeps its name, its target, its
+enforcement, its three rules and its empty `bypass_actors`; only
+`conditions.ref_name.exclude` moves, from `[]` to one pattern:
+
+```json
+"conditions": {
+  "ref_name": {
+    "include": ["refs/tags/v*"],
+    "exclude": ["refs/tags/v*-beta"]
+  }
+}
+```
+
+Applied as a full-body `PUT` over 20390423, the same shape §3 uses everywhere
+else — read the live ruleset, add the one entry, send it back, and re-read to
+confirm. `exclude` wins over `include` in a GitHub ruleset, so this takes
+`v0.4.1-beta` out of the immutability ruleset's scope and leaves every release
+tag inside it, with the bypass actor list still empty.
+
+**What it does not loosen.** Beta tags stay governed by **20390424**, whose
+rule is `creation` and whose condition is untouched, so the *first* cut of a
+line is still a restricted create that only the App's bypass gets through — the
+property the paragraph above depends on. This change reaches `update`,
+`deletion` and `non_fast_forward` on beta names and nothing else. What it
+accepts, deliberately, is that a `vx.y.z-beta` tag becomes deletable and
+rewindable by whoever can already create it; that is the definition of a handle
+([ADR 0036](adr/0036-the-beta-release-channel.md) D7), and the immutable record
+of a beta was never the tag — it is the commit sha, the image digest and
+`SHA256SUMS`.
+
+> [!WARNING]
+> **Do not instead add the App as an `update` bypass actor on 20390423.** It is
+> the obvious repair — it is one entry in `bypass_actors`, it unblocks the
+> second cut, and it looks symmetrical with what 20390424 already does. It is
+> the wrong one, and this note exists so it is not reached for later by someone
+> reading only the failure.
+>
+> **A bypass actor carries no ref condition of its own.** It is scoped to the
+> ruleset it sits in, and 20390423's scope is `refs/tags/v*` — every release
+> tag. There is no way to spell *"bypass `update`, but only on names ending
+> `-beta`"* through a bypass actor. Adding the App there would therefore also
+> let it move `v0.4.0`, `v0.4.1` and every release tag that ever exists.
+>
+> That is exactly what [ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) **D44** forbids —
+> *"`main`, the `vx.y.z` tag, and the release branch are the record of what
+> happened and are never rewritten"* — and it would forbid it in the worst
+> possible way, because the App is the identity every promotion pushes with and
+> the one that runs unattended. `promote.yml:482` refuses to move a release tag
+> in code; it does so on the assumption that the configuration refuses it too,
+> and this bypass actor would delete that second layer without changing a line
+> of the first.
+>
+> The exclusion above is narrower in the only direction that matters: it moves
+> one *name class* out of scope. The bypass actor would move one *identity* out
+> of scope, across every name the ruleset covers.
+
+**After the owner has made it**, three things follow, none of them optional:
+
+1. `gh api repos/actana/control/rulesets/20390423` reports the exclusion, and
+   `docs/rulesets/tag-immutable.json` is re-captured from that read in the same
+   pull request that observes it — the file's whole purpose is to be the live
+   ruleset, and a capture that leads or lags is worse than no capture.
+2. The three dated notes that mark D7's moving handle as conditional lift:
+   [ADR 0036](adr/0036-the-beta-release-channel.md) D7, [`ci-cd.md`
+   §Cutting a beta](ci-cd.md#cutting-a-beta), and the CAUTION block above.
+3. Cut a line twice against the real repository before believing any of it. The
+   first cut proves 20390424; only the second proves 20390423, and the second
+   is the one that has never been run.
 
 ### Verify it actually binds
 

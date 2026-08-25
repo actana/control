@@ -3,24 +3,31 @@ import * as path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  BETA_PRERELEASE,
   BUNDLED_NODE_VERSION,
   CORE_RUNTIME_DEPENDENCIES,
   CORE_TARGETS,
   UNBUNDLED_EXTERNALS,
+  assertCoreVersion,
+  assertShasumsSet,
+  assertTarballSurfaces,
   buildManifest,
   findTarget,
   formatShasums,
   hostTarget,
+  isBetaVersion,
   nodeDistDirName,
   nodeDistShasumsUrl,
   nodeDistTarballUrl,
   parseCoreLinkProtocolVersion,
   parseShasums,
+  parseTarballName,
   planDependencyLayout,
   prebuildDirName,
   tarballName,
   tarballRootDirName,
 } from "../lib/core-tarball.mjs";
+import { parseAssetName } from "../lib/fixture-release.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..", "..");
 
@@ -183,6 +190,61 @@ describe("formatShasums", () => {
   });
 });
 
+// ─── the version a tarball may carry ───────────────────────────────────────
+//
+// A Core tarball self-identifies, and ADR 0036 D18 keeps it that way: the
+// version is in the asset name, in the archive root and in the manifest, which
+// is precisely why a beta's bytes cannot be renamed into a release's. The
+// string those three carry is therefore worth being strict about, and C1 fixes
+// it — a beta is `x.y.z-beta` with nothing after the word, on every surface.
+
+describe("assertCoreVersion", () => {
+  it("takes a release version", () => {
+    expect(assertCoreVersion("0.4.1")).toEqual({
+      version: "0.4.1",
+      line: "0.4.1",
+      prerelease: null,
+    });
+  });
+
+  it("takes a beta, which is the line plus one fixed word", () => {
+    expect(assertCoreVersion("0.4.1-beta")).toEqual({
+      version: "0.4.1-beta",
+      line: "0.4.1",
+      prerelease: BETA_PRERELEASE,
+    });
+    expect(isBetaVersion("0.4.1-beta")).toBe(true);
+    expect(isBetaVersion("0.4.1")).toBe(false);
+  });
+
+  // ADR 0036 C1 bans a counted beta outright, on every surface — and an asset
+  // filename is a surface. A run number or a short sha appended by a workflow
+  // is the shape that would arrive by accident, so it dies here rather than in
+  // a published asset name nobody can rename afterwards.
+  it("refuses a counted beta, whatever counts it", () => {
+    for (const version of ["0.4.1-beta.1", "0.4.1-beta1", "0.4.1-beta.20260824", "0.4.1-beta-2"]) {
+      expect(() => assertCoreVersion(version), version).toThrow(/counted beta/);
+    }
+  });
+
+  it("refuses a beta that is spelled differently rather than treating it as one", () => {
+    expect(() => assertCoreVersion("0.4.1-BETA")).toThrow(/counted beta/);
+  });
+
+  // The backport candidate ADR 0023 D30 publishes carries an identifier by
+  // design, and C1 binds the beta channel only. Banning every prerelease would
+  // be a wider rule than the record made.
+  it("leaves a backport release candidate alone", () => {
+    expect(assertCoreVersion("1.2.4-rc.1").prerelease).toBe("rc.1");
+  });
+
+  it("refuses anything that is not a version at all", () => {
+    for (const version of ["v0.4.1", "0.4", "0.4.1.2", "", "latest", "0.4.1 ", undefined]) {
+      expect(() => assertCoreVersion(version), JSON.stringify(version)).toThrow(/unusable/);
+    }
+  });
+});
+
 describe("tarball naming", () => {
   it("names the archive after version and target", () => {
     expect(tarballName("0.1.0", "linux-arm64")).toBe("actana-core-0.1.0-linux-arm64.tar.gz");
@@ -190,6 +252,174 @@ describe("tarball naming", () => {
 
   it("puts everything under one directory so extraction never litters the CWD", () => {
     expect(tarballRootDirName("0.1.0", "linux-arm64")).toBe("actana-core-0.1.0-linux-arm64");
+  });
+
+  // The beta's asset name is the release's with the version it actually has —
+  // no separate naming scheme, no channel segment. That is what makes a beta
+  // installable the same way a release is, and what makes the two impossible
+  // to confuse (ADR 0036 D20).
+  it("names a beta's archive with the beta version, unchanged", () => {
+    expect(tarballName("0.4.1-beta", "linux-x64")).toBe("actana-core-0.4.1-beta-linux-x64.tar.gz");
+    expect(tarballRootDirName("0.4.1-beta", "linux-x64")).toBe("actana-core-0.4.1-beta-linux-x64");
+  });
+
+  it("refuses a version the build may not publish, at every surface", () => {
+    // One gate, three doors: a counted beta cannot reach one of the three by a
+    // path that skips the other two.
+    expect(() => tarballName("0.4.1-beta.1", "linux-x64")).toThrow(/counted beta/);
+    expect(() => tarballRootDirName("0.4.1-beta.1", "linux-x64")).toThrow(/counted beta/);
+    expect(() =>
+      buildManifest({
+        version: "0.4.1-beta.1",
+        protocolVersion: "0.8.0",
+        target: "linux-x64",
+        nodeVersion: BUNDLED_NODE_VERSION,
+      }),
+    ).toThrow(/counted beta/);
+  });
+});
+
+describe("parseTarballName", () => {
+  it("is the inverse of tarballName for every shape the build emits", () => {
+    for (const [version, target] of [
+      ["0.1.0", "linux-x64"],
+      ["0.4.1-beta", "linux-arm64"],
+      ["1.2.4-rc.1", "mac-arm64"],
+    ]) {
+      expect(parseTarballName(tarballName(version, target))).toEqual({ version, target });
+    }
+  });
+
+  it("is null for a name this build could not have produced", () => {
+    for (const name of [
+      "SHA256SUMS",
+      "actana-core-0.1.0-linux-x64.tar.gz.bak",
+      "actana-core-0.1.0-solaris-sparc.tar.gz",
+      "actana-core-0.4.1-beta.1-linux-x64.tar.gz",
+      "notes.txt",
+    ]) {
+      expect(parseTarballName(name), name).toBeNull();
+    }
+  });
+
+  // The fixture release server reads asset names off a directory to answer as
+  // GitHub would, so its parser and this one are two readings of one contract
+  // — `install.sh`'s (ADR 0016 D29). They may differ in what they tolerate;
+  // they may not differ on what a name the build emits *means*.
+  it("agrees with the fixture server's reading of the same names", () => {
+    for (const [version, target] of [
+      ["0.1.0", "linux-x64"],
+      ["0.4.1-beta", "mac-arm64"],
+    ]) {
+      const name = tarballName(version, target);
+      expect(parseAssetName(name)).toEqual(parseTarballName(name));
+    }
+  });
+});
+
+describe("assertShasumsSet", () => {
+  it("reports the one version covered and the targets it covers", () => {
+    expect(
+      assertShasumsSet(CORE_TARGETS.map((t) => tarballName("0.4.1-beta", t.target))),
+    ).toEqual({
+      version: "0.4.1-beta",
+      targets: ["linux-x64", "linux-arm64", "mac-arm64"],
+    });
+  });
+
+  // The case this exists for. `SHA256SUMS` is one Release's asset, and a file
+  // covering a beta and a release at once is the confusion ADR 0036 D20 rules
+  // out — published under a single name, with no way for a downloader to tell
+  // which half they verified against.
+  it("refuses a set holding two versions", () => {
+    expect(() =>
+      assertShasumsSet([
+        tarballName("0.4.1-beta", "linux-x64"),
+        tarballName("0.4.1", "linux-arm64"),
+      ]),
+    ).toThrow(/two versions/);
+  });
+
+  it("refuses two tarballs claiming one target", () => {
+    expect(() =>
+      assertShasumsSet([tarballName("0.4.1", "linux-x64"), "actana-core-0.4.1-linux-x64.tar.gz"]),
+    ).toThrow(/two linux-x64 tarballs/);
+  });
+
+  it("refuses a file that is not one of ours, rather than checksumming it", () => {
+    expect(() => assertShasumsSet(["actana-core-0.4.1-linux-x64.tar.gz", "notes.tar.gz"])).toThrow(
+      /not a Core tarball asset name/,
+    );
+  });
+
+  it("refuses an empty set", () => {
+    expect(() => assertShasumsSet([])).toThrow(/no Core tarballs/);
+  });
+});
+
+describe("assertTarballSurfaces", () => {
+  const surfaces = (over = {}) => ({
+    assetName: "actana-core-0.4.1-beta-linux-x64.tar.gz",
+    rootDirName: "actana-core-0.4.1-beta-linux-x64",
+    manifest: buildManifest({
+      version: "0.4.1-beta",
+      protocolVersion: "0.8.0",
+      target: "linux-x64",
+      nodeVersion: BUNDLED_NODE_VERSION,
+    }),
+    ...over,
+  });
+
+  it("returns the version and target all three agree on", () => {
+    expect(assertTarballSurfaces(surfaces())).toEqual({
+      version: "0.4.1-beta",
+      target: "linux-x64",
+    });
+  });
+
+  // Each of these is a real published artifact that would install as something
+  // other than what its name says. The first is the rename ADR 0036 D18 refuses
+  // — beta bytes under a release name — and it is refused here on the bytes.
+  it("refuses an archive root that disagrees with the asset name", () => {
+    expect(() =>
+      assertTarballSurfaces(surfaces({ assetName: "actana-core-0.4.1-linux-x64.tar.gz" })),
+    ).toThrow(/asset name and the archive root disagree/);
+  });
+
+  it("refuses a manifest that disagrees about the version", () => {
+    expect(() =>
+      assertTarballSurfaces(
+        surfaces({
+          manifest: buildManifest({
+            version: "0.4.1",
+            protocolVersion: "0.8.0",
+            target: "linux-x64",
+            nodeVersion: BUNDLED_NODE_VERSION,
+          }),
+        }),
+      ),
+    ).toThrow(/disagree about the version/);
+  });
+
+  it("refuses a manifest that disagrees about the target", () => {
+    expect(() =>
+      assertTarballSurfaces(
+        surfaces({
+          manifest: buildManifest({
+            version: "0.4.1-beta",
+            protocolVersion: "0.8.0",
+            target: "linux-arm64",
+            nodeVersion: BUNDLED_NODE_VERSION,
+          }),
+        }),
+      ),
+    ).toThrow(/disagree about the target/);
+  });
+
+  it("refuses a name that is not a Core tarball's", () => {
+    expect(() => assertTarballSurfaces(surfaces({ assetName: "core.tar.gz" }))).toThrow(
+      /not a Core tarball asset name/,
+    );
   });
 });
 
@@ -235,6 +465,21 @@ describe("buildManifest", () => {
       arch: "arm64",
       nodeVersion: BUNDLED_NODE_VERSION,
     });
+  });
+
+  it("writes a beta version through unchanged — the manifest is the third surface", () => {
+    // `runActanaSetup` installs into `versions/<manifest.version>` and
+    // `actana status` reports it, so this field is what a machine says it is
+    // running. A beta that wrote its line here would be a machine reporting a
+    // release it is not (ADR 0036 D20).
+    expect(
+      buildManifest({
+        version: "0.4.1-beta",
+        protocolVersion: "0.8.0",
+        target: "linux-x64",
+        nodeVersion: BUNDLED_NODE_VERSION,
+      }).version,
+    ).toBe("0.4.1-beta");
   });
 
   it("rejects an unknown target", () => {

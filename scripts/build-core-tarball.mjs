@@ -27,7 +27,10 @@
 //                                          [--cache-dir <dir>]
 //
 // --out-dir      Where the tarball lands (default: artifacts/core).
-// --version      Release version, bare semver (default: root package.json).
+// --version      Version to build, bare semver — `x.y.z` for a release,
+//                `x.y.z-beta` for a beta, with nothing after the word
+//                (ADR 0036 C1). A leading `v` is stripped; anything else
+//                is refused. Default: the root package.json's version.
 // --target       Sanity check — must match the host's own target.
 // --node-version Node runtime to bundle (default: BUNDLED_NODE_VERSION).
 // --cache-dir    Where downloaded Node tarballs are kept (default: .cache/node-dist).
@@ -47,6 +50,7 @@ import {
   DEPENDENCY_PRUNE_PATHS,
   CORE_RUNTIME_DEPENDENCIES,
   LAUNCHER_SCRIPT,
+  assertCoreVersion,
   buildManifest,
   findTarget,
   hostTarget,
@@ -220,7 +224,23 @@ async function main() {
   const rootPackageJson = JSON.parse(
     fs.readFileSync(path.join(repoRoot, "package.json"), "utf8"),
   );
-  const version = (stringFlag(args, "version", fail) ?? rootPackageJson.version).replace(/^v/, "");
+  // The `v` a git tag carries is not part of a version on any of the three
+  // surfaces below, so it comes off here — and what is left has to be a
+  // version this repository will publish. A beta is `x.y.z-beta` and nothing
+  // longer (ADR 0036 C1), so the counted string a run number would produce is
+  // refused here, before it can reach an asset name, an archive root or a
+  // manifest.
+  const requestedVersion = (stringFlag(args, "version", fail) ?? rootPackageJson.version).replace(
+    /^v/,
+    "",
+  );
+  let parsedVersion;
+  try {
+    parsedVersion = assertCoreVersion(requestedVersion);
+  } catch (err) {
+    fail(err.message);
+  }
+  const version = parsedVersion.version;
   const nodeVersion = stringFlag(args, "node-version", fail, BUNDLED_NODE_VERSION);
   const outDir = path.resolve(
     stringFlag(args, "out-dir", fail, path.join(repoRoot, "artifacts", "core")),
@@ -238,16 +258,34 @@ async function main() {
     { file: "core-entry.cjs", dist: path.join(repoRoot, "packages", "core", "dist"), pkg: "@actana/core" },
     { file: "actana-cli.cjs", dist: path.join(repoRoot, "packages", "cli", "dist-tarball"), pkg: "@actana/cli" },
   ];
+  // The message names `pnpm build:core-tarball-bundles` and not the single
+  // filter that would fix this one file, because naming the single filter is
+  // how the pair drifts apart. #326 is that drift read back: a release leg
+  // built only `@actana/core` and every tarball job died here, and the line an
+  // operator read told them to build one package rather than pointing at the
+  // one script every caller is asserted to use
+  // (`scripts/__tests__/core-tarball.test.mjs`).
   for (const { file, dist, pkg } of stagedBundles) {
     if (fs.existsSync(path.join(dist, file))) continue;
-    fail(`no ${file} at ${dist} — run \`pnpm --filter ${pkg} build\` first`);
+    fail(
+      `no ${file} at ${dist} — ${pkg} has not been bundled. Run ` +
+        "`pnpm build:core-tarball-bundles`, which builds every package this tarball stages; " +
+        "a pipeline that builds only one of them is what #326 was.",
+    );
   }
 
   const protocolVersion = parseCoreLinkProtocolVersion(
     fs.readFileSync(path.join(repoRoot, "packages", "sdk", "src", "core-link-frames.ts"), "utf8"),
   );
 
-  log(`target=${descriptor.target} version=${version} node=${nodeVersion} protocol=${protocolVersion}`);
+  // The channel is named in the log because the three surfaces below are the
+  // only place it is ever written down: there is no channel field, and there
+  // is not going to be one — a beta is a beta because its version says so.
+  log(
+    `target=${descriptor.target} version=${version} channel=` +
+      `${parsedVersion.prerelease === null ? "release" : parsedVersion.prerelease} ` +
+      `node=${nodeVersion} protocol=${protocolVersion}`,
+  );
 
   const nodeDir = await downloadNodeRuntime(nodeVersion, descriptor, cacheDir);
 

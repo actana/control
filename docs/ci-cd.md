@@ -5,17 +5,19 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 
 ## At a glance
 
-**Five entry points and one reusable workflow** ([ADR
+**Six entry points and one reusable workflow** ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md), amending [ADR
-0016](adr/0016-the-0-1-0-shape.md) D34):
+0016](adr/0016-the-0-1-0-shape.md) D34; the sixth is [ADR
+0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again):
 
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `beta/**` | `beta-x.y.z` in `panel` / `core`, `sha-<short>` in `panel-dev` / `core-dev` |
-| [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, the next train |
-| [`release.yml`](../.github/workflows/release.yml) | `workflow_call` from the promotion, or a dispatch — **not** a `v*` tag (D40) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
-| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures |
+| [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, retiring the promoted train |
+| [`release.yml`](../.github/workflows/release.yml) | a dispatch and only a dispatch: `promote.yml` dispatches it **at `vx.y.z`**, or a person does — **not** a `v*` tag, and no longer a `workflow_call` (D40, as amended by [#326](https://github.com/actana/control/issues/326)) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
+| [`beta-release.yml`](../.github/workflows/beta-release.yml) | dispatch, naming a train | a beta cut: the moving `vx.y.z-beta` tag, a prerelease Release, three Core tarballs + `SHA256SUMS`, `install.sh` and the CLI tarball as assets, `x.y.z-beta` in `panel` / `core`. Never `latest` |
+| [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | daily cron | stale labels / closures, and the issue that says no train is open |
 | [`housekeeping.yml`](../.github/workflows/housekeeping.yml) | weekly cron | a `NODE_VERSION` bump PR, the `-dev` tag sweep, the four Docker Hub pages, and an issue for anything the release detector, the dev-tree audit or the Harness canary found |
 | [`landing.yml`](../.github/workflows/landing.yml) | push to `main` under `landing/**`, or dispatch | `landing/` uploaded to Bunny Edge Storage and the pull zone purged — the page at control.actana.ai |
 
@@ -39,7 +41,29 @@ gate and must never be merged by hand (#264).
 that writes to `main`. It is described under [Cutting a
 release](#cutting-a-release).
 
-`housekeeping.yml` is everything on a clock and nothing that gates. Its seven
+`beta-release.yml` is the sixth, and it is the one an operator meets without
+ever seeing this file: it is what makes a train installable on metal rather
+than only pullable as a container. It is a separate file rather than a third
+mode of `release.yml` because `release.yml`'s two modes are both
+promotion-shaped — an immutable tag, with `latest` in play — and its `resolve`
+job refuses any tag reachable from neither `main` nor a `release/*` branch. A
+beta tag is on a train and is reachable from neither, so a third mode would
+mean loosening the one guard that keeps the other two readable off facts
+rather than off a flag ([ADR 0036](adr/0036-the-beta-release-channel.md) D9).
+It publishes nothing on a merge and everything on a dispatch — see [Cutting a
+beta](#cutting-a-beta).
+
+**Where a version string is written, and what is authoritative for each place,
+is catalogued in [ADR 0037](adr/0037-one-version-per-line.md) §B.** The short
+version: a line is `x.y.z`, the six manifests and `install.sh`'s stamp carry it,
+and every other string — the branch name, the git tag, all four version-bearing
+image tags, the version label inside both images, the npm versions and the
+tarball's filename — is asserted against that tree by
+[`scripts/assert-version-agreement.mjs`](../scripts/assert-version-agreement.mjs)
+before it is written. `pnpm versions:assert --expected x.y.z` runs the same
+check by hand.
+
+`housekeeping.yml` is everything on a clock and nothing that gates. Its eight
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
 described in full under [Housekeeping](#housekeeping).
@@ -75,8 +99,10 @@ the way the bytes a release publishes are, rather than by a lookalike pipeline
 that drifts. It has no trigger of its own, which is why it is not a sixth entry
 point. Nothing on a clock calls it at all (D42).
 
-`scripts/__tests__/workflows.test.mjs` asserts this inventory: five entry
-points plus one reusable workflow, nothing else.
+`scripts/__tests__/workflows.test.mjs` asserts this inventory, and it is the
+check that fails on `beta-release.yml`'s first commit rather than a review
+catching it: the file is added and the inventory extended together
+([#318](https://github.com/actana/control/issues/318), 0036 D9).
 
 ## The train model
 
@@ -211,6 +237,41 @@ deliberately **not** one of them: it is served from `main`, so a broken
 installer is fixable without cutting a release
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D29).
 
+### What a beta cut publishes
+
+A beta publishes the same shape, from the train, at version `x.y.z-beta`
+([ADR 0036](adr/0036-the-beta-release-channel.md) D10). It is a prerelease
+GitHub Release on the moving `vx.y.z-beta` tag, never `latest`, and every asset
+is clobbered in place on each cut:
+
+| Artifact | Value |
+| --- | --- |
+| Core tarballs | `linux-x64`, `linux-arm64`, `mac-arm64` — the same three targets a release builds |
+| `SHA256SUMS` | over exactly those three |
+| `install.sh` | attached as a **copy**, so the script and the bytes it fetches ship together |
+| CLI | `pnpm pack`ed and attached as `actana-cli-<x.y.z>-beta.tgz`, installed from its asset URL (D16) |
+| CLI checksum | `actana-cli-<x.y.z>-beta.tgz.sha256` — the tarball's row as a file of its own, not a fourth row in `SHA256SUMS` |
+| Images | `x.y.z-beta` in `panel` / `core`, retagged from the train's `beta-x.y.z` digest — nothing rebuilt (D12) |
+
+The attached `install.sh` is a copy and **not a door**. The canonical installer
+stays on `main` under D29's rule, and nothing points an operator at the asset as
+an install URL — see [Installing a beta](../INSTALL.md#installing-a-beta) for
+the URLs that are doors.
+
+Three things a beta deliberately does not publish, each of which has been asked
+for and answered rather than overlooked:
+
+- **No Intel Mac build**, and nothing is being omitted: the row does not exist
+  for a release either, for the reason immediately below.
+- **No signing and no notarization**, exactly as a release — integrity is the
+  published checksums, below.
+- **Nothing on registry.npmjs.org.** `latest` and `next` on `@actana/cli` and
+  `@actana/sdk` are untouched by a beta cut, and `release.yml`'s `npm` job is
+  not modified. The reason is npm's own: a version number is burned by its first
+  publish, and under the fixed `x.y.z-beta` string a second cut of the same beta
+  would fail at the registry with a 403 after the tag had moved and every asset
+  had already been replaced (D15).
+
 There is no `mac-x64`, and there never will be
 ([ADR 0016](adr/0016-the-0-1-0-shape.md) D28, as amended): the on-device macOS
 install is Apple silicon only, and an Intel Mac runs its Core from the
@@ -261,6 +322,14 @@ before it succeeds ([npm](#npm)). Provenance attests *where a package was
 built*. It is not a signature over a released binary, and it covers neither the
 tarballs nor the images.
 
+**A beta has no attested surface at all, and that is a real loss rather than an
+omission** ([ADR 0036](adr/0036-the-beta-release-channel.md) D17).
+`--provenance` is a registry artifact, and a beta publishes nothing to the
+registry: its CLI is a tarball attached to the prerelease, so there is no
+attestation for the read-back check to read. `SHA256SUMS` is what stands in its
+place, exactly as it does for the tarballs of a release. Nothing on the beta
+path should be read as carrying an attestation, because none of it does.
+
 **Why unsigned is safe for the way this ships.** The distribution path is
 `curl | bash`, and `curl` — like `wget` — does not set the
 `com.apple.quarantine` extended attribute. Nothing arriving by that path is ever
@@ -293,20 +362,33 @@ it.
 
 ## The tag ladder
 
-Five published tag classes, each answering exactly one question ([ADR
-0023](adr/0023-release-trains-and-digest-promotion.md) D7):
+Seven published tag classes, each answering exactly one question ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D7, extended by [ADR
+0036](adr/0036-the-beta-release-channel.md) D7). All seven are published by
+merged workflows, `vx.y.z-beta` since
+[#318](https://github.com/actana/control/issues/318) and `x.y.z-beta` since
+[#319](https://github.com/actana/control/issues/319).
 
 | Tag | Repository | Published when | Moves | Arch |
 | --- | --- | --- | --- | --- |
 | `pr-<prid><YYYYMM>` | `panel-dev` / `core-dev` | every push to a non-draft, non-docs-only PR | per push | amd64 |
 | `sha-<short>` | `panel-dev` / `core-dev` | every train merge | never | multi-arch |
 | `beta-x.y.z` | `panel` / `core` | the train cut, and every train merge | per merge | multi-arch |
+| `vx.y.z-beta` | git, `actana/control` | a requested beta cut | per cut | — |
+| `x.y.z-beta` | `panel` / `core` | the same cut, retagged from `beta-x.y.z`'s digest | per cut | multi-arch |
 | `x.y.z` | `panel` / `core` | promotion | never | multi-arch |
 | `latest` | `panel` / `core` | promotion of the highest version | per release | multi-arch |
 
 Read it as a ladder of decreasing mutability and increasing audience: `pr-` is
-what is under discussion, `beta-` is what is about to ship, `x.y.z` is what
+what is under discussion, `beta-` is what is about to ship, `x.y.z-beta` is a
+particular moment of that train someone asked to publish, `x.y.z` is what
 shipped, and `latest` is what an operator gets by typing nothing.
+
+**The two beta classes have different clocks, and confusing them is the one
+mistake this table exists to stop.** `beta-x.y.z` moves on **every merge into
+the train**, with nobody asking for it. `x.y.z-beta` — the git tag and the image
+tag alike — moves only when a person dispatches a cut, and it stands still
+between cuts however much the train moves underneath it.
 
 - **`pr-<prid><YYYYMM>` means "the current state of that pull request"** and is
   mutable on purpose (D10). The prefix is deliberately *not* `sha-`, which this
@@ -322,17 +404,54 @@ shipped, and `latest` is what an operator gets by typing nothing.
   and `actana/panel-dev`, not from the release repositories.** It sits there
   because the sweep that deletes it needs a delete-capable credential, and that
   credential is kept permanently out of the repositories holding `latest`.
-- **`beta-x.y.z` is not a semver prerelease, and that is deliberate** (D8).
-  Semver's own form is `1.2.3-beta.1` and the tooling parses it correctly; this
-  shape was chosen because it matches the branch that produced it. The mismatch
-  is safe **only because betas never become GitHub Releases** (D9) — nothing
-  that parses versions ever sees one. If a beta ever gains a Release, that
-  clause has to be revisited before the change lands, not after.
-- **Betas are Docker-only.** No git tag, no GitHub Release, no Core tarballs.
-  The metal install path therefore has no beta channel: a beta is testable as a
-  container and in no other way.
+- **`beta-x.y.z` is not a semver prerelease, and that is still deliberate**
+  (D8). Semver would put the suffix after the version rather than in front of
+  it; this shape was chosen because it matches the branch that produced it, and
+  it names a *train*, not a version anything installs. D8's safety argument was
+  that the mismatch costs nothing because *"nothing that parses versions ever
+  sees one"* — and things now do.
+  [ADR 0036](adr/0036-the-beta-release-channel.md) D8 is the revisit that clause
+  demanded, and it answers every parser in the repository by name.
+- **`x.y.z-beta` is a semver prerelease, and it is the version a machine
+  reports.** It is the string on the git tag, the GitHub Release, the three
+  tarballs, the CLI asset and the two image tags — **exactly `x.y.z-beta`, on
+  every one of them.** There is no counter, no dotted suffix, no run number and
+  no short sha: a beta of the 0.4.1 line is `0.4.1-beta` and stays that string
+  however many times it is cut (0036 C1). A counted form is not a supported
+  shape anywhere in this repository, and the cut refuses to publish one.
+- **Betas are no longer Docker-only.** 0023 D9 made them so, and 0036 reverses
+  it: a beta cut publishes a prerelease GitHub Release with the three Core
+  tarballs and their checksums, so a train is installable on metal. What D9
+  actually required survives in force as 0036 D11 — the Release is created
+  `prerelease: true`, and `beta-release.yml` reads the flag back off the API and
+  fails the run if it is not set. `install.sh` and the in-product update checker
+  both read `/releases/latest`, which excludes prereleases, so a single missing
+  flag would make every running Core and Panel advertise an unreleased build.
+  D11 states that as one sentence because it is 0023 D9's own; after
+  [#317](https://github.com/actana/control/issues/317) the two readers no longer
+  reach the endpoint the same way. The update checker still reads it directly
+  and is exposed in full. `install.sh` reaches it only at D2's **step 4**, once
+  `v<line>` and `v<line>-beta` have both 404'd — so a metal install on a line
+  that has a release never sees the flag at all, and the exposure is the update
+  checker's. Which is the reader that reaches every running machine, so nothing
+  about the requirement softens.
+- **"Version tags in this repository are immutable" is no longer true as a
+  sentence**, and 0036 D7 says which half survives: a **release** tag is
+  immutable and is the record of what shipped (0023 D44); a **beta** tag is a
+  handle and moves, exactly as `beta-x.y.z` already does per merge. The
+  immutable record of a beta is what it has always been — the commit sha, the
+  image digest and `SHA256SUMS`.
+- **Nothing sweeps either beta class**, in git or on Docker Hub (0036 D23). The
+  `vx.y.z-beta` tag, its prerelease Release and the `x.y.z-beta` image tags all
+  persist after the line promotes. That is bounded at **one of each per line**
+  rather than one per cut — which is the moving tag paying for itself — and the
+  alternative would be widening a delete-capable credential that D36 and D38
+  keep permanently out of the repositories holding `latest`.
 - **A prerelease version tag** (`v1.0.0-rc.1`) publishes `:1.0.0-rc.1` and
-  deliberately does **not** move `:latest`.
+  deliberately does **not** move `:latest`. That is the backport release
+  candidate (D30), a different thing from a beta: its shape carries an
+  identifier by design and is compared numerically, and the `x.y.z-beta` rule
+  above does not reach it.
 
 ### `<stage>-<arch>` tags are build scaffolding, not tags to pull
 
@@ -388,6 +507,24 @@ What is **not** true, and never was:
   old line, so there is no digest to promote and its images are built from the
   release branch. See [Backports and the supported
   lines](#backports-and-the-supported-lines).
+- **It does not extend to the Core tarballs, and it cannot** — not now that a
+  beta publishes them ([ADR 0036](adr/0036-the-beta-release-channel.md) D18,
+  [#321](https://github.com/actana/control/issues/321)). A container digest is
+  version-neutral; a tarball self-identifies. The version is in the asset name,
+  in the root directory inside the archive, and in the `core-manifest.json` the
+  CLI reads back, and both consumers check it: `install.sh` refuses a download
+  whose `bin/actana` is not under `actana-core-$VERSION-$TARGET/`, and
+  `actana setup` refuses a tree whose manifest disagrees with the machine. Bytes
+  built as `0.4.1-beta` say `0.4.1-beta` all the way down, so there is no rename
+  that turns them into a `0.4.1` tarball — which is precisely the property that
+  makes the image promotion honest and this one impossible. `release.yml`
+  therefore keeps building its three tarballs from the promoted tag, and
+  `SHA256SUMS` keeps covering exactly those three.
+- **A beta's tarballs and a release's are never confusable**, which is why the
+  clause above costs nothing in safety (0036 D20). Different asset names,
+  different archive roots, different manifests: an operator who downloads
+  `actana-core-0.4.1-beta-linux-x64.tar.gz` cannot end up with a machine
+  reporting `0.4.1`.
 
 The assertion is made twice, on purpose: once in `promote.yml` **before**
 `main` moves — which is what stops an unapproved commit reaching `main` at all
@@ -397,6 +534,26 @@ and a half-verified release is not a verified one.
 
 If the train moved after the approver tested it, the assertion fails with *"the
 train moved; re-approve"* and nothing is published. That is the design working.
+
+**A second assertion runs beside it, and it is about the version rather than
+the commit** ([ADR 0037](adr/0037-one-version-per-line.md) D4). The revision
+label says which commit these bytes came from and is silent about what version
+they think they are, so an image whose six manifests said `9.9.9` used to
+promote cleanly to `x.y.z` and to `latest`. Both images now carry
+`org.opencontainers.image.version`, holding the **line** — which is one label
+for all four version-bearing tags, because `beta-x.y.z`, `x.y.z`, `latest` and
+`x.y.z-beta` are the same bytes carrying the same line. It is read back off the
+pulled image in the same two places the revision is, and a digest that
+self-reports something else is refused before any tag is re-pointed at it.
+
+Two things about that label are worth knowing before you meet them. It is
+written from the checkout's manifests and never from the tag being published,
+because a label taken from the tag would be the tautology the whole chain
+exists to remove. And **an image built before it existed is refused rather than
+tolerated**: the Core images inherit `org.opencontainers.image.version=24.04`
+from the Ubuntu base through `FROM`, and the Panel images carried no version
+label at all, so the first promotion of a train whose images predate this asks
+for a re-run of the train's image jobs and says so on screen.
 
 ## The pull request image, and what it is not
 
@@ -532,7 +689,7 @@ Its axes are `distro × arch`, and they split across two triggers:
 | Trigger | Workflow | Legs |
 | --- | --- | --- |
 | every PR | [`ci.yml`](../.github/workflows/ci.yml) `installer-e2e` | ubuntu, debian — **x64** |
-| `v*` tag | [`release.yml`](../.github/workflows/release.yml) `installer-e2e` | ubuntu, debian — **arm64** |
+| a release | [`release.yml`](../.github/workflows/release.yml) `installer-e2e` | ubuntu, debian — **arm64** |
 
 Distro is the axis that earns its place on every PR: PAM, polkit and the logind
 rules that decide whether a sudo-less `systemctl --user` and `loginctl
@@ -869,11 +1026,12 @@ Two registries are therefore in play, doing two different jobs:
 ## Housekeeping
 
 [`housekeeping.yml`](../.github/workflows/housekeeping.yml) is the only entry
-point that is not a check and not a publish. Seven chores on two crons:
+point that is not a check and not a publish. Eight chores on two crons:
 
 | Job | Cron | What it does |
 | --- | --- | --- |
 | `stale` | daily, 03:17 UTC | labels and closes inactive issues and PRs |
+| `open-train` | daily, 03:17 UTC | asks origin whether a `beta/*` train is open — **opens an issue** when none is, which is the backstop for a promotion that stopped before `train-invariant` (D25) |
 | `base-pins` | Mondays, 07:00 UTC | opens the `NODE_VERSION` bump PR, reports digest drift |
 | `release-detector` | Mondays, 07:00 UTC | base drift or a new fixable CVE in a *released* image, both images — **opens an issue**, publishes nothing |
 | `dev-tag-sweep` | Mondays, 07:00 UTC | deletes stale `pr-*` and `sha-*` tags from `panel-dev` and `core-dev` |
@@ -881,17 +1039,17 @@ point that is not a check and not a publish. Seven chores on two crons:
 | `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
 | `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
 
-An eighth job, `release-ref`, resolves the newest published release for
+A ninth job, `release-ref`, resolves the newest published release for
 `release-detector`; it is a job rather than a step only because a matrix job
 cannot compute its own inputs.
 
 One file, because a workflow file's unit is not a subject but a relationship to
-a pull request, and these seven share one: no PR causes them and no PR fixes
+a pull request, and these eight share one: no PR causes them and no PR fixes
 them. Jobs are gated on `github.event.schedule`, which is how one file carries
 two cadences; `workflow_dispatch` takes a `chore` input naming one of them, or
 `weekly` for the six that share the Monday tick.
 `scripts/__tests__/workflows.test.mjs` reads the file and asserts each job is on
-the cron it claims — and that the directory still holds exactly five entry
+the cron it claims — and that the directory still holds exactly six entry
 points plus `container-image.yml`.
 
 **Nothing on a clock publishes an image.** This file used to rebuild the newest
@@ -959,59 +1117,88 @@ D45.
 
 A release is a **promotion**, not a tag push. Nothing is rebuilt: the images an
 operator pulls are the ones a person already ran. The whole flow is four
-things, and only the first and third need a human.
+things, and three of them are a person's: the cut names the version, the
+acceptance approves the bytes, and the dispatch asks for the publish.
 
 ```
   cut the train  ──▶  merge PRs into it  ──▶  freeze + accept  ──▶  promote
-   (workflow)          (each publishes         (a person)           (dispatch)
+   (a person)          (each publishes         (a person)           (dispatch)
                         beta-x.y.z)
 ```
 
 ### Cutting a train
 
-Normally you do not: `promote.yml` cuts the next one automatically after every
-promotion, so a train is always open and work can always be proposed (D25). The
-guessed version is `beta/<next-minor>.0` — **a default, not a commitment.** If
-the next release is a patch, or a major, delete the branch and re-cut it before
-anything merges into it — by hand, because there is no cut workflow to
-dispatch. *Re-cutting a train, by hand* below is what to run instead.
+**A person cuts the train, by hand, and that is the normal path.** No workflow
+cuts one and nothing guesses a version, because the version *is* the decision:
+the next release may be a patch, a minor or a major, and only a person knows
+which (D3, D22 and D25, all as amended by
+[#325](https://github.com/actana/control/issues/325)). Until #325 a promotion
+cut `beta/<next-minor>.0` on its way out and the runbook told you to delete and
+re-cut it when the guess was wrong — which it was on the first promotion after
+the clause was written.
 
 The cut creates `beta/x.y.z` from `main` and writes that version into every
-manifest in its first commit (D3, amended by #152 and #157). Do not hand-edit
-those files: hand-editing six manifests is how five of them end up disagreeing,
-and the one that disagrees is found at promotion, by a person. A required check
-on the train asserts every one of them equals the branch's version.
+manifest in one commit (D3, amended by #152 and #157), **and into `install.sh`'s
+line stamp beside them** ([ADR 0036](adr/0036-the-beta-release-channel.md) D1). A
+required check on the train asserts every manifest equals the branch's version,
+so drift afterwards is impossible rather than merely discouraged. That commit
+**is** the stamp: a branch created without it is a train that looks right and
+carries the previous train's versions, and it stays quiet until the first pull
+request into it goes red with six errors at once, on whoever happened to open it.
 
-A zero-merge train is legitimate. `beta/0.1.0` is expected to be one, and it
-still has an image to promote, because **the cut itself publishes one** (D7).
-
-#### Re-cutting a train, by hand
-
-**There is no dispatchable cut workflow.** The cut exists only as
-`promote.yml`'s `next-train` job, which runs as a consequence of a promotion
-and takes no version input, so a re-cut is hand work until one exists. That is
-the single exception to "do not hand-edit those files" above, and the way to
-survive it is to write exactly what `next-train` writes and nothing else:
+The stamp in `install.sh` is a seventh file and **not** a seventh manifest. It is
+what makes the copy of the installer on this train install this train's beta and
+the copy on `main` install the release, out of bytes that become identical at the
+promotion fast-forward (0036 D1 and D2) — so a train cut without it serves the
+previous line's beta from its own door, silently. It is edited on its own line
+below rather than added to `files=()` because `install.sh` is not a workspace
+package, and `Train rules`' manifest set deliberately refuses to grow past the
+packages (0036 D4).
 
 ```bash
-git push origin --delete beta/<guessed>        # before anything merges into it
 git fetch origin --prune
 git switch -c beta/x.y.z origin/main
 
-# The six manifests, one line changed in each. Edited in place on purpose:
-# `jq` and most editors reserialise the whole file, and a cut whose diff is
-# not six lines is a cut a reviewer cannot check at a glance.
-node -e 'const fs=require("node:fs"), v=process.argv[1];
-  for (const f of process.argv.slice(2)) fs.writeFileSync(f,
-    fs.readFileSync(f,"utf8").replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${v}"`));
-' x.y.z package.json packages/{cli,core,panel,sdk,shared}/package.json
+# The six manifests. This list and `MANIFESTS` in `ci.yml`'s `Train rules` job
+# are the same set by construction, and a test asserts it: the array below is
+# read out of this file by `scripts/__tests__/workflows.test.mjs`, which fails
+# when the two drift. Extending one without the other is the bug that assertion
+# exists to catch — a seventh package would be cut unstamped and found by
+# `Train rules` afterwards, on somebody else's pull request.
+files=(package.json packages/cli/package.json packages/core/package.json
+       packages/panel/package.json packages/sdk/package.json packages/shared/package.json)
+
+# One line changed in each, edited in place on purpose: `jq` and most editors
+# reserialise the whole file, and a cut whose diff is not six lines is a cut a
+# reviewer cannot check at a glance.
+VERSION=x.y.z node -e '
+  const fs = require("node:fs");
+  const version = process.env.VERSION;
+  for (const file of process.argv.slice(1)) {
+    const before = fs.readFileSync(file, "utf8");
+    fs.writeFileSync(file, before.replace(/^(\s*"version":\s*)"[^"]*"/m, `$1"${version}"`));
+  }
+' "${files[@]}"
+
+for file in "${files[@]}"; do jq -r --arg f "$file" '"\($f): \(.version)"' "$file"; done
+
+# The line stamp (ADR 0036 D1) — one assignment on one line, so this is a `sed`
+# and the diff stays one line like the six above. `-i.bak` because BSD `sed` on
+# macOS requires an argument to `-i` and GNU `sed` accepts one.
+sed -i.bak 's/^LINE=".*"$/LINE="x.y.z"/' install.sh && rm -f install.sh.bak
+grep -n '^LINE=' install.sh                    # must print LINE="x.y.z"
 
 git commit -a -F cut-message.txt               # Conventional Commits, see below
 git push --no-verify origin beta/x.y.z         # --no-verify: see below
 ```
 
-Three things this has to get right, because nothing checks any of them until
-far too late:
+The push is what publishes `beta-x.y.z`, so the train has an image before
+anything merges into it and a zero-merge train is still promotable (D7). It also
+needs an actor that bypasses the `beta/*` ruleset — the repository owner does;
+[`docs/rulesets/beta.json`](rulesets/beta.json) is what it is being bypassed.
+
+Four things this has to get right, because nothing checks any of them until far
+too late:
 
 - **`--no-verify` on that push, or the hooks off for the cut.**
   `.husky/pre-push` does not know the `beta/*` class: its line 9 matches the
@@ -1023,7 +1210,23 @@ far too late:
   and ran `git config core.hooksPath .husky`, which you should have. Tracked
   as #269; when the hook learns the class, drop the `--no-verify`.
 - **The diff is only the cut.** `git diff origin/main beta/x.y.z` is exactly
-  those six manifests and six lines.
+  those six manifests, `install.sh`'s stamp, and seven lines.
+- **The line stamp.** [ADR 0036](adr/0036-the-beta-release-channel.md) D1 gives
+  `install.sh` a stamped line version and says it is *"written by the cut exactly
+  as the six manifests are"*. That is this procedure — the cut is the hand that
+  writes it. [#317](https://github.com/actana/control/issues/317) put the stamp
+  in the file and the resolution that reads it, and
+  `scripts/__tests__/install-sh.test.mjs` asserts that the stamp is a plain
+  `x.y.z` equal to the workspace version and that nothing in the file names a
+  channel. **The separate `Train rules` assertion 0036 D4 asks for is now there**
+  ([#327](https://github.com/actana/control/issues/327), which owns
+  `.github/workflows`): `assert_installer_stamp` runs beside the six manifests on
+  every pull request into a train and on the promotion gate, and `Train versions`
+  makes the same assertion on the push a cut is. It is its own check and not a
+  seventh entry in `MANIFESTS`, because `install.sh` is not a workspace package
+  and that list refuses to grow past them (0036 D4). A cut that forgets the stamp
+  now goes red on the train rather than serving the previous line's beta from its
+  own door.
 - **Every body line of the message is at most 132 characters.** `commitlint`
   lints every commit in a pull request, not just its title — but no pull
   request puts a cut commit in front of it until the promotion gate, when the
@@ -1034,6 +1237,57 @@ far too late:
 awk 'length($0) > 132 { print FILENAME " line " FNR ": " length($0) }' cut-message.txt
 git log origin/main..beta/x.y.z --pretty=%B | awk 'length($0) > 132 { print FNR ": " length($0) }'
 ```
+
+The commit message is the one the cut has always carried, and it is
+Conventional Commits because it reaches `main` through the next promotion pull
+request, where `ci.yml`'s `Conventions` job lints every commit in it:
+
+```
+chore(release): cut beta/x.y.z
+
+Every manifest carries the train's version (ADR 0023 D3). Cut from main after
+promoting <previous>, so a train is always open and work can always be
+proposed (D25).
+```
+
+#### Nothing lets you forget
+
+The invariant D25 protects — *a train is always open, so work can always be
+proposed* — used to be held by the automatic cut. It is now held by two jobs
+that cut nothing and name no version:
+
+- **`promote.yml`'s `train-invariant`** runs at the end of every promotion. It
+  says in the run's own log that the promotion cut no branch and computed no
+  version, then asks origin whether a `beta/*` exists. When none does — the
+  ordinary state one second after the promoted train is deleted — it opens the
+  tracking issue *"No open train: nothing can be proposed until one is cut"*,
+  carrying a link to this section.
+- **`housekeeping.yml`'s `open-train`** asks the same question every morning
+  and reuses that exact title, so the state cannot be closed away: an issue
+  closed while no train exists is filed again on the next daily tick, and the
+  one you cut the train for is closed by you, in the same gesture.
+
+Neither is a red run. Every non-hotfix promotion ends with no train open, so a
+job that failed on it would be red after every good release — which is how a
+team learns that red means nothing.
+
+#### Re-cutting a train
+
+The version was wrong, or the train is being abandoned. **Before anything has
+merged into it** this is one delete and one cut:
+
+```bash
+git push origin --delete beta/x.y.z            # nothing has merged into it
+```
+
+then the procedure above, with the name you actually want. There is no
+delete-and-re-cut *dance* any more, because nothing guessed the name in the
+first place — this is the same cut, done again.
+
+**After something has merged into it**, the branch carries work and deleting it
+throws that work away. Retarget the open pull requests, cherry-pick the squash
+commits onto the new train, and only then delete the old one. That is also the
+fallback when a post-hotfix rebase conflicts (D24).
 
 ### Working the train, and the freeze window
 
@@ -1057,12 +1311,200 @@ after somebody has already worked the checklist against a stale image: the
 failure opens an issue, and the `Train rules` check blocks the promotion pull
 request while the train's latest push is red (D21).
 
+### Cutting a beta
+
+**A beta cut is requested by a person and never happens on a merge** ([ADR
+0036](adr/0036-the-beta-release-channel.md) C3). Merges into the train keep
+doing exactly what they have always done — the checks, and the moving
+`beta-x.y.z` images — and publish nothing else. What a cut adds is the half a
+container cannot give you: a train that installs on metal, and a CLI-only
+machine that can drive it.
+
+```bash
+gh workflow run beta-release.yml --repo actana/control --ref beta/0.4.1 -f train=beta/0.4.1
+```
+
+**The train is named twice, and both are load-bearing.** `-f train=` is the
+input; `--ref` is the branch the run resolves its own workflow file from. A
+dispatch executes the copy of the file that lives on the ref it was dispatched
+on, so `--ref main -f train=beta/0.4.1` would cut the train with `main`'s copy
+of the workflow — the stale-workflow trap
+[#326](https://github.com/actana/control/issues/326) closed for a promotion, in
+a new dialect. Here there is no second workflow to dispatch at the right ref,
+so it is closed by refusal instead: the run stops unless the ref it is on *is*
+the train it was asked to cut, and the error names the corrected command.
+
+The input is validated as `beta/x.y.z` the way a promotion validates it. The
+version published is that branch's version with `-beta` after it — `0.4.1-beta`
+— and **that string is fixed for the life of the line** (0036 C1). Cut the same
+beta ten times and it is `0.4.1-beta` all ten. Nothing appends a counter, a
+dotted suffix, a run number or a short sha, on the tag, the Release, any asset
+name or either image tag; the run asserts the shape before it builds anything
+and refuses a version that grew one.
+
+> **On "ten times", as of 2026-08-25:** the *naming* half of that sentence is
+> unconditional and always was — no cut of any line ever produces anything but
+> `0.4.1-beta`. The *ten times* half is not available yet: a live tag ruleset
+> refuses the second cut of a line, and the CAUTION block at the end of this
+> section says which one, what it costs, and what has to change.
+
+> **`beta-release.yml` has to exist on `main` before any of this can be typed.**
+> GitHub resolves a dispatchable workflow from the **default branch**: a file
+> that is only on a train is not offered by `gh workflow run` or by the Actions
+> UI, and the dispatch fails before a run is created. `--ref` chooses which copy
+> *executes* — it does not make an undispatchable workflow dispatchable. So beta
+> cuts become possible on the line after the one that ships this workflow: the
+> milestone promotes, `beta-release.yml` lands on `main` in that fast-forward,
+> and the next train can be cut. It is the same one-promotion-late shape [ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) D40 records for #326's
+> own amendment, and it is a property of the trigger rather than of this file.
+
+What the run does, in order:
+
+1. **Refuses anything it cannot cut cleanly, before it builds a byte.** The
+   train must be a real `beta/x.y.z` branch on origin; the ref the run is on
+   must be that train; the train's tip must still be the commit the dispatch
+   named, so a merge landing in between costs a re-dispatch rather than a cut
+   whose gates and bytes came from different commits; and the tip's own `ci.yml`
+   push run must be green — a beta cut from a red tip is a published prerelease
+   nobody gated, and the run names the failing run's URL and stops (0023 D21).
+2. **Builds three tarballs** at `x.y.z-beta` — `linux-x64`, `linux-arm64` and
+   `mac-arm64`, each boot-smoked on a runner of its own architecture — and
+   **runs the installer e2e once**, on Ubuntu x64, against the `linux-x64`
+   tarball it just built.
+3. **Composes `SHA256SUMS`** over exactly those three, verifies it the way an
+   operator would, and checks that every asset filename carries the bare beta
+   version and nothing else.
+4. **Moves `vx.y.z-beta`** to the train tip — force-updating the ref on purpose
+   and logging the sha it moved off — and it happens *here*, with every gate
+   above already green, rather than at the front of the run. A beta tag is a
+   handle, not a record.
+5. **Publishes the prerelease**, `prerelease: true` and never `latest`, with
+   every asset clobbered in place, then **reads the flags back off the API** and
+   fails if they are not what it asked for (0036 D11).
+6. **Retags the images.** `x.y.z-beta` in `panel` and `core`, created from the
+   train's `beta-x.y.z` digest with `docker buildx imagetools create` — nothing
+   is rebuilt, so the bytes a person tested are the bytes that are published
+   (0036 D12). It runs *after* step 5 deliberately: an image tag cannot be taken
+   back ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D45), so a
+   retag beside a publish that failed would leave `x.y.z-beta` standing next to
+   a Release that does not exist. What makes *"nothing is rebuilt"* a guarantee
+   rather than a description is `container-image.yml`'s own assertion: it
+   refuses `beta-x.y.z`'s digest, on every architecture the manifest lists, when
+   its `org.opencontainers.image.revision` label is not the commit being cut —
+   which matters precisely because `beta-x.y.z` may have moved since this run
+   resolved the tip.
+
+**A leg that goes red before the publish job publishes nothing, the tag move
+included** — which is what step 4's position in that list buys. Every build,
+every smoke and the e2e are `needs:` of the job that writes the tag and the
+assets, so a `mac-arm64` leg that goes red leaves `vx.y.z-beta` naming exactly
+the commit it named before the dispatch. There is no tag to reset and nothing to
+clean up.
+
+**After that job there are two more that write, and a red one there does leave
+something behind.** The two retags in step 6 are independent promote calls with
+no gate between them, so one can fail where the other succeeded — leaving
+`core:x.y.z-beta` created and `panel:x.y.z-beta` absent, beside a prerelease
+that is already published, with the created tag unwithdrawable (0023 D45).
+**Re-dispatching the cut is the repair**, and it works because every write on
+this path is idempotent: the tag is force-moved, the assets are clobbered, and a
+retag re-points a name that is already a name. It converges only while the train
+tip has not moved — once it has, a re-dispatch cuts the newer commit rather than
+repairing the older one.
+
+> **And as of 2026-08-25, only while the tip has not moved.** The repair
+> survives the ruleset in the CAUTION block below for exactly one reason: when
+> the tip is unchanged, `git push --force` of a ref that already names that
+> commit sends nothing, so no `update` rule fires and the run walks past the tag
+> to the assets and the retags it came back to fix. Once the tip *has* moved,
+> the same re-dispatch is a second cut, 20390423 refuses it at step 4, and the
+> half-retag this paragraph is about stays unrepaired — with `core:x.y.z-beta`
+> created, `panel:x.y.z-beta` absent, and no supported way to finish. That case
+> needs the §3e-i ruleset change, and it is the sharpest reason the change is
+> not merely cosmetic.
+
+A second cut of the same beta is a supported operation and not a repair: it
+moves the tag, replaces every asset, and leaves nothing behind from the cut
+before it.
+
+> [!CAUTION]
+> **Conditional as of 2026-08-25, per the gate review of
+> [#342](https://github.com/actana/control/pull/342): today a beta line can be
+> cut exactly once.** The two claims this section makes about repeated cuts —
+> *"cut the same beta ten times and it is `0.4.1-beta` all ten"* and *"a second
+> cut of the same beta is a supported operation"* — are kept, because they are
+> what the workflow does and what the channel is designed to be. Neither is
+> true against the repository as it is configured right now, and the reason is
+> a ruleset rather than this workflow.
+>
+> Live ruleset **20390423** ("Release tags are immutable") is `active` on
+> `refs/tags/v*` with rules `update`, `deletion` and `non_fast_forward` and
+> **no bypass actors at all**. `v0.4.1-beta` matches that pattern. The **first**
+> cut of a line *creates* the ref and passes through 20390424's App bypass; the
+> **second** cut's `git push --force origin refs/tags/v0.4.1-beta` in step 4
+> *updates* an existing ref, and 20390423 refuses that for everyone — the App
+> included. The paragraph below about `creation` describes 20390424, which is
+> not the ruleset that sees a second cut.
+>
+> **Nothing is published by a refused second cut.** Step 4's position in the
+> list is what buys that: the tag move is the first write in `publish`, so the
+> run stops there with the previous cut's Release, assets and image tags
+> intact, and there is nothing to clean up. The operator sees the tag push fail
+> with a message naming 20390423.
+>
+> **What it means for an operator today.** Cut a line once. If the train tip
+> moves and you need the beta to follow it, the second cut will be refused
+> until the repository owner makes the one-entry ruleset change recorded in
+> [`REPO_SETUP.md`
+> §3e-i](REPO_SETUP.md#3e-i-the-change-ruleset-20390423-needs-and-the-alternative-that-is-wrong)
+> — excluding `refs/tags/v*-beta` from 20390423's conditions. Re-dispatching
+> does not help; this is configuration, not a transient fault. **This block
+> lifts when that exclusion is live and a line has been cut twice for real.**
+
+**A cut pushes its tag as the App, and it checks for that identity first.** The
+tag ruleset restricts *creation* under `refs/tags/v*` — a pattern `vx.y.z-beta`
+matches as squarely as `vx.y.z` does — and the App is the bypass actor ([ADR
+0023](adr/0023-release-trains-and-digest-promotion.md) D39,
+[`REPO_SETUP.md` §3e](REPO_SETUP.md#3e-the-tag-ruleset)). Without those
+credentials the *first* cut of a line fails at the tag, after three tarball
+builds and a macOS runner — which is why the missing secret is refused up front
+rather than met at the push. A later cut of the same line does not reach that
+ruleset at all: it updates a ref rather than creating one, and the ruleset that
+governs an update is 20390423, which the block above is about.
+
+The gates are lighter than a release's, deliberately, because the train has
+already proved most of them on the commit being cut — typecheck, unit tests,
+lint, the audit, the secret scan, both Linux tarballs and the installer e2e on
+Ubuntu and Debian. What the cut adds is the `mac-arm64` leg and one Ubuntu x64
+installer e2e. **There is no macOS install e2e**, which is not a gap this
+introduced: there has never been one ([ADR
+0016](adr/0016-the-0-1-0-shape.md) D35). That `macos-15` leg is real, recurring
+spend against a budget D35 cut, and it is accepted with its price written down
+in 0036 D13 — a beta without a macOS tarball is not installable the same way a
+release is on the one platform where the Core is an on-device product, and C3
+keeps the frequency under a person's control rather than a merge's.
+
+**What a cut does not do:** it does not touch `main`, it is never an input to a
+promotion, and it publishes nothing to registry.npmjs.org under any dist-tag
+(0036 D15, D21). A beta release is a publish *from* the train, not a second
+route to `main`.
+
+Operator-facing instructions for what a cut produces are in
+[`INSTALL.md` §Installing a beta](../INSTALL.md#installing-a-beta).
+
 ### Accepting the beta
 
 Pull `beta-x.y.z`, run it, and work
 [`beta-acceptance-checklist.md`](beta-acceptance-checklist.md). This is the
 human gate the whole design is built around — the image you approve is, byte
 for byte, the image that ships.
+
+A beta cut does not replace that gate and does not stand in for it. The image
+the checklist is worked against is `beta-x.y.z`, the tag that moves per merge,
+because that is the digest a promotion re-points. `x.y.z-beta` is a published
+snapshot for people installing the train, not the artifact the promotion
+assertion reads.
 
 The macOS pre-release checklist is worked at the same time, against the
 **train tip** rather than against a tag that does not exist yet. By the digest
@@ -1074,16 +1516,48 @@ assertion that is the same commit, and it is available earlier.
 `promote.yml`'s *Resolve* job globs `refs/heads/beta/*` and subtracts the train
 being promoted: one branch surviving that subtraction *is* the hotfix condition
 (D23), so a train that was merely abandoned is rebased onto the new `main` and
-force-pushed, its images republished and the next train not cut — see
-[§Hotfix trains](#hotfix-trains) — while two survivors refuse the dispatch
-outright.
+force-pushed and its images republished — see [§Hotfix trains](#hotfix-trains)
+— while two survivors refuse the dispatch outright.
 
-Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
-it approved — then dispatch:
+**Right now that means `beta/0.4.0`, and it is not optional.** It is still on
+origin, it was abandoned rather than promoted, and **both** copies of
+`promote.yml` — the one on `main` and the one on the train — read a single
+survivor the same way: as a hotfix. Promoting `beta/0.4.1` while `beta/0.4.0`
+exists does not fail; it succeeds and then **rebases `beta/0.4.0` onto the new
+`main`, force-pushes it, republishes its images, and comments on every pull
+request open into it**. Delete it first:
 
 ```bash
-gh workflow run promote.yml --repo actana/control -f train=beta/0.1.0
+git push origin --delete beta/0.4.0        # after checking nothing unmerged is on it
 ```
+
+Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
+it approved — then dispatch **at the train**:
+
+```bash
+gh workflow run promote.yml --repo actana/control --ref beta/0.4.1 -f train=beta/0.4.1
+```
+
+**The train is named twice, and both are load-bearing** — the same shape
+[§Cutting a beta](#cutting-a-beta) uses, and for the same reason. `-f train=`
+is the input. `--ref` decides *which copy of `promote.yml` executes*: a
+dispatch resolves every workflow file from the ref it is handed, so `--ref
+beta/0.4.1` runs the train's own `promote.yml` rather than the default
+branch's. Dispatching without `--ref` runs `main`'s copy, which is the
+stale-workflow trap [#326](https://github.com/actana/control/issues/326)
+closed for `release.yml`, one level up.
+
+> **Written 2026-08-25, per the gate review of
+> [#342](https://github.com/actana/control/pull/342).** This instruction used
+> to be the bare `gh workflow run promote.yml -f train=…`, on the reading that
+> a promotion has no choice but to run the default branch's workflow. It has a
+> choice, and the two copies now differ enough that the choice matters. For the
+> **0.4.1** promotion specifically, dispatching at `--ref beta/0.4.1` is what
+> gets you `preflight`, the `release.yml` dispatch at the tag with its
+> `head_sha` assertion, and `train-invariant` — none of which exist on `main`
+> yet — and it is what stops `main`'s `next-train` job cutting an unusable
+> `beta/0.5.0` behind you. [§ Promoting the 0.4.1 train, once
+> ](#promoting-the-041-train-once) is the whole of it.
 
 **That pull request is a gate, not a merge. Do not press the merge button.** A
 squash would produce a `main` commit whose SHA differs from the tested one,
@@ -1115,12 +1589,23 @@ check names, still green.
    unapproved code.
 2. **Verify the digest** — every architecture, both images, against the
    promotion pull request's head SHA. The design reduces to this step.
-3. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
+3. **Preflight the release, while nothing has moved.** Everything below this
+   step is irreversible in practice, so the questions `release.yml` would
+   otherwise not reach until afterwards are asked here: does the promoted
+   commit carry a dispatchable `release.yml`, are the Docker Hub and npm
+   credentials there, is `vx.y.z` free. It also reports which of the workflow
+   files this run resolved differ from the train's (#326).
+4. **Fast-forward `main`** to that exact commit. Not a squash, not a merge
    commit; a non-fast-forward is an error, never a fallback.
-4. **Push `vx.y.z`** as a record — it triggers nothing — then call `release.yml`
-   by `workflow_call`.
-5. **Cut `release/x.y`** if the line has none, **delete the promoted train**,
-   and **cut the next train**.
+5. **Push `vx.y.z`** as a record — it triggers nothing by itself — then
+   **dispatch `release.yml` at that tag** and wait for it. Dispatching at the
+   tag is what makes the release run the *promoted commit's* `release.yml`
+   rather than the default branch's, and the job asserts the release run's
+   `head_sha` is the promoted commit before it waits (#326).
+6. **Cut `release/x.y`** if the line has none and **delete the promoted train**.
+   Nothing cuts the next one: the run says so in its own log and opens the
+   tracking issue when no train is left open — see
+   [§ Nothing lets you forget](#nothing-lets-you-forget).
 
 Every push in that workflow is made with the GitHub App identity and never with
 `GITHUB_TOKEN`, and that is not a preference. **GitHub does not trigger
@@ -1129,27 +1614,284 @@ would push `vx.y.z` and produce no release, and would fast-forward `main`
 without ever firing `landing.yml` — a landing-page change merged through a
 train would quietly stop deploying, with nothing red anywhere (D39).
 
-**Re-running after a failure.** Up to and including the fast-forward, a failed
-run is re-runnable from the top: the promotion pull request is still open and
-nothing is published. **After** it, it is not — `main` has moved, GitHub has
-closed the pull request as merged, and the workflow will refuse. Recovery is
-then per-step and manual: `gh workflow run release.yml -f tag=vx.y.z` re-runs
-the publish, and the branch housekeeping is a `git push` each.
+**Re-running after a failure.** Up to and including the preflight, a failed run
+is re-runnable from the top: the promotion pull request is still open and
+nothing is published. **After the fast-forward** it is not — `main` has moved,
+GitHub has closed the pull request as merged, and `resolve` refuses the second
+dispatch by design, because that pull request *is* the gate. Recovery is then
+per-step and manual, and it is written down in full below:
+[§ When a promotion half-runs](#when-a-promotion-half-runs).
+
+#### Promoting the 0.4.1 train, once
+
+This subsection is about one promotion — the one that carries
+[#326](https://github.com/actana/control/issues/326)'s fix and everything else
+in the 0.4.1 milestone onto `main`. It exists because that promotion is the
+last one where `main`'s copy of `promote.yml` and the train's copy differ, and
+the difference is not cosmetic.
+
+| | `main`'s `promote.yml` | `beta/0.4.1`'s `promote.yml` |
+| --- | --- | --- |
+| `preflight` before `advance` | **absent** | present |
+| release entry | `workflow_call`, resolved from the caller's SHA | `workflow_dispatch` **at `vx.y.z`**, `head_sha` asserted (#326) |
+| `train-invariant` | absent | present |
+| `next-train` (auto-cut) | **present** | **deleted** (#325) |
+
+**Dispatch at the train.** `gh workflow run promote.yml --repo actana/control
+--ref beta/0.4.1 -f train=beta/0.4.1`. Nothing in `promote.yml` reads
+`github.ref` — every job fetches the refs it needs by name and `advance`
+pushes `$HEAD_SHA:refs/heads/main` explicitly — so the ref changes which file
+runs and nothing else. The `pause` job's `macos-release` environment still
+gates it: that environment leaves **deployment branches unrestricted**
+([`REPO_SETUP.md` §macos-release](REPO_SETUP.md)), which is exactly the setting
+that lets a gated job run on a `beta/*` ref. A branch restriction there would
+refuse the ref and this route would not exist.
+
+**What that buys, in one sentence each.** `preflight` asks — before `main`
+moves — whether the promoted commit carries a dispatchable `release.yml`,
+whether the Docker Hub and npm credentials are present, and whether `v0.4.1`
+is free. The release is dispatched **at `v0.4.1`**, so `release.yml` and the
+`container-image.yml` it calls come from the promoted commit rather than from
+`main`, and the run's `head_sha` is asserted to be that commit. And no train is
+cut behind you.
+
+**Two things to expect, neither of them a fault.**
+
+1. **The jobs after `retire-train` run on a ref that no longer exists.**
+   `retire-train` deletes `beta/0.4.1`, which is the ref the run was dispatched
+   on. `train-invariant`'s checkout resolves the run's commit SHA, and `main`
+   now carries that exact commit, so it resolves. If it nonetheless fails, it
+   is cosmetic: `train-invariant` only files the no-open-train tracking issue,
+   and `housekeeping.yml`'s daily `open-train` chore files the same issue the
+   next morning.
+2. **Nothing cuts `beta/0.5.0`.** That is the point, not an omission. Cutting
+   the next train is [§ Cutting a train](#cutting-a-train), by hand, and it
+   writes `install.sh`'s line stamp as well as the six manifests.
+
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342): "it cannot be otherwise"
+> was wrong.** The paragraph in [§ When a promotion
+> half-runs](#when-a-promotion-half-runs) said #326's fix arrives one promotion
+> late and could not be avoided. The first half is true of a dispatch on
+> `main`. The second half is not true at all — `--ref` is the same mechanism
+> `beta-release.yml` requires of its own dispatch and the same one `promote.yml`
+> now uses for `release.yml`, and it was available the whole time.
+
+**If the bare dispatch is used anyway**, this is what to expect and undo, so
+it is recognised rather than diagnosed. `main`'s `promote.yml` runs: no
+`preflight`, the release resolved by `workflow_call` from `main`'s SHA, and —
+because `beta/0.4.0` had to be deleted first and `retire-train` then deletes
+`beta/0.4.1` — `next-train` finds no train open and **cuts `beta/0.5.0` from
+the new `main`**. That job rewrites the six manifests to `0.5.0` and **does not
+write `install.sh`'s line stamp**; it never had to, because the stamp
+([ADR 0036](adr/0036-the-beta-release-channel.md) D1) did not exist when it was
+written. The stamp on `main` therefore still reads `LINE="0.4.1"` while the
+train says `0.5.0`, and the new `Train versions` job — which arrives on `main`
+in this very promotion — runs `assert-version-agreement.mjs --require-stamp` on
+that branch's first push and goes **red**. `Resolve train tags` never runs, so
+**no `beta-0.5.0` image is ever published** and the train is unusable rather
+than merely untidy. The repair is by hand: confirm nothing has been merged into
+it, delete it, and cut the next train properly from
+[§ Cutting a train](#cutting-a-train), which writes the stamp.
+
+### When a promotion half-runs
+
+A promotion is re-runnable from the top **up to and including `preflight`**:
+the promotion pull request is still open, `main` has not moved, no tag exists,
+and nothing has been published. Dispatch it again and read the error.
+
+**Once `advance` has run, it is not.** `main` has been fast-forwarded, `vx.y.z`
+is pushed, and GitHub has closed the promotion pull request as merged the
+moment those commits became reachable — so `promote.yml`'s `resolve` refuses a
+second dispatch, because that pull request is the gate (D5). That refusal is
+the design working. **There is no flag that turns re-dispatching into the
+recovery.** This section is the recovery.
+
+It is written from a real one. Run
+[32716466300](https://github.com/actana/control/actions/runs/32716466300)
+promoted `beta/0.4.0` on 2026-08-24: the pause, the digest verification, the
+fast-forward and the tag all succeeded, and then every publishing job failed,
+because the promotion was running a `release.yml` older than the train it was
+promoting ([#326](https://github.com/actana/control/issues/326)). That cause is
+fixed — the release is dispatched at the tag now — but a promotion can still
+stop after `advance` for reasons that have nothing to do with it: a CVE gate
+that fires, a registry that is down, an installer e2e that goes red.
+
+**The fix arrives one promotion late *if the promotion is dispatched on
+`main`*, and this is the section where that matters.** A promotion executes the
+workflow files resolved from the ref the run was dispatched on, and for a bare
+`gh workflow run promote.yml` that is the default branch as it stood when the
+run was created — that is the whole of #326. Dispatched that way,
+**the first promotion after this change lands still runs the old
+`promote.yml` and the old `release.yml`**: no `preflight`, no `--ref` on the
+release, and no `head_sha` assertion. Expect that one run to look like the runs before it, and read the
+paragraph above rather than this one if it stops.
+
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342).** This paragraph used to
+> end *"it cannot be otherwise, because the change reaches `main` only by being
+> promoted"*, and that is false. **`--ref` is otherwise.** `gh workflow run
+> promote.yml --repo actana/control --ref beta/0.4.1 -f train=beta/0.4.1` runs
+> the *train's* copy of `promote.yml` — the identical mechanism
+> `beta-release.yml` requires of its own dispatch, and the one `promote.yml`
+> itself now uses to dispatch `release.yml` at the tag. The `pause` job's
+> `macos-release` environment leaves deployment branches unrestricted, so the
+> human gate still runs on a `beta/*` ref. What is genuinely one promotion late
+> is only the *default*: a promotion dispatched with no `--ref` still gets
+> `main`'s files. **[§ Promoting the 0.4.1 train,
+> once](#promoting-the-041-train-once) is the instruction**, and it also
+> records what `main`'s copy does behind you if the bare form is used — it
+> auto-cuts an unstamped `beta/0.5.0` that goes red on its first push.
+
+**A half-run promotion is not a cosmetic failure, and this is why.** The
+fast-forward and the version tag land *before* the release does, so between
+`advance` and the GitHub Release existing, `main` carries the new line while
+that line has no Release. `install.sh` resolves the line stamped on `main` and
+falls through to that line's beta when its release is missing, so **if a beta of
+that line was ever cut, the public one-liner serves that prerelease** ([ADR
+0036](adr/0036-the-beta-release-channel.md) D3). If none was, step 4 answers
+with today's newest release and there is no window at all — which is the state
+`v0.4.0` is in below.
+
+In the ordinary case the window is one release run long and closes when the run
+finishes. **A red or cancelled release is what makes it open-ended**, and
+nothing self-corrects: the stamp on `main` cannot be walked back, because `main`
+advances only by fast-forward and is already at the train tip. The recovery is
+finishing the release, below — not rolling anything back.
+
+#### What is safe to re-run, and what is burned
+
+| | | |
+| --- | --- | --- |
+| **The whole release, on the same tag** | re-runnable | Every job is idempotent by design. The tarballs rebuild; `github-release` creates or `--clobber`s its four assets; the image jobs re-point a digest, and a tag is a pointer; and an npm version that is already on the registry is a `::notice`, not the 403 that would fail a release whose only fault was having worked. |
+| **`release/x.y` and deleting the train** | re-runnable | One `git push` each, and both are guarded: the line is created only when it does not exist, and the train is deleted only when its tip is reachable from `main`. |
+| **The tag, and `main`** | **burned** | A tag is the record of what shipped (D44) and `main` only ever moves forward. A promotion that failed after `advance` has a *correct* `main` and a *correct* tag; what is missing is everything downstream of them. Do not delete either, and do not move them. |
+| **An npm version number** | **burned** | Consumed by its first publish. Unpublishing inside the 72-hour window frees the bytes and not the name, so `@actana/sdk@x.y.z` can never mean anything else, on any future train (`release.yml` § *Why it is last*). If a package published and a later job failed, the number is spent and the re-run treats it as published. If it published **unattested**, the number cannot be reclaimed at all: restore the provenance path and cut the next version. |
+| **`:latest`, once it has moved** | **burned as a pointer** | It has no history to roll back to. If the image jobs re-pointed it and the release is then abandoned, the path is [§ Rolling back](#rolling-back), not this one. |
+
+#### Finishing a promotion whose tag and `main` already moved
+
+Everything here is a person's, and the order matters — the release first,
+because the branch housekeeping is what the workflow does *after* a successful
+release and skipping ahead loses the branch you would want to look at.
+
+```bash
+version=0.4.0                       # the train's version, no leading v
+train="beta/$version"
+line="release/${version%.*}"
+
+# 1. Confirm the state, rather than assuming it. `main` should already be the
+#    commit the tag names, and the promotion pull request should read "Merged".
+git fetch origin --prune --tags
+git rev-parse origin/main "v$version^{commit}"
+gh release view "v$version" --repo actana/control || echo "no Release yet"
+npm view @actana/cli versions
+```
+
+```bash
+# 2. Re-run the publish, AT THE TAG. The `--ref` is not decoration: it decides
+#    which copy of `release.yml` — and of the `container-image.yml` it calls —
+#    the run executes. Without it the run resolves them from the default
+#    branch, which is the whole of #326. `-f tag` decides what is released.
+gh workflow run release.yml --repo actana/control --ref "v$version" -f tag="v$version"
+gh run list --repo actana/control --workflow release.yml --limit 1
+```
+
+Watch it out. If it goes green, `v$version` has its GitHub Release, its four
+assets, both images at `<version>`, and its npm packages. If it goes red, fix
+what it names and dispatch it again the same way — a re-run costs nothing that
+has not already been spent.
+
+```bash
+# 3. Cut the release line, if this was the first release on it. It marks where
+#    the line began and is never moved forwards (D27).
+git ls-remote --exit-code --heads origin "$line" \
+  || git push origin "v$version^{commit}:refs/heads/$line"
+```
+
+```bash
+# 4. Retire the promoted train. The guard is the one `retire-train` makes:
+#    everything on the train is on `main`, unless something merged into it
+#    after the fast-forward — in which case deleting it throws real work away.
+#
+#    The empty-tip arm is not defensive noise: re-running this step is the
+#    normal thing to do, and `ls-remote` answers with an empty string once the
+#    branch is gone. Without it `--is-ancestor ""` errors into the last arm and
+#    tells you work is at risk when there is nothing left to do at all.
+tip="$(git ls-remote --heads origin "$train" | cut -f1)"
+if [[ -z "$tip" ]]; then
+  echo "$train is already retired — nothing to do"
+elif git merge-base --is-ancestor "$tip" origin/main; then
+  git push origin --delete "$train"
+else
+  echo "$train is at $tip, which is not reachable from main — something merged"
+  echo "into it after the fast-forward. Retarget that work before deleting it."
+fi
+```
+
+```bash
+# 5. The open-train invariant. A promotion with no train left open files the
+#    tracking issue itself; one that stopped before `train-invariant` did not,
+#    and `housekeeping.yml`'s daily `open-train` chore will file it tomorrow.
+#    Cutting a train is § Cutting a train, and it is a person's decision.
+git ls-remote --heads origin 'refs/heads/beta/*'
+```
+
+If the promotion was a **hotfix** — another train existed when it ran — step 5
+is not the end: the surviving train can no longer fast-forward, and it needs
+the rebase and the image republish `rebase-train` would have done. That whole
+procedure is [§ Hotfix trains](#hotfix-trains); it is not optional, because a
+train whose `beta-` image names an unreachable commit cannot be promoted at
+all (D16, D24).
+
+#### The state `v0.4.0` is in
+
+Recorded here because it is the worked example and because it is still true at
+the time of writing: `main` and `refs/tags/v0.4.0` are both
+`af3bf7b6624c0e0fd59e741bdbad9f249e781dbc` and both correct; there is **no
+GitHub Release for `v0.4.0`** and npm tops out at `0.3.3`; `beta/0.4.0` was
+never retired, so it and `beta/0.4.1` are both open, which is a state `resolve`
+tolerates only as the hotfix case and this is not one. The `0.4.0` **images**
+are fine — `verify` passed on all four manifests before `advance`, and
+`actana/core:beta-0.4.0` and `actana/panel:beta-0.4.0` carry
+`org.opencontainers.image.revision = af3bf7b…` on both architectures.
+
+Closing it is the procedure above, run by a person with the credentials: steps
+2 through 5, with `version=0.4.0`. It is deliberately not done from a pull
+request — dispatching a release is a publish, and a publish is an operator's
+act, not a reviewer's.
 
 ### What `release.yml` does with the tag
 
 ```bash
-gh workflow run release.yml --repo actana/control -f tag=v0.1.0
+gh workflow run release.yml --repo actana/control --ref v0.1.0 -f tag=v0.1.0
 ```
 
 That is the by-hand entry point, and the only way a backport releases at all.
-**Pushing a `v*` tag does nothing** (D40): there is no tag trigger, because
-keeping one beside the `workflow_call` would fire two release runs that could
-not even block each other — `github.ref_name` is the tag under a tag push and
-the *caller's* ref under a `workflow_call`, so the two would take different
-concurrency keys and race to build the same tarballs and create the same
-Release. A stray hand-pushed tag now does nothing at all, which is a stronger
-property than a check that catches it.
+It is also how a promotion enters this workflow: `promote.yml` dispatches
+exactly that command with the tag it has just pushed.
+
+**Give it `--ref`, always, and give it the tag.** A dispatch resolves every
+workflow file it executes from the ref it is handed, `release.yml` and the
+`container-image.yml` it calls alike, so `--ref` decides *which copy of the
+release pipeline runs* while `-f tag` decides *what is released*. Dispatching
+without `--ref` resolves them from the default branch, which is how a release
+ends up running a workflow older than the commit it is publishing — see
+[#326](https://github.com/actana/control/issues/326) and
+[§ When a promotion half-runs](#when-a-promotion-half-runs).
+
+**There is no `workflow_call` trigger** (D40, as amended by #326), and its
+absence is the fix rather than a tidy-up: a local
+`uses: ./.github/workflows/release.yml` resolves this file from the *caller's*
+SHA, which on a promotion is the default branch as it stood when the run was
+created. Removing the trigger removes the `uses:` that could do it.
+
+**Pushing a `v*` tag does nothing either** (D40): there is no tag trigger,
+because keeping one beside the dispatch would fire two release runs that could
+not even block each other — `github.ref_name` differs between them, so the two
+would take different concurrency keys and race to build the same tarballs and
+create the same Release. A stray hand-pushed tag does nothing at all, which is
+a stronger property than a check that catches it.
 
 `release.yml` resolves one of **two modes** from where the tag lives, and says
 which in the log:
@@ -1209,6 +1951,14 @@ The gated job goes to **waiting** the moment the run starts.
 **Nothing leaves the repository until a reviewer approves.** No image moves, no
 `:latest` moves, **no package reaches npm**, no GitHub Release appears, and
 `main` does not advance.
+
+That sentence is about the **promotion**. A beta cut of the same line, if one
+was dispatched, has already published its own prerelease and its own
+`x.y.z-beta` images, and rejecting here does not and cannot withdraw them
+([ADR 0036](adr/0036-the-beta-release-channel.md) C3, D23). What it withdraws
+is the release: nothing an operator gets by typing nothing has moved, `latest`
+is where it was, and the line is still unshipped. A prerelease is never
+`/releases/latest`, which is why it costs the reviewer's guarantee nothing.
 
 That ordering costs a release the reviewer's own latency, and it buys the one
 thing that makes "reject" a real answer: an image push is not undoable, and
@@ -1278,12 +2028,14 @@ both because neither is the natural way to write one:
   rewritten without it being asked. Approvals survive — they attach to the head
   — but conflicts can appear, and only the author can resolve them.
 
-No next train is cut after a hotfix promotion: a train already exists, so the
-invariant already holds (D25).
+Nothing is cut after a hotfix promotion, and nothing is cut after any other
+one either (D25, as amended by #325) — but the hotfix case is the one where the
+invariant needs nothing done about it: the surviving train *is* the open train,
+so `train-invariant` reports it and files nothing.
 
 **If the rebase conflicts**, the workflow fails loudly and does not try to
 resolve anything. The fallback is: abandon the surviving train, re-cut it from
-`main` — by hand, per *Re-cutting a train, by hand* — and cherry-pick its
+`main` — per [§ Re-cutting a train](#re-cutting-a-train) — and cherry-pick its
 squash commits. `main`, the tag and the release are
 unaffected and correct — only that train needs the work.
 
@@ -1370,13 +2122,38 @@ Rollback stops new pulls from getting bad bytes. It is not the fix. **The fix
 goes forward, through a hotfix train** — see above — and it is what re-points
 `latest` at something newer than the version you rolled back to.
 
-Two things rollback does not do, and cannot:
+Three things rollback does not do, and cannot:
 
 - **It does not un-pull anything.** Operators pinned to `0.1.4`, or who pulled
   `latest` while it pointed there, are unaffected by the retag and need to be
   told. `:latest` is a pointer with no history.
 - **It does not touch `beta-x.y.z` or the open train.** Those describe work in
   progress, not what shipped.
+- **It does not reach the metal install path** ([ADR
+  0036](adr/0036-the-beta-release-channel.md) D24). Step 2 above flips a flag on
+  `/releases/latest`; `install.sh` resolves from the line stamped on `main`, and
+  a rollback does not rewrite `main`. So a fresh
+  `curl …/main/install.sh | bash` **keeps installing the version you just rolled
+  back** while every Docker pull and the in-product update checker have already
+  moved off it. This is the one state where the two answers genuinely disagree
+  and the installer's is the worse one, and it is written here rather than met
+  during an incident.
+
+**So the metal path's rollback is the hotfix train, not the flag flip.** A
+hotfix train is cut from `main`, promoted, and re-stamps `main` in the same
+fast-forward — after which the one-liner follows with no further action and no
+new mechanism. The interval to cover is between the flip and that promotion, and
+what covers it is telling operators the version explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash -s -- --version 0.1.3
+actana setup
+```
+
+An explicit `--version` wins over everything and is unaffected by any of this.
+Nothing else about a rollback changes: the beta Release of any line stays where
+it is and does not need deleting, because it is a prerelease and
+`/releases/latest` never answers one.
 
 ## Running CI locally
 

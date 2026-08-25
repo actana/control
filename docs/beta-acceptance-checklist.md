@@ -19,6 +19,17 @@ against the train tip:
 [`core-macos-prerelease-checklist.md`](core-macos-prerelease-checklist.md).
 Both must pass before you approve.
 
+> **`beta-x.y.z`, not `x.y.z-beta`.** Two tags name a beta of the same line and
+> they are not interchangeable. This list is worked against **`beta-x.y.z`**,
+> the train tag that moves on every merge, because that is the digest a
+> promotion re-points and therefore the bytes that ship. `x.y.z-beta` is a
+> published beta *cut* — a snapshot somebody dispatched, for people installing
+> the train on metal or from the CLI — and it is not what the promotion reads.
+> Pulling the wrong one leaves you testing a different commit than the one you
+> are about to approve. See [ADR
+> 0036](adr/0036-the-beta-release-channel.md) D7 and
+> [`ci-cd.md` §Cutting a beta](ci-cd.md#cutting-a-beta).
+
 ---
 
 ## 1. Pull the beta
@@ -102,6 +113,16 @@ docker compose restart
 docker compose exec core actana status
 ```
 
+Those versions are `x.y.z` — the train's version, with no suffix. A beta *cut*
+of this line, if one has been dispatched, publishes `x.y.z-beta` instead, and
+that string is exactly `x.y.z-beta`, with nothing appended after `beta`. The
+two are the same bytes under two names, and neither is `latest`.
+
+A beta is no longer testable only as a container. The same train installs on
+metal from its own ref, and the once-per-release rehearsal of that path is
+[`core-linux-rehearsal.md`](core-linux-rehearsal.md) — a separate exercise from
+this list, not an extra box on it.
+
 ---
 
 ## Then
@@ -124,7 +145,11 @@ When it passes, and the macOS checklist passes:
 gh workflow run promote.yml --repo actana/control -f train=beta/0.2.0
 ```
 
-then approve the run when it asks. Nothing has been published before that
-approval — no image has moved, no Release exists, and `main` has not advanced —
-so **rejecting is a real answer**, and it is the answer whenever a box above is
-unticked. See [`ci-cd.md` § Promotion](ci-cd.md#promotion).
+then approve the run when it asks. Nothing the *promotion* publishes has moved
+before that approval — no release image, no GitHub Release for `x.y.z`, and
+`main` has not advanced — so **rejecting is a real answer**, and it is the
+answer whenever a box above is unticked. A beta cut of this line, if one was
+dispatched, has already published its own prerelease and its own image tags;
+that is not the promotion, it moves nothing an operator gets by typing nothing,
+and rejecting here still leaves the release unshipped. See [`ci-cd.md` §
+Promotion](ci-cd.md#promotion).

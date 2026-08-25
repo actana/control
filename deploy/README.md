@@ -158,8 +158,9 @@ the swap described above: a bind mount needs a host directory that already
 exists and is writable by uid 1000, and a pasted-in service would have neither.
 
 A Core does not have to be in this file at all. The point of the architecture is
-Cores on the machines that already have your code — `curl … install.sh | sh` on
-a laptop or a build box, paired to this same Panel. See
+Cores on the machines that already have your code — `install.sh` and then
+`actana setup` on a laptop or a build box, paired to this same Panel. It is two
+commands because installing is not activating. See
 [`INSTALL.md`](../INSTALL.md).
 
 ## Choosing a version
@@ -180,11 +181,12 @@ update" in the Panel rather than degrading quietly. A Panel on `0.2.0` beside a
 Core on `0.1.0` is a combination that never shipped and that nobody tested, so
 the file does not make it convenient to type.
 
-| Set | Get |
-| --- | --- |
-| nothing | `:latest` — the current release |
-| `ACTANA_TAG=0.1.0` | that release, pinned. What a real deployment should do |
-| `ACTANA_TAG=beta-0.2.0` | the open train — the next release, for testing |
+| Set | Get | Moves |
+| --- | --- | --- |
+| nothing | `:latest` — the current release | per release |
+| `ACTANA_TAG=0.1.0` | that release, pinned. What a real deployment should do | never |
+| `ACTANA_TAG=beta-0.2.0` | the open train's tip — the next release, for testing | **on every merge into the train** |
+| `ACTANA_TAG=0.2.0-beta` | the train's last published beta cut | **only when a person cuts one** |
 
 ```bash
 ACTANA_TAG=0.1.0 docker compose up -d
@@ -195,11 +197,35 @@ pull && docker compose up -d` then upgrades within whatever you pinned, which
 for a pinned version means it does nothing until you change the pin — that is
 the intended behaviour of a pin.
 
+**The last two rows are both "a beta of 0.2.0", and they run on different
+clocks.** That is the one thing to get right here:
+
+- **`beta-0.2.0`** is the train tag. It is republished by **every merge into the
+  train**, so what you get depends on when you pulled and nobody announced the
+  change. It is what the beta acceptance checklist is worked against, and it is
+  the digest a promotion re-points.
+- **`0.2.0-beta`** is a published beta cut. It moves **only when somebody
+  dispatches one**, and it stands still between cuts however much the train
+  moves underneath it. It is the version a machine reports, and the same string
+  names the git tag, the prerelease, its Core tarballs and this image tag.
+
+Neither is `latest`, and neither ever will be. The version string of a beta is
+`x.y.z-beta` exactly — no counter, no dotted suffix — so `0.2.0-beta` is the
+whole tag for the 0.2.0 line's beta however many times that line is cut. Both
+tags persist after the line promotes; nothing sweeps them.
+
 `beta-<version>` is a real multi-arch build of the release train, and it is the
 same digest that promotion re-points at `<version>` and `:latest` when the
 train ships. Nothing is rebuilt in between, so a beta you have run is the
-release you will get. That guarantee starts at `beta-x.y.z` and stops at
-`x.y.z` — see [`../docs/ci-cd.md`](../docs/ci-cd.md).
+release you will get. `x.y.z-beta` is that same digest under a second name, cut
+from the train at the moment somebody asked. That guarantee starts at
+`beta-x.y.z` and stops at `x.y.z`, and it does not extend to the Core tarballs —
+see [`../docs/ci-cd.md`](../docs/ci-cd.md) and [ADR
+0036](../docs/adr/0036-the-beta-release-channel.md).
+
+A beta is no longer testable only as a container: the same train installs on
+metal from its own ref, and the CLI-only path has an equivalent too. See
+[`INSTALL.md` §Installing a beta](../INSTALL.md#installing-a-beta).
 
 `ACTANA_IMAGE_NAMESPACE` exists for a fork publishing under its own Docker Hub
 account. It defaults to `actana` and most deployments never set it.

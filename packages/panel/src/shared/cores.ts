@@ -80,17 +80,30 @@ export type CoreDialStatus = {
 };
 
 /**
- * The command that brings a Core up to date — the same one-liner that installed
- * it. Re-running it on that machine upgrades the Core in place, keeping the
- * pairing (INSTALL.md, "Re-running the one-liner … upgrades it in place"), so
+ * The command that brings a Core up to date: `actana update`, run on that
+ * machine. It resolves the latest release, verifies it against the release's
+ * own `SHA256SUMS`, swaps `current` onto the new tree and **restarts the
+ * daemon**, leaving the pairing material and the data dir untouched — so
  * "needs update" is one paste on the Core rather than a re-pair in the Panel.
  *
- * The `actana` bundle will eventually own this as an `update` verb (CONTEXT.md);
- * until that verb exists, the installer *is* the update path and this is the
- * only command that actually works.
+ * **This was the installer one-liner, and it stopped working as one** (#316).
+ * `install.sh` installs and no longer activates (ADR 0036 C2): pasting it
+ * downloads the bundle, writes a new `versions/<v>`, repoints `current` and
+ * exits. The daemon keeps executing the version it started on, so the Core
+ * still announces the old protocol, the Panel still says "needs update", and
+ * the button never fixes anything. The one-liner plus `actana setup` would
+ * close the gap, but it is the wrong gesture for a machine that already has a
+ * Core: setup is what *activates* a machine, and this one is already active.
+ *
+ * The verb this docstring used to say did not exist yet does now
+ * (`packages/cli/src/actana-update.ts`), and it is the only one of the three
+ * that both lands the new tree and leaves the daemon running on it.
+ *
+ * A Core running as a container refuses `actana update` and names
+ * `docker compose pull && docker compose up -d` instead, which is the right
+ * answer there and is more than the one-liner ever gave that operator.
  */
-export const CORE_UPDATE_COMMAND =
-  "curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash";
+export const CORE_UPDATE_COMMAND = "actana update";
 
 /**
  * The command that brings a Panel up to date.

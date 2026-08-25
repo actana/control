@@ -91,15 +91,26 @@ against the one on screen. [deploy/README.md](deploy/README.md) walks through
 the file itself — the volumes, the loopback port, adding a second Core.
 
 **Installer** — turn a Linux or macOS (arm64) machine into a Core, as your own
-user, without sudo:
+user, without sudo. Two commands, because installing is not activating: the
+first puts the Core bundle and the `actana` CLI on the machine, the second
+turns the machine into a Core. The first prints the second — run the line it
+printed.
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/actana/control/main/install.sh | bash
+actana setup
 ```
 
 **Which one?** Compose if you want the whole thing on one host to try it;
 the installer if you want a Core on a machine that already has your code — your
 laptop, a workstation, a build box — paired to a Panel you deploy separately.
+
+**Want the next release rather than the current one?** The open train ships as a
+beta on all three surfaces — the `x.y.z-beta` images, a prerelease with the
+three Core tarballs, and the CLI as an asset. The ref you fetch `install.sh`
+from is the channel, so installing one is the same two commands from the train's
+own URL. See [INSTALL.md §Installing a beta](INSTALL.md#installing-a-beta) and
+[ADR 0036](docs/adr/0036-the-beta-release-channel.md).
 
 Full paths: [deploy/README.md](deploy/README.md) for the reference Compose,
 [DEPLOY.md](DEPLOY.md) for the Panel, [INSTALL.md](INSTALL.md) for a Core.
