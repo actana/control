@@ -174,9 +174,12 @@ Pick the tarball matching the machine's architecture from the GitHub Release —
 `linux-x64`, `linux-arm64` or `mac-arm64` — plus the `SHA256SUMS` asset from
 the same release. Those four files are the whole release.
 
-A beta prerelease carries the same four plus a copy of `install.sh` and the CLI
-tarball, and the version in every asset name is `x.y.z-beta`. Verify it exactly
-as below — `SHA256SUMS` covers the three Core tarballs there too.
+A beta prerelease carries the same four plus a copy of `install.sh`, and **will
+carry the CLI tarball once
+[#320](https://github.com/actana/control/issues/320)'s attach step lands — a
+cut made today does not attach it, so do not go looking for it on the Release
+page**. The version in every asset name is `x.y.z-beta`. Verify it exactly as
+below — `SHA256SUMS` covers the three Core tarballs there too.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -555,10 +558,13 @@ latest, with every asset replaced in place on each cut:
 - a copy of **`install.sh`**, so the script and the bytes it fetches ship
   together. It is a copy and not a door: the install URLs are the ones in the
   table above,
-- the **CLI tarball** described above — the one item on this list that a cut
-  does not attach yet ([#320](https://github.com/actana/control/issues/320)),
+- the **CLI tarball** described above — **not attached by a cut yet
+  ([#320](https://github.com/actana/control/issues/320))**,
 - **`x.y.z-beta` container images** in `actana/panel` and `actana/core`,
-  retagged from the train's own `beta-x.y.z` digest with nothing rebuilt.
+  retagged from the train's own `beta-x.y.z` digest with nothing rebuilt —
+  **not published by a cut yet
+  ([#319](https://github.com/actana/control/issues/319)); pull `beta-x.y.z` for
+  a container until it lands**.
 
 And what it does not:
 
