@@ -1073,9 +1073,24 @@ jobs:
           git -c user.name="${APP_SLUG:-actana-release}[bot]" \
               -c user.email="${APP_SLUG:-actana-release}[bot]@users.noreply.github.com" \
               tag -f -a "$TAG" "$SHA" -m "$TAG — beta cut of $TRAIN at $SHA"
+          # Two different rulesets can refuse this push, they refuse it for
+          # opposite reasons, and only one of them is a credential fault — so
+          # the error names the case this run is actually in. `$previous` is
+          # what tells them apart: empty means we were creating the ref.
+          #
+          #   create (first cut of a line) → 20390424, rule `creation`,
+          #     App bypass `always`. Refused ⇒ the App identity is missing.
+          #   update (every later cut)     → 20390423, rule `update`,
+          #     bypass_actors []. Refused ⇒ configuration, not credentials.
+          #
+          # See docs/REPO_SETUP.md §3e and §3e-i.
           if ! output="$(git push --force origin "refs/tags/$TAG" 2>&1)"; then
             echo "$output"
-            echo "::error title=The tag push was refused::\`refs/tags/v*\` is governed by the 'Release tags — only admins cut releases' ruleset, which needs the App as a **bypass actor** (ADR 0023 D39, docs/REPO_SETUP.md §3). Nothing has been published: no Release has been created or updated in this run."
+            if [[ -z "$previous" ]]; then
+              echo "::error title=The tag push was refused::Creating \`refs/tags/$TAG\` is restricted by ruleset **20390424** ('Release tags — only admins cut releases'), whose \`creation\` rule needs the App as a **bypass actor** (ADR 0023 D39, docs/REPO_SETUP.md §3e). Nothing has been published: no Release has been created or updated in this run."
+            else
+              echo "::error title=The tag push was refused::This is a **second cut** of $TAG, so the push is an \`update\` of an existing ref rather than a creation, and \`refs/tags/v*\` is governed by ruleset **20390423** ('Release tags are immutable') — rules \`update\`, \`deletion\`, \`non_fast_forward\`, and **no bypass actors at all**, so the App cannot pass it either. This is not a credential fault and re-dispatching will not clear it: it needs the ruleset change in docs/REPO_SETUP.md §3e-i (exclude \`refs/tags/v*-beta\` from 20390423's conditions), which is the repository owner's to make. Nothing has been published: no Release has been created or updated in this run."
+            fi
             exit 1
           fi
           echo "$output"

@@ -23,6 +23,22 @@ reduced to the fields the create/update API takes. Applying it would be a
 `POST` if 20390423 has been lost and a `PUT` over 20390423 if it has been
 edited; either is a deliberate restore, not a step in the cutover.
 
+> **Noted 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342): this file is correct, and
+> the ruleset it captures now needs a change.** The capture was re-read against
+> the live ruleset on 2026-08-25 and is byte-identical, so nothing here drifted
+> — the error the review found was in the *prose* that described 20390423, not
+> in this payload. What is new is that 20390423 can no longer stay as it is:
+> its `update` rule, with an empty `bypass_actors`, is what refuses the second
+> cut of a beta line, and [`../REPO_SETUP.md`
+> §3e-i](../REPO_SETUP.md#3e-i-the-change-ruleset-20390423-needs-and-the-alternative-that-is-wrong)
+> writes down the one-entry change required — excluding `refs/tags/v*-beta`
+> from its conditions — and why adding the App as an `update` bypass actor
+> instead would violate [ADR 0023](../adr/0023-release-trains-and-digest-promotion.md)
+> D44. **That change is the repository owner's to make, and it is still not
+> made**, so this capture stays as it is until it is; when it is made, this
+> file is re-captured from the same `GET` in the pull request that observes it.
+
 **Nothing here is applied by CI, and nothing here should be applied from a
 branch.** These files are data. Applying them is an admin step, taken
 deliberately, in the order and against the preconditions written down in

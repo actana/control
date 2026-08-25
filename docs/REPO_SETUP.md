@@ -773,12 +773,48 @@ are untouched by the payload.
 `refs/tags/v*` matches `v0.4.1-beta` exactly as it matches `v0.4.1`, so the
 `vx.y.z-beta` tag a beta cut publishes is created under this ruleset ([ADR
 0036](adr/0036-the-beta-release-channel.md) D7). The App bypass is therefore
-what makes the **first** cut of a line possible at all — later cuts of the same
-line only *update* an existing ref, which `creation` does not restrict, so a
-missing App identity would fail one cut per line and pass every other. That is
-the worst shape a credential problem can have, and it is why `beta-release.yml`
-refuses to start without the App secrets rather than discovering it at the push
+what makes the **first** cut of a line possible at all, and it is why
+`beta-release.yml` refuses to start without the App secrets rather than meeting
+the problem at a push that comes after three tarball builds and a macOS runner
 ([`ci-cd.md` §Cutting a beta](ci-cd.md#cutting-a-beta)).
+
+> [!CAUTION]
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342): a *second* cut of a line
+> is refused today, and this paragraph used to say the opposite.**
+>
+> What stood here was: *"later cuts of the same line only **update** an
+> existing ref, which `creation` does not restrict, so a missing App identity
+> would fail one cut per line and pass every other."* Read against 20390424
+> alone that sentence is true, which is how it survived review. It is false
+> against the repository, because 20390424 is not the only ruleset on
+> `refs/tags/v*`.
+>
+> Ruleset **20390423** ("Release tags are immutable") is `active` on the *same*
+> `refs/tags/v*` pattern, with rules `update`, `deletion` and
+> `non_fast_forward`, and **no bypass actors** — `bypass_actors` is absent from
+> the API read, which is how GitHub renders the empty list (`gh api
+> repos/actana/control/rulesets/20390423`, captured as
+> [`rulesets/tag-immutable.json`](rulesets/tag-immutable.json)).
+> `v0.4.1-beta` matches that pattern as squarely as it matches 20390424's. The
+> two rulesets therefore divide the two cases between them:
+>
+> | The cut | The git operation | Which ruleset decides | Result today |
+> | --- | --- | --- | --- |
+> | the **first** of a line | *creates* `refs/tags/v0.4.1-beta` | 20390424 — rule `creation`, App bypass `always` | **passes** |
+> | every **later** one | *force-updates* that same ref | 20390423 — rule `update`, no bypass actors | **refused, for every identity, the App included** |
+>
+> `creation` does not restrict a second cut. `update` does, and `update` is
+> 20390423's rule, not 20390424's. The `git push --force origin
+> refs/tags/vx.y.z-beta` in `beta-release.yml`'s *publish* job is that update.
+>
+> **The failure is clean, and it is still a failure.** The tag move is the
+> first write in `publish`, so a refused second cut creates no Release, uploads
+> no asset and retags no image — it stops with the previous cut intact. But
+> until the change in §3e-i is made, **a beta line can be cut exactly once**,
+> and [ADR 0036](adr/0036-the-beta-release-channel.md) D7's moving handle is
+> false against the repository as configured. Nothing on the cut path
+> preflights this; the run discovers it at the push.
 
 > [!WARNING]
 > **Open decision — this apply deletes a live bypass actor, and the pre-flight
@@ -817,8 +853,8 @@ refuses to start without the App secrets rather than discovering it at the push
 > 20390424 has zero bypass actors was an artifact of reading it without admin
 > rights.
 
-Ruleset **20390423** ("Release tags are immutable") is not touched by this
-effort — nothing here applies it and nothing here changes it. Its payload is
+Ruleset **20390423** ("Release tags are immutable") is not applied by this
+effort — nothing here applies it and no payload here changes it. Its payload is
 committed anyway, as
 [`rulesets/tag-immutable.json`](rulesets/tag-immutable.json), captured verbatim
 from the live ruleset. The point of `rulesets/` is that a clone can restore the
@@ -826,6 +862,88 @@ repository's protection; leaving one of the five out meant the fifth existed
 only in the web form, which is the thing this section is against. Restoring it
 is a `POST` if it has been deleted and a `PUT` over 20390423 if it has been
 edited — a deliberate act, not a cutover step.
+
+**It does now need one change, and that change is the repository owner's to
+make.** It is written down here rather than made here, for the reason the whole
+of §3 exists: these files are data, no branch applies them, and CI never may
+([`rulesets/README.md`](rulesets/README.md)). Nothing in
+[#342](https://github.com/actana/control/pull/342) touches any ruleset.
+
+#### 3e-i. The change ruleset 20390423 needs, and the alternative that is wrong
+
+- [ ] **Repository owner only.** Exclude `refs/tags/v*-beta` from ruleset
+      **20390423**'s conditions, then re-capture
+      [`rulesets/tag-immutable.json`](rulesets/tag-immutable.json).
+
+**The change is one array entry.** 20390423 keeps its name, its target, its
+enforcement, its three rules and its empty `bypass_actors`; only
+`conditions.ref_name.exclude` moves, from `[]` to one pattern:
+
+```json
+"conditions": {
+  "ref_name": {
+    "include": ["refs/tags/v*"],
+    "exclude": ["refs/tags/v*-beta"]
+  }
+}
+```
+
+Applied as a full-body `PUT` over 20390423, the same shape §3 uses everywhere
+else — read the live ruleset, add the one entry, send it back, and re-read to
+confirm. `exclude` wins over `include` in a GitHub ruleset, so this takes
+`v0.4.1-beta` out of the immutability ruleset's scope and leaves every release
+tag inside it, with the bypass actor list still empty.
+
+**What it does not loosen.** Beta tags stay governed by **20390424**, whose
+rule is `creation` and whose condition is untouched, so the *first* cut of a
+line is still a restricted create that only the App's bypass gets through — the
+property the paragraph above depends on. This change reaches `update`,
+`deletion` and `non_fast_forward` on beta names and nothing else. What it
+accepts, deliberately, is that a `vx.y.z-beta` tag becomes deletable and
+rewindable by whoever can already create it; that is the definition of a handle
+([ADR 0036](adr/0036-the-beta-release-channel.md) D7), and the immutable record
+of a beta was never the tag — it is the commit sha, the image digest and
+`SHA256SUMS`.
+
+> [!WARNING]
+> **Do not instead add the App as an `update` bypass actor on 20390423.** It is
+> the obvious repair — it is one entry in `bypass_actors`, it unblocks the
+> second cut, and it looks symmetrical with what 20390424 already does. It is
+> the wrong one, and this note exists so it is not reached for later by someone
+> reading only the failure.
+>
+> **A bypass actor carries no ref condition of its own.** It is scoped to the
+> ruleset it sits in, and 20390423's scope is `refs/tags/v*` — every release
+> tag. There is no way to spell *"bypass `update`, but only on names ending
+> `-beta`"* through a bypass actor. Adding the App there would therefore also
+> let it move `v0.4.0`, `v0.4.1` and every release tag that ever exists.
+>
+> That is exactly what [ADR
+> 0023](adr/0023-release-trains-and-digest-promotion.md) **D44** forbids —
+> *"`main`, the `vx.y.z` tag, and the release branch are the record of what
+> happened and are never rewritten"* — and it would forbid it in the worst
+> possible way, because the App is the identity every promotion pushes with and
+> the one that runs unattended. `promote.yml:482` refuses to move a release tag
+> in code; it does so on the assumption that the configuration refuses it too,
+> and this bypass actor would delete that second layer without changing a line
+> of the first.
+>
+> The exclusion above is narrower in the only direction that matters: it moves
+> one *name class* out of scope. The bypass actor would move one *identity* out
+> of scope, across every name the ruleset covers.
+
+**After the owner has made it**, three things follow, none of them optional:
+
+1. `gh api repos/actana/control/rulesets/20390423` reports the exclusion, and
+   `docs/rulesets/tag-immutable.json` is re-captured from that read in the same
+   pull request that observes it — the file's whole purpose is to be the live
+   ruleset, and a capture that leads or lags is worse than no capture.
+2. The three dated notes that mark D7's moving handle as conditional lift:
+   [ADR 0036](adr/0036-the-beta-release-channel.md) D7, [`ci-cd.md`
+   §Cutting a beta](ci-cd.md#cutting-a-beta), and the CAUTION block above.
+3. Cut a line twice against the real repository before believing any of it. The
+   first cut proves 20390424; only the second proves 20390423, and the second
+   is the one that has never been run.
 
 ### Verify it actually binds
 

@@ -294,6 +294,34 @@ The immutable record of a beta stays what it has always been — the commit sha,
 digest, and `SHA256SUMS`. A fixed name (C1) and repeated cuts (C3) cannot both hold any other
 way.
 
+> **Conditional as of 2026-08-25, per the gate review of
+> [#342](https://github.com/actana/control/pull/342): the handle does not move yet, and this
+> clause holds only once one ruleset is changed.** The clause is not withdrawn and its
+> argument is untouched — it is what the repository is being configured *towards*. What is
+> false today is the "moves" column of the table above, and it is false against configuration
+> rather than against code.
+>
+> Live ruleset **20390423** ("Release tags are immutable") is `active` on `refs/tags/v*` with
+> rules `update`, `deletion` and `non_fast_forward` and **no bypass actors**. `v0.4.1-beta`
+> matches that pattern. So the *first* cut of a line, which **creates** the ref, passes
+> through 20390424's App bypass and works; every *later* cut force-**updates** an existing ref,
+> and 20390423 refuses that for every identity, the App included. The `creation` rule the
+> record reasons about is 20390424's; `update` is 20390423's, and only 20390423 sees a second
+> cut. **`beta-release.yml` is correct and fails cleanly** — the tag move is the first write
+> in `publish`, so a refused second cut publishes nothing — but until the ruleset changes, a
+> beta line can be cut exactly **once**, and the sentence *"a beta tag is a handle and moves"*
+> describes an intent rather than the repository.
+>
+> The change required is one array entry — excluding `refs/tags/v*-beta` from 20390423's
+> conditions — and it is **the repository owner's to make**; #342 makes no ruleset change.
+> [`docs/REPO_SETUP.md` §3e-i](../REPO_SETUP.md#3e-i-the-change-ruleset-20390423-needs-and-the-alternative-that-is-wrong)
+> records it exactly, together with why the obvious alternative is wrong: adding the App as an
+> `update` bypass actor would unblock the beta cut *and* let the App move every release tag,
+> because a bypass actor carries no ref condition of its own — which is precisely what
+> [0023](0023-release-trains-and-digest-promotion.md) D44 forbids, and what the `promote.yml`
+> check quoted above assumes the configuration also forbids. **This note lifts when that
+> exclusion is live and a line has been cut twice against the real repository.**
+
 **D8 — The version parsers, each answered by name.** 0023 D8's safety argument was *"nothing
 that parses versions ever sees one."* After this milestone several things do:
 

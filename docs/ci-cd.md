@@ -1341,6 +1341,12 @@ dotted suffix, a run number or a short sha, on the tag, the Release, any asset
 name or either image tag; the run asserts the shape before it builds anything
 and refuses a version that grew one.
 
+> **On "ten times", as of 2026-08-25:** the *naming* half of that sentence is
+> unconditional and always was — no cut of any line ever produces anything but
+> `0.4.1-beta`. The *ten times* half is not available yet: a live tag ruleset
+> refuses the second cut of a line, and the CAUTION block at the end of this
+> section says which one, what it costs, and what has to change.
+
 > **`beta-release.yml` has to exist on `main` before any of this can be typed.**
 > GitHub resolves a dispatchable workflow from the **default branch**: a file
 > that is only on a train is not offered by `gh workflow run` or by the Actions
@@ -1406,19 +1412,65 @@ retag re-points a name that is already a name. It converges only while the train
 tip has not moved — once it has, a re-dispatch cuts the newer commit rather than
 repairing the older one.
 
+> **And as of 2026-08-25, only while the tip has not moved.** The repair
+> survives the ruleset in the CAUTION block below for exactly one reason: when
+> the tip is unchanged, `git push --force` of a ref that already names that
+> commit sends nothing, so no `update` rule fires and the run walks past the tag
+> to the assets and the retags it came back to fix. Once the tip *has* moved,
+> the same re-dispatch is a second cut, 20390423 refuses it at step 4, and the
+> half-retag this paragraph is about stays unrepaired — with `core:x.y.z-beta`
+> created, `panel:x.y.z-beta` absent, and no supported way to finish. That case
+> needs the §3e-i ruleset change, and it is the sharpest reason the change is
+> not merely cosmetic.
+
 A second cut of the same beta is a supported operation and not a repair: it
 moves the tag, replaces every asset, and leaves nothing behind from the cut
 before it.
+
+> [!CAUTION]
+> **Conditional as of 2026-08-25, per the gate review of
+> [#342](https://github.com/actana/control/pull/342): today a beta line can be
+> cut exactly once.** The two claims this section makes about repeated cuts —
+> *"cut the same beta ten times and it is `0.4.1-beta` all ten"* and *"a second
+> cut of the same beta is a supported operation"* — are kept, because they are
+> what the workflow does and what the channel is designed to be. Neither is
+> true against the repository as it is configured right now, and the reason is
+> a ruleset rather than this workflow.
+>
+> Live ruleset **20390423** ("Release tags are immutable") is `active` on
+> `refs/tags/v*` with rules `update`, `deletion` and `non_fast_forward` and
+> **no bypass actors at all**. `v0.4.1-beta` matches that pattern. The **first**
+> cut of a line *creates* the ref and passes through 20390424's App bypass; the
+> **second** cut's `git push --force origin refs/tags/v0.4.1-beta` in step 4
+> *updates* an existing ref, and 20390423 refuses that for everyone — the App
+> included. The paragraph below about `creation` describes 20390424, which is
+> not the ruleset that sees a second cut.
+>
+> **Nothing is published by a refused second cut.** Step 4's position in the
+> list is what buys that: the tag move is the first write in `publish`, so the
+> run stops there with the previous cut's Release, assets and image tags
+> intact, and there is nothing to clean up. The operator sees the tag push fail
+> with a message naming 20390423.
+>
+> **What it means for an operator today.** Cut a line once. If the train tip
+> moves and you need the beta to follow it, the second cut will be refused
+> until the repository owner makes the one-entry ruleset change recorded in
+> [`REPO_SETUP.md`
+> §3e-i](REPO_SETUP.md#3e-i-the-change-ruleset-20390423-needs-and-the-alternative-that-is-wrong)
+> — excluding `refs/tags/v*-beta` from 20390423's conditions. Re-dispatching
+> does not help; this is configuration, not a transient fault. **This block
+> lifts when that exclusion is live and a line has been cut twice for real.**
 
 **A cut pushes its tag as the App, and it checks for that identity first.** The
 tag ruleset restricts *creation* under `refs/tags/v*` — a pattern `vx.y.z-beta`
 matches as squarely as `vx.y.z` does — and the App is the bypass actor ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md) D39,
 [`REPO_SETUP.md` §3e](REPO_SETUP.md#3e-the-tag-ruleset)). Without those
-credentials the *first* cut of a line fails at the tag and every later cut of
-that line succeeds, because a later cut only updates a ref that already exists —
-which is why the missing secret is refused up front rather than met after three
-tarball builds and a macOS runner.
+credentials the *first* cut of a line fails at the tag, after three tarball
+builds and a macOS runner — which is why the missing secret is refused up front
+rather than met at the push. A later cut of the same line does not reach that
+ruleset at all: it updates a ref rather than creating one, and the ruleset that
+governs an update is 20390423, which the block above is about.
 
 The gates are lighter than a release's, deliberately, because the train has
 already proved most of them on the commit being cut — typecheck, unit tests,
