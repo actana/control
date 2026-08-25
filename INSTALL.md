@@ -174,12 +174,12 @@ Pick the tarball matching the machine's architecture from the GitHub Release —
 `linux-x64`, `linux-arm64` or `mac-arm64` — plus the `SHA256SUMS` asset from
 the same release. Those four files are the whole release.
 
-A beta prerelease carries the same four plus a copy of `install.sh`, and **will
-carry the CLI tarball once
-[#320](https://github.com/actana/control/issues/320)'s attach step lands — a
-cut made today does not attach it, so do not go looking for it on the Release
-page**. The version in every asset name is `x.y.z-beta`. Verify it exactly as
-below — `SHA256SUMS` covers the three Core tarballs there too.
+A beta prerelease carries seven assets: the same four, plus a copy of
+`install.sh`, plus the CLI tarball `actana-cli-x.y.z-beta.tgz` and its checksum
+`actana-cli-x.y.z-beta.tgz.sha256`. The version in every asset name is
+`x.y.z-beta`. Verify it exactly as below — `SHA256SUMS` covers the three Core
+tarballs there too, and the CLI tarball's checksum is a file of its own rather
+than a fourth row in it.
 
 ```bash
 sha256sum --ignore-missing -c SHA256SUMS
@@ -530,10 +530,11 @@ registry spec:
 npm i -g https://github.com/actana/control/releases/download/v0.4.1-beta/actana-cli-0.4.1-beta.tgz
 ```
 
-> **Not yet, on a real cut.** The pack and the name are shipped and asserted, and
-> the beta cut does not attach the tarball to its prerelease yet
-> ([#320](https://github.com/actana/control/issues/320)). Until it does, that URL
-> is a 404 on any beta you cut today. The form is the one it will take.
+The checksum is attached beside the tarball as
+`actana-cli-x.y.z-beta.tgz.sha256`, in `sha256sum`'s own two-space format, and
+the run prints the same row in its summary. There is no provenance attestation
+on this path ([ADR 0036](docs/adr/0036-the-beta-release-channel.md) D15, D17) —
+that checksum is what stands in its place.
 
 Compare that with the release path, which is the ordinary one:
 
@@ -558,13 +559,11 @@ latest, with every asset replaced in place on each cut:
 - a copy of **`install.sh`**, so the script and the bytes it fetches ship
   together. It is a copy and not a door: the install URLs are the ones in the
   table above,
-- the **CLI tarball** described above — **not attached by a cut yet
-  ([#320](https://github.com/actana/control/issues/320))**,
+- the **CLI tarball** described above, `actana-cli-x.y.z-beta.tgz`,
+- its checksum **`actana-cli-x.y.z-beta.tgz.sha256`**, a file of its own rather
+  than a fourth row in `SHA256SUMS`,
 - **`x.y.z-beta` container images** in `actana/panel` and `actana/core`,
-  retagged from the train's own `beta-x.y.z` digest with nothing rebuilt —
-  **not published by a cut yet
-  ([#319](https://github.com/actana/control/issues/319)); pull `beta-x.y.z` for
-  a container until it lands**.
+  retagged from the train's own `beta-x.y.z` digest with nothing rebuilt.
 
 And what it does not:
 

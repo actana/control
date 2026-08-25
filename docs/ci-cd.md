@@ -10,18 +10,6 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 0016](adr/0016-the-0-1-0-shape.md) D34; the sixth is [ADR
 0036](adr/0036-the-beta-release-channel.md) D9, amending D34 again):
 
-> **The sixth is in the tree and its asset set is not finished.**
-> `beta-release.yml` landed with
-> [#318](https://github.com/actana/control/issues/318) and publishes the moving
-> tag, the prerelease, three Core tarballs, `SHA256SUMS` and `install.sh`. Two
-> things its row promises are still decided rather than running: the **CLI
-> tarball**, whose packing half merged with
-> [#320](https://github.com/actana/control/issues/320) and whose attach step is
-> the `EXPECTED` array that ticket still has to extend, and the **`x.y.z-beta`
-> image tags**, which are
-> [#319](https://github.com/actana/control/issues/319). Both are D10's, so the
-> row states the contract; neither is published by a run today.
-
 | Workflow | Trigger | Produces |
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
@@ -261,8 +249,9 @@ is clobbered in place on each cut:
 | Core tarballs | `linux-x64`, `linux-arm64`, `mac-arm64` — the same three targets a release builds |
 | `SHA256SUMS` | over exactly those three |
 | `install.sh` | attached as a **copy**, so the script and the bytes it fetches ship together |
-| CLI | `pnpm pack`ed and attached as `actana-cli-<x.y.z>-beta.tgz`, installed from its asset URL (D16). **[#320](https://github.com/actana/control/issues/320) packs it; the attach step is still to come** |
-| Images | `x.y.z-beta` in `panel` / `core`, retagged from the train's `beta-x.y.z` digest — nothing rebuilt (D12). **[#319](https://github.com/actana/control/issues/319), not yet in the workflow** |
+| CLI | `pnpm pack`ed and attached as `actana-cli-<x.y.z>-beta.tgz`, installed from its asset URL (D16) |
+| CLI checksum | `actana-cli-<x.y.z>-beta.tgz.sha256` — the tarball's row as a file of its own, not a fourth row in `SHA256SUMS` |
+| Images | `x.y.z-beta` in `panel` / `core`, retagged from the train's `beta-x.y.z` digest — nothing rebuilt (D12) |
 
 The attached `install.sh` is a copy and **not a door**. The canonical installer
 stays on `main` under D29's rule, and nothing points an operator at the asset as
@@ -375,11 +364,10 @@ it.
 
 Seven published tag classes, each answering exactly one question ([ADR
 0023](adr/0023-release-trains-and-digest-promotion.md) D7, extended by [ADR
-0036](adr/0036-the-beta-release-channel.md) D7). Six of the seven are published
-by merged workflows, `vx.y.z-beta` since
-[#318](https://github.com/actana/control/issues/318). **The `x.y.z-beta` image
-row is decided rather than live** — it is
-[#319](https://github.com/actana/control/issues/319), which has not landed.
+0036](adr/0036-the-beta-release-channel.md) D7). All seven are published by
+merged workflows, `vx.y.z-beta` since
+[#318](https://github.com/actana/control/issues/318) and `x.y.z-beta` since
+[#319](https://github.com/actana/control/issues/319).
 
 | Tag | Repository | Published when | Moves | Arch |
 | --- | --- | --- | --- | --- |
@@ -1390,16 +1378,37 @@ What the run does, in order:
 6. **Retags the images.** `x.y.z-beta` in `panel` and `core`, created from the
    train's `beta-x.y.z` digest with `docker buildx imagetools create` — nothing
    is rebuilt, so the bytes a person tested are the bytes that are published
-   (0036 D12). **This step is [#319](https://github.com/actana/control/issues/319)
-   and is not in the workflow yet**; a cut run today stops after step 5.
+   (0036 D12). It runs *after* step 5 deliberately: an image tag cannot be taken
+   back ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D45), so a
+   retag beside a publish that failed would leave `x.y.z-beta` standing next to
+   a Release that does not exist. What makes *"nothing is rebuilt"* a guarantee
+   rather than a description is `container-image.yml`'s own assertion: it
+   refuses `beta-x.y.z`'s digest, on every architecture the manifest lists, when
+   its `org.opencontainers.image.revision` label is not the commit being cut —
+   which matters precisely because `beta-x.y.z` may have moved since this run
+   resolved the tip.
 
-**A red leg publishes nothing, the tag move included** — which is what step 4's
-position in that list buys. Every build, every smoke and the e2e are `needs:` of
-the one job that writes anything, so a `mac-arm64` leg that goes red leaves
-`vx.y.z-beta` naming exactly the commit it named before the dispatch. There is
-no tag to reset and nothing to clean up. A second cut of the same beta is a
-supported operation and not a repair: it moves the tag, replaces every asset,
-and leaves nothing behind from the cut before it.
+**A leg that goes red before the publish job publishes nothing, the tag move
+included** — which is what step 4's position in that list buys. Every build,
+every smoke and the e2e are `needs:` of the job that writes the tag and the
+assets, so a `mac-arm64` leg that goes red leaves `vx.y.z-beta` naming exactly
+the commit it named before the dispatch. There is no tag to reset and nothing to
+clean up.
+
+**After that job there are two more that write, and a red one there does leave
+something behind.** The two retags in step 6 are independent promote calls with
+no gate between them, so one can fail where the other succeeded — leaving
+`core:x.y.z-beta` created and `panel:x.y.z-beta` absent, beside a prerelease
+that is already published, with the created tag unwithdrawable (0023 D45).
+**Re-dispatching the cut is the repair**, and it works because every write on
+this path is idempotent: the tag is force-moved, the assets are clobbered, and a
+retag re-points a name that is already a name. It converges only while the train
+tip has not moved — once it has, a re-dispatch cuts the newer commit rather than
+repairing the older one.
+
+A second cut of the same beta is a supported operation and not a repair: it
+moves the tag, replaces every asset, and leaves nothing behind from the cut
+before it.
 
 **A cut pushes its tag as the App, and it checks for that identity first.** The
 tag ruleset restricts *creation* under `refs/tags/v*` — a pattern `vx.y.z-beta`
