@@ -1345,6 +1345,106 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
       }
     }
   });
+
+  // ── #320: the CLI asset, landed from #337's pull request comment ────────────
+
+  // D15 and D16. The line, never the beta string — the script appends `-beta`,
+  // which is what leaves no parameter a counter could arrive through — and the
+  // real `npm i -g`, run against the bytes that are attached rather than
+  // against a copy of them.
+  it("packs the CLI as an asset from the line, and installs it for real (D16)", () => {
+    const job = code(jobBlock(source, "publish"));
+    const call = invocation(job, "rehearse-npm-publish.mjs");
+    expect(call).toContain('--beta "$BETA_LINE"');
+    expect(call, "the pack must not reach the release path's publish flags").not.toContain(
+      "--version",
+    );
+    expect(call, "the asset must not be staged where the Core guards sweep").toContain(
+      "--out-dir artifacts/beta",
+    );
+    expect(call, "#320's acceptance criterion is the install, not the pack").toContain(
+      "--install-check",
+    );
+    // `BETA_LINE` is the line (`0.4.1`), not `beta_version` (`0.4.1-beta`).
+    // `betaVersion("0.4.1-beta")` throws, so the wrong one is caught at
+    // runtime — but only after a macOS leg and three tarballs have been paid
+    // for, and the point of C1 is that no surface derives a second time.
+    expect(job).toContain("BETA_LINE: ${{ needs.resolve.outputs.version }}");
+    expect(job).not.toContain("BETA_LINE: ${{ needs.resolve.outputs.beta_version }}");
+  });
+
+  // The guard on the flag rather than on the artifact. `install=ok` is emitted
+  // by the script only when `--install-check` actually ran, so dropping the
+  // flag leaves a green run with an attached asset and the one assertion #320
+  // calls the whole ticket never made.
+  it("refuses an asset that was packed but never installed (D16)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain("INSTALL: ${{ steps.beta-cli.outputs.install }}");
+    expect(job).toContain('if [[ "$INSTALL" != "ok" ]]; then');
+    // And the filename, which is what an operator pastes into a terminal (C1).
+    expect(job).toContain('if [[ "$ASSET" != "actana-cli-$BETA_VERSION.tgz" ]]; then');
+  });
+
+  // ADR 0036 D10 puts `SHA256SUMS` over exactly the three Core tarballs and
+  // this file's `--expect` is derived from `CORE_TARGETS`, so #320's checksum
+  // is its own file rather than a fourth row — the option that ticket names
+  // beside the row and leaves both the record and the derivation intact.
+  //
+  // Ordering is asserted, not assumed: `compose-core-shasums.mjs` and the
+  // foreign-asset guard both sweep `core-tarballs/`, so the CLI asset is
+  // staged in after them.
+  it("gives the CLI asset its own checksum file, staged after the Core guards (D10)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain(
+      `compose-core-shasums.mjs --dir core-tarballs --expect ${CORE_TARGETS.length}`,
+    );
+    expect(job).toContain(`printf '%s  %s\\n' "$SHA256" "$ASSET" > "core-tarballs/$ASSET.sha256"`);
+    expect(job, "the sidecar is verified the way an operator verifies it").toContain(
+      'sha256sum -c "$ASSET.sha256"',
+    );
+    const compose = job.indexOf("compose-core-shasums.mjs");
+    const guard = job.indexOf("A foreign asset is in the tarball directory");
+    const stage = job.indexOf('cp "$TARBALL" "core-tarballs/$ASSET"');
+    expect(compose).toBeGreaterThan(-1);
+    expect(guard).toBeGreaterThan(-1);
+    expect(stage, "the CLI asset is staged before the Core guards sweep the directory")
+      .toBeGreaterThan(Math.max(compose, guard));
+    // And before the tag moves, which is this job's own ordering principle: a
+    // failed pack must leave `vx.y.z-beta` where it was.
+    expect(stage, "the asset is assembled after the tag has already moved").toBeLessThan(
+      job.indexOf('git push --force origin "refs/tags/$TAG"'),
+    );
+  });
+
+  // `EXPECTED` is the one list the create, the clobbering upload and the prune
+  // all read. An asset uploaded outside it is an asset the next cut deletes,
+  // which is the trap this file's own comment warned #320 about.
+  it("names the CLI asset and its checksum in the asset contract (D7, D16)", () => {
+    const job = code(jobBlock(source, "publish"));
+    const expected = /EXPECTED=\(([\s\S]*?)\)\n/.exec(job);
+    expect(expected, "no EXPECTED list").not.toBeNull();
+    const names = [...expected[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
+    expect(names).toEqual([
+      ...CORE_TARGETS.map(({ target }) => `actana-core-$BETA_VERSION-${target}.tar.gz`),
+      "SHA256SUMS",
+      "actana-cli-$BETA_VERSION.tgz",
+      "actana-cli-$BETA_VERSION.tgz.sha256",
+      "install.sh",
+    ]);
+  });
+
+  // #320's last criterion: the printed command is the one an operator runs,
+  // built from the pack's own outputs and this job's tag rather than
+  // re-derived — and it says there is no attestation, because ADR 0036 D17
+  // says #323's instructions must not imply one.
+  it("prints the exact install command, and claims no attestation (D17)", () => {
+    const job = code(jobBlock(source, "publish"));
+    expect(job).toContain('url="https://github.com/$REPO/releases/download/$TAG/$ASSET"');
+    expect(job).toContain('echo "npm i -g $url"');
+    expect(job).toContain("ASSET: ${{ steps.beta-cli.outputs.asset }}");
+    expect(job).toContain("SHA256: ${{ steps.beta-cli.outputs.sha256 }}");
+    expect(job).toMatch(/no provenance attestation/);
+  });
 });
 
 describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)", () => {

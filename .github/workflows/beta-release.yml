@@ -1,17 +1,17 @@
 name: Beta release
 
 # A requested beta cut: the moving `vx.y.z-beta` tag, a prerelease GitHub
-# Release, three Core tarballs, their `SHA256SUMS`, `install.sh` beside them,
-# and the two `x.y.z-beta` image tags retagged from the train's own digests
-# (ADR 0036 D10).
+# Release, three Core tarballs, their `SHA256SUMS`, the packed CLI asset with
+# its checksum, `install.sh` beside them, and the two `x.y.z-beta` image tags
+# retagged from the train's own digests (ADR 0036 D10).
 #
 #   resolve ─┬─ tarball (linux-x64, linux-arm64) ─┬─ installer-e2e ─┬─ publish ─┬─ core-image
 #            │                                    │   (ubuntu x64)  │            │
 #            └─ tarball-macos (mac-arm64) ────────┴─────────────────┘            └─ panel-image
 #
 # Two stages write, and they are ordered by what cannot be taken back.
-# `publish` verifies every asset, moves the tag, creates or updates the
-# Release, and then reads the Release back to prove the prerelease flag
+# `publish` packs and verifies every asset, moves the tag, creates or updates
+# the Release, and then reads the Release back to prove the prerelease flag
 # survived. `core-image` and `panel-image` run after it and re-point
 # `x.y.z-beta` at the digest the train already published — the one act in this
 # file that nothing can undo (ADR 0023 D45: Docker Hub has no tag garbage
@@ -221,6 +221,48 @@ name: Beta release
 # these jobs cannot pass `version:` before #327 lands. `workflows.test.mjs`
 # binds the two instead: the moment `container-image.yml` declares that input,
 # the retag jobs must pass `beta_version` or the suite goes red.
+#
+# ── The CLI is a Release asset, never an npm version (#320, D15, D16) ────────
+#
+# `publish` packs `@actana/cli` with `scripts/rehearse-npm-publish.mjs --beta`
+# and attaches `actana-cli-x.y.z-beta.tgz` to this Release with its checksum
+# beside it. **Nothing is published to registry.npmjs.org, under any dist-tag**
+# (D15): a beta string carries no counter (C1) and npm burns a version on its
+# first publish, so a fixed string could go out once per train and the second
+# cut of the same beta would 403 after the tag had already moved.
+#
+# `--beta` takes the **line** (`0.4.1`), not the beta string: the `-beta` is
+# appended by the script, so there is no parameter a counter could arrive
+# through. The script also holds that line against the one
+# `packages/cli/package.json` carries, so a cut from the wrong branch fails
+# there rather than attaching the right filename to the wrong program. The
+# manifest edits it makes — the version, and the dropped `@actana/sdk`, which
+# is inlined into the bundle — are restored from the original bytes in a
+# `finally` before the step returns. Nothing is committed: the train's six
+# manifests carry `x.y.z` and `ci.yml`'s `Train rules` asserts them on every
+# pull request into the train (ADR 0023 D3).
+#
+# `--install-check` runs a real `npm i -g` into a fresh prefix under an empty
+# HOME and asks the installed `actana` its version. It is #320's acceptance
+# criterion, and it is run here as well as in `pnpm test` so the assertion is
+# made against the bytes that are actually attached. The staging step refuses
+# to continue unless the script reported `install=ok`, which it emits only when
+# the flag was really passed — a flag dropped from the invocation would
+# otherwise leave the check unmade and the run green.
+#
+# **The checksum is its own file, not a fourth `SHA256SUMS` row.** ADR 0036 D10
+# puts `SHA256SUMS` over *exactly* the three Core tarballs, and this file's
+# `--expect` is derived from `CORE_TARGETS` in `workflows.test.mjs` rather than
+# written as a literal — so a fourth row would contradict the record and break
+# the derivation at once. #320 asks for *"a row in `SHA256SUMS` or its own
+# file"*; this is its own file, `actana-cli-x.y.z-beta.tgz.sha256`, in
+# `sha256sum`'s two-space format, verified here the way an operator verifies
+# it, and named in `EXPECTED` so the prune step does not delete it on the next
+# cut.
+#
+# There is no provenance attestation on this path and the printed instructions
+# say so in as many words (D17). An attestation is a registry artifact and an
+# asset has none; the integrity story for a beta is the published checksums.
 #
 # ── The prerelease flag is read back, not trusted (ADR 0023 D9, ADR 0036 D11)
 #
@@ -767,6 +809,19 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
+      # The CLI asset is packed in this job (#320, D16), and `pnpm pack` runs
+      # `packages/cli`'s `prepack` — `node build.mjs` — so the workspace has to
+      # be installed. This is the same pair `release.yml`'s `npm` job carries
+      # for the same script, and it is the only reason this job needs pnpm at
+      # all: nothing else here builds anything.
+      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+        with:
+          version: 11.1.2
+          cache: false
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           pattern: core-tarball-*
@@ -829,6 +884,82 @@ jobs:
           done < <(find core-tarballs -maxdepth 1 -type f -name '*.tar.gz')
           echo "✅ three tarballs, all at $BETA_VERSION, no counter on any of them"
 
+      # ── The CLI asset (#320, ADR 0036 D16) ─────────────────────────────────
+      #
+      # The step #337 wrote out as YAML in its own pull request comment,
+      # because #318 owned this file at the time and that ticket owned none of
+      # it. Landed here, adjusted to the file as it now exists: `resolve`'s
+      # output is `version` rather than `line`, the Release ref is this job's
+      # `$TAG` rather than one re-derived from the pack's output, and the
+      # upload folds into `EXPECTED` — the single list the create, the clobber
+      # and the prune all read — instead of being a second `gh release upload`.
+      # That last one is not a preference: an asset attached outside `EXPECTED`
+      # is an asset the prune step deletes on the next cut.
+      #
+      # It runs **before the tag moves**, which is this job's own ordering
+      # principle rather than a change of mind about #337's: the assets are
+      # assembled and verified first, so a failed pack, a failed
+      # `--install-check` or a mis-named artifact leaves `vx.y.z-beta` naming
+      # the commit it named before the run started.
+      #
+      # `--out-dir artifacts/beta`, not `core-tarballs`: the two steps above
+      # sweep `*.tar.gz` there and are deliberately strict. A `.tgz` slips past
+      # both harmlessly, but staging the CLI asset into that directory before
+      # them is the debugging round this file's `EXPECTED` comment warned #320
+      # about, and there is no reason to walk up to the line.
+      #
+      # No `contents: write` is added for it — this job already has it for the
+      # Release — and no `id-token` at all: there is no provenance attestation
+      # on this path (D17).
+      - id: beta-cli
+        name: Pack the CLI as a beta Release asset
+        env:
+          # The LINE (`0.4.1`), not the beta string. The script appends
+          # `-beta`, which is why there is no parameter a counter could arrive
+          # through, and it holds this value against the line
+          # `packages/cli/package.json` carries before it packs anything.
+          BETA_LINE: ${{ needs.resolve.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/rehearse-npm-publish.mjs \
+            --beta "$BETA_LINE" \
+            --out-dir artifacts/beta \
+            --install-check | tee -a "$GITHUB_OUTPUT"
+
+      # C1 and #320's acceptance criterion, both asserted against what the pack
+      # actually produced rather than against the variable that asked for it.
+      #
+      # `install=ok` is emitted only when `--install-check` really ran, so this
+      # is the guard on the flag itself: dropped from the invocation above, the
+      # pack still succeeds, the asset is still attached, and the one assertion
+      # #320 calls the whole ticket would simply not have been made.
+      #
+      # The checksum is written here as its own file rather than as a fourth
+      # `SHA256SUMS` row (ADR 0036 D10 — that file is over exactly the three
+      # Core tarballs), in `sha256sum`'s two-space format, and verified the way
+      # an operator verifies it.
+      - name: Stage the CLI asset and its checksum beside the Core assets
+        env:
+          BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
+          ASSET: ${{ steps.beta-cli.outputs.asset }}
+          TARBALL: ${{ steps.beta-cli.outputs.tarballs }}
+          SHA256: ${{ steps.beta-cli.outputs.sha256 }}
+          INSTALL: ${{ steps.beta-cli.outputs.install }}
+        run: |
+          set -euo pipefail
+          if [[ "$INSTALL" != "ok" ]]; then
+            echo "::error title=The CLI asset was packed but never installed::scripts/rehearse-npm-publish.mjs reported install='$INSTALL'. It emits \`install=ok\` only when \`--install-check\` actually ran the \`npm i -g\` into a fresh prefix and asked the installed \`actana\` its version — #320's acceptance criterion, made here against the bytes that are attached rather than against a copy of them. Restore \`--install-check\` on the pack step."
+            exit 1
+          fi
+          if [[ "$ASSET" != "actana-cli-$BETA_VERSION.tgz" ]]; then
+            echo "::error title=The CLI asset is misnamed::the pack produced '$ASSET', not \`actana-cli-$BETA_VERSION.tgz\`. The asset filename is the URL an operator pastes into \`npm i -g\`, and it carries the bare beta version with no counter (ADR 0036 C1)."
+            exit 1
+          fi
+          cp "$TARBALL" "core-tarballs/$ASSET"
+          printf '%s  %s\n' "$SHA256" "$ASSET" > "core-tarballs/$ASSET.sha256"
+          ( cd core-tarballs && sha256sum -c "$ASSET.sha256" )
+          echo "✅ $ASSET staged at $BETA_VERSION, installed for real, checksum verified"
+
       # ── The tag move (ADR 0036 D7) ─────────────────────────────────────────
       #
       # Deliberately force-updated, and the previous sha is named in the log
@@ -888,18 +1019,20 @@ jobs:
       # beta is a supported operation, not a repair, and must leave nothing of
       # the previous one behind (ADR 0036 D7).
       #
-      # **`EXPECTED` is the asset contract of this file, and it is the line #320
-      # extends.** That ticket attaches the packed CLI tarball to this same
-      # Release (D16); adding the upload without adding the name here would have
-      # the prune step delete it on the next cut.
+      # **`EXPECTED` is the asset contract of this file**, read by the create,
+      # by the clobbering upload and by the prune, so a name that is not here
+      # is a name the next cut deletes. It is seven now: the three Core
+      # tarballs, `SHA256SUMS`, `install.sh`, and #320's packed CLI tarball
+      # with its own `.sha256` beside it (D16, and D10 for why the CLI's
+      # checksum is a file rather than a fourth `SHA256SUMS` row).
       #
-      # One ordering caveat for that ticket, so it is not found by debugging:
-      # `compose-core-shasums.mjs --expect 3` and the filename guard above both
-      # sweep `*.tar.gz` in `core-tarballs/`, and both are deliberately strict.
-      # `pnpm pack` produces a `.tgz`, which slips past both harmlessly — but a
-      # CLI asset staged into that directory under a `*.tar.gz` name before
-      # those steps would break `--expect 3` and trip the foreign-asset guard.
-      # Stage it after them, or give it a name that is not `*.tar.gz`.
+      # The ordering caveat this comment used to leave for #320 has been taken
+      # rather than left: `compose-core-shasums.mjs --expect 3` and the
+      # filename guard above both sweep `*.tar.gz` in `core-tarballs/` and both
+      # are deliberately strict, so the CLI asset is packed into
+      # `artifacts/beta` and staged in after them. A `.tgz` would have slipped
+      # past both harmlessly; staging it in before them under a `*.tar.gz` name
+      # would break `--expect 3` and trip the foreign-asset guard.
       #
       # `install.sh` is attached as a **copy, not a door** (D5). The canonical
       # installer stays on `raw.githubusercontent.com/actana/control/main/install.sh`
@@ -941,11 +1074,13 @@ jobs:
                     "actana-core-$BETA_VERSION-linux-arm64.tar.gz"
                     "actana-core-$BETA_VERSION-mac-arm64.tar.gz"
                     "SHA256SUMS"
+                    "actana-cli-$BETA_VERSION.tgz"
+                    "actana-cli-$BETA_VERSION.tgz.sha256"
                     "install.sh")
           files=()
           for name in "${EXPECTED[@]}"; do
             if [[ ! -f "core-tarballs/$name" ]]; then
-              echo "::error title=An expected asset is missing::core-tarballs/$name was not produced by this run. The beta asset set is three Core tarballs, SHA256SUMS and install.sh (ADR 0036 D10)."
+              echo "::error title=An expected asset is missing::core-tarballs/$name was not produced by this run. The beta asset set is three Core tarballs, SHA256SUMS, the packed CLI tarball with its .sha256, and install.sh (ADR 0036 D10, D16)."
               exit 1
             fi
             files+=("core-tarballs/$name")
@@ -1096,6 +1231,37 @@ jobs:
             echo "- assets: $assets"
             echo ""
             echo "Nothing was published to npm — a beta is invisible to registry.npmjs.org (ADR 0036 D15)."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # #320's last criterion: the instructions in the summary are the exact
+      # command an operator runs, built from the pack's own outputs and this
+      # job's `$TAG` rather than re-derived — so the string a reader copies and
+      # the string on the Release cannot drift.
+      #
+      # `npm i -g <asset URL>`, and nothing about an attestation, because there
+      # is not one on this path (D17). Integrity is the checksum row, which is
+      # named here and shipped beside the asset.
+      - name: Print the CLI install command
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ needs.resolve.outputs.tag }}
+          ASSET: ${{ steps.beta-cli.outputs.asset }}
+          SHA256: ${{ steps.beta-cli.outputs.sha256 }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/$REPO/releases/download/$TAG/$ASSET"
+          {
+            echo "### Install the CLI half of this beta"
+            echo ""
+            echo "For a machine that drives Cores it does not host — no daemon, no Core on the box."
+            echo ""
+            echo '```'
+            echo "npm i -g $url"
+            echo '```'
+            echo ""
+            echo "Verify first, if you want to: \`$SHA256  $ASSET\` — the same row is in \`$ASSET.sha256\`, attached beside it."
+            echo ""
+            echo "_No npm registry version is published for a beta, and an asset carries no provenance attestation (ADR 0036 D15, D17)._"
           } >> "$GITHUB_STEP_SUMMARY"
 
   # ── The two beta image tags (#319) ──────────────────────────────────────────
