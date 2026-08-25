@@ -209,18 +209,24 @@ name: Beta release
 #      the same string the tag, the Release and every asset filename carry. A
 #      counter cannot reach the image tag without failing the cut outright.
 #   2. The digest's own `org.opencontainers.image.version` label, held to that
-#      string by `scripts/lib/version-agreement.mjs`. That module and
-#      `container-image.yml`'s `version:` input arrive with #327 (ADR 0037 D3,
-#      D4), which is open and not in this branch's base. Image mode is exactly
-#      where that ban had a hole — it short-circuits before `checkAgreement`,
-#      and `lineOf("0.4.1-beta.1")` is `0.4.1`, which agrees with a correctly
-#      labelled digest — so #327 moved the ban into `imageVersionProblem`
-#      itself *"which is what lets #319's beta retag inherit it"*.
+#      string by `scripts/lib/version-agreement.mjs` — #327's module, reached
+#      here by passing `version: <beta_version>` to `container-image.yml` (ADR
+#      0037 D3, D4). Image mode is exactly where that ban had a hole: it
+#      short-circuits before `checkAgreement`, which was the only caller of
+#      `versionProblem`, and `lineOf("0.4.1-beta.1")` is `0.4.1` — which agrees
+#      with a correctly labelled digest, so the counted string published green.
+#      #327 moved the ban into `imageVersionProblem` itself *"which is what lets
+#      #319's beta retag inherit it"*, and this is the caller that inherits it.
 #
-# Passing an input a reusable workflow does not declare is a hard failure, so
-# these jobs cannot pass `version:` before #327 lands. `workflows.test.mjs`
-# binds the two instead: the moment `container-image.yml` declares that input,
-# the retag jobs must pass `beta_version` or the suite goes red.
+# **The beta string is passed, not the line.** `--expected 0.4.1 --image-label
+# 0.4.1` exits zero for a digest tagged `0.4.1-beta.1`; `--expected 0.4.1-beta.1`
+# exits one and names the counted beta. Handing this the line would restore the
+# hole while looking like a version check, so `workflows.test.mjs` pins the
+# value rather than the presence — and it pins it conditionally, on whether
+# `container-image.yml` declares the input at all, because passing one a
+# reusable workflow does not declare is a hard failure. That binding is what
+# turned red the moment #327 merged under this branch, which is how the wiring
+# above came to be written rather than remembered.
 #
 # ── The CLI is a Release asset, never an npm version (#320, D15, D16) ────────
 #
@@ -1313,6 +1319,16 @@ jobs:
       # scaffolding tags to discriminate (ADR 0023 D12) — but the input is
       # required, and the honest value is the version this cut publishes.
       stage: ${{ needs.resolve.outputs.beta_version }}
+      # ADR 0037 D4, and the half of C1's ban this file does not own. The
+      # **beta string**, not the line: `container-image.yml` holds the
+      # digest's `org.opencontainers.image.version` label to `lineOf` this,
+      # and refuses a counted beta by name before the comparison — which is
+      # the check that reaches image mode at all, because image mode
+      # short-circuits before `checkAgreement` and `lineOf("0.4.1-beta.1")`
+      # is `0.4.1`, agreeing with a correctly labelled digest. Passing the
+      # line here would hand it the string that already agrees and lose the
+      # ban (ADR 0037 D7, D8).
+      version: ${{ needs.resolve.outputs.beta_version }}
       mode: promote
       # `beta-0.4.1`, the moving handle `ci.yml`'s train jobs publish on every
       # merge. It moves on a different clock from the tag below: this one per
@@ -1338,6 +1354,16 @@ jobs:
       image: panel
       ref: ${{ needs.resolve.outputs.sha }}
       stage: ${{ needs.resolve.outputs.beta_version }}
+      # ADR 0037 D4, and the half of C1's ban this file does not own. The
+      # **beta string**, not the line: `container-image.yml` holds the
+      # digest's `org.opencontainers.image.version` label to `lineOf` this,
+      # and refuses a counted beta by name before the comparison — which is
+      # the check that reaches image mode at all, because image mode
+      # short-circuits before `checkAgreement` and `lineOf("0.4.1-beta.1")`
+      # is `0.4.1`, agreeing with a correctly labelled digest. Passing the
+      # line here would hand it the string that already agrees and lose the
+      # ban (ADR 0037 D7, D8).
+      version: ${{ needs.resolve.outputs.beta_version }}
       mode: promote
       source_tag: beta-${{ needs.resolve.outputs.version }}
       tags: ${{ needs.resolve.outputs.beta_version }}
