@@ -78,10 +78,18 @@ FROM gcr.io/distroless/nodejs24@sha256:2e3b3a96d1d7286c3e4727f9c84b4dc32b6b33e7d
 # instead (the `descriptions` job in .github/workflows/release.yml).
 ARG IMAGE_SOURCE=https://github.com/actana/control
 ARG IMAGE_REVISION=
+# `image.version` is the **line** these bytes carry — `0.4.1`, never
+# `beta-0.4.1` and never `0.4.1-beta`. It is what lets an image say what it is
+# rather than only which commit it came from, and it is what
+# `container-image.yml` asserts before re-pointing `x.y.z`, `latest` or a beta
+# tag at a digest (ADR 0037 D4). Empty by default so a local `docker build`
+# still works; CI passes the version out of the manifests it just asserted.
+ARG IMAGE_VERSION=
 LABEL org.opencontainers.image.title="Actana Panel" \
       org.opencontainers.image.description="Self-hosted web Panel for driving agentic coding work across your machines. Deploy this one; pair a Core per machine." \
       org.opencontainers.image.source="${IMAGE_SOURCE}" \
       org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
       org.opencontainers.image.licenses="MIT"
 
 ENV NODE_ENV=production \

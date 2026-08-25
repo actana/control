@@ -39,6 +39,16 @@ gate and must never be merged by hand (#264).
 that writes to `main`. It is described under [Cutting a
 release](#cutting-a-release).
 
+**Where a version string is written, and what is authoritative for each place,
+is catalogued in [ADR 0037](adr/0037-one-version-per-line.md) §B.** The short
+version: a line is `x.y.z`, the six manifests and `install.sh`'s stamp carry it,
+and every other string — the branch name, the git tag, all four version-bearing
+image tags, the version label inside both images, the npm versions and the
+tarball's filename — is asserted against that tree by
+[`scripts/assert-version-agreement.mjs`](../scripts/assert-version-agreement.mjs)
+before it is written. `pnpm versions:assert --expected x.y.z` runs the same
+check by hand.
+
 `housekeeping.yml` is everything on a clock and nothing that gates. Its seven
 chores share no subject; what they share is that **none of them can be caused or
 fixed by a pull request**, which is why they are not in `ci.yml`. It is
@@ -397,6 +407,26 @@ and a half-verified release is not a verified one.
 
 If the train moved after the approver tested it, the assertion fails with *"the
 train moved; re-approve"* and nothing is published. That is the design working.
+
+**A second assertion runs beside it, and it is about the version rather than
+the commit** ([ADR 0037](adr/0037-one-version-per-line.md) D4). The revision
+label says which commit these bytes came from and is silent about what version
+they think they are, so an image whose six manifests said `9.9.9` used to
+promote cleanly to `x.y.z` and to `latest`. Both images now carry
+`org.opencontainers.image.version`, holding the **line** — which is one label
+for all four version-bearing tags, because `beta-x.y.z`, `x.y.z`, `latest` and
+`x.y.z-beta` are the same bytes carrying the same line. It is read back off the
+pulled image in the same two places the revision is, and a digest that
+self-reports something else is refused before any tag is re-pointed at it.
+
+Two things about that label are worth knowing before you meet them. It is
+written from the checkout's manifests and never from the tag being published,
+because a label taken from the tag would be the tautology the whole chain
+exists to remove. And **an image built before it existed is refused rather than
+tolerated**: the Core images inherit `org.opencontainers.image.version=24.04`
+from the Ubuntu base through `FROM`, and the Panel images carried no version
+label at all, so the first promotion of a train whose images predate this asks
+for a re-run of the train's image jobs and says so on screen.
 
 ## The pull request image, and what it is not
 
@@ -1060,11 +1090,15 @@ too late:
   in the file and the resolution that reads it, and
   `scripts/__tests__/install-sh.test.mjs` asserts that the stamp is a plain
   `x.y.z` equal to the workspace version and that nothing in the file names a
-  channel. **The separate `Train rules` assertion 0036 D4 asks for is not there
-  yet**: #317 landed without touching `.github/workflows`, which another ticket
-  held open across the same wave. Until it lands, nothing goes red on the train
-  when a cut forgets the stamp — the check is this step and the test above it,
-  so measure the `grep` output before you commit.
+  channel. **The separate `Train rules` assertion 0036 D4 asks for is now there**
+  ([#327](https://github.com/actana/control/issues/327), which owns
+  `.github/workflows`): `assert_installer_stamp` runs beside the six manifests on
+  every pull request into a train and on the promotion gate, and `Train versions`
+  makes the same assertion on the push a cut is. It is its own check and not a
+  seventh entry in `MANIFESTS`, because `install.sh` is not a workspace package
+  and that list refuses to grow past them (0036 D4). A cut that forgets the stamp
+  now goes red on the train rather than serving the previous line's beta from its
+  own door.
 - **Every body line of the message is at most 132 characters.** `commitlint`
   lints every commit in a pull request, not just its title — but no pull
   request puts a cut commit in front of it until the promotion gate, when the
