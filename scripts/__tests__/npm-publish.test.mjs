@@ -28,17 +28,21 @@ import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  BETA_VERSION,
   MONOREPO_ENGINES,
   NODE_GUARD,
   PUBLISHABLE,
   PUBLISHED_ENGINES,
+  assertBundleInlines,
   assertMonorepoKeepsTheGuard,
   assertPackedBin,
   assertPackedFiles,
   assertPackedManifest,
   assertPublishSet,
+  betaVersion,
   binTargets,
   discoverPublishable,
+  externalNames,
   publishOrder,
   workspaceManifests,
 } from "../lib/npm-packages.mjs";
@@ -287,6 +291,170 @@ describe("the published manifest (#129 D12)", () => {
     expect(() => assertPackedManifest(packed(), { version: "0.2.3" })).toThrow(
       /is not the version being released/,
     );
+  });
+});
+
+// ─── The beta asset (#320, ADR 0036 D15/D16) ─────────────────────────────────
+//
+// A beta publishes nothing. Under ADR 0036 C1 a beta version string is
+// `x.y.z-beta` exactly — no counter, ever — and a beta is designed to be cut
+// repeatedly as the train moves, so the registry, which burns a version on
+// first publish, can serve that string exactly once. D15 drops the registry
+// from this path entirely and D16 attaches a packed tarball to the prerelease
+// instead, installed with `npm i -g <asset-url>`.
+//
+// The route is the operator's and is not re-decided here. What is asserted here
+// is that the artifact it produces installs, and that the one rule the route
+// had to narrow is narrower rather than looser.
+describe("the beta asset's manifest (ADR 0036 C1, D15, D16)", () => {
+  const betaCommand = (overrides = {}) =>
+    packedCommand({
+      version: "0.4.1-beta",
+      dependencies: { selfsigned: "^5.5.0", undici: "8.9.0", ws: "8.21.0" },
+      ...overrides,
+    });
+
+  it("accepts the shape D16 attaches: a beta version, and no sibling to resolve", () => {
+    expect(() =>
+      assertPackedManifest(betaCommand(), { version: "0.4.1-beta", beta: true }),
+    ).not.toThrow();
+  });
+
+  // C1, on the artifact rather than on the workflow that named it. This is the
+  // counter ban with nowhere left to hide: the string reaches an asset
+  // filename and a URL an operator pastes into a terminal.
+  it.each(["0.4.1-beta.1", "0.4.1-beta.2", "0.4.1-beta-7c3a9f1", "0.4.1-beta1", "0.4.1"])(
+    "refuses %s as a beta version",
+    (version) => {
+      expect(() => assertPackedManifest(betaCommand({ version }), { beta: true })).toThrow(
+        /is packed as a beta and its version is not `x\.y\.z-beta`/,
+      );
+    },
+  );
+
+  // The narrowing, and the direction of it. A beta manifest that still names
+  // `@actana/sdk` names a version registry.npmjs.org does not have and, under
+  // D15, never will — so the operator's `npm i -g <asset-url>` fails on it.
+  // Pinned *correctly* and pinned to another train fail identically here,
+  // which is why the beta rule is absence rather than a looser range.
+  it("refuses a beta that still depends on the sibling, at any version at all", () => {
+    for (const range of ["0.4.1-beta", "0.4.1", "^0.4.0", "latest"]) {
+      expect(() =>
+        assertPackedManifest(betaCommand({ dependencies: { "@actana/sdk": range } }), {
+          beta: true,
+        }),
+      ).toThrow(/is packed as a beta and still depends on @actana\/sdk/);
+    }
+  });
+
+  // The clause #320 is explicit about: *the beta branch narrows it, never
+  // removes it*. Same manifest, same module, `beta` off — and the release rule
+  // is the rule it always was.
+  it("leaves the release rule exactly as it was: a CLI on another train's SDK still fails", () => {
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "0.2.1" } })),
+    ).toThrow(/not on 0\.2\.2/);
+    expect(() =>
+      assertPackedManifest(packedCommand({ dependencies: { "@actana/sdk": "0.2.2" } })),
+    ).not.toThrow();
+    // **And the release path does NOT refuse a manifest with no SDK at all.**
+    // An earlier draft of this comment claimed it did — the assertion below is
+    // unchanged, only what it is said to mean. `assertPackedManifest` iterates
+    // `Object.entries(packed.dependencies)`, so a dependency that is absent is
+    // a loop body that never runs: the release branch validates a pin that is
+    // *present* and has nothing to say about one that is missing.
+    //
+    // That is not a hole, because the release-side presence is held somewhere
+    // else and always has been: `packages/cli/src/__tests__/no-local-escape.test.ts`
+    // pins the working-tree manifest's dependency set to exactly four names, on
+    // every pull request, and the release packs from that working tree. The
+    // invariant on record is therefore the true one — this module refuses a
+    // release pinned to the *wrong* SDK version, and that test refuses a release
+    // that lost the SDK entirely.
+    expect(() =>
+      assertPackedManifest(betaCommand({ version: "0.2.2" }), { version: "0.2.2" }),
+    ).not.toThrow();
+  });
+
+  // `workspace:` is the one failure both paths share, and for the same reason:
+  // the protocol reaching a packed manifest means pnpm did not pack it.
+  it("refuses the workspace protocol on either path", () => {
+    for (const beta of [true, false]) {
+      expect(() =>
+        assertPackedManifest(betaCommand({ dependencies: { "@actana/sdk": "workspace:*" } }), {
+          beta,
+        }),
+      ).toThrow(/`workspace:` protocol reached the packed manifest/);
+    }
+  });
+
+  // Everything a beta shares with a release, asserted rather than assumed. The
+  // asset is installed by the same `npm i -g` onto the same machine, so a beta
+  // that quietly lost the engines floor or grew a `postinstall` would break an
+  // operator in exactly the ways D12 exists to prevent.
+  it("keeps every rule it did not narrow", () => {
+    expect(() =>
+      assertPackedManifest(betaCommand({ engines: { node: MONOREPO_ENGINES } }), { beta: true }),
+    ).toThrow(/D12 says exactly ">=22"/);
+    expect(() =>
+      assertPackedManifest(betaCommand({ scripts: { postinstall: "node x.mjs" } }), { beta: true }),
+    ).toThrow(/ships a `postinstall` script/);
+    expect(() => assertPackedManifest(betaCommand({ bin: {} }), { beta: true })).toThrow(
+      /empty `bin` map/,
+    );
+  });
+});
+
+describe("the beta version string, and the counter that does not exist (C1)", () => {
+  it("names a line's beta and appends nothing else", () => {
+    expect(betaVersion("0.4.1")).toBe("0.4.1-beta");
+    expect(betaVersion("1.0.0")).toBe("1.0.0-beta");
+    expect(BETA_VERSION.test("0.4.1-beta")).toBe(true);
+  });
+
+  // The input a second cut of the same beta would want to hand it. There is no
+  // argument for a counter and no parameter to put one in: the function takes
+  // a line, and `0.4.1-beta` is not a line.
+  it.each(["0.4.1-beta", "0.4.1-beta.2", "v0.4.1", "0.4", "0.4.1-rc.1", ""])(
+    "refuses %s as a line",
+    (line) => {
+      expect(() => betaVersion(line)).toThrow(/is not a release line/);
+    },
+  );
+});
+
+describe("the SDK is inlined, not imported (ADR 0036 D16)", () => {
+  const build = fs.readFileSync(path.join(repoRoot, "packages/cli/build.mjs"), "utf8");
+
+  // The precondition the whole route rests on, read off the file that decides
+  // it. `packages/cli/src/__tests__/no-local-escape.test.ts` asserts the same
+  // absence from inside the CLI package; this is the copy the packing path
+  // reads, because the packing path is what would ship the mistake.
+  it("marks only ws, undici and selfsigned external", () => {
+    expect(externalNames(build)).toEqual(["ws", "undici", "selfsigned"]);
+    expect(externalNames(build)).not.toContain("@actana/sdk");
+  });
+
+  it("catches a bundle that imports the sibling rather than carrying it", () => {
+    for (const source of [
+      'import { CoreClient } from "@actana/sdk/core-client";',
+      'const sdk = require("@actana/sdk");',
+      'const sdk = await import("@actana/sdk/core-session");',
+    ]) {
+      expect(() => assertBundleInlines("@actana/cli", source, "@actana/sdk")).toThrow(
+        /imports @actana\/sdk at runtime rather than inlining it/,
+      );
+    }
+  });
+
+  // The false positive this rule had to be written around, and it is not
+  // hypothetical: the CLI bundle inlines its own `package.json` — that is
+  // where `actana --version` reads its answer — so the literal text
+  // `"@actana/sdk": "workspace:*"` is in the bytes of a bundle that imports
+  // nothing of the sort. A substring search would fail every pack.
+  it("does not mistake the inlined manifest's own text for an import", () => {
+    const inlinedManifest = 'var package_default = { dependencies: { "@actana/sdk": "workspace:*" } };';
+    expect(() => assertBundleInlines("@actana/cli", inlinedManifest, "@actana/sdk")).not.toThrow();
   });
 });
 
@@ -635,4 +803,220 @@ describe("packing both published packages for real", () => {
     expect(typeof CoreSession).toBe("function");
     expect(typeof DurableCoreClient).toBe("function");
   });
+});
+
+// #320's acceptance criterion, and the ticket says so in as many words: *`npm
+// i -g <that asset URL>` on a clean machine, with no access to any private
+// registry, installs and puts a working `actana` on `PATH` — asserted in CI,
+// not assumed. That assertion is the whole ticket; if it cannot be made, say so
+// rather than shipping a URL nobody has run.*
+//
+// So it is made, on the bytes. The rehearsal packs the asset, this reads the
+// tarball again itself, and `--install-check` runs the real `npm i -g` into a
+// fresh prefix under an empty HOME and asks the installed command its version.
+//
+// **The URL half is the one thing not exercised here, and that is a property of
+// time rather than a gap in the check.** The asset URL cannot resolve until the
+// Release exists to serve it, which is after a cut and long after a pull
+// request. What a URL adds to a local path is npm's download, which is the same
+// code path `npm i -g https://…` takes for any tarball — so the risk it carries
+// is "the asset was not attached", which is #318's step and the checksum row,
+// not the tarball's. Everything that is about *these bytes* is asserted here.
+describe("packing the beta CLI asset for real (#320, ADR 0036 D16)", () => {
+  // Read off the manifest rather than written in: the line moves every train,
+  // and a number pinned here would either go stale or start asserting the
+  // wrong train's beta. This is also the cross-check the script performs — the
+  // caller names a line and the checkout has to agree it is that line.
+  const line = JSON.parse(
+    fs.readFileSync(path.join(repoRoot, "packages/cli/package.json"), "utf8"),
+  ).version;
+  const beta = `${line}-beta`;
+
+  // Opt-out rather than opt-in, and impossible to take in CI. A check that
+  // skips by default is a check that is not made, and #320 asked for this one
+  // specifically; the escape hatch exists for an offline working copy and the
+  // `CI` guard below is what stops it becoming the normal state.
+  const offline = process.env.ACTANA_SKIP_NPM_INSTALL_CHECK === "1";
+
+  /** @type {string} */ let outDir;
+  /** @type {string} */ let stdout;
+  /** @type {string} */ let tarball;
+  /** @type {string[]} */ let entries;
+  /** @type {object} */ let manifest;
+
+  beforeAll(() => {
+    if (offline && !process.env.CI) {
+      outDir = "";
+      return;
+    }
+    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-asset-test-"));
+    stdout = execFileSync(
+      process.execPath,
+      [
+        path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"),
+        "--beta",
+        line,
+        "--out-dir",
+        outDir,
+        "--install-check",
+      ],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    tarball = /^tarballs=(.*)$/m.exec(stdout)[1];
+    entries = execFileSync("tar", ["-tzf", tarball], { encoding: "utf8" })
+      .split("\n")
+      .filter(Boolean);
+    manifest = JSON.parse(
+      execFileSync("tar", ["-xzOf", tarball, "package/package.json"], { encoding: "utf8" }),
+    );
+  }, 900_000);
+
+  afterAll(() => {
+    if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  // The guard on the escape hatch. `ACTANA_SKIP_NPM_INSTALL_CHECK` turns off
+  // the assertion #320 calls the whole ticket, so it may not be reachable on
+  // the machine whose green light anyone acts on.
+  it("cannot be skipped in CI", () => {
+    expect(offline && process.env.CI, "the beta install check was skipped under CI").toBeFalsy();
+  });
+
+  // C1 on the two surfaces an operator actually reads: the version inside the
+  // manifest and the filename hanging off the download URL. No counter, no run
+  // number, no short sha, in either.
+  it.skipIf(offline && !process.env.CI)("carries exactly the x.y.z-beta string, in the manifest and in the filename", () => {
+    expect(manifest.version).toBe(beta);
+    expect(BETA_VERSION.test(manifest.version)).toBe(true);
+    expect(path.basename(tarball)).toBe(`actana-cli-${beta}.tgz`);
+    // `/\./g`, not `"."` — a string argument to `replace` swaps the FIRST match
+    // only, so `0.4.1-beta` escaped one dot and left two live. The regex still
+    // matched, because `.` matches a dot, which is how a wrong escape survives
+    // a green test: it is loose, not broken.
+    expect(stdout).toMatch(new RegExp(`^asset=actana-cli-${beta.replace(/\./g, "\\.")}\\.tgz$`, "m"));
+    expect(stdout).toMatch(new RegExp(`^version=${beta.replace(/\./g, "\\.")}$`, "m"));
+    // The checksum row #318's SHA256SUMS carries, printed rather than left to
+    // a second pass over the file — an asset hashed twice is an asset that can
+    // be hashed differently.
+    expect(stdout).toMatch(/^sha256=[0-9a-f]{64}$/m);
+  });
+
+  // Route 2, on the artifact. The manifest names the three externals
+  // `build.mjs` names and nothing else — in particular not `@actana/sdk`,
+  // whose version is on no registry under D15.
+  it.skipIf(offline && !process.env.CI)("drops @actana/sdk from the packed manifest and keeps the three externals", () => {
+    expect(Object.keys(manifest.dependencies).sort()).toEqual(["selfsigned", "undici", "ws"]);
+    expect(manifest.dependencies["@actana/sdk"]).toBeUndefined();
+    expect(manifest.bin).toEqual({ actana: "bin/actana.mjs" });
+    expect(manifest.engines.node).toBe(PUBLISHED_ENGINES);
+    // The same tarball a release would produce in every other respect.
+    expect(entries).toContain("package/bin/actana.mjs");
+    expect(entries).toContain("package/dist/actana-cli.mjs");
+    expect(entries).toContain("package/LICENSE");
+    expect(entries.some((entry) => entry.endsWith(NODE_GUARD))).toBe(false);
+  });
+
+  // Landmine one, proven rather than reasoned about: the SDK is *in* the
+  // bundle. Read out of the tarball, in specifier position — the inlined
+  // `package.json` puts the bare string in these bytes either way.
+  it.skipIf(offline && !process.env.CI)("ships a bundle with the SDK inlined and no @actana specifier in it", () => {
+    const bundle = execFileSync("tar", ["-xzOf", tarball, "package/dist/actana-cli.mjs"], {
+      encoding: "utf8",
+      maxBuffer: 128 * 1024 * 1024,
+    });
+    expect(() => assertBundleInlines("@actana/cli", bundle, "@actana/sdk")).not.toThrow();
+    // The other direction, so a bundle that had lost the SDK entirely could not
+    // pass this by importing nothing: the sourcemap names the modules esbuild
+    // pulled in, and `packages/sdk/src` is among them.
+    const map = JSON.parse(
+      execFileSync("tar", ["-xzOf", tarball, "package/dist/actana-cli.mjs.map"], {
+        encoding: "utf8",
+        maxBuffer: 128 * 1024 * 1024,
+      }),
+    );
+    const fromSdk = map.sources.filter((source) => source.includes("/sdk/src/"));
+    expect(
+      fromSdk.length,
+      "the bundle inlines no @actana/sdk module, so the beta manifest dropped a dependency whose code is not in the tarball",
+    ).toBeGreaterThan(0);
+  });
+
+  // The criterion itself. `npm i -g <the tarball>`, a fresh prefix, an empty
+  // HOME, and the public registry for `ws`, `undici` and `selfsigned` — which
+  // is what a machine wired to an external Core has, and all it has.
+  it.skipIf(offline && !process.env.CI)("installs with `npm i -g` and puts a working `actana` on PATH", () => {
+    expect(stdout).toMatch(/^install=ok$/m);
+  }, 900_000);
+});
+
+// Review r1, finding 1 — regression. `fail()` is `process.exit(1)`, and a
+// `process.exit` inside a `try` skips the `finally` outright. The beta pack
+// called it from its `catch`, *after* the manifest had been rewritten, so a
+// failed `pnpm pack` left `packages/cli/package.json` in the working tree
+// carrying `x.y.z-beta` with `@actana/sdk` gone and `keywords` reflowed — the
+// exact state ADR 0023 D3 says must never be committed, sitting there for the
+// next `git add -A`. The doc block and the PR both claimed the opposite.
+//
+// Asserted on the bytes rather than on the code shape: the script is run with a
+// `PATH` that has no `pnpm` on it, which is how the reviewer reproduced it, and
+// the manifest is compared byte-for-byte before and after. A refusal *before*
+// the edit and a failure *after* it are both covered — the first by the exit
+// code, the second by the bytes.
+describe("a failed beta pack leaves the working tree alone (review r1, finding 1)", () => {
+  const manifestPath = path.join(repoRoot, "packages/cli/package.json");
+  const line = JSON.parse(fs.readFileSync(manifestPath, "utf8")).version;
+
+  /** @type {Buffer} */ let original;
+  /** @type {string} */ let emptyPathDir;
+  /** @type {string} */ let outDir;
+
+  beforeAll(() => {
+    // The safety net under the thing being tested. If the restore is broken
+    // again, this test fails *and* puts the file back, rather than failing and
+    // leaving the repository in the state it was complaining about.
+    original = fs.readFileSync(manifestPath);
+    emptyPathDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-no-pnpm-"));
+    outDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-beta-fail-"));
+  });
+
+  afterAll(() => {
+    if (original) fs.writeFileSync(manifestPath, original);
+    if (emptyPathDir) fs.rmSync(emptyPathDir, { recursive: true, force: true });
+    if (outDir) fs.rmSync(outDir, { recursive: true, force: true });
+  });
+
+  it("restores the manifest byte-for-byte when `pnpm pack` cannot run", () => {
+    const before = fs.readFileSync(manifestPath);
+    let status = 0;
+    let stderr = "";
+    try {
+      execFileSync(
+        process.execPath,
+        [path.join(repoRoot, "scripts/rehearse-npm-publish.mjs"), "--beta", line, "--out-dir", outDir],
+        {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+          // `node` is invoked by absolute path, so an empty `PATH` starves only
+          // the `pnpm` the pack shells out to. Everything before the edit —
+          // reading the manifests, reading `build.mjs` — needs no `PATH` at all,
+          // which is what puts the failure on the far side of the rewrite.
+          env: { PATH: emptyPathDir, HOME: process.env.HOME ?? emptyPathDir },
+        },
+      );
+    } catch (error) {
+      status = error.status ?? 1;
+      stderr = error.stderr ?? "";
+    }
+
+    expect(status, "the pack was supposed to fail with no `pnpm` on PATH").not.toBe(0);
+    expect(stderr).toMatch(/`pnpm pack` failed for @actana\/cli/);
+    // The assertion the finding is about. Bytes, not a parsed comparison: the
+    // rewrite also reflows `keywords`, so a JSON-equal check would have passed
+    // on a file that is visibly modified in `git status`.
+    expect(
+      fs.readFileSync(manifestPath).equals(before),
+      "a failed beta pack left packages/cli/package.json modified in the working tree",
+    ).toBe(true);
+  }, 120_000);
 });
