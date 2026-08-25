@@ -1518,12 +1518,45 @@ being promoted: one branch surviving that subtraction *is* the hotfix condition
 force-pushed and its images republished — see [§Hotfix trains](#hotfix-trains)
 — while two survivors refuse the dispatch outright.
 
-Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
-it approved — then dispatch:
+**Right now that means `beta/0.4.0`, and it is not optional.** It is still on
+origin, it was abandoned rather than promoted, and **both** copies of
+`promote.yml` — the one on `main` and the one on the train — read a single
+survivor the same way: as a hotfix. Promoting `beta/0.4.1` while `beta/0.4.0`
+exists does not fail; it succeeds and then **rebases `beta/0.4.0` onto the new
+`main`, force-pushes it, republishes its images, and comments on every pull
+request open into it**. Delete it first:
 
 ```bash
-gh workflow run promote.yml --repo actana/control -f train=beta/0.1.0
+git push origin --delete beta/0.4.0        # after checking nothing unmerged is on it
 ```
+
+Open a pull request from `beta/x.y.z` into `main`, let its checks settle, get
+it approved — then dispatch **at the train**:
+
+```bash
+gh workflow run promote.yml --repo actana/control --ref beta/0.4.1 -f train=beta/0.4.1
+```
+
+**The train is named twice, and both are load-bearing** — the same shape
+[§Cutting a beta](#cutting-a-beta) uses, and for the same reason. `-f train=`
+is the input. `--ref` decides *which copy of `promote.yml` executes*: a
+dispatch resolves every workflow file from the ref it is handed, so `--ref
+beta/0.4.1` runs the train's own `promote.yml` rather than the default
+branch's. Dispatching without `--ref` runs `main`'s copy, which is the
+stale-workflow trap [#326](https://github.com/actana/control/issues/326)
+closed for `release.yml`, one level up.
+
+> **Written 2026-08-25, per the gate review of
+> [#342](https://github.com/actana/control/pull/342).** This instruction used
+> to be the bare `gh workflow run promote.yml -f train=…`, on the reading that
+> a promotion has no choice but to run the default branch's workflow. It has a
+> choice, and the two copies now differ enough that the choice matters. For the
+> **0.4.1** promotion specifically, dispatching at `--ref beta/0.4.1` is what
+> gets you `preflight`, the `release.yml` dispatch at the tag with its
+> `head_sha` assertion, and `train-invariant` — none of which exist on `main`
+> yet — and it is what stops `main`'s `next-train` job cutting an unusable
+> `beta/0.5.0` behind you. [§ Promoting the 0.4.1 train, once
+> ](#promoting-the-041-train-once) is the whole of it.
 
 **That pull request is a gate, not a merge. Do not press the merge button.** A
 squash would produce a `main` commit whose SHA differs from the tested one,
@@ -1588,6 +1621,78 @@ dispatch by design, because that pull request *is* the gate. Recovery is then
 per-step and manual, and it is written down in full below:
 [§ When a promotion half-runs](#when-a-promotion-half-runs).
 
+#### Promoting the 0.4.1 train, once
+
+This subsection is about one promotion — the one that carries
+[#326](https://github.com/actana/control/issues/326)'s fix and everything else
+in the 0.4.1 milestone onto `main`. It exists because that promotion is the
+last one where `main`'s copy of `promote.yml` and the train's copy differ, and
+the difference is not cosmetic.
+
+| | `main`'s `promote.yml` | `beta/0.4.1`'s `promote.yml` |
+| --- | --- | --- |
+| `preflight` before `advance` | **absent** | present |
+| release entry | `workflow_call`, resolved from the caller's SHA | `workflow_dispatch` **at `vx.y.z`**, `head_sha` asserted (#326) |
+| `train-invariant` | absent | present |
+| `next-train` (auto-cut) | **present** | **deleted** (#325) |
+
+**Dispatch at the train.** `gh workflow run promote.yml --repo actana/control
+--ref beta/0.4.1 -f train=beta/0.4.1`. Nothing in `promote.yml` reads
+`github.ref` — every job fetches the refs it needs by name and `advance`
+pushes `$HEAD_SHA:refs/heads/main` explicitly — so the ref changes which file
+runs and nothing else. The `pause` job's `macos-release` environment still
+gates it: that environment leaves **deployment branches unrestricted**
+([`REPO_SETUP.md` §macos-release](REPO_SETUP.md)), which is exactly the setting
+that lets a gated job run on a `beta/*` ref. A branch restriction there would
+refuse the ref and this route would not exist.
+
+**What that buys, in one sentence each.** `preflight` asks — before `main`
+moves — whether the promoted commit carries a dispatchable `release.yml`,
+whether the Docker Hub and npm credentials are present, and whether `v0.4.1`
+is free. The release is dispatched **at `v0.4.1`**, so `release.yml` and the
+`container-image.yml` it calls come from the promoted commit rather than from
+`main`, and the run's `head_sha` is asserted to be that commit. And no train is
+cut behind you.
+
+**Two things to expect, neither of them a fault.**
+
+1. **The jobs after `retire-train` run on a ref that no longer exists.**
+   `retire-train` deletes `beta/0.4.1`, which is the ref the run was dispatched
+   on. `train-invariant`'s checkout resolves the run's commit SHA, and `main`
+   now carries that exact commit, so it resolves. If it nonetheless fails, it
+   is cosmetic: `train-invariant` only files the no-open-train tracking issue,
+   and `housekeeping.yml`'s daily `open-train` chore files the same issue the
+   next morning.
+2. **Nothing cuts `beta/0.5.0`.** That is the point, not an omission. Cutting
+   the next train is [§ Cutting a train](#cutting-a-train), by hand, and it
+   writes `install.sh`'s line stamp as well as the six manifests.
+
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342): "it cannot be otherwise"
+> was wrong.** The paragraph in [§ When a promotion
+> half-runs](#when-a-promotion-half-runs) said #326's fix arrives one promotion
+> late and could not be avoided. The first half is true of a dispatch on
+> `main`. The second half is not true at all — `--ref` is the same mechanism
+> `beta-release.yml` requires of its own dispatch and the same one `promote.yml`
+> now uses for `release.yml`, and it was available the whole time.
+
+**If the bare dispatch is used anyway**, this is what to expect and undo, so
+it is recognised rather than diagnosed. `main`'s `promote.yml` runs: no
+`preflight`, the release resolved by `workflow_call` from `main`'s SHA, and —
+because `beta/0.4.0` had to be deleted first and `retire-train` then deletes
+`beta/0.4.1` — `next-train` finds no train open and **cuts `beta/0.5.0` from
+the new `main`**. That job rewrites the six manifests to `0.5.0` and **does not
+write `install.sh`'s line stamp**; it never had to, because the stamp
+([ADR 0036](adr/0036-the-beta-release-channel.md) D1) did not exist when it was
+written. The stamp on `main` therefore still reads `LINE="0.4.1"` while the
+train says `0.5.0`, and the new `Train versions` job — which arrives on `main`
+in this very promotion — runs `assert-version-agreement.mjs --require-stamp` on
+that branch's first push and goes **red**. `Resolve train tags` never runs, so
+**no `beta-0.5.0` image is ever published** and the train is unusable rather
+than merely untidy. The repair is by hand: confirm nothing has been merged into
+it, delete it, and cut the next train properly from
+[§ Cutting a train](#cutting-a-train), which writes the stamp.
+
 ### When a promotion half-runs
 
 A promotion is re-runnable from the top **up to and including `preflight`**:
@@ -1611,15 +1716,31 @@ fixed — the release is dispatched at the tag now — but a promotion can still
 stop after `advance` for reasons that have nothing to do with it: a CVE gate
 that fires, a registry that is down, an installer e2e that goes red.
 
-**The fix arrives one promotion late, and this is the section where that
-matters.** A promotion executes the workflow files on the default branch as
-they stood when the run was created — that is the whole of #326 — so **the
-first promotion after this change lands still runs the old `promote.yml` and
-the old `release.yml`**: no `preflight`, no `--ref` on the release, and no
-`head_sha` assertion. It cannot be otherwise, because the change reaches `main`
-only by being promoted. Expect that one run to look like the runs before it,
-and read the paragraph above rather than this one if it stops. Every promotion
-after it has the guarantee.
+**The fix arrives one promotion late *if the promotion is dispatched on
+`main`*, and this is the section where that matters.** A promotion executes the
+workflow files resolved from the ref the run was dispatched on, and for a bare
+`gh workflow run promote.yml` that is the default branch as it stood when the
+run was created — that is the whole of #326. Dispatched that way,
+**the first promotion after this change lands still runs the old
+`promote.yml` and the old `release.yml`**: no `preflight`, no `--ref` on the
+release, and no `head_sha` assertion. Expect that one run to look like the runs before it, and read the
+paragraph above rather than this one if it stops.
+
+> **Corrected 2026-08-25 by the gate review of
+> [#342](https://github.com/actana/control/pull/342).** This paragraph used to
+> end *"it cannot be otherwise, because the change reaches `main` only by being
+> promoted"*, and that is false. **`--ref` is otherwise.** `gh workflow run
+> promote.yml --repo actana/control --ref beta/0.4.1 -f train=beta/0.4.1` runs
+> the *train's* copy of `promote.yml` — the identical mechanism
+> `beta-release.yml` requires of its own dispatch, and the one `promote.yml`
+> itself now uses to dispatch `release.yml` at the tag. The `pause` job's
+> `macos-release` environment leaves deployment branches unrestricted, so the
+> human gate still runs on a `beta/*` ref. What is genuinely one promotion late
+> is only the *default*: a promotion dispatched with no `--ref` still gets
+> `main`'s files. **[§ Promoting the 0.4.1 train,
+> once](#promoting-the-041-train-once) is the instruction**, and it also
+> records what `main`'s copy does behind you if the bare form is used — it
+> auto-cuts an unstamped `beta/0.5.0` that goes red on its first push.
 
 **A half-run promotion is not a cosmetic failure, and this is why.** The
 fast-forward and the version tag land *before* the release does, so between
