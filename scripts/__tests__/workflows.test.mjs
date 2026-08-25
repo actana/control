@@ -136,8 +136,13 @@ describe("the workflow inventory (ADR 0016 D34)", () => {
     expect(source).not.toMatch(/^ {2}(?:push|pull_request|schedule|workflow_dispatch):/m);
   });
 
+  // `beta-release.yml` joined the list with #319. It calls the same reusable
+  // workflow in the one mode that builds nothing (`promote`, ADR 0023 D17), so
+  // "every path that touches an image" is the honest reading of this test now:
+  // three callers, one implementation, and no second place for D16's refusal
+  // to be weakened.
   it("calls the reusable build from every path that builds an image", () => {
-    for (const file of ["ci.yml", "release.yml"]) {
+    for (const file of ["ci.yml", "release.yml", "beta-release.yml"]) {
       expect(read(file)).toContain("uses: ./.github/workflows/container-image.yml");
     }
   });
@@ -839,6 +844,39 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     return call.join("\n");
   };
 
+  /**
+   * The `with:` mapping a reusable-workflow job hands `container-image.yml`,
+   * as `key -> value`, read off the comment-stripped job the way the runner
+   * reads it.
+   *
+   * Same reason as `invocation` above: the inputs decide what is published,
+   * and a `toContain` over the job's text is satisfied by a comment or an
+   * error message naming the same string. This returns the mapping, so an
+   * assertion can say `tags` **is** one thing rather than that the word
+   * appears somewhere in the job.
+   */
+  const withInputs = (text, job) => {
+    const block = code(jobBlock(text, job));
+    const lines = block.split("\n");
+    const start = lines.findIndex((line) => line === "    with:");
+    expect(start, `no with: block in ${job}`).toBeGreaterThan(-1);
+    const inputs = {};
+    for (const line of lines.slice(start + 1)) {
+      if (line.trim() === "") continue;
+      if (!/^ {6}\S/.test(line)) break;
+      const pair = /^ {6}([a-z_]+): (.+)$/.exec(line);
+      expect(pair, `unparsed input line in ${job}: ${line}`).not.toBeNull();
+      inputs[pair[1]] = pair[2].trim();
+    }
+    return inputs;
+  };
+
+  /** A job's own scalar key (`name`, `uses`, `secrets`) at the job's indent. */
+  const jobKey = (text, job, key) => {
+    const match = new RegExp(`^ {4}${key}: (.+)$`, "m").exec(code(jobBlock(text, job)));
+    return match === null ? undefined : match[1].trim();
+  };
+
   // C3. A beta cut is *requested*, the way a promotion is (ADR 0023 D14),
   // because "published by accident" is the failure worth designing out. A
   // `push:` on `beta/**` here would be one line and would turn every merge into
@@ -894,12 +932,24 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     const job = jobBlock(source, "resolve");
     expect(job).toContain("RUN_REF: ${{ github.ref_name }}");
     expect(code(job)).toContain('if [[ "$RUN_REF" != "$train" ]]; then');
-    // Dispatching nothing is what makes that refusal sufficient: this file runs
-    // the workflow it was dispatched as and calls no other, so there is no
-    // second copy for a caller's SHA to resolve.
-    expect(body, "a local uses: resolves from the caller's SHA (#326)").not.toMatch(
-      /uses: \.\/\.github\/workflows\//,
-    );
+    // Dispatching nothing is what makes that refusal sufficient, and #319's two
+    // retag jobs do not weaken it. This assertion used to read "no local
+    // `uses:` at all", which was true of a file that called nothing and is the
+    // wrong rule now: a reusable workflow named by **path** resolves from the
+    // *same commit* as its caller, so once the refusal above has held
+    // `github.ref_name` to the train, `core-image` and `panel-image` run the
+    // train's own copy of `container-image.yml`. That is the inverse of #326's
+    // trap rather than an instance of it.
+    //
+    // What resolves from somewhere else is a `owner/repo/....yml@ref` call —
+    // pinned to a ref this run did not choose — and a *dispatch*. The first is
+    // banned here; the second is covered by the loop below, which holds every
+    // `gh workflow run` in the file to its `--ref`.
+    for (const [, target] of body.matchAll(/uses: (\S*\.github\/workflows\/\S+)/g)) {
+      expect(target, "a reusable call that is not a local path (#326)").toMatch(
+        /^\.\/\.github\/workflows\/[a-z-]+\.yml$/,
+      );
+    }
     // The re-dispatch this file prints when it refuses is the one an operator
     // will paste, so it carries the `--ref` for the same reason #326 requires it
     // on every `gh workflow run release.yml` in the repository: a dispatch
@@ -1115,6 +1165,185 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   // the sentence is pinned here, in the file whose existence depends on it.
   it("leaves release.yml's refusal of a tag on a train in place (D9)", () => {
     expect(code(read("release.yml"))).toContain("Tag is on neither main nor a release line");
+  });
+
+  // ── #319: the beta image tags ───────────────────────────────────────────────
+  //
+  // Every assertion below reads the `with:` mapping or a job's own keys rather
+  // than searching the file for a string. That is the shape the review of #318
+  // asked for after a flag count over a whole job was satisfied by two error
+  // messages quoting the flag: this file's header names `promote`, `latest`,
+  // `beta-x.y.z` and `x.y.z-beta` dozens of times in prose, so a `toContain`
+  // here would pass against a file that publishes nothing at all.
+
+  // #319's first and second criteria. The mode that retags is
+  // `container-image.yml`'s and this file calls it — the machinery is not
+  // re-implemented, so there is no second place for D16's refusal to be
+  // weakened. `mode: promote` refuses `push: false` and a missing `source_tag`
+  // in its own `resolve`, so a malformed call here fails before a pull.
+  it("retags both images from the train's digest, and builds nothing (#319, D12)", () => {
+    for (const [job, image] of [
+      ["core-image", "core"],
+      ["panel-image", "panel"],
+    ]) {
+      expect(jobKey(source, job, "uses")).toBe("./.github/workflows/container-image.yml");
+      // `version` is #327's input and is governed exclusively by the binding
+      // test below, which is the one that knows whether it exists yet. It is
+      // held out here so that wiring it correctly the day #327 lands does not
+      // make this test red for the right change.
+      const { version: _version, ...inputs } = withInputs(source, job);
+      expect(inputs).toEqual({
+        image,
+        ref: "${{ needs.resolve.outputs.sha }}",
+        stage: "${{ needs.resolve.outputs.beta_version }}",
+        mode: "promote",
+        // `beta-0.4.1` — the train's moving handle, from the line, not from
+        // the beta string. `beta-${{ … beta_version }}` would be
+        // `beta-0.4.1-beta`, a tag nothing publishes.
+        source_tag: "beta-${{ needs.resolve.outputs.version }}",
+        tags: "${{ needs.resolve.outputs.beta_version }}",
+        push: "true",
+      });
+      // The exhaustive `toEqual` above is what pins the absences, and each one
+      // is a real failure rather than tidiness: `dev_tags` is refused outright
+      // by promote mode (ADR 0023 D36), and a narrowed `matrix` would narrow
+      // D16's per-architecture assertion rather than any work — a promotion
+      // builds nothing, so there is nothing to save.
+      expect(inputs.dev_tags).toBeUndefined();
+      expect(inputs.matrix).toBeUndefined();
+      // `push_required` left at its default `true`: a registry outage must
+      // fail a cut rather than leave a Release advertising a tag that is not
+      // there.
+      expect(inputs.push_required).toBeUndefined();
+    }
+    // Nothing in this file builds an image or scans one. The retag is a
+    // second name for bytes the train already gated (#319's second criterion).
+    expect(body).not.toContain("docker build");
+    expect(body).not.toContain("Dockerfile");
+    expect(body).not.toMatch(/trivy/i);
+  });
+
+  // #319's fourth criterion, on the surface it is about. Asserted as the whole
+  // value of `tags` rather than as the absence of the word: this file says
+  // `--latest=false` and `/releases/latest` in the Release steps, so "latest
+  // does not appear" is both false and beside the point. One tag, no space, no
+  // second entry.
+  it("puts exactly one tag on each repository, and latest is never it (D10)", () => {
+    for (const job of ["core-image", "panel-image"]) {
+      const tags = withInputs(source, job).tags;
+      expect(tags).toBe("${{ needs.resolve.outputs.beta_version }}");
+      // `tags` is space-separated, so one whole expression and nothing beside
+      // it is what "exactly one tag" means at this level. A second entry —
+      // `latest`, or a literal — would sit outside the braces.
+      expect(tags, "a second tag would ride along on the same retag").toMatch(
+        /^\$\{\{[^{}]*\}\}$/,
+      );
+    }
+    // And the string that expands there cannot be `latest` or anything else:
+    // `resolve` builds it by one concatenation and refuses any other shape.
+    expect(code(jobBlock(source, "resolve"))).toContain('beta_version="$version-beta"');
+    expect(code(jobBlock(source, "resolve"))).toContain(
+      '^[0-9]+\\.[0-9]+\\.[0-9]+-beta$',
+    );
+  });
+
+  // #319's fifth criterion. `Panel image` / `Core image` are required checks in
+  // the "Protect main" ruleset; reusing either name here would make a beta cut
+  // report under a check the ruleset gates pull requests on. `ci.yml`'s train
+  // jobs solved this with `(train)` and this file follows with `(beta)`.
+  it("does not reuse the pinned Panel image / Core image check names", () => {
+    expect(jobKey(source, "core-image", "name")).toBe("Core image (beta)");
+    expect(jobKey(source, "panel-image", "name")).toBe("Panel image (beta)");
+    // The pinned names, unqualified, must not appear as a job name anywhere in
+    // this file — the check the ruleset knows is the bare one.
+    expect(source).not.toMatch(/^ {4}name: (?:Panel|Core) image$/m);
+    // And they are still where the ruleset expects them, so this test fails if
+    // the convention it is following is the thing that moved.
+    expect(read("release.yml")).toMatch(/^ {4}name: Core image$/m);
+    expect(read("ci.yml")).toMatch(/^ {4}name: Core image \(train\)$/m);
+  });
+
+  // #319's sixth criterion, and the irreversibility argument behind it. An
+  // image tag cannot be taken back: Docker Hub has no tag garbage collection
+  // and no undelete (ADR 0023 D45), the delete-capable credential is kept out
+  // of the repositories holding `latest` (D36, D38), and ADR 0036 D23 refuses
+  // to widen it — so `x.y.z-beta` persists, and a retag that ran beside a
+  // failed publish would persist beside a Release that does not exist.
+  //
+  // `publish` subsumes the three gate jobs, and they are named anyway: the
+  // criterion is about those legs, and an edit that drops `publish` must not
+  // silently drop them with it.
+  it("retags only after every gate and after the Release exists (#319)", () => {
+    for (const job of ["core-image", "panel-image"]) {
+      const needs = jobKey(source, job, "needs");
+      for (const gate of ["resolve", "tarball", "tarball-macos", "installer-e2e", "publish"]) {
+        expect(needs, `${job} does not wait for ${gate}`).toContain(gate);
+      }
+    }
+    // The other direction: nothing upstream of `publish` may reach the
+    // registry, or the ordering above is decoration.
+    for (const job of ["resolve", "tarball", "tarball-macos", "installer-e2e"]) {
+      const block = code(jobBlock(source, job));
+      expect(block, `${job} touches an image ahead of the gates`).not.toContain(
+        "container-image.yml",
+      );
+    }
+  });
+
+  // #318's review named this as the hole that opens the moment #319 lands: a
+  // promotion pull request run has the same head sha as the train tip and
+  // skips `Resolve train tags` / `Core image (train)` / `Panel image (train)`,
+  // and under ADR 0023 D33 a draft resolves both image checks to `pass`
+  // without building. The digest this retag re-points is exactly the one such
+  // a run never publishes.
+  //
+  // So the filter and the dependency are asserted together. Either alone is
+  // satisfiable while the hole is open: a filter nothing depends on gates
+  // nothing, and a dependency on an unfiltered gate is a dependency on a
+  // pull_request run.
+  it("retags only behind the greenness gate that filters the push event (D21, D41)", () => {
+    const gate = code(jobBlock(source, "resolve"));
+    expect(gate, "the gate no longer filters the event at the API").toContain("--event push");
+    expect(gate, "the gate no longer asserts the event it selected").toContain(
+      'select(.headSha == $sha and .event == "push")',
+    );
+    expect(gate).toContain("Not a push run");
+    for (const job of ["core-image", "panel-image"]) {
+      expect(jobKey(source, job, "needs"), `${job} does not depend on the gate`).toContain(
+        "resolve",
+      );
+    }
+  });
+
+  // ADR 0037 D7 and D8: a counted beta is refused wherever a version string is
+  // validated, and #319 *inherits* that check rather than writing one. #327
+  // moved the ban into `imageVersionProblem` precisely because image mode
+  // short-circuits before `checkAgreement` and `lineOf("0.4.1-beta.1")` is
+  // `0.4.1`, which agrees with a correctly labelled digest.
+  //
+  // That module and `container-image.yml`'s `version:` input are #327's and
+  // are not in this branch's base. Passing an input a reusable workflow does
+  // not declare is a hard failure, so this test binds the two rather than
+  // asserting one of them: while the input does not exist the retag must not
+  // pass it, and the moment it does exist the retag must pass the beta string
+  // — `beta_version`, not the line, because the line is what a correctly
+  // labelled digest already says and the counter is what has to be caught.
+  it("passes the version the counted-beta ban is applied to, once #327 declares it", () => {
+    const declared = /^ {6}version:$/m.test(read("container-image.yml"));
+    for (const job of ["core-image", "panel-image"]) {
+      const { version } = withInputs(source, job);
+      if (declared) {
+        expect(
+          version,
+          `${job} does not hand container-image.yml the string ADR 0037 D7 bans a counter in`,
+        ).toBe("${{ needs.resolve.outputs.beta_version }}");
+      } else {
+        expect(
+          version,
+          `${job} passes a version input container-image.yml does not declare — the call would fail to start`,
+        ).toBeUndefined();
+      }
+    }
   });
 });
 

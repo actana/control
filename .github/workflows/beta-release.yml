@@ -1,17 +1,26 @@
 name: Beta release
 
 # A requested beta cut: the moving `vx.y.z-beta` tag, a prerelease GitHub
-# Release, three Core tarballs, their `SHA256SUMS`, and `install.sh` beside
-# them (ADR 0036 D10).
+# Release, three Core tarballs, their `SHA256SUMS`, `install.sh` beside them,
+# and the two `x.y.z-beta` image tags retagged from the train's own digests
+# (ADR 0036 D10).
 #
-#   resolve ─┬─ tarball (linux-x64, linux-arm64) ─┬─ installer-e2e ─┬─ publish
-#            │                                    │   (ubuntu x64)  │
-#            └─ tarball-macos (mac-arm64) ────────┴─────────────────┘
+#   resolve ─┬─ tarball (linux-x64, linux-arm64) ─┬─ installer-e2e ─┬─ publish ─┬─ core-image
+#            │                                    │   (ubuntu x64)  │            │
+#            └─ tarball-macos (mac-arm64) ────────┴─────────────────┘            └─ panel-image
 #
-# `publish` is the only job that writes anything: it moves the tag, creates or
-# updates the Release, replaces every asset, and then reads the Release back to
-# prove the prerelease flag survived. Everything above it is a gate, so a red
-# leg leaves `vx.y.z-beta` exactly where it was.
+# Two stages write, and they are ordered by what cannot be taken back.
+# `publish` verifies every asset, moves the tag, creates or updates the
+# Release, and then reads the Release back to prove the prerelease flag
+# survived. `core-image` and `panel-image` run after it and re-point
+# `x.y.z-beta` at the digest the train already published — the one act in this
+# file that nothing can undo (ADR 0023 D45: Docker Hub has no tag garbage
+# collection and no undelete; ADR 0036 D23: nothing sweeps a beta image tag,
+# and the delete-capable credential is not widened to reach one).
+#
+# Everything above `publish` is a gate, so a red leg leaves `vx.y.z-beta`
+# exactly where it was — and because the retag is downstream of `publish`, a
+# red publish leaves the image tags where they were too.
 #
 # ── Why this is a file of its own (ADR 0036 D9) ──────────────────────────────
 #
@@ -131,6 +140,87 @@ name: Beta release
 # A second cut of the same beta is therefore a supported operation and not a
 # repair: the tag moves, every asset is replaced, and any asset the previous cut
 # left that this one does not produce is deleted before the new ones go up.
+#
+# ── The images are retagged, never rebuilt (#319, ADR 0036 D12, ADR 0023 D17)
+#
+# `core-image` and `panel-image` call `container-image.yml` in `promote` mode,
+# which is the machinery ADR 0023 D16 and D17 already built and which this file
+# calls rather than re-implements. **Nothing is built**: no `docker build`, no
+# Dockerfile, no Trivy leg, no per-arch scaffolding. Every build step in that
+# workflow is gated on `inputs.mode == 'build'`, and `resolve` there refuses a
+# `promote` without a `source_tag` and a `promote` with `push: false` before
+# anything is pulled.
+#
+# The bytes already exist. `ci.yml`'s `train-tags` → `*-image-train` jobs
+# published them as `beta-x.y.z` on the merge that made this tip, and the
+# greenness gate above refused to cut unless that **push** run was green —
+# which is precisely the run that publishes them. A `pull_request` run has the
+# same head sha and skips those jobs, and a draft resolves both image checks to
+# `pass` without building (ADR 0023 D33); that is why the gate filters the
+# event at the API *and* asserts it again in the `jq`, and it is why these jobs
+# hang off `resolve`. Retagging from a digest a `pull_request` run never
+# published is the hole that filter exists to close.
+#
+# What the two jobs do is give that digest a second name, `x.y.z-beta`, with
+# `docker buildx imagetools create` — one source, no rewritten config blob.
+# Standing between that and publishing bytes nobody cut is D16's assertion,
+# which `container-image.yml` makes on **every architecture the manifest
+# lists**, in the `build` job that `publish` there needs:
+#
+#     if [[ "$revision" != "$EXPECTED" ]]; then
+#       echo "::error title=Refusing to promote a digest built from another
+#       commit::…"
+#
+# It is the point, not a formality. `beta-x.y.z` moves on every train merge, so
+# between `resolve` reading the tip and these jobs retagging it somebody may
+# have merged, and D16 refuses that digest by name rather than publishing bytes
+# nobody cut.
+#
+# **`latest` is never in the tag list**, on either repository, and no `-dev`
+# handle is either — `promote` mode refuses `dev_tags` outright (ADR 0023 D36).
+# The tag list is exactly `x.y.z-beta`, one entry.
+#
+# **The two pinned check names are not reused.** `Panel image` / `Core image`
+# are required checks in the "Protect main" ruleset and are used by `ci.yml` on
+# pull requests and by `release.yml` on the release. These jobs are `Core image
+# (beta)` and `Panel image (beta)`, following the `Core image (train)`
+# convention `ci.yml` adopted for the same reason.
+#
+# **They run last, and that ordering is the irreversibility argument.** An
+# image tag cannot be taken back: ADR 0023 D45 records that Docker Hub has no
+# tag garbage collection and no undelete, D36 and D38 keep the delete-capable
+# credential permanently out of the repositories that hold `latest` — which is
+# exactly where these tags go — and ADR 0036 D23 settles the consequence: the
+# `x.y.z-beta` tags persist once the line promotes, nothing sweeps them, and
+# *"do not revisit by widening the list."* So this file puts the un-absorbable
+# act last, the way `release.yml` argues for its own final job. A retag that
+# ran before `publish` and then met a red `publish` would leave `x.y.z-beta` on
+# Docker Hub beside a Release that does not exist, permanently and with no
+# credential able to remove it. The reverse — a Release whose images are not
+# yet retagged — is repaired by re-dispatching the cut, because every step in
+# this file is idempotent: the tag is force-moved, the assets are clobbered,
+# and a retag re-points a name that is already a name.
+#
+# **The counted-beta ban reaches this path, and it is not this file's ban to
+# write** (ADR 0036 C1, ADR 0037 D7, D8). Two halves:
+#
+#   1. `resolve` refuses anything but `x.y.z-beta` before a single job starts,
+#      and these jobs publish `needs.resolve.outputs.beta_version` verbatim —
+#      the same string the tag, the Release and every asset filename carry. A
+#      counter cannot reach the image tag without failing the cut outright.
+#   2. The digest's own `org.opencontainers.image.version` label, held to that
+#      string by `scripts/lib/version-agreement.mjs`. That module and
+#      `container-image.yml`'s `version:` input arrive with #327 (ADR 0037 D3,
+#      D4), which is open and not in this branch's base. Image mode is exactly
+#      where that ban had a hole — it short-circuits before `checkAgreement`,
+#      and `lineOf("0.4.1-beta.1")` is `0.4.1`, which agrees with a correctly
+#      labelled digest — so #327 moved the ban into `imageVersionProblem`
+#      itself *"which is what lets #319's beta retag inherit it"*.
+#
+# Passing an input a reusable workflow does not declare is a hard failure, so
+# these jobs cannot pass `version:` before #327 lands. `workflows.test.mjs`
+# binds the two instead: the moment `container-image.yml` declares that input,
+# the retag jobs must pass `beta_version` or the suite goes red.
 #
 # ── The prerelease flag is read back, not trusted (ADR 0023 D9, ADR 0036 D11)
 #
@@ -1007,3 +1097,82 @@ jobs:
             echo ""
             echo "Nothing was published to npm — a beta is invisible to registry.npmjs.org (ADR 0036 D15)."
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # ── The two beta image tags (#319) ──────────────────────────────────────────
+  #
+  # The argument for these two jobs — retag never rebuild, D16's assertion on
+  # every architecture, why `latest` cannot appear, why the check names carry
+  # `(beta)`, why they run after `publish`, and how the counted-beta ban
+  # reaches them — is at the head of this file under *"The images are
+  # retagged, never rebuilt"*. What is left here is the wiring.
+  #
+  # Both are `uses:` calls into the same reusable workflow `ci.yml` and
+  # `release.yml` call, in the mode that exists for exactly this
+  # (`container-image.yml`'s `promote`, ADR 0023 D16, D17). Nothing is
+  # re-implemented, and nothing about D16's refusal is weakened: this file
+  # cannot weaken it, because it does not contain it.
+  #
+  # `needs:` names every gate rather than only `publish`, which subsumes them.
+  # That is deliberate: #319's last acceptance criterion is about the tarball
+  # and installer-e2e legs specifically, and a later edit that took `publish`
+  # off this list must not silently take those with it.
+  #
+  # No `matrix:` override. The default is `amd64` + `arm64`, which is what the
+  # train publishes and therefore what the manifest lists — and the revision
+  # assertion runs once per row, so narrowing the matrix here would narrow the
+  # assertion rather than the work (there is no work: nothing is built).
+  #
+  # No `dev_tags:`. A promotion publishes to the release repository only, and
+  # `promote` mode refuses one outright (ADR 0023 D36).
+  #
+  # `push_required` is left at its default `true`. A registry outage must fail
+  # a cut: the alternative is a green run whose Release advertises an image tag
+  # that does not exist.
+  core-image:
+    name: Core image (beta)
+    needs: [resolve, tarball, tarball-macos, installer-e2e, publish]
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+    secrets: inherit
+    with:
+      image: core
+      # The commit, not the tag. This is the value D16 compares the digest's
+      # `org.opencontainers.image.revision` label against, and it is the same
+      # sha `publish` just moved `vx.y.z-beta` onto — so the image the beta
+      # advertises and the bytes the beta names are one commit by assertion
+      # rather than by coincidence.
+      ref: ${{ needs.resolve.outputs.sha }}
+      # Unused in this mode — nothing is built, so there are no per-arch
+      # scaffolding tags to discriminate (ADR 0023 D12) — but the input is
+      # required, and the honest value is the version this cut publishes.
+      stage: ${{ needs.resolve.outputs.beta_version }}
+      mode: promote
+      # `beta-0.4.1`, the moving handle `ci.yml`'s train jobs publish on every
+      # merge. It moves on a different clock from the tag below: this one per
+      # train merge, `0.4.1-beta` per cut (ADR 0036 D7). Lagging between cuts
+      # is what makes a cut a cut, and D16 is what stops the lag becoming a
+      # publish of bytes this run never gated.
+      source_tag: beta-${{ needs.resolve.outputs.version }}
+      # Exactly one tag, and `latest` is not in it — on either repository, ever
+      # (ADR 0036 D10). `beta_version` is the string `resolve` already refused
+      # to let carry a counter, and it is the same string the git tag, the
+      # Release and every asset filename carry (C1).
+      tags: ${{ needs.resolve.outputs.beta_version }}
+      push: true
+
+  panel-image:
+    name: Panel image (beta)
+    needs: [resolve, tarball, tarball-macos, installer-e2e, publish]
+    uses: ./.github/workflows/container-image.yml
+    permissions:
+      contents: read
+    secrets: inherit
+    with:
+      image: panel
+      ref: ${{ needs.resolve.outputs.sha }}
+      stage: ${{ needs.resolve.outputs.beta_version }}
+      mode: promote
+      source_tag: beta-${{ needs.resolve.outputs.version }}
+      tags: ${{ needs.resolve.outputs.beta_version }}
+      push: true
