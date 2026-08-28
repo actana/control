@@ -282,6 +282,19 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
 const REFUSED = Symbol("public-host-refused");
 
 /**
+ * The two addresses every server certificate carries and no pairing code may
+ * choose (ADR 0032 D9, ADR 0038 D4).
+ *
+ * Named here only so the refusal can tell the truth about them. They are *not*
+ * an exception list the membership check consults — the check is against the
+ * operator's configured hosts and these are not on it, which is the policy.
+ * What they are is the one case where "not one of this Core's configured public
+ * hosts" and "not in this Core's certificate" come apart, and an operator told
+ * the second about `127.0.0.1` has been told something false.
+ */
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1"];
+
+/**
  * Which configured address this code hands back, or {@link REFUSED}.
  *
  * `undefined` — the flag was not given — is the primary, and that is not
@@ -327,13 +340,27 @@ function chooseEndpointHost(
         "public hosts.",
     );
     deps.err(
-      "A pairing code can only hand back an address this Core's certificate already " +
-        "covers — otherwise the client it pairs would fail hostname verification.",
+      "A pairing code can only hand back an address this Core was configured to answer " +
+        `on, so that the certificate is guaranteed to cover it — otherwise the client it ` +
+        "pairs would fail hostname verification on its first dial.",
     );
     deps.err(`Configured (${CONTAINER_PUBLIC_HOST_ENV}): ${formatPublicHosts(configured)}`);
     deps.err(
       `Omit --public-host to use ${primaryPublicHost(configured)}, the first of them.`,
     );
+    // `localhost` and `127.0.0.1` are on every certificate this Core signs (ADR
+    // 0032 D9) and are still not selectable, so the sentence above would be
+    // false about them if it were left to stand alone. The policy is deliberate
+    // — ADR 0038 D4 — and the reason is reachability rather than coverage: a
+    // loopback address handed to a client on another machine names that
+    // client's own machine.
+    if (LOOPBACK_HOSTS.includes(wanted)) {
+      deps.err(
+        `${wanted} is in this Core's certificate, and it is deliberately not selectable: ` +
+          "handed to a client on another machine it would name that machine, not this Core. " +
+          "The machine this Core runs on already reaches it on loopback without pairing.",
+      );
+    }
     return REFUSED;
   }
   return wanted;

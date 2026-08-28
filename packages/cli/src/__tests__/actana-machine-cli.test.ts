@@ -596,7 +596,8 @@ describe("setup", () => {
     expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
       "AC_CORE_PUBLIC_HOST=core,10.0.0.5,core.example",
     );
-    expect(out.join("\n")).toContain("10.0.0.5, core.example");
+    // Printed the way the flag takes it back, so an operator can paste it.
+    expect(out.join("\n")).toContain("10.0.0.5,core.example");
   });
 
   it("writes the same unit and the same endpoint for a single --public-host", async () => {

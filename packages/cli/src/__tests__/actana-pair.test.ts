@@ -326,11 +326,38 @@ describe("actana pair new --public-host", () => {
     const said = err.join("\n");
     expect(said).toContain("192.168.1.20");
     expect(said).toMatch(/not one of this Core's configured public hosts/);
-    expect(said).toContain("core, 10.0.0.5, core.example.test");
+    // No spaces: an operator pastes this back into `--public-host`, where
+    // `core, 10.0.0.5` is two shell words and only the first reaches the flag.
+    expect(said).toContain("core,10.0.0.5,core.example.test");
     expect(said).toContain("Omit --public-host to use core, the first of them.");
     // Nothing was minted: no code was printed, and no session was written.
     expect(out).toEqual([]);
     expect(store().listSessions()).toEqual([]);
+  });
+
+  // The loopback pair is on every certificate this Core signs (ADR 0032 D9) and
+  // is still deliberately not selectable (ADR 0038 D4). The refusal therefore
+  // has to give a different reason for them, because the ordinary one — "the
+  // certificate does not cover it" — is false about `127.0.0.1`.
+  it("refuses a loopback address without claiming the certificate lacks it", async () => {
+    await multiHost();
+
+    for (const loopback of ["127.0.0.1", "localhost"]) {
+      expect(run(["new", "--public-host", loopback])).toBe(2);
+      const said = err.join("\n");
+      expect(said).toContain(`${loopback} is in this Core's certificate`);
+      expect(said).toMatch(/deliberately not selectable/);
+      // The true reason is reachability: handed to a client on another machine
+      // it would name that machine.
+      expect(said).toMatch(/would name that machine, not this Core/);
+      expect(store().listSessions()).toEqual([]);
+    }
+  });
+
+  it("gives an ordinary refusal no loopback sentence", async () => {
+    await multiHost();
+    expect(run(["new", "--public-host", "192.168.1.20"])).toBe(2);
+    expect(err.join("\n")).not.toMatch(/is in this Core's certificate/);
   });
 
   it("refuses a near miss rather than resolving it to something close", async () => {
