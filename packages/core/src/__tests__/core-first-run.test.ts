@@ -4,6 +4,8 @@ import * as path from "node:path";
 import * as os from "node:os";
 import { X509Certificate, createPublicKey } from "node:crypto";
 import { loadOrMintMaterial } from "../core-first-run";
+import selfsigned from "selfsigned";
+import { issueServerCert } from "@actana/shared/core-cert-material";
 import {
   mintFreshMaterial,
   persistMaterialToFile,
@@ -33,8 +35,48 @@ import {
  */
 let sample: PersistedMaterial;
 
+/**
+ * What a machine installed before the Harness → Core rename carries.
+ *
+ * Real certificates under the old CA name, because the point of the fixture is
+ * that they are *valid* — the review's correction is that this material works
+ * and must keep booting, and a placeholder string could not show that.
+ */
+let preRename: PersistedMaterial;
+
+async function mintPreRenameMaterial(base: PersistedMaterial): Promise<PersistedMaterial> {
+  const notBefore = new Date();
+  const ca = await selfsigned.generate(
+    [
+      { name: "commonName", value: "mission-control-harness-ca" },
+      { name: "organizationName", value: "Mission Control" },
+    ],
+    {
+      algorithm: "sha256",
+      notBeforeDate: notBefore,
+      notAfterDate: new Date(notBefore.getTime() + 86_400_000),
+      extensions: [
+        { name: "basicConstraints", cA: true, pathLenConstraint: 0, critical: true },
+        { name: "keyUsage", keyCertSign: true, cRLSign: true, critical: true },
+      ],
+    },
+  );
+  const server = await issueServerCert({
+    ca: { cert: ca.cert, key: ca.private },
+    hosts: ["core.example.test"],
+  });
+  return {
+    ...base,
+    caCert: ca.cert,
+    caKey: ca.private,
+    serverCert: server.cert,
+    serverKey: server.key,
+  };
+}
+
 beforeAll(async () => {
   sample = await mintFreshMaterial(["core.example.test"]);
+  preRename = await mintPreRenameMaterial(sample);
 });
 
 let dir: string;
@@ -79,8 +121,8 @@ describe("loadOrMintMaterial — the file is absent", () => {
   });
 });
 
-describe("loadOrMintMaterial — the identity on disk is not this Core's (#348)", () => {
-  it("refuses material whose CA is not this product's, naming the file", async () => {
+describe("loadOrMintMaterial — the identity on disk cannot be served (#348)", () => {
+  it("refuses material that could never complete a handshake, naming the file", async () => {
     // The load path's half of `checkMaterialIdentity`: the daemon stops at
     // boot with a sentence, instead of presenting an identity that fails at a
     // client as `wrong version number`.
@@ -93,6 +135,18 @@ describe("loadOrMintMaterial — the identity on disk is not this Core's (#348)"
     await expect(loadOrMintMaterial({ materialFile, ...options })).rejects.toThrow(
       /actana setup/,
     );
+  });
+
+  it("boots on material from before the rename rather than refusing it", async () => {
+    // The review's correction, pinned: the Harness-era CA is not the fault in
+    // #348 and this daemon serves it. Refusing here would brick a working
+    // install and cost every paired client its pairing.
+    persistMaterialToFile(materialFile, preRename);
+
+    const result = await loadOrMintMaterial({ materialFile, ...options });
+
+    expect(result.material.caCert).toBe(preRename.caCert);
+    expect(result.material.coreId).toBe(preRename.coreId);
   });
 
   it("leaves the file alone — the operator decides what to discard", async () => {

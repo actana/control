@@ -48,6 +48,7 @@ import * as path from "node:path";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { formatPublicHosts, primaryPublicHost } from "@actana/shared/public-hosts";
 import {
+  checkMaterialIdentity,
   loadMaterial,
   materialFilePath,
   checkServerCertHost,
@@ -170,8 +171,16 @@ export type PlacementResult = {
   launcher: LauncherClaim;
 };
 
-/** What `actana setup` did to this machine's pairing material. */
-export type MaterialOutcome = "minted" | "reused" | "reissued";
+/**
+ * What `actana setup` did to this machine's pairing material.
+ *
+ * `re-minted` is the recovery path (#348): the material on disk could not have
+ * served TLS at all, so it was replaced rather than re-blessed. Its own outcome
+ * because it is the one that costs the operator something — every paired client
+ * has to pair again — and a caller that reported it as an ordinary `minted`
+ * would leave them to find that out from a client that stopped working.
+ */
+export type MaterialOutcome = "minted" | "reused" | "reissued" | "re-minted";
 
 export type SetupResult = {
   /** The version that is now installed — the tree's, not this CLI's (#288 D10). */
@@ -242,6 +251,10 @@ export function choosePublicHost(
  *
  * Material written before D18 does not record the host its cert was signed for;
  * the config setup wrote alongside it does, so that stands in for it.
+ *
+ * The one thing reuse cannot survive is material that could never have worked.
+ * See the first branch: that is the whole of what makes `actana setup` an
+ * honest answer to a daemon that refused to boot (#348).
  */
 async function resolveMaterial(
   opts: SetupOptions,
@@ -250,6 +263,42 @@ async function resolveMaterial(
   if (!existing) {
     return { material: await mintFreshMaterial(opts.publicHosts), outcome: "minted" };
   }
+
+  // The recovery path, and the reason `setup` can be named as a remedy at all
+  // (#348). Everything below this reuses the identity on disk — `reissueServerCert`
+  // included, which signs a new leaf with the *existing* CA and key. That is
+  // right for material that works and useless for material that cannot: a
+  // daemon told to boot on it refuses, the operator is told to run `setup`, and
+  // `setup` hands back what it was already given. So the file is checked with
+  // the same function the daemon boots with, and material that could never
+  // serve TLS is replaced instead of re-blessed.
+  const issue = checkMaterialIdentity(existing);
+  if (issue?.severity === "unusable") {
+    opts.out(`This Core's material cannot be served: ${issue.message}`);
+    // The same confirmation `actana token regenerate` asks before the same
+    // loss, because it is the same loss — and it is a loss the operator has
+    // no way around here: the alternative to fresh material is a daemon that
+    // will not boot.
+    if (opts.interactive && !opts.assumeYes) {
+      const yes = await opts.system.confirm(
+        "Mint this Core a fresh identity? Every client paired with it is locked out until " +
+          "it pairs again.",
+        true,
+      );
+      if (!yes) {
+        throw new Error(
+          "Left this Core's material alone, so setup stopped: the daemon will not boot on " +
+            `it. Re-run and accept, or remove ${materialFilePath(opts.layout.configDir)} and ` +
+            "run setup again.",
+        );
+      }
+    }
+    return { material: await mintFreshMaterial(opts.publicHosts), outcome: "re-minted" };
+  }
+  // Usable, just not ours — pre-rename material is the case that matters, and
+  // it is kept. Said out loud because the operator should know what their Core
+  // is presenting, and because `actana token regenerate` is how they change it.
+  if (issue) opts.out(issue.message);
 
   const previous = readActanaConfig(opts.layout.configDir);
   const check = checkServerCertHost(

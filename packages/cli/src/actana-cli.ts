@@ -643,6 +643,16 @@ async function cmdSetup(
         `trusts this Core, but it is dialling the address it paired with. Point it at ` +
         `${publicHost}, or run \`actana pair new\` here and pair it again.`,
     );
+  } else if (result.materialOutcome === "re-minted") {
+    // The recovery in #348: the material that was here could not have served
+    // TLS, so setup replaced it rather than re-blessing it. Nothing that was
+    // paired with the old identity works any more, and saying so is the whole
+    // point of the outcome having its own name.
+    deps.out(
+      "This Core's old material could not be served and has been replaced, so every client " +
+        "paired with it is locked out. Pair each one again: run `actana pair new` here and " +
+        "spend the code it prints on the client.",
+    );
   } else if (result.materialOutcome === "reused") {
     deps.out(
       "This Core's pairing credentials are unchanged — a Panel already paired " +
@@ -1270,6 +1280,15 @@ async function cmdUpdate(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   // saying, because "I just replaced the whole install" reads otherwise.
   deps.out("Your pairing credentials are unchanged — paired Panels stay paired.");
 
+  if (result.listening === null) {
+    // Nothing was restarted, and the update said why on stdout — there is no
+    // service on this machine to restart (#348). Non-zero so a scripted
+    // upgrade notices that the new version is placed but nothing is running
+    // it, without the "the daemon restarted" sentence below, which would be
+    // false.
+    deps.err("Nothing is running this version yet — run `actana setup`.");
+    return 1;
+  }
   if (!result.listening) {
     deps.err(
       `The daemon restarted but nothing is listening on port ${installed.config.port} yet. ` +

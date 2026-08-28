@@ -67,15 +67,30 @@ describe("material this Core can serve", () => {
 });
 
 describe("material from before the rename", () => {
-  it("is refused, and named for what it is rather than as a parse error", async () => {
+  it("is reported as foreign, not as unusable — it works, and the rename is not its fault", async () => {
+    // The correction the review asked for. The Harness-era CA serves TLS
+    // exactly as it always did; what broke on the machine in #348 was the
+    // environment-variable rename, which `core-boot-refusals.ts` stops on its
+    // own. Refusing this material would cost every paired client its pairing
+    // to fix a problem it does not have.
     const legacy = await preRenameMaterial();
-    const refusal = checkMaterialIdentity(legacy)!;
+    const issue = checkMaterialIdentity(legacy)!;
 
-    expect(refusal).not.toBeNull();
-    expect(refusal).toContain(LEGACY_CA_COMMON_NAME);
-    expect(refusal).toMatch(/rename/i);
-    // The operator's next move, in the message rather than in a doc.
-    expect(refusal).toContain("actana setup");
+    expect(issue.severity).toBe("foreign");
+    expect(issue.message).toContain(LEGACY_CA_COMMON_NAME);
+    expect(issue.message).toMatch(/rename/i);
+    expect(issue.message).toMatch(/kept and served/);
+  });
+
+  it("is refused once it genuinely cannot serve, and then it is not called old", async () => {
+    // Provenance is checked last on purpose: pre-rename material with a
+    // mismatched key is broken, and "an install from before the rename" would
+    // send the operator after the wrong thing.
+    const legacy = await preRenameMaterial();
+    const issue = checkMaterialIdentity({ ...legacy, serverKey: current.serverKey })!;
+
+    expect(issue.severity).toBe("unusable");
+    expect(issue.message).not.toContain(LEGACY_CA_COMMON_NAME);
   });
 
   it("is otherwise indistinguishable from current material, which is the point", async () => {
@@ -91,52 +106,63 @@ describe("material from before the rename", () => {
 });
 
 describe("material that does not hang together", () => {
-  it("refuses a CA no version of this product minted", async () => {
+  it("refuses a CA that did not sign the leaf beside it, whatever it is called", async () => {
+    // A stranger's CA cannot have signed our server certificate, so this is
+    // caught as unusable before provenance is ever considered.
     const stranger = await selfsigned.generate([{ name: "commonName", value: "some-other-ca" }], {
       algorithm: "sha256",
     });
-    const refusal = checkMaterialIdentity({ ...current, caCert: stranger.cert })!;
-    expect(refusal).toContain("some-other-ca");
-    expect(refusal).toMatch(/no version of this product has minted/);
+    const issue = checkMaterialIdentity({ ...current, caCert: stranger.cert })!;
+    expect(issue.severity).toBe("unusable");
+    expect(issue.message).toMatch(/not issued by the CA beside it/);
   });
 
   it("refuses a server certificate the CA beside it did not issue", () => {
     // Two real identities, each valid on its own — the mix is what no client
     // can validate, and it is what a half-finished manual repair produces.
-    const refusal = checkMaterialIdentity({
+    const issue = checkMaterialIdentity({
       ...current,
       serverCert: other.serverCert,
       serverKey: other.serverKey,
     })!;
-    expect(refusal).toMatch(/not issued by the CA beside it/);
+    expect(issue.severity).toBe("unusable");
+    expect(issue.message).toMatch(/not issued by the CA beside it/);
   });
 
   it("refuses a certificate and key that are not a pair", () => {
-    const refusal = checkMaterialIdentity({ ...current, serverKey: other.serverKey })!;
-    expect(refusal).toMatch(/are not a pair/);
+    const issue = checkMaterialIdentity({ ...current, serverKey: other.serverKey })!;
+    expect(issue.severity).toBe("unusable");
+    expect(issue.message).toMatch(/are not a pair/);
     // Said here rather than left to the handshake, which says nothing.
-    expect(refusal).toMatch(/handshake/);
+    expect(issue.message).toMatch(/handshake/);
   });
 
   it("refuses bytes that are not certificates at all", () => {
-    expect(checkMaterialIdentity({ ...current, caCert: "not a certificate" })).toMatch(
+    const message = (material: PersistedMaterial) => checkMaterialIdentity(material)?.message ?? "";
+    expect(message({ ...current, caCert: "not a certificate" })).toMatch(
       /`caCert` is not a certificate/,
     );
-    expect(checkMaterialIdentity({ ...current, serverCert: "-----BEGIN CERTIFICATE-----\nx\n" }))
-      .toMatch(/`serverCert` is not a certificate/);
-    expect(checkMaterialIdentity({ ...current, serverKey: "not a key" })).toMatch(
+    expect(message({ ...current, serverCert: "-----BEGIN CERTIFICATE-----\nx\n" })).toMatch(
+      /`serverCert` is not a certificate/,
+    );
+    expect(message({ ...current, serverKey: "not a key" })).toMatch(
       /`serverKey` is not a private key/,
     );
   });
 
-  it("says what to run, whatever the reason", () => {
+  it("says what to run, whatever the reason — and it is a command that works", () => {
+    // `actana setup` is named because `resolveMaterial` re-mints on exactly
+    // this severity. `actana-setup.test.ts` is where that is proved end to end;
+    // what this pins is that no unusable message points somewhere else.
     for (const broken of [
       { ...current, caCert: "junk" },
       { ...current, serverCert: "junk" },
       { ...current, serverKey: "junk" },
       { ...current, serverCert: other.serverCert, serverKey: other.serverKey },
     ]) {
-      expect(checkMaterialIdentity(broken)).toContain("actana setup");
+      const issue = checkMaterialIdentity(broken)!;
+      expect(issue.severity).toBe("unusable");
+      expect(issue.message).toContain("actana setup");
     }
   });
 });

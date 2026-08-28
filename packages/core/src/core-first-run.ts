@@ -53,6 +53,7 @@ import {
   type PersistedMaterial,
 } from "@actana/shared/core-material-store";
 import { widenedPublicHosts } from "@actana/shared/public-hosts";
+import log from "@actana/shared/log";
 
 export type LoadOrMintOptions = {
   /** Full path from `AC_CORE_MATERIAL_FILE`. */
@@ -126,11 +127,14 @@ export type LoadOrMintResult = {
  * costs a certificate, not the pairing (ADR 0016 D18).
  *
  * Throws when the file exists but cannot be parsed, and when it parses into an
- * identity this Core cannot serve — material issued by a CA from before the
- * rename, or a server certificate and key that do not agree (#348). The
- * operator decides whether to discard an identity, not the daemon; what the
- * daemon owes them is the reason, at boot, instead of a TLS error at a client
- * three steps away.
+ * identity that could never serve TLS — a leaf the CA beside it did not sign,
+ * or a certificate and key that do not agree (#348). The operator decides
+ * whether to discard an identity, not the daemon; what the daemon owes them is
+ * the reason, at boot, instead of a TLS error at a client three steps away.
+ *
+ * Material from an older generation of this product is **not** in that
+ * category: it works, it is logged, and it boots. `actana setup` is where an
+ * operator chooses to replace it.
  */
 export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadOrMintResult> {
   if (fs.existsSync(opts.materialFile)) {
@@ -143,14 +147,24 @@ export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadO
       );
     }
     const existing = read.material;
-    // Before anything is done with it: material whose CA is not this product's
-    // — a file from before the rename, most often — is refused here rather
-    // than presented to a client as an unexplainable TLS failure (#348). The
-    // check is on the load path only; what this function mints is ours by
-    // construction.
-    const unusable = checkMaterialIdentity(existing);
-    if (unusable) {
-      throw new Error(`${opts.materialFile} cannot be used as this Core's identity. ${unusable}`);
+    // Before anything is done with it: material that could never complete a
+    // handshake stops the boot here, rather than reaching a client as an
+    // unexplainable TLS failure (#348). Material that merely came from an
+    // older generation of this product is *kept* and logged — it serves TLS
+    // exactly as it always did, and the rename broke the environment around it
+    // rather than the identity itself. The check is on the load path only;
+    // what this function mints is ours by construction.
+    const issue = checkMaterialIdentity(existing);
+    if (issue?.severity === "unusable") {
+      throw new Error(
+        `${opts.materialFile} cannot be used as this Core's identity. ${issue.message}`,
+      );
+    }
+    if (issue) {
+      log.warn("core-material.foreign-identity", {
+        file: opts.materialFile,
+        detail: issue.message,
+      });
     }
     // Material written before #282 has no stable core UUID, and the load just
     // minted one. Writing it back here is what makes it stable: unpersisted, a
