@@ -11,6 +11,7 @@ const healthy: ActanaStatusReport = {
   target: "linux-x64",
   endpoint: "wss://10.0.0.5:8443",
   serviceName: "actana-core.service",
+  legacyService: null,
   service: { loadState: "loaded", activeState: "active", subState: "running", mainPid: 4211 },
   persistence: { label: "Linger", value: "yes" },
   container: null,
@@ -135,6 +136,7 @@ describe("formatActanaStatus", () => {
       target: null,
       endpoint: null,
       serviceName: "actana-core.service",
+      legacyService: null,
       service: null,
       persistence: null,
       container: null,
@@ -157,6 +159,64 @@ describe("formatActanaStatus", () => {
 
 // An alert, and only an alert: the line names the command and never runs it,
 // and nothing about it reaches the exit code a script reads.
+describe("a service left by an install from before the rename (#348)", () => {
+  /** The machine in the report: the old agent is what launchd actually loaded. */
+  const legacy: ActanaStatusReport = {
+    ...healthy,
+    serviceName: "com.actana.harness",
+    legacyService: "com.actana.harness",
+  };
+
+  it("is degraded even while the legacy agent is up and answering", () => {
+    // It answers *because* it is the thing that is wrong: it runs the new
+    // binary with the pre-rename environment and holds the port the real Core
+    // wants. Reporting healthy here is what let this ship.
+    expect(summarizeHealth(legacy)).toBe("degraded");
+    expect(formatActanaStatus(legacy)).toMatch(/^Core: degraded/);
+  });
+
+  it("names the agent launchd loaded, not the label setup would write", () => {
+    expect(formatActanaStatus(legacy)).toMatch(/Auto-start\s+com\.actana\.harness/);
+    expect(formatActanaStatus(legacy)).not.toMatch(/Auto-start\s+com\.actana\.core/);
+  });
+
+  it("says what is there and what to run about it", () => {
+    const text = formatActanaStatus(legacy);
+    // "still installed", not "is loaded": the detection is true when the plist
+    // merely exists, and this is the wording `actana place` uses too.
+    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is still installed/);
+    expect(text).toMatch(/actana setup/);
+  });
+
+  it("still says it on a machine setup has never run on", () => {
+    // `actana uninstall --purge-data` removes the config, so `installed` is
+    // false — and the legacy agent it used to leave behind still held the
+    // port. The one row that explains that must survive the short page.
+    const text = formatActanaStatus({
+      ...healthy,
+      installed: false,
+      service: null,
+      legacyService: "com.actana.harness",
+    });
+    expect(text).toMatch(/^Core: not installed/);
+    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is still installed/);
+    expect(text).toMatch(/Run `actana setup`/);
+  });
+
+  it("still reports the legacy agent when the new one is installed beside it", () => {
+    // What an in-place upgrade leaves: the real Core registered and running,
+    // and the old agent still loaded behind it.
+    const both = { ...healthy, legacyService: "com.actana.harness" };
+    expect(formatActanaStatus(both)).toMatch(/Auto-start\s+actana-core\.service/);
+    expect(formatActanaStatus(both)).toMatch(/Legacy agent\s+com\.actana\.harness/);
+    expect(summarizeHealth(both)).toBe("degraded");
+  });
+
+  it("says nothing at all on a machine that has none", () => {
+    expect(formatActanaStatus(healthy)).not.toMatch(/Legacy agent/);
+  });
+});
+
 describe("the update availability line", () => {
   const available = {
     ...healthy,

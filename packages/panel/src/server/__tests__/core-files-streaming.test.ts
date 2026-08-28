@@ -147,7 +147,7 @@ const running: PtyCoreLinkServer[] = [];
 let sink: Sink;
 
 async function pairSinkCore(): Promise<string> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
   const made = makeSink();
   sink = made.sink;

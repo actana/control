@@ -8,12 +8,26 @@
 //   AC_USER_DATA_DIR  — the user-data dir
 //   AC_APP_PATH       — the app path
 //   AC_CORE_LINK_PORT — the port to listen on for the core-link WebSocket
-//   AC_CORE_LINK_HOST — the host to bind to (default: 127.0.0.1)
+//   AC_CORE_LINK_HOST — the host to bind to (default: 127.0.0.1). Outside
+//                          remote mode this must be a loopback address: the
+//                          server is plain `ws://` and trusts every connection
+//                          there, and `core-boot-refusals.ts` says why binding
+//                          that anywhere else stops the boot (#348).
+//
+// Anything named `AC_HARNESS_*` stops the boot outright. Those are the
+// pre-rename spellings, this daemon reads none of them, and a machine that
+// still sets them is running an auto-start service two renames old — see
+// `core-boot-refusals.ts`.
 //
 // Remote mode (issue 04 — `wss://` + mTLS + bearer auth):
 //   AC_CORE_REMOTE=1            — enable remote mode (mTLS + auth)
-//   AC_CORE_PUBLIC_HOST=<host>  — the reachable host for the cert SAN and the
-//                                     endpoint (default: AC_CORE_LINK_HOST)
+//   AC_CORE_PUBLIC_HOST=<hosts> — the reachable host for the cert SAN and the
+//                                     endpoint, or a comma-separated list of
+//                                     them (#347): every entry becomes a SAN,
+//                                     the first is the primary and is the
+//                                     endpoint a pairing hands back unless the
+//                                     code chose another of them
+//                                     (default: AC_CORE_LINK_HOST)
 //   AC_CORE_BEARER_DAYS=<n>     — bearer validity in days (default: 365)
 //   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
 //                                     **Required in remote mode.** The daemon
@@ -34,7 +48,8 @@
 //
 // The operator sets `ACTANA_PUBLIC_HOST`, which `actana daemon` hands down as
 // `AC_CORE_PUBLIC_HOST`. Missing, the boot stops here rather than defaulting to
-// the bind address — a Core with a guessed SAN pairs with nothing.
+// the bind address — a Core with a guessed SAN pairs with nothing. One value or
+// several, comma-separated, and one value behaves exactly as it always has.
 //
 // Prints "@@AC_CORE_LISTENING@@" on stdout once the WS server is listening, so
 // the parent can resolve boot readiness (mirrors server-runner.mjs). That is the
@@ -52,7 +67,12 @@ import {
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
-import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "./core-pairing-wiring";
+import {
+  buildCorePairingRoutes,
+  buildPairingEndpointResolver,
+  composeCoreHttpRoutes,
+  isPairingPath,
+} from "./core-pairing-wiring";
 import type { CorePairingRoutesOptions } from "./core-pairing-routes";
 import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
 import {
@@ -98,6 +118,7 @@ import {
   coreUpdateCommand,
   inContainer,
 } from "@actana/shared/actana-container-contract";
+import { formatPublicHosts, parsePublicHosts } from "@actana/shared/public-hosts";
 import {
   updateCheckCachePath,
   updateNoticeStatePath,
@@ -112,6 +133,7 @@ import { HarnessSkillWatcher } from "./harness-skill-watcher";
 import { ensureOrchestrationSkill } from "./orchestration-skill";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
+import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
 
 const CORE_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 
@@ -125,6 +147,18 @@ function requiredEnv(name: string): string {
 }
 
 async function startCore(): Promise<void> {
+  // First, before a single variable is read for its value: an environment
+  // written for the Harness-era daemon is refused outright (#348). It has to
+  // be first because the variables that survived the rename —
+  // `AC_USER_DATA_DIR`, `AC_CORE_LINK_PORT`, `AC_CORE_LINK_HOST` — are set on
+  // that machine too, so every check below it would pass and the daemon would
+  // boot as something nobody asked for.
+  const legacyEnv = legacyEnvRefusal(process.env);
+  if (legacyEnv) {
+    console.error(`[core-entry] ${legacyEnv}`);
+    process.exit(1);
+  }
+
   const userDataDir = requiredEnv("AC_USER_DATA_DIR");
   const appPath = requiredEnv("AC_APP_PATH");
   const port = Number(requiredEnv("AC_CORE_LINK_PORT"));
@@ -136,6 +170,17 @@ async function startCore(): Promise<void> {
 
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     console.error(`[core-entry] invalid AC_CORE_LINK_PORT: ${port}`);
+    process.exit(1);
+  }
+
+  // The combination the refusal above exists to make impossible, refused again
+  // on its own terms: plaintext, unauthenticated core-link on an address other
+  // than this machine. A pre-rename plist is one way to reach it and no longer
+  // the only one that matters — anything that sets a bind address without
+  // setting remote mode arrives here, and none of them should listen.
+  const exposure = plaintextExposureRefusal({ remoteMode, host });
+  if (exposure) {
+    console.error(`[core-entry] ${exposure}`);
     process.exit(1);
   }
 
@@ -415,7 +460,29 @@ async function startCore(): Promise<void> {
       );
       process.exit(1);
     }
-    const publicHost = process.env.AC_CORE_PUBLIC_HOST || host;
+    // One address or a comma-separated list of them (#347). Every entry becomes
+    // a SAN on this Core's certificate; the first is the primary — the endpoint
+    // a pairing hands back unless the operator chose otherwise when they minted
+    // the code. A single value parses to a list of one and nothing about it
+    // changes.
+    //
+    // The refusal names whichever variable actually carried the value. In a
+    // container that is the operator's `ACTANA_PUBLIC_HOST`, which `actana
+    // daemon` translated; on metal the unit sets `AC_CORE_PUBLIC_HOST` directly
+    // and `ACTANA_PUBLIC_HOST` does not exist there at all — and this branch
+    // exists precisely for whatever execs the daemon bundle without the CLI in
+    // front of it. Naming a variable the operator cannot find is worse than
+    // naming none.
+    const publicHostVar = containerMode ? CONTAINER_PUBLIC_HOST_ENV : "AC_CORE_PUBLIC_HOST";
+    const parsedPublicHosts = parsePublicHosts(
+      process.env.AC_CORE_PUBLIC_HOST || host,
+      process.env.AC_CORE_PUBLIC_HOST ? publicHostVar : "AC_CORE_LINK_HOST",
+    );
+    if (!parsedPublicHosts.ok) {
+      console.error(`[core-entry] ${parsedPublicHosts.error}`);
+      process.exit(1);
+    }
+    const publicHosts = parsedPublicHosts.hosts;
     const materialFile = process.env.AC_CORE_MATERIAL_FILE;
     const bearerDays = Number(process.env.AC_CORE_BEARER_DAYS ?? 365);
     const label = process.env.ACTANA_LABEL || "";
@@ -450,7 +517,7 @@ async function startCore(): Promise<void> {
       try {
         resolved = await loadOrMintMaterial({
           materialFile,
-          publicHost,
+          publicHosts,
           // `host` is the bind address standing in for an answer the operator
           // did not give — enough to mint a first identity from, never enough
           // to re-sign an existing one's SAN with.
@@ -460,7 +527,7 @@ async function startCore(): Promise<void> {
         console.error(`[core-entry] ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-      const { material, certAction } = resolved;
+      const { material, certAction, addedHosts } = resolved;
       const secret: BearerSecret = material.bearerSecret;
 
       // The pre-auth pairing endpoint (#282). Mounted only on this path, and
@@ -479,7 +546,11 @@ async function startCore(): Promise<void> {
           coreUuid: material.coreUuid,
         },
         sessions: pairingStore,
-        endpoint: `wss://${publicHost}:${port}`,
+        // Per redeemed session, not one string for the route: which of this
+        // Core's addresses a client is told to dial is the operator's choice at
+        // `actana pair new` time, and the resolver reads it off the stored
+        // session and off nothing in the request (#347).
+        endpointFor: buildPairingEndpointResolver({ publicHosts, port }),
         bearerDays,
       };
       // The other half of `actana pair revoke` (#283). That command runs in the
@@ -498,15 +569,38 @@ async function startCore(): Promise<void> {
       };
       serverOpts.authVerifier = (b) => verifyBearer(b, secret);
 
-      // A moved public host keeps the identity and re-signs the cert for the
-      // new address (D18), so this is not a pairing event — but a paired client
-      // is still dialling the old address, so say where this Core now is.
-      if (certAction === "moved") {
+      // A changed public host list keeps the identity and re-signs the cert
+      // (D18), so neither branch below is a pairing event. **Which sentence is
+      // printed matters more than that one is**, because the two changes cost
+      // an operator completely different things and the wrong advice on the
+      // cheap one is the whole of what it costs (#347).
+      //
+      // Both print the full list. Naming the primary alone was the old bug: an
+      // operator who added `192.168.1.20` read "public host is now core" — a
+      // line that does not mention the thing that changed.
+      if (certAction === "widened") {
+        // Nothing is dialling an address this Core has left, so there is
+        // nothing to do and nothing is advised. Saying "update your Panel or
+        // pair again" here would charge the operator the exact cost #347 exists
+        // to remove, over a change that removed it.
         console.log(
-          `[core-entry] public host is now ${publicHost} — re-issued this Core's server ` +
-            "certificate from its existing CA. Pairing credentials are unchanged; update " +
-            `this Core's address in your Panel, or run \`actana pair new\` here and pair ` +
-            "it again.",
+          `[core-entry] public hosts are now ${formatPublicHosts(publicHosts)} — added ` +
+            `${formatPublicHosts(addedHosts)}, and re-issued this Core's server certificate ` +
+            `from its existing CA to cover ${addedHosts.length === 1 ? "it" : "them"}. Every ` +
+            "address this Core already answered to is still covered, so every paired client " +
+            `keeps working and none has to be re-paired. Pair a client to a new address with ` +
+            "`actana pair new --public-host <addr>`.",
+        );
+      } else if (certAction === "moved") {
+        // A host this Core was signed for is gone. A paired client is still
+        // dialling it, and that address is the one thing re-issuing cannot fix
+        // from here — the client holds it.
+        console.log(
+          `[core-entry] public hosts are now ${formatPublicHosts(publicHosts)} — re-issued ` +
+            "this Core's server certificate from its existing CA. This Core no longer answers " +
+            "to every address it was signed for. Pairing credentials are unchanged; update " +
+            "this Core's address in your Panel, or run `actana pair new` here and pair it " +
+            "again.",
         );
       }
 

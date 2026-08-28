@@ -25,7 +25,9 @@
 //
 // The operator's whole contract is three variables (D15):
 //
-//   ACTANA_PUBLIC_HOST  required — the address the Panel dials
+//   ACTANA_PUBLIC_HOST  required — the address the Panel dials, or a
+//                       comma-separated list of the addresses this Core's
+//                       clients dial (#347). The first is the primary.
 //   ACTANA_PORT         8443
 //   ACTANA_LABEL        the public host
 //
@@ -43,10 +45,15 @@
 // Pure: env in, values or a sentence out. Nothing here touches the filesystem,
 // the network or the process.
 
+import { parsePublicHosts, primaryPublicHost } from "./public-hosts";
+
 /** The marker the image bakes. Set by us, so it means *our* container. */
 export const CONTAINER_ENV = "ACTANA_CONTAINER";
 
-/** Required in container mode: the address a Panel dials this Core on. */
+/**
+ * Required in container mode: the address a Panel dials this Core on, or the
+ * comma-separated list of the addresses its clients dial (#347).
+ */
 export const CONTAINER_PUBLIC_HOST_ENV = "ACTANA_PUBLIC_HOST";
 
 /** The port the daemon listens on, and the port `EXPOSE` names. */
@@ -60,8 +67,26 @@ export const DEFAULT_CONTAINER_PORT = 8443;
 
 /** What the operator's three variables resolve to. */
 export type ContainerContract = {
-  /** The cert SAN, and the endpoint host a pairing hands back. Never guessed. */
+  /**
+   * The primary public host: the first entry of {@link publicHosts}.
+   *
+   * The certificate's common name, the endpoint a pairing hands back when the
+   * operator chose nothing else, and the label's default. Kept as its own field
+   * because most of this repository wants exactly one address — an endpoint is
+   * one address — and `hosts[0]` spelled at every call site is a convention
+   * rather than a decision.
+   */
   publicHost: string;
+  /**
+   * Every address this Core's certificate covers, in the operator's order
+   * (#347).
+   *
+   * One entry for the single-value `ACTANA_PUBLIC_HOST` that has always been
+   * the contract, more when a Core is reachable more than one way at once —
+   * a compose service name inside the network and a LAN address from outside
+   * it. Never guessed, for the same reason the single value never was.
+   */
+  publicHosts: string[];
   port: number;
   label: string;
 };
@@ -96,8 +121,8 @@ function trimmed(env: NodeJS.ProcessEnv, name: string): string | undefined {
 export function readContainerContract(
   env: NodeJS.ProcessEnv,
 ): ContainerContract | ContractError {
-  const publicHost = trimmed(env, CONTAINER_PUBLIC_HOST_ENV);
-  if (!publicHost) {
+  const rawPublicHost = trimmed(env, CONTAINER_PUBLIC_HOST_ENV);
+  if (!rawPublicHost) {
     return {
       error:
         `${CONTAINER_PUBLIC_HOST_ENV} is not set, and this Core will not guess it. The ` +
@@ -108,6 +133,16 @@ export function readContainerContract(
         `  ${CONTAINER_PUBLIC_HOST_ENV}=core1.example.com`,
     };
   }
+
+  // One address or several, separated by commas — every one of them a SAN on
+  // this Core's certificate (#347). Refused rather than repaired when an entry
+  // is empty: `core,,10.0.0.5` is a typo, and quietly minting a certificate for
+  // the two hosts it does name would tell the operator nothing about the third
+  // they thought they had asked for.
+  const hosts = parsePublicHosts(rawPublicHost, CONTAINER_PUBLIC_HOST_ENV);
+  if (!hosts.ok) return { error: hosts.error };
+  const publicHosts = hosts.hosts;
+  const publicHost = primaryPublicHost(publicHosts);
 
   const rawPort = trimmed(env, CONTAINER_PORT_ENV);
   let port = DEFAULT_CONTAINER_PORT;
@@ -126,7 +161,12 @@ export function readContainerContract(
   // The label is what the operator sees in their Panel's Core list, and the
   // public host is the one thing they have already had to name — a better
   // default than a container id nobody chose.
-  return { publicHost, port, label: trimmed(env, CONTAINER_LABEL_ENV) ?? publicHost };
+  return {
+    publicHost,
+    publicHosts,
+    port,
+    label: trimmed(env, CONTAINER_LABEL_ENV) ?? publicHost,
+  };
 }
 
 /**

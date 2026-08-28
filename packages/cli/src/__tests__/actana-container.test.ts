@@ -30,6 +30,7 @@ describe("readContainerContract", () => {
   it("takes the public host from the operator and defaults the rest", () => {
     expect(readContainerContract({ ACTANA_PUBLIC_HOST: "core1.example.com" })).toEqual({
       publicHost: "core1.example.com",
+      publicHosts: ["core1.example.com"],
       port: DEFAULT_CONTAINER_PORT,
       label: "core1.example.com",
     });
@@ -46,7 +47,12 @@ describe("readContainerContract", () => {
         ACTANA_PORT: "9443",
         ACTANA_LABEL: "build box",
       }),
-    ).toEqual({ publicHost: "10.0.0.5", port: 9443, label: "build box" });
+    ).toEqual({
+      publicHost: "10.0.0.5",
+      publicHosts: ["10.0.0.5"],
+      port: 9443,
+      label: "build box",
+    });
   });
 
   it("refuses to guess a missing public host, and names the variable", () => {
@@ -57,6 +63,39 @@ describe("readContainerContract", () => {
 
   it("treats an empty public host as unset rather than as a hostname", () => {
     expect(readContainerContract({ ACTANA_PUBLIC_HOST: "  " })).toHaveProperty("error");
+  });
+
+  // ─── Several addresses in one variable (#347) ──────────────────────────
+  //
+  // A Core reachable on a compose service name and a LAN address at once is
+  // the case the single value could not serve. The variable did not change
+  // name and a single value did not change meaning; it grew commas.
+
+  it("reads a comma-separated list, first entry the primary", () => {
+    expect(readContainerContract({ ACTANA_PUBLIC_HOST: "core,10.0.0.5" })).toEqual({
+      publicHost: "core",
+      publicHosts: ["core", "10.0.0.5"],
+      port: DEFAULT_CONTAINER_PORT,
+      // The label still defaults to the address the operator already named —
+      // the primary, now that there can be more than one.
+      label: "core",
+    });
+  });
+
+  it("trims the spaces a human writes between the entries", () => {
+    expect(readContainerContract({ ACTANA_PUBLIC_HOST: "core, 10.0.0.5" })).toMatchObject({
+      publicHosts: ["core", "10.0.0.5"],
+    });
+  });
+
+  // A doubled or trailing comma is a typo, and reading it as the shorter list
+  // it resembles would mint a certificate the operator never asked for.
+  it("refuses an empty entry, and names the variable in the refusal", () => {
+    for (const value of ["core,,10.0.0.5", "core,", ",core"]) {
+      const result = readContainerContract({ ACTANA_PUBLIC_HOST: value });
+      expect(result, JSON.stringify(value)).toHaveProperty("error");
+      expect((result as { error: string }).error).toContain(CONTAINER_PUBLIC_HOST_ENV);
+    }
   });
 
   it("rejects a port that is not a usable port number", () => {

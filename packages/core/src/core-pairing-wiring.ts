@@ -20,7 +20,14 @@
 //   3. **A Core without pairing material mounts nothing.** No CA key, no
 //      endpoint to hand out — and, through the gate, no relaxation of the TLS
 //      handshake. The loopback Core is unchanged by this ticket.
+//   4. **Which address a redemption hands back is decided here, from the
+//      session and the configured list, and from nothing else** (#347). See
+//      {@link buildPairingEndpointResolver}: it is the second of the two places
+//      the "a pairing code can only name a host this certificate covers" rule
+//      is enforced, the first being `actana pair new` refusing to mint one.
 import type { CoreHttpRoutes } from "./core-files-routes";
+import { isConfiguredPublicHost, primaryPublicHost } from "@actana/shared/public-hosts";
+import type { PairingSession } from "@actana/shared/pairing-session";
 import {
   CORE_PAIRING_ROUTE_PREFIX,
   createCorePairingRequestHandler,
@@ -58,5 +65,49 @@ export function composeCoreHttpRoutes(...families: CoreHttpRoutes[]): CoreHttpRo
   return {
     handle: (req, res) => families.some((family) => family.handle(req, res)),
     handleContinue: (req, res) => families.some((family) => family.handleContinue(req, res)),
+  };
+}
+
+/** What a redemption's endpoint is built out of: this Core's own addresses. */
+export type PairingEndpointOptions = {
+  /**
+   * Every address this Core's server certificate covers, in the operator's
+   * order. The first is the primary.
+   */
+  publicHosts: readonly string[];
+  /** The port the core link listens on — the same one for every address. */
+  port: number;
+};
+
+/**
+ * Build the `endpointFor` the redeem route answers with (#347).
+ *
+ * Two rules, and both of them are the ticket:
+ *
+ * **The session decides, not the request.** The only input is the stored
+ * pairing session — what `actana pair new` wrote on the machine that is the
+ * Core. No header, no body field and no socket address reaches this function,
+ * which is what keeps the property `core-pairing-routes.ts` has always had: a
+ * client pins the address this Core chose for it, never one a caller supplied.
+ *
+ * **A session can only ever name a configured host.** `actana pair new`
+ * refuses a `--public-host` that is not in the recorded list, so a session
+ * carrying one is already impossible through the supported path. It is checked
+ * again here anyway, because the two ends are a file apart and time passes
+ * between them: an operator can shorten `ACTANA_PUBLIC_HOST` while a code
+ * minted against the longer list is still live, and by then the certificate no
+ * longer covers the address that code was going to hand back. Falling back to
+ * the primary sends that client somewhere it can actually verify, where
+ * honouring the stale value would hand it a name TLS is about to reject.
+ */
+export function buildPairingEndpointResolver(
+  opts: PairingEndpointOptions,
+): (session: PairingSession) => string {
+  const primary = primaryPublicHost(opts.publicHosts);
+  return (session) => {
+    const chosen = session.endpointHost ?? "";
+    const host =
+      chosen.length > 0 && isConfiguredPublicHost(opts.publicHosts, chosen) ? chosen : primary;
+    return `wss://${host}:${opts.port}`;
   };
 }

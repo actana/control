@@ -124,7 +124,7 @@ describe("Core client over mTLS", () => {
 
   /** A real Core on a real port, and the blob a client would be handed for it. */
   async function startCore(): Promise<{ blob: CoreRegistrationBlob; caCert: string }> {
-    const material = await generateCertMaterial({ host: "127.0.0.1" });
+    const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const port = await freePort();
     const bound = { port: 0 };
     server = new PtyCoreLinkServer(makeMockPtyCore(), {

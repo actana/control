@@ -188,7 +188,7 @@ afterEach(() => {
 
 /** A Core on a real port, its fake PTY manager, and the blob for it. */
 async function startCore() {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
   const bound = { port: 0 };
   const machine = echoingPtyCore();

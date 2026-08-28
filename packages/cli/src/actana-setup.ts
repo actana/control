@@ -39,7 +39,7 @@
 // re-running over an existing install lands the new tree beside the old one
 // and swaps by repointing one link. Re-running deliberately REUSES the existing
 // material: regenerating would lock out every client already paired with this
-// Core. A changed publicHost re-signs the server cert from
+// Core. A changed public host list re-signs the server cert from
 // that same CA and nothing else (ADR 0016 D18). Minting fresh credentials is
 // `actana token regenerate` (issue 06), an explicit act.
 
@@ -47,6 +47,12 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import {
+  formatPublicHosts,
+  primaryPublicHost,
+  widenedPublicHosts,
+} from "@actana/shared/public-hosts";
+import {
+  checkMaterialIdentity,
   loadMaterial,
   materialFilePath,
   checkServerCertHost,
@@ -56,7 +62,12 @@ import {
   type PersistedMaterial,
 } from "@actana/shared/core-material-store";
 import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses.ts";
-import { endpointFor, readActanaConfig, writeActanaConfig } from "./actana-config.ts";
+import {
+  configPublicHosts,
+  endpointFor,
+  readActanaConfig,
+  writeActanaConfig,
+} from "./actana-config.ts";
 import { binDirOnPath, installDirFor, type ActanaLayout } from "./actana-layout.ts";
 import {
   installTree,
@@ -115,8 +126,16 @@ export type SetupOptions = PlacementOptions & {
   port: number;
   /** The address the daemon binds. */
   host: string;
-  /** The address a client dials — goes in the cert SAN and the endpoint. */
-  publicHost: string;
+  /**
+   * The addresses a client dials — every one of them a SAN on the cert, the
+   * first of them the endpoint (#347).
+   *
+   * A list because `--public-host core,10.0.0.5` is one Core reachable two ways
+   * at once. One entry is the case that has not changed: it mints the
+   * certificate it always minted, records the host it always recorded, and
+   * prints the endpoint it always printed.
+   */
+  publicHosts: readonly string[];
   label: string;
   /** Skip prompts and take the recommended answer. */
   assumeYes: boolean;
@@ -156,8 +175,26 @@ export type PlacementResult = {
   launcher: LauncherClaim;
 };
 
-/** What `actana setup` did to this machine's pairing material. */
-export type MaterialOutcome = "minted" | "reused" | "reissued";
+/**
+ * What `actana setup` did to this machine's pairing material.
+ *
+ * `re-minted` is the recovery path (#348): the material on disk could not have
+ * served TLS at all, so it was replaced rather than re-blessed. Its own outcome
+ * because it is the one that costs the operator something — every paired client
+ * has to pair again — and a caller that reported it as an ordinary `minted`
+ * would leave them to find that out from a client that stopped working.
+ *
+ * `widened` is the opposite case, and it needs its own name for the same reason
+ * (ADR 0038 D3a): every address this Core already answered to is still covered
+ * and one or more have joined them, so nothing is dialling an address this Core
+ * has left and **no client has to do anything**. The certificate is re-issued
+ * on both paths, which is exactly why the SAN comparison cannot tell them
+ * apart — and reporting a widening as `reissued` charges the operator the
+ * re-pairing #347 exists to remove, over the change that removed it. The daemon
+ * has drawn this distinction since #347's own review; this is the other
+ * resolver, and on metal it is the one an operator actually reads.
+ */
+export type MaterialOutcome = "minted" | "reused" | "reissued" | "widened" | "re-minted";
 
 export type SetupResult = {
   /** The version that is now installed — the tree's, not this CLI's (#288 D10). */
@@ -179,8 +216,25 @@ export type SetupResult = {
    * - `reissued` — the existing identity, with a server cert re-signed for a
    *   public host that moved. A paired Panel still trusts this Core but is
    *   dialling the address it paired with.
+   * - `widened` — the existing identity, with a server cert re-signed to cover
+   *   an address that joined the ones it already had (#347, ADR 0038 D3a).
+   *   Every paired client keeps working, and none has to be re-paired.
+   * - `re-minted` — the material on disk could not be served, so this run
+   *   replaced it (#348). Every client paired with the old identity is locked
+   *   out until it pairs again.
    */
   materialOutcome: MaterialOutcome;
+  /**
+   * On a `widened` run, the addresses that joined the list, in the operator's
+   * order. Empty on every other outcome.
+   *
+   * Returned rather than recomputed by the caller because by then the previous
+   * list is gone: `resolveMaterial` re-signs and overwrites `serverHosts`, so
+   * the only place that can name the difference is the place that still holds
+   * both sides of it. The daemon's {@link LoadOrMintResult} carries the same
+   * field for the same reason.
+   */
+  addedHosts: string[];
   /** Whether the daemon's port answered before the timeout. */
   listening: boolean;
   /** What became of each managed Harness during the offer round. */
@@ -228,33 +282,108 @@ export function choosePublicHost(
  *
  * Material written before D18 does not record the host its cert was signed for;
  * the config setup wrote alongside it does, so that stands in for it.
+ *
+ * The one thing reuse cannot survive is material that could never have worked.
+ * See the first branch: that is the whole of what makes `actana setup` an
+ * honest answer to a daemon that refused to boot (#348).
  */
 async function resolveMaterial(
   opts: SetupOptions,
-): Promise<{ material: PersistedMaterial; outcome: MaterialOutcome }> {
+): Promise<{ material: PersistedMaterial; outcome: MaterialOutcome; addedHosts: string[] }> {
   const existing = loadMaterial(opts.layout.configDir);
   if (!existing) {
-    return { material: await mintFreshMaterial(opts.publicHost), outcome: "minted" };
+    return { material: await mintFreshMaterial(opts.publicHosts), outcome: "minted", addedHosts: [] };
   }
 
+  // The recovery path, and the reason `setup` can be named as a remedy at all
+  // (#348). Everything below this reuses the identity on disk — `reissueServerCert`
+  // included, which signs a new leaf with the *existing* CA and key. That is
+  // right for material that works and useless for material that cannot: a
+  // daemon told to boot on it refuses, the operator is told to run `setup`, and
+  // `setup` hands back what it was already given. So the file is checked with
+  // the same function the daemon boots with, and material that could never
+  // serve TLS is replaced instead of re-blessed.
+  const issue = checkMaterialIdentity(existing);
+  if (issue?.severity === "unusable") {
+    opts.out(`This Core's material cannot be served: ${issue.message}`);
+    // The same confirmation `actana token regenerate` asks before the same
+    // loss, because it is the same loss — and it is a loss the operator has
+    // no way around here: the alternative to fresh material is a daemon that
+    // will not boot.
+    if (opts.interactive && !opts.assumeYes) {
+      const yes = await opts.system.confirm(
+        "Mint this Core a fresh identity? Every client paired with it is locked out until " +
+          "it pairs again.",
+        true,
+      );
+      if (!yes) {
+        throw new Error(
+          "Left this Core's material alone, so setup stopped: the daemon will not boot on " +
+            `it. Re-run and accept, or remove ${materialFilePath(opts.layout.configDir)} and ` +
+            "run setup again.",
+        );
+      }
+    }
+    return { material: await mintFreshMaterial(opts.publicHosts), outcome: "re-minted", addedHosts: [] };
+  }
+  // Usable, just not ours — pre-rename material is the case that matters, and
+  // it is kept. Said out loud because the operator should know what their Core
+  // is presenting, and because `actana token regenerate` is how they change it.
+  if (issue) opts.out(issue.message);
+
   const previous = readActanaConfig(opts.layout.configDir);
-  const check = checkServerCertHost(existing, opts.publicHost, previous?.publicHost);
+  const recorded = previous ? configPublicHosts(previous) : undefined;
+  const check = checkServerCertHost(existing, opts.publicHosts, recorded);
   if (check === "covered") {
     // Backfilled for material that predates the record: the config setup wrote
-    // beside it is what proved the cert covers this host, so record the answer.
-    return { material: { ...existing, serverHost: opts.publicHost }, outcome: "reused" };
+    // beside it is what proved the cert covers these hosts, so record the answer.
+    return {
+      material: { ...existing, serverHosts: [...opts.publicHosts] },
+      outcome: "reused",
+      addedHosts: [],
+    };
+  }
+
+  const wanted = formatPublicHosts(opts.publicHosts);
+
+  // **A widening is not a move** (ADR 0038 D3a). `checkServerCertHost` answers
+  // `moved` for any list that is not identical, because the SAN comparison
+  // cannot tell the two apart — and the difference is the whole benefit #347
+  // shipped: adding an address costs a paired client nothing, while moving one
+  // costs it the address it holds. The daemon has told them apart since #347's
+  // own review; `actana setup` did not, and on metal setup's is the *only*
+  // message an operator sees, because the daemon's next boot then reads
+  // `covered` and says nothing at all.
+  //
+  // Resolved against the same list `checkServerCertHost` compared, so the two
+  // cannot disagree about what "before" was: the material's own record, or the
+  // config setup wrote beside it for material that predates the record.
+  const signedFor = existing.serverHosts.length > 0 ? existing.serverHosts : (recorded ?? []);
+  const added = widenedPublicHosts(signedFor, opts.publicHosts);
+  if (added) {
+    opts.out(
+      `Adding ${formatPublicHosts(added)} to this Core's addresses — re-issuing its server ` +
+        `certificate from its own CA to cover ${added.length === 1 ? "it" : "them"}. Every ` +
+        "address this Core already answered to is still covered.",
+    );
+    return {
+      material: await reissueServerCert(existing, opts.publicHosts),
+      outcome: "widened",
+      addedHosts: added,
+    };
   }
 
   opts.out(
     check === "moved"
-      ? `Public host changed to ${opts.publicHost} — re-issuing this Core's server ` +
+      ? `Public host changed to ${wanted} — re-issuing this Core's server ` +
           "certificate from its own CA."
       : "This Core's material does not record which host its certificate was signed " +
-          `for — re-issuing it for ${opts.publicHost} from its own CA.`,
+          `for — re-issuing it for ${wanted} from its own CA.`,
   );
   return {
-    material: await reissueServerCert(existing, opts.publicHost),
+    material: await reissueServerCert(existing, opts.publicHosts),
     outcome: "reissued",
+    addedHosts: [],
   };
 }
 
@@ -378,14 +507,15 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
   const { installDir, launcher } = placeCoreBundle(opts, plan);
   fs.mkdirSync(layout.dataDir, { recursive: true });
 
-  const { material, outcome } = await resolveMaterial(opts);
+  const { material, outcome, addedHosts } = await resolveMaterial(opts);
   persistMaterial(layout.configDir, material);
 
   const config = {
     version: manifest.version,
     port: opts.port,
     host: opts.host,
-    publicHost: opts.publicHost,
+    publicHost: primaryPublicHost(opts.publicHosts),
+    publicHosts: [...opts.publicHosts],
     label: opts.label,
     installDir,
     dataDir: layout.dataDir,
@@ -402,7 +532,10 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_PORT: String(opts.port),
       AC_CORE_LINK_HOST: opts.host,
-      AC_CORE_PUBLIC_HOST: opts.publicHost,
+      // The whole list, in the one variable the daemon reads it from. A single
+      // host joins to itself, so a unit written for a one-address Core is the
+      // unit that was always written for it (#347).
+      AC_CORE_PUBLIC_HOST: opts.publicHosts.join(","),
       AC_USER_DATA_DIR: layout.dataDir,
       AC_CORE_MATERIAL_FILE: materialFilePath(layout.configDir),
     },
@@ -458,6 +591,7 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     serviceSummary: persistence.summary,
     survivesLogout: persistence.survivesLogout,
     materialOutcome: outcome,
+    addedHosts,
     listening,
     agents,
     launcher,

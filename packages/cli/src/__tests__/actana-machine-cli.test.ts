@@ -2,12 +2,14 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { X509Certificate } from "node:crypto";
 import { runActanaCli, CLIENT_NOUNS, EXIT_USAGE } from "../actana-cli.ts";
 import { loadCoreBlob, registryPaths } from "../blob-registry.ts";
 import { localCoreName } from "../local-core-wiring.ts";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import { refusedContainerVerbs } from "../actana-container.ts";
 import { installDirFor, resolveActanaLayout } from "../actana-layout.ts";
+import { readActanaConfig, writeActanaConfig } from "../actana-config.ts";
 import { releaseAssetName, releaseChannel } from "../actana-release.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
 import { fakeSystem as makeFakeSystem, realTar, stubClientHalf } from "./machine-fixture.ts";
@@ -575,6 +577,143 @@ describe("setup", () => {
     expect(blob.label).toBe("eu-1");
   });
 
+  // #347: one Core, several addresses, one certificate. The flag grew commas;
+  // it did not change name, and a single value did not change meaning.
+  it("covers every address a comma-separated --public-host names", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5,core.example"]);
+
+    const material = readMaterial();
+    const san = new X509Certificate(material.serverCert!).subjectAltName ?? "";
+    expect(san).toContain("DNS:core");
+    expect(san).toContain("IP Address:10.0.0.5");
+    expect(san).toContain("DNS:core.example");
+    // The loopback pair every server certificate carries (ADR 0032 D9).
+    expect(san).toContain("DNS:localhost");
+    expect(san).toContain("IP Address:127.0.0.1");
+
+    // The primary is the endpoint, and the whole list reaches the daemon in the
+    // one variable it reads it from.
+    expect(wiredCredential().endpoint).toBe("wss://core:8443");
+    expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
+      "AC_CORE_PUBLIC_HOST=core,10.0.0.5,core.example",
+    );
+    // Printed the way the flag takes it back, so an operator can paste it.
+    expect(out.join("\n")).toContain("10.0.0.5,core.example");
+  });
+
+  it("tells an operator adding an address that nothing has to be re-paired", async () => {
+    // ADR 0038 D3a, end to end through the verb an operator actually runs. On
+    // metal this is the only message about the change they ever see: the
+    // daemon's next boot reads `covered` and says nothing at all.
+    await setup(fakeSystem(), ["--public-host", "10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem(), ["--public-host", "10.0.0.5,core.lan"])).toBe(0);
+
+    const said = out.join("\n");
+    expect(said).toContain("core.lan");
+    expect(said).toMatch(/none has to be re-paired/i);
+    expect(said).toMatch(/actana pair new --public-host core\.lan/);
+    // The `moved` advice this path used to print: re-point a Panel at an
+    // address it is already dialling, or pair it again.
+    expect(said).not.toMatch(/dialling the address it paired with/i);
+    expect(said).not.toMatch(/pair it again/i);
+    expect(said).not.toMatch(/Public host changed/i);
+  });
+
+  // ─── C1: a bare re-run must not collapse a Core onto a guessed address ──
+  //
+  // #348 made a bare `actana setup` the advertised remedy in five places while
+  // #347 raised what taking that advice costs from one address to the whole
+  // list. Defaulting to a guess here re-issues a single-SAN certificate,
+  // rewrites the config and the unit, and unpairs every client on every other
+  // address — with `pair new --public-host <the old one>` then refusing,
+  // because the material no longer lists it.
+
+  it("keeps the recorded addresses when setup is re-run with no --public-host", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem())).toBe(0);
+
+    // The certificate still covers both, and the config and unit still name
+    // both — a guess would have left one address and dropped the other.
+    const san = new X509Certificate(readMaterial().serverCert!).subjectAltName ?? "";
+    expect(san).toContain("DNS:core");
+    expect(san).toContain("IP Address:10.0.0.5");
+    expect(readMaterial().serverHosts).toEqual(["core", "10.0.0.5"]);
+    const config = readActanaConfig(layoutForHome().configDir)!;
+    expect(config.publicHosts).toEqual(["core", "10.0.0.5"]);
+    expect(config.publicHost).toBe("core");
+    expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
+      "AC_CORE_PUBLIC_HOST=core,10.0.0.5",
+    );
+    // Not silent about a decision made on the operator's behalf.
+    expect(out.join("\n")).toMatch(/Keeping this Core's recorded addresses/);
+  });
+
+  it("leaves a client paired to the second address able to pair again after a bare re-run", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5"]);
+    await setup(fakeSystem());
+    out.length = 0;
+    err.length = 0;
+
+    // The membership check reads `material.serverHosts`, so this is the exact
+    // thing a collapsed certificate would have broken.
+    expect(await runActanaCli(deps(["pair", "new", "--public-host", "10.0.0.5"], fakeSystem()))).toBe(
+      0,
+    );
+  });
+
+  it("still lets an explicit --public-host change the addresses", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem(), ["--public-host", "core.example"])).toBe(0);
+
+    expect(readMaterial().serverHosts).toEqual(["core.example"]);
+    expect(readActanaConfig(layoutForHome().configDir)!.publicHosts).toEqual(["core.example"]);
+    // The declaration is authoritative, so nothing was "kept".
+    expect(out.join("\n")).not.toMatch(/Keeping this Core's recorded/);
+  });
+
+  it("still guesses on a machine that has never been set up", async () => {
+    // A first-time install has no config to read, and the guess is what makes
+    // `actana setup` work with no flags at all.
+    expect(await setup(fakeSystem())).toBe(0);
+
+    expect(readActanaConfig(layoutForHome().configDir)!.publicHosts?.length).toBe(1);
+    expect(out.join("\n")).not.toMatch(/Keeping this Core's recorded/);
+  });
+
+  it("still tells an operator who moved the address that a client is left behind", async () => {
+    await setup(fakeSystem(), ["--public-host", "10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem(), ["--public-host", "10.0.0.9"])).toBe(0);
+
+    const said = out.join("\n");
+    expect(said).toMatch(/dialling the address it paired with/i);
+  });
+
+  it("writes the same unit and the same endpoint for a single --public-host", async () => {
+    await setup(fakeSystem(), ["--public-host", "core.example"]);
+
+    // The compatibility promise, at the layer an operator's compose file and
+    // unit meet: one address in, one address out, and no list to notice.
+    expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
+      "AC_CORE_PUBLIC_HOST=core.example",
+    );
+    expect(wiredCredential().endpoint).toBe("wss://core.example:8443");
+    expect(out.join("\n")).not.toContain("Also valid");
+  });
+
+  it("refuses a --public-host with an empty entry rather than dropping it", async () => {
+    expect(await setup(fakeSystem(), ["--public-host", "core,,10.0.0.5"])).toBe(2);
+    expect(err.join("\n")).toContain("--public-host");
+    expect(err.join("\n")).toContain("empty entry");
+  });
+
   it("rejects a port that is not a port", async () => {
     expect(await setup(fakeSystem(), ["--port", "not-a-port"])).toBe(2);
     expect(err.join("\n")).toMatch(/port/i);
@@ -636,6 +775,38 @@ describe("status", () => {
     });
     expect(await runActanaCli(deps(["status"], system))).toBe(1);
     expect(out.join("\n")).toMatch(/stopped/i);
+  });
+
+  it("reports the legacy unit's own state on Linux, not `not installed` (#348)", async () => {
+    // The launchd side got this fallback first; without the matching one here,
+    // `Auto-start actana-harness.service` printed over `State not installed`
+    // — the self-contradiction the issue opens with, on the other platform.
+    await setup(fakeSystem());
+    fs.rmSync(layoutForHome().servicePath);
+    fs.writeFileSync(
+      path.join(layoutForHome().serviceDir, "actana-harness.service"),
+      "[Unit]\nDescription=Actana Control Harness\n",
+    );
+    out.length = 0;
+
+    const system = fakeSystem({
+      "systemctl --user show actana-core.service": {
+        status: 0,
+        stdout: "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0",
+        stderr: "",
+      },
+      "systemctl --user show actana-harness.service": {
+        status: 0,
+        stdout: RUNNING_UNIT,
+        stderr: "",
+      },
+    });
+    expect(await runActanaCli(deps(["status"], system))).toBe(1);
+
+    const text = out.join("\n");
+    expect(text).toMatch(/Auto-start\s+actana-harness\.service/);
+    expect(text).not.toMatch(/State\s+not installed/);
+    expect(text).toMatch(/Legacy agent\s+actana-harness\.service is still installed/);
   });
 
   it("says not-installed on a fresh machine instead of erroring", async () => {
@@ -975,6 +1146,30 @@ describe("update", () => {
     );
   });
 
+  it("restarts a unit systemd still holds after its file was deleted by hand", async () => {
+    // #353 review C2, end to end through the real systemd manager. `observe()`
+    // is allowed to answer from the filesystem alone when no legacy unit is in
+    // play, so without the fallback in `runActanaUpdate` this machine swaps the
+    // tree, skips the restart, and leaves the old daemon running out of the new
+    // one. Before #348 the restart was unconditional and this worked.
+    await setup(fakeSystem());
+    fs.rmSync(layoutForHome().servicePath);
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
+    out.length = 0;
+    err.length = 0;
+
+    // The unit file is gone; systemd still has the unit loaded and running.
+    const system = fakeSystem({
+      "systemctl --user show": { status: 0, stdout: RUNNING_UNIT, stderr: "" },
+    });
+    expect(await update(system)).toBe(0);
+
+    expect(system.calls.map((c) => c.join(" "))).toContain(
+      "systemctl --user restart actana-core.service",
+    );
+    expect(out.join("\n")).not.toMatch(/no auto-start service/);
+  });
+
   it("leaves `status` reporting the new version", async () => {
     await setup(fakeSystem());
     writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
@@ -1092,6 +1287,30 @@ describe("uninstall", () => {
     expect(fs.existsSync(layout.binLink)).toBe(false);
     expect(fs.existsSync(layout.versionsDir)).toBe(false);
     expect(fs.existsSync(layout.currentLink)).toBe(false);
+  });
+
+  it("tells the truth on a machine that has only the pre-rename unit", async () => {
+    // #353 review C4, end to end. `uninstall` runs without requiring an
+    // install, so this machine is reachable — and it is the #348 cleanup path.
+    // Both halves have to be said: no Core was installed, *and* the stale unit
+    // that was here is gone.
+    const layout = layoutForHome();
+    fs.mkdirSync(layout.serviceDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(layout.serviceDir, "actana-harness.service"),
+      "[Unit]\nDescription=Actana Control Harness\n",
+    );
+    out.length = 0;
+
+    expect(await runActanaCli(deps(["uninstall", "--yes"], fakeSystem()))).toBe(0);
+
+    const said = out.join("\n");
+    expect(said).toContain("actana-harness.service");
+    expect(said).toContain("There was no Core installed for this user");
+    // The sentence that used to name a service and an install that were never
+    // on this machine.
+    expect(said).not.toMatch(/Removed the actana-core\.service service/);
+    expect(fs.existsSync(path.join(layout.serviceDir, "actana-harness.service"))).toBe(false);
   });
 
   it("keeps the data dir and the credentials, and says how to remove them", async () => {
@@ -1229,6 +1448,25 @@ describe("macOS", () => {
     "}",
   ].join("\n");
 
+  /** launchd's answer about a job it has never heard of. */
+  const NO_SUCH_JOB: CommandResult = { status: 113, stdout: "", stderr: "Could not find service" };
+
+  /**
+   * The ordinary Mac: one that never had a pre-rename agent.
+   *
+   * The shared fake answers 0 to every command it was not told about, and
+   * since #348 the launchd manager asks `launchctl print` about
+   * `com.actana.harness` — so without this default every machine in this suite
+   * would claim to be carrying a legacy agent it never had. Overriding that
+   * answer is how a test opts into the machine that does.
+   */
+  function macSystem(overrides: Record<string, CommandResult> = {}) {
+    return fakeSystem({
+      "launchctl print gui/501/com.actana.harness": NO_SUCH_JOB,
+      ...overrides,
+    });
+  }
+
   let macRoot: string;
 
   beforeEach(() => {
@@ -1253,7 +1491,7 @@ describe("macOS", () => {
   }
 
   it("installs a LaunchAgent and points the operator at `actana pair new`", async () => {
-    expect(await macSetup(fakeSystem())).toBe(0);
+    expect(await macSetup(macSystem())).toBe(0);
 
     const text = out.join("\n");
     expect(text).toContain("actana pair new");
@@ -1263,15 +1501,15 @@ describe("macOS", () => {
   });
 
   it("tells the operator the daemon starts at login rather than surviving logout", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     expect(out.join("\n")).toMatch(/starts at login/i);
   });
 
   it("reports healthy from launchctl, with the LaunchAgent named", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     out.length = 0;
 
-    const system = fakeSystem({
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1289,10 +1527,10 @@ describe("macOS", () => {
   });
 
   it("reports stopped — not degraded — when the agent is installed but unloaded", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     out.length = 0;
 
-    const system = fakeSystem({
+    const system = macSystem({
       "launchctl print": { status: 113, stdout: "", stderr: "Could not find service" },
     });
     expect(await runActanaCli(macDeps(["status"], system))).toBe(1);
@@ -1300,8 +1538,8 @@ describe("macOS", () => {
   });
 
   it("stops by unloading the agent — `launchctl stop` would just restart it", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem({
+    await macSetup(macSystem());
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1316,8 +1554,8 @@ describe("macOS", () => {
   });
 
   it("stopping an already-stopped Core succeeds, as it does on Linux", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem({
+    await macSetup(macSystem());
+    const system = macSystem({
       "launchctl print": { status: 113, stdout: "", stderr: "Could not find service" },
     });
 
@@ -1328,8 +1566,8 @@ describe("macOS", () => {
   });
 
   it("starts by bootstrapping the agent back into the domain", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem({
+    await macSetup(macSystem());
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 113,
         stdout: "",
@@ -1344,10 +1582,10 @@ describe("macOS", () => {
   });
 
   it("starts a loaded-but-dead agent — loaded is not the same as running", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     // launchd is throttling a job that keeps crashing: loaded, no pid. On Linux
     // `systemctl start` would act here, so `actana start` must too.
-    const system = fakeSystem({
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: "\tstate = waiting\n",
@@ -1362,8 +1600,8 @@ describe("macOS", () => {
   });
 
   it("starting an already-running Core is a no-op, as it is on Linux", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem({
+    await macSetup(macSystem());
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1378,8 +1616,8 @@ describe("macOS", () => {
   });
 
   it("restarts a loaded agent in place with kickstart", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem({
+    await macSetup(macSystem());
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1394,8 +1632,8 @@ describe("macOS", () => {
   });
 
   it("surfaces a launchctl failure with its message and exit code", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem({
+    await macSetup(macSystem());
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1409,8 +1647,8 @@ describe("macOS", () => {
   });
 
   it("tails the LaunchAgent's log file — launchd has no journal", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem();
+    await macSetup(macSystem());
+    const system = macSystem();
 
     expect(await runActanaCli(macDeps(["logs"], system))).toBe(0);
     const call = system.calls.find((c) => c[0] === "tail")!;
@@ -1421,13 +1659,13 @@ describe("macOS", () => {
   });
 
   it("creates the log file at setup so the first `logs` is not an error", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     expect(fs.existsSync(path.join(home, "Library", "Logs", "Actana", "core.log"))).toBe(true);
   });
 
   it("follows and limits lines the same way as on Linux", async () => {
-    await macSetup(fakeSystem());
-    const system = fakeSystem();
+    await macSetup(macSystem());
+    const system = macSystem();
 
     await runActanaCli(macDeps(["logs", "-f", "-n", "50"], system));
     const call = system.calls.find((c) => c[0] === "tail")!;
@@ -1436,11 +1674,11 @@ describe("macOS", () => {
   });
 
   it("updates to a mac build and kickstarts the agent onto it", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
     out.length = 0;
 
-    const system = fakeSystem({
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1457,23 +1695,142 @@ describe("macOS", () => {
     );
   });
 
+  // ─── a machine upgraded in place from before the rename (#348) ──────────
+
+  /** What an install generation before the rename left in `~/Library/LaunchAgents`. */
+  function plantLegacyAgent(): string {
+    const dir = path.join(home, "Library", "LaunchAgents");
+    fs.mkdirSync(dir, { recursive: true });
+    const legacyPlist = path.join(dir, "com.actana.harness.plist");
+    fs.writeFileSync(legacyPlist, "<plist/>\n");
+    return legacyPlist;
+  }
+
+  it("setup boots the pre-rename agent out and deletes its plist", async () => {
+    const legacyPlist = plantLegacyAgent();
+    const system = macSystem();
+
+    expect(await macSetup(system)).toBe(0);
+
+    expect(system.calls.map((c) => c.join(" "))).toContain(
+      "launchctl bootout gui/501/com.actana.harness",
+    );
+    expect(fs.existsSync(legacyPlist)).toBe(false);
+    expect(out.join("\n")).toMatch(/Removed com\.actana\.harness/);
+  });
+
+  it("place warns about it, because `install.sh` never reaches setup", async () => {
+    plantLegacyAgent();
+
+    expect(await runActanaCli(macDeps(["place"], macSystem()))).toBe(0);
+
+    // Warned, not removed: `place` puts a tree down and says what to run next.
+    expect(err.join("\n")).toMatch(/com\.actana\.harness is still installed/);
+    expect(err.join("\n")).toMatch(/actana setup/);
+    expect(fs.existsSync(path.join(home, "Library", "LaunchAgents", "com.actana.harness.plist")))
+      .toBe(true);
+  });
+
+  it("status names the agent launchd loaded and says to run setup", async () => {
+    await macSetup(macSystem());
+    plantLegacyAgent();
+    out.length = 0;
+
+    const system = macSystem({
+      "launchctl print gui/501/com.actana.core": {
+        status: 0,
+        stdout: RUNNING_HARNESS,
+        stderr: "",
+      },
+      "launchctl print gui/501/com.actana.harness": { status: 0, stdout: "", stderr: "" },
+    });
+    // Non-zero: a second Core-era service on the machine is a degradation, and
+    // a script watching the exit code should see it.
+    expect(await runActanaCli(macDeps(["status"], system))).toBe(1);
+
+    const text = out.join("\n");
+    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is still installed/);
+    expect(text).toMatch(/actana setup/);
+  });
+
+  it("update removes it before restarting onto the new tree", async () => {
+    await macSetup(macSystem());
+    plantLegacyAgent();
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
+    out.length = 0;
+
+    const system = macSystem();
+    expect(
+      await runActanaCli(macDeps(["update", "--base-url", RELEASE_BASE_URL], system)),
+    ).toBe(0);
+
+    const commands = system.calls.map((c) => c.join(" "));
+    expect(commands).toContain("launchctl bootout gui/501/com.actana.harness");
+    // Before the restart: the old agent runs `current/bin/actana` too, and
+    // `current` now points at the tree the restart is about to start.
+    expect(commands.indexOf("launchctl bootout gui/501/com.actana.harness")).toBeLessThan(
+      commands.lastIndexOf("launchctl kickstart -k gui/501/com.actana.core"),
+    );
+    expect(
+      fs.existsSync(path.join(home, "Library", "LaunchAgents", "com.actana.harness.plist")),
+    ).toBe(false);
+  });
+
+  it("update keeps the legacy agent when it is the machine's only service", async () => {
+    // End to end on the #348 Mac, through the real launchd manager: an
+    // in-place upgrade where `actana setup` was never run after the rename, so
+    // there is no `com.actana.core.plist` to restart onto. Before this, update
+    // booted the legacy agent out and then threw on a bootstrap of a plist
+    // that does not exist — zero auto-start services, and a message pointing
+    // at the logs of a daemon that never started.
+    const legacyPlist = plantLegacyAgent();
+    // An install `actana place` made: a config and a tree, but no service.
+    writeActanaConfig(layoutForHome("darwin").configDir, {
+      version: MANIFEST.version,
+      port: 8443,
+      host: "0.0.0.0",
+      publicHost: "10.0.0.5",
+      publicHosts: ["10.0.0.5"],
+      label: "mac-1",
+      installDir: installDirFor(layoutForHome("darwin"), MANIFEST.version),
+      dataDir: layoutForHome("darwin").dataDir,
+    });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
+    out.length = 0;
+    err.length = 0;
+
+    const system = macSystem({ "launchctl print gui/501/": NO_SUCH_JOB });
+    const code = await runActanaCli(macDeps(["update", "--base-url", RELEASE_BASE_URL], system));
+
+    // The agent that was the machine's only service is still there.
+    expect(fs.existsSync(legacyPlist)).toBe(true);
+    expect(system.calls.map((c) => c.join(" "))).not.toContain(
+      "launchctl bootout gui/501/com.actana.harness",
+    );
+    // Non-zero, and pointing at the command that actually registers a Core —
+    // not at the logs of something that was never started.
+    expect(code).toBe(1);
+    expect(out.join("\n")).toMatch(/actana setup/);
+    expect(err.join("\n")).not.toMatch(/Check `actana logs`/);
+  });
+
   it("will not install a linux build on a Mac", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
     err.length = 0;
 
     expect(
-      await runActanaCli(macDeps(["update", "--base-url", RELEASE_BASE_URL], fakeSystem())),
+      await runActanaCli(macDeps(["update", "--base-url", RELEASE_BASE_URL], macSystem())),
     ).toBe(1);
     expect(err.join("\n")).toContain("mac-arm64");
   });
 
   it("regenerates credentials and reloads the agent onto them", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     const old = readMaterial("darwin");
     out.length = 0;
 
-    const system = fakeSystem({
+    const system = macSystem({
       "launchctl print gui/501/com.actana.core": {
         status: 0,
         stdout: RUNNING_HARNESS,
@@ -1489,9 +1846,9 @@ describe("macOS", () => {
   });
 
   it("uninstalls by booting the agent out and deleting its plist", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     const layout = layoutForHome("darwin");
-    const system = fakeSystem();
+    const system = macSystem();
 
     expect(await runActanaCli(macDeps(["uninstall"], system))).toBe(0);
 
@@ -1506,10 +1863,10 @@ describe("macOS", () => {
   });
 
   it("removes the data dir and credentials with --purge-data on a Mac too", async () => {
-    await macSetup(fakeSystem());
+    await macSetup(macSystem());
     const layout = layoutForHome("darwin");
 
-    expect(await runActanaCli(macDeps(["uninstall", "--purge-data"], fakeSystem()))).toBe(0);
+    expect(await runActanaCli(macDeps(["uninstall", "--purge-data"], macSystem()))).toBe(0);
     expect(fs.existsSync(layout.dataDir)).toBe(false);
     expect(fs.existsSync(layout.configDir)).toBe(false);
   });

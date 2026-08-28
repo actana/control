@@ -93,6 +93,7 @@ routing around it.
 | [0035](adr/0035-a-second-skill-for-the-sub-agent-role.md) | A second skill for the sub-agent role, and it is eager — **PROPOSED**, depends on 0031 |
 | [0036](adr/0036-the-beta-release-channel.md) | The beta release channel: a beta installs like a release, and the ref is the channel — **PROPOSED**, amends 0016 (D28, D29, D34, D35) and 0023 (D8, D9) |
 | [0037](adr/0037-one-version-per-line.md) | One version per line: where a version string is written, and what is authoritative — **PROPOSED**, amends 0023 (D3, D7), the two clauses 0036 §G left open |
+| [0038](adr/0038-a-core-has-several-addresses.md) | A Core has several addresses: multi-SAN certificates, and a per-pairing endpoint — **PROPOSED**, amends 0016 (D15, D18) and adds to 0034 |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

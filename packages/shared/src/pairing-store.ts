@@ -210,7 +210,11 @@ export class PairingStore {
     const o = parsed as Partial<PairingRecords>;
     return {
       version: 1,
-      sessions: this.rows(o.sessions, isPairingSession, "session", strict),
+      // `normaliseSession` rather than a check inside `isPairingSession`: an
+      // optional field that decides no part of session validity must not be
+      // able to condemn a row, because a condemned row here fails the whole
+      // store closed (#347). See `isPairingSession`.
+      sessions: this.rows(o.sessions, isPairingSession, "session", strict).map(normaliseSession),
       clients: this.rows(o.clients, isPairedClient, "client", strict),
     };
   }
@@ -404,7 +408,46 @@ function isPairingSession(value: unknown): value is PairingSession {
     typeof o.attempts === "number" &&
     typeof o.attemptCap === "number" &&
     (o.consumedAt === null || typeof o.consumedAt === "number")
+    // **`endpointHost` is deliberately not checked here** (#347). It is
+    // optional, it is not load-bearing for whether a session is a session, and
+    // this predicate is not a mere shape check: `parse(strict: true)` throws on
+    // the first row it fails, `readStrict` propagates that, and
+    // `core-pairing-revocation.ts` reads an unreadable store as *everything is
+    // revoked*. So a single row with a wrong-typed `endpointHost` would lock
+    // out every client the Core has ever paired — a total failure bought by a
+    // field that decides nothing about session validity.
+    //
+    // A bad value costs nothing instead. `readEndpointHost` below drops
+    // anything that is not a usable string, so the session loads meaning "the
+    // primary", and `buildPairingEndpointResolver` re-checks membership on the
+    // way out regardless. The safe degradation was already there; this only
+    // stops the row being condemned before it can happen.
   );
+}
+
+/**
+ * A session as this build reads it, with `endpointHost` reduced to a value the
+ * resolver can use (#347).
+ *
+ * Anything that is not a non-empty string becomes `null`, which is what every
+ * session written before the field existed already means: the primary. Done on
+ * the way out of the parser so one reading of a malformed value exists rather
+ * than one per consumer — and done here rather than as a rejection in
+ * {@link isPairingSession} because rejecting fails the whole store closed.
+ *
+ * The row is returned untouched when there is nothing to reduce, so the
+ * ordinary path allocates nothing.
+ */
+function normaliseSession(session: PairingSession): PairingSession {
+  const raw: unknown = session.endpointHost;
+  if (raw === undefined || raw === null) return session;
+  const host = typeof raw === "string" ? raw.trim() : "";
+  // The short-circuit is for a value that is already usable, so it has to
+  // require `length` as well as equality: an empty string equals its own trim
+  // and is still not a host, and returning it here would leave `""` where every
+  // reader expects `null`.
+  if (host.length > 0 && host === raw) return session;
+  return { ...session, endpointHost: host.length > 0 ? host : null };
 }
 
 function isPairedClient(value: unknown): value is PairedClient {

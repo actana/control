@@ -78,7 +78,12 @@ import {
   readContainerContract,
   refusedContainerVerbs,
 } from "./actana-container.ts";
-import { endpointFor, readActanaConfig, type ActanaConfig } from "./actana-config.ts";
+import {
+  configPublicHosts,
+  endpointFor,
+  readActanaConfig,
+  type ActanaConfig,
+} from "./actana-config.ts";
 import {
   binDirOnPath,
   resolveActanaLayout,
@@ -94,6 +99,7 @@ import { readCoreManifest, type CoreManifest } from "./actana-manifest.ts";
 import { releaseChannel } from "./actana-release.ts";
 import {
   createServiceManager,
+  supportsService,
   type ActanaServiceManager,
   type ServiceVerb,
 } from "./actana-service.ts";
@@ -115,6 +121,12 @@ import {
   supportedHarnessIdsSentence,
 } from "./actana-harnesses.ts";
 import type { Harness } from "@actana/shared/domain";
+import {
+  formatPublicHosts,
+  parsePublicHosts,
+  primaryPublicHost,
+  PUBLIC_HOST_SEPARATOR,
+} from "@actana/shared/public-hosts";
 import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./actana-status.ts";
 import { runActanaUninstall } from "./actana-uninstall.ts";
 import { runActanaUpdate } from "./actana-update.ts";
@@ -214,7 +226,9 @@ Which Core a client command means, in this order:
 Install and setup options:
   --port <n>            Port the daemon listens on (default ${DEFAULT_PORT})
   --host <addr>         Address the daemon binds (default 0.0.0.0)
-  --public-host <addr>  Address your Panel dials (default: this machine's IP)
+  --public-host <addr>  Address your Panel dials (default: this machine's IP).
+                        Comma-separate several — \`core,10.0.0.5\` — to cover
+                        them all in one certificate; the first is the primary
   --label <name>        Alias shown in your Panel (default: the hostname)
   --with-<harness>      Install this Harness without asking (repeatable)
   --no-harnesses        Do not install or offer any Harness
@@ -262,9 +276,10 @@ const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to D
                         names (\`docker compose up -d\`, \`docker compose logs -f\`, …)
 
 The image reads three variables:
-  ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials. Never guessed:
-                        it is baked into this Core's certificate and the endpoint
-                        a pairing hands out
+  ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials, or a comma-separated
+                        list of the addresses this Core's clients dial. Never
+                        guessed: every entry is baked into this Core's certificate,
+                        and the first is the endpoint a pairing hands out
   ${CONTAINER_PORT_ENV}           port the daemon listens on (default ${DEFAULT_CONTAINER_PORT})
   ${CONTAINER_LABEL_ENV}          alias shown in your Panel (default: the public host)
 `;
@@ -412,6 +427,7 @@ function containerInstall(deps: ActanaCliDeps): InstalledCore | null {
       port: contract.port,
       host: deps.env.AC_CORE_LINK_HOST ?? "0.0.0.0",
       publicHost: contract.publicHost,
+      publicHosts: contract.publicHosts,
       label: contract.label,
       installDir: deps.installRoot,
       dataDir: deps.env.AC_USER_DATA_DIR ?? layout.dataDir,
@@ -532,11 +548,53 @@ async function cmdSetup(
   const service = requireService(deps, layout);
   if (!service) return 1;
 
-  const publicHost = stringFlag(
-    parsed.values,
-    "public-host",
-    choosePublicHost(deps.networkInterfaces, deps.hostname),
+  // One address, or several separated by commas (#347) — every one of them a
+  // SAN on this Core's certificate, the first of them the endpoint `setup`
+  // prints and every pairing hands back by default. A bare `--public-host
+  // 10.0.0.5` is a list of one and installs exactly what it always installed.
+  //
+  // **What a bare `actana setup` defaults to is the addresses this Core is
+  // already installed with, not a guess** (#347 × #348). The guess is for a
+  // machine that has never been set up; on one that has, it would resolve a
+  // single routable IPv4, re-issue a single-SAN certificate for it, overwrite
+  // `publicHosts` in the config and the unit, and take the Core off every
+  // address a client is actually paired to — while `pair new --public-host
+  // <the old address>` started refusing, because the material no longer lists
+  // it. #348 made a bare `actana setup` the advertised remedy in five places,
+  // so that is now the *common* path rather than an unlucky one.
+  //
+  // This is the same rule the daemon already holds: `core-first-run.ts` re-signs
+  // a SAN only for an address the operator *declared*, precisely so a guess
+  // cannot take a working Core off its own address. An explicit `--public-host`
+  // is a declaration and stays authoritative; the default is not one.
+  const recordedConfig = readActanaConfig(layout.configDir);
+  const recordedHosts = recordedConfig ? configPublicHosts(recordedConfig) : null;
+  const parsedPublicHosts = parsePublicHosts(
+    stringFlag(
+      parsed.values,
+      "public-host",
+      recordedHosts?.join(PUBLIC_HOST_SEPARATOR) ??
+        choosePublicHost(deps.networkInterfaces, deps.hostname),
+    ),
+    "--public-host",
   );
+  if (!parsedPublicHosts.ok) {
+    deps.err(parsedPublicHosts.error);
+    return EXIT_USAGE;
+  }
+  const publicHosts = parsedPublicHosts.hosts;
+  const publicHost = primaryPublicHost(publicHosts);
+
+  // Said out loud, because it is a decision this command made on the
+  // operator's behalf and the alternative it declined — the guess — is what
+  // every earlier release did.
+  if (recordedHosts && parsed.values["public-host"] === undefined) {
+    deps.out(
+      `Keeping this Core's recorded ${recordedHosts.length === 1 ? "address" : "addresses"}: ` +
+        `${formatPublicHosts(recordedHosts)}. Pass --public-host to change ` +
+        `${recordedHosts.length === 1 ? "it" : "them"}.`,
+    );
+  }
 
   const common = {
     layout,
@@ -544,7 +602,7 @@ async function cmdSetup(
     env: deps.env,
     port,
     host: stringFlag(parsed.values, "host", "0.0.0.0"),
-    publicHost,
+    publicHosts,
     label: stringFlag(parsed.values, "label", deps.hostname),
     platform: deps.platform,
     arch: deps.arch,
@@ -580,6 +638,11 @@ async function cmdSetup(
   deps.out(`Core installed at ${result.installDir}`);
   deps.out(`  Version    ${result.version}`);
   deps.out(`  Endpoint   wss://${publicHost}:${port}`);
+  // Only when there is more than one, because a Core with a single address has
+  // nothing here the endpoint line did not already say.
+  if (publicHosts.length > 1) {
+    deps.out(`  Also valid ${formatPublicHosts(publicHosts.slice(1))}`);
+  }
   deps.out(`  Service    ${result.serviceName} (${result.serviceSummary})`);
   const harnessSummary = summarizeHarnessInstalls(result.agents);
   if (harnessSummary) deps.out(`  ${harnessSummary}`);
@@ -609,6 +672,34 @@ async function cmdSetup(
       "This Core's pairing credentials are unchanged — a paired Panel still " +
         `trusts this Core, but it is dialling the address it paired with. Point it at ` +
         `${publicHost}, or run \`actana pair new\` here and pair it again.`,
+    );
+  } else if (result.materialOutcome === "widened") {
+    // **A widening is not a move** (ADR 0038 D3a, #347). Every address this
+    // Core already answered to is still on the certificate and one or more have
+    // joined them, so nothing is dialling an address it has left — there is
+    // nothing for the operator to do, and nothing is advised. The `reissued`
+    // branch above would have told them to re-point a Panel at an address it is
+    // already dialling, or to pair it again: a no-op instruction followed by
+    // the exact cost this ticket exists to remove. On metal this is the only
+    // message about the change an operator sees, because the daemon's next boot
+    // reads `covered` and says nothing.
+    deps.out(
+      `This Core now answers to ${formatPublicHosts(publicHosts)} — ` +
+        `${formatPublicHosts(result.addedHosts)} joined the addresses it already had, and its ` +
+        "server certificate was re-issued from its own CA to cover " +
+        `${result.addedHosts.length === 1 ? "it" : "them"}. Every paired client keeps working ` +
+        "and none has to be re-paired. To pair a client to one of the new addresses, run " +
+        `\`actana pair new --public-host ${result.addedHosts[0]}\` here.`,
+    );
+  } else if (result.materialOutcome === "re-minted") {
+    // The recovery in #348: the material that was here could not have served
+    // TLS, so setup replaced it rather than re-blessing it. Nothing that was
+    // paired with the old identity works any more, and saying so is the whole
+    // point of the outcome having its own name.
+    deps.out(
+      "This Core's old material could not be served and has been replaced, so every client " +
+        "paired with it is locked out. Pair each one again: run `actana pair new` here and " +
+        "spend the code it prints on the client.",
     );
   } else if (result.materialOutcome === "reused") {
     deps.out(
@@ -764,7 +855,50 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
       : "That writes this Core's identity, its auto-start service and its registration, and " +
           "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
   );
+  // Last, so it is the line still on screen when `install.sh` finishes.
+  warnAboutLegacyService(deps, layout);
   return 0;
+}
+
+/**
+ * Say so when a pre-rename service is still installed here (#348).
+ *
+ * `install.sh` runs `actana place` and stops; an operator who upgrades that way
+ * never reaches `actana setup`, which is the only thing that removes the old
+ * service. So the old agent — `KeepAlive` on, `ProgramArguments` pointing at
+ * `current/bin/actana`, which `place` has just repointed — picks up the new
+ * binary with the pre-rename environment and crash-loops against the port.
+ *
+ * A warning rather than a removal, and a refusal least of all. `place` is the
+ * step that does not touch the running machine: it puts a tree down and prints
+ * what to run next. Booting out a service is `setup`'s and `update`'s job, and
+ * the line below is what makes an operator run one of them.
+ *
+ * Best effort in both directions, exactly as {@link stopDaemonBeingReplaced}
+ * is: a platform with no init system has no legacy service to warn about, and
+ * a bundle must still place on it.
+ */
+function warnAboutLegacyService(deps: ActanaCliDeps, layout: ActanaLayout): void {
+  if (!supportsService(deps.platform)) return;
+  let legacy: string | null;
+  try {
+    legacy = createServiceManager({
+      platform: deps.platform,
+      layout,
+      system: deps.system,
+      user: deps.user,
+      uid: deps.uid,
+    }).observe().legacyName;
+  } catch {
+    return;
+  }
+  if (!legacy) return;
+  deps.err(
+    `Warning: ${legacy} is still installed on this machine, left by an install from before ` +
+      "the rename. It runs `current/bin/actana` too, so it is now starting the version just " +
+      "placed with the old environment, and it will fight the real Core for the port. " +
+      "`actana setup` removes it.",
+  );
 }
 
 /**
@@ -884,6 +1018,9 @@ async function containerStatus(deps: ActanaCliDeps): Promise<number> {
     target: manifest?.target ?? null,
     endpoint: endpointFor(config),
     serviceName: null,
+    // There is no init system in the image and never was one, so there is no
+    // pre-rename agent for it to be carrying (ADR 0016 D16).
+    legacyService: null,
     service: null,
     persistence: null,
     container: { listening, port: config.port },
@@ -912,6 +1049,7 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   if (!service) return 1;
 
   const version = manifest?.version ?? config?.version ?? null;
+  const observed = service.observe();
   const report: ActanaStatusReport = {
     installed: config !== null,
     version,
@@ -919,7 +1057,11 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     protocolVersion: manifest?.protocolVersion ?? null,
     target: manifest?.target ?? null,
     endpoint: config ? endpointFor(config) : null,
-    serviceName: service.name,
+    // What the init system actually has, falling back to the label setup would
+    // write when it has nothing at all — never the constant on a machine whose
+    // real service is called something else (#348).
+    serviceName: observed.name ?? service.name,
+    legacyService: observed.legacyName,
     service: service.state(),
     persistence: service.persistence(),
     container: null,
@@ -1064,7 +1206,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     }
   }
 
-  persistMaterialToFile(materialPath, await mintFreshMaterial(config.publicHost));
+  persistMaterialToFile(materialPath, await mintFreshMaterial(configPublicHosts(config)));
 
   if (container) {
     if (!loadMaterialFromFile(materialPath)) {
@@ -1186,6 +1328,15 @@ async function cmdUpdate(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   // saying, because "I just replaced the whole install" reads otherwise.
   deps.out("Your pairing credentials are unchanged — paired Panels stay paired.");
 
+  if (result.listening === null) {
+    // Nothing was restarted, and the update said why on stdout — there is no
+    // service on this machine to restart (#348). Non-zero so a scripted
+    // upgrade notices that the new version is placed but nothing is running
+    // it, without the "the daemon restarted" sentence below, which would be
+    // false.
+    deps.err("Nothing is running this version yet — run `actana setup`.");
+    return 1;
+  }
   if (!result.listening) {
     deps.err(
       `The daemon restarted but nothing is listening on port ${installed.config.port} yet. ` +
@@ -1232,7 +1383,16 @@ async function cmdUninstall(deps: ActanaCliDeps, argv: string[]): Promise<number
 
   const result = runActanaUninstall({ layout, service, purgeData, out: deps.out });
   if (result.removed.length === 0 && result.kept.length === 0) {
-    deps.out("There was no Core installed for this user.");
+    // Nothing of an install was here. On the #348 machine that is still the
+    // truth *and* not the whole of it: the pre-rename agent was here and is now
+    // gone, so saying only "there was no Core installed" would read as though
+    // the command had done nothing (#353 review C4).
+    deps.out(
+      result.removedLegacyService
+        ? `There was no Core installed for this user — only ${result.removedLegacyService}, ` +
+            "left by an install from before the rename, and that is now removed."
+        : "There was no Core installed for this user.",
+    );
   }
   return 0;
 }
@@ -1368,7 +1528,8 @@ async function cmdDaemon(deps: ActanaCliDeps): Promise<number> {
 
   await deps.runDaemon({
     AC_CORE_LINK_PORT: String(contract.port),
-    AC_CORE_PUBLIC_HOST: contract.publicHost,
+    // The whole list, as the operator wrote it — `core-entry` splits it again.
+    AC_CORE_PUBLIC_HOST: contract.publicHosts.join(","),
     // The label is the one contract variable `core-entry` reads under its own
     // name rather than an `AC_*` translation, and it is handed over even when
     // the operator set it — the contract's default (the public host) only

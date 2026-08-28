@@ -80,6 +80,11 @@ services:
       # It lives here, in the file you edit, rather than in the image — the
       # image never guesses it, because a container's default hostname is its
       # container ID and would change the certificate on every recreation.
+      # One address, or several comma-separated — every entry becomes a SAN on
+      # this Core's certificate and the first is the primary. Add a LAN address
+      # here (`core,192.168.1.20`) to reach this Core from your own machine's
+      # `actana` as well as from the Panel beside it, then pair each client to
+      # the one it can reach with `actana pair new --public-host <addr>`.
       - ACTANA_PUBLIC_HOST=core
       # What the Panel shows this Core as. Defaults to the public host.
       - ACTANA_LABEL=core

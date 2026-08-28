@@ -83,19 +83,63 @@ core:
     - ACTANA_PUBLIC_HOST=core
 ```
 
-That one value is three things at once:
+That one value is two-and-a-half things at once (ADR 0038):
 
 1. the **address the Panel dials** (`wss://core:8443`),
-2. the **SAN in the Core's server certificate**, and
-3. the **endpoint every pairing hands back** to the client that redeems a code.
+2. the **SANs in the Core's server certificate** — every entry, since the value
+   may name more than one address, and
+3. by default, the **endpoint a pairing hands back** to the client that redeems
+   a code: the first entry, unless that code chose another of them with
+   `pair new --public-host`.
 
 So it lives in the compose file you edit, next to the service it names — never
 in `.env`, which has room for one value and a fleet needs one per Core, and
 never guessed by the image, because a container's default hostname is its
 container ID and would change the certificate on every recreation.
 
-Rename the service and you must change this to match. Changing it after pairing
-means re-pairing: the old certificate does not cover the new name.
+Rename the service and you must change this to match. What that costs depends
+on which edit it is:
+
+- **Adding** an address leaves every address already there covered, so clients
+  paired before the edit keep working and none has to be re-paired.
+- **Replacing or removing** one means re-pairing every client that was paired to
+  the address you took away: the new certificate does not cover it, and the
+  client is the one holding it.
+
+### Reaching one Core more than one way
+
+A Core is often reachable two ways at once — as the compose service name from
+the Panel beside it, and as a LAN address from your own machine's `actana`. Name
+both, comma-separated, and one certificate covers both:
+
+```yaml
+core:
+  environment:
+    - ACTANA_PUBLIC_HOST=core,192.168.1.20
+```
+
+Every entry becomes a SAN. **The first entry is the primary**: it is the
+certificate's common name, and it is the endpoint a pairing hands back unless
+that code chose otherwise. `localhost` and `127.0.0.1` are always covered too,
+so the container's own `actana` can dial it.
+
+Then pair each client to the address it can actually reach:
+
+```bash
+docker compose exec core actana pair new --label panel  --public-host core
+docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+```
+
+`--public-host` **chooses** from that list; it can never add to it. Name an
+address that is not configured and `pair new` refuses and prints the ones that
+are — a code that handed back an address this certificate does not cover would
+give its client a credential that fails on its first dial.
+
+A single value still means exactly what it always meant, so nothing above is
+needed for one address. And **adding** an address to the list keeps the ones
+already there covered: clients paired before the change stay paired, which is
+the re-pair that *replacing* the one value still forces and adding no longer
+does.
 
 ## Volumes — what survives what
 
