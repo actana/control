@@ -1,10 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import { X509Certificate, createPublicKey } from "node:crypto";
 import { loadOrMintMaterial } from "../core-first-run";
-import { persistMaterialToFile, type PersistedMaterial } from "@actana/shared/core-material-store";
+import {
+  mintFreshMaterial,
+  persistMaterialToFile,
+  type PersistedMaterial,
+} from "@actana/shared/core-material-store";
 
 // First run in a container is the only place a Core mints its own identity
 // without `actana setup` (ADR 0016 D13/D17). The daemon mints and persists into
@@ -18,18 +22,20 @@ import { persistMaterialToFile, type PersistedMaterial } from "@actana/shared/co
 // about. A client enrolls by spending a code from `actana pair new`, which
 // `core-pairing-routes.test.ts` and `actana-pair.test.ts` cover.
 
-const sample: PersistedMaterial = {
-  caCert: "-----BEGIN CERTIFICATE-----\nCA\n-----END CERTIFICATE-----",
-  caKey: "-----BEGIN PRIVATE KEY-----\nCAKEY\n-----END PRIVATE KEY-----",
-  serverCert: "-----BEGIN CERTIFICATE-----\nSERVER\n-----END CERTIFICATE-----",
-  serverKey: "-----BEGIN PRIVATE KEY-----\nSERVERKEY\n-----END PRIVATE KEY-----",
-  clientCert: "-----BEGIN CERTIFICATE-----\nCLIENT\n-----END CERTIFICATE-----",
-  clientKey: "-----BEGIN PRIVATE KEY-----\nCLIENTKEY\n-----END PRIVATE KEY-----",
-  bearerSecret: "deadbeef".repeat(8),
-  coreId: "core_abcdef0123456789",
-  coreUuid: "1f2e3d4c-5b6a-4798-8a9b-0c1d2e3f4a5b",
-  serverHosts: ["core.example.test"],
-};
+/**
+ * A previous boot's material — real certificates, minted once for the suite.
+ *
+ * Placeholder PEM strings would do for a store that only type-checks its
+ * fields, and this fixture used to be exactly that. Since #348 the load path
+ * checks the CA the identity chains to, so material that is not an identity is
+ * refused — correctly, and `core-material-identity.test.ts` is where that
+ * refusal is asserted. Minting is ~200 ms, once.
+ */
+let sample: PersistedMaterial;
+
+beforeAll(async () => {
+  sample = await mintFreshMaterial(["core.example.test"]);
+});
 
 let dir: string;
 let materialFile: string;
@@ -70,6 +76,32 @@ describe("loadOrMintMaterial — the file is absent", () => {
     await loadOrMintMaterial({ materialFile, ...options });
     // Private keys — same 0600 the install path writes.
     expect(fs.statSync(materialFile).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("loadOrMintMaterial — the identity on disk is not this Core's (#348)", () => {
+  it("refuses material whose CA is not this product's, naming the file", async () => {
+    // The load path's half of `checkMaterialIdentity`: the daemon stops at
+    // boot with a sentence, instead of presenting an identity that fails at a
+    // client as `wrong version number`.
+    const stranger = await mintFreshMaterial(["core.example.test"]);
+    persistMaterialToFile(materialFile, { ...sample, serverCert: stranger.serverCert });
+
+    await expect(loadOrMintMaterial({ materialFile, ...options })).rejects.toThrow(
+      /cannot be used as this Core's identity/,
+    );
+    await expect(loadOrMintMaterial({ materialFile, ...options })).rejects.toThrow(
+      /actana setup/,
+    );
+  });
+
+  it("leaves the file alone — the operator decides what to discard", async () => {
+    persistMaterialToFile(materialFile, { ...sample, serverKey: "not a key" });
+    const before = fs.readFileSync(materialFile, "utf8");
+
+    await expect(loadOrMintMaterial({ materialFile, ...options })).rejects.toThrow();
+
+    expect(fs.readFileSync(materialFile, "utf8")).toBe(before);
   });
 });
 

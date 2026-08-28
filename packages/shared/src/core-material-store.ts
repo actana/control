@@ -13,7 +13,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createPrivateKey, randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { generateCertMaterial, issueServerCert } from "./core-cert-material";
 import { samePublicHosts } from "./public-hosts";
 import log from "@actana/shared/log";
@@ -319,6 +319,105 @@ export function readMaterialFile(filePath: string): MaterialFileRead | null {
     },
     mintedCoreUuid,
   };
+}
+
+/** The common name on every CA this product has minted since the rename. */
+export const CORE_CA_COMMON_NAME = "mission-control-core-ca";
+
+/** The common name the Harness-era installer minted, and the tell for #348. */
+export const LEGACY_CA_COMMON_NAME = "mission-control-harness-ca";
+
+/** The common name in an X.509 subject / issuer string, or `""`. */
+function commonNameOf(distinguishedName: string): string {
+  return /^CN=(.*)$/m.exec(distinguishedName)?.[1]?.trim() ?? "";
+}
+
+/** What to tell the operator to do about material this Core cannot use. */
+const REMEDY =
+  "Run `actana setup` to mint this Core's identity again — every paired client re-pairs " +
+  "with a fresh `actana pair new` code.";
+
+/**
+ * Whether this material is an identity this Core can actually serve (#348).
+ *
+ * {@link readMaterialFile} type-checks eight strings, which is the difference
+ * between a file and JSON — not between *this* Core's identity and one from
+ * two renames ago. Pre-rename material has the same eight fields, the same
+ * filename and the same shape; the only thing that distinguishes it is the CA
+ * it chains to, and nothing looked. So it loaded, the daemon presented it, and
+ * the operator's first news of the problem was `wrong version number` from a
+ * client — a message about a wire protocol, for a problem about an identity.
+ *
+ * Three questions, in the order that produces the most useful answer: is the
+ * CA one of ours, did it issue this server certificate, and does that
+ * certificate go with the key beside it. Each returns a sentence naming what
+ * is wrong and what to run; null means the material is usable.
+ *
+ * A *check*, not a validation of the whole file: the client certificate and
+ * the bearer secret are deliberately not examined here. The server pair is
+ * what the TLS handshake fails on, and a check that grew to cover everything
+ * would start refusing material over fields no handshake reads.
+ */
+export function checkMaterialIdentity(material: PersistedMaterial): string | null {
+  let ca: X509Certificate;
+  try {
+    ca = new X509Certificate(material.caCert);
+  } catch {
+    return `\`caCert\` is not a certificate this Core can parse. ${REMEDY}`;
+  }
+
+  const issuer = commonNameOf(ca.subject);
+  if (issuer !== CORE_CA_COMMON_NAME) {
+    // The pre-rename CA gets its own sentence: an operator who sees it needs
+    // to know the file is *old*, not corrupt, and that a stale auto-start
+    // service is very likely still pointing at it (#348).
+    const provenance =
+      issuer === LEGACY_CA_COMMON_NAME
+        ? `is \`${LEGACY_CA_COMMON_NAME}\`, the CA an install from before the Harness → Core ` +
+          "rename minted. This file is that install's identity, and the service that pointed " +
+          "at it is from before the rename too."
+        : `is \`${issuer || "(no common name)"}\`, which no version of this product has minted.`;
+    return (
+      `The CA in this material ${provenance} A Core cannot serve an identity it did not ` +
+      `issue: the certificate would chain to nothing any client pins. ${REMEDY}`
+    );
+  }
+
+  let server: X509Certificate;
+  try {
+    server = new X509Certificate(material.serverCert);
+  } catch {
+    return `\`serverCert\` is not a certificate this Core can parse. ${REMEDY}`;
+  }
+  // `verify` and deliberately not `checkIssued`: the latter compares names, and
+  // every CA this product mints carries the *same* name — so two Cores' files
+  // shuffled together would pass it while chaining to different keys. The
+  // signature is the only part of a certificate that cannot be coincidence.
+  let issuedByThisCa: boolean;
+  try {
+    issuedByThisCa = server.verify(ca.publicKey);
+  } catch {
+    issuedByThisCa = false;
+  }
+  if (!issuedByThisCa) {
+    return (
+      "The server certificate in this material was not issued by the CA beside it, so no " +
+      `client that pins the CA can validate it. ${REMEDY}`
+    );
+  }
+
+  try {
+    if (!server.checkPrivateKey(createPrivateKey(material.serverKey))) {
+      return (
+        "The server certificate and `serverKey` in this material are not a pair. TLS would " +
+        `fail at the handshake with nothing said about why. ${REMEDY}`
+      );
+    }
+  } catch {
+    return `\`serverKey\` is not a private key this Core can parse. ${REMEDY}`;
+  }
+
+  return null;
 }
 
 /**
