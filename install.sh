@@ -534,7 +534,7 @@ main() {
   [ -n "$expected" ] || die "release $tag has no build for $TARGET.
   Its $SHASUMS_ASSET does not list $asset."
 
-  say "Downloading $asset…"
+  say "Downloading $asset..."
   tarball="$work_dir/$asset"
   fetch_url "$release_url/$asset" "$tarball" ||
     die "could not download $release_url/$asset"
