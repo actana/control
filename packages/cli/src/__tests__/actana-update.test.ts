@@ -249,8 +249,58 @@ describe("landing a newer release", () => {
     expect(out.join("\n")).toMatch(/actana setup/);
   });
 
+  it("restarts a unit systemd still holds when the unit file was deleted by hand", async () => {
+    // #353 review C2, a regression this branch introduced. The systemd
+    // `observe()` may answer from the filesystem alone when there is no legacy
+    // unit to be confused with, so a loaded unit whose file was removed reads
+    // as `name: null`. Concluding "no service" there swapped the tree, skipped
+    // the restart and left the OLD daemon running out of the NEW tree — where
+    // the pre-#348 code restarted unconditionally and succeeded.
+    const service = fakeService({
+      observe: () => ({ name: null, legacyName: null }),
+      state: () => ({
+        loadState: "loaded",
+        activeState: "active",
+        subState: "running",
+        mainPid: 4211,
+      }),
+    });
+
+    const result = await update({ service });
+
+    expect(service.verbs).toEqual(["restart"]);
+    expect(result.listening).toBe(true);
+    expect(out.join("\n")).not.toMatch(/no auto-start service/);
+  });
+
+  it("does not mistake a loaded legacy unit for a current one", async () => {
+    // The fallback must not fire when there is a legacy service in play:
+    // `state()` falls back to the legacy unit itself, so a non-null answer
+    // there would say nothing about the current one.
+    const service = fakeService({
+      observe: () => ({ name: "actana-harness.service", legacyName: "actana-harness.service" }),
+      state: () => ({
+        loadState: "loaded",
+        activeState: "active",
+        subState: "running",
+        mainPid: 4211,
+      }),
+    });
+
+    const result = await update({ service });
+
+    expect(service.verbs).toEqual([]);
+    expect(result.listening).toBeNull();
+    expect(out.join("\n")).toMatch(/actana setup/);
+  });
+
   it("says so, without restarting, when there is no service at all", async () => {
-    const service = fakeService({ observe: () => ({ name: null, legacyName: null }) });
+    const service = fakeService({
+      observe: () => ({ name: null, legacyName: null }),
+      // Nothing loaded either — the init system has never heard of this unit,
+      // which is what separates it from the hand-deleted-file case above.
+      state: () => null,
+    });
 
     const result = await update({ service });
 

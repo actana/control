@@ -1146,6 +1146,30 @@ describe("update", () => {
     );
   });
 
+  it("restarts a unit systemd still holds after its file was deleted by hand", async () => {
+    // #353 review C2, end to end through the real systemd manager. `observe()`
+    // is allowed to answer from the filesystem alone when no legacy unit is in
+    // play, so without the fallback in `runActanaUpdate` this machine swaps the
+    // tree, skips the restart, and leaves the old daemon running out of the new
+    // one. Before #348 the restart was unconditional and this worked.
+    await setup(fakeSystem());
+    fs.rmSync(layoutForHome().servicePath);
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });
+    out.length = 0;
+    err.length = 0;
+
+    // The unit file is gone; systemd still has the unit loaded and running.
+    const system = fakeSystem({
+      "systemctl --user show": { status: 0, stdout: RUNNING_UNIT, stderr: "" },
+    });
+    expect(await update(system)).toBe(0);
+
+    expect(system.calls.map((c) => c.join(" "))).toContain(
+      "systemctl --user restart actana-core.service",
+    );
+    expect(out.join("\n")).not.toMatch(/no auto-start service/);
+  });
+
   it("leaves `status` reporting the new version", async () => {
     await setup(fakeSystem());
     writeRelease({ dir: releaseDir, version: "0.2.0", target: "linux-x64" });

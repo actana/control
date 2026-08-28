@@ -205,8 +205,23 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   // Asked of the init system rather than of the filesystem: `observe()` is
   // what knows whether this machine's *current* service exists, on both
   // platforms, and it is the same answer `actana status` renders.
+  //
+  // With one fallback, because `observe()` is allowed to answer from the
+  // filesystem alone when there is no legacy service to be confused with —
+  // `actana place` calls it too, and placement asks the init system nothing on
+  // an ordinary machine. That narrowing is invisible to `actana status`, which
+  // renders `state()` beside it, and it is *not* invisible here: a unit whose
+  // file was deleted by hand is still loaded and still running a daemon, and
+  // concluding "no service" about it would swap the tree, skip the restart and
+  // leave the old daemon running out of the new one — which is worse than the
+  // unconditional restart this replaced. So when `observe()` found nothing and
+  // there is no legacy service in play, the init system is asked directly.
+  // `state()` cannot be answering about the legacy unit in that case: its own
+  // fallback to that unit requires the legacy unit to be present.
   const observed = service.observe();
-  const hasCurrentService = observed.name === service.name;
+  const hasCurrentService =
+    observed.name === service.name ||
+    (observed.legacyName === null && service.state() !== null);
   if (hasCurrentService) {
     const legacy = service.removeLegacyUnit();
     if (legacy) opts.out(`Removed ${legacy}, left by an install from before the rename.`);

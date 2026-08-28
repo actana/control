@@ -329,6 +329,12 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
       // its own test pins. A machine that *has* a pre-rename unit is getting a
       // warning printed about it either way, and one `systemctl show` is what
       // makes that warning name the right service.
+      //
+      // **A caller that must not miss a loaded-but-file-less unit cannot rely
+      // on this alone** — `actana update` says so at its own call site and
+      // falls back to `state()`, which asks unconditionally. Widening the
+      // probe here instead would put a `systemctl` call in `place`, and that
+      // is the one verb whose contract is that it touches nothing running.
       if (legacyName && stateOf(UNIT_NAME)) return { name: UNIT_NAME, legacyName };
       return { name: legacyName, legacyName };
     },
