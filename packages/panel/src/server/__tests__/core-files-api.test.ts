@@ -112,7 +112,7 @@ type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential; proj
  */
 async function startCore(label: string, opts: { withFiles?: boolean } = {}): Promise<CoreFixture> {
   const withFiles = opts.withFiles ?? true;
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
   const projectRoot = fs.mkdtempSync(path.join(tmpRoot, "project-"));
   const authVerifier = (bearer: string) => verifyBearer(bearer, BEARER_SECRET);

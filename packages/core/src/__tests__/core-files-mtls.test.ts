@@ -77,7 +77,7 @@ function freePort(): Promise<number> {
 }
 
 async function startCore(entries: Parameters<typeof makeTree>[0] = {}): Promise<Rig> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
   const projectRoot = makeTree(entries);
 

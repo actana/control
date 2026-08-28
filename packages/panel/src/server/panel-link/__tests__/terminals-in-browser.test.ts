@@ -423,7 +423,7 @@ type CoreFixture = {
 };
 
 async function startCore(label: string): Promise<CoreFixture> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const bound = { port: await freePort() };
   const core = scriptedCore();
   const log = eventLog();
