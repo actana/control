@@ -108,12 +108,19 @@ export function primaryPublicHost(hosts: readonly string[]): string {
 /**
  * Render a list back as the operator would type it.
  *
- * Used for the value handed to `AC_CORE_PUBLIC_HOST` in a unit file, and for
- * the list a refusal prints. One spelling, so the string a Core is configured
- * with and the string it prints back are the same string.
+ * **No space after the separator**, because everything printed through this is
+ * read by an operator who may paste it straight back: `--public-host core,
+ * 10.0.0.5` is two shell words and only the first reaches the flag. A list this
+ * function printed has to be a list the flag accepts.
+ *
+ * Operator-facing only — the refusals, and the daemon's log lines. The value
+ * handed to `AC_CORE_PUBLIC_HOST` is joined at its two call sites rather than
+ * here, because that one is a machine reading a variable and not a human
+ * reading a sentence; they agree on the separator either way, which is the only
+ * thing they have to agree on.
  */
 export function formatPublicHosts(hosts: readonly string[]): string {
-  return hosts.join(`${PUBLIC_HOST_SEPARATOR} `).trim();
+  return hosts.join(PUBLIC_HOST_SEPARATOR);
 }
 
 /**

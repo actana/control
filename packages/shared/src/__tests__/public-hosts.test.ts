@@ -119,8 +119,20 @@ describe("samePublicHosts", () => {
 });
 
 describe("formatPublicHosts", () => {
+  // No space after the comma, and that is the whole assertion: everything this
+  // prints is read by an operator who may paste it straight back, and
+  // `--public-host core, 10.0.0.5` is two shell words of which the flag sees
+  // one. A list this function printed has to be a list the flag accepts.
   it("renders a list an operator can paste back into the variable", () => {
-    expect(formatPublicHosts(["core", "10.0.0.5"])).toBe("core, 10.0.0.5");
+    expect(formatPublicHosts(["core", "10.0.0.5"])).toBe("core,10.0.0.5");
     expect(formatPublicHosts(["core"])).toBe("core");
+  });
+
+  it("round-trips through the parser it is the inverse of", () => {
+    const hosts = ["core", "10.0.0.5", "core.example.test"];
+    expect(parsePublicHosts(formatPublicHosts(hosts), "--public-host")).toEqual({
+      ok: true,
+      hosts,
+    });
   });
 });
