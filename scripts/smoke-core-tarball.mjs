@@ -45,6 +45,7 @@ import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { assertTarballSurfaces } from "./lib/core-tarball.mjs";
 import {
   assertBootsAndDials,
+  assertRefusesUnsafeEnv,
   coreSmokeEnv,
   makeDie,
   pickFreePort,
@@ -203,6 +204,22 @@ async function main() {
   });
 
   await assertBootsAndDials(child, { home: tmpHome, port, timeoutMs, die, log });
+
+  // The same launcher, the same tree, two environments it must refuse (#348).
+  // Run after the good boot and on the same port, so "nothing is listening" is
+  // a statement about this refusal rather than about a port that was never
+  // used — the daemon above is stopped first for exactly that reason.
+  child.kill("SIGTERM");
+  await new Promise((resolve) => child.on("exit", resolve));
+  await assertRefusesUnsafeEnv({
+    launcher,
+    argv: ["daemon"],
+    env,
+    port,
+    timeoutMs,
+    die,
+    log,
+  });
 
   log("OK — extracted tarball boots a dialable Core with no system Node");
   cleanup();

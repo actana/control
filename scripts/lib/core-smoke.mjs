@@ -13,6 +13,7 @@
 // file's `assertBootsAndDials` assertion against a path nothing ships, one
 // layer inside the tarball smoke that does ship.
 
+import { spawn } from "node:child_process";
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -329,6 +330,98 @@ export function dialAndListHarnessAvailability(blob, timeoutMs = DIAL_TIMEOUT_MS
  * `log` reports progress with the caller's own prefix; `die` ends the run with
  * the child's output attached.
  */
+/**
+ * Run a Core once with a hostile environment and prove it refuses to serve (#348).
+ *
+ * The behavioural half of `core-boot-refusals.ts`. Its unit tests state the
+ * property over the whole `(remoteMode, host)` space, but the *ordering* — that
+ * the refusal happens before anything binds — is asserted there by reading
+ * `core-entry.ts` as text, which an awaited call inserted between the guard and
+ * the server would sail straight through. This spawns the real daemon and
+ * checks the only thing that actually matters: it exited, and nothing was
+ * listening.
+ *
+ * Two environments, because they are two different refusals: the variables a
+ * pre-rename LaunchAgent sets, and the plaintext-on-a-public-interface shape
+ * that ignoring them used to produce.
+ */
+export async function assertRefusesUnsafeEnv({ launcher, argv, env, port, timeoutMs, die, log }) {
+  const cases = [
+    {
+      name: "a pre-rename environment",
+      // The variable the old plist sets. Everything else is a working config,
+      // so a daemon that booted here would be one that ignored it.
+      env: { ...env, AC_HARNESS_REMOTE: "1" },
+      expect: /AC_HARNESS_REMOTE/,
+    },
+    {
+      name: "plaintext on a public interface",
+      // Remote mode dropped and a wildcard bind left behind — exactly what the
+      // old plist produced once its `AC_HARNESS_REMOTE` stopped being read.
+      env: { ...env, AC_CORE_REMOTE: "", AC_CORE_LINK_HOST: "0.0.0.0" },
+      expect: /AC_CORE_LINK_HOST is 0\.0\.0\.0/,
+    },
+  ];
+
+  for (const testCase of cases) {
+    const child = spawn(launcher, argv, {
+      env: testCase.env,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const output = [];
+    child.stdout.on("data", (chunk) => output.push(String(chunk)));
+    child.stderr.on("data", (chunk) => output.push(String(chunk)));
+
+    const exit = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          /* already dead */
+        }
+        resolve({ code: null, timedOut: true });
+      }, timeoutMs);
+      child.on("exit", (code, signal) => {
+        clearTimeout(timer);
+        resolve({ code: code ?? (signal ? 1 : 0), timedOut: false });
+      });
+    });
+
+    const printed = output.join("");
+    if (exit.timedOut) {
+      die(`the Core kept running under ${testCase.name} — it must refuse and exit`, [printed]);
+    }
+    if (exit.code === 0) {
+      die(`the Core exited 0 under ${testCase.name} — a refusal is not a clean boot`, [printed]);
+    }
+    if (printed.includes(LISTENING_SENTINEL)) {
+      die(`the Core announced it was listening under ${testCase.name}`, [printed]);
+    }
+    if (!testCase.expect.test(printed)) {
+      die(`the refusal under ${testCase.name} did not say why`, [printed]);
+    }
+    if (await somethingListensOn(port)) {
+      die(`something is listening on ${port} after the Core refused ${testCase.name}`, [printed]);
+    }
+    log(`refused ${testCase.name}: exit ${exit.code}, nothing bound on ${port}`);
+  }
+}
+
+/** Whether anything accepts a TCP connection on a loopback port right now. */
+function somethingListensOn(port) {
+  return new Promise((resolve) => {
+    const socket = net.connect({ port, host: "127.0.0.1" });
+    const done = (answer) => {
+      socket.destroy();
+      resolve(answer);
+    };
+    socket.setTimeout(1_000);
+    socket.on("connect", () => done(true));
+    socket.on("timeout", () => done(false));
+    socket.on("error", () => done(false));
+  });
+}
+
 export async function assertBootsAndDials(child, { home, port, timeoutMs, die, log }) {
   const observer = { logLines: [], badTags: [] };
 
