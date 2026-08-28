@@ -145,3 +145,36 @@ export function isConfiguredPublicHost(hosts: readonly string[], candidate: stri
 export function samePublicHosts(a: readonly string[], b: readonly string[]): boolean {
   return a.length === b.length && a.every((host, index) => host === b[index]);
 }
+
+/**
+ * What `next` adds to `previous`, or `null` when this is not a widening.
+ *
+ * A **widening** is a change where every host the Core was already signed for
+ * is still covered, and at least one more has joined them — an operator adding
+ * a LAN address beside a compose service name. It is the change #347 exists to
+ * make painless, and the whole reason it needs a name of its own is that the
+ * SAN comparison cannot tell it from a genuine move: {@link samePublicHosts} is
+ * order-sensitive, so any edit at all re-issues the certificate, and the
+ * daemon's "your Core moved, re-address your Panel or pair again" line is
+ * exactly wrong here. Nothing broke. That is the point.
+ *
+ * `null` rather than an empty list for the three cases that are not one, so a
+ * caller cannot mistake "nothing was added" for "this was a widening":
+ *
+ * - nothing was recorded before, so there is no previous coverage to preserve;
+ * - a previously covered host is gone, which is the move a client feels; and
+ * - the same set in a different order, which is a changed primary and so a
+ *   changed default endpoint, with nothing added.
+ *
+ * Order within the result follows `next`, so a caller naming the additions
+ * names them as the operator wrote them.
+ */
+export function widenedPublicHosts(
+  previous: readonly string[],
+  next: readonly string[],
+): string[] | null {
+  if (previous.length === 0) return null;
+  if (!previous.every((host) => next.includes(host))) return null;
+  const added = next.filter((host) => !previous.includes(host));
+  return added.length > 0 ? added : null;
+}

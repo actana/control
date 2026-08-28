@@ -249,7 +249,11 @@ describe("loadOrMintMaterial — several public hosts", () => {
       publicHostDeclared: true,
     });
 
-    expect(widened.certAction).toBe("moved");
+    // `widened`, not `moved`: every previously recorded host is still covered,
+    // so no paired client lost anything and the daemon must not advise one to
+    // re-address a Panel or pair again (#347 review R1).
+    expect(widened.certAction).toBe("widened");
+    expect(widened.addedHosts).toEqual(["10.0.0.5"]);
     expect(sanEntries(widened.material.serverCert)).toContain("DNS:core");
     expect(sanEntries(widened.material.serverCert)).toContain("IP Address:10.0.0.5");
     // And nothing a paired client pinned has changed — the CA it validates
@@ -316,5 +320,70 @@ describe("loadOrMintMaterial — several public hosts", () => {
     expect(boot.certAction).toBe("unchanged");
     expect(boot.material.serverCert).toBe(minted.material.serverCert);
     expect(boot.material.serverHosts).toEqual(["core"]);
+  });
+});
+
+// ─── widening is not moving (#347 review R1) ────────────────────────────────
+//
+// Any edit to the list re-issues the certificate. Only some edits cost a paired
+// client anything, and the daemon's advice is written from this distinction:
+// telling an operator who just *added* an address to re-address their Panel or
+// pair again would charge them the exact cost #347 exists to remove.
+
+describe("loadOrMintMaterial — a widened list is not a moved one", () => {
+  async function bootedOn(hosts: string[]) {
+    return loadOrMintMaterial({ materialFile, publicHosts: hosts, publicHostDeclared: true });
+  }
+
+  it("reports a widening as its own action, naming what was added", async () => {
+    await bootedOn(["core"]);
+
+    const widened = await bootedOn(["core", "10.0.0.5", "core.example"]);
+
+    expect(widened.certAction).toBe("widened");
+    expect(widened.addedHosts).toEqual(["10.0.0.5", "core.example"]);
+    // And it really was re-signed — a widening is not a no-op, it is a re-issue
+    // whose consequences are simply nothing an operator has to act on.
+    expect(sanEntries(widened.material.serverCert)).toContain("IP Address:10.0.0.5");
+  });
+
+  it("still calls it a widening when the addition is not last", async () => {
+    await bootedOn(["core"]);
+    const widened = await bootedOn(["10.0.0.5", "core"]);
+    expect(widened.certAction).toBe("widened");
+    expect(widened.addedHosts).toEqual(["10.0.0.5"]);
+  });
+
+  it("reports a dropped host as a move, because a client is still dialling it", async () => {
+    await bootedOn(["core", "10.0.0.5"]);
+
+    const moved = await bootedOn(["core"]);
+
+    expect(moved.certAction).toBe("moved");
+    expect(moved.addedHosts).toEqual([]);
+    expect(sanEntries(moved.material.serverCert)).not.toContain("IP Address:10.0.0.5");
+  });
+
+  it("reports a reorder as a move — nothing was added and the primary changed", async () => {
+    await bootedOn(["core", "10.0.0.5"]);
+
+    const reordered = await bootedOn(["10.0.0.5", "core"]);
+
+    // The default endpoint a new pairing hands back is not what it was, so this
+    // is not the reassuring case even though every host is still covered.
+    expect(reordered.certAction).toBe("moved");
+    expect(reordered.addedHosts).toEqual([]);
+  });
+
+  it("leaves backfilled and unchanged carrying no additions", async () => {
+    const minted = await bootedOn(["core"]);
+    expect(minted.addedHosts).toEqual([]);
+
+    const { serverHosts: _listed, ...legacy } = minted.material;
+    fs.writeFileSync(materialFile, JSON.stringify({ ...legacy, serverHosts: [] }));
+
+    const backfilled = await bootedOn(["core"]);
+    expect(backfilled.certAction).toBe("backfilled");
+    expect(backfilled.addedHosts).toEqual([]);
   });
 });

@@ -5,6 +5,7 @@ import {
   parsePublicHosts,
   primaryPublicHost,
   samePublicHosts,
+  widenedPublicHosts,
 } from "../public-hosts";
 
 // `ACTANA_PUBLIC_HOST` became a comma-separated list in #347. The rules this
@@ -134,5 +135,45 @@ describe("formatPublicHosts", () => {
       ok: true,
       hosts,
     });
+  });
+});
+
+// ─── widening versus moving (#347 review R1) ────────────────────────────────
+//
+// Any edit to the list re-issues the certificate, because the comparison is
+// order-sensitive. But "the certificate was re-signed" and "some client is now
+// dialling an address this Core has left" are different facts, and only the
+// second is worth an operator's attention. This is the predicate that tells
+// them apart.
+
+describe("widenedPublicHosts", () => {
+  it("names what was added when every recorded host is still covered", () => {
+    expect(widenedPublicHosts(["core"], ["core", "10.0.0.5"])).toEqual(["10.0.0.5"]);
+    expect(widenedPublicHosts(["core"], ["core", "10.0.0.5", "core.example"])).toEqual([
+      "10.0.0.5",
+      "core.example",
+    ]);
+    // The addition need not be last; what matters is that nothing was lost.
+    expect(widenedPublicHosts(["core"], ["10.0.0.5", "core"])).toEqual(["10.0.0.5"]);
+  });
+
+  it("is not a widening when a previously covered host is gone", () => {
+    // The move a client actually feels: something is still dialling `core`.
+    expect(widenedPublicHosts(["core"], ["10.0.0.5"])).toBeNull();
+    expect(widenedPublicHosts(["core", "10.0.0.5"], ["core", "10.0.0.9"])).toBeNull();
+  });
+
+  it("is not a widening when the same set is merely reordered", () => {
+    // Nothing was added, and the primary — the default endpoint — is not what
+    // it was. `null` rather than an empty list, so no caller can read
+    // "nothing added" as "this was a widening".
+    expect(widenedPublicHosts(["core", "10.0.0.5"], ["10.0.0.5", "core"])).toBeNull();
+    expect(widenedPublicHosts(["core"], ["core"])).toBeNull();
+  });
+
+  it("is not a widening when nothing was recorded before", () => {
+    // There is no previous coverage to have preserved, so there is nothing to
+    // reassure the operator about.
+    expect(widenedPublicHosts([], ["core", "10.0.0.5"])).toBeNull();
   });
 });

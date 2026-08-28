@@ -109,7 +109,7 @@ import {
   coreUpdateCommand,
   inContainer,
 } from "@actana/shared/actana-container-contract";
-import { parsePublicHosts, primaryPublicHost } from "@actana/shared/public-hosts";
+import { formatPublicHosts, parsePublicHosts } from "@actana/shared/public-hosts";
 import {
   updateCheckCachePath,
   updateNoticeStatePath,
@@ -432,16 +432,24 @@ async function startCore(): Promise<void> {
     // a pairing hands back unless the operator chose otherwise when they minted
     // the code. A single value parses to a list of one and nothing about it
     // changes.
+    //
+    // The refusal names whichever variable actually carried the value. In a
+    // container that is the operator's `ACTANA_PUBLIC_HOST`, which `actana
+    // daemon` translated; on metal the unit sets `AC_CORE_PUBLIC_HOST` directly
+    // and `ACTANA_PUBLIC_HOST` does not exist there at all — and this branch
+    // exists precisely for whatever execs the daemon bundle without the CLI in
+    // front of it. Naming a variable the operator cannot find is worse than
+    // naming none.
+    const publicHostVar = containerMode ? CONTAINER_PUBLIC_HOST_ENV : "AC_CORE_PUBLIC_HOST";
     const parsedPublicHosts = parsePublicHosts(
       process.env.AC_CORE_PUBLIC_HOST || host,
-      process.env.AC_CORE_PUBLIC_HOST ? CONTAINER_PUBLIC_HOST_ENV : "AC_CORE_LINK_HOST",
+      process.env.AC_CORE_PUBLIC_HOST ? publicHostVar : "AC_CORE_LINK_HOST",
     );
     if (!parsedPublicHosts.ok) {
       console.error(`[core-entry] ${parsedPublicHosts.error}`);
       process.exit(1);
     }
     const publicHosts = parsedPublicHosts.hosts;
-    const publicHost = primaryPublicHost(publicHosts);
     const materialFile = process.env.AC_CORE_MATERIAL_FILE;
     const bearerDays = Number(process.env.AC_CORE_BEARER_DAYS ?? 365);
     const label = process.env.ACTANA_LABEL || "";
@@ -486,7 +494,7 @@ async function startCore(): Promise<void> {
         console.error(`[core-entry] ${err instanceof Error ? err.message : String(err)}`);
         process.exit(1);
       }
-      const { material, certAction } = resolved;
+      const { material, certAction, addedHosts } = resolved;
       const secret: BearerSecret = material.bearerSecret;
 
       // The pre-auth pairing endpoint (#282). Mounted only on this path, and
@@ -528,15 +536,38 @@ async function startCore(): Promise<void> {
       };
       serverOpts.authVerifier = (b) => verifyBearer(b, secret);
 
-      // A moved public host keeps the identity and re-signs the cert for the
-      // new address (D18), so this is not a pairing event — but a paired client
-      // is still dialling the old address, so say where this Core now is.
-      if (certAction === "moved") {
+      // A changed public host list keeps the identity and re-signs the cert
+      // (D18), so neither branch below is a pairing event. **Which sentence is
+      // printed matters more than that one is**, because the two changes cost
+      // an operator completely different things and the wrong advice on the
+      // cheap one is the whole of what it costs (#347).
+      //
+      // Both print the full list. Naming the primary alone was the old bug: an
+      // operator who added `192.168.1.20` read "public host is now core" — a
+      // line that does not mention the thing that changed.
+      if (certAction === "widened") {
+        // Nothing is dialling an address this Core has left, so there is
+        // nothing to do and nothing is advised. Saying "update your Panel or
+        // pair again" here would charge the operator the exact cost #347 exists
+        // to remove, over a change that removed it.
         console.log(
-          `[core-entry] public host is now ${publicHost} — re-issued this Core's server ` +
-            "certificate from its existing CA. Pairing credentials are unchanged; update " +
-            `this Core's address in your Panel, or run \`actana pair new\` here and pair ` +
-            "it again.",
+          `[core-entry] public hosts are now ${formatPublicHosts(publicHosts)} — added ` +
+            `${formatPublicHosts(addedHosts)}, and re-issued this Core's server certificate ` +
+            `from its existing CA to cover ${addedHosts.length === 1 ? "it" : "them"}. Every ` +
+            "address this Core already answered to is still covered, so every paired client " +
+            `keeps working and none has to be re-paired. Pair a client to a new address with ` +
+            "`actana pair new --public-host <addr>`.",
+        );
+      } else if (certAction === "moved") {
+        // A host this Core was signed for is gone. A paired client is still
+        // dialling it, and that address is the one thing re-issuing cannot fix
+        // from here — the client holds it.
+        console.log(
+          `[core-entry] public hosts are now ${formatPublicHosts(publicHosts)} — re-issued ` +
+            "this Core's server certificate from its existing CA. This Core no longer answers " +
+            "to every address it was signed for. Pairing credentials are unchanged; update " +
+            "this Core's address in your Panel, or run `actana pair new` here and pair it " +
+            "again.",
         );
       }
 
