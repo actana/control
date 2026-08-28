@@ -357,3 +357,71 @@ describe("reading strictly", () => {
     expect(() => store.readStrict()).toThrow(new RegExp(file().replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   });
 });
+
+// ─── endpointHost never fails the store closed (#347 review R2) ─────────────
+//
+// `readStrict` throws on a row this build does not know, and
+// `core-pairing-revocation.ts` reads an unreadable store as *everything is
+// revoked* — so a row condemned here costs a Core every client it ever paired.
+// `endpointHost` is optional and decides no part of session validity, so it
+// must not be able to buy that price. A bad value reads as absent instead,
+// which means what it has always meant: the primary.
+
+describe("a malformed endpointHost is absent, not a condemned row", () => {
+  const file = () => path.join(dir, "pairing.json");
+
+  /** Write one session row with `endpointHost` set to whatever is passed. */
+  function withEndpointHost(value: unknown): void {
+    fs.writeFileSync(
+      file(),
+      JSON.stringify({
+        version: 1,
+        sessions: [{ ...session(), endpointHost: value }],
+        clients: [client()],
+      }),
+    );
+  }
+
+  it("does not throw in the strict reader, whatever the value is", () => {
+    // The strict reader is the one a revocation check runs, and this is the
+    // whole point: every one of these used to take the Core's paired clients
+    // with it.
+    for (const bad of [7, true, {}, [], { host: "core" }]) {
+      withEndpointHost(bad);
+      expect(() => store.readStrict(), JSON.stringify(bad)).not.toThrow();
+      expect(store.readStrict().sessions[0]!.endpointHost).toBeNull();
+      // And the clients the store exists to remember are still there.
+      expect(store.readStrict().clients).toHaveLength(1);
+    }
+  });
+
+  it("reads an empty or whitespace-only value as absent too", () => {
+    for (const blank of ["", "   "]) {
+      withEndpointHost(blank);
+      expect(store.readStrict().sessions[0]!.endpointHost).toBeNull();
+    }
+  });
+
+  it("keeps a usable value, trimmed", () => {
+    withEndpointHost(" 10.0.0.5 ");
+    expect(store.readStrict().sessions[0]!.endpointHost).toBe("10.0.0.5");
+    withEndpointHost("core");
+    expect(store.readStrict().sessions[0]!.endpointHost).toBe("core");
+  });
+
+  it("still condemns a row whose load-bearing fields are wrong", () => {
+    // The leniency is scoped to the one optional field. A session with no
+    // `codeHash` is not a session, and the strict reader must still say so.
+    fs.writeFileSync(
+      file(),
+      JSON.stringify({ version: 1, sessions: [{ ...session(), codeHash: 7 }], clients: [] }),
+    );
+    expect(() => store.readStrict()).toThrow(/session 0 is not a session this build knows/);
+  });
+
+  it("round-trips a session the ordinary way, untouched", () => {
+    const chosen = { ...session(), endpointHost: "10.0.0.5" };
+    store.createSession(chosen, NOW);
+    expect(store.getSession("ps_1")).toEqual(chosen);
+  });
+});
