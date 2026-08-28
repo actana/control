@@ -258,6 +258,23 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     );
   }
 
+  /** What systemd says about one unit, or null when it has no such unit. */
+  function stateOf(name: string): ActanaServiceState | null {
+    const show = systemctl(
+      "show",
+      name,
+      "--property=LoadState",
+      "--property=ActiveState",
+      "--property=SubState",
+      "--property=MainPID",
+    );
+    if (show.status !== 0) return null;
+    const state = systemdStateFromShow(show.stdout);
+    // `not-found` means systemd has no such unit — reporting "no service" is
+    // truer than reporting a load state nobody can act on.
+    return state.loadState === "not-found" ? null : state;
+  }
+
   /** Stop a unit, unlink it from boot, delete it, and leave no failed entry. */
   function removeUnit(name: string, filePath: string): void {
     systemctl("stop", name);
@@ -301,10 +318,19 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
 
     observe() {
       const legacyName = legacyUnitPresent() ? LEGACY_UNIT_NAME : null;
-      return {
-        name: fs.existsSync(layout.servicePath) ? UNIT_NAME : legacyName,
-        legacyName,
-      };
+      if (fs.existsSync(layout.servicePath)) return { name: UNIT_NAME, legacyName };
+      // No unit file, but systemd may still be holding the unit — one whose
+      // file was deleted by hand is still loaded and still running a daemon,
+      // which is not "absent" (the launchd side asks the same pair).
+      //
+      // Asked only when there is a legacy unit to be confused with, and that
+      // is deliberate: `actana place` calls this, and placement asks the init
+      // system nothing on the ordinary machine — a copy and two symlinks, as
+      // its own test pins. A machine that *has* a pre-rename unit is getting a
+      // warning printed about it either way, and one `systemctl show` is what
+      // makes that warning name the right service.
+      if (legacyName && stateOf(UNIT_NAME)) return { name: UNIT_NAME, legacyName };
+      return { name: legacyName, legacyName };
     },
 
     async ensurePersistence(context) {
@@ -320,19 +346,13 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     },
 
     state() {
-      const show = systemctl(
-        "show",
-        UNIT_NAME,
-        "--property=LoadState",
-        "--property=ActiveState",
-        "--property=SubState",
-        "--property=MainPID",
-      );
-      if (show.status !== 0) return null;
-      const state = systemdStateFromShow(show.stdout);
-      // `not-found` means systemd has no such unit — reporting "no service" is
-      // truer than reporting a load state nobody can act on.
-      return state.loadState === "not-found" ? null : state;
+      const current = stateOf(UNIT_NAME);
+      if (current) return current;
+      // No current unit, but this machine may still be running the pre-rename
+      // one — the same fallback the launchd side has, and without it `status`
+      // prints `Auto-start actana-harness.service` over `State not installed`,
+      // which is #348's own self-contradiction on the other platform.
+      return legacyUnitPresent() ? stateOf(LEGACY_UNIT_NAME) : null;
     },
 
     verb: (verb) => systemctl(verb, UNIT_NAME),
@@ -385,9 +405,16 @@ function launchdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
    * other half of the same mess — `rm`ing the file does not unload anything,
    * because launchd holds the copy it read at bootstrap time.
    *
-   * The file is checked first so a machine that never had one asks launchd
-   * nothing at all, which is also what keeps this cheap enough for the status
-   * path to call.
+   * The file is checked first because it is the cheap half and the common
+   * answer on a machine that *has* one — but note which way the short-circuit
+   * runs: a machine that never had a legacy agent has no plist, so it is
+   * exactly that machine which pays for the `launchctl print`. (The systemd
+   * `legacyUnitPresent` above really does ask the filesystem only, because
+   * both of its halves are files.) `observe`, `state` and the `place` warning
+   * each call this, so a plain `actana status` on a healthy Mac spawns a few
+   * extra `launchctl` processes. Correct, and cheap enough — worth memoising
+   * only if it ever shows up, and memoising would have to be invalidated by
+   * `removeLegacyUnit`.
    */
   const legacyPresent = (): boolean =>
     fs.existsSync(legacyPath) ||

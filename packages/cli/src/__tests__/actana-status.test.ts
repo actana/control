@@ -180,10 +180,27 @@ describe("a service left by an install from before the rename (#348)", () => {
     expect(formatActanaStatus(legacy)).not.toMatch(/Auto-start\s+com\.actana\.core/);
   });
 
-  it("says what is loaded and what to run about it", () => {
+  it("says what is there and what to run about it", () => {
     const text = formatActanaStatus(legacy);
-    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is loaded/);
+    // "still installed", not "is loaded": the detection is true when the plist
+    // merely exists, and this is the wording `actana place` uses too.
+    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is still installed/);
     expect(text).toMatch(/actana setup/);
+  });
+
+  it("still says it on a machine setup has never run on", () => {
+    // `actana uninstall --purge-data` removes the config, so `installed` is
+    // false — and the legacy agent it used to leave behind still held the
+    // port. The one row that explains that must survive the short page.
+    const text = formatActanaStatus({
+      ...healthy,
+      installed: false,
+      service: null,
+      legacyService: "com.actana.harness",
+    });
+    expect(text).toMatch(/^Core: not installed/);
+    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is still installed/);
+    expect(text).toMatch(/Run `actana setup`/);
   });
 
   it("still reports the legacy agent when the new one is installed beside it", () => {

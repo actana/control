@@ -94,6 +94,17 @@ export function runActanaUninstall(opts: UninstallOptions): UninstallResult {
   opts.service.uninstall();
   if (hadService) removed.push(opts.service.filePath);
 
+  // And the pre-rename one, which `uninstall()` above does not touch: it only
+  // knows the current label (#348). Left behind on a machine being uninstalled
+  // it is worse than a leftover file — `KeepAlive` re-execs `current/bin/actana`
+  // out of a tree this function is about to delete, until launchd throttles a
+  // job that can never start again.
+  const legacy = opts.service.removeLegacyUnit();
+  if (legacy) {
+    removed.push(legacy);
+    opts.out(`Removed ${legacy}, left by an install from before the rename.`);
+  }
+
   if (isOurLauncher(layout)) {
     remove(layout.binLink, removed);
   } else if (lstatOrNull(layout.binLink)) {

@@ -166,13 +166,40 @@ function updateRows(report: ActanaStatusReport): string[] {
   ];
 }
 
+/**
+ * The two rows about a service left by an install from before the rename.
+ *
+ * Its own function because it is printed from two places: the ordinary report,
+ * and the `not-installed` page, where every other row is suppressed and this
+ * one must not be.
+ *
+ * "still installed" rather than "is loaded": the detection behind it is true
+ * when the plist merely exists, so an agent that was never bootstrapped would
+ * be overstated by "loaded" — and this is the wording `actana place` already
+ * uses for the same thing.
+ */
+function legacyRows(legacyService: string): string[] {
+  return [
+    row("Legacy agent", `${legacyService} is still installed — from before the rename`),
+    row("", "run `actana setup` to remove it and register this Core properly"),
+  ];
+}
+
 /** Render the report as the text `actana status` prints. */
 export function formatActanaStatus(report: ActanaStatusReport): string {
   const health = summarizeHealth(report);
   const lines: string[] = [HEALTH_LINE[health]];
 
   if (health === "not-installed") {
-    lines.push("", "  Run `actana setup` to install and pair this machine.");
+    // Setup has never run here, so there is nothing to report about a Core —
+    // except when this machine is still carrying the service of one. That row
+    // survives the early return: `actana uninstall --purge-data` removes the
+    // config while `uninstall()` used to leave a pre-rename agent loaded, and
+    // an operator looking at a machine whose port is held needs the one line
+    // that explains it (#348).
+    lines.push("");
+    if (report.legacyService) lines.push(...legacyRows(report.legacyService));
+    lines.push("  Run `actana setup` to install and pair this machine.");
     return lines.join("\n") + "\n";
   }
 
@@ -224,10 +251,7 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
   // line that explains every other row that looks wrong, and the remedy is one
   // command (#348).
   if (report.legacyService) {
-    lines.push(
-      row("Legacy agent", `${report.legacyService} is loaded — an install from before the rename`),
-      row("", "run `actana setup` to remove it and register this Core properly"),
-    );
+    lines.push(...legacyRows(report.legacyService));
   }
 
   lines.push(
