@@ -9,6 +9,7 @@ import { localCoreName } from "../local-core-wiring.ts";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import { refusedContainerVerbs } from "../actana-container.ts";
 import { installDirFor, resolveActanaLayout } from "../actana-layout.ts";
+import { writeActanaConfig } from "../actana-config.ts";
 import { releaseAssetName, releaseChannel } from "../actana-release.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
 import { fakeSystem as makeFakeSystem, realTar, stubClientHalf } from "./machine-fixture.ts";
@@ -679,6 +680,38 @@ describe("status", () => {
     });
     expect(await runActanaCli(deps(["status"], system))).toBe(1);
     expect(out.join("\n")).toMatch(/stopped/i);
+  });
+
+  it("reports the legacy unit's own state on Linux, not `not installed` (#348)", async () => {
+    // The launchd side got this fallback first; without the matching one here,
+    // `Auto-start actana-harness.service` printed over `State not installed`
+    // — the self-contradiction the issue opens with, on the other platform.
+    await setup(fakeSystem());
+    fs.rmSync(layoutForHome().servicePath);
+    fs.writeFileSync(
+      path.join(layoutForHome().serviceDir, "actana-harness.service"),
+      "[Unit]\nDescription=Actana Control Harness\n",
+    );
+    out.length = 0;
+
+    const system = fakeSystem({
+      "systemctl --user show actana-core.service": {
+        status: 0,
+        stdout: "LoadState=not-found\nActiveState=inactive\nSubState=dead\nMainPID=0",
+        stderr: "",
+      },
+      "systemctl --user show actana-harness.service": {
+        status: 0,
+        stdout: RUNNING_UNIT,
+        stderr: "",
+      },
+    });
+    expect(await runActanaCli(deps(["status"], system))).toBe(1);
+
+    const text = out.join("\n");
+    expect(text).toMatch(/Auto-start\s+actana-harness\.service/);
+    expect(text).not.toMatch(/State\s+not installed/);
+    expect(text).toMatch(/Legacy agent\s+actana-harness\.service is still installed/);
   });
 
   it("says not-installed on a fresh machine instead of erroring", async () => {
@@ -1573,7 +1606,7 @@ describe("macOS", () => {
     expect(await runActanaCli(macDeps(["status"], system))).toBe(1);
 
     const text = out.join("\n");
-    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is loaded/);
+    expect(text).toMatch(/Legacy agent\s+com\.actana\.harness is still installed/);
     expect(text).toMatch(/actana setup/);
   });
 
@@ -1598,6 +1631,44 @@ describe("macOS", () => {
     expect(
       fs.existsSync(path.join(home, "Library", "LaunchAgents", "com.actana.harness.plist")),
     ).toBe(false);
+  });
+
+  it("update keeps the legacy agent when it is the machine's only service", async () => {
+    // End to end on the #348 Mac, through the real launchd manager: an
+    // in-place upgrade where `actana setup` was never run after the rename, so
+    // there is no `com.actana.core.plist` to restart onto. Before this, update
+    // booted the legacy agent out and then threw on a bootstrap of a plist
+    // that does not exist — zero auto-start services, and a message pointing
+    // at the logs of a daemon that never started.
+    const legacyPlist = plantLegacyAgent();
+    // An install `actana place` made: a config and a tree, but no service.
+    writeActanaConfig(layoutForHome("darwin").configDir, {
+      version: MANIFEST.version,
+      port: 8443,
+      host: "0.0.0.0",
+      publicHost: "10.0.0.5",
+      publicHosts: ["10.0.0.5"],
+      label: "mac-1",
+      installDir: installDirFor(layoutForHome("darwin"), MANIFEST.version),
+      dataDir: layoutForHome("darwin").dataDir,
+    });
+    writeRelease({ dir: releaseDir, version: "0.2.0", target: "mac-arm64" });
+    out.length = 0;
+    err.length = 0;
+
+    const system = macSystem({ "launchctl print gui/501/": NO_SUCH_JOB });
+    const code = await runActanaCli(macDeps(["update", "--base-url", RELEASE_BASE_URL], system));
+
+    // The agent that was the machine's only service is still there.
+    expect(fs.existsSync(legacyPlist)).toBe(true);
+    expect(system.calls.map((c) => c.join(" "))).not.toContain(
+      "launchctl bootout gui/501/com.actana.harness",
+    );
+    // Non-zero, and pointing at the command that actually registers a Core —
+    // not at the logs of something that was never started.
+    expect(code).toBe(1);
+    expect(out.join("\n")).toMatch(/actana setup/);
+    expect(err.join("\n")).not.toMatch(/Check `actana logs`/);
   });
 
   it("will not install a linux build on a Mac", async () => {

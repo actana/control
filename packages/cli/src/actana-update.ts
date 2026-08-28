@@ -26,7 +26,9 @@
 // The one service this *does* rewrite is a pre-rename one. `current/bin/actana`
 // is what the old agent runs too, so an update hands the new binary to a
 // service that has been gone from the product for two renames, with the old
-// environment still set on it (#348). It is removed here, before the restart.
+// environment still set on it (#348). It is removed here, before the restart —
+// but only when this machine has a current service to take over from it. An
+// update never leaves a machine with no auto-start service at all.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -78,7 +80,13 @@ export type UpdateResult = {
   /** The version it pointed at before. */
   previousVersion: string;
   installDir: string;
-  /** Whether the daemon's port answered after the restart; null when nothing changed. */
+  /**
+   * Whether the daemon's port answered after the restart.
+   *
+   * Null when nothing was restarted — an update that changed nothing, and the
+   * machine with no current service to restart onto (#348), where a port that
+   * answered would be somebody else's daemon.
+   */
   listening: boolean | null;
 };
 
@@ -185,16 +193,51 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   if (launcher.note) opts.out(launcher.note);
   writeActanaConfig(layout.configDir, { ...config, version: manifest.version, installDir });
 
-  // Before the restart, not after it, and this is the whole of why #348's
-  // machine crash-looped: a pre-rename agent's `ProgramArguments` point at
-  // `current/bin/actana`, which the swap above has just repointed at the new
-  // tree. Left in place it is a second service, with the old environment,
-  // racing the restart below for the same port — and `KeepAlive` brings it
-  // back every time it loses. `actana setup` has always cleaned this up; an
-  // update never reached setup, which is exactly the upgrade path an operator
-  // running `install.sh` takes.
-  const legacy = service.removeLegacyUnit();
-  if (legacy) opts.out(`Removed ${legacy}, left by an install from before the rename.`);
+  // **Only when there is a current service to take over.** Removing the
+  // pre-rename one is right on a machine that has both — it runs
+  // `current/bin/actana` too, so the swap above has just handed it the new
+  // tree, and `KeepAlive` restarts it into a race for the port. But on a
+  // machine that has *only* the legacy service — which is the machine #348
+  // describes, since `actana setup` was never run after the rename — removing
+  // it leaves nothing to restart, and an update must never end with a machine
+  // that has no auto-start service at all. There it is left alone and named,
+  // and `actana setup` is the step that replaces it.
+  // Asked of the init system rather than of the filesystem: `observe()` is
+  // what knows whether this machine's *current* service exists, on both
+  // platforms, and it is the same answer `actana status` renders.
+  const observed = service.observe();
+  const hasCurrentService = observed.name === service.name;
+  if (hasCurrentService) {
+    const legacy = service.removeLegacyUnit();
+    if (legacy) opts.out(`Removed ${legacy}, left by an install from before the rename.`);
+  }
+
+  if (!hasCurrentService) {
+    // Not an error, and not a restart either: the tree is placed and `current`
+    // points at it, but nothing on this machine is registered to run it. The
+    // old `verb("restart")` here bootstrapped a plist that does not exist,
+    // failed, and pointed the operator at the logs of a daemon that was never
+    // started.
+    const legacy = observed.legacyName;
+    opts.out(
+      legacy
+        ? `${manifest.version} is installed, and nothing was restarted: this machine's only ` +
+            `auto-start service is ${legacy}, left by an install from before the rename. It ` +
+            "is still in place — removing it would leave no service at all. `actana setup` " +
+            "replaces it with this Core's own and starts the daemon."
+        : `${manifest.version} is installed, and nothing was restarted: this machine has no ` +
+            `auto-start service. \`actana setup\` registers ${service.name} and starts the daemon.`,
+    );
+    return {
+      updated: true,
+      version: manifest.version,
+      previousVersion: config.version,
+      installDir,
+      // Not probed: nothing was asked to start, so a port that answers would
+      // be somebody else's daemon and a port that does not is not news.
+      listening: null,
+    };
+  }
 
   opts.out(`Restarting ${service.name} on ${manifest.version}…`);
   const restarted = service.verb("restart");

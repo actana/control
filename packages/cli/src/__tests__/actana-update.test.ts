@@ -223,6 +223,44 @@ describe("landing a newer release", () => {
     expect(out.join("\n")).toMatch(/Removed com\.actana\.harness/);
   });
 
+  it("keeps the legacy service when it is the only one, and never restarts into nothing", async () => {
+    // The #348 machine: `actana setup` was never run after the rename, so
+    // `com.actana.core` does not exist and the pre-rename agent is the only
+    // auto-start service there is. Removing it and then failing to restart —
+    // which is what this did — leaves the operator with no service at all.
+    const removals: string[] = [];
+    const service = fakeService({
+      observe: () => ({ name: "com.actana.harness", legacyName: "com.actana.harness" }),
+      removeLegacyUnit: () => {
+        removals.push("removed");
+        return "com.actana.harness";
+      },
+    });
+
+    const result = await update({ service });
+
+    expect(result.updated).toBe(true);
+    expect(removals).toEqual([]);
+    expect(service.verbs).toEqual([]);
+    // Null rather than false: nothing was asked to start, so the port was
+    // never a question.
+    expect(result.listening).toBeNull();
+    expect(out.join("\n")).toMatch(/com\.actana\.harness/);
+    expect(out.join("\n")).toMatch(/actana setup/);
+  });
+
+  it("says so, without restarting, when there is no service at all", async () => {
+    const service = fakeService({ observe: () => ({ name: null, legacyName: null }) });
+
+    const result = await update({ service });
+
+    expect(result.updated).toBe(true);
+    expect(service.verbs).toEqual([]);
+    expect(result.listening).toBeNull();
+    expect(out.join("\n")).toMatch(/no auto-start service/);
+    expect(out.join("\n")).toMatch(/actana setup/);
+  });
+
   it("says nothing about a legacy service on a machine that has none", async () => {
     await update();
     expect(out.join("\n")).not.toMatch(/before the rename/);
