@@ -28,7 +28,12 @@ import { PairingStore, derivePairingCodeKey, hashPairingCode } from "@actana/sha
 import { PtyCoreLinkServer } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
-import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "../core-pairing-wiring";
+import {
+  buildCorePairingRoutes,
+  buildPairingEndpointResolver,
+  composeCoreHttpRoutes,
+  isPairingPath,
+} from "../core-pairing-wiring";
 import { PairingRateLimiter } from "../core-pairing-rate-limit";
 import type { PairingAuditEvent } from "@actana/shared/pairing-audit";
 
@@ -42,7 +47,13 @@ type Rig = {
   store: PairingStore;
   audit: PairingAuditEvent[];
   /** Open a pending session and return its id and the code the operator reads out. */
-  openSession(opts?: { label?: string; ttlMs?: number; now?: number }): { sessionId: string; code: string };
+  openSession(opts?: {
+    label?: string;
+    ttlMs?: number;
+    now?: number;
+    /** `actana pair new --public-host` — which configured host this code names. */
+    endpointHost?: string;
+  }): { sessionId: string; code: string };
   clock: { now: number };
 };
 
@@ -89,8 +100,11 @@ function freePort(): Promise<number> {
   });
 }
 
-async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promise<Rig> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+async function startCore(
+  opts: { rateLimiter?: PairingRateLimiter; publicHosts?: string[] } = {},
+): Promise<Rig> {
+  const publicHosts = opts.publicHosts ?? ["127.0.0.1"];
+  const material = await generateCertMaterial({ hosts: publicHosts });
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-pairing-"));
   tempDirs.push(dir);
@@ -109,7 +123,10 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
       coreUuid: CORE_UUID,
     },
     sessions: store,
-    endpoint: `wss://127.0.0.1:${port}`,
+    // The daemon's own resolver over the hosts this Core is configured for
+    // (#347), not a stub that answers one string: what these tests exercise is
+    // the mapping the Core really performs from a stored session to an address.
+    endpointFor: buildPairingEndpointResolver({ publicHosts, port }),
     now: () => clock.now,
     audit: (event) => audit.push(event),
     ...(opts.rateLimiter ? { rateLimiter: opts.rateLimiter } : {}),
@@ -145,7 +162,7 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
     store,
     audit,
     clock,
-    openSession: ({ label = "laptop", ttlMs, now } = {}) => {
+    openSession: ({ label = "laptop", ttlMs, now, endpointHost } = {}) => {
       const code = generatePairingCode();
       const sessionId = `ps_${Math.random().toString(16).slice(2, 10)}`;
       store.createSession(
@@ -155,6 +172,7 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
           codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
           now: now ?? clock.now,
           ...(ttlMs === undefined ? {} : { ttlMs }),
+          ...(endpointHost === undefined ? {} : { endpointHost }),
         }),
         clock.now,
       );
@@ -187,7 +205,13 @@ function post(
   rig: Rig,
   url: string,
   body: string | object,
-  opts: { clientCert?: { cert: string; key: string }; contentType?: string; method?: string } = {},
+  opts: {
+    clientCert?: { cert: string; key: string };
+    contentType?: string;
+    method?: string;
+    /** A `Host` header the caller chose — what #347's endpoint must ignore. */
+    host?: string;
+  } = {},
 ): Promise<Response> {
   const payload = typeof body === "string" ? body : JSON.stringify(body);
   return new Promise((resolve, reject) => {
@@ -197,10 +221,18 @@ function post(
         method: opts.method ?? "POST",
         agent: false,
         ca: rig.caCert,
+        // Only when the caller is deliberately lying in the `host` header.
+        // Node derives the TLS server name from that header, so the dial would
+        // fail hostname verification before the Core ever read the request —
+        // and it is precisely that header one test needs the Core to ignore.
+        // Empty means "send no SNI", which leaves verification on the address
+        // actually dialled rather than on the lie.
+        ...(opts.host === undefined ? {} : { servername: "" }),
         ...(opts.clientCert ? { cert: opts.clientCert.cert, key: opts.clientCert.key } : {}),
         headers: {
           "content-type": opts.contentType ?? "application/json",
           "content-length": String(Buffer.byteLength(payload)),
+          ...(opts.host === undefined ? {} : { host: opts.host }),
         },
       },
       (res) => {
@@ -587,5 +619,102 @@ describe("the pre-auth hole is exactly one route wide", () => {
 
     expect(res.status).toBe(401);
     expect(JSON.parse(res.body).code).toBe("unauthorized");
+  }, 30_000);
+});
+
+// ─── The endpoint is per pairing session (#347) ─────────────────────────────
+//
+// A Core reachable more than one way has to tell each client the address *that
+// client* can reach it on: the Panel on the compose network gets the service
+// name, the CLI on the host machine gets the LAN address, out of one
+// certificate and one Core. Which one is decided when the operator mints the
+// code, and read back off the stored session at redemption — never off the
+// request, which is the property this endpoint has had since it existed.
+
+describe("the endpoint a redemption hands back", () => {
+  it("is the host the operator chose for that code", async () => {
+    const rig = await startCore({ publicHosts: ["core", "10.0.0.5"] });
+    const panel = rig.openSession({ label: "panel", endpointHost: "core" });
+    const laptop = rig.openSession({ label: "laptop", endpointHost: "10.0.0.5" });
+
+    const first = await redeem(rig, {
+      sessionId: panel.sessionId,
+      code: panel.code,
+      csr: (await generateClientCsr("panel")).csrPem,
+    });
+    const second = await redeem(rig, {
+      sessionId: laptop.sessionId,
+      code: laptop.code,
+      csr: (await generateClientCsr("laptop")).csrPem,
+    });
+
+    // Two clients, one Core, two addresses — and both of them on the one
+    // certificate this Core presented to each of them.
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(JSON.parse(first.body).endpoint).toMatch(/^wss:\/\/core:\d+$/);
+    expect(JSON.parse(second.body).endpoint).toMatch(/^wss:\/\/10\.0\.0\.5:\d+$/);
+  }, 30_000);
+
+  // Today's behaviour, unchanged: a code minted without choosing anything hands
+  // back the first configured address.
+  it("is the primary when the code chose nothing", async () => {
+    const rig = await startCore({ publicHosts: ["core", "10.0.0.5"] });
+    const { sessionId, code } = rig.openSession({ label: "panel" });
+
+    const res = await redeem(rig, {
+      sessionId,
+      code,
+      csr: (await generateClientCsr("panel")).csrPem,
+    });
+
+    expect(JSON.parse(res.body).endpoint).toMatch(/^wss:\/\/core:\d+$/);
+  }, 30_000);
+
+  // **The `Host` header is still not a source, and this is the test that says
+  // so.** A caller writes that header, so a client that pinned it would have
+  // pinned whatever an attacker put there. The endpoint comes from the stored
+  // session; a header naming another of the Core's own hosts changes nothing,
+  // and neither does one naming a host that is not the Core's at all.
+  it("ignores the Host header, whatever it claims", async () => {
+    const rig = await startCore({ publicHosts: ["core", "10.0.0.5"] });
+    const { sessionId, code } = rig.openSession({ label: "panel" });
+
+    const res = await post(
+      rig,
+      "/v1/pair/redeem",
+      {
+        sessionId,
+        code,
+        client: { label: "panel", platform: "linux" },
+        csr: (await generateClientCsr("panel")).csrPem,
+      },
+      { host: "attacker.example" },
+    );
+
+    expect(res.status).toBe(200);
+    const { endpoint } = JSON.parse(res.body) as { endpoint: string };
+    expect(endpoint).not.toContain("attacker.example");
+    // The session named nothing, so it is the primary — not the header, and
+    // not the other configured host either.
+    expect(endpoint).toMatch(/^wss:\/\/core:\d+$/);
+  }, 30_000);
+
+  // A code can outlive the configuration it was minted against: an operator
+  // shortens `ACTANA_PUBLIC_HOST` while a code naming the dropped address is
+  // still live. Honouring it would hand that client a name this Core's
+  // certificate no longer covers — a credential that fails on its first dial.
+  it("falls back to the primary for a host that is no longer configured", async () => {
+    const rig = await startCore({ publicHosts: ["core"] });
+    const { sessionId, code } = rig.openSession({ label: "laptop", endpointHost: "10.0.0.5" });
+
+    const res = await redeem(rig, {
+      sessionId,
+      code,
+      csr: (await generateClientCsr("laptop")).csrPem,
+    });
+
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body).endpoint).toMatch(/^wss:\/\/core:\d+$/);
   }, 30_000);
 });

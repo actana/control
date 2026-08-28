@@ -12,8 +12,13 @@
 //
 // Remote mode (issue 04 — `wss://` + mTLS + bearer auth):
 //   AC_CORE_REMOTE=1            — enable remote mode (mTLS + auth)
-//   AC_CORE_PUBLIC_HOST=<host>  — the reachable host for the cert SAN and the
-//                                     endpoint (default: AC_CORE_LINK_HOST)
+//   AC_CORE_PUBLIC_HOST=<hosts> — the reachable host for the cert SAN and the
+//                                     endpoint, or a comma-separated list of
+//                                     them (#347): every entry becomes a SAN,
+//                                     the first is the primary and is the
+//                                     endpoint a pairing hands back unless the
+//                                     code chose another of them
+//                                     (default: AC_CORE_LINK_HOST)
 //   AC_CORE_BEARER_DAYS=<n>     — bearer validity in days (default: 365)
 //   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
 //                                     **Required in remote mode.** The daemon
@@ -34,7 +39,8 @@
 //
 // The operator sets `ACTANA_PUBLIC_HOST`, which `actana daemon` hands down as
 // `AC_CORE_PUBLIC_HOST`. Missing, the boot stops here rather than defaulting to
-// the bind address — a Core with a guessed SAN pairs with nothing.
+// the bind address — a Core with a guessed SAN pairs with nothing. One value or
+// several, comma-separated, and one value behaves exactly as it always has.
 //
 // Prints "@@AC_CORE_LISTENING@@" on stdout once the WS server is listening, so
 // the parent can resolve boot readiness (mirrors server-runner.mjs). That is the
@@ -52,7 +58,12 @@ import {
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
-import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "./core-pairing-wiring";
+import {
+  buildCorePairingRoutes,
+  buildPairingEndpointResolver,
+  composeCoreHttpRoutes,
+  isPairingPath,
+} from "./core-pairing-wiring";
 import type { CorePairingRoutesOptions } from "./core-pairing-routes";
 import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
 import {
@@ -98,6 +109,7 @@ import {
   coreUpdateCommand,
   inContainer,
 } from "@actana/shared/actana-container-contract";
+import { parsePublicHosts, primaryPublicHost } from "@actana/shared/public-hosts";
 import {
   updateCheckCachePath,
   updateNoticeStatePath,
@@ -415,7 +427,21 @@ async function startCore(): Promise<void> {
       );
       process.exit(1);
     }
-    const publicHost = process.env.AC_CORE_PUBLIC_HOST || host;
+    // One address or a comma-separated list of them (#347). Every entry becomes
+    // a SAN on this Core's certificate; the first is the primary — the endpoint
+    // a pairing hands back unless the operator chose otherwise when they minted
+    // the code. A single value parses to a list of one and nothing about it
+    // changes.
+    const parsedPublicHosts = parsePublicHosts(
+      process.env.AC_CORE_PUBLIC_HOST || host,
+      process.env.AC_CORE_PUBLIC_HOST ? CONTAINER_PUBLIC_HOST_ENV : "AC_CORE_LINK_HOST",
+    );
+    if (!parsedPublicHosts.ok) {
+      console.error(`[core-entry] ${parsedPublicHosts.error}`);
+      process.exit(1);
+    }
+    const publicHosts = parsedPublicHosts.hosts;
+    const publicHost = primaryPublicHost(publicHosts);
     const materialFile = process.env.AC_CORE_MATERIAL_FILE;
     const bearerDays = Number(process.env.AC_CORE_BEARER_DAYS ?? 365);
     const label = process.env.ACTANA_LABEL || "";
@@ -450,7 +476,7 @@ async function startCore(): Promise<void> {
       try {
         resolved = await loadOrMintMaterial({
           materialFile,
-          publicHost,
+          publicHosts,
           // `host` is the bind address standing in for an answer the operator
           // did not give — enough to mint a first identity from, never enough
           // to re-sign an existing one's SAN with.
@@ -479,7 +505,11 @@ async function startCore(): Promise<void> {
           coreUuid: material.coreUuid,
         },
         sessions: pairingStore,
-        endpoint: `wss://${publicHost}:${port}`,
+        // Per redeemed session, not one string for the route: which of this
+        // Core's addresses a client is told to dial is the operator's choice at
+        // `actana pair new` time, and the resolver reads it off the stored
+        // session and off nothing in the request (#347).
+        endpointFor: buildPairingEndpointResolver({ publicHosts, port }),
         bearerDays,
       };
       // The other half of `actana pair revoke` (#283). That command runs in the

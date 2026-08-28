@@ -403,7 +403,12 @@ function isPairingSession(value: unknown): value is PairingSession {
     typeof o.expiresAt === "number" &&
     typeof o.attempts === "number" &&
     typeof o.attemptCap === "number" &&
-    (o.consumedAt === null || typeof o.consumedAt === "number")
+    (o.consumedAt === null || typeof o.consumedAt === "number") &&
+    // Optional since #347, and checked rather than ignored: the daemon reads it
+    // to decide which address it hands a redeeming client, and a non-string
+    // there would reach a template. Absent and `null` both mean "the primary",
+    // which is what every session written before the field existed means.
+    (o.endpointHost === undefined || o.endpointHost === null || typeof o.endpointHost === "string")
   );
 }
 

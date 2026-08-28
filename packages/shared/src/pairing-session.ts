@@ -78,6 +78,27 @@ export type PairingSession = {
    * field existed are still valid sessions — see {@link isRevoked}.
    */
   revokedAt?: number | null;
+  /**
+   * Which of this Core's configured public hosts this pairing's redemption
+   * hands back as its endpoint, or `null`/absent for the primary (#347).
+   *
+   * The one address-shaped field on a pairing session, and it is here rather
+   * than resolved at redemption time because the Core has to answer "where do I
+   * tell *this* client to dial me?" from something it stored when the operator
+   * minted the code — never from the request. A `Host` header is chosen by the
+   * caller, and a client that pinned it would have pinned whatever an attacker
+   * wrote there; `core-pairing-routes.ts` says so at the option that reads this.
+   *
+   * **It can only ever name a host the certificate already covers.** `actana
+   * pair new --public-host` refuses an address that is not in the Core's
+   * recorded SAN list, and the resolver on the daemon side falls back to the
+   * primary for a stored value that is no longer configured — so a pairing code
+   * cannot introduce a name a client would fail hostname verification against.
+   *
+   * Optional, because a session written before this field existed is still a
+   * session, and it means what it has always meant: the primary.
+   */
+  endpointHost?: string | null;
   /** Inert (#280): the identity that created the session, once there is one. */
   created_by: string | null;
   /** Inert (#280): the tenant the session belongs to, once there are tenants. */
@@ -98,6 +119,15 @@ export type NewPairingSession = {
   /** Override the cap of five. Present for tests and future policy, not for a
    *  caller looking for a way around the cap. */
   attemptCap?: number;
+  /**
+   * `actana pair new --public-host` — which configured host this one code hands
+   * back (#347). Omitted is the primary, which is what every code did before.
+   *
+   * Validated by the caller, not here: membership is a question about the
+   * Core's certificate, and this module owns the rules of a session rather than
+   * the identity of a Core.
+   */
+  endpointHost?: string;
 };
 
 /**
@@ -116,6 +146,7 @@ export function createPairingSession(input: NewPairingSession): PairingSession {
     attemptCap: input.attemptCap ?? PAIRING_ATTEMPT_CAP,
     consumedAt: null,
     revokedAt: null,
+    endpointHost: input.endpointHost ?? null,
     created_by: null,
     tenant_id: null,
     auth_method: null,

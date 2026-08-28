@@ -152,7 +152,7 @@ function recording(inner: CoreHttpRoutes, wire: WireLog): CoreHttpRoutes {
 }
 
 async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promise<Rig> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-sdk-pairing-"));
   tempDirs.push(dir);
@@ -171,7 +171,7 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
       coreUuid: CORE_UUID,
     },
     sessions: store,
-    endpoint: `wss://127.0.0.1:${port}`,
+    endpointFor: () => `wss://127.0.0.1:${port}`,
     now: () => clock.now,
     audit: (event) => audit.push(event),
     ...(opts.rateLimiter ? { rateLimiter: opts.rateLimiter } : {}),
@@ -650,8 +650,8 @@ describe("the redemption dial is pinned to the certificate authority that matche
     // read out, and the redemption dial — a second connection — gets somebody
     // else's. If the code were posted on an unverified connection this is where
     // it would leak, so the assertion is that the second server saw no request.
-    const honest = await generateCertMaterial({ host: "127.0.0.1" });
-    const impostor = await generateCertMaterial({ host: "127.0.0.1" });
+    const honest = await generateCertMaterial({ hosts: ["127.0.0.1"] });
+    const impostor = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const stub = await startStub({
       cert: { cert: honest.server.cert, key: honest.server.key, ca: honest.ca.cert },
       answer: { status: 200, body: JSON.stringify({ endpoint: "wss://127.0.0.1:1", caCert: "x", clientCert: "x", bearer: "x" }) },
@@ -693,8 +693,8 @@ describe("the redemption dial is pinned to the certificate authority that matche
     // The same trust question one layer up: the CA in the response is what
     // every later dial pins, so a Core that hands back a different one is
     // asking this client to trust something no human read out.
-    const honest = await generateCertMaterial({ host: "127.0.0.1" });
-    const other = await generateCertMaterial({ host: "127.0.0.1" });
+    const honest = await generateCertMaterial({ hosts: ["127.0.0.1"] });
+    const other = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const stub = await startStub({
       cert: { cert: honest.server.cert, key: honest.server.key, ca: honest.ca.cert },
       answer: {
@@ -732,7 +732,7 @@ describe("a certificate problem is not an accusation", () => {
     //
     // This used to be reported as `fingerprint-mismatch` — the operator was
     // told they were being intercepted and went looking for an attacker.
-    const material = await generateCertMaterial({ host: "127.0.0.1" });
+    const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const stub = await startStub({
       cert: { cert: material.server.cert, key: material.server.key, ca: material.ca.cert },
       host: "127.0.0.2",
@@ -759,10 +759,10 @@ describe("a certificate problem is not an accusation", () => {
   }, 30_000);
 
   it("reports an expired server certificate as a certificate problem, not a mismatch", async () => {
-    const ca = await generateCertMaterial({ host: "127.0.0.1" });
+    const ca = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const stale = await issueServerCert({
       ca: { cert: ca.ca.cert, key: ca.ca.key },
-      host: "127.0.0.1",
+      hosts: ["127.0.0.1"],
       days: 1,
       notBefore: new Date(Date.now() - 400 * 24 * 60 * 60 * 1000),
     });
@@ -793,7 +793,7 @@ describe("answers that are not a Core's", () => {
     body: string;
     headers?: Record<string, string>;
   }): Promise<CorePairingError> {
-    const material = await generateCertMaterial({ host: "127.0.0.1" });
+    const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const stub = await startStub({
       cert: { cert: material.server.cert, key: material.server.key, ca: material.ca.cert },
       answer,
