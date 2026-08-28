@@ -21,6 +21,14 @@ export const LEGACY_ENV_PREFIX = "AC_HARNESS_";
  * `127.0.0.1`, so a variable that is unset or blank is the default, not a
  * different answer. `::` and `0.0.0.0` are deliberately absent — they are the
  * wildcard bind that {@link plaintextExposureRefusal} exists to catch.
+ *
+ * **Not the same set as `LOOPBACK_HOSTS` in `packages/cli/src/actana-pair.ts`,
+ * and deliberately so.** That one is the pair ADR 0038 D4 puts on every server
+ * certificate, so that `pair new`'s refusal can tell the truth about why a
+ * loopback address is unselectable; it is a record of what was signed. This one
+ * decides whether a *bind* address reaches off this machine, so it is as wide as
+ * it can be made and errs towards refusing the boot. Two questions, two answers,
+ * and neither list may be swapped for the other.
  */
 const LOOPBACK_HOSTS = new Set(["", "127.0.0.1", "::1", "[::1]", "localhost"]);
 

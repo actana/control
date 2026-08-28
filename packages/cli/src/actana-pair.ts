@@ -291,6 +291,15 @@ const REFUSED = Symbol("public-host-refused");
  * What they are is the one case where "not one of this Core's configured public
  * hosts" and "not in this Core's certificate" come apart, and an operator told
  * the second about `127.0.0.1` has been told something false.
+ *
+ * **Not the same set as `LOOPBACK_HOSTS` in `packages/core/src/core-boot-refusals.ts`,
+ * and deliberately so.** That one answers "does binding this address reach off
+ * this machine?" for the daemon's plaintext-exposure refusal, so it is as wide
+ * as it can be made and fails closed — `::1`, the whole of `127.0.0.0/8`, an
+ * empty value. This one is exactly the pair ADR 0038 D4 puts on every
+ * certificate, and it is a *record of what was signed*, not a policy: adding
+ * `::1` here would claim coverage the certificate does not carry. Two questions,
+ * two answers, and neither list may be swapped for the other.
  */
 const LOOPBACK_HOSTS = ["localhost", "127.0.0.1"];
 

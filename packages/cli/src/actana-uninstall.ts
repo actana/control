@@ -39,6 +39,14 @@ export type UninstallResult = {
   removed: string[];
   /** Paths deliberately left in place, for the operator to be told about. */
   kept: string[];
+  /**
+   * The pre-rename service this run booted out, or null (#348).
+   *
+   * Its own field rather than an entry in {@link removed}, which is a list of
+   * filesystem paths: a launchd label is not one, and a caller printing the
+   * list would have shown `com.actana.harness` among a column of directories.
+   */
+  removedLegacyService: string | null;
 };
 
 /** Remove a path if it exists, recording it. Missing is not a failure. */
@@ -100,10 +108,7 @@ export function runActanaUninstall(opts: UninstallOptions): UninstallResult {
   // out of a tree this function is about to delete, until launchd throttles a
   // job that can never start again.
   const legacy = opts.service.removeLegacyUnit();
-  if (legacy) {
-    removed.push(legacy);
-    opts.out(`Removed ${legacy}, left by an install from before the rename.`);
-  }
+  if (legacy) opts.out(`Removed ${legacy}, left by an install from before the rename.`);
 
   if (isOurLauncher(layout)) {
     remove(layout.binLink, removed);
@@ -141,5 +146,5 @@ export function runActanaUninstall(opts: UninstallOptions): UninstallResult {
     );
   }
 
-  return { removed, kept };
+  return { removed, kept, removedLegacyService: legacy };
 }
