@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { X509Certificate } from "node:crypto";
 import { runActanaCli, CLIENT_NOUNS, EXIT_USAGE } from "../actana-cli.ts";
 import { loadCoreBlob, registryPaths } from "../blob-registry.ts";
 import { localCoreName } from "../local-core-wiring.ts";
@@ -573,6 +574,48 @@ describe("setup", () => {
     const blob = wiredCredential("eu-1");
     expect(blob.endpoint).toBe("wss://core.example:9443");
     expect(blob.label).toBe("eu-1");
+  });
+
+  // #347: one Core, several addresses, one certificate. The flag grew commas;
+  // it did not change name, and a single value did not change meaning.
+  it("covers every address a comma-separated --public-host names", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5,core.example"]);
+
+    const material = readMaterial();
+    const san = new X509Certificate(material.serverCert!).subjectAltName ?? "";
+    expect(san).toContain("DNS:core");
+    expect(san).toContain("IP Address:10.0.0.5");
+    expect(san).toContain("DNS:core.example");
+    // The loopback pair every server certificate carries (ADR 0032 D9).
+    expect(san).toContain("DNS:localhost");
+    expect(san).toContain("IP Address:127.0.0.1");
+
+    // The primary is the endpoint, and the whole list reaches the daemon in the
+    // one variable it reads it from.
+    expect(wiredCredential().endpoint).toBe("wss://core:8443");
+    expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
+      "AC_CORE_PUBLIC_HOST=core,10.0.0.5,core.example",
+    );
+    // Printed the way the flag takes it back, so an operator can paste it.
+    expect(out.join("\n")).toContain("10.0.0.5,core.example");
+  });
+
+  it("writes the same unit and the same endpoint for a single --public-host", async () => {
+    await setup(fakeSystem(), ["--public-host", "core.example"]);
+
+    // The compatibility promise, at the layer an operator's compose file and
+    // unit meet: one address in, one address out, and no list to notice.
+    expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
+      "AC_CORE_PUBLIC_HOST=core.example",
+    );
+    expect(wiredCredential().endpoint).toBe("wss://core.example:8443");
+    expect(out.join("\n")).not.toContain("Also valid");
+  });
+
+  it("refuses a --public-host with an empty entry rather than dropping it", async () => {
+    expect(await setup(fakeSystem(), ["--public-host", "core,,10.0.0.5"])).toBe(2);
+    expect(err.join("\n")).toContain("--public-host");
+    expect(err.join("\n")).toContain("empty entry");
   });
 
   it("rejects a port that is not a port", async () => {

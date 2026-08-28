@@ -77,7 +77,7 @@ afterEach(async () => {
  * the same two options the Core's own server factory sets.
  */
 async function startCore(): Promise<{ blob: CoreRegistrationBlob; caCert: string; port: number }> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "actana-sdk-mtls-")));
   fs.writeFileSync(path.join(root, "notes.txt"), "over mutual TLS");
 

@@ -89,7 +89,7 @@ type Rig = { coreId: string; projectRoot: string; locks: ProjectWriteLocks; port
 
 /** A real Core, paired through the Panel, behind a real Panel HTTP server. */
 async function rig(): Promise<Rig> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const corePort = await freePort();
   const projectRoot = fs.mkdtempSync(path.join(tmpRoot, "project-"));
   const authVerifier = (bearer: string) => verifyBearer(bearer, BEARER_SECRET);

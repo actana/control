@@ -39,13 +39,14 @@
 // re-running over an existing install lands the new tree beside the old one
 // and swaps by repointing one link. Re-running deliberately REUSES the existing
 // material: regenerating would lock out every client already paired with this
-// Core. A changed publicHost re-signs the server cert from
+// Core. A changed public host list re-signs the server cert from
 // that same CA and nothing else (ADR 0016 D18). Minting fresh credentials is
 // `actana token regenerate` (issue 06), an explicit act.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
+import { formatPublicHosts, primaryPublicHost } from "@actana/shared/public-hosts";
 import {
   loadMaterial,
   materialFilePath,
@@ -56,7 +57,12 @@ import {
   type PersistedMaterial,
 } from "@actana/shared/core-material-store";
 import { offerHarnessInstalls, type HarnessInstallOutcome } from "./actana-harnesses.ts";
-import { endpointFor, readActanaConfig, writeActanaConfig } from "./actana-config.ts";
+import {
+  configPublicHosts,
+  endpointFor,
+  readActanaConfig,
+  writeActanaConfig,
+} from "./actana-config.ts";
 import { binDirOnPath, installDirFor, type ActanaLayout } from "./actana-layout.ts";
 import {
   installTree,
@@ -115,8 +121,16 @@ export type SetupOptions = PlacementOptions & {
   port: number;
   /** The address the daemon binds. */
   host: string;
-  /** The address a client dials — goes in the cert SAN and the endpoint. */
-  publicHost: string;
+  /**
+   * The addresses a client dials — every one of them a SAN on the cert, the
+   * first of them the endpoint (#347).
+   *
+   * A list because `--public-host core,10.0.0.5` is one Core reachable two ways
+   * at once. One entry is the case that has not changed: it mints the
+   * certificate it always minted, records the host it always recorded, and
+   * prints the endpoint it always printed.
+   */
+  publicHosts: readonly string[];
   label: string;
   /** Skip prompts and take the recommended answer. */
   assumeYes: boolean;
@@ -234,26 +248,31 @@ async function resolveMaterial(
 ): Promise<{ material: PersistedMaterial; outcome: MaterialOutcome }> {
   const existing = loadMaterial(opts.layout.configDir);
   if (!existing) {
-    return { material: await mintFreshMaterial(opts.publicHost), outcome: "minted" };
+    return { material: await mintFreshMaterial(opts.publicHosts), outcome: "minted" };
   }
 
   const previous = readActanaConfig(opts.layout.configDir);
-  const check = checkServerCertHost(existing, opts.publicHost, previous?.publicHost);
+  const check = checkServerCertHost(
+    existing,
+    opts.publicHosts,
+    previous ? configPublicHosts(previous) : undefined,
+  );
   if (check === "covered") {
     // Backfilled for material that predates the record: the config setup wrote
-    // beside it is what proved the cert covers this host, so record the answer.
-    return { material: { ...existing, serverHost: opts.publicHost }, outcome: "reused" };
+    // beside it is what proved the cert covers these hosts, so record the answer.
+    return { material: { ...existing, serverHosts: [...opts.publicHosts] }, outcome: "reused" };
   }
 
+  const wanted = formatPublicHosts(opts.publicHosts);
   opts.out(
     check === "moved"
-      ? `Public host changed to ${opts.publicHost} — re-issuing this Core's server ` +
+      ? `Public host changed to ${wanted} — re-issuing this Core's server ` +
           "certificate from its own CA."
       : "This Core's material does not record which host its certificate was signed " +
-          `for — re-issuing it for ${opts.publicHost} from its own CA.`,
+          `for — re-issuing it for ${wanted} from its own CA.`,
   );
   return {
-    material: await reissueServerCert(existing, opts.publicHost),
+    material: await reissueServerCert(existing, opts.publicHosts),
     outcome: "reissued",
   };
 }
@@ -385,7 +404,8 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
     version: manifest.version,
     port: opts.port,
     host: opts.host,
-    publicHost: opts.publicHost,
+    publicHost: primaryPublicHost(opts.publicHosts),
+    publicHosts: [...opts.publicHosts],
     label: opts.label,
     installDir,
     dataDir: layout.dataDir,
@@ -402,7 +422,10 @@ export async function runActanaSetup(opts: SetupOptions): Promise<SetupResult> {
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_PORT: String(opts.port),
       AC_CORE_LINK_HOST: opts.host,
-      AC_CORE_PUBLIC_HOST: opts.publicHost,
+      // The whole list, in the one variable the daemon reads it from. A single
+      // host joins to itself, so a unit written for a one-address Core is the
+      // unit that was always written for it (#347).
+      AC_CORE_PUBLIC_HOST: opts.publicHosts.join(","),
       AC_USER_DATA_DIR: layout.dataDir,
       AC_CORE_MATERIAL_FILE: materialFilePath(layout.configDir),
     },

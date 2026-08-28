@@ -15,6 +15,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { generateCertMaterial, issueServerCert } from "./core-cert-material";
+import { samePublicHosts } from "./public-hosts";
 import log from "@actana/shared/log";
 
 /**
@@ -58,12 +59,24 @@ export type PersistedMaterial = {
    */
   coreUuid: string;
   /**
-   * The public host `serverCert`'s SAN was signed for. This is what makes a
-   * moved Core detectable without parsing the certificate back out of the PEM
-   * (ADR 0016 D18). Empty for material written before the field existed —
-   * treated as "unknown", which re-issues the server cert once and records it.
+   * The public hosts `serverCert`'s SAN list was signed for, in the operator's
+   * order. This is what makes a moved Core detectable without parsing the
+   * certificate back out of the PEM (ADR 0016 D18), and since #347 it is also
+   * the list `actana pair new --public-host` may choose from — a pairing code
+   * can never hand back an address that is not in here, because that is
+   * precisely the set the certificate covers.
+   *
+   * Empty for material written before any of this was recorded — treated as
+   * "unknown", which re-issues the server cert once and records it.
+   *
+   * A list rather than the single `serverHost` this was until #347. Material
+   * written by an earlier build carries that field instead and
+   * {@link readMaterialFile} reads it as a list of one, so an installed Core
+   * upgrades without re-issuing anything. The reverse — a newer file read by an
+   * older build — is a downgrade, and it lands on the same "unknown host" path
+   * that build already had: one silent re-issue for its single host.
    */
-  serverHost: string;
+  serverHosts: string[];
 };
 
 /** The filename inside the config dir. */
@@ -85,7 +98,7 @@ function restrictPermissions(filePath: string): void {
 
 /**
  * Mint a brand-new Core identity: a fresh CA, fresh certs, a fresh bearer
- * secret and a fresh coreId, all valid for `publicHost`.
+ * secret and a fresh coreId, all valid for every host in `publicHosts`.
  *
  * Everything a paired Panel pinned is replaced, so whoever calls this is
  * choosing to lock that Panel out until it re-pairs. Setup calls it only when
@@ -93,8 +106,8 @@ function restrictPermissions(filePath: string): void {
  * which is how a compromised Core is rotated; the daemon's first run in a
  * container calls it when the volume is empty (ADR 0016 D17).
  */
-export async function mintFreshMaterial(publicHost: string): Promise<PersistedMaterial> {
-  const generated = await generateCertMaterial({ host: publicHost });
+export async function mintFreshMaterial(publicHosts: readonly string[]): Promise<PersistedMaterial> {
+  const generated = await generateCertMaterial({ hosts: publicHosts });
   return {
     caCert: generated.ca.cert,
     caKey: generated.ca.key,
@@ -105,38 +118,44 @@ export async function mintFreshMaterial(publicHost: string): Promise<PersistedMa
     bearerSecret: randomBytes(32).toString("hex"),
     coreId: `core_${randomBytes(8).toString("hex")}`,
     coreUuid: randomUUID(),
-    serverHost: publicHost,
+    serverHosts: [...publicHosts],
   };
 }
 
 /**
- * What `material`'s server cert says about `host`:
+ * What `material`'s server cert says about `hosts`:
  *
- * - `covered` — it was signed for exactly this host; a Panel dialling it gets
- *   past TLS hostname verification.
- * - `moved` — it was signed for a different one, and that Panel would not.
- * - `unrecorded` — the material predates `serverHost` and nothing on disk says
+ * - `covered` — it was signed for exactly these hosts, in this order; a client
+ *   dialling any of them gets past TLS hostname verification.
+ * - `moved` — it was signed for a different list, and some client would not.
+ * - `unrecorded` — the material predates the record and nothing on disk says
  *   either way.
  *
- * `fallbackHost` is what the caller knows independently, for material that
- * predates the record: `actana setup` wrote the host into the config beside the
- * material, which is as good as the record would have been. A daemon booting in
- * a container has no such config, which is why `unrecorded` stays a third
- * answer rather than collapsing into `moved` — re-signing is safe, but telling
- * an operator their Core moved when it did not is not.
+ * **In order**, because the first entry is the primary: it is the certificate's
+ * common name and the endpoint a pairing hands back by default, so a list that
+ * was reordered is a Core whose clients are being sent somewhere else. Treating
+ * that as `covered` would leave the recorded primary disagreeing with the
+ * configured one for the life of the install.
+ *
+ * `fallbackHosts` is what the caller knows independently, for material that
+ * predates the record: `actana setup` wrote the hosts into the config beside
+ * the material, which is as good as the record would have been. A daemon
+ * booting in a container has no such config, which is why `unrecorded` stays a
+ * third answer rather than collapsing into `moved` — re-signing is safe, but
+ * telling an operator their Core moved when it did not is not.
  */
 export function checkServerCertHost(
   material: PersistedMaterial,
-  host: string,
-  fallbackHost?: string,
+  hosts: readonly string[],
+  fallbackHosts?: readonly string[],
 ): "covered" | "moved" | "unrecorded" {
-  const signedFor = material.serverHost || fallbackHost || "";
-  if (signedFor === "") return "unrecorded";
-  return signedFor === host ? "covered" : "moved";
+  const signedFor = material.serverHosts.length > 0 ? material.serverHosts : (fallbackHosts ?? []);
+  if (signedFor.length === 0) return "unrecorded";
+  return samePublicHosts(signedFor, hosts) ? "covered" : "moved";
 }
 
 /**
- * Sign a fresh server cert for `publicHost` against the material's own CA,
+ * Sign a fresh server cert for `publicHosts` against the material's own CA,
  * keeping everything else byte-for-byte.
  *
  * This is what a changed public host does now (ADR 0016 D18). The CA key, the
@@ -154,17 +173,17 @@ export function checkServerCertHost(
  */
 export async function reissueServerCert(
   material: PersistedMaterial,
-  publicHost: string,
+  publicHosts: readonly string[],
 ): Promise<PersistedMaterial> {
   const server = await issueServerCert({
     ca: { cert: material.caCert, key: material.caKey },
-    host: publicHost,
+    hosts: publicHosts,
   });
   return {
     ...material,
     serverCert: server.cert,
     serverKey: server.key,
-    serverHost: publicHost,
+    serverHosts: [...publicHosts],
   };
 }
 
@@ -278,7 +297,7 @@ export function readMaterialFile(filePath: string): MaterialFileRead | null {
   // Absent in material written before #282, and minted here rather than
   // refused: the identity on disk is intact, the UUID is an addition to it, and
   // an install that predates the field must not have to be redone to gain one.
-  // Empty string is treated as absent for the same reason `serverHost` is —
+  // Empty string is treated as absent for the same reason `serverHosts` is —
   // a field that is there but says nothing is not a value.
   const storedUuid = typeof o.coreUuid === "string" ? o.coreUuid : "";
   const mintedCoreUuid = storedUuid === "";
@@ -295,9 +314,34 @@ export function readMaterialFile(filePath: string): MaterialFileRead | null {
       coreUuid: mintedCoreUuid ? randomUUID() : storedUuid,
       // Absent in material written before D18. Not a validation failure — the
       // identity is intact and only the SAN's provenance is unknown, so it loads
-      // as "unknown host" and {@link serverCertCoversHost} takes it from there.
-      serverHost: typeof o.serverHost === "string" ? o.serverHost : "",
+      // as "unknown host" and {@link checkServerCertHost} takes it from there.
+      serverHosts: readServerHosts(o),
     },
     mintedCoreUuid,
   };
+}
+
+/**
+ * The recorded SAN hosts, from either spelling this file has written.
+ *
+ * `serverHosts` is the list (#347). `serverHost` is the single string it
+ * replaced, and material written by any build before #347 carries that one —
+ * read here as a list of one so an installed Core keeps its certificate across
+ * the upgrade instead of re-issuing it on the next boot. Neither present, or
+ * both empty, is `[]`: the "unknown host" {@link checkServerCertHost} answers
+ * `unrecorded` for.
+ *
+ * Anything that is not a string is dropped rather than refused. This is a
+ * provenance record, not the identity — a mangled entry costs one re-issue from
+ * the CA already on disk, where refusing the file would cost the CA itself.
+ */
+function readServerHosts(o: Record<string, unknown>): string[] {
+  if (Array.isArray(o.serverHosts)) {
+    return o.serverHosts
+      .filter((host): host is string => typeof host === "string")
+      .map((host) => host.trim())
+      .filter((host) => host.length > 0);
+  }
+  const legacy = typeof o.serverHost === "string" ? o.serverHost.trim() : "";
+  return legacy.length > 0 ? [legacy] : [];
 }

@@ -33,7 +33,7 @@ Three variables, and only the first is required.
 
 | Variable | Default | What it does |
 | --- | --- | --- |
-| `ACTANA_PUBLIC_HOST` | — **required** | The host your Panel will dial. It is in the server certificate's SAN and in the endpoint every pairing hands back. |
+| `ACTANA_PUBLIC_HOST` | — **required** | The host your Panel will dial, or a comma-separated list of the hosts this Core's clients dial. Every entry goes in the server certificate's SANs; the first is the primary, and it is the endpoint a pairing hands back unless that code chose another. |
 | `ACTANA_PORT` | `8443` | The core-link port, and the port the image exposes. |
 | `ACTANA_LABEL` | — | The name the Panel shows for this Core. |
 
@@ -59,6 +59,26 @@ every `docker compose up`. One mount, one backup target.
 
 `docker compose down -v` destroys the pairing. Nothing else does — restarts, upgrades and host
 changes all keep it.
+
+### More than one address
+
+One Core is often reachable two ways at once — as a compose service name inside the network, and as
+a LAN address from outside it. Name both:
+
+```yaml
+- ACTANA_PUBLIC_HOST=core,192.168.1.20
+```
+
+One certificate covers both, and each client is paired to the one it can reach:
+
+```bash
+docker compose exec core actana pair new --label panel  --public-host core
+docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+```
+
+`--public-host` picks from the configured list and can never add to it: an address that is not on
+the list is refused, with the list printed. Omit it and the code hands back the first entry. A
+single `ACTANA_PUBLIC_HOST` behaves exactly as it always has.
 
 Changing `ACTANA_PUBLIC_HOST` re-signs the server certificate for the new address, from the CA
 already in the volume. The Core ID, the CA, the bearer secret and your Panel's client certificate

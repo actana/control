@@ -292,7 +292,7 @@ type CoreCredential = Parameters<typeof registerCoreFromCredential>[0];
 type CoreFixture = { server: PtyCoreLinkServer; credential: CoreCredential; log: ReturnType<typeof growableEventLog> };
 
 async function startCore(label: string, protocolVersion?: string): Promise<CoreFixture> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const bound = { port: await freePort() };
   const log = growableEventLog();
   const server = new PtyCoreLinkServer(mockCore(), {

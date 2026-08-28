@@ -161,7 +161,7 @@ function dial(
 }
 
 async function startCore(): Promise<Rig> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-revocation-transport-"));
   tempDirs.push(dir);
@@ -180,7 +180,7 @@ async function startCore(): Promise<Rig> {
       coreUuid: CORE_UUID,
     },
     sessions: store,
-    endpoint: `wss://127.0.0.1:${port}`,
+    endpointFor: () => `wss://127.0.0.1:${port}`,
   });
   const fileRoutes = createCoreFilesRequestHandler({
     filesPort: { projectRoot: () => null },

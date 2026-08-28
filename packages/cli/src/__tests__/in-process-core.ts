@@ -258,7 +258,7 @@ export type InProcessCore = {
 
 /** Start a Core on a real port and return the credential that reaches it. */
 export async function startInProcessCore(opts: InProcessCoreOptions = {}): Promise<InProcessCore> {
-  const material = opts.material ?? (await generateCertMaterial({ host: "127.0.0.1" }));
+  const material = opts.material ?? (await generateCertMaterial({ hosts: ["127.0.0.1"] }));
   const port = opts.port ?? (await freePort());
   const bound = { port: 0, dropAll: () => {} };
   const server = new PtyCoreLinkServer((opts.ptyCore ?? unusedPtyCore()) as never, {

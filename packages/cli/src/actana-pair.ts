@@ -1,8 +1,17 @@
 // `actana pair` — the Core-side operator's half of short-code enrollment (#283).
 //
-//   actana pair new [--label <label>] [--ttl <duration>]
+//   actana pair new [--label <label>] [--ttl <duration>] [--public-host <addr>]
 //   actana pair ls [--json]
 //   actana pair revoke <target>
+//
+// **`--public-host` chooses an address, it never introduces one** (#347). A
+// Core's certificate covers the addresses `ACTANA_PUBLIC_HOST` named, and this
+// flag picks which of *those* the code's redemption hands back — so one Core
+// can pair its Panel to the compose service name and a host-machine CLI to the
+// LAN address, out of one certificate. An address that is not on the list is
+// refused here, with the list printed, because a pairing code that handed back
+// a name the certificate does not cover would hand its client a credential that
+// fails TLS hostname verification on the first dial.
 //
 // **This runs on the machine that IS the Core.** That sentence is in the help
 // text and it is in this header for the same reason: there are two pairing
@@ -33,7 +42,13 @@
 // redeems them and enforces the revocations. Neither imports the other.
 
 import { randomUUID } from "node:crypto";
+import { CONTAINER_PUBLIC_HOST_ENV } from "@actana/shared/actana-container-contract";
 import { certFingerprintSha256 } from "@actana/shared/core-cert-material";
+import {
+  formatPublicHosts,
+  isConfiguredPublicHost,
+  primaryPublicHost,
+} from "@actana/shared/public-hosts";
 import { loadMaterialFromFile } from "@actana/shared/core-material-store";
 import { generatePairingCode } from "@actana/shared/pairing-code";
 import {
@@ -68,7 +83,7 @@ Core hands out. The client end of the same exchange is \`actana core pair\`, and
 it runs on the machine being paired — not here.
 
 Usage
-  actana pair new [--label <name>] [--ttl <duration>]
+  actana pair new [--label <name>] [--ttl <duration>] [--public-host <addr>]
                                   mint a one-time code and print it
   actana pair ls [--json]         pending codes, and the clients already paired
   actana pair revoke <target>     unpair a client, or cancel a pending code
@@ -77,6 +92,11 @@ Flags
   --label <name>   what to call the machine being paired (default: unnamed)
   --ttl <duration> how long the code stays good — \`30s\`, \`5m\`, \`2h\`
                    (default: ${describeDuration(PAIRING_SESSION_TTL_MS)})
+  --public-host <addr>
+                   which of this Core's configured addresses THIS code hands
+                   back as the endpoint (default: the first one). It has to be
+                   one this Core's certificate already covers — \`pair new\`
+                   lists them if you name one it does not
   --json           machine-readable output — \`ls\`
   -h, --help       show this help
 
@@ -90,6 +110,19 @@ Minting a code
   The code is printed once and never stored. This Core keeps only a keyed
   digest of it, so nothing — including \`pair ls\` — can print it again. A lost
   code is re-minted, not recovered.
+
+Choosing an address
+  A Core can be reachable more than one way at once — \`ACTANA_PUBLIC_HOST\` takes
+  a comma-separated list, and every entry is in this Core's certificate. Pair a
+  client that sits inside the Docker network under the service name, and a
+  client on the host machine under the LAN address, from the same Core and
+  without re-issuing anything:
+
+    actana pair new --label panel  --public-host core
+    actana pair new --label laptop --public-host 192.168.1.20
+
+  Omit the flag and the code hands back the first configured address, which is
+  what every code did before there was more than one.
 
 Revoking
   \`revoke\` takes a certificate serial, a session id, or a label that matches
@@ -161,7 +194,7 @@ export function runPairCommand(
 // ─── new ────────────────────────────────────────────────────────────────────
 
 function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): number {
-  const flags = readFlags(rest, { label: "value", ttl: "value" });
+  const flags = readFlags(rest, { label: "value", ttl: "value", "public-host": "value" });
   if ("error" in flags) {
     deps.err(`actana pair new: ${flags.error}.`);
     return EXIT_USAGE;
@@ -194,6 +227,14 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     return EXIT_FAILURE;
   }
 
+  // Which address this one code hands back (#347). Resolved against the hosts
+  // the material records its certificate was signed for — the SAN list itself,
+  // rather than a config file that could have drifted from it — because the
+  // whole property being kept is that a code can never name an address a client
+  // would then fail hostname verification against.
+  const endpointHost = chooseEndpointHost(deps, material.serverHosts, flags.values);
+  if (endpointHost === REFUSED) return EXIT_USAGE;
+
   const store = openStore(deps, materialPath, "new");
   if (!store) return EXIT_FAILURE;
 
@@ -214,6 +255,7 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     }),
     now,
     ttlMs: ttl,
+    endpointHost,
   });
 
   store.createSession(session, now);
@@ -227,9 +269,101 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
   deps.out(`CA fingerprint ${certFingerprintSha256(material.caCert)}`);
   deps.out(`Expires        ${absoluteTime(session.expiresAt)} (${relativeTime(session.expiresAt, now)})`);
   if (label) deps.out(`Label          ${label}`);
+  // Only when it was chosen. A Core with one configured address has nothing to
+  // say here, and a line that appeared on every `pair new` would be noise on
+  // the terminal an operator is reading a credential off.
+  if (endpointHost) deps.out(`Endpoint host  ${endpointHost}`);
   deps.out(`Session        ${sessionId}`);
   deps.err(`Cancel it before it is used with \`actana pair revoke ${sessionId}\`.`);
   return EXIT_OK;
+}
+
+/** What {@link chooseEndpointHost} returns when it has already said no. */
+const REFUSED = Symbol("public-host-refused");
+
+/**
+ * The two addresses every server certificate carries and no pairing code may
+ * choose (ADR 0032 D9, ADR 0038 D4).
+ *
+ * Named here only so the refusal can tell the truth about them. They are *not*
+ * an exception list the membership check consults — the check is against the
+ * operator's configured hosts and these are not on it, which is the policy.
+ * What they are is the one case where "not one of this Core's configured public
+ * hosts" and "not in this Core's certificate" come apart, and an operator told
+ * the second about `127.0.0.1` has been told something false.
+ */
+const LOOPBACK_HOSTS = ["localhost", "127.0.0.1"];
+
+/**
+ * Which configured address this code hands back, or {@link REFUSED}.
+ *
+ * `undefined` — the flag was not given — is the primary, and that is not
+ * spelled here: an absent `endpointHost` on the session already means the
+ * primary, resolved on the daemon side at redemption time against whatever the
+ * Core is configured with *then*. Pinning the primary into the session at mint
+ * would freeze an answer the operator did not choose.
+ *
+ * **The membership check is the design, not input validation.** A pairing code
+ * may only hand back an address this Core's certificate already covers, so the
+ * candidate is checked against the SAN list recorded in `material.json` — the
+ * record of what was actually signed. Anything else is refused, and the refusal
+ * prints the list, because an operator who typed the wrong address needs the
+ * right ones more than they need to be told they were wrong.
+ */
+function chooseEndpointHost(
+  deps: ActanaCliDeps,
+  configured: readonly string[],
+  values: Record<string, string | true | undefined>,
+): string | undefined | typeof REFUSED {
+  const requested = valueFlag(values, "public-host");
+  if (requested === undefined) return undefined;
+
+  const wanted = requested.trim();
+  if (wanted.length === 0) {
+    deps.err("actana pair new: --public-host needs an address.");
+    return REFUSED;
+  }
+  if (configured.length === 0) {
+    // Material written before the SAN list was recorded (pre-#347, or pre-D18).
+    // There is nothing here to check membership against, and guessing would be
+    // the one thing this flag exists to prevent.
+    deps.err(
+      "actana pair new: this Core's material does not record which addresses its " +
+        "certificate covers, so --public-host cannot be checked against them.",
+    );
+    deps.err("Re-run `actana setup` (or restart the container) — it records them.");
+    return REFUSED;
+  }
+  if (!isConfiguredPublicHost(configured, wanted)) {
+    deps.err(
+      `actana pair new: ${JSON.stringify(wanted)} is not one of this Core's configured ` +
+        "public hosts.",
+    );
+    deps.err(
+      "A pairing code can only hand back an address this Core was configured to answer " +
+        `on, so that the certificate is guaranteed to cover it — otherwise the client it ` +
+        "pairs would fail hostname verification on its first dial.",
+    );
+    deps.err(`Configured (${CONTAINER_PUBLIC_HOST_ENV}): ${formatPublicHosts(configured)}`);
+    deps.err(
+      `Omit --public-host to use ${primaryPublicHost(configured)}, the first of them.`,
+    );
+    // `localhost` and `127.0.0.1` are on every certificate this Core signs (ADR
+    // 0032 D9) and are still not selectable, so the sentence above would be
+    // false about them if it were left to stand alone. The policy is deliberate
+    // — ADR 0038 D4 — and the reason is reachability rather than coverage: a
+    // loopback address handed to a client on another machine names that
+    // client's own machine.
+    if (LOOPBACK_HOSTS.includes(wanted)) {
+      deps.err(
+        `${wanted} is in this Core's certificate, and it is deliberately not selectable: ` +
+          "handed to a client on another machine it would name that machine, not this Core. " +
+          "The machine this Core runs on already reaches it on loopback without pairing.",
+      );
+    }
+    return REFUSED;
+  }
+  return wanted;
 }
 
 // ─── ls ─────────────────────────────────────────────────────────────────────

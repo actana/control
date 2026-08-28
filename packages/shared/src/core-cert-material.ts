@@ -43,12 +43,19 @@ export type CertMaterial = {
 
 export type GenerateCertMaterialOptions = {
   /**
-   * The host the server cert is valid for (SAN). Defaults to `localhost` +
-   * `127.0.0.1`. For a remote Core this is the VM's reachable address
-   * (e.g. `10.0.0.5`); the Panel dials that host, so the SAN must match or
-   * TLS hostname verification fails.
+   * The hosts the server cert is valid for (SANs). Defaults to `localhost` +
+   * `127.0.0.1`. For a remote Core these are the addresses a client reaches it
+   * on (e.g. `["core", "10.0.0.5"]`); a client dials one of them, so it must be
+   * in the SAN list or TLS hostname verification fails.
+   *
+   * A list rather than one host since #347: one Core is often reachable two
+   * ways at once — a compose service name on the internal network and a LAN
+   * address from the host machine — and covering only one of them meant
+   * changing the answer, which re-signs the certificate and unpairs everything
+   * still dialling the old name. **The first entry is the primary**: it is the
+   * common name, and it is the endpoint a pairing hands back by default.
    */
-  host?: string;
+  hosts?: readonly string[];
   /** Cert validity in days. Defaults to 10 years for the CA, 1 year for leaves. */
   days?: number;
 };
@@ -71,7 +78,7 @@ function addDays(date: Date, days: number): Date {
 export async function generateCertMaterial(
   opts: GenerateCertMaterialOptions = {},
 ): Promise<CertMaterial> {
-  const host = opts.host && opts.host.length > 0 ? opts.host : "localhost";
+  const hosts = certHosts(opts.hosts);
   const caDays = opts.days ?? CA_DAYS;
   const leafDays = opts.days ?? LEAF_DAYS;
   const notBefore = new Date();
@@ -102,7 +109,7 @@ export async function generateCertMaterial(
   // ─── Server cert, signed by the CA ───
   const server = await issueServerCert({
     ca: { cert: ca.cert, key: ca.private },
-    host,
+    hosts,
     days: leafDays,
     notBefore,
   });
@@ -138,8 +145,11 @@ export async function generateCertMaterial(
 export type IssueServerCertOptions = {
   /** The CA to sign with — the Panel has already pinned its certificate. */
   ca: CertAuthority;
-  /** The host a Panel dials, which the SAN must cover. */
-  host: string;
+  /**
+   * The hosts a client dials, every one of which the SAN list must cover. The
+   * first is the primary — the common name, and the default endpoint (#347).
+   */
+  hosts: readonly string[];
   /** Leaf validity in days. Defaults to a year. */
   days?: number;
   /** Backdate/align the validity window. Defaults to now. */
@@ -147,7 +157,7 @@ export type IssueServerCertOptions = {
 };
 
 /**
- * Sign a server cert for `host` against an existing CA.
+ * Sign a server cert for `hosts` against an existing CA.
  *
  * Split out of {@link generateCertMaterial} because a Core that moves keeps its
  * identity and only outgrows its SAN: re-issuing from the CA the Panel already
@@ -155,23 +165,11 @@ export type IssueServerCertOptions = {
  * (ADR 0016 D18).
  */
 export async function issueServerCert(opts: IssueServerCertOptions): Promise<CertPem> {
-  const host = opts.host && opts.host.length > 0 ? opts.host : "localhost";
+  const hosts = certHosts(opts.hosts);
   const notBefore = opts.notBefore ?? new Date();
 
-  // type 2 = DNS, type 7 = IPv4. If the host parses as an IP, add it as IP;
-  // otherwise add it as DNS. Always also cover localhost + 127.0.0.1 so a
-  // loopback dial against the same Core works too.
-  const sanAltNames: { type: 2 | 7; value?: string; ip?: string }[] = [];
-  if (isIp(host)) {
-    sanAltNames.push({ type: 7, ip: host });
-  } else {
-    sanAltNames.push({ type: 2, value: host });
-  }
-  if (host !== "localhost") sanAltNames.push({ type: 2, value: "localhost" });
-  sanAltNames.push({ type: 7, ip: "127.0.0.1" });
-
   const server = await selfsigned.generate(
-    [{ name: "commonName", value: host }],
+    [{ name: "commonName", value: hosts[0]! }],
     {
       algorithm: "sha256",
       notBeforeDate: notBefore,
@@ -186,11 +184,57 @@ export async function issueServerCert(opts: IssueServerCertOptions): Promise<Cer
           critical: true,
         },
         { name: "extKeyUsage", serverAuth: true },
-        { name: "subjectAltName", altNames: sanAltNames },
+        { name: "subjectAltName", altNames: serverSanAltNames(hosts) },
       ],
     },
   );
   return { cert: server.cert, key: server.private };
+}
+
+/**
+ * The hosts a certificate is signed for, with the one default this module has
+ * always had.
+ *
+ * `localhost` for an absent or empty list, exactly as a missing `host` meant
+ * before #347 — every caller that passed nothing got a loopback certificate and
+ * still does.
+ */
+function certHosts(hosts: readonly string[] | undefined): string[] {
+  const named = (hosts ?? []).map((host) => host.trim()).filter((host) => host.length > 0);
+  return named.length > 0 ? named : ["localhost"];
+}
+
+/**
+ * The SAN list for a server certificate: every configured host, then the two
+ * loopback names.
+ *
+ * type 2 = DNS, type 7 = IPv4. A host that parses as an IP is added as an IP
+ * and anything else as DNS, because a client verifying `10.0.0.5` against a
+ * `DNS:10.0.0.5` entry fails — Node checks IP literals against `iPAddress`
+ * entries and nothing else.
+ *
+ * `localhost` and `127.0.0.1` are appended to every server certificate, on the
+ * mint path and the re-issue path both, so the machine's own CLI can dial the
+ * Core it is standing on (ADR 0032 D9, `core-self-register.ts`). #347 did not
+ * change that: an operator's list is *added to* the loopback pair rather than
+ * replacing it.
+ *
+ * Repeats are dropped. An operator who lists `127.0.0.1` explicitly, or lists
+ * the same name twice, gets one entry for it — a certificate naming the same
+ * address twice verifies identically and reads worse.
+ */
+function serverSanAltNames(hosts: readonly string[]): { type: 2 | 7; value?: string; ip?: string }[] {
+  const altNames: { type: 2 | 7; value?: string; ip?: string }[] = [];
+  const seen = new Set<string>();
+  const add = (host: string): void => {
+    if (host.length === 0 || seen.has(host)) return;
+    seen.add(host);
+    altNames.push(isIp(host) ? { type: 7, ip: host } : { type: 2, value: host });
+  };
+  for (const host of hosts) add(host);
+  add("localhost");
+  add("127.0.0.1");
+  return altNames;
 }
 
 /** Crude IPv4 detector — good enough for SAN choice (no false positives that matter). */

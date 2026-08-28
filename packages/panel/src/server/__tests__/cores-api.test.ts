@@ -190,7 +190,7 @@ type CoreFixture = {
 };
 
 async function startCore(label: string, eventCount = 0): Promise<CoreFixture> {
-  const material = await generateCertMaterial({ host: "127.0.0.1" });
+  const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const bound = { port: await freePort() };
   // Counted on the Core side: this is what "the Panel actually reached this
   // machine" looks like from the machine, rather than from the Panel's own

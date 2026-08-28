@@ -133,13 +133,30 @@ export type CorePairingRoutesOptions = {
   material: PairingIssuerMaterial;
   sessions: PairingSessionPort;
   /**
-   * The `wss://host:port` a paired client dials afterwards — what goes in the
-   * response's `endpoint`, and from there into the client's blob-shaped
-   * credential. The Core's own idea of its public address, not a value derived
-   * from the request: a `Host` header is chosen by the caller, and a client
-   * that pinned it would have pinned whatever an attacker wrote there.
+   * The `wss://host:port` the client that redeemed **this** session dials
+   * afterwards — what goes in the response's `endpoint`, and from there into
+   * the client's blob-shaped credential.
+   *
+   * **Still the Core's own idea of its public address, and never a value
+   * derived from the request.** A `Host` header is chosen by the caller, and a
+   * client that pinned it would have pinned whatever an attacker wrote there.
+   * That has not moved an inch; what changed in #347 is only *which* of the
+   * Core's own addresses this answer is, and the only input to that is the
+   * stored session — a record the operator wrote with `actana pair new` on the
+   * machine that is the Core, minutes before this request existed. Nothing the
+   * redeeming client sends reaches this function.
+   *
+   * A function of the session rather than one string for the whole route,
+   * because one Core now covers several addresses at once and a client paired
+   * for the compose network must be told the service name while a client paired
+   * from the host machine is told the LAN address. Both are on this Core's
+   * certificate; neither is on the wire until it is chosen here.
+   *
+   * The resolver is the caller's — `core-pairing-wiring.ts` builds the one the
+   * daemon uses, and it is the place the "only a configured host, ever" rule is
+   * enforced a second time on the way out.
    */
-  endpoint: string;
+  endpointFor: (session: PairingSession) => string;
   /** Issued bearer lifetime. Defaults to {@link DEFAULT_PAIRED_BEARER_DAYS}. */
   bearerDays?: number;
   /** Shared across requests. A fresh default one is made when omitted. */
@@ -401,7 +418,11 @@ export function createCorePairingRequestHandler(opts: CorePairingRoutesOptions):
       caCert: opts.material.caCert,
       clientCert: issued.cert,
       bearer,
-      endpoint: opts.endpoint,
+      // From the session this redemption named, and from nothing else on this
+      // request — see `endpointFor`. `consumed.session` rather than the copy
+      // read at step 2 so the answer is built from the row the store just
+      // wrote, which is the row that decided the race.
+      endpoint: opts.endpointFor(consumed.session),
     };
     sendJson(res, 200, answer);
   }

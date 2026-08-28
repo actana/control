@@ -350,7 +350,7 @@ function coreDisk(): string {
  */
 let sharedMaterial: Awaited<ReturnType<typeof generateCertMaterial>> | null = null;
 async function certMaterial() {
-  sharedMaterial ??= await generateCertMaterial({ host: "127.0.0.1" });
+  sharedMaterial ??= await generateCertMaterial({ hosts: ["127.0.0.1"] });
   return sharedMaterial;
 }
 

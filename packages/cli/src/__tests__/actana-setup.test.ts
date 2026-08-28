@@ -98,7 +98,7 @@ function options(system: ActanaSystem, over: Partial<SetupOptions> = {}): SetupO
     manifest: MANIFEST,
     port: 8443,
     host: "0.0.0.0",
-    publicHost: "10.0.0.5",
+    publicHosts: ["10.0.0.5"],
     label: "vm-1",
     platform: "linux",
     arch: "x64",
@@ -491,7 +491,11 @@ describe("runActanaSetup — the install layout", () => {
       version: "0.1.0",
       port: 8443,
       host: "0.0.0.0",
+      // The primary and the list both, and for a one-address Core the primary
+      // is what it always was — `status`, `token` and `endpointFor` read it and
+      // are untouched by #347.
       publicHost: "10.0.0.5",
+      publicHosts: ["10.0.0.5"],
       label: "vm-1",
       installDir: path.join(layout.versionsDir, "0.1.0"),
       dataDir: layout.dataDir,
@@ -739,7 +743,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     await runActanaSetup(options(fakeSystem()));
     const before = loadMaterial(layout.configDir)!;
 
-    const second = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+    const second = await runActanaSetup(options(fakeSystem(), { publicHosts: ["10.0.0.9"] }));
 
     const after = loadMaterial(layout.configDir)!;
     expect(second.materialOutcome).toBe("reissued");
@@ -756,7 +760,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     const before = loadMaterial(layout.configDir)!;
     const { caCert: caBefore, clientCert: clientCertBefore } = wiredCredential(first);
 
-    const second = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+    const second = await runActanaSetup(options(fakeSystem(), { publicHosts: ["10.0.0.9"] }));
 
     const after = loadMaterial(layout.configDir)!;
     expect(after.coreId).toBe(before.coreId);
@@ -775,7 +779,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     const first = await runActanaSetup(options(fakeSystem()));
     const pinnedCa = wiredCredential(first).caCert;
 
-    await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+    await runActanaSetup(options(fakeSystem(), { publicHosts: ["10.0.0.9"] }));
 
     const server = new X509Certificate(loadMaterial(layout.configDir)!.serverCert);
     expect(server.verify(createPublicKey(pinnedCa))).toBe(true);
@@ -783,17 +787,17 @@ describe("runActanaSetup — re-running over an existing install", () => {
 
   it("re-issues rather than re-mints for material predating the recorded host", async () => {
     await runActanaSetup(options(fakeSystem()));
-    // Material written before `serverHost` existed: the config setup wrote
+    // Material written before the SAN record existed: the config setup wrote
     // beside it is what says which host the cert was signed for.
     const legacy = loadMaterial(layout.configDir)!;
-    persistMaterial(layout.configDir, { ...legacy, serverHost: "" });
+    persistMaterial(layout.configDir, { ...legacy, serverHosts: [] });
 
     const same = await runActanaSetup(options(fakeSystem()));
     expect(same.materialOutcome).toBe("reused");
     expect(loadMaterial(layout.configDir)!.serverCert).toBe(legacy.serverCert);
 
-    persistMaterial(layout.configDir, { ...legacy, serverHost: "" });
-    const moved = await runActanaSetup(options(fakeSystem(), { publicHost: "10.0.0.9" }));
+    persistMaterial(layout.configDir, { ...legacy, serverHosts: [] });
+    const moved = await runActanaSetup(options(fakeSystem(), { publicHosts: ["10.0.0.9"] }));
 
     expect(moved.materialOutcome).toBe("reissued");
     expect(loadMaterial(layout.configDir)!.coreId).toBe(legacy.coreId);
@@ -803,7 +807,7 @@ describe("runActanaSetup — re-running over an existing install", () => {
     const lines: string[] = [];
     await runActanaSetup(options(fakeSystem()));
     await runActanaSetup(
-      options(fakeSystem(), { publicHost: "10.0.0.9", out: (l) => lines.push(l) }),
+      options(fakeSystem(), { publicHosts: ["10.0.0.9"], out: (l) => lines.push(l) }),
     );
 
     const said = lines.join("\n");

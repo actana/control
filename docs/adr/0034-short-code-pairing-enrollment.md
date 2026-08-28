@@ -60,6 +60,21 @@ without a certificate at any point. `core-pairing-redeem.test.ts` holds this as
 a named case — *"the pre-auth hole is exactly one route wide"*. **A second
 pre-auth route is a change to this decision, not a routine addition.**
 
+> **Amended 2026-08-28 by [#347](https://github.com/actana/control/issues/347): the one route's
+> `endpoint` becomes per-session, and the route count does not change.**
+> [ADR 0038](0038-a-core-has-several-addresses.md) D6 and D7. `POST /v1/pair/redeem` is still the
+> only pre-auth surface, still relaxes the handshake exactly the way this clause confines it, and its
+> request shape is untouched — so the *"the pre-auth hole is exactly one route wide"* case still
+> holds and was not edited. What changed is inside the 200 body: `endpoint` is resolved from the
+> redeemed pairing session rather than being one string configured for the whole route, so a Core
+> covering several addresses can tell each client the one it can reach. **The pre-auth caller gained
+> no influence over it.** The resolver's whole input is the stored session — a record the operator
+> wrote with `actana pair new` on the machine that is the Core, before the request existed — and the
+> `Host` header is still not a source, for the reason this route has always given. A pairing code can
+> only name an address the certificate already covers (0038 D5), enforced when the code is minted and
+> again on the way out. Recorded here because 0038's header and `docs/README.md` both say it adds to
+> the surface this clause bounds, and a clause that is added to should say so where it is read.
+
 **D3 — The client's private key is born on the client and never crosses the
 wire.** The client generates a key pair, sends a CSR, and the Core signs it
 (`core-pairing-csr.ts:60`, `core-pairing.ts:393`). The redemption body is

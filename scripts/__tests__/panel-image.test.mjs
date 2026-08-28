@@ -1037,7 +1037,12 @@ describe("docker hub descriptions", () => {
     expect(core).toContain("actana harnesses install");
     // The refused verbs of the old fixture, and the systemd it needed.
     expect(core).not.toContain("--privileged");
-    expect(core).not.toContain("--public-host core");
+    // The old fixture hardcoded the public host into its *setup* — a container
+    // that installed itself. Narrowed from a bare `--public-host core` in #347:
+    // `actana pair new --public-host core` is a different command doing a
+    // different job, and the reference compose really does call the service
+    // `core`, so the flag's own examples have to be able to say so.
+    expect(core).not.toContain("setup --public-host core");
   });
 
   it("links the images back to this repository via OCI labels", () => {
