@@ -42,9 +42,15 @@ export type UninstallResult = {
   /**
    * The pre-rename service this run booted out, or null (#348).
    *
-   * Its own field rather than an entry in {@link removed}, which is a list of
-   * filesystem paths: a launchd label is not one, and a caller printing the
-   * list would have shown `com.actana.harness` among a column of directories.
+   * Its own field rather than an entry in {@link removed}, and that is not a
+   * matter of neatness (#353 review C4). `removed` is a list of filesystem
+   * paths — a launchd label is not one — *and* it is the caller's "did this run
+   * do anything?" signal: `actana uninstall` runs without requiring an install,
+   * so on a machine carrying only the pre-rename agent a label in that list
+   * made the summary claim a service and an install that were never there,
+   * while suppressing the truthful "there was no Core installed" line. Both
+   * statements were false, on the #348 cleanup path, about exactly the machine
+   * #348 is about.
    */
   removedLegacyService: string | null;
 };
@@ -132,8 +138,18 @@ export function runActanaUninstall(opts: UninstallOptions): UninstallResult {
   // once whatever is being kept there is accounted for.
   removeIfEmpty(layout.root, removed);
 
+  // Only the halves that were actually here. On a machine carrying the
+  // pre-rename agent and no install — the machine #348 is about — this used to
+  // name `com.actana.core`, a service that was never on it, and "the Core
+  // install", which never existed (#353 review C4). The legacy removal has its
+  // own line above and its own field on the result; it is deliberately not what
+  // makes this one print.
   if (removed.length > 0) {
-    opts.out(`Removed the ${opts.service.name} service and the Core install.`);
+    opts.out(
+      hadService
+        ? `Removed the ${opts.service.name} service and the Core install.`
+        : "Removed the Core install.",
+    );
   }
   if (kept.length > 0) {
     opts.out("");

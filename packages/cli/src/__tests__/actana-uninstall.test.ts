@@ -29,7 +29,9 @@ function fakeService() {
       service.uninstalls += 1;
       fs.rmSync(service.filePath, { force: true });
     },
-    removeLegacyUnit: () => null,
+    // Typed rather than inferred as `() => null`, so a test can stand this up
+    // as the machine that *does* carry a pre-rename service.
+    removeLegacyUnit: (): string | null => null,
     observe: () => ({ name: "actana-core.service", legacyName: null }),
     async ensurePersistence() {
       return { survivesLogout: true, summary: "enabled, lingering" };
@@ -134,6 +136,23 @@ describe("uninstall", () => {
     expect(result.kept).toContain(layout.dataDir);
   });
 
+  it("names only the halves that were actually there when a unit was not", () => {
+    // An install with no unit file: the summary may claim the install and must
+    // not claim a service.
+    installedMachine();
+    fs.rmSync(fakeService().filePath, { force: true });
+
+    runActanaUninstall({
+      layout,
+      service: fakeService(),
+      purgeData: false,
+      out: (line) => out.push(line),
+    });
+
+    expect(out.join("\n")).toContain("Removed the Core install.");
+    expect(out.join("\n")).not.toContain("actana-core.service service");
+  });
+
   it("keeps the root only for the data it holds, not as an empty shell", () => {
     // The default data dir lives inside the install root, so the root survives
     // a plain uninstall — but with nothing in it except that data.
@@ -175,6 +194,31 @@ describe("uninstall", () => {
 });
 
 describe("uninstalling a machine that is already mostly clean", () => {
+  // ─── a machine carrying only the pre-rename agent (#353 review C4) ──────
+  //
+  // `actana uninstall` deliberately runs without requiring an install, so this
+  // machine is reachable: the #348 cleanup path, on exactly the machine #348 is
+  // about. The legacy removal must not be mistaken for an install having been
+  // here — `removed` is both a list of paths and the caller's "did this run do
+  // anything?" signal.
+  it("does not claim a service or an install that were never here", () => {
+    const service = fakeService();
+    service.removeLegacyUnit = () => "com.actana.harness";
+
+    const result = uninstall(false, service);
+
+    // Nothing of an install was on this machine, so nothing is reported as
+    // removed; the legacy agent has its own field.
+    expect(result.removed).toEqual([]);
+    expect(result.kept).toEqual([]);
+    expect(result.removedLegacyService).toBe("com.actana.harness");
+    const said = out.join("\n");
+    expect(said).toContain("com.actana.harness");
+    // The two false statements this used to print.
+    expect(said).not.toContain("actana-core.service");
+    expect(said).not.toMatch(/and the Core install/);
+  });
+
   it("succeeds with nothing installed at all", () => {
     const service = fakeService();
     expect(() => uninstall(false, service)).not.toThrow();

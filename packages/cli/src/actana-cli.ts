@@ -1383,7 +1383,16 @@ async function cmdUninstall(deps: ActanaCliDeps, argv: string[]): Promise<number
 
   const result = runActanaUninstall({ layout, service, purgeData, out: deps.out });
   if (result.removed.length === 0 && result.kept.length === 0) {
-    deps.out("There was no Core installed for this user.");
+    // Nothing of an install was here. On the #348 machine that is still the
+    // truth *and* not the whole of it: the pre-rename agent was here and is now
+    // gone, so saying only "there was no Core installed" would read as though
+    // the command had done nothing (#353 review C4).
+    deps.out(
+      result.removedLegacyService
+        ? `There was no Core installed for this user — only ${result.removedLegacyService}, ` +
+            "left by an install from before the rename, and that is now removed."
+        : "There was no Core installed for this user.",
+    );
   }
   return 0;
 }

@@ -1289,6 +1289,30 @@ describe("uninstall", () => {
     expect(fs.existsSync(layout.currentLink)).toBe(false);
   });
 
+  it("tells the truth on a machine that has only the pre-rename unit", async () => {
+    // #353 review C4, end to end. `uninstall` runs without requiring an
+    // install, so this machine is reachable — and it is the #348 cleanup path.
+    // Both halves have to be said: no Core was installed, *and* the stale unit
+    // that was here is gone.
+    const layout = layoutForHome();
+    fs.mkdirSync(layout.serviceDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(layout.serviceDir, "actana-harness.service"),
+      "[Unit]\nDescription=Actana Control Harness\n",
+    );
+    out.length = 0;
+
+    expect(await runActanaCli(deps(["uninstall", "--yes"], fakeSystem()))).toBe(0);
+
+    const said = out.join("\n");
+    expect(said).toContain("actana-harness.service");
+    expect(said).toContain("There was no Core installed for this user");
+    // The sentence that used to name a service and an install that were never
+    // on this machine.
+    expect(said).not.toMatch(/Removed the actana-core\.service service/);
+    expect(fs.existsSync(path.join(layout.serviceDir, "actana-harness.service"))).toBe(false);
+  });
+
   it("keeps the data dir and the credentials, and says how to remove them", async () => {
     await setup(fakeSystem());
     const layout = layoutForHome();
