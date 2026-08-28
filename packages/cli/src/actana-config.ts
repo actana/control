@@ -116,10 +116,6 @@ export function readActanaConfig(configDir: string): ActanaConfig | null {
 }
 
 /**
- * The `wss://` endpoint the Panel dials. Always `wss://` — a registration blob
- * carrying anything else is rejected by the Panel (ADR 0002).
- */
-/**
  * The addresses this install's certificate covers, from either shape of config.
  *
  * A config written before #347 records one `publicHost` and no list, and it
@@ -134,6 +130,15 @@ export function configPublicHosts(
   return listed.length > 0 ? listed : [config.publicHost];
 }
 
+/**
+ * The `wss://` endpoint the Panel dials. Always `wss://` — a registration blob
+ * carrying anything else is rejected by the Panel (ADR 0002).
+ *
+ * The **primary** address, and only ever one: an endpoint is one address, and
+ * which of several a given client is told to dial is a per-pairing question the
+ * Core answers at redemption (#347, ADR 0038 D6) rather than one this config
+ * can answer for everybody.
+ */
 export function endpointFor(config: Pick<ActanaConfig, "publicHost" | "port">): string {
   const host = config.publicHost.includes(":") && !config.publicHost.startsWith("[")
     ? `[${config.publicHost}]`
