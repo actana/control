@@ -109,7 +109,7 @@ function record(client: PairedClient, now = NOW): void {
 beforeEach(async () => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-pair-"));
   materialPath = materialFilePath(dir);
-  material = await mintFreshMaterial("10.0.0.5");
+  material = await mintFreshMaterial(["10.0.0.5"]);
   persistMaterialToFile(materialPath, material);
   out = [];
   err = [];
@@ -257,6 +257,116 @@ describe("actana pair new", () => {
     expect(fs.readFileSync(pairingStorePath(materialPath), "utf8")).toBe(
       '{"version":1,"clients":[{"certSerial"',
     );
+  });
+});
+
+// ─── pair new --public-host (#347) ──────────────────────────────────────────
+//
+// A Core whose certificate covers several addresses can pair each client to
+// the one it can reach. The flag **chooses** from that list; it can never add
+// to it, because a code that handed back an address the certificate does not
+// cover would give its client a credential that fails on its first dial. The
+// refusal is therefore the load-bearing half of this feature, not its edge
+// case, and it is what these tests spend most of their assertions on.
+
+describe("actana pair new --public-host", () => {
+  /** This suite's Core is reachable three ways, which is the case at issue. */
+  async function multiHost(): Promise<void> {
+    material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+    persistMaterialToFile(materialPath, material);
+  }
+
+  it("records the chosen host on the session, and says so on stdout", async () => {
+    await multiHost();
+
+    expect(run(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
+
+    expect(field("Endpoint host")).toBe("10.0.0.5");
+    const session = store().getSession(field("Session"))!;
+    expect(session.endpointHost).toBe("10.0.0.5");
+  });
+
+  it("leaves the session on the primary when the flag is omitted", async () => {
+    await multiHost();
+
+    expect(run(["new", "--label", "laptop"])).toBe(0);
+
+    // Null, not the primary spelled into the row: the daemon resolves an
+    // unchosen endpoint against whatever this Core is configured with when the
+    // code is redeemed, which is today's behaviour and stays it.
+    const session = store().getSession(field("Session"))!;
+    expect(session.endpointHost).toBeNull();
+    expect(out.join("\n")).not.toContain("Endpoint host");
+  });
+
+  it("takes any host on the list, not only the primary", async () => {
+    await multiHost();
+    for (const host of ["core", "10.0.0.5", "core.example.test"]) {
+      expect(run(["new", "--public-host", host])).toBe(0);
+      expect(field("Endpoint host")).toBe(host);
+    }
+  });
+
+  it("trims what the operator typed, as the configured list was trimmed", async () => {
+    await multiHost();
+    expect(run(["new", "--public-host", " 10.0.0.5 "])).toBe(0);
+    expect(store().getSession(field("Session"))!.endpointHost).toBe("10.0.0.5");
+  });
+
+  // **The constraint the whole design rests on.** A pairing code may not name
+  // an address this Core's certificate has no SAN for. Refused before anything
+  // is written, and the refusal prints the addresses that would have worked —
+  // an operator who typed the wrong one needs the right ones more than they
+  // need to be told they were wrong.
+  it("refuses a host that is not configured, and prints the ones that are", async () => {
+    await multiHost();
+
+    expect(run(["new", "--label", "laptop", "--public-host", "192.168.1.20"])).toBe(2);
+
+    const said = err.join("\n");
+    expect(said).toContain("192.168.1.20");
+    expect(said).toMatch(/not one of this Core's configured public hosts/);
+    expect(said).toContain("core, 10.0.0.5, core.example.test");
+    expect(said).toContain("Omit --public-host to use core, the first of them.");
+    // Nothing was minted: no code was printed, and no session was written.
+    expect(out).toEqual([]);
+    expect(store().listSessions()).toEqual([]);
+  });
+
+  it("refuses a near miss rather than resolving it to something close", async () => {
+    await multiHost();
+    // Prefixes, suffixes and case are all somebody else's address.
+    for (const wrong of ["10.0.0.50", "core.example", "CORE", "localhost"]) {
+      expect(run(["new", "--public-host", wrong])).toBe(2);
+      expect(store().listSessions()).toEqual([]);
+    }
+  });
+
+  it("refuses an empty value rather than reading it as the primary", async () => {
+    await multiHost();
+    expect(run(["new", "--public-host="])).toBe(2);
+    expect(err.join("\n")).toMatch(/--public-host needs an address/);
+    expect(store().listSessions()).toEqual([]);
+  });
+
+  // Material written before the SAN list was recorded has nothing to check
+  // membership against, and guessing is the one thing this flag exists to
+  // prevent. A code without the flag still mints, so the Core is not bricked.
+  it("refuses when this Core's material records no configured hosts", () => {
+    persistMaterialToFile(materialPath, { ...material, serverHosts: [] });
+
+    expect(run(["new", "--public-host", "10.0.0.5"])).toBe(2);
+    expect(err.join("\n")).toMatch(/does not record which addresses/);
+    expect(store().listSessions()).toEqual([]);
+
+    expect(run(["new", "--label", "laptop"])).toBe(0);
+  });
+
+  it("names the flag in its help, with the rule that binds it", () => {
+    expect(run(["new", "--help"])).toBe(0);
+    const help = out.join("\n");
+    expect(help).toContain("--public-host <addr>");
+    expect(help).toMatch(/certificate already covers/);
   });
 });
 
