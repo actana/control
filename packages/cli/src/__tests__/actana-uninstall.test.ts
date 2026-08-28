@@ -30,6 +30,7 @@ function fakeService() {
       fs.rmSync(service.filePath, { force: true });
     },
     removeLegacyUnit: () => null,
+    observe: () => ({ name: "actana-core.service", legacyName: null }),
     async ensurePersistence() {
       return { survivesLogout: true, summary: "enabled, lingering" };
     },

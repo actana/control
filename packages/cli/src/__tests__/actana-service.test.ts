@@ -43,6 +43,13 @@ const DEFINITION = {
   environment: { AC_CORE_REMOTE: "1" },
 };
 
+/** The pre-rename LaunchAgent label — what a machine upgraded in place keeps. */
+const LEGACY_LABEL = "com.actana.harness";
+
+/** `launchctl print` answers for a job launchd has, and for one it does not. */
+const OK: CommandResult = { status: 0, stdout: "", stderr: "" };
+const MISSING: CommandResult = { status: 113, stdout: "", stderr: "Could not find service" };
+
 let tmp: string;
 let home: string;
 
@@ -189,6 +196,14 @@ describe("removing the pre-rename unit", () => {
   /** The unit `actana setup` wrote when the machine was called a Harness. */
   const LEGACY_UNIT = "actana-harness.service";
 
+  /** The pre-rename plist an in-place upgrade leaves in `~/Library/LaunchAgents`. */
+  function plantLegacyAgent(layout: ActanaLayout): string {
+    fs.mkdirSync(layout.serviceDir, { recursive: true });
+    const legacyPath = path.join(layout.serviceDir, `${LEGACY_LABEL}.plist`);
+    fs.writeFileSync(legacyPath, "<plist/>\n");
+    return legacyPath;
+  }
+
   function plantLegacyUnit(layout: ActanaLayout): string {
     fs.mkdirSync(layout.serviceDir, { recursive: true });
     const legacyPath = path.join(layout.serviceDir, LEGACY_UNIT);
@@ -250,12 +265,49 @@ describe("removing the pre-rename unit", () => {
     expect(fs.existsSync(layout.servicePath)).toBe(true);
   });
 
-  it("has nothing to remove on macOS — no released build ever wrote a plist", () => {
+  it("boots out the pre-rename LaunchAgent, deletes its plist, and names it", () => {
     const system = fakeSystem();
+    const { manager, layout } = managerFor("darwin", system);
+    const legacyPath = plantLegacyAgent(layout);
+
+    expect(manager.removeLegacyUnit()).toBe(LEGACY_LABEL);
+
+    expect(system.calls.map((c) => c.join(" "))).toContain(
+      `launchctl bootout gui/501/${LEGACY_LABEL}`,
+    );
+    expect(fs.existsSync(legacyPath)).toBe(false);
+  });
+
+  it("boots out a loaded legacy job whose plist someone already deleted", () => {
+    // `rm`ing the plist unloads nothing: launchd holds the copy it read at
+    // bootstrap time, so the old daemon is still up and still holds the port.
+    const system = fakeSystem({ [`launchctl print gui/501/${LEGACY_LABEL}`]: OK });
+    const { manager } = managerFor("darwin", system);
+
+    expect(manager.removeLegacyUnit()).toBe(LEGACY_LABEL);
+    expect(system.calls.map((c) => c.join(" "))).toContain(
+      `launchctl bootout gui/501/${LEGACY_LABEL}`,
+    );
+  });
+
+  it("removes nothing on a macOS machine that never had one", () => {
+    const system = fakeSystem({ "launchctl print": MISSING });
     const { manager } = managerFor("darwin", system);
 
     expect(manager.removeLegacyUnit()).toBeNull();
-    expect(system.calls).toEqual([]);
+    expect(manager.removeLegacyUnit()).toBeNull();
+    expect(system.calls.map((c) => c.join(" "))).not.toContain(
+      `launchctl bootout gui/501/${LEGACY_LABEL}`,
+    );
+  });
+
+  it("leaves the agent setup just installed alone", () => {
+    const system = fakeSystem({ "launchctl print": MISSING });
+    const { manager, layout } = managerFor("darwin", system);
+    manager.install(DEFINITION);
+
+    expect(manager.removeLegacyUnit()).toBeNull();
+    expect(fs.existsSync(layout.servicePath)).toBe(true);
   });
 });
 
@@ -268,8 +320,31 @@ describe("launchd manager — state", () => {
   }
 
   it("reports nothing installed before setup has written a plist", () => {
-    const { manager } = managerFor("darwin", fakeSystem());
+    // No plist under either label, and launchd has never heard of either job.
+    const { manager } = managerFor("darwin", fakeSystem({ "launchctl print gui/501/": MISSING }));
     expect(manager.state()).toBeNull();
+  });
+
+  it("reports the legacy agent's state rather than `not installed` (#348)", () => {
+    // The machine in the report: a pre-rename agent launchd is really running,
+    // no plist under the current label, and a `State  not installed` that was
+    // flatly untrue while a Core was up and holding the port.
+    const system = fakeSystem({
+      "launchctl print gui/501/com.actana.core": MISSING,
+      "launchctl print gui/501/com.actana.harness": {
+        status: 0,
+        stdout: "\tstate = running\n\tpid = 991\n",
+        stderr: "",
+      },
+    });
+    const { manager } = managerFor("darwin", system);
+
+    expect(manager.state()).toEqual({
+      loadState: "loaded",
+      activeState: "active",
+      subState: "running",
+      mainPid: 991,
+    });
   });
 
   it("reads a running agent's pid", () => {
@@ -328,6 +403,30 @@ describe("launchd manager — state", () => {
       path.join(home, "Library", "LaunchAgents", "com.actana.core.plist"),
     );
     expect(fs.readFileSync(manager.filePath, "utf8")).toContain("<key>Label</key>");
+  });
+
+  it("names the label launchd actually loaded, not the one setup would write", () => {
+    const system = fakeSystem({
+      "launchctl print gui/501/com.actana.core": MISSING,
+      "launchctl print gui/501/com.actana.harness": OK,
+    });
+    const { manager } = managerFor("darwin", system);
+
+    expect(manager.name).toBe("com.actana.core");
+    expect(manager.observe()).toEqual({ name: LEGACY_LABEL, legacyName: LEGACY_LABEL });
+  });
+
+  it("reports both when an in-place upgrade left the old agent beside the new one", () => {
+    const system = fakeSystem({ "launchctl print gui/501/": MISSING });
+    const { manager, layout } = installed(system);
+    fs.writeFileSync(path.join(layout.serviceDir, `${LEGACY_LABEL}.plist`), "<plist/>\n");
+
+    expect(manager.observe()).toEqual({ name: "com.actana.core", legacyName: LEGACY_LABEL });
+  });
+
+  it("reports no service at all on a machine with neither plist", () => {
+    const { manager } = managerFor("darwin", fakeSystem({ "launchctl print gui/501/": MISSING }));
+    expect(manager.observe()).toEqual({ name: null, legacyName: null });
   });
 
   it("probes the domain once however many verbs are run", () => {

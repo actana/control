@@ -13,7 +13,7 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { randomBytes, randomUUID } from "node:crypto";
+import { createPrivateKey, randomBytes, randomUUID, X509Certificate } from "node:crypto";
 import { generateCertMaterial, issueServerCert } from "./core-cert-material";
 import { samePublicHosts } from "./public-hosts";
 import log from "@actana/shared/log";
@@ -319,6 +319,139 @@ export function readMaterialFile(filePath: string): MaterialFileRead | null {
     },
     mintedCoreUuid,
   };
+}
+
+/** The common name on every CA this product has minted since the rename. */
+export const CORE_CA_COMMON_NAME = "mission-control-core-ca";
+
+/** The common name the Harness-era installer minted, and the tell for #348. */
+export const LEGACY_CA_COMMON_NAME = "mission-control-harness-ca";
+
+/** The common name in an X.509 subject / issuer string, or `""`. */
+function commonNameOf(distinguishedName: string): string {
+  return /^CN=(.*)$/m.exec(distinguishedName)?.[1]?.trim() ?? "";
+}
+
+/**
+ * What is wrong with a material file, and how wrong.
+ *
+ * The severity is the whole of the interface, because the two answers get
+ * opposite treatment and confusing them is how a fix for #348 became a way to
+ * break working machines:
+ *
+ * - `unusable` — no configuration can make this serve TLS. The certificate and
+ *   the key are not a pair, the leaf was not signed by the CA in the file, or
+ *   one of them is not a certificate at all. The daemon refuses to boot on it
+ *   and `actana setup` re-mints it.
+ * - `foreign` — it works, it is simply not ours. Every certificate hangs
+ *   together and a client that pinned that CA still validates; only the
+ *   provenance is unexpected. Reported and kept.
+ */
+export type MaterialIdentityIssue = {
+  severity: "unusable" | "foreign";
+  message: string;
+};
+
+/** What to tell the operator to do about material this Core cannot use. */
+const REMEDY =
+  "Run `actana setup`, which mints this Core a fresh identity when the one on disk cannot " +
+  "be served — every paired client then re-pairs with a new `actana pair new` code.";
+
+/**
+ * Whether this material is an identity this Core can actually serve (#348).
+ *
+ * {@link readMaterialFile} type-checks eight strings, which is the difference
+ * between a file and JSON — not between an identity and a broken one. So
+ * material that could never complete a handshake loaded, the daemon presented
+ * it, and the operator's first news was `wrong version number` from a client:
+ * a message about a wire protocol, for a problem about an identity.
+ *
+ * **What is deliberately *not* refused: a CA this product did not mint.** The
+ * first version of this check refused those, on the reasoning that pre-rename
+ * material is what the machine in #348 carried. It is — and it works. The
+ * triage was explicit that the root cause there is the environment-variable
+ * rename, which `core-boot-refusals.ts` now stops on its own; the Harness-era
+ * CA serves TLS perfectly well once the daemon reads the right variables.
+ * Refusing it would have made this fix brick a working install and cost every
+ * paired client its pairing, to no end. So provenance is `foreign`: said out
+ * loud, and kept.
+ *
+ * A *check*, not a validation of the whole file: the client certificate and the
+ * bearer secret are deliberately not examined. The server pair is what the TLS
+ * handshake fails on, and a check that grew to cover everything would start
+ * refusing material over fields no handshake reads.
+ */
+export function checkMaterialIdentity(material: PersistedMaterial): MaterialIdentityIssue | null {
+  const unusable = (message: string): MaterialIdentityIssue => ({
+    severity: "unusable",
+    message: `${message} ${REMEDY}`,
+  });
+
+  let ca: X509Certificate;
+  try {
+    ca = new X509Certificate(material.caCert);
+  } catch {
+    return unusable("`caCert` is not a certificate this Core can parse.");
+  }
+
+  let server: X509Certificate;
+  try {
+    server = new X509Certificate(material.serverCert);
+  } catch {
+    return unusable("`serverCert` is not a certificate this Core can parse.");
+  }
+
+  // `verify` and deliberately not `checkIssued`: the latter compares names, and
+  // every CA this product mints carries the *same* name — so two Cores' files
+  // shuffled together would pass it while chaining to different keys. The
+  // signature is the only part of a certificate that cannot be coincidence.
+  let issuedByThisCa: boolean;
+  try {
+    issuedByThisCa = server.verify(ca.publicKey);
+  } catch {
+    issuedByThisCa = false;
+  }
+  if (!issuedByThisCa) {
+    return unusable(
+      "The server certificate in this material was not issued by the CA beside it, so no " +
+        "client that pins the CA can validate it.",
+    );
+  }
+
+  try {
+    if (!server.checkPrivateKey(createPrivateKey(material.serverKey))) {
+      return unusable(
+        "The server certificate and `serverKey` in this material are not a pair. TLS would " +
+          "fail at the handshake with nothing said about why.",
+      );
+    }
+  } catch {
+    return unusable("`serverKey` is not a private key this Core can parse.");
+  }
+
+  // Everything hangs together, so whatever is left is provenance and nothing
+  // more. Last on purpose: material with the pre-rename CA *and* a mismatched
+  // key is unusable, and saying "old" about it would send the operator after
+  // the wrong thing.
+  const issuer = commonNameOf(ca.subject);
+  if (issuer !== CORE_CA_COMMON_NAME) {
+    const provenance =
+      issuer === LEGACY_CA_COMMON_NAME
+        ? `was minted by \`${LEGACY_CA_COMMON_NAME}\`, an install from before the Harness → ` +
+          "Core rename"
+        : `was minted by \`${issuer || "(no common name)"}\`, which no version of this ` +
+          "product has minted";
+    return {
+      severity: "foreign",
+      message:
+        `This Core's identity ${provenance}. It is kept and served as it is: the ` +
+        "certificates hang together, and a client that pinned that CA still validates. " +
+        "`actana setup` replaces it with freshly minted material if you want to — every " +
+        "paired client re-pairs when you do.",
+    };
+  }
+
+  return null;
 }
 
 /**

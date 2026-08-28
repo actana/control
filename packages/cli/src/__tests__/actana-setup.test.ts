@@ -7,7 +7,16 @@ import { X509Certificate, createPublicKey } from "node:crypto";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { readActanaConfig } from "../actana-config";
 import { resolveActanaLayout, type ActanaLayout } from "../actana-layout";
-import { loadMaterial, materialFilePath, persistMaterial } from "@actana/shared/core-material-store";
+import selfsigned from "selfsigned";
+import { issueServerCert } from "@actana/shared/core-cert-material";
+import {
+  checkMaterialIdentity,
+  loadMaterial,
+  materialFilePath,
+  mintFreshMaterial,
+  persistMaterial,
+  type PersistedMaterial,
+} from "@actana/shared/core-material-store";
 import { createServiceManager } from "../actana-service";
 import {
   runActanaSetup,
@@ -965,6 +974,117 @@ describe("runActanaSetup — a Core installed before the rename", () => {
     await runActanaSetup(options(system));
 
     expect(system.calls.some((c) => c.join(" ").includes(LEGACY_UNIT))).toBe(false);
+  });
+});
+
+describe("runActanaSetup — recovering material the daemon cannot serve (#348)", () => {
+  /**
+   * Material with a real CA and a server key that belongs to another identity.
+   *
+   * The shape that used to trap an operator: `readMaterialFile` type-checks it
+   * happily, `reissueServerCert` re-blesses it with the same broken key, and
+   * the daemon refuses to boot on it — while telling them to run the command
+   * they had just run.
+   */
+  async function plantUnusableMaterial(): Promise<void> {
+    const mine = await mintFreshMaterial(["10.0.0.5"]);
+    const other = await mintFreshMaterial(["10.0.0.5"]);
+    fs.mkdirSync(layout.configDir, { recursive: true });
+    persistMaterial(layout.configDir, { ...mine, serverKey: other.serverKey });
+  }
+
+  /** What a machine from before the Harness → Core rename carries. */
+  async function plantPreRenameMaterial(): Promise<PersistedMaterial> {
+    const base = await mintFreshMaterial(["10.0.0.5"]);
+    const notBefore = new Date();
+    const ca = await selfsigned.generate(
+      [
+        { name: "commonName", value: "mission-control-harness-ca" },
+        { name: "organizationName", value: "Mission Control" },
+      ],
+      {
+        algorithm: "sha256",
+        notBeforeDate: notBefore,
+        notAfterDate: new Date(notBefore.getTime() + 86_400_000),
+        extensions: [
+          { name: "basicConstraints", cA: true, pathLenConstraint: 0, critical: true },
+          { name: "keyUsage", keyCertSign: true, cRLSign: true, critical: true },
+        ],
+      },
+    );
+    const server = await issueServerCert({
+      ca: { cert: ca.cert, key: ca.private },
+      hosts: ["10.0.0.5"],
+    });
+    const material: PersistedMaterial = {
+      ...base,
+      caCert: ca.cert,
+      caKey: ca.private,
+      serverCert: server.cert,
+      serverKey: server.key,
+      serverHosts: ["10.0.0.5"],
+    };
+    fs.mkdirSync(layout.configDir, { recursive: true });
+    persistMaterial(layout.configDir, material);
+    return material;
+  }
+
+  it("re-mints it from a fresh CA instead of re-blessing it", async () => {
+    await plantUnusableMaterial();
+
+    const result = await runActanaSetup(options(fakeSystem()));
+
+    expect(result.materialOutcome).toBe("re-minted");
+    // The end-to-end assertion the review asked for: the daemon boots on what
+    // setup wrote. `checkMaterialIdentity` is the function `loadOrMintMaterial`
+    // calls at boot, so a null here *is* a clean boot.
+    expect(checkMaterialIdentity(loadMaterial(layout.configDir)!)).toBeNull();
+  });
+
+  it("says what it did, because every paired client is locked out by it", async () => {
+    await plantUnusableMaterial();
+    const lines: string[] = [];
+
+    await runActanaSetup(options(fakeSystem(), { out: (line) => lines.push(line) }));
+
+    expect(lines.join("\n")).toMatch(/cannot be served/);
+  });
+
+  it("asks first when there is a terminal, and stops if the answer is no", async () => {
+    await plantUnusableMaterial();
+    const system = fakeSystem();
+    system.answer = false;
+
+    await expect(
+      runActanaSetup(options(system, { interactive: true, assumeYes: false })),
+    ).rejects.toThrow(/Left this Core's material alone/);
+    expect(system.confirms.join(" ")).toMatch(/fresh identity/);
+  });
+
+  it("keeps material from before the rename — it works, and re-pairing is not free", async () => {
+    // The review's correction. The Harness-era CA is not what broke #348; the
+    // environment-variable rename is, and `core-boot-refusals.ts` stops that.
+    // Re-minting here would cost every paired client its pairing for nothing.
+    const planted = await plantPreRenameMaterial();
+    const lines: string[] = [];
+
+    const result = await runActanaSetup(options(fakeSystem(), { out: (line) => lines.push(line) }));
+
+    expect(result.materialOutcome).not.toBe("re-minted");
+    expect(loadMaterial(layout.configDir)!.caCert).toBe(planted.caCert);
+    // Kept, but not silently: the operator is told what their Core presents.
+    expect(lines.join("\n")).toMatch(/mission-control-harness-ca/);
+  });
+
+  it("leaves good material alone, and asks nothing about it", async () => {
+    const system = fakeSystem();
+    await runActanaSetup(options(system));
+    const first = loadMaterial(layout.configDir)!;
+
+    await runActanaSetup(options(system));
+
+    expect(loadMaterial(layout.configDir)!.caCert).toBe(first.caCert);
+    expect(system.confirms.join(" ")).not.toMatch(/fresh identity/);
   });
 });
 
