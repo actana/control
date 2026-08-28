@@ -66,12 +66,13 @@ export function legacyEnvVars(env: NodeJS.ProcessEnv): string[] {
 export function legacyEnvRefusal(env: NodeJS.ProcessEnv): string | null {
   const found = legacyEnvVars(env);
   if (found.length === 0) return null;
+  const one = found.length === 1;
   return (
-    `${found.join(", ")} ${found.length === 1 ? "is" : "are"} set. Those variables belong to ` +
-    "the Harness-era daemon, which this one is the rename of — it reads the `AC_CORE_` " +
-    "spellings and would ignore every one of them, boot without TLS, without a client " +
+    `${found.join(", ")} ${one ? "is" : "are"} set. ${one ? "That variable belongs" : "Those variables belong"} ` +
+    "to the Harness-era daemon, which this one is the rename of — it reads the `AC_CORE_` " +
+    `spellings and would ignore ${one ? "it" : "every one of them"}, boot without TLS, without a client ` +
     "certificate and without a bearer, and serve that on whatever address the same " +
-    "environment named. It will not do that. The service setting them is an auto-start " +
+    `environment named. It will not do that. The service setting ${one ? "it" : "them"} is an auto-start ` +
     "unit or LaunchAgent from before the rename (`com.actana.harness` on macOS, " +
     "`actana-harness.service` on Linux): run `actana setup` to remove it and register " +
     "this Core properly."
