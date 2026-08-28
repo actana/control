@@ -80,14 +80,25 @@ docker compose exec core actana pair new --label laptop --public-host 192.168.1.
 the list is refused, with the list printed. Omit it and the code hands back the first entry. A
 single `ACTANA_PUBLIC_HOST` behaves exactly as it always has.
 
-Changing `ACTANA_PUBLIC_HOST` re-signs the server certificate for the new address, from the CA
-already in the volume. The Core ID, the CA, the bearer secret and your Panel's client certificate
-are untouched, so a Panel paired before the change still trusts this Core — but it is still dialling
-the old address, so point it at the new one. If you would rather pair it again, mint a fresh code:
+Editing `ACTANA_PUBLIC_HOST` re-signs the server certificate from the CA already in the volume. The
+Core ID, the CA, the bearer secret and your Panel's client certificate are untouched either way, so a
+Panel paired before the edit still trusts this Core. What differs is whether it can still reach it:
 
-```bash
-docker compose exec core actana pair new --label my-panel
-```
+- **Adding an address** — every address this Core already answered to is still on the new
+  certificate, and the new one has joined them. **Nothing is dialling an address the Core has left,
+  so every paired client keeps working and none has to be re-paired.** Pair a client to the new
+  address when you want one there: `actana pair new --public-host <the new address>`.
+- **Replacing or removing an address** — a client paired to the address you took away is still
+  dialling it, and that is the one thing re-signing cannot fix from here, because the client holds
+  it. Point it at the new address, or pair it again:
+
+  ```bash
+  docker compose exec core actana pair new --label my-panel
+  ```
+
+Reordering the list is a replacement of sorts: the first entry is the endpoint a code hands back
+when it names no address, so moving a different entry to the front changes where new pairings are
+sent — though every address stays covered.
 
 ## Harness CLIs
 

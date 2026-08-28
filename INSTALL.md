@@ -285,9 +285,18 @@ URL and never fails your Core install. After an install the Core
 re-probes immediately, so a paired Panel sees the new harness without a restart.
 
 Re-running `setup` is safe: it upgrades in place, keeps this Core's identity, and
-leaves exactly one unit (or one LaunchAgent). Paired clients stay paired. It
-re-signs the server certificate only when `--public-host` changed, because the
-old one would no longer verify for the new address — and it says so when it does.
+leaves exactly one unit (or one LaunchAgent). It re-signs the server certificate
+only when `--public-host` changed, and it says so when it does — **adding** an
+address keeps every client paired, while replacing one means re-pairing whatever
+was paired to the address you took away.
+
+Paired clients stay paired, with one exception: if the material on disk could
+never have served TLS — a certificate and key that do not agree, a certificate
+the CA beside it did not sign — `setup` mints this Core a fresh identity rather
+than leaving you with a daemon that refuses to boot, and every paired client is
+then locked out until it pairs again. It says so on stdout, and asks first when
+there is a terminal to ask on. **`--yes` takes that answer for you**, which is
+worth knowing before an unattended re-run.
 
 ### Step 3 — Pair the Core in your Panel
 
@@ -772,11 +781,18 @@ Network → Firewall), and can the Panel machine reach the port
 (`nc -zv <public-host> 8443`)?
 
 If the machine's address changed since setup, the certificate no longer covers
-it. Re-run setup and re-pair with the new token it prints:
+it. The cheaper fix is to **add** the new address rather than replace the old
+one — every client paired to an address already on the list keeps working, and
+none has to pair again:
 
 ```bash
-actana setup --public-host <new-address>
+actana setup --public-host <old-address>,<new-address>
 ```
+
+Replacing it instead re-signs for the new address alone, and any client paired to
+the old one has to be re-pointed or paired again — `actana pair new` here, then
+spend the code it prints on the client. `setup` itself prints no credential for
+you to carry — pairing codes come from `actana pair new`.
 
 ---
 
