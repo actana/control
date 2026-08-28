@@ -78,7 +78,12 @@ import {
   readContainerContract,
   refusedContainerVerbs,
 } from "./actana-container.ts";
-import { endpointFor, readActanaConfig, type ActanaConfig } from "./actana-config.ts";
+import {
+  configPublicHosts,
+  endpointFor,
+  readActanaConfig,
+  type ActanaConfig,
+} from "./actana-config.ts";
 import {
   binDirOnPath,
   resolveActanaLayout,
@@ -115,6 +120,11 @@ import {
   supportedHarnessIdsSentence,
 } from "./actana-harnesses.ts";
 import type { Harness } from "@actana/shared/domain";
+import {
+  formatPublicHosts,
+  parsePublicHosts,
+  primaryPublicHost,
+} from "@actana/shared/public-hosts";
 import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./actana-status.ts";
 import { runActanaUninstall } from "./actana-uninstall.ts";
 import { runActanaUpdate } from "./actana-update.ts";
@@ -214,7 +224,9 @@ Which Core a client command means, in this order:
 Install and setup options:
   --port <n>            Port the daemon listens on (default ${DEFAULT_PORT})
   --host <addr>         Address the daemon binds (default 0.0.0.0)
-  --public-host <addr>  Address your Panel dials (default: this machine's IP)
+  --public-host <addr>  Address your Panel dials (default: this machine's IP).
+                        Comma-separate several — \`core,10.0.0.5\` — to cover
+                        them all in one certificate; the first is the primary
   --label <name>        Alias shown in your Panel (default: the hostname)
   --with-<harness>      Install this Harness without asking (repeatable)
   --no-harnesses        Do not install or offer any Harness
@@ -262,9 +274,10 @@ const CONTAINER_USAGE = `This Core is a container, so its lifecycle belongs to D
                         names (\`docker compose up -d\`, \`docker compose logs -f\`, …)
 
 The image reads three variables:
-  ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials. Never guessed:
-                        it is baked into this Core's certificate and the endpoint
-                        a pairing hands out
+  ${CONTAINER_PUBLIC_HOST_ENV}    required — the address your Panel dials, or a comma-separated
+                        list of the addresses this Core's clients dial. Never
+                        guessed: every entry is baked into this Core's certificate,
+                        and the first is the endpoint a pairing hands out
   ${CONTAINER_PORT_ENV}           port the daemon listens on (default ${DEFAULT_CONTAINER_PORT})
   ${CONTAINER_LABEL_ENV}          alias shown in your Panel (default: the public host)
 `;
@@ -412,6 +425,7 @@ function containerInstall(deps: ActanaCliDeps): InstalledCore | null {
       port: contract.port,
       host: deps.env.AC_CORE_LINK_HOST ?? "0.0.0.0",
       publicHost: contract.publicHost,
+      publicHosts: contract.publicHosts,
       label: contract.label,
       installDir: deps.installRoot,
       dataDir: deps.env.AC_USER_DATA_DIR ?? layout.dataDir,
@@ -532,11 +546,24 @@ async function cmdSetup(
   const service = requireService(deps, layout);
   if (!service) return 1;
 
-  const publicHost = stringFlag(
-    parsed.values,
-    "public-host",
-    choosePublicHost(deps.networkInterfaces, deps.hostname),
+  // One address, or several separated by commas (#347) — every one of them a
+  // SAN on this Core's certificate, the first of them the endpoint `setup`
+  // prints and every pairing hands back by default. A bare `--public-host
+  // 10.0.0.5` is a list of one and installs exactly what it always installed.
+  const parsedPublicHosts = parsePublicHosts(
+    stringFlag(
+      parsed.values,
+      "public-host",
+      choosePublicHost(deps.networkInterfaces, deps.hostname),
+    ),
+    "--public-host",
   );
+  if (!parsedPublicHosts.ok) {
+    deps.err(parsedPublicHosts.error);
+    return EXIT_USAGE;
+  }
+  const publicHosts = parsedPublicHosts.hosts;
+  const publicHost = primaryPublicHost(publicHosts);
 
   const common = {
     layout,
@@ -544,7 +571,7 @@ async function cmdSetup(
     env: deps.env,
     port,
     host: stringFlag(parsed.values, "host", "0.0.0.0"),
-    publicHost,
+    publicHosts,
     label: stringFlag(parsed.values, "label", deps.hostname),
     platform: deps.platform,
     arch: deps.arch,
@@ -580,6 +607,11 @@ async function cmdSetup(
   deps.out(`Core installed at ${result.installDir}`);
   deps.out(`  Version    ${result.version}`);
   deps.out(`  Endpoint   wss://${publicHost}:${port}`);
+  // Only when there is more than one, because a Core with a single address has
+  // nothing here the endpoint line did not already say.
+  if (publicHosts.length > 1) {
+    deps.out(`  Also valid ${formatPublicHosts(publicHosts.slice(1))}`);
+  }
   deps.out(`  Service    ${result.serviceName} (${result.serviceSummary})`);
   const harnessSummary = summarizeHarnessInstalls(result.agents);
   if (harnessSummary) deps.out(`  ${harnessSummary}`);
@@ -1064,7 +1096,7 @@ async function cmdTokenRegenerate(deps: ActanaCliDeps, argv: string[]): Promise<
     }
   }
 
-  persistMaterialToFile(materialPath, await mintFreshMaterial(config.publicHost));
+  persistMaterialToFile(materialPath, await mintFreshMaterial(configPublicHosts(config)));
 
   if (container) {
     if (!loadMaterialFromFile(materialPath)) {
@@ -1368,7 +1400,8 @@ async function cmdDaemon(deps: ActanaCliDeps): Promise<number> {
 
   await deps.runDaemon({
     AC_CORE_LINK_PORT: String(contract.port),
-    AC_CORE_PUBLIC_HOST: contract.publicHost,
+    // The whole list, as the operator wrote it — `core-entry` splits it again.
+    AC_CORE_PUBLIC_HOST: contract.publicHosts.join(","),
     // The label is the one contract variable `core-entry` reads under its own
     // name rather than an `AC_*` translation, and it is handed over even when
     // the operator set it — the contract's default (the public host) only

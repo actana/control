@@ -24,8 +24,20 @@ export type ActanaConfig = {
   port: number;
   /** The address the daemon binds. */
   host: string;
-  /** The reachable address in the cert SAN, and this Core's endpoint. */
+  /**
+   * The reachable address in the cert SAN, and this Core's endpoint.
+   *
+   * The **primary** since #347 — the first of {@link publicHosts}. It stays a
+   * single string because an endpoint is a single address, and every reader
+   * here (`status`, `token`, {@link endpointFor}) wants exactly that one.
+   */
   publicHost: string;
+  /**
+   * Every address this Core's certificate covers, in the operator's order
+   * (#347). Absent in a config written before the field existed, which reads as
+   * the one-entry list `[publicHost]` — the answer that config was recording.
+   */
+  publicHosts?: string[];
   /** Human-friendly alias carried in this Core's credential. */
   label: string;
   /** The versioned install tree `current` points at. */
@@ -90,6 +102,13 @@ export function readActanaConfig(configDir: string): ActanaConfig | null {
     port: o.port,
     host: o.host,
     publicHost: o.publicHost,
+    // A list only when the file has a usable one. Anything else falls through
+    // to `configPublicHosts`, which reads a config written before #347 as the
+    // single host it recorded rather than as a Core with no addresses.
+    ...(Array.isArray(o.publicHosts) &&
+    o.publicHosts.every((host) => typeof host === "string" && host.trim().length > 0)
+      ? { publicHosts: o.publicHosts.map((host) => (host as string).trim()) }
+      : {}),
     label: o.label,
     installDir: o.installDir,
     dataDir: o.dataDir,
@@ -100,6 +119,21 @@ export function readActanaConfig(configDir: string): ActanaConfig | null {
  * The `wss://` endpoint the Panel dials. Always `wss://` — a registration blob
  * carrying anything else is rejected by the Panel (ADR 0002).
  */
+/**
+ * The addresses this install's certificate covers, from either shape of config.
+ *
+ * A config written before #347 records one `publicHost` and no list, and it
+ * means the same thing a one-entry list means — so it is read as one rather
+ * than as an install with nothing configured. That keeps a machine that
+ * upgrades from re-issuing its certificate on the next `actana setup`.
+ */
+export function configPublicHosts(
+  config: Pick<ActanaConfig, "publicHost" | "publicHosts">,
+): string[] {
+  const listed = config.publicHosts ?? [];
+  return listed.length > 0 ? listed : [config.publicHost];
+}
+
 export function endpointFor(config: Pick<ActanaConfig, "publicHost" | "port">): string {
   const host = config.publicHost.includes(":") && !config.publicHost.startsWith("[")
     ? `[${config.publicHost}]`
