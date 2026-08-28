@@ -42,7 +42,10 @@
 // redeems them and enforces the revocations. Neither imports the other.
 
 import { randomUUID } from "node:crypto";
-import { CONTAINER_PUBLIC_HOST_ENV } from "@actana/shared/actana-container-contract";
+import {
+  CONTAINER_PUBLIC_HOST_ENV,
+  inContainer,
+} from "@actana/shared/actana-container-contract";
 import { certFingerprintSha256 } from "@actana/shared/core-cert-material";
 import {
   formatPublicHosts,
@@ -353,7 +356,17 @@ function chooseEndpointHost(
         `on, so that the certificate is guaranteed to cover it — otherwise the client it ` +
         "pairs would fail hostname verification on its first dial.",
     );
-    deps.err(`Configured (${CONTAINER_PUBLIC_HOST_ENV}): ${formatPublicHosts(configured)}`);
+    // Named for wherever the operator can actually go and change it, which is
+    // not the same place on both shapes of Core. In a container it is the
+    // `ACTANA_PUBLIC_HOST` in their compose file; on metal that variable exists
+    // nowhere at all — the list came from `--public-host` at setup and lives in
+    // `actana.json` and in the unit. `core-entry.ts` keys the same choice on
+    // container mode for the same reason: naming a variable the operator cannot
+    // find is worse than naming none.
+    const configuredBy = inContainer(deps.env)
+      ? CONTAINER_PUBLIC_HOST_ENV
+      : "actana setup --public-host";
+    deps.err(`Configured (${configuredBy}): ${formatPublicHosts(configured)}`);
     deps.err(
       `Omit --public-host to use ${primaryPublicHost(configured)}, the first of them.`,
     );

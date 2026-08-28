@@ -54,14 +54,14 @@ let err: string[];
 let audited: Record<string, unknown>[];
 
 /** One run of `actana pair <argv>`, with its two streams captured. */
-function run(argv: string[], now = NOW): number {
+function run(argv: string[], now = NOW, env: Record<string, string> = {}): number {
   out = [];
   err = [];
   const deps: ActanaCliDeps = {
     ...stubClientHalf(() => now),
     ...stubMachineHalf(),
     argv: ["pair", ...argv],
-    env: {},
+    env,
     home: dir,
     out: (line: string) => out.push(line),
     err: (line: string) => err.push(line),
@@ -330,9 +330,32 @@ describe("actana pair new --public-host", () => {
     // `core, 10.0.0.5` is two shell words and only the first reaches the flag.
     expect(said).toContain("core,10.0.0.5,core.example.test");
     expect(said).toContain("Omit --public-host to use core, the first of them.");
+    // #353 review C3: on metal `ACTANA_PUBLIC_HOST` exists nowhere — the list
+    // came from `--public-host` at setup — so naming it would send the operator
+    // to grep for an unset variable.
+    expect(said).toContain("Configured (actana setup --public-host):");
+    expect(said).not.toContain("ACTANA_PUBLIC_HOST");
     // Nothing was minted: no code was printed, and no session was written.
     expect(out).toEqual([]);
     expect(store().listSessions()).toEqual([]);
+  });
+
+  it("names the container's own variable when it is running in one", async () => {
+    // The other half of C3: in a container the list really does come from
+    // `ACTANA_PUBLIC_HOST` in the operator's compose file, and that is where
+    // they go to change it. Same refusal, the source named per shape of Core —
+    // the rule `parsePublicHosts`'s `varName` parameter exists for.
+    await multiHost();
+
+    expect(
+      run(["new", "--label", "laptop", "--public-host", "192.168.1.20"], NOW, {
+        ACTANA_CONTAINER: "1",
+      }),
+    ).toBe(2);
+
+    const said = err.join("\n");
+    expect(said).toContain("Configured (ACTANA_PUBLIC_HOST):");
+    expect(said).not.toContain("actana setup --public-host):");
   });
 
   // The loopback pair is on every certificate this Core signs (ADR 0032 D9) and
