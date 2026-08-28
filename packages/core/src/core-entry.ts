@@ -8,7 +8,16 @@
 //   AC_USER_DATA_DIR  — the user-data dir
 //   AC_APP_PATH       — the app path
 //   AC_CORE_LINK_PORT — the port to listen on for the core-link WebSocket
-//   AC_CORE_LINK_HOST — the host to bind to (default: 127.0.0.1)
+//   AC_CORE_LINK_HOST — the host to bind to (default: 127.0.0.1). Outside
+//                          remote mode this must be a loopback address: the
+//                          server is plain `ws://` and trusts every connection
+//                          there, and `core-boot-refusals.ts` says why binding
+//                          that anywhere else stops the boot (#348).
+//
+// Anything named `AC_HARNESS_*` stops the boot outright. Those are the
+// pre-rename spellings, this daemon reads none of them, and a machine that
+// still sets them is running an auto-start service two renames old — see
+// `core-boot-refusals.ts`.
 //
 // Remote mode (issue 04 — `wss://` + mTLS + bearer auth):
 //   AC_CORE_REMOTE=1            — enable remote mode (mTLS + auth)
@@ -124,6 +133,7 @@ import { HarnessSkillWatcher } from "./harness-skill-watcher";
 import { ensureOrchestrationSkill } from "./orchestration-skill";
 import { HarnessInstallService } from "./harness-install-service";
 import { daemonHarnessSystem } from "./core-harness-system";
+import { legacyEnvRefusal, plaintextExposureRefusal } from "./core-boot-refusals";
 
 const CORE_LISTENING_SENTINEL = "@@AC_CORE_LISTENING@@";
 
@@ -137,6 +147,18 @@ function requiredEnv(name: string): string {
 }
 
 async function startCore(): Promise<void> {
+  // First, before a single variable is read for its value: an environment
+  // written for the Harness-era daemon is refused outright (#348). It has to
+  // be first because the variables that survived the rename —
+  // `AC_USER_DATA_DIR`, `AC_CORE_LINK_PORT`, `AC_CORE_LINK_HOST` — are set on
+  // that machine too, so every check below it would pass and the daemon would
+  // boot as something nobody asked for.
+  const legacyEnv = legacyEnvRefusal(process.env);
+  if (legacyEnv) {
+    console.error(`[core-entry] ${legacyEnv}`);
+    process.exit(1);
+  }
+
   const userDataDir = requiredEnv("AC_USER_DATA_DIR");
   const appPath = requiredEnv("AC_APP_PATH");
   const port = Number(requiredEnv("AC_CORE_LINK_PORT"));
@@ -148,6 +170,17 @@ async function startCore(): Promise<void> {
 
   if (!Number.isInteger(port) || port <= 0 || port > 65535) {
     console.error(`[core-entry] invalid AC_CORE_LINK_PORT: ${port}`);
+    process.exit(1);
+  }
+
+  // The combination the refusal above exists to make impossible, refused again
+  // on its own terms: plaintext, unauthenticated core-link on an address other
+  // than this machine. A pre-rename plist is one way to reach it and no longer
+  // the only one that matters — anything that sets a bind address without
+  // setting remote mode arrives here, and none of them should listen.
+  const exposure = plaintextExposureRefusal({ remoteMode, host });
+  if (exposure) {
+    console.error(`[core-entry] ${exposure}`);
     process.exit(1);
   }
 
