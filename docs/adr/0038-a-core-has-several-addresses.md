@@ -102,6 +102,22 @@ client certificate all survive a re-issue; a public host the operator never
 declared still re-signs nothing; `actana token regenerate` is still the only
 deliberate re-mint.)*
 
+**D3a — A widened list is not a move, and the operator is told which one
+happened.** D3's comparison re-issues the certificate for *any* edit, which is
+correct — but "the certificate was re-signed" and "some client is now dialling
+an address this Core has left" are different facts, and only the second is
+worth an operator's attention. A **widening** — every previously recorded host
+still covered, and at least one more joined them — costs nobody anything: no
+paired client lost coverage, and that is the change this whole record exists to
+make painless. So `loadOrMintMaterial` reports it as its own `certAction`, and
+the daemon says what was added and **advises nothing**. A genuine move keeps
+the "update your Panel or pair again" line it has always had. Both print the
+full list: naming the primary alone told an operator who had just added
+`192.168.1.20` that "public host is now core", which is a sentence that does
+not mention the thing that changed. Same set in a different order is a move,
+not a widening — nothing was added and the primary, and therefore the default
+endpoint, is not what it was.
+
 **D4 — The loopback pair is still appended to every server certificate.**
 `localhost` and `127.0.0.1` go into every SAN list, on the mint path and the
 re-issue path both, so the machine's own CLI can dial the Core it is standing
@@ -158,9 +174,10 @@ unchanged, and it reads one more field of state it already owned.)*
   address that client can route to. Flipping LAN reachability on or off no
   longer cascades into re-pairing clients that were working.
 - Adding an address to the list re-signs the server certificate — the recorded
-  list changed, so D3 calls it a move — but from the CA already on disk, so
+  list changed, so D3's comparison fires — but from the CA already on disk, so
   every paired client stays paired and the address it holds stays covered.
-  This is the reverse of the failure #347 reports.
+  This is the reverse of the failure #347 reports, and D3a is what stops the
+  daemon reporting it as the failure anyway.
 - `pair ls` does not show which endpoint a pending code will hand back. It
   could, and the JSON row is where it would go; it is left out because this
   record is already two halves and `pair ls`'s output is not one of them.
@@ -168,6 +185,12 @@ unchanged, and it reads one more field of state it already owned.)*
   operator who removes an address while a code for it is live gets a client
   paired to the primary, which is reachable, rather than one paired to a name
   its certificate no longer carries.
+- `localhost` and `127.0.0.1` are refused by D5 while being covered by D4, and
+  that pair of facts is the one place the refusal's ordinary sentence would be
+  false. `pair new` says so explicitly for those two rather than claiming the
+  certificate does not cover them: the reason they are unselectable is
+  reachability, not coverage — handed to a client on another machine, a
+  loopback address names that machine.
 - The three-things-at-once sentence in `deploy/README.md` is now two-and-a-half:
   the certificate covers every entry, the endpoint is the primary unless a code
   chose otherwise, and verification is per-address as it always was.
