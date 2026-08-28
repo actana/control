@@ -790,7 +790,6 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
   deps.out("");
   deps.out("  " + setupCommandFor(layout, placed.launcher, deps.env));
   deps.out("");
-  warnAboutLegacyService(deps, layout);
   deps.out(
     existing
       ? "That restarts the daemon on the version just placed. This Core's identity, its " +
@@ -798,6 +797,8 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
       : "That writes this Core's identity, its auto-start service and its registration, and " +
           "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
   );
+  // Last, so it is the line still on screen when `install.sh` finishes.
+  warnAboutLegacyService(deps, layout);
   return 0;
 }
 
