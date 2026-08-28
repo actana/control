@@ -40,9 +40,20 @@ set -euo pipefail
 
 TARGET="${1:-install.sh}"
 
+# Three ways a target can be unscannable, and each says which one it was. They
+# are separate messages rather than one, because "you pointed the step at the
+# wrong path" and "CI checked out a file it cannot read" are different problems
+# with different fixes, and a guard that blurs them sends the reader looking in
+# the wrong place.
 if [ ! -f "$TARGET" ]; then
   echo "::error title=The installer is missing::$TARGET is not a file, so the expansion guard for #346 has nothing to scan. A guard that reports green over a file it never read is worse than no guard at all."
-  echo "install-sh-ascii-guard: $TARGET does not exist." >&2
+  echo "install-sh-ascii-guard: $TARGET does not exist or is not a regular file." >&2
+  exit 1
+fi
+
+if [ ! -r "$TARGET" ]; then
+  echo "::error title=The installer cannot be read::$TARGET exists and is not readable, so the expansion guard for #346 could not scan it. This is a hard failure on purpose: an unreadable file and a clean file must never produce the same green check."
+  echo "install-sh-ascii-guard: $TARGET is not readable." >&2
   exit 1
 fi
 
@@ -80,25 +91,84 @@ PATTERN="$EXPANSION[$NON_ASCII]"
 BAD_SAMPLE="$(printf 'say "Downloading $asset\342\200\246"')"
 GOOD_SAMPLE='say "Downloading $asset..."'
 
-if ! printf '%s\n' "$BAD_SAMPLE" | grep -qE "$PATTERN"; then
+# `grep` answers three different questions with its exit status, and this
+# script must never collapse them:
+#
+#   0   it matched          — for the scan below, the guard has found the bug
+#   1   it did not match    — for the scan below, the guard passes
+#   >1  it could not answer — unreadable file, bad pattern, I/O error
+#
+# The third is the one that bites. A `|| true` (which is what this script used
+# to carry) maps 2 onto the same path as 1, so "grep could not read the file"
+# reads as "the file is clean" and the required check goes green over a file
+# nothing ever scanned. Every `grep` here therefore captures the status and
+# branches on all three. `set -o pipefail` makes the pipeline's status grep's.
+bad_status=0
+printf '%s\n' "$BAD_SAMPLE" | grep -qE -- "$PATTERN" || bad_status=$?
+
+if [ "$bad_status" -gt 1 ]; then
+  echo "::error title=The install.sh expansion guard is broken::\`grep\` exited $bad_status on its own known-bad sample, which is an error rather than an answer. The scan is not trustworthy and is reporting failure rather than green."
+  echo "install-sh-ascii-guard: self-test failed — grep exited $bad_status on the known-bad sample." >&2
+  exit 1
+fi
+
+if [ "$bad_status" -ne 0 ]; then
   echo "::error title=The install.sh expansion guard is broken::Its own known-bad sample did not match, so this scan cannot be trusted and is reporting failure rather than green. \`grep -E\` here does not support the 0x80-0xFF byte range under LC_ALL=C that the check is built on."
   echo "install-sh-ascii-guard: self-test failed — the known-bad sample did not match." >&2
   exit 1
 fi
 
-if printf '%s\n' "$GOOD_SAMPLE" | grep -qE "$PATTERN"; then
+good_status=0
+printf '%s\n' "$GOOD_SAMPLE" | grep -qE -- "$PATTERN" || good_status=$?
+
+if [ "$good_status" -gt 1 ]; then
+  echo "::error title=The install.sh expansion guard is broken::\`grep\` exited $good_status on its own known-good sample, which is an error rather than an answer. The scan is not trustworthy and is reporting failure rather than green."
+  echo "install-sh-ascii-guard: self-test failed — grep exited $good_status on the known-good sample." >&2
+  exit 1
+fi
+
+if [ "$good_status" -eq 0 ]; then
   echo "::error title=The install.sh expansion guard is broken::Its own known-good sample matched, so the check would refuse correct files. This is a bug in scripts/install-sh-ascii-guard.sh, not in $TARGET."
   echo "install-sh-ascii-guard: self-test failed — the known-good sample matched." >&2
   exit 1
 fi
 
-# `|| true`, because no match is this script's success case and `set -e` would
-# otherwise abort on it.
-HITS="$(grep -nE "$PATTERN" "$TARGET" || true)"
+# The scan. Its status is captured rather than discarded — see the three
+# answers above. `grep`'s own diagnostic is kept too: it is the sentence that
+# says *why* the file could not be read, and swallowing it would leave the
+# reader with an exit code and nothing else.
+SCAN_ERR="$(mktemp "${TMPDIR:-/tmp}/install-sh-ascii-guard.XXXXXX")"
+trap 'rm -f "$SCAN_ERR"' EXIT
 
-if [ -z "$HITS" ]; then
+scan_status=0
+HITS="$(grep -nE -- "$PATTERN" "$TARGET" 2>"$SCAN_ERR")" || scan_status=$?
+
+# Anything grep had to say reaches the log whatever the outcome, so a warning
+# on a run that passed is still visible.
+if [ -s "$SCAN_ERR" ]; then
+  cat "$SCAN_ERR" >&2
+fi
+
+if [ "$scan_status" -gt 1 ]; then
+  detail="$(tr '\n' ' ' <"$SCAN_ERR")"
+  echo "::error title=The install.sh expansion guard could not scan its target::\`grep\` exited $scan_status on $TARGET — an error, not an answer, so nothing was scanned and this check refuses to report green. $detail"
+  echo "install-sh-ascii-guard: grep exited $scan_status on $TARGET; the file was not scanned." >&2
+  exit 1
+fi
+
+if [ "$scan_status" -eq 1 ]; then
   echo "  OK  $TARGET: no expansion is followed immediately by a non-ASCII byte (#346)."
   exit 0
+fi
+
+# Status 0 means grep matched, so there is at least one line to report. An
+# empty capture here would mean grep said "I matched" and named nothing, which
+# is not a state any grep produces — and the one thing that must not happen to
+# it is being read as success.
+if [ -z "$HITS" ]; then
+  echo "::error title=The install.sh expansion guard is broken::\`grep\` reported a match on $TARGET and printed no lines. That is not a state this script can interpret, so it fails rather than guessing."
+  echo "install-sh-ascii-guard: grep exited 0 with no output on $TARGET." >&2
+  exit 1
 fi
 
 echo "$TARGET has an expansion followed immediately by a non-ASCII byte." >&2

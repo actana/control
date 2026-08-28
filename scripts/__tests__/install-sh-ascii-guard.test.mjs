@@ -184,14 +184,119 @@ describe("the guard cannot report green by accident", () => {
     expect(out).toMatch(/::error/);
   });
 
-  it("self-tests its own detector before it trusts a scan", () => {
-    // The one environmental assumption is that `grep -E` matches the
-    // 0x80-0xFF byte range under `LC_ALL=C`. If that ever stops holding, the
-    // scan matches nothing and the check goes green over a broken installer.
-    const source = fs.readFileSync(GUARD, "utf8");
-    expect(source).toMatch(/BAD_SAMPLE/);
-    expect(source).toMatch(/GOOD_SAMPLE/);
-    expect(source).toMatch(/self-test failed/);
+  // The cases below run the guard. The one they replaced read the guard's
+  // *source* for `BAD_SAMPLE`, `GOOD_SAMPLE` and `self-test failed`, which is
+  // how the defect the review found survived 19 cases: deleting the checks and
+  // leaving the words in a comment passed it green, and `grep`'s error status
+  // being read as "no match" was invisible to it. A property proven by grepping
+  // the implementation is not proven.
+
+  it("fails on a file it cannot read, rather than reporting it clean", () => {
+    // The review's reproduction, exactly: a file that genuinely contains the
+    // bug, made unreadable. Before the fix this printed `OK` and exited 0 —
+    // a green required check over a file nothing had scanned.
+    const file = fixture("unreadable.sh", `say "Downloading $asset${ELLIPSIS}"\n`);
+    fs.chmodSync(file, 0o000);
+    try {
+      const { status, out } = run(file);
+      expect(status, "an unreadable file reported green").not.toBe(0);
+      expect(out).toMatch(/::error/);
+      // Its own message, not the missing-file one: "you pointed the step at the
+      // wrong path" and "CI checked out a file it cannot read" are different
+      // problems, and the reader needs to know which one this is.
+      expect(out).toMatch(/cannot be read|not readable/);
+    } finally {
+      fs.chmodSync(file, 0o644);
+    }
+  });
+
+  it("fails when grep errors, and does not read that as 'no match'", () => {
+    // `grep` exits 0 when it matched, 1 when it did not, and >1 when it could
+    // not answer at all. The `|| true` this replaced mapped >1 onto the same
+    // path as 1, so an unscannable file read as a clean one.
+    //
+    // A `grep` on PATH that errors on a file scan reproduces that third answer
+    // without depending on file permissions or on who the test runs as. It
+    // delegates the guard's stdin self-tests to the real binary, so the script
+    // reaches its scan and it is the scan's status handling under test.
+    const realGrep = spawnSync("sh", ["-c", "command -v grep"], { encoding: "utf8" })
+      .stdout.trim();
+    expect(realGrep, "no grep on PATH to delegate to").toBeTruthy();
+
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-grep-shim-"));
+    const shim = path.join(shimDir, "grep");
+    fs.writeFileSync(
+      shim,
+      [
+        "#!/bin/sh",
+        'last=""',
+        'for a in "$@"; do last="$a"; done',
+        'if [ -f "$last" ]; then',
+        '  echo "grep: $last: Input/output error" >&2',
+        "  exit 2",
+        "fi",
+        `exec ${JSON.stringify(realGrep)} "$@"`,
+        "",
+      ].join("\n"),
+    );
+    fs.chmodSync(shim, 0o755);
+
+    try {
+      const result = spawnSync("bash", [GUARD, INSTALL_SH], {
+        encoding: "utf8",
+        cwd: repoRoot,
+        env: { ...process.env, PATH: `${shimDir}${path.delimiter}${process.env.PATH}` },
+      });
+      const out = `${result.stdout}${result.stderr}`;
+      expect(result.status, "a grep error reported green").not.toBe(0);
+      expect(out).toMatch(/::error/);
+      expect(out).toMatch(/could not scan|exited 2/);
+      // grep's own diagnostic survives to the log — an exit code on its own
+      // does not tell anyone why the file could not be read.
+      expect(out).toContain("Input/output error");
+    } finally {
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still passes and still fails normally once those paths exist", () => {
+    // The two branches above must not have cost the ordinary answers: a clean
+    // file exits 0, and a file carrying the bug exits 1 naming its line.
+    expect(run(INSTALL_SH).status, "the shipped installer no longer passes").toBe(0);
+    const bad = run(fixture("still-fails.sh", `say "Downloading $asset${ELLIPSIS}"\n`));
+    expect(bad.status).toBe(1);
+    expect(bad.out).toContain("line=1");
+  });
+
+  it("refuses a target that is a directory rather than scanning nothing", () => {
+    const { status, out } = run(workDir);
+    expect(status, "a directory reported green").not.toBe(0);
+    expect(out).toMatch(/::error/);
+  });
+
+  it("catches its own detector breaking, by running it", () => {
+    // The self-test's purpose: if `grep -E` ever stops matching the 0x80-0xFF
+    // byte range under `LC_ALL=C`, the scan matches nothing and the check goes
+    // green over a broken installer. A `grep` that never matches is exactly
+    // that failure, and the guard must refuse rather than pass.
+    const shimDir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-grep-blind-"));
+    const shim = path.join(shimDir, "grep");
+    // Matches nothing, ever — the shape of a locale or byte-range regression.
+    fs.writeFileSync(shim, ["#!/bin/sh", "exit 1", ""].join("\n"));
+    fs.chmodSync(shim, 0o755);
+
+    try {
+      const result = spawnSync("bash", [GUARD, INSTALL_SH], {
+        encoding: "utf8",
+        cwd: repoRoot,
+        env: { ...process.env, PATH: `${shimDir}${path.delimiter}${process.env.PATH}` },
+      });
+      const out = `${result.stdout}${result.stderr}`;
+      expect(result.status, "a detector that matches nothing reported green").not.toBe(0);
+      expect(out).toMatch(/known-bad sample did not match/);
+    } finally {
+      fs.rmSync(shimDir, { recursive: true, force: true });
+    }
   });
 
   it("scans under LC_ALL=C, so 'non-ASCII' means bytes and not the caller's locale", () => {
