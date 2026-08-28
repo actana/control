@@ -28,7 +28,7 @@ const sample: PersistedMaterial = {
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
   coreUuid: "1f2e3d4c-5b6a-4798-8a9b-0c1d2e3f4a5b",
-  serverHost: "core.example.test",
+  serverHosts: ["core.example.test"],
 };
 
 let dir: string;
@@ -44,7 +44,7 @@ afterEach(() => {
 });
 
 const options = {
-  publicHost: "core.example.test",
+  publicHosts: ["core.example.test"],
   publicHostDeclared: true,
 };
 
@@ -122,7 +122,7 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     const moved = await loadOrMintMaterial({
       materialFile,
       ...options,
-      publicHost: "core2.example.test",
+      publicHosts: ["core2.example.test"],
     });
 
     expect(moved.certAction).toBe("moved");
@@ -142,7 +142,7 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     const moved = await loadOrMintMaterial({
       materialFile,
       ...options,
-      publicHost: "core2.example.test",
+      publicHosts: ["core2.example.test"],
     });
 
     const server = new X509Certificate(moved.material.serverCert);
@@ -155,13 +155,13 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     const moved = await loadOrMintMaterial({
       materialFile,
       ...options,
-      publicHost: "core2.example.test",
+      publicHosts: ["core2.example.test"],
     });
 
     const again = await loadOrMintMaterial({
       materialFile,
       ...options,
-      publicHost: "core2.example.test",
+      publicHosts: ["core2.example.test"],
     });
 
     expect(again.certAction).toBe("unchanged");
@@ -170,7 +170,7 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
 
   it("re-issues quietly for material written before the host was recorded", async () => {
     const minted = await loadOrMintMaterial({ materialFile, ...options });
-    const { serverHost: _recorded, ...legacy } = minted.material;
+    const { serverHosts: _recorded, ...legacy } = minted.material;
     fs.writeFileSync(materialFile, JSON.stringify(legacy));
 
     // An unrecorded host is an unknown one, not a moved one: the SAN is
@@ -180,7 +180,7 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
 
     expect(boot.certAction).toBe("backfilled");
     expect(boot.material.coreId).toBe(minted.material.coreId);
-    expect(boot.material.serverHost).toBe(options.publicHost);
+    expect(boot.material.serverHosts).toEqual(options.publicHosts);
   });
 
   it("leaves the cert alone when the public host was never declared", async () => {
@@ -192,11 +192,129 @@ describe("loadOrMintMaterial — ACTANA_PUBLIC_HOST moved", () => {
     const boot = await loadOrMintMaterial({
       materialFile,
       ...options,
-      publicHost: "127.0.0.1",
+      publicHosts: ["127.0.0.1"],
       publicHostDeclared: false,
     });
 
     expect(boot.certAction).toBe("unchanged");
     expect(boot.material.serverCert).toBe(first.material.serverCert);
+  });
+});
+
+// ─── Several public hosts in one certificate (#347) ─────────────────────────
+//
+// The daemon's boot path is where a comma-separated `ACTANA_PUBLIC_HOST`
+// becomes a certificate, so this is where the two halves of the promise are
+// checked against the artefact: several hosts really are covered, and one host
+// still behaves exactly as it did before there could be several.
+
+/** The SAN entries a verifier sees, read off the certificate itself. */
+function sanEntries(certPem: string): string[] {
+  return (new X509Certificate(certPem).subjectAltName ?? "")
+    .split(", ")
+    .filter((entry) => entry.length > 0);
+}
+
+describe("loadOrMintMaterial — several public hosts", () => {
+  it("mints one certificate covering every configured host", async () => {
+    const minted = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core", "10.0.0.5"],
+      publicHostDeclared: true,
+    });
+
+    expect(sanEntries(minted.material.serverCert)).toEqual([
+      "DNS:core",
+      "IP Address:10.0.0.5",
+      "DNS:localhost",
+      "IP Address:127.0.0.1",
+    ]);
+    expect(minted.material.serverHosts).toEqual(["core", "10.0.0.5"]);
+  });
+
+  // The regression this ticket exists to end: a Core reachable two ways used
+  // to need its one address changed, which re-signed the certificate for the
+  // new name only and unpaired everything still dialling the old one. Adding
+  // an address now keeps the old one covered.
+  it("keeps the original host covered when a second one is added", async () => {
+    const first = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core"],
+      publicHostDeclared: true,
+    });
+
+    const widened = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core", "10.0.0.5"],
+      publicHostDeclared: true,
+    });
+
+    expect(widened.certAction).toBe("moved");
+    expect(sanEntries(widened.material.serverCert)).toContain("DNS:core");
+    expect(sanEntries(widened.material.serverCert)).toContain("IP Address:10.0.0.5");
+    // And nothing a paired client pinned has changed — the CA it validates
+    // against is the one it already holds (ADR 0016 D18).
+    expect(widened.material.caCert).toBe(first.material.caCert);
+    expect(widened.material.coreId).toBe(first.material.coreId);
+    expect(widened.material.coreUuid).toBe(first.material.coreUuid);
+    expect(
+      new X509Certificate(widened.material.serverCert).verify(
+        createPublicKey(first.material.caCert),
+      ),
+    ).toBe(true);
+  });
+
+  // **The compatibility landmine, proved rather than asserted.** A Docker
+  // Compose file that sets one `ACTANA_PUBLIC_HOST` must not need editing and
+  // must behave exactly as it does now: the same SAN list, and — the half that
+  // would actually hurt — no re-issue on the boot after the upgrade, because a
+  // re-issue is what invalidates nothing but looks alarming in a log and costs
+  // a certificate for no reason.
+  it("a single host mints what it always minted and never re-issues on restart", async () => {
+    const first = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core"],
+      publicHostDeclared: true,
+    });
+    expect(first.certAction).toBe("unchanged");
+    expect(sanEntries(first.material.serverCert)).toEqual([
+      "DNS:core",
+      "DNS:localhost",
+      "IP Address:127.0.0.1",
+    ]);
+
+    const bytes = fs.readFileSync(materialFile, "utf8");
+    const restart = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core"],
+      publicHostDeclared: true,
+    });
+
+    expect(restart.certAction).toBe("unchanged");
+    expect(restart.material.serverCert).toBe(first.material.serverCert);
+    expect(fs.readFileSync(materialFile, "utf8")).toBe(bytes);
+  });
+
+  // A Core installed before #347 has a `serverHost` string and no list. Its
+  // next boot must be a plain load: reading the old field as a list of one is
+  // what keeps a rename from looking like a moved Core.
+  it("boots material written before the list existed without re-issuing", async () => {
+    const minted = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core"],
+      publicHostDeclared: true,
+    });
+    const { serverHosts: _listed, ...legacy } = minted.material;
+    fs.writeFileSync(materialFile, JSON.stringify({ ...legacy, serverHost: "core" }));
+
+    const boot = await loadOrMintMaterial({
+      materialFile,
+      publicHosts: ["core"],
+      publicHostDeclared: true,
+    });
+
+    expect(boot.certAction).toBe("unchanged");
+    expect(boot.material.serverCert).toBe(minted.material.serverCert);
+    expect(boot.material.serverHosts).toEqual(["core"]);
   });
 });

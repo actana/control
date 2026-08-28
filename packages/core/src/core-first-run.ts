@@ -49,10 +49,18 @@ import {
 export type LoadOrMintOptions = {
   /** Full path from `AC_CORE_MATERIAL_FILE`. */
   materialFile: string;
-  /** The host a client reaches this Core on — the server cert's SAN. */
-  publicHost: string;
   /**
-   * Whether `publicHost` is the operator's answer (`ACTANA_PUBLIC_HOST`) or the
+   * The hosts a client reaches this Core on — the server cert's SAN list, in
+   * the operator's order, the first of them the primary (#347).
+   *
+   * A list rather than one host, and a single-entry list is the case that has
+   * not changed: `ACTANA_PUBLIC_HOST=core` arrives here as `["core"]`, mints
+   * the certificate it always minted and hands back the endpoint it always
+   * handed back.
+   */
+  publicHosts: readonly string[];
+  /**
+   * Whether `publicHosts` is the operator's answer (`ACTANA_PUBLIC_HOST`) or the
    * bind address standing in for one. Only the operator's answer may re-sign an
    * existing Core's cert: the stand-in is a guess, and a guess that rewrote the
    * SAN would take a working Core off its own address to put it on `127.0.0.1`.
@@ -107,12 +115,12 @@ export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadO
     // thing that identifier exists not to do. Nothing else about the identity
     // changes, so no Panel notices and nothing has to re-pair.
     if (read.mintedCoreUuid) persistMaterialToFile(opts.materialFile, existing);
-    const check = checkServerCertHost(existing, opts.publicHost);
+    const check = checkServerCertHost(existing, opts.publicHosts);
     if (check === "covered" || !opts.publicHostDeclared) {
       return { material: existing, certAction: "unchanged" };
     }
 
-    const reissued = await reissueServerCert(existing, opts.publicHost);
+    const reissued = await reissueServerCert(existing, opts.publicHosts);
     persistMaterialToFile(opts.materialFile, reissued);
     if (check === "unrecorded") {
       // Nothing moved as far as anyone knows — the record simply did not exist
@@ -128,7 +136,7 @@ export async function loadOrMintMaterial(opts: LoadOrMintOptions): Promise<LoadO
     return { material: reissued, certAction: "moved" };
   }
 
-  const material = await mintFreshMaterial(opts.publicHost);
+  const material = await mintFreshMaterial(opts.publicHosts);
   persistMaterialToFile(opts.materialFile, material);
 
   return { material, certAction: "unchanged" };
