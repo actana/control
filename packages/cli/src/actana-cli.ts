@@ -125,6 +125,7 @@ import {
   formatPublicHosts,
   parsePublicHosts,
   primaryPublicHost,
+  PUBLIC_HOST_SEPARATOR,
 } from "@actana/shared/public-hosts";
 import { formatActanaStatus, summarizeHealth, type ActanaStatusReport } from "./actana-status.ts";
 import { runActanaUninstall } from "./actana-uninstall.ts";
@@ -551,11 +552,29 @@ async function cmdSetup(
   // SAN on this Core's certificate, the first of them the endpoint `setup`
   // prints and every pairing hands back by default. A bare `--public-host
   // 10.0.0.5` is a list of one and installs exactly what it always installed.
+  //
+  // **What a bare `actana setup` defaults to is the addresses this Core is
+  // already installed with, not a guess** (#347 × #348). The guess is for a
+  // machine that has never been set up; on one that has, it would resolve a
+  // single routable IPv4, re-issue a single-SAN certificate for it, overwrite
+  // `publicHosts` in the config and the unit, and take the Core off every
+  // address a client is actually paired to — while `pair new --public-host
+  // <the old address>` started refusing, because the material no longer lists
+  // it. #348 made a bare `actana setup` the advertised remedy in five places,
+  // so that is now the *common* path rather than an unlucky one.
+  //
+  // This is the same rule the daemon already holds: `core-first-run.ts` re-signs
+  // a SAN only for an address the operator *declared*, precisely so a guess
+  // cannot take a working Core off its own address. An explicit `--public-host`
+  // is a declaration and stays authoritative; the default is not one.
+  const recordedConfig = readActanaConfig(layout.configDir);
+  const recordedHosts = recordedConfig ? configPublicHosts(recordedConfig) : null;
   const parsedPublicHosts = parsePublicHosts(
     stringFlag(
       parsed.values,
       "public-host",
-      choosePublicHost(deps.networkInterfaces, deps.hostname),
+      recordedHosts?.join(PUBLIC_HOST_SEPARATOR) ??
+        choosePublicHost(deps.networkInterfaces, deps.hostname),
     ),
     "--public-host",
   );
@@ -565,6 +584,17 @@ async function cmdSetup(
   }
   const publicHosts = parsedPublicHosts.hosts;
   const publicHost = primaryPublicHost(publicHosts);
+
+  // Said out loud, because it is a decision this command made on the
+  // operator's behalf and the alternative it declined — the guess — is what
+  // every earlier release did.
+  if (recordedHosts && parsed.values["public-host"] === undefined) {
+    deps.out(
+      `Keeping this Core's recorded ${recordedHosts.length === 1 ? "address" : "addresses"}: ` +
+        `${formatPublicHosts(recordedHosts)}. Pass --public-host to change ` +
+        `${recordedHosts.length === 1 ? "it" : "them"}.`,
+    );
+  }
 
   const common = {
     layout,

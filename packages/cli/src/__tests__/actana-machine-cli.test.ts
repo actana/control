@@ -9,7 +9,7 @@ import { localCoreName } from "../local-core-wiring.ts";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import { refusedContainerVerbs } from "../actana-container.ts";
 import { installDirFor, resolveActanaLayout } from "../actana-layout.ts";
-import { writeActanaConfig } from "../actana-config.ts";
+import { readActanaConfig, writeActanaConfig } from "../actana-config.ts";
 import { releaseAssetName, releaseChannel } from "../actana-release.ts";
 import type { ActanaSystem, CommandResult } from "../actana-system.ts";
 import { fakeSystem as makeFakeSystem, realTar, stubClientHalf } from "./machine-fixture.ts";
@@ -619,6 +619,71 @@ describe("setup", () => {
     expect(said).not.toMatch(/dialling the address it paired with/i);
     expect(said).not.toMatch(/pair it again/i);
     expect(said).not.toMatch(/Public host changed/i);
+  });
+
+  // ─── C1: a bare re-run must not collapse a Core onto a guessed address ──
+  //
+  // #348 made a bare `actana setup` the advertised remedy in five places while
+  // #347 raised what taking that advice costs from one address to the whole
+  // list. Defaulting to a guess here re-issues a single-SAN certificate,
+  // rewrites the config and the unit, and unpairs every client on every other
+  // address — with `pair new --public-host <the old one>` then refusing,
+  // because the material no longer lists it.
+
+  it("keeps the recorded addresses when setup is re-run with no --public-host", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem())).toBe(0);
+
+    // The certificate still covers both, and the config and unit still name
+    // both — a guess would have left one address and dropped the other.
+    const san = new X509Certificate(readMaterial().serverCert!).subjectAltName ?? "";
+    expect(san).toContain("DNS:core");
+    expect(san).toContain("IP Address:10.0.0.5");
+    expect(readMaterial().serverHosts).toEqual(["core", "10.0.0.5"]);
+    const config = readActanaConfig(layoutForHome().configDir)!;
+    expect(config.publicHosts).toEqual(["core", "10.0.0.5"]);
+    expect(config.publicHost).toBe("core");
+    expect(fs.readFileSync(layoutForHome().servicePath, "utf8")).toContain(
+      "AC_CORE_PUBLIC_HOST=core,10.0.0.5",
+    );
+    // Not silent about a decision made on the operator's behalf.
+    expect(out.join("\n")).toMatch(/Keeping this Core's recorded addresses/);
+  });
+
+  it("leaves a client paired to the second address able to pair again after a bare re-run", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5"]);
+    await setup(fakeSystem());
+    out.length = 0;
+    err.length = 0;
+
+    // The membership check reads `material.serverHosts`, so this is the exact
+    // thing a collapsed certificate would have broken.
+    expect(await runActanaCli(deps(["pair", "new", "--public-host", "10.0.0.5"], fakeSystem()))).toBe(
+      0,
+    );
+  });
+
+  it("still lets an explicit --public-host change the addresses", async () => {
+    await setup(fakeSystem(), ["--public-host", "core,10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem(), ["--public-host", "core.example"])).toBe(0);
+
+    expect(readMaterial().serverHosts).toEqual(["core.example"]);
+    expect(readActanaConfig(layoutForHome().configDir)!.publicHosts).toEqual(["core.example"]);
+    // The declaration is authoritative, so nothing was "kept".
+    expect(out.join("\n")).not.toMatch(/Keeping this Core's recorded/);
+  });
+
+  it("still guesses on a machine that has never been set up", async () => {
+    // A first-time install has no config to read, and the guess is what makes
+    // `actana setup` work with no flags at all.
+    expect(await setup(fakeSystem())).toBe(0);
+
+    expect(readActanaConfig(layoutForHome().configDir)!.publicHosts?.length).toBe(1);
+    expect(out.join("\n")).not.toMatch(/Keeping this Core's recorded/);
   });
 
   it("still tells an operator who moved the address that a client is left behind", async () => {
