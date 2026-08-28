@@ -31,7 +31,7 @@ const sample: PersistedMaterial = {
   bearerSecret: "deadbeef".repeat(8),
   coreId: "core_abcdef0123456789",
   coreUuid: "6f1a2b3c-4d5e-4f60-8a9b-0c1d2e3f4a5b",
-  serverHost: "10.0.0.5",
+  serverHosts: ["10.0.0.5"],
 };
 
 function tmpDir(): string {
@@ -99,15 +99,31 @@ describe("core material store", () => {
       expect(loadMaterial(nested)).toEqual(sample);
     });
 
-    it("loads material written before serverHost existed as an unknown host", () => {
-      const { serverHost, ...legacy } = sample;
+    it("loads material written before the SAN record existed as an unknown host", () => {
+      const { serverHosts, ...legacy } = sample;
       fs.writeFileSync(materialFilePath(dir), JSON.stringify(legacy));
 
       // The identity is intact — only the SAN's provenance is unknown, and
       // rejecting the file over that would unpair a Panel to save a field.
       const loaded = loadMaterial(dir);
-      expect(loaded).toEqual({ ...legacy, serverHost: "" });
-      expect(checkServerCertHost(loaded!, serverHost)).toBe("unrecorded");
+      expect(loaded).toEqual({ ...legacy, serverHosts: [] });
+      expect(checkServerCertHost(loaded!, serverHosts)).toBe("unrecorded");
+    });
+
+    // #347 renamed the record from one `serverHost` to a `serverHosts` list.
+    // Material written by any build before it carries the old spelling, and a
+    // Core that re-issued its certificate on the next boot over a rename would
+    // be re-issuing for a reason that has nothing to do with its address.
+    it("reads the pre-#347 single serverHost as a list of one", () => {
+      const { serverHosts: _listed, ...legacy } = sample;
+      fs.writeFileSync(
+        materialFilePath(dir),
+        JSON.stringify({ ...legacy, serverHost: "10.0.0.5" }),
+      );
+
+      const loaded = loadMaterial(dir);
+      expect(loaded!.serverHosts).toEqual(["10.0.0.5"]);
+      expect(checkServerCertHost(loaded!, ["10.0.0.5"])).toBe("covered");
     });
 
     it("restricts file permissions to owner-only (0o600)", () => {
@@ -124,9 +140,9 @@ describe("core material store", () => {
   // paired Panel over what is usually a typo'd env var (ADR 0016 D18).
   describe("reissueServerCert", () => {
     it("keeps every credential a Panel pinned and replaces only the server cert", async () => {
-      const minted = await mintFreshMaterial("10.0.0.5");
+      const minted = await mintFreshMaterial(["10.0.0.5"]);
 
-      const moved = await reissueServerCert(minted, "core.example.test");
+      const moved = await reissueServerCert(minted, ["core.example.test"]);
 
       expect(moved.coreId).toBe(minted.coreId);
       expect(moved.bearerSecret).toBe(minted.bearerSecret);
@@ -139,9 +155,9 @@ describe("core material store", () => {
     });
 
     it("signs the new cert with the CA the Panel already pinned", async () => {
-      const minted = await mintFreshMaterial("10.0.0.5");
+      const minted = await mintFreshMaterial(["10.0.0.5"]);
 
-      const moved = await reissueServerCert(minted, "core.example.test");
+      const moved = await reissueServerCert(minted, ["core.example.test"]);
 
       // This is the whole point: the Panel validates the Core against the CA
       // in the blob it holds, so that CA must still vouch for the new cert.
@@ -152,36 +168,36 @@ describe("core material store", () => {
     });
 
     it("records the host it signed for, so the next boot knows it is covered", async () => {
-      const minted = await mintFreshMaterial("10.0.0.5");
-      expect(checkServerCertHost(minted, "10.0.0.5")).toBe("covered");
-      expect(checkServerCertHost(minted, "core.example.test")).toBe("moved");
+      const minted = await mintFreshMaterial(["10.0.0.5"]);
+      expect(checkServerCertHost(minted, ["10.0.0.5"])).toBe("covered");
+      expect(checkServerCertHost(minted, ["core.example.test"])).toBe("moved");
 
-      const moved = await reissueServerCert(minted, "core.example.test");
+      const moved = await reissueServerCert(minted, ["core.example.test"]);
 
-      expect(moved.serverHost).toBe("core.example.test");
-      expect(checkServerCertHost(moved, "core.example.test")).toBe("covered");
+      expect(moved.serverHosts).toEqual(["core.example.test"]);
+      expect(checkServerCertHost(moved, ["core.example.test"])).toBe("covered");
     });
   });
 
   describe("checkServerCertHost", () => {
-    const unrecorded: PersistedMaterial = { ...sample, serverHost: "" };
+    const unrecorded: PersistedMaterial = { ...sample, serverHosts: [] };
 
     it("separates a host that moved from one nothing on disk records", () => {
       // The two must not collapse: re-signing is safe either way, but telling
       // an operator their Core moved when it did not is a fiction.
-      expect(checkServerCertHost(unrecorded, "10.0.0.5")).toBe("unrecorded");
-      expect(checkServerCertHost(sample, "10.0.0.9")).toBe("moved");
+      expect(checkServerCertHost(unrecorded, ["10.0.0.5"])).toBe("unrecorded");
+      expect(checkServerCertHost(sample, ["10.0.0.9"])).toBe("moved");
     });
 
     it("takes the caller's fallback for material that predates the record", () => {
       // `actana setup` wrote the host into the config beside the material,
       // which is as authoritative as the record would have been.
-      expect(checkServerCertHost(unrecorded, "10.0.0.5", "10.0.0.5")).toBe("covered");
-      expect(checkServerCertHost(unrecorded, "10.0.0.9", "10.0.0.5")).toBe("moved");
+      expect(checkServerCertHost(unrecorded, ["10.0.0.5"], ["10.0.0.5"])).toBe("covered");
+      expect(checkServerCertHost(unrecorded, ["10.0.0.9"], ["10.0.0.5"])).toBe("moved");
     });
 
     it("prefers the recorded host over the fallback", () => {
-      expect(checkServerCertHost(sample, "10.0.0.5", "stale.example")).toBe("covered");
+      expect(checkServerCertHost(sample, ["10.0.0.5"], ["stale.example"])).toBe("covered");
     });
   });
 
@@ -193,13 +209,13 @@ describe("core material store", () => {
 
   describe("the stable core UUID", () => {
     it("mints one at install", async () => {
-      const minted = await mintFreshMaterial("10.0.0.5");
+      const minted = await mintFreshMaterial(["10.0.0.5"]);
       expect(minted.coreUuid).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
     });
 
     it("gives two Cores two different UUIDs", async () => {
-      const a = await mintFreshMaterial("10.0.0.5");
-      const b = await mintFreshMaterial("10.0.0.5");
+      const a = await mintFreshMaterial(["10.0.0.5"]);
+      const b = await mintFreshMaterial(["10.0.0.5"]);
       expect(a.coreUuid).not.toBe(b.coreUuid);
     });
 
@@ -207,8 +223,8 @@ describe("core material store", () => {
       // The whole point of the field. A Core that moves re-signs its server
       // cert from the CA it already holds; a `aud` that changed with it would
       // be no more stable than the certificate it was supposed to outlive.
-      const minted = await mintFreshMaterial("10.0.0.5");
-      const reissued = await reissueServerCert(minted, "10.0.0.9");
+      const minted = await mintFreshMaterial(["10.0.0.5"]);
+      const reissued = await reissueServerCert(minted, ["10.0.0.9"]);
       expect(reissued.coreUuid).toBe(minted.coreUuid);
       expect(reissued.serverCert).not.toBe(minted.serverCert);
     });
