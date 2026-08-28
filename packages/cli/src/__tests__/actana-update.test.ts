@@ -43,6 +43,7 @@ function fakeService(overrides: Partial<ActanaServiceManager> = {}) {
     install() {},
     uninstall() {},
     removeLegacyUnit: () => null,
+    observe: () => ({ name: "actana-core.service", legacyName: null }),
     async ensurePersistence() {
       return { survivesLogout: true, summary: "enabled, lingering" };
     },
@@ -197,6 +198,34 @@ describe("landing a newer release", () => {
     const result = await update({ service });
     expect(service.verbs).toEqual(["restart"]);
     expect(result.listening).toBe(true);
+  });
+
+  it("removes a pre-rename service before restarting onto the new tree (#348)", async () => {
+    // The upgrade path in the report: `install.sh` places a new tree and the
+    // operator runs `actana update`, never `actana setup`. The old agent runs
+    // `current/bin/actana` too, so without this it comes back on the new
+    // binary with the old environment and fights for the port.
+    const order: string[] = [];
+    const service = fakeService({
+      removeLegacyUnit: () => {
+        order.push("removeLegacyUnit");
+        return "com.actana.harness";
+      },
+      verb: (verb) => {
+        order.push(verb);
+        return { status: 0, stdout: "", stderr: "" };
+      },
+    });
+
+    await update({ service });
+
+    expect(order).toEqual(["removeLegacyUnit", "restart"]);
+    expect(out.join("\n")).toMatch(/Removed com\.actana\.harness/);
+  });
+
+  it("says nothing about a legacy service on a machine that has none", async () => {
+    await update();
+    expect(out.join("\n")).not.toMatch(/before the rename/);
   });
 
   it("says so when the daemon did not come back", async () => {

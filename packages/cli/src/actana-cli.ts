@@ -99,6 +99,7 @@ import { readCoreManifest, type CoreManifest } from "./actana-manifest.ts";
 import { releaseChannel } from "./actana-release.ts";
 import {
   createServiceManager,
+  supportsService,
   type ActanaServiceManager,
   type ServiceVerb,
 } from "./actana-service.ts";
@@ -789,6 +790,7 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
   deps.out("");
   deps.out("  " + setupCommandFor(layout, placed.launcher, deps.env));
   deps.out("");
+  warnAboutLegacyService(deps, layout);
   deps.out(
     existing
       ? "That restarts the daemon on the version just placed. This Core's identity, its " +
@@ -797,6 +799,47 @@ function cmdPlace(deps: ActanaCliDeps, argv: string[]): number {
           "starts the daemon. `actana --help` lists its port, host, label and Harness options.",
   );
   return 0;
+}
+
+/**
+ * Say so when a pre-rename service is still installed here (#348).
+ *
+ * `install.sh` runs `actana place` and stops; an operator who upgrades that way
+ * never reaches `actana setup`, which is the only thing that removes the old
+ * service. So the old agent — `KeepAlive` on, `ProgramArguments` pointing at
+ * `current/bin/actana`, which `place` has just repointed — picks up the new
+ * binary with the pre-rename environment and crash-loops against the port.
+ *
+ * A warning rather than a removal, and a refusal least of all. `place` is the
+ * step that does not touch the running machine: it puts a tree down and prints
+ * what to run next. Booting out a service is `setup`'s and `update`'s job, and
+ * the line below is what makes an operator run one of them.
+ *
+ * Best effort in both directions, exactly as {@link stopDaemonBeingReplaced}
+ * is: a platform with no init system has no legacy service to warn about, and
+ * a bundle must still place on it.
+ */
+function warnAboutLegacyService(deps: ActanaCliDeps, layout: ActanaLayout): void {
+  if (!supportsService(deps.platform)) return;
+  let legacy: string | null;
+  try {
+    legacy = createServiceManager({
+      platform: deps.platform,
+      layout,
+      system: deps.system,
+      user: deps.user,
+      uid: deps.uid,
+    }).observe().legacyName;
+  } catch {
+    return;
+  }
+  if (!legacy) return;
+  deps.err(
+    `Warning: ${legacy} is still installed on this machine, left by an install from before ` +
+      "the rename. It runs `current/bin/actana` too, so it is now starting the version just " +
+      "placed with the old environment, and it will fight the real Core for the port. " +
+      "`actana setup` removes it.",
+  );
 }
 
 /**
@@ -916,6 +959,9 @@ async function containerStatus(deps: ActanaCliDeps): Promise<number> {
     target: manifest?.target ?? null,
     endpoint: endpointFor(config),
     serviceName: null,
+    // There is no init system in the image and never was one, so there is no
+    // pre-rename agent for it to be carrying (ADR 0016 D16).
+    legacyService: null,
     service: null,
     persistence: null,
     container: { listening, port: config.port },
@@ -944,6 +990,7 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
   if (!service) return 1;
 
   const version = manifest?.version ?? config?.version ?? null;
+  const observed = service.observe();
   const report: ActanaStatusReport = {
     installed: config !== null,
     version,
@@ -951,7 +998,11 @@ async function cmdStatus(deps: ActanaCliDeps, argv: string[]): Promise<number> {
     protocolVersion: manifest?.protocolVersion ?? null,
     target: manifest?.target ?? null,
     endpoint: config ? endpointFor(config) : null,
-    serviceName: service.name,
+    // What the init system actually has, falling back to the label setup would
+    // write when it has nothing at all — never the constant on a machine whose
+    // real service is called something else (#348).
+    serviceName: observed.name ?? service.name,
+    legacyService: observed.legacyName,
     service: service.state(),
     persistence: service.persistence(),
     container: null,

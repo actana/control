@@ -22,6 +22,11 @@
 // stays paired), the data dir, and every choice `actana setup` recorded. What
 // changes: the tree, `current`, and the version in `actana.json`. The service
 // definition is not rewritten because it already runs `current/bin/actana`.
+//
+// The one service this *does* rewrite is a pre-rename one. `current/bin/actana`
+// is what the old agent runs too, so an update hands the new binary to a
+// service that has been gone from the product for two renames, with the old
+// environment still set on it (#348). It is removed here, before the restart.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -179,6 +184,17 @@ export async function runActanaUpdate(opts: UpdateOptions): Promise<UpdateResult
   const launcher = claimLauncher(layout, opts.env);
   if (launcher.note) opts.out(launcher.note);
   writeActanaConfig(layout.configDir, { ...config, version: manifest.version, installDir });
+
+  // Before the restart, not after it, and this is the whole of why #348's
+  // machine crash-looped: a pre-rename agent's `ProgramArguments` point at
+  // `current/bin/actana`, which the swap above has just repointed at the new
+  // tree. Left in place it is a second service, with the old environment,
+  // racing the restart below for the same port — and `KeepAlive` brings it
+  // back every time it loses. `actana setup` has always cleaned this up; an
+  // update never reached setup, which is exactly the upgrade path an operator
+  // running `install.sh` takes.
+  const legacy = service.removeLegacyUnit();
+  if (legacy) opts.out(`Removed ${legacy}, left by an install from before the rename.`);
 
   opts.out(`Restarting ${service.name} on ${manifest.version}…`);
   const restarted = service.verb("restart");

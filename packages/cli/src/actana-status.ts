@@ -57,8 +57,25 @@ export type ActanaStatusReport = {
   target: string | null;
   /** The `wss://` endpoint the Panel dials. */
   endpoint: string | null;
-  /** What the service is called here: `actana-core.service`, `com.actana.core`. */
+  /**
+   * What the service is called here: `actana-core.service`, `com.actana.core`.
+   *
+   * The one the init system **actually has**, not the one setup would write
+   * (#348). The difference is the whole of the bug: this row printed the
+   * constant `com.actana.core` on a machine whose only agent was the pre-rename
+   * `com.actana.harness`, so `Auto-start` named a plist that was not on disk
+   * while the Core in front of the operator ran under another name.
+   */
   serviceName: string | null;
+  /**
+   * The pre-rename service, when this machine still carries one (#348).
+   *
+   * Its own field rather than folded into {@link serviceName}, because both
+   * can be true at once — an in-place upgrade leaves the old agent loaded
+   * beside the new one, and an operator needs told about the one that should
+   * not be there even while the one that should is running fine.
+   */
+  legacyService: string | null;
   /** null when no service is installed (or the platform has no init system). */
   service: ActanaServiceState | null;
   /** How the daemon persists across sessions. null when it could not be read. */
@@ -101,6 +118,12 @@ export function summarizeHealth(report: ActanaStatusReport): ActanaHealth {
     if (!report.container.listening) return "stopped";
     return report.paired ? "healthy" : "degraded";
   }
+  // A pre-rename service on the machine is a degradation whatever else is
+  // true (#348): it runs `current/bin/actana` with the old environment, it
+  // fights the real Core for the port, and `KeepAlive` brings it back. Saying
+  // `healthy` because *something* answered is how this was missed for a
+  // release — so the exit code is non-zero until it is gone.
+  if (report.legacyService) return "degraded";
   if (!report.service) return "degraded";
   if (report.service.activeState === "active") {
     return report.service.subState === "running" && report.paired ? "healthy" : "degraded";
@@ -195,6 +218,16 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
     if (report.persistence) {
       lines.push(row(report.persistence.label, report.persistence.value));
     }
+  }
+
+  // Last of the service rows and unconditional in its own right: it is the one
+  // line that explains every other row that looks wrong, and the remedy is one
+  // command (#348).
+  if (report.legacyService) {
+    lines.push(
+      row("Legacy agent", `${report.legacyService} is loaded — an install from before the rename`),
+      row("", "run `actana setup` to remove it and register this Core properly"),
+    );
   }
 
   lines.push(
