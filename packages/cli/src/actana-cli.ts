@@ -643,6 +643,24 @@ async function cmdSetup(
         `trusts this Core, but it is dialling the address it paired with. Point it at ` +
         `${publicHost}, or run \`actana pair new\` here and pair it again.`,
     );
+  } else if (result.materialOutcome === "widened") {
+    // **A widening is not a move** (ADR 0038 D3a, #347). Every address this
+    // Core already answered to is still on the certificate and one or more have
+    // joined them, so nothing is dialling an address it has left — there is
+    // nothing for the operator to do, and nothing is advised. The `reissued`
+    // branch above would have told them to re-point a Panel at an address it is
+    // already dialling, or to pair it again: a no-op instruction followed by
+    // the exact cost this ticket exists to remove. On metal this is the only
+    // message about the change an operator sees, because the daemon's next boot
+    // reads `covered` and says nothing.
+    deps.out(
+      `This Core now answers to ${formatPublicHosts(publicHosts)} — ` +
+        `${formatPublicHosts(result.addedHosts)} joined the addresses it already had, and its ` +
+        "server certificate was re-issued from its own CA to cover " +
+        `${result.addedHosts.length === 1 ? "it" : "them"}. Every paired client keeps working ` +
+        "and none has to be re-paired. To pair a client to one of the new addresses, run " +
+        `\`actana pair new --public-host ${result.addedHosts[0]}\` here.`,
+    );
   } else if (result.materialOutcome === "re-minted") {
     // The recovery in #348: the material that was here could not have served
     // TLS, so setup replaced it rather than re-blessing it. Nothing that was

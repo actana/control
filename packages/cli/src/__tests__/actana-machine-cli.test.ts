@@ -601,6 +601,36 @@ describe("setup", () => {
     expect(out.join("\n")).toContain("10.0.0.5,core.example");
   });
 
+  it("tells an operator adding an address that nothing has to be re-paired", async () => {
+    // ADR 0038 D3a, end to end through the verb an operator actually runs. On
+    // metal this is the only message about the change they ever see: the
+    // daemon's next boot reads `covered` and says nothing at all.
+    await setup(fakeSystem(), ["--public-host", "10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem(), ["--public-host", "10.0.0.5,core.lan"])).toBe(0);
+
+    const said = out.join("\n");
+    expect(said).toContain("core.lan");
+    expect(said).toMatch(/none has to be re-paired/i);
+    expect(said).toMatch(/actana pair new --public-host core\.lan/);
+    // The `moved` advice this path used to print: re-point a Panel at an
+    // address it is already dialling, or pair it again.
+    expect(said).not.toMatch(/dialling the address it paired with/i);
+    expect(said).not.toMatch(/pair it again/i);
+    expect(said).not.toMatch(/Public host changed/i);
+  });
+
+  it("still tells an operator who moved the address that a client is left behind", async () => {
+    await setup(fakeSystem(), ["--public-host", "10.0.0.5"]);
+    out.length = 0;
+
+    expect(await setup(fakeSystem(), ["--public-host", "10.0.0.9"])).toBe(0);
+
+    const said = out.join("\n");
+    expect(said).toMatch(/dialling the address it paired with/i);
+  });
+
   it("writes the same unit and the same endpoint for a single --public-host", async () => {
     await setup(fakeSystem(), ["--public-host", "core.example"]);
 

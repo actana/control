@@ -812,6 +812,93 @@ describe("runActanaSetup — re-running over an existing install", () => {
     expect(loadMaterial(layout.configDir)!.coreId).toBe(legacy.coreId);
   });
 
+  // ─── a widening is not a move (ADR 0038 D3a, #347) ──────────────────────
+  //
+  // The distinction was drawn in the daemon during #347's own review and not
+  // carried across to this resolver, which is how `actana setup` came to charge
+  // an operator a re-pairing for the change that removed it. Pinned here, at
+  // the resolver, because on metal setup's message is the *only* one about the
+  // change an operator ever sees: the daemon's next boot reads `covered`.
+
+  it("reports an added address as widened, not as a move", async () => {
+    await runActanaSetup(options(fakeSystem()));
+    const before = loadMaterial(layout.configDir)!;
+
+    const second = await runActanaSetup(
+      options(fakeSystem(), { publicHosts: ["10.0.0.5", "core.lan"] }),
+    );
+
+    expect(second.materialOutcome).toBe("widened");
+    expect(second.addedHosts).toEqual(["core.lan"]);
+    // Re-issued from the same CA, and the old address is still covered — which
+    // is the whole reason no client has to do anything.
+    const after = loadMaterial(layout.configDir)!;
+    expect(after.caCert).toBe(before.caCert);
+    expect(after.coreId).toBe(before.coreId);
+    const san = new X509Certificate(after.serverCert).subjectAltName ?? "";
+    expect(san).toContain("10.0.0.5");
+    expect(san).toContain("core.lan");
+    expect(after.serverHosts).toEqual(["10.0.0.5", "core.lan"]);
+  });
+
+  it("does not tell the operator to re-point or re-pair anything on a widening", async () => {
+    const lines: string[] = [];
+    await runActanaSetup(options(fakeSystem()));
+    await runActanaSetup(
+      options(fakeSystem(), {
+        publicHosts: ["10.0.0.5", "core.lan"],
+        out: (l) => lines.push(l),
+      }),
+    );
+
+    const said = lines.join("\n");
+    expect(said).toContain("core.lan");
+    // The `moved` wording, which was what this path used to print.
+    expect(said).not.toMatch(/Public host changed/i);
+    expect(said).not.toMatch(/pair it again/i);
+  });
+
+  it("still calls a dropped address a move, even when another is added", async () => {
+    // Not a widening: `10.0.0.5` is gone, so a client holding it is dialling an
+    // address this Core has left. The distinction has to cut both ways or it is
+    // just a way of never reporting a move.
+    await runActanaSetup(options(fakeSystem()));
+
+    const second = await runActanaSetup(
+      options(fakeSystem(), { publicHosts: ["10.0.0.9", "core.lan"] }),
+    );
+
+    expect(second.materialOutcome).toBe("reissued");
+    expect(second.addedHosts).toEqual([]);
+  });
+
+  it("calls a reordered list a move — the primary is the default endpoint", async () => {
+    await runActanaSetup(options(fakeSystem(), { publicHosts: ["10.0.0.5", "core.lan"] }));
+
+    const second = await runActanaSetup(
+      options(fakeSystem(), { publicHosts: ["core.lan", "10.0.0.5"] }),
+    );
+
+    // Nothing was added and the endpoint a pairing hands back changed, so this
+    // is a move even though every address is still covered.
+    expect(second.materialOutcome).toBe("reissued");
+  });
+
+  it("widens material that predates the recorded host, using the config beside it", async () => {
+    await runActanaSetup(options(fakeSystem()));
+    const legacy = loadMaterial(layout.configDir)!;
+    persistMaterial(layout.configDir, { ...legacy, serverHosts: [] });
+
+    const second = await runActanaSetup(
+      options(fakeSystem(), { publicHosts: ["10.0.0.5", "core.lan"] }),
+    );
+
+    // Resolved against the same list `checkServerCertHost` compared, so the
+    // coverage test and the widening test cannot disagree about "before".
+    expect(second.materialOutcome).toBe("widened");
+    expect(second.addedHosts).toEqual(["core.lan"]);
+  });
+
   it("says it re-issued the certificate rather than announcing a new token", async () => {
     const lines: string[] = [];
     await runActanaSetup(options(fakeSystem()));
