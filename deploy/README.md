@@ -97,6 +97,40 @@ container ID and would change the certificate on every recreation.
 Rename the service and you must change this to match. Changing it after pairing
 means re-pairing: the old certificate does not cover the new name.
 
+### Reaching one Core more than one way
+
+A Core is often reachable two ways at once — as the compose service name from
+the Panel beside it, and as a LAN address from your own machine's `actana`. Name
+both, comma-separated, and one certificate covers both:
+
+```yaml
+core:
+  environment:
+    - ACTANA_PUBLIC_HOST=core,192.168.1.20
+```
+
+Every entry becomes a SAN. **The first entry is the primary**: it is the
+certificate's common name, and it is the endpoint a pairing hands back unless
+that code chose otherwise. `localhost` and `127.0.0.1` are always covered too,
+so the container's own `actana` can dial it.
+
+Then pair each client to the address it can actually reach:
+
+```bash
+docker compose exec core actana pair new --label panel  --public-host core
+docker compose exec core actana pair new --label laptop --public-host 192.168.1.20
+```
+
+`--public-host` **chooses** from that list; it can never add to it. Name an
+address that is not configured and `pair new` refuses and prints the ones that
+are — a code that handed back an address this certificate does not cover would
+give its client a credential that fails on its first dial.
+
+A single value still means exactly what it always meant, so nothing above is
+needed for one address. And **adding** an address to the list keeps the ones
+already there covered: clients paired before the change stay paired, which is
+the re-pair that changing the one value used to force.
+
 ## Volumes — what survives what
 
 | Volume | Holds | Destroyed by |

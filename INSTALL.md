@@ -255,7 +255,7 @@ Useful flags:
 |---|---|
 | `--port <n>` | Port the daemon listens on (default `8443`) |
 | `--host <addr>` | Address the daemon binds (default `0.0.0.0`) |
-| `--public-host <addr>` | Address your Panel dials. Defaults to the machine's first routable IPv4 — set it explicitly if the machine is behind NAT or reached by DNS name. |
+| `--public-host <addr>` | Address your Panel dials. Defaults to the machine's first routable IPv4 — set it explicitly if the machine is behind NAT or reached by DNS name. Comma-separate several — `--public-host core,10.0.0.5` — to cover them all in one certificate; the first is the primary, and `actana pair new --public-host <addr>` picks which of them a given code hands back. |
 | `--label <name>` | Alias shown in your Panel (default: the hostname) |
 | `--with-<harness>` | Install this harness CLI without asking. Repeatable; takes an id or its command — `--with-claude-code`, `--with-claude`, `--with-codex`, `--with-cursor-cli`, `--with-opencode` |
 | `--no-harnesses` | Do not install or offer any harness CLI |
