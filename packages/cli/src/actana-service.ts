@@ -23,6 +23,8 @@ import {
   chooseLaunchdDomain,
   LAUNCH_AGENT_LABEL,
   launchdLogPath,
+  LEGACY_LAUNCH_AGENT_LABEL,
+  legacyLaunchAgentPath,
   parseLaunchctlPrint,
   renderActanaPlist,
   serviceTarget,
@@ -65,6 +67,28 @@ export type PersistenceRow = {
   /** `Linger` on systemd, `At login` on launchd. */
   label: string;
   value: string;
+};
+
+/**
+ * Which of this machine's services the init system actually has (#348).
+ *
+ * `name` is what is really installed or loaded here, which is not the same
+ * question as `ActanaServiceManager.name` — that one is the label setup
+ * *writes*, and reporting it unconditionally is how `actana status` came to
+ * print `com.actana.core` on a machine whose only agent was the pre-rename
+ * `com.actana.harness`.
+ */
+export type ServiceObservation = {
+  /** The unit / label this machine actually has, or null when it has none. */
+  name: string | null;
+  /**
+   * The pre-rename unit / label, when this machine still carries one.
+   *
+   * Reported separately from `name` because both can be true at once — a
+   * machine upgraded in place has the new plist *and* the old agent still
+   * loaded, and that combination is the failure #348 describes.
+   */
+  legacyName: string | null;
 };
 
 /** What making the service persist achieved. */
@@ -118,6 +142,13 @@ export type ActanaServiceManager = {
    * this exists and when it goes.
    */
   removeLegacyUnit(): string | null;
+  /**
+   * What this machine actually has installed or loaded, for `actana status`.
+   *
+   * Never throws and never asks the operator to act: a status report on a
+   * broken machine is the one thing that still has to work.
+   */
+  observe(): ServiceObservation;
   /** Make the daemon survive logout as far as this platform allows. */
   ensurePersistence(context: PersistenceContext): Promise<PersistenceOutcome>;
   /** Start at boot/login from now on, and start now. Throws when it cannot. */
@@ -206,6 +237,27 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     return true;
   }
 
+  /**
+   * Whether a pre-rename unit is still on this machine.
+   *
+   * Two places, because deleting a unit file does not disable the unit:
+   * systemd reads a user's own units from `$XDG_CONFIG_HOME/systemd/user`, and
+   * `enable` leaves a symlink in `default.target.wants` beside it that still
+   * starts the daemon at boot on its own.
+   *
+   * Asked of the filesystem rather than of systemd, so a machine that never had
+   * one runs no commands at all and cannot fail. `lstat` for the link, because
+   * once the unit file is gone the link dangles and `existsSync` follows it to
+   * nothing — which is exactly the case being caught.
+   */
+  function legacyUnitPresent(): boolean {
+    const legacyPath = path.join(layout.serviceDir, LEGACY_UNIT_NAME);
+    const enabledLink = path.join(layout.serviceDir, "default.target.wants", LEGACY_UNIT_NAME);
+    return (
+      fs.existsSync(legacyPath) || Boolean(fs.lstatSync(enabledLink, { throwIfNoEntry: false }))
+    );
+  }
+
   /** Stop a unit, unlink it from boot, delete it, and leave no failed entry. */
   function removeUnit(name: string, filePath: string): void {
     systemctl("stop", name);
@@ -242,21 +294,17 @@ function systemdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     },
 
     removeLegacyUnit() {
-      // Two places, because deleting a unit file does not disable the unit:
-      // systemd reads a user's own units from `$XDG_CONFIG_HOME/systemd/user`,
-      // and `enable` leaves a symlink in `default.target.wants` beside it that
-      // still starts the daemon at boot on its own.
-      const legacyPath = path.join(layout.serviceDir, LEGACY_UNIT_NAME);
-      const enabledLink = path.join(layout.serviceDir, "default.target.wants", LEGACY_UNIT_NAME);
-      // Asked of the filesystem rather than of systemd, so a machine that never
-      // had one runs no commands at all and cannot fail. `lstat` for the link,
-      // because once the unit file is gone the link dangles and `existsSync`
-      // follows it to nothing — which is exactly the case being caught.
-      if (!fs.existsSync(legacyPath) && !fs.lstatSync(enabledLink, { throwIfNoEntry: false })) {
-        return null;
-      }
-      removeUnit(LEGACY_UNIT_NAME, legacyPath);
+      if (!legacyUnitPresent()) return null;
+      removeUnit(LEGACY_UNIT_NAME, path.join(layout.serviceDir, LEGACY_UNIT_NAME));
       return LEGACY_UNIT_NAME;
+    },
+
+    observe() {
+      const legacyName = legacyUnitPresent() ? LEGACY_UNIT_NAME : null;
+      return {
+        name: fs.existsSync(layout.servicePath) ? UNIT_NAME : legacyName,
+        legacyName,
+      };
     },
 
     async ensurePersistence(context) {
@@ -325,6 +373,25 @@ function launchdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     return domain;
   };
   const target = (): string => serviceTarget(resolveDomain(), LAUNCH_AGENT_LABEL);
+  const legacyPath = legacyLaunchAgentPath(layout.home);
+  const legacyTarget = (): string => serviceTarget(resolveDomain(), LEGACY_LAUNCH_AGENT_LABEL);
+
+  /**
+   * Whether the pre-rename agent is still on this machine.
+   *
+   * Both halves are needed and neither implies the other. The plist is what
+   * brings the old agent back at the operator's next login, and it is what an
+   * in-place upgrade leaves untouched. A *loaded* job with no plist left is the
+   * other half of the same mess — `rm`ing the file does not unload anything,
+   * because launchd holds the copy it read at bootstrap time.
+   *
+   * The file is checked first so a machine that never had one asks launchd
+   * nothing at all, which is also what keeps this cheap enough for the status
+   * path to call.
+   */
+  const legacyPresent = (): boolean =>
+    fs.existsSync(legacyPath) ||
+    system.run("launchctl", ["print", legacyTarget()]).status === 0;
 
   const printJob = (): CommandResult => system.run("launchctl", ["print", target()]);
   /** Whether launchd knows about the job at all — loaded, running or not. */
@@ -333,6 +400,28 @@ function launchdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
   const isRunning = (): boolean => {
     const printed = printJob();
     return printed.status === 0 && parseLaunchctlPrint(printed.stdout).state === "running";
+  };
+
+  /** What launchd says about one label, in the shape `actana status` renders. */
+  const stateOf = (label: string): ActanaServiceState => {
+    const printed = system.run("launchctl", ["print", serviceTarget(resolveDomain(), label)]);
+    if (printed.status !== 0) {
+      // The agent is installed but not loaded — `actana stop`, or a session
+      // that has not logged in since. That is stopped, not missing.
+      return { loadState: "loaded", activeState: "inactive", subState: "dead", mainPid: null };
+    }
+    const job = parseLaunchctlPrint(printed.stdout);
+    if (job.state === "running") {
+      return { loadState: "loaded", activeState: "active", subState: "running", mainPid: job.pid };
+    }
+    // Loaded but not running: launchd is between restarts, or throttling a job
+    // that keeps dying. Either way the operator has something to fix.
+    return {
+      loadState: "loaded",
+      activeState: "activating",
+      subState: job.state ?? "unknown",
+      mainPid: null,
+    };
   };
 
   /** Register the agent with launchd. `RunAtLoad` is what starts it. */
@@ -387,10 +476,21 @@ function launchdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     },
 
     removeLegacyUnit() {
-      // Nothing to clean up: the pre-rename `com.actana.harness` agent only
-      // ever existed on a machine that built its own tarball, and the macOS
-      // Core targets are being dropped rather than migrated (ADR 0016 D28).
-      return null;
+      // This used to return null on the reasoning that macOS Core targets were
+      // being dropped rather than migrated (ADR 0016 D28). #90 amended that
+      // decision and gave macOS a first-class on-device Core, so the pre-rename
+      // agent is now something real machines carry — and carry through an
+      // upgrade, because its `ProgramArguments` point at `current/bin/actana`
+      // and `KeepAlive` brings it back (#348).
+      if (!legacyPresent()) return null;
+      // Unload before deleting, the same order `uninstall` uses and for the
+      // same reason: launchd holds the plist it read at bootstrap time, so
+      // removing the file alone leaves the old daemon running on the port the
+      // new one is about to want. Failure is the ordinary "nothing was loaded"
+      // case — the plist below is the half that matters.
+      system.run("launchctl", ["bootout", legacyTarget()]);
+      fs.rmSync(legacyPath, { force: true });
+      return LEGACY_LAUNCH_AGENT_LABEL;
     },
 
     async ensurePersistence() {
@@ -420,30 +520,20 @@ function launchdServiceManager(opts: ServiceManagerOptions): ActanaServiceManage
     },
 
     state() {
-      if (!fs.existsSync(layout.servicePath)) return null;
-      const printed = printJob();
-      if (printed.status !== 0) {
-        // The agent is installed but not loaded — `actana stop`, or a session
-        // that has not logged in since. That is stopped, not missing.
-        return { loadState: "loaded", activeState: "inactive", subState: "dead", mainPid: null };
-      }
-      const job = parseLaunchctlPrint(printed.stdout);
-      if (job.state === "running") {
-        return {
-          loadState: "loaded",
-          activeState: "active",
-          subState: "running",
-          mainPid: job.pid,
-        };
-      }
-      // Loaded but not running: launchd is between restarts, or throttling a
-      // job that keeps dying. Either way the operator has something to fix.
-      return {
-        loadState: "loaded",
-        activeState: "activating",
-        subState: job.state ?? "unknown",
-        mainPid: null,
-      };
+      if (fs.existsSync(layout.servicePath)) return stateOf(LAUNCH_AGENT_LABEL);
+      // No plist under the current label, but launchd may still be running the
+      // pre-rename agent out of this same tree — which is a Core that is up,
+      // not the "not installed" this used to report (#348).
+      return legacyPresent() ? stateOf(LEGACY_LAUNCH_AGENT_LABEL) : null;
+    },
+
+    observe() {
+      const legacyName = legacyPresent() ? LEGACY_LAUNCH_AGENT_LABEL : null;
+      // The plist is the stronger signal and is checked first: it is what
+      // launchd loads at the next login, so an installed-but-unloaded agent is
+      // still this machine's service.
+      const current = fs.existsSync(layout.servicePath) || isLoaded();
+      return { name: current ? LAUNCH_AGENT_LABEL : legacyName, legacyName };
     },
 
     verb(verb) {

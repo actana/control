@@ -22,6 +22,24 @@ export const LAUNCH_AGENT_LABEL = "com.actana.core";
 /** The plist filename inside `~/Library/LaunchAgents`. */
 export const LAUNCH_AGENT_FILENAME = `${LAUNCH_AGENT_LABEL}.plist`;
 
+/**
+ * The agent setup wrote when the machine was called a Harness.
+ *
+ * The launchd half of `LEGACY_UNIT_NAME` in `actana-systemd.ts`, and it exists
+ * for the same reason: a machine installed before the Harness → Core rename still has this
+ * agent, `KeepAlive` is on, and its `ProgramArguments` point at
+ * `…/current/bin/actana` — so after an in-place upgrade the *old* agent
+ * launches the *new* binary with the old environment (#348). It has to be
+ * booted out and deleted, not left beside the new one.
+ *
+ * Deletable with `removeLegacyUnit` and its callers, one release after every
+ * supported machine has been through a 0.4.2 `actana setup`.
+ */
+export const LEGACY_LAUNCH_AGENT_LABEL = "com.actana.harness";
+
+/** The pre-rename plist's filename inside `~/Library/LaunchAgents`. */
+export const LEGACY_LAUNCH_AGENT_FILENAME = `${LEGACY_LAUNCH_AGENT_LABEL}.plist`;
+
 /** Everything that varies between one machine's LaunchAgent and another's. */
 export type ActanaPlistConfig = {
   /** `Label` — the job's name in every `launchctl` invocation. */
@@ -39,6 +57,17 @@ export type ActanaPlistConfig = {
 /** Where the LaunchAgent's plist lives for a given home directory. */
 export function launchAgentPath(home: string): string {
   return path.join(home, "Library", "LaunchAgents", LAUNCH_AGENT_FILENAME);
+}
+
+/**
+ * Where a pre-rename install left its plist.
+ *
+ * Beside {@link launchAgentPath} rather than derived from the layout: launchd
+ * reads agents from `~/Library/LaunchAgents` and nowhere else, so the legacy
+ * one is in the same directory as the current one by construction.
+ */
+export function legacyLaunchAgentPath(home: string): string {
+  return path.join(home, "Library", "LaunchAgents", LEGACY_LAUNCH_AGENT_FILENAME);
 }
 
 /**
