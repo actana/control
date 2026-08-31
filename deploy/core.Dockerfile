@@ -91,7 +91,7 @@ RUN apt-get update \
 # carries `nodejs` at all. NodeSource and every other third-party apt repo are
 # out for the same reason the tarball is in — this is a download we verify,
 # not a publisher we trust.
-ARG NODE_VERSION=24.19.0
+ARG NODE_VERSION=24.20.0
 # npm newer than the one Node bundles, because that is where the image's only
 # fixable CRITICAL/HIGH live: npm's vendored tar/undici/brace-expansion under
 # /usr/local/lib/node_modules/npm. 11.19.0 clears four of the seven measured
