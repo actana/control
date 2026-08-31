@@ -324,7 +324,7 @@ describe("the first-run gate (#358)", () => {
     it("names the mint command on step 2, and what each line it prints is for", async () => {
       await mount();
       await goToStep(2);
-      expect(screen.getByText("actana pair new --label <name>")).toBeTruthy();
+      expect(screen.getByText("actana pair new --label NAME")).toBeTruthy();
       expect(screen.getByText(/^Pairing code/)).toBeTruthy();
       expect(screen.getByText(/^CA fingerprint/)).toBeTruthy();
       expect(screen.getByText(/^Session/)).toBeTruthy();
@@ -342,7 +342,7 @@ describe("the first-run gate (#358)", () => {
       });
       // `pair new` reads a value starting with `-` as another option, in both
       // flag forms, and quoting cannot help. So the placeholder is printed.
-      expect(screen.getByText("actana pair new --label <name>")).toBeTruthy();
+      expect(screen.getByText("actana pair new --label NAME")).toBeTruthy();
       expect(screen.queryByText(/--label\s+'?-panel/)).toBeNull();
       expect(document.querySelector("[data-label-refusal]")?.textContent).toMatch(
         /cannot start with/,
@@ -357,14 +357,14 @@ describe("the first-run gate (#358)", () => {
       });
       // Quoted, because it is going to be pasted into a shell.
       expect(screen.getByText("actana pair new --label 'the office'")).toBeTruthy();
-      expect(screen.queryByText("actana pair new --label <name>")).toBeNull();
+      expect(screen.queryByText("actana pair new --label NAME")).toBeNull();
     });
 
     it("keeps every command copyable, since it is pasted on another machine", async () => {
       await mount();
       await goToStep(2);
       const copy = screen.getByRole("button", {
-        name: "Copy: actana pair new --label <name>",
+        name: "Copy: actana pair new --label NAME",
       });
       const writeText = vi.fn(async () => undefined);
       Object.defineProperty(navigator, "clipboard", {
@@ -374,7 +374,7 @@ describe("the first-run gate (#358)", () => {
       await act(async () => {
         fireEvent.click(copy);
       });
-      expect(writeText).toHaveBeenCalledWith("actana pair new --label <name>");
+      expect(writeText).toHaveBeenCalledWith("actana pair new --label NAME");
     });
   });
 

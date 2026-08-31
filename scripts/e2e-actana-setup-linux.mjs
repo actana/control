@@ -443,7 +443,7 @@ async function main() {
     // Pinned by value: this script is plain node with no path to the CLI's
     // exports. `actana-pair.test.ts` pins the same wording against the
     // constant itself, so a change to it fails there first (#357 review B1).
-    "Settings (gear icon) -> Cores -> Add Core: this Core's address, then compare the " +
+    "Settings (gear icon) -> Cores -> Add a Core: this Core's address, then compare the " +
       "CA fingerprint, then the session and the code",
     "From a terminal",
     "npm i -g @actana/cli",

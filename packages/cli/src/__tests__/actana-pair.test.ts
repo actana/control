@@ -588,7 +588,7 @@ describe("actana pair new, at a terminal", () => {
     expect(screen()).toContain("From the Panel");
     expect(screen()).toContain(PANEL_INSTRUCTION);
     expect(PANEL_INSTRUCTION).toBe(
-      "Settings (gear icon) -> Cores -> Add Core: this Core's address, then compare the " +
+      "Settings (gear icon) -> Cores -> Add a Core: this Core's address, then compare the " +
         "CA fingerprint, then the session and the code",
     );
     // Every field the form requires is named, in the form's order, and the
