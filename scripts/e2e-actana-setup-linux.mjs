@@ -18,7 +18,9 @@
 //     own** (#287);
 //   • `--version` installs that exact release; with no flag, the latest;
 //   • `status` / `start` / `stop` / `restart` / `logs` control and report the
-//     daemon, and `pair new` mints a code on it;
+//     daemon, and `pair new` mints a code on it — in **both** its shapes:
+//     the labelled lines when its stdout is redirected, and the framed
+//     handout with both redemption paths when it has a terminal (#357);
 //   • re-running the two commands upgrades in place — one unit, same pairing
 //     credentials, and a pre-rename `actana-harness.service` is taken out on
 //     the way;
@@ -393,7 +395,15 @@ async function main() {
   // The verb that replaced the reprint. It has to work on the machine the
   // one-liner produced, and it must not put the code on stdout twice or leak a
   // credential while doing it.
-  const minted = mustAsOperator("actana pair new --label e2e-panel");
+  //
+  // **Redirected, deliberately.** Since #357 `pair new` renders a framed
+  // handout when stdout is a terminal, and `machinectl shell` gives it one —
+  // so a scrape run here without the redirect would be reading the cosmetic
+  // shape. The contract this asserts is the *other* one: what a script sees.
+  // Both shapes are checked, this one first, because it is the one anything
+  // downstream depends on.
+  mustAsOperator("actana pair new --label e2e-panel > /tmp/pair-new.out");
+  const minted = mustAsOperator("cat /tmp/pair-new.out");
   if (!/Pairing code\s+[A-Z2-9]{4}-[A-Z2-9]{4}/.test(minted.stdout)) {
     die("`actana pair new` printed no pairing code", minted.stdout.split("\n"));
   }
@@ -403,6 +413,44 @@ async function main() {
   if (/BEGIN (CERTIFICATE|PRIVATE KEY)/.test(minted.stdout)) {
     die("`actana pair new` printed certificate material", minted.stdout.split("\n"));
   }
+  // Nothing cosmetic reached a redirected stdout: no frame, no instructions,
+  // no escape sequence. This is the half of #357 that scripts depend on, and
+  // the only place it is checked against a real installed Core.
+  for (const cosmetic of ["\u256d", "\u2502", "From the Panel", "From a terminal", "npm i -g"]) {
+    if (minted.stdout.includes(cosmetic)) {
+      die(`redirected \`actana pair new\` printed ${cosmetic}`, minted.stdout.split("\n"));
+    }
+  }
+  log("`actana pair new` keeps its labelled lines when stdout is not a terminal (#357)");
+
+  // And the other shape, on the same machine: `machinectl shell` is a
+  // terminal, so this run frames the code and says what to do with it. The
+  // pasteable line has to carry `--session` — without it the client's
+  // `readTicket` refuses the code it was just handed.
+  const framed = mustAsOperator("actana pair new --label e2e-tty");
+  for (const wanted of [
+    "\u256d",
+    "From the Panel",
+    "Settings (gear icon) -> Cores -> Add Core, then enter the code above",
+    "From a terminal",
+    "npm i -g @actana/cli",
+  ]) {
+    if (!framed.stdout.includes(wanted)) {
+      die(`framed \`actana pair new\` printed no ${JSON.stringify(wanted)}`, framed.stdout.split("\n"));
+    }
+  }
+  const pasteable = framed.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("actana core pair "));
+  if (!pasteable) die("framed `actana pair new` printed no pasteable command", framed.stdout.split("\n"));
+  if (!/--session [0-9a-f-]{36}\b/.test(pasteable)) {
+    die("the pasteable command carries no --session", [pasteable]);
+  }
+  if (!/--fingerprint [0-9A-F]{2}(:[0-9A-F]{2}){31}/.test(pasteable)) {
+    die("the pasteable command carries no whole fingerprint", [pasteable]);
+  }
+  log("`actana pair new` frames the code and both redemption paths at a terminal (#357)");
   const reprint = asOperator("actana token");
   if (reprint.status === 0) die("`actana token` still reprints something — #287 removed it");
   // Both streams: `machinectl shell` folds the session's stderr into the
