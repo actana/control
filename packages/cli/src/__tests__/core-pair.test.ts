@@ -18,7 +18,8 @@ import { describe, it, expect, afterEach } from "vitest";
 import { existsSync, statSync } from "node:fs";
 import { coreBlobPath, readCurrentCore } from "../blob-registry.ts";
 import { displayWidth, FRAME_WIDTH } from "../cli-frame.ts";
-import { corePairingOutcome } from "../core-pair-results.ts";
+import { corePairingOutcome, corePairSuccessBlock } from "../core-pair-results.ts";
+import { wrapText } from "../cli-frame.ts";
 import { resolveCore } from "../core-resolution.ts";
 import { CorePairingError, type CorePairingFailure } from "@actana/sdk/core-pairing.ts";
 import {
@@ -546,6 +547,15 @@ function sparePairArgv(): string[] {
 /** Every failure the SDK distinguishes and that a fake Core can be told to raise. */
 const SDK_FAILURES: CorePairingFailure[] = [
   "bad-address",
+  // Both added after #366 review 8. `fingerprint-unconfirmed` the fake has
+  // always been able to raise — the older table below proves it — and
+  // `bad-fingerprint` had never been covered by any list at all, so neither
+  // sat inside the byte-identity loop, the something-to-type loop or the
+  // distinct-remedy check. `bad-code` stays out on purpose: it is intercepted
+  // before the SDK's message can quote the code, so its first line is this
+  // package's own and the loop's literal would not describe it.
+  "bad-fingerprint",
+  "fingerprint-unconfirmed",
   "unreachable",
   "not-pairable",
   "no-ca-presented",
@@ -763,6 +773,9 @@ describe("actana core pair, at a terminal", () => {
       "actana project ls",
       "actana harness ls",
       "actana session start <project>",
+      // #360 names this beside `session start`, and #366 review 4 caught it
+      // missing.
+      "actana core shell",
     ]) {
       expect(screen, `the success block does not teach ${verb}`).toContain(verb);
     }
@@ -770,26 +783,32 @@ describe("actana core pair, at a terminal", () => {
     expect(screen.indexOf("actana core status")).toBeLessThan(screen.indexOf("actana project ls"));
     expect(screen.indexOf("actana project ls")).toBeLessThan(screen.indexOf("actana harness ls"));
     expect(screen.indexOf("actana harness ls")).toBeLessThan(screen.indexOf("actana session start"));
+    expect(screen.indexOf("actana session start")).toBeLessThan(screen.indexOf("actana core shell"));
     // And the Panel, which is the other thing to pair with the same Core.
     expect(screen).toContain("Settings -> Cores");
   });
 
-  it("names this machine as the Core will list it, from --label or the hostname", async () => {
-    // The one row about the far end. It is the name an operator looks for in
-    // `actana pair ls` on the Core when they come to revoke this client, and a
-    // certificate serial is not a name anybody recognises.
+  it("reports the name it sent as a local fact, claiming nothing about the Core", async () => {
+    // #366 review 2. The row used to say this name was "this machine, in the
+    // Core's `pair ls`", and that is false — the Core stores the *session*
+    // label there. So the row now states only what is true on this side, and
+    // this test pins the absence of the claim as hard as the presence of the
+    // value: a reworded row that quietly grew the claim back would fail here.
     const labelled = await cli().run(pairArgv(["--label", "ada-laptop"]), {
       stdoutIsTty: true,
       pairing: fakePairing(),
     });
-    expect(prose(labelled.out)).toContain("Label ada-laptop — this machine, in the Core's `pair ls`");
+    const said = prose(labelled.out);
+    expect(said).toContain("Sent as ada-laptop — the name this machine gave");
+    expect(said).not.toContain("pair ls");
+    expect(said).not.toContain("revoke");
 
-    // With no --label the hostname is the honest default, and it is the value
-    // that was actually sent — not something this block made up to fill a row.
+    // The value is the one that actually crossed the seam, not one this block
+    // made up to fill a row — asserted against what the SDK was handed.
     const pairing = fakePairing();
     const bare = await cli().run(pairArgv(), { stdoutIsTty: true, pairing });
     expect(pairing.paired[0]?.label).toBeTruthy();
-    expect(prose(bare.out)).toContain(`Label ${pairing.paired[0]?.label} —`);
+    expect(prose(bare.out)).toContain(`Sent as ${pairing.paired[0]?.label} —`);
 
     // And nothing about it reaches the piped shape.
     const piped = await cli().run(pairArgv(["--label", "ada-laptop"]), { pairing: fakePairing() });
@@ -875,7 +894,14 @@ describe("actana core pair, at a terminal", () => {
     });
     const dial = prose(unreachable.err);
     expect(dial).toContain("a dial failure, not a refusal");
-    expect(dial).toContain("no attempt was spent");
+    // #366 review 3: the guarantee is conditional, because this class also
+    // covers a drop *after* the code went out — one timer spans the whole
+    // exchange, the Core's signing included. An unconditional "your code is
+    // still good" here costs the operator a second trip.
+    expect(dial).toContain("If nothing answered, nothing was sent");
+    expect(dial).toContain("the connection dropped part-way through");
+    expect(dial).toContain("mint a fresh one");
+    expect(dial).not.toContain("the code was never sent, no attempt was spent");
     expect(dial).toContain("getent hosts <host>");
     expect(dial).toContain("nc -vz <host> <port>");
     expect(dial).toContain("HTTPS_PROXY");
@@ -925,6 +951,87 @@ describe("actana core pair, at a terminal", () => {
       .join("");
     // Wrapped, never shortened: the whole path is still there.
     expect(inFrame).toContain(coreBlobPath(cli().paths, deep));
+  });
+
+  // #366 review 1. The old width test only ever rendered `the fake Core
+  // answered <failure>` — a headline far too short to break anything — so it
+  // looked like it covered the frame and did not. The SDK's real
+  // `fingerprint-mismatch` sentence carries **two** 95-column colon-hex
+  // fingerprints with no space and no slash in them, and that is the one class
+  // on this screen whose whole subject is a value compared character by
+  // character. Built here to the SDK's own format rather than imported, so a
+  // change to that format shows up as a diff a reader has to look at.
+  function sdkFingerprintMismatch(): CorePairingError {
+    const presented = PAIRED_FINGERPRINT;
+    const expected = PAIRED_FINGERPRINT.split(":").reverse().join(":");
+    return new CorePairingError(
+      "fingerprint-mismatch",
+      `https://core.test:8443 presented a certificate authority with fingerprint ${presented}, ` +
+        `but ${expected} was expected — the pairing code was not sent`,
+    );
+  }
+
+  it("holds the frame around the SDK's real fingerprint-mismatch sentence", async () => {
+    const err = sdkFingerprintMismatch();
+    const run = await cli().run(pairArgv(), {
+      stdoutIsTty: true,
+      pairing: fakePairing({ failsWith: err }),
+      env: { NO_COLOR: "1" },
+    });
+
+    expect(run.code).toBe(EXIT_PAIR_FINGERPRINT_MISMATCH);
+    const lines = framed(run.err);
+    expect(lines.length).toBeGreaterThan(3);
+    for (const line of lines) expect(displayWidth(line)).toBe(FRAME_WIDTH);
+
+    // Wrapped, never shortened — and this is the class where that matters most:
+    // an operator is being asked to compare these two values by eye, and a
+    // fingerprint with an ellipsis in it is an invitation to guess.
+    const said = prose(run.err).replace(/ /g, "");
+    expect(said).toContain(PAIRED_FINGERPRINT.replace(/ /g, ""));
+    expect(said).toContain(PAIRED_FINGERPRINT.split(":").reverse().join(":"));
+    expect(said).not.toContain("…");
+  });
+
+  it("holds the frame around every refusal this file words itself", async () => {
+    // #366 review 9: five of these were never rendered by any test, so the
+    // width invariant was unproven for exactly the blocks whose step lists this
+    // PR wrote from scratch.
+    const tty = { stdoutIsTty: true, env: { NO_COLOR: "1" } } as const;
+    const runs = [
+      await cli().run(["core", "pair", "prod"], { ...tty, pairing: fakePairing() }),
+      await cli().run(
+        ["core", "pair", "prod", "core.test:8443", CODE, "WXYZ-6789", "--session", SESSION],
+        { ...tty, pairing: fakePairing() },
+      ),
+      await cli().run(
+        ["core", "pair", "bad name", "core.test:8443", CODE, "--session", SESSION],
+        { ...tty, pairing: fakePairing() },
+      ),
+      await cli().run(
+        ["core", "pair", "prod", "core.test:8443", `other-session:${CODE}`, "--session", SESSION],
+        { ...tty, pairing: fakePairing() },
+      ),
+      await cli().run(
+        ["core", "pair", "prod", "core.test:8443", "no", "--session", SESSION, "--fingerprint", PAIRED_FINGERPRINT],
+        { ...tty, pairing: fakePairing() },
+      ),
+      await cli().run(pairArgv(), {
+        ...tty,
+        pairing: fakePairing({ failsWith: new TypeError("cannot read properties of undefined") }),
+      }),
+    ];
+
+    for (const [index, run] of runs.entries()) {
+      const lines = framed(run.err);
+      expect(lines.length, `refusal ${index} was not framed`).toBeGreaterThan(3);
+      for (const line of lines) {
+        expect(displayWidth(line), `refusal ${index}: "${line}"`).toBe(FRAME_WIDTH);
+      }
+      // And each still ends in something to type.
+      const commands = run.err.filter((line) => /^ {2}\S/.test(line));
+      expect(commands.length, `refusal ${index} had nothing to type`).toBeGreaterThan(0);
+    }
   });
 
   it("keeps every framed line exactly the frame's width", async () => {
@@ -981,6 +1088,112 @@ describe("actana core pair, at a terminal", () => {
       const run = await cli().run(pairArgv(), { stdoutIsTty, pairing: fakePairing() });
       expect(run.all, "the pairing code reached an output sink").not.toContain(CODE);
       expect(run.all.toUpperCase(), "the pairing code reached an output sink").not.toContain("ABCD");
+    }
+  });
+});
+
+// ─── the pure renderers, called directly (#366 review 7) ───────────────────
+//
+// Two properties that `runCorePair` cannot reach. Both modules are pure —
+// values in, lines out — so calling them is the whole of the setup, and a
+// branch nothing exercises is a branch nobody knows the shape of.
+
+describe("corePairSuccessBlock, directly", () => {
+  /** A block with every field filled, so a test can vary exactly one. */
+  function block(over: Partial<Parameters<typeof corePairSuccessBlock>[0]> = {}): string[] {
+    return corePairSuccessBlock({
+      name: "prod",
+      endpoint: "wss://core.test:8443",
+      replaced: false,
+      label: "bkp-07",
+      current: "prod",
+      credentialPath: "/home/ada/.config/actana/cores/prod.txt",
+      color: false,
+      ...over,
+    });
+  }
+
+  it("says nothing is selected when the pointer is gone, rather than naming one", () => {
+    // Unreachable through the verb: `runCorePair` writes the pointer when
+    // nothing holds it and then reads it back. It is reachable in the world —
+    // a concurrent `actana core rm` between those two lines — and the honest
+    // answer is that nothing is selected, not a name that is not there.
+    const said = block({ current: null }).join("\n");
+
+    expect(said).toContain("nothing is selected yet");
+    expect(said).not.toContain("every later verb talks to this Core");
+    // And it offers the command that fixes it, because it is not current.
+    expect(said).toContain("actana core use prod");
+  });
+
+  it("keeps the frame at width for all three pointer states", () => {
+    for (const current of ["prod", "other", null]) {
+      for (const line of block({ current }).filter((one) => /^[╭│╰]/.test(one))) {
+        expect(displayWidth(line), `current=${current}: "${line}"`).toBe(FRAME_WIDTH);
+      }
+    }
+  });
+});
+
+describe("wrapText, on the values a frame actually holds", () => {
+  /** Every wrap is lossless: the pieces put back together are the input. */
+  function rejoined(text: string, columns: number): string {
+    return wrapText(text, columns).join("").replace(/ /g, "");
+  }
+
+  it("breaks colon-hex on its colons, and loses nothing", () => {
+    const fingerprint = PAIRED_FINGERPRINT;
+    const lines = wrapText(fingerprint, 40);
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(40);
+    // Every line but the last ends on the separator, which is what tells a
+    // reader the value continues.
+    for (const line of lines.slice(0, -1)) expect(line.endsWith(":")).toBe(true);
+    expect(lines.join("")).toBe(fingerprint);
+  });
+
+  it("breaks a path on its slashes, and loses nothing", () => {
+    const path = "/home/ada.mcdonald/.config/actana/cores/a-rather-long-core-name.txt";
+    const lines = wrapText(path, 30);
+
+    expect(lines.length).toBeGreaterThan(1);
+    for (const line of lines) expect(displayWidth(line)).toBeLessThanOrEqual(30);
+    expect(lines.join("")).toBe(path);
+  });
+
+  it("breaks a URL on either separator", () => {
+    const url = "https://a-very-long-host-name.example.invalid:8443/v1/pairing/redeem";
+    expect(rejoined(url, 24)).toBe(url);
+    for (const line of wrapText(url, 24)) expect(displayWidth(line)).toBeLessThanOrEqual(24);
+  });
+
+  it("leaves a word with neither separator whole and over-long, never cut", () => {
+    // The residual, pinned so it stays a decision rather than a surprise: there
+    // is nowhere left to break that would not put a line ending inside a name,
+    // and a ragged border is a cheaper failure than a value that cannot be
+    // trusted. Documented on `wrapText` in exactly these terms.
+    const unbreakable = "z".repeat(90);
+    const lines = wrapText(`before ${unbreakable} after`, 40);
+
+    expect(lines).toContain(unbreakable);
+    expect(lines.join(" ")).toContain(unbreakable);
+    expect(lines.join("")).not.toContain("…");
+  });
+
+  it("never drops a character, whatever it is handed", () => {
+    for (const text of [
+      PAIRED_FINGERPRINT,
+      "/a/b/c/d/e/f/g/h",
+      "wss://core.test:8443",
+      "a b c",
+      "",
+      "::::",
+      "////",
+    ]) {
+      expect(rejoined(text, 8), `wrapText dropped part of ${JSON.stringify(text)}`).toBe(
+        text.replace(/ /g, ""),
+      );
     }
   });
 });

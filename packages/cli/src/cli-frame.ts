@@ -58,6 +58,21 @@ export const FRAME_GUTTER = 3;
  */
 export const FRAME_CONTENT_WIDTH = FRAME_WIDTH - 2 - FRAME_GUTTER - 1;
 
+/**
+ * The style a section heading **under** a frame carries.
+ *
+ * `From the Panel` on the Core's handout and `Next steps` on the client's
+ * result are the same element doing the same job, and #366's review caught them
+ * rendering differently — one bold, one dim — which is the exact drift this
+ * module exists to stop. Bold, because that is what #364 shipped and `pair new`
+ * has an operator reading it in the wild today; a heading that is dimmer than
+ * the prose beneath it is also the wrong way round.
+ *
+ * Field labels *inside* a frame stay {@link ANSI.dim}. They are a column, not a
+ * heading — the eye finds them by position.
+ */
+export const FRAME_HEADING = ANSI.bold;
+
 /** One run of styled text inside a framed line. */
 export type Span = { text: string; style?: string };
 
@@ -140,8 +155,9 @@ function isWide(point: number): boolean {
  *
  * **Only ever called on something the operator can read back somewhere else.**
  * Truncation is a lie about a value, and the values worth telling it about are
- * names — a label is a name the operator chose and can read off `pair ls`. A
- * fingerprint wraps instead, and nothing routes one through here.
+ * names — a label is a name the operator chose and can read back from where
+ * they chose it. A fingerprint wraps instead, and nothing routes one through
+ * here.
  */
 export function clip(text: string, columns: number): string {
   if (displayWidth(text) <= columns) return text;
@@ -166,21 +182,34 @@ export function style(text: string, code: string | undefined, color: boolean): s
  * `text` broken across lines at spaces, measured in display columns.
  *
  * Prose is the one thing a frame holds that has no natural break in it: a label
- * is short, a fingerprint splits on its own colons, and a diagnostic relayed
- * from the SDK is a sentence of whatever length that sentence is.
+ * is short, and a diagnostic relayed from the SDK is a sentence of whatever
+ * length that sentence is — with, sometimes, an unbreakable value sitting in
+ * the middle of it.
  *
  * **This function may not shorten its input.** Every caller is printing
- * something an operator has to read exactly — a path to their own credential, a
- * URL, an address — and a wrap that drops characters is a truncation wearing a
- * different name. So a word too long for a line of its own is broken on its
- * slashes rather than cut, which is the same move `wrapFingerprint` makes on
- * colons: the separator stays at the end of the line, so a reader can see there
- * is more. That is not an edge case. A credential lands under the operator's
- * home directory, and a home directory deep enough to overflow a 74-column box
- * is an ordinary machine, not a pathological one.
+ * something an operator has to read exactly — a path to their own credential,
+ * an address, a fingerprint they are being asked to *compare* — and a wrap that
+ * drops characters is a truncation wearing a different name.
  *
- * A word with no slash in it and no room to fit is left over-long. A ragged
- * border is the acceptable cost; a lost character is not.
+ * So a word too long for a line of its own is broken on {@link WORD_BREAKS} —
+ * `/`, `:` and `.`, the separators the values reaching a frame are built out
+ * of: a path, an origin, a `host:port`, colon-hex, a domain name. The
+ * separator stays at the end of the line it breaks after, which is what tells a
+ * reader the value continues — the same move `wrapFingerprint` makes on the
+ * Core's side.
+ *
+ * Neither is an edge case. A credential lands under the operator's home
+ * directory, and a home deep enough to overflow a 74-column box is an ordinary
+ * machine; the SDK's `fingerprint-mismatch` sentence carries **two** 95-column
+ * colon-hex fingerprints, and that is the one class on this screen whose whole
+ * subject is a value being compared character by character (#366 review 1).
+ *
+ * **The residual, stated rather than hidden:** a word with neither separator in
+ * it and no room to fit is left whole and over-long, and the border beside it
+ * runs one column past the rest. That is deliberate. There is nowhere left to
+ * break that would not put a line ending in the middle of a name, and a ragged
+ * border is a cheaper failure than a value an operator cannot trust. It is
+ * pinned by a test so it stays a decision.
  */
 export function wrapText(text: string, columns: number): string[] {
   const width = Math.max(1, columns);
@@ -199,9 +228,10 @@ export function wrapText(text: string, columns: number): string[] {
       continue;
     }
     // Too long for any line. Break it where it has a break, and leave the last
-    // chunk open so anything after it — `(mode 0600)`, a trailing note — can
-    // share that line rather than starting another.
-    const chunks = breakOnSlashes(word, width);
+    // chunk open so anything after it — `(mode 0600)`, `was expected — the
+    // pairing code was not sent` — can share that line rather than starting
+    // another.
+    const chunks = breakLongWord(word, width);
     lines.push(...chunks.slice(0, -1));
     line = chunks.at(-1) ?? "";
   }
@@ -210,20 +240,44 @@ export function wrapText(text: string, columns: number): string[] {
 }
 
 /**
- * One over-long word, split on its slashes, each line keeping its separator.
+ * The separators an over-long word may be broken after.
+ *
+ * Three, because between them they are what every unbreakable value this
+ * program prints is built out of:
+ *
+ *   - `/` — a filesystem path, and the path half of a URL;
+ *   - `:` — `host:port`, an `https://` scheme, and colon-hex: a SHA-256
+ *     fingerprint is 95 columns and is the reason this list is not just `/`
+ *     (#366 review 1);
+ *   - `.` — a domain name, which is the long slash-free value an endpoint row
+ *     is made of and the one the review asked about by name. Found by a test:
+ *     `https://a-very-long-host-name.example.invalid:8443/…` has 38 columns
+ *     between its `//` and its port, and neither of the first two separators
+ *     is anywhere in them.
+ *
+ * A sentence-ending full stop is a break point too, in principle. In practice
+ * it never is: a word is only broken here when it is longer on its own than
+ * the whole line, and the last word of a sentence is not.
+ */
+const WORD_BREAKS = /(?<=[/:.])/;
+
+/**
+ * One over-long word, split after its separators, each line keeping its own.
  *
  * The separator stays at the end of the line it breaks after, which is what
  * tells a reader that the value continues — the same reason `wrapFingerprint`
- * keeps its colons. A single segment with no slash and no room is handed back
- * over-long: there is nowhere left to break, and breaking anyway would put a
- * line ending in the middle of a directory name.
+ * keeps its colons on the Core's side.
+ *
+ * **Lossless by construction.** The split is a zero-width lookbehind, so the
+ * pieces are the input partitioned rather than tokenised: nothing is consumed
+ * as a delimiter and `chunks.join("")` is the word it was handed. A word with
+ * no separator in it comes back as one over-long chunk — see the residual in
+ * {@link wrapText}.
  */
-function breakOnSlashes(word: string, width: number): string[] {
-  const parts = word.split("/");
+function breakLongWord(word: string, width: number): string[] {
   const chunks: string[] = [];
   let chunk = "";
-  for (const [index, part] of parts.entries()) {
-    const piece = index < parts.length - 1 ? `${part}/` : part;
+  for (const piece of word.split(WORD_BREAKS)) {
     if (piece === "") continue;
     if (chunk !== "" && displayWidth(chunk + piece) > width) {
       chunks.push(chunk);

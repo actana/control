@@ -33,8 +33,9 @@ import {
   ANSI,
   clip,
   frameEdge,
-  frameRow,
   FRAME_CONTENT_WIDTH,
+  FRAME_HEADING,
+  frameRow,
   style,
   wrapText,
   type Span,
@@ -124,17 +125,24 @@ export type CorePairSuccess = {
   /** Whether a Core of this name was already registered. Chooses one word. */
   replaced: boolean;
   /**
-   * What this machine is called **on the Core** — `--label`, or its hostname.
+   * The name this machine put in the pairing request — `--label`, or its
+   * hostname when the flag was not given.
    *
-   * The one fact on this block about the far end rather than this one, and it
-   * is here because it is the name an operator will look for when they come
-   * to revoke this client: the Core lists it in `actana pair ls` beside a
-   * certificate serial, and a serial is not something anybody recognises.
+   * **A purely local fact, and the row is worded to claim nothing else**
+   * (#366 review 2). The first version of this row said it was "this machine,
+   * in the Core's `pair ls`", and that is false: `core-pairing-routes.ts`
+   * builds `PairedClient.label` from **`session.label`** — the name the *Core*
+   * operator typed at `actana pair new --label <name>` — and this value
+   * reaches the Core only as the certificate CN, and only in the sub-case
+   * where the session carried no label at all. `actana pair revoke` matches on
+   * `client.label` and on a `CN=`-prefixed subject, so it would not have found
+   * this name either. A row whose stated purpose was revocation and which
+   * could not be revoked by is worse than no row.
    *
-   * Deliberately **not** the LABEL column of `actana core ls`, which means
-   * the Core's own alias and stays empty for a paired credential — see the
-   * `writeCoreBlob` call in `core-pair.ts`. Same word, opposite end of the
-   * link, which is why the row says which end it is talking about.
+   * What it is good for is the case an operator did not choose: no `--label`,
+   * so this machine sent its hostname and nothing on the screen said so. That
+   * is a fact about **this** side, it is checkable here, and it is all this
+   * row now says.
    */
   label: string;
   /** What `current` names now. `null` when nothing does. */
@@ -170,12 +178,15 @@ export function corePairSuccessBlock(result: CorePairSuccess): string[] {
   );
   lines.push(frameRow([], color));
   lines.push(...field("Endpoint", result.endpoint, color));
-  // Clipped, and it is this row that gives: a label is a name the operator
-  // chose and can read back off `pair ls`, where every other value here is one
-  // they have to be able to copy.
-  lines.push(
-    ...field("Label", `${clip(result.label, 28)} — this machine, in the Core's \`pair ls\``, color),
-  );
+  // "Sent as", not "Label", because there are two LABEL columns in this
+  // program already — `core ls`'s, which means the *Core's* own alias, and
+  // `pair ls`'s on the Core, which means the *session's*. This is neither. It
+  // is what left this machine, and the row says only that.
+  //
+  // Clipped, and it is this row that gives: it is a name the operator either
+  // typed or can read off `hostname`, where every other value here is one they
+  // have to be able to copy.
+  lines.push(...field("Sent as", `${clip(result.label, 30)} — the name this machine gave`, color));
   lines.push(...field("Current", currentSentence(result, isCurrent), color));
   // Reassurance, not a secret: the operator has just been told a credential
   // exists and has no way to see that it does. The path and the mode are the
@@ -186,7 +197,7 @@ export function corePairSuccessBlock(result: CorePairSuccess): string[] {
   lines.push(frameEdge("bottom", color));
   lines.push("");
 
-  lines.push(style("Next steps", ANSI.dim, color));
+  lines.push(style("Next steps", FRAME_HEADING, color));
   lines.push(...stepLines(nextSteps(result, isCurrent), color));
   return lines;
 }
@@ -198,6 +209,15 @@ export function corePairSuccessBlock(result: CorePairSuccess): string[] {
  * second Core on a machine that already has one changes nothing about
  * `current`, and the operator's very next command will talk to the other Core
  * unless this line tells them so.
+ *
+ * **The third is defensive and says so** (#366 review 7). `runCorePair` writes
+ * the pointer when nothing holds it and then reads it back, so a `null` here
+ * means the pointer was cleared between those two lines — a concurrent
+ * `actana core rm`, or a registry that has gone missing underneath the write.
+ * Rare, not impossible, and the honest thing to print is that nothing is
+ * selected rather than a name that is not. It is unreachable through the verb,
+ * so the suite renders it by calling this block directly: a branch nothing
+ * exercises is a branch nobody knows the shape of.
  */
 function currentSentence(result: CorePairSuccess, isCurrent: boolean): string {
   if (isCurrent) return `"${result.name}" — every later verb talks to this Core`;
@@ -239,6 +259,15 @@ function nextSteps(result: CorePairSuccess, isCurrent: boolean): CorePairStep[] 
   steps.push({
     command: 'actana session start <project> "<prompt>"',
     note: "The first real thing to run on it. Prints the Session id and exits.",
+  });
+  // Named in #360 beside `session start` as the other first real action, and
+  // dropped from the first cut of this list — silently, which is the part the
+  // review was right about (#366 review 4). It is the interactive half of the
+  // same idea: `session start` hands work to an agent, `core shell` puts the
+  // operator on the machine themselves.
+  steps.push({
+    command: "actana core shell",
+    note: "Or an interactive shell on the Core, to look around it yourself.",
   });
   steps.push({
     note:
@@ -299,7 +328,7 @@ export function corePairRefusalBlock(refusal: CorePairRefusal): string[] {
   lines.push(frameEdge("bottom", color));
   lines.push("");
 
-  lines.push(style("What to do", ANSI.dim, color));
+  lines.push(style("What to do", FRAME_HEADING, color));
   lines.push(...stepLines(refusal.steps, color));
   return lines;
 }
@@ -403,9 +432,24 @@ export function corePairingOutcome(
             // The distinction the whole class turns on: a dial that never
             // landed has spent nothing, so the code in the operator's hand is
             // still good and re-minting one would be wasted effort.
+            //
+            // **Scoped, because this class is not only the dial** (#366 review
+            // 3). `postRedemption` reports `transport` — and so `unreachable` —
+            // from its error handler, which is armed across `req.end(body)` as
+            // well as before it: one 15s timer covers the whole exchange
+            // including the Core signing the certificate, so a slow Core or a
+            // reset mid-flight lands here with the session already spent. A
+            // block that promised the code was good would send that operator
+            // back for a `refused` and a second trip.
             note:
-              "Nothing answered at that address. This is a dial failure, not a refusal — the code was " +
-              "never sent, no attempt was spent, and the code you were given is still good.",
+              "Nothing answered at that address — a dial failure, not a refusal. If nothing answered, " +
+              "nothing was sent: no attempt was spent and the code you were given is still good.",
+          },
+          {
+            note:
+              "If instead the connection dropped part-way through, the Core may have redeemed the code " +
+              "before the answer was lost. A retry that comes back refused means exactly that — mint a " +
+              "fresh one rather than reading it as a second network fault.",
           },
           { command: "getent hosts <host>", note: "Does the name resolve, and to the machine you mean?" },
           {
@@ -770,7 +814,7 @@ function field(label: string, value: string, color: boolean): string[] {
  * escape around it is how a low-contrast terminal theme turns an instruction
  * into something that cannot be read. The note is dim because it is read once.
  */
-export function stepLines(steps: readonly CorePairStep[], color: boolean): string[] {
+function stepLines(steps: readonly CorePairStep[], color: boolean): string[] {
   const lines: string[] = [];
   for (const [index, step] of steps.entries()) {
     if (index > 0) lines.push("");

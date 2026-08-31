@@ -93,9 +93,9 @@ import {
   clip,
   displayWidth,
   frameEdge,
+  FRAME_CONTENT_WIDTH,
+  FRAME_HEADING,
   frameRow,
-  FRAME_GUTTER,
-  FRAME_WIDTH,
   style,
   useColor,
 } from "./cli-frame.ts";
@@ -108,7 +108,6 @@ import type { ActanaCliDeps } from "./cli-deps.ts";
 // definitions moved to `cli-frame.ts` when `actana core pair` grew a frame of
 // its own (#360) — there is one border width in this program, not two.
 export { displayWidth, FRAME_WIDTH } from "./cli-frame.ts";
-
 
 export const PAIR_HELP = `actana pair — enroll a client on THIS machine's Core
 
@@ -558,7 +557,7 @@ export function pairingHandout(handout: PairingHandout): string[] {
     // it is *this* row that gives — a label is a name the operator already
     // knows and can read off `pair ls`, where the fingerprint is a value they
     // have to compare character by character (#357 review N1).
-    const room = FRAME_WIDTH - 2 - FRAME_GUTTER - displayWidth("Label          ") - 1;
+    const room = FRAME_CONTENT_WIDTH - displayWidth("Label          ");
     lines.push(
       frameRow([{ text: "Label          ", style: ANSI.dim }, { text: clip(label, room) }], color),
     );
@@ -569,11 +568,11 @@ export function pairingHandout(handout: PairingHandout): string[] {
 
   // The canonical path first: most people pairing a Core are sitting in front
   // of a Panel, and the code goes straight into it.
-  lines.push(style("From the Panel", ANSI.bold, color));
+  lines.push(style("From the Panel", FRAME_HEADING, color));
   lines.push(`  ${PANEL_INSTRUCTION}`);
   lines.push("");
 
-  lines.push(style("From a terminal", ANSI.bold, color));
+  lines.push(style("From a terminal", FRAME_HEADING, color));
   lines.push("  npm i -g @actana/cli");
   lines.push("");
   // One command per address, **with the minted values already in it**. A

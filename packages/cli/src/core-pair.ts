@@ -245,9 +245,9 @@ export async function runCorePair(
       name,
       endpoint: blob.endpoint,
       replaced: replacing,
-      // What was sent to the Core as this machine's name, which is what the
-      // operator will look for in `actana pair ls` there — not the empty
-      // LABEL this registry stores, which means the Core's own alias.
+      // What this machine put in the request, and nothing more is claimed of
+      // it (#366 review 2). The Core keeps the *session* label in its
+      // `pair ls`, not this one — see `CorePairSuccess.label`.
       label: args.label ?? deps.hostname,
       // **Read back, not inferred.** The block says which Core is current now,
       // and that is a claim about what is on disk — `writeCurrentCore` above
