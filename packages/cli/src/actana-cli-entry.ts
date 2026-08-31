@@ -144,6 +144,7 @@ async function main(): Promise<void> {
       : () => {},
     readStdin,
     stdinIsTty: Boolean(process.stdin.isTTY),
+    stdoutIsTty: Boolean(process.stdout.isTTY),
     probe: probeCore,
     connect: connectCore,
     // The one dial that starts with nothing trusted: `core pair` enrolls this

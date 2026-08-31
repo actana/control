@@ -28,6 +28,14 @@
 // design working, not an omission, and `pair-command.test.ts` asserts it rather
 // than trusting it.
 //
+// **`pair new` has two shapes, and `isatty(stdout)` is the whole of the
+// switch** (#357). Down a pipe it is the labelled lines below, byte for byte
+// what 0.4.2 printed, because they are a screen-scraping contract. At a
+// terminal it is a framed handout that also says what to click in the Panel and
+// what to paste on the other machine. There is deliberately no `--json` and no
+// flag: a second way to ask is a second thing to keep true. See "the operator's
+// shape" further down for what is drawn and why.
+//
 // **What the fingerprint is for.** `pair new` prints the CA fingerprint beside
 // the code because the client's first dial is the one dial it cannot verify any
 // other way: it holds no certificate, so it has nothing pinned. A human reads
@@ -42,10 +50,14 @@
 // redeems them and enforces the revocations. Neither imports the other.
 
 import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import {
+  CONTAINER_PORT_ENV,
   CONTAINER_PUBLIC_HOST_ENV,
+  DEFAULT_CONTAINER_PORT,
   inContainer,
 } from "@actana/shared/actana-container-contract";
+import { coreNameError } from "@actana/shared/blob-registry";
 import { certFingerprintSha256 } from "@actana/shared/core-cert-material";
 import {
   formatPublicHosts,
@@ -75,6 +87,7 @@ import {
   pairingAuditor,
   type PairingAuditSink,
 } from "@actana/shared/pairing-audit";
+import { readActanaConfig } from "./actana-config.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -263,20 +276,46 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
 
   store.createSession(session, now);
 
-  // stdout: the three facts a human reads out. stderr: everything explaining
-  // them, so a `pair new` that is being piped or screen-scraped stays three
-  // labelled lines and nothing else.
+  const fingerprint = certFingerprintSha256(material.caCert);
+
+  // stderr is the same in both shapes below. It is the prose, and prose is not
+  // what a scraper reads — so the two sentences that explain the code are here
+  // whether the frame was drawn or not.
   deps.err("Read the code AND the fingerprint out to the machine you are pairing.");
   deps.err("The code is printed once — this Core keeps only a digest of it.");
-  deps.out(`Pairing code   ${code}`);
-  deps.out(`CA fingerprint ${certFingerprintSha256(material.caCert)}`);
-  deps.out(`Expires        ${absoluteTime(session.expiresAt)} (${relativeTime(session.expiresAt, now)})`);
-  if (label) deps.out(`Label          ${label}`);
-  // Only when it was chosen. A Core with one configured address has nothing to
-  // say here, and a line that appeared on every `pair new` would be noise on
-  // the terminal an operator is reading a credential off.
-  if (endpointHost) deps.out(`Endpoint host  ${endpointHost}`);
-  deps.out(`Session        ${sessionId}`);
+
+  if (deps.stdoutIsTty) {
+    // The operator's shape (#357). Everything about it is cosmetic: it carries
+    // the same facts the labelled lines do, plus the two ways to spend them,
+    // and it is reachable only when there is a human at the other end.
+    for (const line of pairingHandout({
+      code,
+      fingerprint,
+      expiresAt: session.expiresAt,
+      now,
+      sessionId,
+      label,
+      hosts: handoutHosts(material.serverHosts, endpointHost),
+      port: corePort(deps, materialPath),
+      color: useColor(deps),
+    })) {
+      deps.out(line);
+    }
+  } else {
+    // stdout: the facts a human reads out, one labelled line each. **Not one
+    // byte of this may move** — it is what every script that has ever wrapped
+    // `pair new` reads, and the frame above exists precisely so that this does
+    // not have to change to give an operator something better to look at.
+    deps.out(`Pairing code   ${code}`);
+    deps.out(`CA fingerprint ${fingerprint}`);
+    deps.out(`Expires        ${absoluteTime(session.expiresAt)} (${relativeTime(session.expiresAt, now)})`);
+    if (label) deps.out(`Label          ${label}`);
+    // Only when it was chosen. A Core with one configured address has nothing to
+    // say here, and a line that appeared on every `pair new` would be noise on
+    // the terminal an operator is reading a credential off.
+    if (endpointHost) deps.out(`Endpoint host  ${endpointHost}`);
+    deps.out(`Session        ${sessionId}`);
+  }
   deps.err(`Cancel it before it is used with \`actana pair revoke ${sessionId}\`.`);
   return EXIT_OK;
 }
@@ -386,6 +425,294 @@ function chooseEndpointHost(
     return REFUSED;
   }
   return wanted;
+}
+
+// ─── the operator's shape (#357) ────────────────────────────────────────────
+//
+// `pair new` has two audiences and they want opposite things. A script wants
+// labelled lines it can cut a field out of and nothing else; the person
+// standing at the Core wants to know what the code is *for* and what to type
+// next, on the other machine, without reassembling `actana core pair` out of
+// four separate lines by hand.
+//
+// **The switch is `isatty(stdout)` and nothing else.** No flag, no environment
+// variable, and deliberately no `--json` (#357). A pipe, a file, a `$( )` and a
+// CI log all get the labelled lines, byte for byte what 0.4.2 printed, and
+// `actana-pair.test.ts` asserts that against a literal rather than trusting it.
+// A terminal gets the frame below. Nothing else in this command reads the
+// answer — the session that was minted, the digest that was stored and the
+// exit code are identical either way, because a command that *did* something
+// different at a terminal is a command no script can trust.
+//
+// Everything here is pure: values in, lines out. That is what lets the suite
+// assert on the frame without a terminal, and what keeps the decision to draw
+// one in exactly one `if`.
+
+/** The escape sequences the frame uses, and the only ANSI in this file. */
+const ANSI = {
+  reset: "\u001b[0m",
+  bold: "\u001b[1m",
+  dim: "\u001b[2m",
+  /** The pairing code itself, which is the one thing on the screen that matters. */
+  boldCyan: "\u001b[1;36m",
+} as const;
+
+/**
+ * Whether to colour, given a terminal.
+ *
+ * `stdoutIsTty` is the gate; `NO_COLOR` is the standard opt-out on top of it
+ * (https://no-color.org). Honouring it costs one clause and means an operator
+ * whose terminal renders escapes badly still gets the instructions, rather than
+ * having to choose between colour and a pipe.
+ */
+function useColor(deps: ActanaCliDeps): boolean {
+  const noColor = deps.env.NO_COLOR;
+  return deps.stdoutIsTty && (noColor === undefined || noColor === "");
+}
+
+/** The frame's total width, borders included. Fixed, so the output is one shape. */
+const FRAME_WIDTH = 74;
+
+/** How far in from the left border the content starts. */
+const FRAME_GUTTER = 3;
+
+/** One run of styled text inside a framed line. */
+type Span = { text: string; style?: string };
+
+/**
+ * Every fact the handout renders. Times arrive as epoch ms and the clock does
+ * not: `now` is passed in, because this file reads the clock in exactly one
+ * place and it is not here.
+ */
+export type PairingHandout = {
+  code: string;
+  /** The full colon-separated hex. Wrapped below, and never shortened. */
+  fingerprint: string;
+  expiresAt: number;
+  now: number;
+  sessionId: string;
+  /** `""` when the code was minted without one. */
+  label: string;
+  /** The addresses to offer a pasteable command for, primary first. */
+  hosts: readonly string[];
+  port: number;
+  color: boolean;
+};
+
+/**
+ * The framed block, the Panel path and the terminal path, as lines.
+ *
+ * The order is the order of the questions an operator asks: what is the code,
+ * how long have I got, what do I compare the certificate against, which session
+ * is it — and then, under the frame, what do I actually do with it.
+ */
+export function pairingHandout(handout: PairingHandout): string[] {
+  const { code, fingerprint, sessionId, label, color } = handout;
+  const lines: string[] = [];
+
+  lines.push(frameEdge("top", color));
+  lines.push(frameRow([], color));
+  lines.push(frameRow([{ text: "Pairing code", style: ANSI.dim }], color));
+  lines.push(frameRow([], color));
+  // The one line the whole command exists for, and the only one in bold cyan.
+  lines.push(frameRow([{ text: `   ${code}`, style: ANSI.boldCyan }], color));
+  lines.push(frameRow([], color));
+  lines.push(
+    frameRow(
+      [
+        { text: "Expires        ", style: ANSI.dim },
+        {
+          text: `${absoluteTime(handout.expiresAt)} (${relativeTime(handout.expiresAt, handout.now)})`,
+        },
+      ],
+      color,
+    ),
+  );
+  lines.push(frameRow([], color));
+  // **Wrapped, never truncated.** The fingerprint is what the client checks the
+  // certificate against before it sends the code, so a fingerprint with an
+  // ellipsis in it is not a fingerprint — it is an invitation to guess.
+  lines.push(frameRow([{ text: "CA fingerprint", style: ANSI.dim }], color));
+  for (const chunk of wrapFingerprint(fingerprint)) {
+    lines.push(frameRow([{ text: `   ${chunk}` }], color));
+  }
+  lines.push(frameRow([], color));
+  lines.push(frameRow([{ text: "Session        ", style: ANSI.dim }, { text: sessionId }], color));
+  if (label) {
+    lines.push(frameRow([{ text: "Label          ", style: ANSI.dim }, { text: label }], color));
+  }
+  lines.push(frameRow([], color));
+  lines.push(frameEdge("bottom", color));
+  lines.push("");
+
+  // The canonical path first: most people pairing a Core are sitting in front
+  // of a Panel, and the code goes straight into it.
+  lines.push(style("From the Panel", ANSI.bold, color));
+  lines.push(`  ${PANEL_INSTRUCTION}`);
+  lines.push("");
+
+  lines.push(style("From a terminal", ANSI.bold, color));
+  lines.push("  npm i -g @actana/cli");
+  lines.push("");
+  // One command per address, **with the minted values already in it**. A
+  // placeholder here would put the operator back where they started: reading
+  // four fields off a screen and retyping them into a fifth thing.
+  for (const [index, host] of handout.hosts.entries()) {
+    const note = index === 0 && handout.hosts.length > 1 ? " (primary)" : "";
+    lines.push(
+      style(`  # on the machine being paired, reachable at ${host}${note}`, ANSI.dim, color),
+    );
+    lines.push(`  ${corePairCommand(handout, host)}`);
+    if (index < handout.hosts.length - 1) lines.push("");
+  }
+  return lines;
+}
+
+/**
+ * The Panel path, worded once.
+ *
+ * A constant rather than an inline string because the wording is the spec --
+ * #357 names the click path exactly — and a test asserts this value rather
+ * than a regex that would go on passing after somebody paraphrased it.
+ */
+export const PANEL_INSTRUCTION =
+  "Settings (gear icon) -> Cores -> Add Core, then enter the code above";
+
+/**
+ * The line the operator pastes on the other machine.
+ *
+ * Every value is real: the label, the address, the code, the session and the
+ * whole fingerprint. `--session` is not optional — `readTicket` on the client
+ * refuses a bare code without it — and its absence from two usage strings is
+ * the other half of #357.
+ *
+ * One line, not a backslash continuation. A continuation is one keystroke away
+ * from being pasted into something that does not join it, and the whole promise
+ * of this line is that it works when pasted.
+ */
+function corePairCommand(handout: PairingHandout, host: string): string {
+  return [
+    "actana core pair",
+    handoutName(handout.label),
+    endpointAddress(host, handout.port),
+    handout.code,
+    "--session",
+    handout.sessionId,
+    "--fingerprint",
+    handout.fingerprint,
+  ].join(" ");
+}
+
+/**
+ * What the pasted command calls the Core.
+ *
+ * The `--label` when there is one and the client's registry would accept it,
+ * and `<name>` otherwise. The check is `coreNameError` — the client's own rule
+ * — rather than a second opinion about names written here: a label with a
+ * space in it is a fine label and not a Core name, and pasting it would fail on
+ * the far machine with a message about a registry nobody mentioned.
+ */
+function handoutName(label: string): string {
+  if (!label || coreNameError(label) !== null) return "<name>";
+  return label;
+}
+
+/**
+ * `host:port`, with an IPv6 literal bracketed.
+ *
+ * The same rule `endpointFor` applies in `actana-config.ts`, for the same
+ * reason: `fe80::1:8443` is not an address anything can parse.
+ */
+function endpointAddress(host: string, port: number): string {
+  const bracketed = host.includes(":") && !host.startsWith("[") ? `[${host}]` : host;
+  return `${bracketed}:${port}`;
+}
+
+/**
+ * The fingerprint, broken across lines on its own separators.
+ *
+ * Split on the colons that are already in it and re-joined, so a wrapped
+ * fingerprint reads as the same value with a line break in it: every line but
+ * the last ends with the separator, which is what tells a reader there is more.
+ * Nothing is dropped — this function cannot shorten its input, which is the
+ * property that matters.
+ */
+export function wrapFingerprint(fingerprint: string, groupsPerLine = 16): string[] {
+  const groups = fingerprint.split(":");
+  const perLine = Math.max(1, groupsPerLine);
+  const lines: string[] = [];
+  for (let i = 0; i < groups.length; i += perLine) {
+    const last = i + perLine >= groups.length;
+    lines.push(groups.slice(i, i + perLine).join(":") + (last ? "" : ":"));
+  }
+  return lines;
+}
+
+/** The top or bottom rule. */
+function frameEdge(which: "top" | "bottom", color: boolean): string {
+  const [left, right] = which === "top" ? ["╭", "╮"] : ["╰", "╯"];
+  return style(`${left}${"─".repeat(FRAME_WIDTH - 2)}${right}`, ANSI.dim, color);
+}
+
+/**
+ * One line between the two borders.
+ *
+ * The padding is measured on the **plain** text and the styling applied
+ * afterwards, because an escape sequence has a length and no width — pad a
+ * coloured string by `String.length` and the right border walks off by however
+ * many bytes the colour cost.
+ */
+function frameRow(spans: Span[], color: boolean): string {
+  const plain = spans.map((span) => span.text).join("");
+  const body = spans.map((span) => style(span.text, span.style, color)).join("");
+  const fill = Math.max(1, FRAME_WIDTH - 2 - FRAME_GUTTER - plain.length);
+  const bar = style("│", ANSI.dim, color);
+  return `${bar}${" ".repeat(FRAME_GUTTER)}${body}${" ".repeat(fill)}${bar}`;
+}
+
+/** Wrap `text` in an escape sequence, or hand it back untouched. */
+function style(text: string, code: string | undefined, color: boolean): string {
+  return color && code ? `${code}${text}${ANSI.reset}` : text;
+}
+
+/**
+ * The addresses the handout offers a command for, primary first.
+ *
+ * When `--public-host` chose one, it is the only one: the credential redemption
+ * hands back carries *that* endpoint, and offering the others would be offering
+ * commands whose paired client then dials an address this code did not choose.
+ * Otherwise it is the whole configured list in the operator's order, which is
+ * the order the primary is first in (#347).
+ *
+ * A Core whose material predates the SAN list having been recorded has no list
+ * to offer, and falls back to what `primaryPublicHost` falls back to rather
+ * than printing a command with an empty address in it.
+ */
+function handoutHosts(configured: readonly string[], chosen: string | undefined): string[] {
+  if (chosen) return [chosen];
+  return configured.length > 0 ? [...configured] : [primaryPublicHost(configured)];
+}
+
+/**
+ * The port the pasteable command dials.
+ *
+ * In a container it is the one the contract names — `ACTANA_PORT`, or 8443
+ * when it is unset — because there is no `actana.json` there. On metal it is
+ * what `actana setup` recorded beside the material, which is the directory
+ * `materialPath` points into. A config that cannot be read falls back to the
+ * documented default rather than refusing to print the command: an operator
+ * with a wrong port in front of them can fix it, and one with no command at all
+ * cannot.
+ */
+function corePort(deps: ActanaCliDeps, materialPath: string): number {
+  if (inContainer(deps.env)) {
+    const raw = deps.env[CONTAINER_PORT_ENV]?.trim();
+    const parsed = raw ? Number(raw) : Number.NaN;
+    return Number.isInteger(parsed) && parsed > 0 && parsed <= 65535
+      ? parsed
+      : DEFAULT_CONTAINER_PORT;
+  }
+  return readActanaConfig(path.dirname(materialPath))?.port ?? DEFAULT_CONTAINER_PORT;
 }
 
 // ─── ls ─────────────────────────────────────────────────────────────────────

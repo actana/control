@@ -38,8 +38,10 @@ import {
 import {
   describeDuration,
   MAX_PAIRING_TTL_MS,
+  PANEL_INSTRUCTION,
   parseDuration,
   runPairCommand,
+  wrapFingerprint,
 } from "../actana-pair.ts";
 import type { ActanaCliDeps } from "../cli-deps.ts";
 import { stubClientHalf, stubMachineHalf } from "./machine-fixture.ts";
@@ -53,8 +55,19 @@ let out: string[];
 let err: string[];
 let audited: Record<string, unknown>[];
 
-/** One run of `actana pair <argv>`, with its two streams captured. */
-function run(argv: string[], now = NOW, env: Record<string, string> = {}): number {
+/**
+ * One run of `actana pair <argv>`, with its two streams captured.
+ *
+ * **stdout is a pipe unless a test says otherwise**, which is the shape the
+ * stdout contract is about and the shape everything written before #357
+ * asserts against. {@link runTty} is the other one.
+ */
+function run(
+  argv: string[],
+  now = NOW,
+  env: Record<string, string> = {},
+  stdoutIsTty = false,
+): number {
   out = [];
   err = [];
   const deps: ActanaCliDeps = {
@@ -65,11 +78,17 @@ function run(argv: string[], now = NOW, env: Record<string, string> = {}): numbe
     home: dir,
     out: (line: string) => out.push(line),
     err: (line: string) => err.push(line),
+    stdoutIsTty,
   };
   return runPairCommand(deps, argv, {
     materialPath: () => materialPath,
     audit: (record) => audited.push(record),
   });
+}
+
+/** The same run with a terminal on stdout — the framed shape (#357). */
+function runTty(argv: string[], now = NOW, env: Record<string, string> = {}): number {
+  return run(argv, now, env, true);
 }
 
 function store(): PairingStore {
@@ -419,6 +438,311 @@ describe("actana pair new --public-host", () => {
     expect(help).toMatch(/certificate already covers/);
   });
 });
+
+// ─── pair new, the two shapes (#357) ────────────────────────────────────────
+//
+// One command, two audiences. Down a pipe it is the labelled lines a script
+// cuts fields out of; at a terminal it is a framed handout that says what the
+// code is for and what to type on the other machine. The switch is
+// `isatty(stdout)` and nothing else — there is deliberately no `--json` and no
+// flag — so the two things this suite has to hold are that the piped shape did
+// not move a byte, and that the framed one carries everything an operator needs
+// to finish the job without retyping a fingerprint.
+
+describe("actana pair new, piped", () => {
+  /** The 0.4.2 shape, written out rather than derived from the code under test. */
+  function expectedLines(over: { label?: string; endpointHost?: string } = {}): string[] {
+    const lines = [
+      `Pairing code   ${field("Pairing code")}`,
+      `CA fingerprint ${new X509Certificate(material.caCert).fingerprint256}`,
+      "Expires        2026-08-20T12:05:00Z (in 5 minutes)",
+    ];
+    if (over.label) lines.push(`Label          ${over.label}`);
+    if (over.endpointHost) lines.push(`Endpoint host  ${over.endpointHost}`);
+    lines.push(`Session        ${field("Session")}`);
+    return lines;
+  }
+
+  it("prints the labelled lines byte for byte, in the order 0.4.2 printed them", () => {
+    expect(run(["new", "--label", "laptop"])).toBe(0);
+    // Every line, whole, in order — not `toContain`. A framed block that leaked
+    // into the piped path, an extra blank line, a changed column width or a
+    // reordered field would each fail here, and each of them breaks a script.
+    expect(out).toEqual(expectedLines({ label: "laptop" }));
+  });
+
+  it("keeps the unlabelled shape, which has no Label line at all", () => {
+    expect(run(["new"])).toBe(0);
+    expect(out).toEqual(expectedLines());
+  });
+
+  it("keeps `Endpoint host` where it was, between Label and Session", async () => {
+    material = await mintFreshMaterial(["core", "10.0.0.5"]);
+    persistMaterialToFile(materialPath, material);
+
+    expect(run(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
+
+    expect(out).toEqual(expectedLines({ label: "laptop", endpointHost: "10.0.0.5" }));
+  });
+
+  it("writes no escape sequence, no box drawing and no instructions", () => {
+    run(["new", "--label", "laptop"]);
+    const printed = out.join("\n");
+    expect(printed).not.toMatch(/\x1b\[/);
+    for (const ornament of ["╭", "│", "─"]) expect(printed).not.toContain(ornament);
+    expect(printed).not.toContain("From the Panel");
+    expect(printed).not.toContain("From a terminal");
+    expect(printed).not.toContain("npm i -g");
+  });
+
+  it("is the shape a Core with several addresses prints too", async () => {
+    // The framed path prints one command per address. Down a pipe the several
+    // addresses change nothing at all: same five lines.
+    material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+    persistMaterialToFile(materialPath, material);
+
+    expect(run(["new", "--label", "laptop"])).toBe(0);
+
+    expect(out).toEqual(expectedLines({ label: "laptop" }));
+  });
+});
+
+describe("actana pair new, at a terminal", () => {
+  /** Everything stdout saw, as one string. */
+  function screen(): string {
+    return out.join("\n");
+  }
+
+  /** The pasteable command lines — the ones that start the client verb. */
+  function commands(): string[] {
+    return out.map((line) => line.trim()).filter((line) => line.startsWith("actana core pair "));
+  }
+
+  it("frames the code, and the code is what was minted", () => {
+    expect(runTty(["new", "--label", "laptop"])).toBe(0);
+
+    const session = store().listSessions()[0]!;
+    const code = /([A-Z2-9]{4}-[A-Z2-9]{4})/.exec(screen())?.[1];
+    expect(code).toBeDefined();
+    // The digest in the store is the digest of the code on the screen, which is
+    // the only thing that makes the framed shape the same shape.
+    expect(
+      pairingCodeMatches(
+        session.codeHash,
+        hashPairingCode({
+          key: derivePairingCodeKey(material.bearerSecret),
+          sessionId: session.id,
+          code: code!,
+        }),
+      ),
+    ).toBe(true);
+    expect(screen()).toContain("╭");
+    expect(screen()).toContain("Pairing code");
+  });
+
+  it("prints the expiry beside the code, absolute and relative", () => {
+    runTty(["new", "--ttl", "2h"]);
+    expect(screen()).toContain("2026-08-20T14:00:00Z (in 2 hours)");
+  });
+
+  it("prints the WHOLE fingerprint, wrapped rather than shortened", () => {
+    runTty(["new", "--label", "laptop"]);
+
+    const fingerprint = new X509Certificate(material.caCert).fingerprint256;
+    expect(fingerprint.split(":")).toHaveLength(32);
+
+    // Inside the frame it is wrapped: no framed line holds the whole of it,
+    // and the framed lines that hold pieces of it re-join to exactly the value
+    // — nothing dropped, nothing elided, nothing rewritten.
+    const framed = out.filter((line) => line.includes("│"));
+    expect(framed.some((line) => line.includes(fingerprint))).toBe(false);
+    const rejoined = framed
+      .map((line) => /([0-9A-F]{2}(?::[0-9A-F]{2}){7,}:?)/.exec(line)?.[1] ?? "")
+      .join("");
+    expect(rejoined).toBe(fingerprint);
+    for (const elision of ["...", "…"]) expect(screen()).not.toContain(elision);
+    // And the pasteable command carries it whole, on one line, because that is
+    // the copy a client actually checks the certificate against.
+    expect(commands()[0]).toContain(`--fingerprint ${fingerprint}`);
+  });
+
+  it("prints the session id", () => {
+    runTty(["new"]);
+    const sessionId = store().listSessions()[0]!.id;
+    expect(screen()).toContain(sessionId);
+  });
+
+  it("gives the Panel path, worded as the ticket words it", () => {
+    runTty(["new", "--label", "laptop"]);
+    expect(screen()).toContain("From the Panel");
+    expect(screen()).toContain(
+      "Settings (gear icon) -> Cores -> Add Core, then enter the code above",
+    );
+    expect(PANEL_INSTRUCTION).toBe(
+      "Settings (gear icon) -> Cores -> Add Core, then enter the code above",
+    );
+  });
+
+  it("gives the terminal path: the install, then a command with real values", () => {
+    expect(runTty(["new", "--label", "laptop"])).toBe(0);
+
+    expect(screen()).toContain("From a terminal");
+    expect(screen()).toContain("npm i -g @actana/cli");
+
+    const session = store().listSessions()[0]!;
+    const code = /([A-Z2-9]{4}-[A-Z2-9]{4})/.exec(screen())![1]!;
+    const fingerprint = new X509Certificate(material.caCert).fingerprint256;
+    expect(commands()).toEqual([
+      `actana core pair laptop 10.0.0.5:8443 ${code} --session ${session.id} --fingerprint ${fingerprint}`,
+    ]);
+    // The install line comes before the command it installs the binary for.
+    expect(screen().indexOf("npm i -g @actana/cli")).toBeLessThan(screen().indexOf("actana core pair "));
+  });
+
+  // The other half of the ticket: `readTicket` refuses a bare code, so a
+  // pasteable line without `--session` is a line that fails on arrival.
+  it("carries --session, with the id of the session it just minted", () => {
+    runTty(["new", "--label", "laptop"]);
+    const session = store().listSessions()[0]!;
+    for (const command of commands()) {
+      expect(command).toContain(`--session ${session.id}`);
+      expect(command).toContain("--fingerprint ");
+    }
+  });
+
+  it("offers one command per configured address, the primary first", async () => {
+    material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+    persistMaterialToFile(materialPath, material);
+
+    expect(runTty(["new", "--label", "laptop"])).toBe(0);
+
+    const addresses = commands().map((command) => command.split(" ")[4]);
+    expect(addresses).toEqual(["core:8443", "10.0.0.5:8443", "core.example.test:8443"]);
+  });
+
+  it("offers only the chosen address when --public-host chose one", async () => {
+    material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+    persistMaterialToFile(materialPath, material);
+
+    expect(runTty(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
+
+    // That is the endpoint redemption will hand this client, so a command
+    // pointing anywhere else would pair it to an address the code did not pick.
+    expect(commands().map((command) => command.split(" ")[4])).toEqual(["10.0.0.5:8443"]);
+  });
+
+  it("dials the port this install recorded, not a guess", () => {
+    fs.writeFileSync(
+      path.join(dir, "actana.json"),
+      JSON.stringify({
+        version: "0.4.3",
+        port: 9443,
+        host: "0.0.0.0",
+        publicHost: "10.0.0.5",
+        label: "core-1",
+        installDir: dir,
+        dataDir: dir,
+      }),
+    );
+
+    runTty(["new", "--label", "laptop"]);
+
+    expect(commands()[0]).toContain(" 10.0.0.5:9443 ");
+  });
+
+  it("dials the container's port when it is running in one", () => {
+    runTty(["new", "--label", "laptop"], NOW, { ACTANA_CONTAINER: "1", ACTANA_PORT: "7443" });
+    expect(commands()[0]).toContain(" 10.0.0.5:7443 ");
+  });
+
+  it("falls back to 8443 rather than printing no command at all", () => {
+    // No `actana.json` beside the material: an operator with a wrong port can
+    // fix one character, and an operator with no command has to build it.
+    runTty(["new", "--label", "laptop"]);
+    expect(commands()[0]).toContain(" 10.0.0.5:8443 ");
+  });
+
+  it("uses a placeholder name when there is no label to use", () => {
+    runTty(["new"]);
+    expect(commands()[0]).toContain("actana core pair <name> ");
+  });
+
+  it("uses a placeholder when the label is not a name the client registry takes", () => {
+    // `--label` takes anything an operator wants to call a machine; a Core name
+    // does not. Pasting `my laptop` would fail on the far machine with a
+    // message about a registry nobody mentioned.
+    runTty(["new", "--label", "my laptop"]);
+    expect(commands()[0]).toContain("actana core pair <name> ");
+    // The label is still the label — it is on the frame and in the store.
+    expect(screen()).toContain("my laptop");
+    expect(store().listSessions()[0]!.label).toBe("my laptop");
+  });
+
+  it("colours at a terminal, and the frame stays square anyway", () => {
+    runTty(["new", "--label", "laptop"]);
+    const printed = out.join("\n");
+    expect(printed).toMatch(/\x1b\[1;36m/);
+    // Padding measured on the plain text, so every framed row is the same
+    // *display* width despite the escapes having a length and no width.
+    const framed = out.filter((line) => line.includes("│")).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    expect(framed.length).toBeGreaterThan(5);
+    expect(new Set(framed.map((line) => [...line].length))).toEqual(new Set([74]));
+  });
+
+  it("degrades to no escapes under NO_COLOR, keeping every instruction", () => {
+    runTty(["new", "--label", "laptop"], NOW, { NO_COLOR: "1" });
+    const printed = out.join("\n");
+    expect(printed).not.toMatch(/\x1b\[/);
+    expect(printed).toContain("From the Panel");
+    expect(printed).toContain("From a terminal");
+    expect(commands()).toHaveLength(1);
+  });
+
+  it("mints exactly what the piped shape mints — only the printing differs", () => {
+    expect(runTty(["new", "--label", "laptop", "--ttl", "30s"])).toBe(0);
+    const session = store().listSessions()[0]!;
+    expect(session.expiresAt - session.createdAt).toBe(30_000);
+    expect(session.label).toBe("laptop");
+    // The prose on stderr is the same prose, terminal or not: it is not what a
+    // scraper reads, and it is what a human is told either way.
+    expect(err.join("\n")).toMatch(/Read the code AND the fingerprint/);
+    expect(err.join("\n")).toContain(`actana pair revoke ${session.id}`);
+  });
+
+  it("still stores a digest and never the code, framed or not", () => {
+    runTty(["new", "--label", "laptop"]);
+    const code = /([A-Z2-9]{4}-[A-Z2-9]{4})/.exec(out.join("\n"))![1]!;
+    const session = store().listSessions()[0]!;
+    expect(JSON.stringify(session)).not.toContain(code);
+    expect(JSON.stringify(session)).not.toContain(code.replace("-", ""));
+  });
+
+  it("refuses the same things it refuses down a pipe, and frames nothing", () => {
+    expect(runTty(["new", "--ttl", "5"])).toBe(2);
+    expect(out).toEqual([]);
+    expect(store().listSessions()).toEqual([]);
+  });
+});
+
+describe("wrapFingerprint", () => {
+  it("keeps every group, and marks the break with the separator", () => {
+    const fingerprint = Array.from({ length: 32 }, (_, i) => i.toString(16).padStart(2, "0").toUpperCase()).join(":");
+    const lines = wrapFingerprint(fingerprint);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]!.endsWith(":")).toBe(true);
+    expect(lines[1]!.endsWith(":")).toBe(false);
+    // Rejoinable, exactly: a wrapped fingerprint is the same value with a line
+    // break in it, and never a shortened one.
+    expect(lines.join("")).toBe(fingerprint);
+  });
+
+  it("cannot shorten its input, whatever it is asked for", () => {
+    for (const perLine of [0, 1, 5, 999]) {
+      expect(wrapFingerprint("AA:BB:CC:DD", perLine).join("")).toBe("AA:BB:CC:DD");
+    }
+  });
+});
+
 
 // ─── pair ls ────────────────────────────────────────────────────────────────
 

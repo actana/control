@@ -72,6 +72,21 @@ export type ActanaCliDeps = {
    * a hang.
    */
   stdinIsTty: boolean;
+  /**
+   * Whether **stdout** is a terminal — the whole of the switch between the two
+   * shapes `actana pair new` prints (#357).
+   *
+   * Its own field rather than {@link interactive}, which is the *pair* of them
+   * and answers a different question: whether there is somewhere to prompt.
+   * `actana pair new > code.txt` at a terminal has an interactive stdin and a
+   * redirected stdout, and it is the second half that decides whether what
+   * lands in that file is the scrapeable labelled lines or a box drawing.
+   *
+   * A cosmetic frame is only ever built off this. Nothing about *what* the CLI
+   * does may read it — a command that behaved differently down a pipe than it
+   * does at a terminal is a command no script can trust.
+   */
+  stdoutIsTty: boolean;
   // ─── the client half: Cores this machine can reach ────────────────────────
 
   /** How `core status` reaches a Core. See `core-probe.ts`. */
