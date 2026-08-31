@@ -47,6 +47,7 @@ import {
 import { useSettings, useProjects } from "~/queries";
 import { ProviderUsageIndicator } from "~/components/views/ProviderUsageIndicator";
 import { UpdateBanner } from "~/components/views/UpdateBanner";
+import { FirstRunGate } from "~/components/views/FirstRunGate";
 import {
   normalizeSettingsPanelId,
   type SettingsPanelId,
@@ -149,7 +150,19 @@ function RootComponent() {
                      * slot for an app-wide skeleton if we want one later.
                      */}
                     <ClientOnly fallback={null}>
-                      <Shell />
+                      {/*
+                       * The pairing gate (#358). A Panel that knows no Cores
+                       * has nothing to draw, so it draws the wizard *instead
+                       * of* the shell rather than over it: no top bar, no
+                       * rail, no outlet, and so no route or keystroke that
+                       * reaches a dead dashboard. It sits inside ClientOnly
+                       * because the registry read is a client read like every
+                       * other, and inside the providers because the pairing
+                       * form it mounts is the same one Settings mounts.
+                       */}
+                      <FirstRunGate>
+                        <Shell />
+                      </FirstRunGate>
                     </ClientOnly>
                   </HeaderActionsProvider>
                 </GroupsDialogProvider>

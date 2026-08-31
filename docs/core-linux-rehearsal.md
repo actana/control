@@ -131,6 +131,76 @@ actana pair new --label my-panel
       fingerprint**, and when the code expires.
 - [ ] The code is short enough to read out loud over a phone without spelling
       anything — no `0`, `O`, `1`, `I` or `L` in it.
+- [ ] Because you are at a terminal, it comes **framed** (#357): the code, the
+      whole fingerprint wrapped rather than shortened, the session — and under
+      it both ways to spend them, the Panel path and a pasteable
+      `actana core pair …` command per address this Core answers on.
+- [ ] `actana pair new > /tmp/code.txt` instead gives the plain labelled lines
+      and nothing else — no frame, no instructions. That is the contract every
+      script wrapping this command depends on. (`rm /tmp/code.txt` after.)
+
+### The pasteable line, on a second machine
+
+**This is the one thing nothing automated can check**, and the reason it is a
+checkbox: the command below is generated from real minted values, and whether
+it works is a question about two machines. Take the `actana core pair …` line
+the block printed to a second machine — another VM, a laptop, a container with
+`npm i -g @actana/cli` on it — and paste it **unedited**.
+
+```bash
+# on the second machine, pasted exactly as printed
+actana core pair <as-printed>
+actana core status
+```
+
+- [ ] It pastes and runs. No `bash: …: No such file or directory`, no shell
+      error naming a file instead of `actana` — the line survives a shell as
+      printed, placeholder and all.
+- [ ] If `pair new` was run with no `--label`, the name slot is `NAME` and the
+      line still runs. Rename or remove it afterwards with `actana core rm`.
+- [ ] It pairs: the Core is registered, and no fingerprint had to be retyped.
+- [ ] `actana core status` **reaches the Core** from that second machine. A
+      pairing that succeeds and then cannot be reached is the failure this
+      checkbox exists for.
+- [ ] On a Core with several `--public-host` addresses: the block warns, on
+      every address but the one the credential will carry, that the code still
+      registers the other endpoint — and names the `actana pair new
+      --public-host <addr>` re-mint that would register the one you dialled.
+      Pair on a non-primary address and confirm `core status` behaves the way
+      the warning said it would.
+- [ ] Because you are at a terminal on that machine too, the pairing **result**
+      comes framed (#360): a green `✓`, the endpoint, an honest `Current` row,
+      where the credential landed at mode 0600 — and under it `actana core
+      status`, `actana project ls`, `actana harness ls`, `actana session
+      start` and `actana core shell`. Run all five. They are the checkbox: a
+      next step that does not work is worse than no next step.
+- [ ] The `Sent as` row names what this machine put in the request — the
+      `--label` you passed, or its hostname. It claims nothing about the Core,
+      and it should not: `actana pair ls` **on the Core** lists the label the
+      *code* was minted with, which is a different string. Check both screens
+      and confirm the client never told you to look for a name that is not
+      there (#366 review 2).
+- [ ] Pair a **second** Core on that machine. The block says `current` is still
+      the first one and offers `actana core use <name>` — it does not claim a
+      `current` the pairing did not take.
+- [ ] `actana core pair … > /tmp/paired.txt 2>&1` instead gives the two plain
+      lines and nothing else — no frame, no next steps, on either stream. That
+      is the contract every script wrapping this command depends on.
+      (`rm /tmp/paired.txt` after.)
+- [ ] Run it once more with the **same, now spent** code. The refusal is framed,
+      red, and ends in `actana pair new --label <name>` plus the reminder to
+      re-run with the NEW code *and* the NEW session — not prose alone.
+- [ ] Run it against a port nothing listens on. That refusal says **dial**
+      failure rather than refusal, scopes the "your code is still good"
+      promise to *if nothing answered*, and offers `getent hosts` / `nc -vz` —
+      a different remedy from the one above, which is the whole point of the
+      table.
+- [ ] Run it with a `--fingerprint` that is wrong by one byte. The refusal is
+      framed and **the box holds**: the real SDK sentence carries two full
+      95-column fingerprints, both wrapped on their own colons and neither
+      shortened, and every border lands in the same column (#366 review 1).
+      This is the one screen an operator compares character by character.
+- [ ] `NO_COLOR=1` on any of the above: same words, same box, no escapes.
 
 ---
 

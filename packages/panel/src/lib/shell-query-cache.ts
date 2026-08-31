@@ -9,6 +9,16 @@ export const SHELL_QUERY_CACHE_KEYS = {
   projects: "mc:shell-cache:projects:v1",
   groups: "mc:shell-cache:groups:v1",
   settings: "mc:shell-cache:settings:v1",
+  /**
+   * How many Cores this Panel was paired with, last time anyone asked.
+   *
+   * Read by the first-run gate (#358) so a Panel with a fleet paints its shell
+   * on the first client render instead of blanking for a round trip — the same
+   * bargain the three keys above make, for the one number that decides whether
+   * there is a shell to paint at all. It is a seed and never an answer: the
+   * live `listCores()` corrects it on the same tick it lands.
+   */
+  coreCount: "mc:shell-cache:core-count:v1",
 } as const;
 
 type CacheEnvelope<T> = {
@@ -79,6 +89,16 @@ export function readCachedGroups(): Group[] | undefined {
 export function readCachedSettings(): AppSettings | undefined {
   const data = readCache<unknown>(SHELL_QUERY_CACHE_KEYS.settings);
   return isObject(data) ? (data as AppSettings) : undefined;
+}
+
+/** The seeded Core count, or undefined when this browser has never been told. */
+export function readCachedCoreCount(): number | undefined {
+  const data = readCache<unknown>(SHELL_QUERY_CACHE_KEYS.coreCount);
+  return typeof data === "number" && Number.isInteger(data) && data >= 0 ? data : undefined;
+}
+
+export function writeCachedCoreCount(count: number): void {
+  writeCache(SHELL_QUERY_CACHE_KEYS.coreCount, count);
 }
 
 export function writeCachedProjects(projects: ProjectWithCounts[]): void {

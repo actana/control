@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { CoreWithDial } from "~/shared/cores";
 import type { CorePairingFailureCode, CorePairingRefusal } from "~/shared/core-pairing";
@@ -52,6 +52,10 @@ const api = {
   renameCore: vi.fn(),
   removeCore: vi.fn(async () => undefined),
   getKeybindings: vi.fn(async () => ({ bindings: {} })),
+  // Not this suite's subject: `ConfirmDialog` renders a `CardFrame`, whose glow
+  // reads settings through react-query. Stubbed so opening the removal dialog
+  // is about the removal.
+  getSettings: vi.fn(async () => ({})),
 };
 
 const toasts = { success: vi.fn(), error: vi.fn() };
@@ -59,17 +63,24 @@ const toasts = { success: vi.fn(), error: vi.fn() };
 vi.mock("~/lib/api", () => ({ api, ApiError }));
 vi.mock("sonner", () => ({ toast: toasts }));
 
+const { QueryClient, QueryClientProvider } = await import("@tanstack/react-query");
 const { CoresSettingsPage } = await import("../CoresSettingsPage");
 const { KeybindingsProvider } = await import("~/lib/keybindings/store");
 const { pairingFailureMessage } = await import("~/shared/core-pairing");
+const { CORE_REGISTRY_CHANGED_EVENT } = await import("~/lib/design-meta");
 
 let CORES: CoreWithDial[] = [];
 
 async function openPage(): Promise<void> {
+  // A query client because the removal dialog's `CardFrame` reads settings
+  // through one; retries off so a stubbed failure is a failure now.
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
-    <KeybindingsProvider>
-      <CoresSettingsPage />
-    </KeybindingsProvider>,
+    <QueryClientProvider client={client}>
+      <KeybindingsProvider>
+        <CoresSettingsPage />
+      </KeybindingsProvider>
+    </QueryClientProvider>,
   );
   await act(async () => {});
 }
@@ -453,5 +464,82 @@ describe("adding a Core by short code (#286)", () => {
       expect(state()).toBe("unchecked");
       expect(screen.queryByLabelText("Pairing code")).toBeNull();
     });
+  });
+});
+
+/**
+ * The registry announcements (#358).
+ *
+ * Pairing and forgetting are the only two things in this tree that change how
+ * many Cores this Panel has, and the first-run gate decides whether there is a
+ * dashboard at all on exactly that number. The gate's own suite drives the
+ * event directly; without these, the two halves of `remove → announce → wizard`
+ * are each proven and never meet, and dropping either call here would go
+ * unnoticed — degrading silently to "the wizard comes back within fifteen
+ * seconds" rather than at once.
+ */
+describe("telling the rest of the tab that the registry moved (#358)", () => {
+  let announced: Mock<() => void>;
+  // The listener is its own binding rather than the spy itself: a `vi.fn()` is
+  // not typed as an `EventListener`, and both add and remove need one identity.
+  let onAnnounce: () => void;
+
+  beforeEach(() => {
+    CORES = [];
+    vi.clearAllMocks();
+    api.listCores.mockImplementation(async () => ({ cores: CORES }));
+    api.inspectCoreForPairing.mockImplementation(async () => ({
+      identity: { fingerprint: PRESENTED, httpsOrigin: ORIGIN },
+    }));
+    api.pairCore.mockImplementation(async () => ({ core: paired() }));
+    api.removeCore.mockImplementation(async () => undefined);
+    announced = vi.fn<() => void>();
+    onAnnounce = () => {
+      announced();
+    };
+    window.addEventListener(CORE_REGISTRY_CHANGED_EVENT, onAnnounce);
+  });
+
+  afterEach(() => {
+    window.removeEventListener(CORE_REGISTRY_CHANGED_EVENT, onAnnounce);
+    cleanup();
+  });
+
+  it("announces when a pairing lands", async () => {
+    await openPage();
+    await verify();
+    type("Session", "ps_abc");
+    type("Pairing code", "k7rp-9x4t");
+    await click("Pair Core");
+
+    expect(api.pairCore).toHaveBeenCalled();
+    expect(announced).toHaveBeenCalledTimes(1);
+  });
+
+  it("announces when a Core is forgotten — the last one is what puts the wizard back", async () => {
+    CORES = [paired("prod-vm-1")];
+    await openPage();
+
+    await click("Remove Core prod-vm-1");
+    CORES = [];
+    // The dialog's own button. The row's is named "Remove Core prod-vm-1", so
+    // this exact name reaches only the confirmation.
+    await click("Remove Core");
+
+    expect(api.removeCore).toHaveBeenCalledWith("core_new");
+    expect(announced).toHaveBeenCalledTimes(1);
+  });
+
+  it("says nothing when the removal failed", async () => {
+    // The count did not move, so nothing should be told that it did — a gate
+    // that re-read here would spend a request to learn what it already knew.
+    CORES = [paired("prod-vm-1")];
+    await openPage();
+    api.removeCore.mockRejectedValueOnce(new Error("core is busy"));
+
+    await click("Remove Core prod-vm-1");
+    await click("Remove Core");
+
+    expect(announced).not.toHaveBeenCalled();
   });
 });

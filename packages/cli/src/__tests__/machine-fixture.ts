@@ -165,6 +165,7 @@ export type ClientHalf = Pick<
   | "verbose"
   | "readStdin"
   | "stdinIsTty"
+  | "stdoutIsTty"
   | "probe"
   | "connect"
   | "pairing"
@@ -189,6 +190,9 @@ export function stubClientHalf(
     verbose: () => {},
     readStdin: async () => "",
     stdinIsTty: false,
+    // Piped, so every suite that does not ask otherwise sees the shape a script
+    // sees — which is the shape the stdout contract is about.
+    stdoutIsTty: false,
     probe: refuse("dial a Core"),
     connect: refuse("dial a Core"),
     pairing: { identify: refuse("identify a Core"), pair: refuse("pair with a Core") },

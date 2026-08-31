@@ -85,6 +85,13 @@ export type RunOptions = {
   stdin?: string;
   /** Force the TTY answer. Defaults to false when `stdin` is set, true otherwise. */
   stdinIsTty?: boolean;
+  /**
+   * Whether stdout is a terminal. Defaults to **false** — a run captured into
+   * an array is a piped run, and the commands that render differently at a
+   * terminal must render their scrapeable shape here unless a suite says
+   * otherwise.
+   */
+  stdoutIsTty?: boolean;
   /** What `core status` gets back, or a throw. */
   probe?: CoreProbeFn;
   /** What every other noun gets when it dials, or a throw. */
@@ -320,6 +327,7 @@ export function makeCliFixture(): CliFixture {
           : () => {},
         readStdin: async () => opts.stdin ?? "",
         stdinIsTty: opts.stdinIsTty ?? opts.stdin === undefined,
+        stdoutIsTty: opts.stdoutIsTty ?? false,
         probe:
           opts.probe ??
           (async () => {
