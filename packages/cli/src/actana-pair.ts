@@ -98,7 +98,6 @@ import {
   FRAME_WIDTH,
   style,
   useColor,
-  type Span,
 } from "./cli-frame.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";

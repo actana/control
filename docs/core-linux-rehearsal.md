@@ -168,6 +168,27 @@ actana core status
       --public-host <addr>` re-mint that would register the one you dialled.
       Pair on a non-primary address and confirm `core status` behaves the way
       the warning said it would.
+- [ ] Because you are at a terminal on that machine too, the pairing **result**
+      comes framed (#360): a green `✓`, the endpoint, an honest `Current` row,
+      where the credential landed at mode 0600 — and under it `actana core
+      status`, `actana project ls`, `actana harness ls` and `actana session
+      start`. Run the four. They are the checkbox: a next step that does not
+      work is worse than no next step.
+- [ ] Pair a **second** Core on that machine. The block says `current` is still
+      the first one and offers `actana core use <name>` — it does not claim a
+      `current` the pairing did not take.
+- [ ] `actana core pair … > /tmp/paired.txt 2>&1` instead gives the two plain
+      lines and nothing else — no frame, no next steps, on either stream. That
+      is the contract every script wrapping this command depends on.
+      (`rm /tmp/paired.txt` after.)
+- [ ] Run it once more with the **same, now spent** code. The refusal is framed,
+      red, and ends in `actana pair new --label <name>` plus the reminder to
+      re-run with the NEW code *and* the NEW session — not prose alone.
+- [ ] Run it against a port nothing listens on. That refusal says **dial**
+      failure rather than refusal, keeps the code alive, and offers `getent
+      hosts` / `nc -vz` — a different remedy from the one above, which is the
+      whole point of the table.
+- [ ] `NO_COLOR=1` on any of the above: same words, same box, no escapes.
 
 ---
 

@@ -167,28 +167,70 @@ export function style(text: string, code: string | undefined, color: boolean): s
  *
  * Prose is the one thing a frame holds that has no natural break in it: a label
  * is short, a fingerprint splits on its own colons, and a diagnostic relayed
- * from the SDK is a sentence of whatever length that sentence is. A word longer
- * than the whole line — a URL, an address — goes on a line of its own and is
- * left over-long rather than cut, because **this function may not shorten its
- * input**: every caller is printing something an operator has to read exactly,
- * and a wrap that drops characters is a truncation wearing a different name. A
- * ragged border is the acceptable cost; a lost character is not.
+ * from the SDK is a sentence of whatever length that sentence is.
+ *
+ * **This function may not shorten its input.** Every caller is printing
+ * something an operator has to read exactly — a path to their own credential, a
+ * URL, an address — and a wrap that drops characters is a truncation wearing a
+ * different name. So a word too long for a line of its own is broken on its
+ * slashes rather than cut, which is the same move `wrapFingerprint` makes on
+ * colons: the separator stays at the end of the line, so a reader can see there
+ * is more. That is not an edge case. A credential lands under the operator's
+ * home directory, and a home directory deep enough to overflow a 74-column box
+ * is an ordinary machine, not a pathological one.
+ *
+ * A word with no slash in it and no room to fit is left over-long. A ragged
+ * border is the acceptable cost; a lost character is not.
  */
 export function wrapText(text: string, columns: number): string[] {
   const width = Math.max(1, columns);
   const lines: string[] = [];
   let line = "";
   for (const word of text.split(/\s+/).filter((piece) => piece !== "")) {
-    if (line === "") {
+    const candidate = line === "" ? word : `${line} ${word}`;
+    if (displayWidth(candidate) <= width) {
+      line = candidate;
+      continue;
+    }
+    if (line !== "") lines.push(line);
+    line = "";
+    if (displayWidth(word) <= width) {
       line = word;
       continue;
     }
-    if (displayWidth(`${line} ${word}`) <= width) line = `${line} ${word}`;
-    else {
-      lines.push(line);
-      line = word;
-    }
+    // Too long for any line. Break it where it has a break, and leave the last
+    // chunk open so anything after it — `(mode 0600)`, a trailing note — can
+    // share that line rather than starting another.
+    const chunks = breakOnSlashes(word, width);
+    lines.push(...chunks.slice(0, -1));
+    line = chunks.at(-1) ?? "";
   }
   if (line !== "") lines.push(line);
   return lines.length > 0 ? lines : [""];
+}
+
+/**
+ * One over-long word, split on its slashes, each line keeping its separator.
+ *
+ * The separator stays at the end of the line it breaks after, which is what
+ * tells a reader that the value continues — the same reason `wrapFingerprint`
+ * keeps its colons. A single segment with no slash and no room is handed back
+ * over-long: there is nowhere left to break, and breaking anyway would put a
+ * line ending in the middle of a directory name.
+ */
+function breakOnSlashes(word: string, width: number): string[] {
+  const parts = word.split("/");
+  const chunks: string[] = [];
+  let chunk = "";
+  for (const [index, part] of parts.entries()) {
+    const piece = index < parts.length - 1 ? `${part}/` : part;
+    if (piece === "") continue;
+    if (chunk !== "" && displayWidth(chunk + piece) > width) {
+      chunks.push(chunk);
+      chunk = "";
+    }
+    chunk += piece;
+  }
+  if (chunk !== "") chunks.push(chunk);
+  return chunks.length > 0 ? chunks : [word];
 }

@@ -17,6 +17,8 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { existsSync, statSync } from "node:fs";
 import { coreBlobPath, readCurrentCore } from "../blob-registry.ts";
+import { displayWidth, FRAME_WIDTH } from "../cli-frame.ts";
+import { corePairingOutcome } from "../core-pair-results.ts";
 import { resolveCore } from "../core-resolution.ts";
 import { CorePairingError, type CorePairingFailure } from "@actana/sdk/core-pairing.ts";
 import {
@@ -508,5 +510,455 @@ describe("actana core pair — what it says", () => {
     const run = await cli().run(["core", "wat"]);
     expect(run.code).toBe(EXIT_USAGE);
     expect(run.err.join("\n")).toContain("Verbs: pair, ls");
+  });
+});
+
+// ─── the two shapes (#360) ──────────────────────────────────────────────────
+//
+// One command, two audiences — the client half of the split #357 made on the
+// Core. Down a pipe `core pair` is the lines 0.4.2 printed and nothing else; at
+// a terminal it is a framed result that says what just happened and what to
+// type next. The switch is `isatty(stdout)` and nothing else, so the two things
+// this suite has to hold are that the piped shape did not move a byte, and that
+// the framed one carries a concrete remedy for every class of failure rather
+// than the prose that sent an operator to the help.
+
+/** The escape byte, built rather than typed, so no raw control byte is in this file. */
+const ESC = String.fromCharCode(0x1b);
+const GREEN = `${ESC}[32m`;
+const RED = `${ESC}[31m`;
+
+/** The three arguments for a second Core, so the pointer has something to keep. */
+function sparePairArgv(): string[] {
+  return [
+    "core",
+    "pair",
+    "spare",
+    "core.test:8443",
+    CODE,
+    "--session",
+    SESSION,
+    "--fingerprint",
+    PAIRED_FINGERPRINT,
+  ];
+}
+
+/** Every failure the SDK distinguishes and that a fake Core can be told to raise. */
+const SDK_FAILURES: CorePairingFailure[] = [
+  "bad-address",
+  "unreachable",
+  "not-pairable",
+  "no-ca-presented",
+  "fingerprint-mismatch",
+  "hostname-mismatch",
+  "certificate-invalid",
+  "refused",
+  "rate-limited",
+  "rejected",
+  "core-error",
+  "malformed-response",
+];
+
+describe("actana core pair, piped", () => {
+  it("prints the two success lines byte for byte, in the order 0.4.2 printed them", async () => {
+    const run = await cli().run(pairArgv(), { pairing: fakePairing() });
+
+    expect(run.code).toBe(EXIT_OK);
+    // Whole, in order — not `toContain`. A framed block that leaked into the
+    // piped path, an extra blank line, a reworded pointer note or a fourth line
+    // would each fail here, and each of them breaks a script.
+    expect(run.out).toEqual([
+      'Paired Core "prod" → wss://core.test:8443',
+      '`current` now points at "prod".',
+    ]);
+    expect(run.err).toEqual([]);
+  });
+
+  it("keeps the second-Core shape, which names the pointer it did not move", async () => {
+    await cli().run(pairArgv(), { pairing: fakePairing() });
+    const second = await cli().run(sparePairArgv(), { pairing: fakePairing() });
+
+    expect(second.out).toEqual([
+      'Paired Core "spare" → wss://core.test:8443',
+      '`current` is still "prod" — `actana core use spare` to switch.',
+    ]);
+  });
+
+  it("keeps the re-pair shape, which is one line and no pointer note at all", async () => {
+    await cli().run(pairArgv(), { pairing: fakePairing() });
+    const again = await cli().run(pairArgv(), { pairing: fakePairing() });
+
+    // `current` already names this Core, so 0.4.2 said nothing about it. The
+    // framed block *does* have a row for it, and this is the assertion that
+    // keeps that row from leaking down here.
+    expect(again.out).toEqual(['Replaced Core "prod" → wss://core.test:8443']);
+  });
+
+  it("writes no escape sequence, no box drawing and no next steps", async () => {
+    const run = await cli().run(pairArgv(), { pairing: fakePairing() });
+    const printed = [...run.out, ...run.err].join("\n");
+
+    expect(printed).not.toMatch(/\x1b\[/);
+    for (const ornament of ["╭", "╰", "│", "─", "✓", "✗"]) expect(printed).not.toContain(ornament);
+    expect(printed).not.toContain("Next steps");
+    expect(printed).not.toContain("actana core status");
+  });
+
+  it("gives every SDK failure exactly the two lines it gave in 0.4.2", async () => {
+    for (const failure of SDK_FAILURES) {
+      const run = await cli().run(pairArgv(), { pairing: fakePairing({ fails: failure }) });
+      // Two lines: the SDK's sentence, then the one-line next step. Exactly two
+      // — the remedy the frame adds is three or four more, and none of them may
+      // appear here.
+      expect(run.err, `${failure} did not print the 0.4.2 pair of lines`).toEqual([
+        `actana core pair: the fake Core answered ${failure}`,
+        corePairingOutcome(failure).next,
+      ]);
+      expect(run.out).toEqual([]);
+    }
+  });
+
+  it("pins two of those next-step lines by value, not by the table that writes them", async () => {
+    // The table is the code under test, so a suite that only compared against
+    // it would pass on a rewrite of every line in it. Two spelled out: the
+    // class an operator hits most, and the one that matters most.
+    const refused = await cli().run(pairArgv(), { pairing: fakePairing({ fails: "refused" }) });
+    expect(refused.err[1]).toBe(
+      "Ask for a fresh code — `actana pair new` on the Core. Its audit log says which of the four this was.",
+    );
+
+    const mismatch = await cli().run(pairArgv(), { pairing: fakePairing({ fails: "fingerprint-mismatch" }) });
+    expect(mismatch.err[1]).toBe(
+      "Do not retry until you know why: either that is not the Core you were told about, or its credentials " +
+        "were reissued and the fingerprint you have is stale. `actana pair new` prints the current one.",
+    );
+  });
+
+  it("gives every refusal this file words itself exactly the lines it gave in 0.4.2", async () => {
+    const missing = await cli().run(["core", "pair", "prod"], { pairing: fakePairing() });
+    expect(missing.err).toEqual([
+      "actana core pair: a name, an address and a code are required.",
+      "  actana core pair <name> <host:port> <code> --session <id> --fingerprint <sha256>",
+      "`actana pair new` on the Core prints the code, the fingerprint and the session.",
+    ]);
+
+    const extra = await cli().run(
+      ["core", "pair", "prod", "core.test:8443", CODE, "WXYZ-6789", "--session", SESSION],
+      { pairing: fakePairing() },
+    );
+    expect(extra.err).toEqual([
+      "actana core pair: too many arguments — expected <name> <address> <code>.",
+    ]);
+
+    const badName = await cli().run(
+      ["core", "pair", "bad name", "core.test:8443", CODE, "--session", SESSION],
+      { pairing: fakePairing() },
+    );
+    expect(badName.err).toEqual([
+      "actana core pair: a Core name starts with a letter or digit and holds only letters, digits, dot, dash and underscore.",
+    ]);
+
+    const noSession = await cli().run(
+      ["core", "pair", "prod", "core.test:8443", CODE, "--fingerprint", PAIRED_FINGERPRINT],
+      { pairing: fakePairing() },
+    );
+    expect(noSession.err).toEqual([
+      "actana core pair: a pairing code names the pairing session it belongs to.",
+      "Pass `--session <id>` — `actana pair new` prints it beside the code — or the <session>:<code> form.",
+    ]);
+
+    const disagree = await cli().run(
+      ["core", "pair", "prod", "core.test:8443", `other-session:${CODE}`, "--session", SESSION],
+      { pairing: fakePairing() },
+    );
+    expect(disagree.err).toEqual([
+      "actana core pair: the code names one pairing session and `--session` names another.",
+      "Drop `--session`, or pass the bare code beside it — they have to agree.",
+    ]);
+
+    const shape = await cli().run(
+      ["core", "pair", "prod", "core.test:8443", "no", "--session", SESSION, "--fingerprint", PAIRED_FINGERPRINT],
+      { pairing: fakePairing() },
+    );
+    expect(shape.err).toEqual([
+      "actana core pair: that was not accepted as a pairing code — hyphen and case do not matter, its shape does.",
+      "A pairing code is eight characters, written XXXX-XXXX. `actana pair new` prints a fresh one.",
+    ]);
+  });
+
+  it("is the same piped shape with NO_COLOR set as without it", async () => {
+    const plain = await cli().run(pairArgv(), { pairing: fakePairing() });
+    cli().cleanup();
+    fixture = null;
+    const noColor = await cli().run(pairArgv(), { pairing: fakePairing(), env: { NO_COLOR: "1" } });
+    expect(noColor.out).toEqual(plain.out);
+  });
+});
+
+describe("actana core pair, at a terminal", () => {
+  /** The framed lines of a run — the ones the border is drawn on. */
+  function framed(lines: string[]): string[] {
+    return lines.filter((line) => /^[╭│╰]/.test(line));
+  }
+
+  /**
+   * Everything a run said, as one line of prose.
+   *
+   * The escapes come off and every run of whitespace becomes one space, so a
+   * sentence can be asserted as the sentence it is rather than as the shape a
+   * 74-column wrap happened to give it. Asserting the wrap instead would make
+   * every one of these tests fail on a reworded neighbour.
+   */
+  function prose(lines: string[]): string {
+    return lines
+      .join(" ")
+      .replace(/\x1b\[[0-9;]*m/g, "")
+      // The border too: a sentence wrapped across two framed rows has a bar,
+      // two runs of padding and a gutter in the middle of it.
+      .replace(/[│╭╮╰╯─]/g, " ")
+      .replace(/\s+/g, " ");
+  }
+
+  it("frames the success, marks it green, and names the Core and its endpoint", async () => {
+    const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+    const screen = run.out.join("\n");
+
+    expect(run.code).toBe(EXIT_OK);
+    expect(screen).toContain("╭");
+    expect(screen).toContain("╰");
+    expect(screen).toContain('Paired Core "prod"');
+    expect(screen).toContain("wss://core.test:8443");
+    // Green, and only on the marker — nothing on a success is red.
+    expect(screen).toContain(`${GREEN}✓`);
+    expect(screen).not.toContain(RED);
+  });
+
+  it("claims `current` only for a Core that actually became current", async () => {
+    const first = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+    expect(first.out.join("\n")).toContain('"prod" — every later verb talks to this Core');
+
+    // The second pairing does not move the pointer, and the block has to say so
+    // rather than congratulating an operator on a `current` they do not have.
+    const second = await cli().run(sparePairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+    const screen = second.out.join("\n");
+    expect(readCurrentCore(cli().paths)).toBe("prod");
+    expect(screen).toContain('still "prod" — this pairing did not change it');
+    expect(screen).not.toContain("every later verb talks to this Core");
+    // And the first thing it offers is the command that fixes it.
+    expect(screen).toContain("actana core use spare");
+  });
+
+  it("offers `core use` only when there is a pointer to move", async () => {
+    const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+    expect(run.out.join("\n")).not.toContain("actana core use prod");
+  });
+
+  it("ends in the four verbs a freshly paired Core exists for", async () => {
+    const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+    const screen = run.out.join("\n");
+
+    expect(screen).toContain("Next steps");
+    for (const verb of [
+      "actana core status",
+      "actana project ls",
+      "actana harness ls",
+      "actana session start <project>",
+    ]) {
+      expect(screen, `the success block does not teach ${verb}`).toContain(verb);
+    }
+    // In that order: verify, then look around, then do something.
+    expect(screen.indexOf("actana core status")).toBeLessThan(screen.indexOf("actana project ls"));
+    expect(screen.indexOf("actana project ls")).toBeLessThan(screen.indexOf("actana harness ls"));
+    expect(screen.indexOf("actana harness ls")).toBeLessThan(screen.indexOf("actana session start"));
+    // And the Panel, which is the other thing to pair with the same Core.
+    expect(screen).toContain("Settings -> Cores");
+  });
+
+  it("says where the credential landed and at what mode, and never what is in it", async () => {
+    const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+
+    const inFrame = run.out
+      .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""))
+      .filter((line) => line.startsWith("│"))
+      .map((line) => line.replace(/^│\s*/, "").replace(/\s*│$/, ""))
+      .join("");
+    expect(inFrame).toContain(coreBlobPath(cli().paths, "prod"));
+    expect(prose(run.out)).toContain("(mode 0600)");
+    for (const secret of SENTINELS) expect(run.all).not.toContain(secret);
+  });
+
+  it("frames every failure class, each with a marker and something to type", async () => {
+    for (const failure of SDK_FAILURES) {
+      const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing({ fails: failure }) });
+      const screen = run.err.join("\n");
+
+      expect(run.code, `${failure} exited ${run.code}`).toBe(corePairingOutcome(failure).exit);
+      expect(screen, `${failure} was not framed`).toContain("╭");
+      expect(screen, `${failure} carried no red marker`).toContain(`${RED}✗`);
+      expect(screen, `${failure} offered no remedy section`).toContain("What to do");
+      // The acceptance criterion in full: every class ends with a copyable
+      // command, not only an explanation. A command line is the one that is
+      // indented two and carries no escape — the notes under it are dim.
+      const commands = run.err.filter((line) => /^ {2}\S/.test(line) && !line.startsWith(ESC));
+      expect(commands.length, `${failure} ended with an explanation and nothing to type`).toBeGreaterThan(0);
+    }
+  });
+
+  it("gives no two failure classes the same remedy", async () => {
+    // The point of the table: "ask for a fresh code" and "check the port is
+    // open" are answers to different problems, and a surface that gave both to
+    // both would be the prose it replaced.
+    const seen = new Map<string, string>();
+    for (const failure of SDK_FAILURES) {
+      const remedy = corePairingOutcome(failure)
+        .steps.map((step) => `${step.command ?? ""}|${step.note}`)
+        .join("\n");
+      expect(seen.has(remedy), `${failure} repeats ${seen.get(remedy)}'s remedy`).toBe(false);
+      seen.set(remedy, failure);
+    }
+  });
+
+  it("tells an expired or unknown code how to mint a fresh one, and to re-run with it", async () => {
+    const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing({ fails: "refused" }) });
+    const screen = run.err.join("\n");
+
+    expect(screen).toContain("actana pair new --label <name>");
+    const said = prose(run.err);
+    expect(said).toContain("expired, already spent, never issued, or out of attempts");
+    // The mistake this exists to stop: a new code with yesterday's session.
+    expect(said).toContain("NEW code");
+    expect(said).toContain("NEW --session");
+    expect(said).toContain("the old session will not redeem the new code");
+  });
+
+  it("explains the fingerprint comparison and warns against going round it", async () => {
+    const run = await cli().run(pairArgv(), {
+      stdoutIsTty: true,
+      pairing: fakePairing({ fails: "fingerprint-mismatch" }),
+    });
+    const screen = run.err.join("\n");
+
+    const said = prose(run.err);
+    expect(said).toContain("compared against the one you gave, and the two differ");
+    expect(said).toContain("The code was not sent");
+    expect(said).toContain("no flag that skips the comparison");
+    expect(said).toContain("somebody sitting between you and the right one");
+    expect(screen).toContain("actana pair new --label <name>");
+  });
+
+  it("separates a dial failure from a refusal, and says what to check", async () => {
+    const unreachable = await cli().run(pairArgv(), {
+      stdoutIsTty: true,
+      pairing: fakePairing({ fails: "unreachable" }),
+    });
+    const dial = prose(unreachable.err);
+    expect(dial).toContain("a dial failure, not a refusal");
+    expect(dial).toContain("no attempt was spent");
+    expect(dial).toContain("getent hosts <host>");
+    expect(dial).toContain("nc -vz <host> <port>");
+    expect(dial).toContain("HTTPS_PROXY");
+    // Nothing about minting a fresh code: the code in the operator's hand is
+    // still good, and sending them back to the Core would waste the trip.
+    expect(dial).not.toContain("actana pair new");
+
+    const answered = await cli().run(pairArgv(), {
+      stdoutIsTty: true,
+      pairing: fakePairing({ fails: "not-pairable" }),
+    });
+    const stillWrong = prose(answered.err);
+    expect(stillWrong).toContain("The dial worked");
+    expect(stillWrong).toContain("actana update");
+    expect(stillWrong).not.toContain("getent hosts");
+  });
+
+  it("points a bare code at both the flag and the joined form the usage line shows", async () => {
+    const run = await cli().run(
+      ["core", "pair", "prod", "core.test:8443", CODE, "--fingerprint", PAIRED_FINGERPRINT],
+      { stdoutIsTty: true, pairing: fakePairing() },
+    );
+    const screen = run.err.join("\n");
+
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(screen).toContain(
+      "actana core pair <name> <host:port> <code> --session <id> --fingerprint <sha256>",
+    );
+    expect(screen).toContain(
+      "actana core pair <name> <host:port> <session>:<code> --fingerprint <sha256>",
+    );
+    expect(prose(run.err)).toContain("prints the session id on its own line");
+  });
+
+  it("wraps a credential path too long for the frame instead of overflowing it", async () => {
+    // A deep home directory is ordinary, and the row that reassures an
+    // operator their credential exists is the row most likely to be long.
+    const deep = "d".repeat(30);
+    const run = await cli().run(
+      ["core", "pair", deep, "core.test:8443", CODE, "--session", SESSION, "--fingerprint", PAIRED_FINGERPRINT],
+      { stdoutIsTty: true, pairing: fakePairing(), env: { NO_COLOR: "1" } },
+    );
+
+    for (const line of framed(run.out)) expect(displayWidth(line)).toBe(FRAME_WIDTH);
+    const inFrame = framed(run.out)
+      .map((line) => line.replace(/^│\s*/, "").replace(/\s*│$/, ""))
+      .join("");
+    // Wrapped, never shortened: the whole path is still there.
+    expect(inFrame).toContain(coreBlobPath(cli().paths, deep));
+  });
+
+  it("keeps every framed line exactly the frame's width", async () => {
+    // Measured under NO_COLOR, because `displayWidth` counts columns and an
+    // escape sequence has none — the padding is computed on the plain text and
+    // this is the assertion that says so.
+    const runs = [
+      await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing(), env: { NO_COLOR: "1" } }),
+      await cli().run(pairArgv(), {
+        stdoutIsTty: true,
+        pairing: fakePairing({ fails: "refused" }),
+        env: { NO_COLOR: "1" },
+      }),
+      await cli().run(
+        ["core", "pair", "prod", "core.test:8443", CODE, "--fingerprint", PAIRED_FINGERPRINT],
+        { stdoutIsTty: true, pairing: fakePairing(), env: { NO_COLOR: "1" } },
+      ),
+    ];
+    for (const run of runs) {
+      const lines = framed([...run.out, ...run.err]);
+      expect(lines.length).toBeGreaterThan(3);
+      for (const line of lines) expect(displayWidth(line)).toBe(FRAME_WIDTH);
+    }
+  });
+
+  it("degrades to no escapes under NO_COLOR, keeping every instruction", async () => {
+    const coloured = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
+    // Back to nothing registered, so the second run is the same first pairing
+    // in the same fixture — same credential path, same `current` sentence, and
+    // a comparison that is about the escapes and nothing else.
+    await cli().run(["core", "rm", "prod"]);
+    const plain = await cli().run(pairArgv(), {
+      stdoutIsTty: true,
+      pairing: fakePairing(),
+      env: { NO_COLOR: "1" },
+    });
+
+    expect(coloured.out.join("\n")).toMatch(/\x1b\[/);
+    expect(plain.out.join("\n")).not.toMatch(/\x1b\[/);
+    // Same block, same words, same commands — only the escapes are gone.
+    expect(plain.out).toEqual(coloured.out.map((line) => line.replace(/\x1b\[[0-9;]*m/g, "")));
+    // And the padding was computed on the plain text: strip the escapes off
+    // the coloured run and its borders still land in the same column. That is
+    // the property a frame padded by `String.length` would fail.
+    for (const line of framed(coloured.out)) {
+      expect(displayWidth(line.replace(/\x1b\[[0-9;]*m/g, ""))).toBe(FRAME_WIDTH);
+    }
+  });
+
+  it("never prints the pairing code, framed or not", async () => {
+    for (const stdoutIsTty of [true, false]) {
+      cli().cleanup();
+      fixture = null;
+      const run = await cli().run(pairArgv(), { stdoutIsTty, pairing: fakePairing() });
+      expect(run.all, "the pairing code reached an output sink").not.toContain(CODE);
+      expect(run.all.toUpperCase(), "the pairing code reached an output sink").not.toContain("ABCD");
+    }
   });
 });
