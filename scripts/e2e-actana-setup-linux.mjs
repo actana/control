@@ -402,17 +402,26 @@ async function main() {
   // shape. The contract this asserts is the *other* one: what a script sees.
   // Both shapes are checked, this one first, because it is the one anything
   // downstream depends on.
-  mustAsOperator("actana pair new --label e2e-panel > /tmp/pair-new.out");
+  const redirected = mustAsOperator("actana pair new --label e2e-panel > /tmp/pair-new.out");
   const minted = mustAsOperator("cat /tmp/pair-new.out");
+  // The file held a redeemable code. This whole file's discipline is about not
+  // leaving credentials lying around, and an ephemeral container is a reason
+  // nobody notices rather than a reason it is fine (#357 review N2).
+  mustAsOperator("rm -f /tmp/pair-new.out");
   if (!/Pairing code\s+[A-Z2-9]{4}-[A-Z2-9]{4}/.test(minted.stdout)) {
     die("`actana pair new` printed no pairing code", minted.stdout.split("\n"));
   }
   if (!/CA fingerprint\s+[0-9A-F]{2}(:[0-9A-F]{2}){31}/.test(minted.stdout)) {
     die("`actana pair new` printed no CA fingerprint", minted.stdout.split("\n"));
   }
-  if (/BEGIN (CERTIFICATE|PRIVATE KEY)/.test(minted.stdout)) {
-    die("`actana pair new` printed certificate material", minted.stdout.split("\n"));
-  }
+  // **Both streams, and both shapes.** Before the redirect, `minted.stdout` was
+  // the folded stdout+stderr `machinectl shell` produces, so this check covered
+  // stderr too; scraping a file narrowed it to one stream of one run. The
+  // framed run below is swept by the same list (#357 review N2).
+  const leakChecked = [
+    ["redirected stdout", minted.stdout],
+    ["the redirected run's own streams", `${redirected.stdout}${redirected.stderr}`],
+  ];
   // Nothing cosmetic reached a redirected stdout: no frame, no instructions,
   // no escape sequence. This is the half of #357 that scripts depend on, and
   // the only place it is checked against a real installed Core.
@@ -431,7 +440,11 @@ async function main() {
   for (const wanted of [
     "\u256d",
     "From the Panel",
-    "Settings (gear icon) -> Cores -> Add Core, then enter the code above",
+    // Pinned by value: this script is plain node with no path to the CLI's
+    // exports. `actana-pair.test.ts` pins the same wording against the
+    // constant itself, so a change to it fails there first (#357 review B1).
+    "Settings (gear icon) -> Cores -> Add Core: this Core's address, then compare the " +
+      "CA fingerprint, then the session and the code",
     "From a terminal",
     "npm i -g @actana/cli",
   ]) {
@@ -450,7 +463,44 @@ async function main() {
   if (!/--fingerprint [0-9A-F]{2}(:[0-9A-F]{2}){31}/.test(pasteable)) {
     die("the pasteable command carries no whole fingerprint", [pasteable]);
   }
+  // #357 review B3: the line's whole promise is that it works when pasted, and
+  // `<name>` was a shell redirection. Handing it to the machine's own shell is
+  // the only check that means anything — `printf` hands back the words a shell
+  // actually parsed, so a redirection or a glob shows up as a missing word.
+  const echoed = mustAsOperator(`printf '%s\\n' ${pasteable}`);
+  const words = echoed.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (words.join(" ") !== pasteable) {
+    die("the pasteable command did not survive a shell", [pasteable, ...words]);
+  }
+  // And the default invocation, which is the one #357 review B3 was about: no
+  // `--label`, so the name is the placeholder, and the placeholder is the thing
+  // a shell used to eat. Checked on the real machine rather than only in the
+  // unit suite, because "survives a shell" is a claim about a shell.
+  const unlabelled = mustAsOperator("actana pair new");
+  const defaultLine = unlabelled.stdout
+    .split("\n")
+    .map((line) => line.trim())
+    .find((line) => line.startsWith("actana core pair "));
+  if (!defaultLine) die("unlabelled `actana pair new` printed no pasteable command", unlabelled.stdout.split("\n"));
+  if (!/^actana core pair NAME /.test(defaultLine)) {
+    die("the unlabelled command does not use the shell-safe name placeholder", [defaultLine]);
+  }
+  const defaultEchoed = mustAsOperator(`printf '%s\\n' ${defaultLine}`);
+  const defaultWords = defaultEchoed.stdout.split("\n").map((line) => line.trim()).filter(Boolean);
+  if (defaultWords.join(" ") !== defaultLine) {
+    die("the unlabelled pasteable command did not survive a shell", [defaultLine, ...defaultWords]);
+  }
+  log("both pasteable commands survive the machine's own shell, placeholder included (#357)");
+
+  leakChecked.push(["the framed run", `${framed.stdout}${framed.stderr}`]);
+  leakChecked.push(["the unlabelled framed run", `${unlabelled.stdout}${unlabelled.stderr}`]);
+  for (const [what, output] of leakChecked) {
+    if (/BEGIN (CERTIFICATE|PRIVATE KEY)/.test(output)) {
+      die(`\`actana pair new\` printed certificate material on ${what}`, output.split("\n"));
+    }
+  }
   log("`actana pair new` frames the code and both redemption paths at a terminal (#357)");
+  log("neither shape of `actana pair new` leaked certificate material on either stream");
   const reprint = asOperator("actana token");
   if (reprint.status === 0) die("`actana token` still reprints something — #287 removed it");
   // Both streams: `machinectl shell` folds the session's stderr into the
