@@ -65,6 +65,27 @@ function cliPinnedLabels(): string[] {
 }
 
 /**
+ * The placeholder the CLI puts in the name slot, read out of its own export.
+ *
+ * Read rather than repeated, for the same reason the label set above is: the
+ * two surfaces print the same command, and `<name>` — which both of them once
+ * used — is a shell redirection, not a slot. Pinning the Panel's placeholder
+ * to `NAME_PLACEHOLDER` is what keeps them from drifting apart again.
+ */
+function cliNamePlaceholder(): string {
+  const match = /export const NAME_PLACEHOLDER = "([^"]+)";/.exec(CLI_PRINTER);
+  if (!match) {
+    throw new Error(
+      "could not find `NAME_PLACEHOLDER` in actana-pair.ts — if it moved or changed shape, this test has to follow it",
+    );
+  }
+  return match[1];
+}
+
+/** The mint command as the wizard prints it with no usable name typed. */
+const PLACEHOLDER_COMMAND = `actana pair new --label ${cliNamePlaceholder()}`;
+
+/**
  * The order `actana-pair.ts` writes those lines in, read off the `deps.out`
  * calls themselves. `Endpoint host` is dropped: it is printed only for
  * `--public-host`, which this wizard does not teach.
@@ -114,8 +135,8 @@ describe("the mint command", () => {
   it("names `--label` even when no name has been chosen", () => {
     // Dropping the flag would be the easy thing to do and would teach an
     // operator to skip the one field that makes `actana pair ls` readable.
-    expect(pairNewCommand("")).toBe("actana pair new --label <name>");
-    expect(pairNewCommand("   ")).toBe("actana pair new --label <name>");
+    expect(pairNewCommand("")).toBe(PLACEHOLDER_COMMAND);
+    expect(pairNewCommand("   ")).toBe(PLACEHOLDER_COMMAND);
   });
 
   it("folds the chosen name in, untouched when a shell would not mind", () => {
@@ -148,8 +169,8 @@ describe("a name the Core would refuse", () => {
     // in both flag forms, and quoting cannot help because the shell strips the
     // quotes first. Emitting it would hand the operator a command that fails on
     // paste — with the Panel to blame for printing it.
-    expect(pairNewCommand("-panel")).toBe("actana pair new --label <name>");
-    expect(composePairNewCommand("-panel")).toContain("--label <name>");
+    expect(pairNewCommand("-panel")).toBe(PLACEHOLDER_COMMAND);
+    expect(composePairNewCommand("-panel")).toContain(`--label ${cliNamePlaceholder()}`);
   });
 
   it("still refuses it in the CLI's own parser, which is why this exists", () => {

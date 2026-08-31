@@ -644,13 +644,18 @@ function hostNotes(
  * for. The comparison is the security-relevant step of the whole exchange
  * (#280 step 3, #284); it is the one thing this line must not drop.
  *
+ * The field is called **Add a Core**, not "Add Core": that is the string the
+ * Panel renders it from (`packages/panel/src/shared/core-onboarding.ts`,
+ * `ADD_CORE_FIELD_LABEL`), and this line is worded from the form. #357's issue
+ * text said "Add Core" and was wrong about the field's name.
+ *
  * A constant rather than an inline string because the wording is the spec, and
  * a test asserts this value rather than a regex that would go on passing after
  * somebody paraphrased it. `scripts/e2e-actana-setup-linux.mjs` pins it too:
  * both move with this line.
  */
 export const PANEL_INSTRUCTION =
-  "Settings (gear icon) -> Cores -> Add Core: this Core's address, then compare the " +
+  "Settings (gear icon) -> Cores -> Add a Core: this Core's address, then compare the " +
   "CA fingerprint, then the session and the code";
 
 /**

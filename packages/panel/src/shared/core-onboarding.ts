@@ -230,10 +230,22 @@ export function composePairNewCommand(label: string): string {
  * A name with a space in it silently becomes two arguments, and `pair new`
  * would take the first and reject the second — a failure the operator would
  * blame on the Panel, having pasted exactly what it printed.
+ *
+ * The placeholder is bare `NAME` for the same reason, and it is deliberately
+ * the CLI's own `NAME_PLACEHOLDER` (`packages/cli/src/actana-pair.ts`, #357
+ * review B3): `<name>` is not inert in a shell. Pasted into bash it parses as
+ * redirections — read stdin from a file called `name`, write stdout to the
+ * next word — so the command never runs and what the operator sees is
+ * `bash: name: No such file or directory`, a message that names neither
+ * `actana` nor the actual problem. This is the wizard's *default* state — an
+ * empty name box, behind a one-click copy button — so it is the likeliest
+ * thing of all to be pasted unedited. `NAME` reads as a slot just as clearly,
+ * survives every shell, and pasted unedited it mints a code labelled `NAME`,
+ * recoverable with one `actana core rm NAME`, which a shell error is not.
  */
 function labelArgument(label: string): string {
   const trimmed = label.trim();
-  if (trimmed === "" || labelRefusal(trimmed) !== null) return "<name>";
+  if (trimmed === "" || labelRefusal(trimmed) !== null) return "NAME";
   if (/^[A-Za-z0-9._:@%+,/=-]+$/.test(trimmed)) return trimmed;
   return `'${trimmed.replace(/'/g, `'\\''`)}'`;
 }
