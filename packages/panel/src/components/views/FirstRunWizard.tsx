@@ -1,15 +1,18 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Btn } from "~/components/ui/Btn";
 import { Icon } from "~/components/ui/Icon";
 import { TextField } from "~/components/ui/TextField";
 import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
 import {
-  CORE_INSTALL_PATHS,
+  ADD_CORE_LOCATION,
   PAIR_NEW_OUTPUT,
   composePairNewCommand,
+  coreInstallPaths,
+  labelRefusal,
   pairNewCommand,
 } from "~/shared/core-onboarding";
 import type { CoreWithDial } from "~/shared/cores";
+import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
 
 /**
  * The first-run pairing wizard (#358) — what a Panel with no Cores shows
@@ -237,12 +240,15 @@ function StepRail({ step, onStep }: { step: StepIndex; onStep: (next: StepIndex)
  * which is the same place any other surface would read them from.
  */
 function InstallStep() {
+  // The Compose line is pinned to this Panel's own line, so the Core it brings
+  // up is built from the same train — see `coreInstallPaths`.
+  const paths = coreInstallPaths(CURRENT_MC_VERSION);
   return (
     <StepBody
       title="Install the Core on the machine you want to drive"
       lede="A Core is the daemon that owns the repository and runs the Harnesses. It goes on the machine with your code — a laptop, a workstation, a build box — not on this Panel. Pick whichever path fits that machine."
     >
-      {CORE_INSTALL_PATHS.map((path) => (
+      {paths.map((path) => (
         <div key={path.id} data-install-path={path.id} style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           <div style={{ fontSize: 13, fontWeight: 600 }}>{path.title}</div>
           <Prose>{path.blurb}</Prose>
@@ -261,11 +267,13 @@ function InstallStep() {
  *
  * The command is built from what the operator types, so `--label` is a thing
  * they have chosen rather than a flag they were shown and skipped. Under it,
- * the four lines `pair new` prints and what each one is for: three of them are
- * typed into step 3, and an operator who knows that reads the terminal once
- * instead of three times.
+ * every line `pair new` prints and what each one is for — including `Label`,
+ * which that command always produces because it always carries `--label`. An
+ * operator who knows which lines matter reads the terminal once instead of
+ * three times.
  */
 function MintStep({ label, onLabel }: { label: string; onLabel: (next: string) => void }) {
+  const refusal = labelRefusal(label);
   return (
     <StepBody
       title="Mint a pairing code on that machine"
@@ -279,7 +287,26 @@ function MintStep({ label, onLabel }: { label: string; onLabel: (next: string) =
         hint="Optional, and worth setting: it is what `actana pair ls` calls this Panel on the Core later."
         autoComplete="off"
         spellCheck={false}
+        ariaInvalid={refusal !== null}
       />
+      {/* A name the Core would refuse never reaches the command block: the
+          placeholder is printed instead, and the reason is said here. Printing
+          the refused form would be the Panel handing over a command that fails
+          on paste — the one failure `labelRefusal` exists to prevent. */}
+      {refusal && (
+        <div
+          role="alert"
+          data-label-refusal
+          style={{
+            fontFamily: "var(--mono)",
+            fontSize: 11.5,
+            lineHeight: 1.5,
+            color: "var(--danger, #e5484d)",
+          }}
+        >
+          {refusal}
+        </div>
+      )}
       <CommandLine command={pairNewCommand(label)} />
       <Prose>Or, if that Core came up under Docker Compose:</Prose>
       <CommandLine command={composePairNewCommand(label)} />
@@ -338,9 +365,9 @@ function RedeemStep({ onPaired }: { onPaired: (core: CoreWithDial) => Promise<vo
     >
       <AddCoreByPairing onPaired={onPaired} />
       <Aside>
-        This is the same form as <strong>Settings → Cores → Add Core</strong>, which is where every
-        Core after this one is paired. The gear icon in the top bar is waiting for you on the other
-        side of this step.
+        This is the same form as <strong>{ADD_CORE_LOCATION}</strong>, which is where every Core
+        after this one is paired. The gear icon in the top bar is waiting for you on the other side
+        of this step.
       </Aside>
     </StepBody>
   );
@@ -433,12 +460,23 @@ function Aside({ children }: { children: React.ReactNode }) {
  */
 function CommandLine({ command }: { command: string }) {
   const [copied, setCopied] = useState(false);
+  // The "copied" flash outlives the step it was clicked on: copy on step 1,
+  // press Next inside a second and a half, and the timer would fire into an
+  // unmounted tree. Held so it can be cancelled.
+  const flash = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(
+    () => () => {
+      if (flash.current !== null) clearTimeout(flash.current);
+    },
+    [],
+  );
 
   const copy = () => {
     void navigator.clipboard?.writeText(command).then(
       () => {
         setCopied(true);
-        setTimeout(() => setCopied(false), 1500);
+        if (flash.current !== null) clearTimeout(flash.current);
+        flash.current = setTimeout(() => setCopied(false), 1500);
       },
       () => undefined,
     );

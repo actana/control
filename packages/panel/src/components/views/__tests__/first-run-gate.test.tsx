@@ -64,6 +64,9 @@ vi.mock("~/lib/api", () => ({ api, ApiError }));
 
 const { FirstRunGate } = await import("../FirstRunGate");
 const { announceCoreRegistryChanged } = await import("~/lib/core-registry-changed");
+const { writeCachedCoreCount } = await import("~/lib/shell-query-cache");
+const { CURRENT_MC_VERSION } = await import("~/queries/mission-control-version");
+const { ADD_CORE_LOCATION, composeUpCoreCommand } = await import("~/shared/core-onboarding");
 // Warm the chunk the gate loads lazily. `FirstRunWizard` is imported with
 // `React.lazy` — it has no business in the entry bundle of a Panel that has a
 // fleet — and an unpopulated module registry means React suspends on a promise
@@ -125,6 +128,9 @@ async function pair(): Promise<void> {
 describe("the first-run gate (#358)", () => {
   beforeEach(() => {
     CORES = [];
+    // The gate seeds its first render from a localStorage count, so a value one
+    // test wrote would decide the next test's first paint.
+    window.localStorage.clear();
     vi.clearAllMocks();
     api.listCores.mockImplementation(async () => ({ cores: CORES }));
     api.inspectCoreForPairing.mockImplementation(async () => ({
@@ -164,6 +170,41 @@ describe("the first-run gate (#358)", () => {
       expect(dashboard()).toBeNull();
     });
 
+    it("paints the shell on the first render when this browser has seen a fleet", async () => {
+      // The seed is the whole point: without it every load of every Panel
+      // blanks until `listCores()` answers, which is a network round-trip in
+      // front of the shell to protect a state only a first-ever load is in.
+      writeCachedCoreCount(2);
+      api.listCores.mockImplementation(() => new Promise(() => {}));
+      render(
+        <FirstRunGate>
+          <div data-testid={DASHBOARD}>Fleet</div>
+        </FirstRunGate>,
+      );
+      // No flush: this has to be true of the first client render, not of the
+      // render after a promise settles.
+      expect(dashboard()).toBeTruthy();
+      expect(wizard()).toBeNull();
+    });
+
+    it("paints the wizard on the first render when this browser has seen none", async () => {
+      writeCachedCoreCount(0);
+      api.listCores.mockImplementation(() => new Promise(() => {}));
+      await mount();
+      expect(wizard()).toBeTruthy();
+      expect(dashboard()).toBeNull();
+    });
+
+    it("keeps the seed honest — the live read corrects it", async () => {
+      // A cached count is a memory, not an answer. An operator who forgot their
+      // last Core from another browser must not be handed a dashboard.
+      writeCachedCoreCount(3);
+      CORES = [];
+      await mount();
+      expect(wizard()).toBeTruthy();
+      expect(dashboard()).toBeNull();
+    });
+
     it("never unlocks on a registry read it could not make", async () => {
       api.listCores.mockRejectedValue(new Error("panel unreachable"));
       await mount();
@@ -177,13 +218,21 @@ describe("the first-run gate (#358)", () => {
   });
 
   describe("it is a gate, not a suggestion", () => {
-    it("offers nothing that skips, dismisses or defers it", async () => {
+    it("offers nothing that skips, dismisses or defers it, on any step", async () => {
+      // A keyword scan cannot prove absence on its own — "Go to Panel" would
+      // pass it — which is why the structural test below is the one doing the
+      // work. What this catches is an escape hatch added later by someone who
+      // named it the obvious thing, and it now looks at all three steps rather
+      // than only at the one that happens to be open on mount.
       await mount();
-      const escapes = screen
-        .getAllByRole("button")
-        .map((button) => `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""}`)
-        .filter((name) => /skip|dismiss|later|not now|close|continue anyway|explore/i.test(name));
-      expect(escapes).toEqual([]);
+      for (const step of [1, 2, 3] as const) {
+        await goToStep(step);
+        const escapes = screen
+          .getAllByRole("button")
+          .map((button) => `${button.textContent ?? ""} ${button.getAttribute("aria-label") ?? ""}`)
+          .filter((name) => /skip|dismiss|later|not now|close|continue anyway|explore/i.test(name));
+        expect(escapes).toEqual([]);
+      }
     });
 
     it("keeps the dashboard away on every step of the way through it", async () => {
@@ -211,6 +260,27 @@ describe("the first-run gate (#358)", () => {
       expect(dashboard()).toBeNull();
     });
 
+    it("does not tear down a live session on a single empty answer", async () => {
+      // Locking the gate unmounts the shell — every terminal, every socket. A
+      // Panel server that restarts against an empty or unmigrated data
+      // directory answers 200 with nothing in it, and one such answer must not
+      // end a session with no prompt and no undo.
+      CORES = [core()];
+      await mount();
+      expect(dashboard()).toBeTruthy();
+
+      api.listCores.mockResolvedValueOnce({ cores: [] });
+      const before = api.listCores.mock.calls.length;
+      await act(async () => {
+        announceCoreRegistryChanged();
+      });
+      await flush();
+
+      expect(api.listCores.mock.calls.length).toBe(before + 2);
+      expect(dashboard()).toBeTruthy();
+      expect(wizard()).toBeNull();
+    });
+
     it("does not throw a paired Panel into the wizard over one failed poll", async () => {
       CORES = [core()];
       await mount();
@@ -236,9 +306,19 @@ describe("the first-run gate (#358)", () => {
         ),
       ).toBeTruthy();
       expect(screen.getByText("actana setup")).toBeTruthy();
-      expect(
-        screen.getByText("docker compose -f deploy/docker-compose.yml up -d"),
-      ).toBeTruthy();
+      expect(screen.getByText(composeUpCoreCommand(CURRENT_MC_VERSION))).toBeTruthy();
+    });
+
+    it("brings up the Core alone, at a tag that resolves", async () => {
+      // The reader of this screen already has a Panel. A bare `up -d` would
+      // start the file's `panel` service too — clashing with theirs on 7420 or
+      // shadowing it — and `:latest` does not resolve until a release exists.
+      await mount();
+      await goToStep(1);
+      const compose = screen.getByText(/docker compose .* up -d/);
+      expect(compose.textContent?.endsWith("up -d core")).toBe(true);
+      expect(compose.textContent).toContain(`ACTANA_TAG=beta-${CURRENT_MC_VERSION}`);
+      expect(screen.queryByText("docker compose -f deploy/docker-compose.yml up -d")).toBeNull();
     });
 
     it("names the mint command on step 2, and what each line it prints is for", async () => {
@@ -248,6 +328,25 @@ describe("the first-run gate (#358)", () => {
       expect(screen.getByText(/^Pairing code/)).toBeTruthy();
       expect(screen.getByText(/^CA fingerprint/)).toBeTruthy();
       expect(screen.getByText(/^Session/)).toBeTruthy();
+      // The command taught here always carries `--label`, so `pair new` always
+      // prints a `Label` line. Leaving it out left one line on the operator's
+      // terminal that this screen did not account for.
+      expect(screen.getByText(/^Label/)).toBeTruthy();
+    });
+
+    it("refuses to print a command the Core would reject, and says why", async () => {
+      await mount();
+      await goToStep(2);
+      await act(async () => {
+        type("Name this Panel will have on that Core", "-panel");
+      });
+      // `pair new` reads a value starting with `-` as another option, in both
+      // flag forms, and quoting cannot help. So the placeholder is printed.
+      expect(screen.getByText("actana pair new --label <name>")).toBeTruthy();
+      expect(screen.queryByText(/--label\s+'?-panel/)).toBeNull();
+      expect(document.querySelector("[data-label-refusal]")?.textContent).toMatch(
+        /cannot start with/,
+      );
     });
 
     it("rewrites the mint command as the operator names this Panel", async () => {
@@ -291,7 +390,7 @@ describe("the first-run gate (#358)", () => {
       expect(document.querySelector("[data-fingerprint-state]")?.getAttribute("data-fingerprint-state")).toBe(
         "unchecked",
       );
-      expect(screen.getByText(/Settings → Cores → Add Core/)).toBeTruthy();
+      expect(screen.getByText(ADD_CORE_LOCATION)).toBeTruthy();
     });
 
     it("posts the same body Settings posts", async () => {

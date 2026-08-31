@@ -7,6 +7,7 @@ import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { api } from "~/lib/api";
 import { announceCoreRegistryChanged } from "~/lib/core-registry-changed";
+import { ADD_CORE_FIELD_LABEL } from "~/shared/core-onboarding";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { coreOrder, type CoreDialStatus, type CoreWithDial } from "~/shared/cores";
 
@@ -173,7 +174,9 @@ export function CoresSettingsPage() {
             )}
           </Field>
 
-          <Field label="Add a Core">
+          {/* Named from the same constant the first-run wizard points at, so
+              the two paths name one place with one string (#358). */}
+          <Field label={ADD_CORE_FIELD_LABEL}>
             <AddCoreByPairing onPaired={handlePaired} />
           </Field>
         </>
