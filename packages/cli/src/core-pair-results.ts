@@ -31,6 +31,7 @@
 
 import {
   ANSI,
+  clip,
   frameEdge,
   frameRow,
   FRAME_CONTENT_WIDTH,
@@ -122,6 +123,20 @@ export type CorePairSuccess = {
   endpoint: string;
   /** Whether a Core of this name was already registered. Chooses one word. */
   replaced: boolean;
+  /**
+   * What this machine is called **on the Core** — `--label`, or its hostname.
+   *
+   * The one fact on this block about the far end rather than this one, and it
+   * is here because it is the name an operator will look for when they come
+   * to revoke this client: the Core lists it in `actana pair ls` beside a
+   * certificate serial, and a serial is not something anybody recognises.
+   *
+   * Deliberately **not** the LABEL column of `actana core ls`, which means
+   * the Core's own alias and stays empty for a paired credential — see the
+   * `writeCoreBlob` call in `core-pair.ts`. Same word, opposite end of the
+   * link, which is why the row says which end it is talking about.
+   */
+  label: string;
   /** What `current` names now. `null` when nothing does. */
   current: string | null;
   /** Where the credential landed. The path, at mode 0600 — never the contents. */
@@ -155,6 +170,12 @@ export function corePairSuccessBlock(result: CorePairSuccess): string[] {
   );
   lines.push(frameRow([], color));
   lines.push(...field("Endpoint", result.endpoint, color));
+  // Clipped, and it is this row that gives: a label is a name the operator
+  // chose and can read back off `pair ls`, where every other value here is one
+  // they have to be able to copy.
+  lines.push(
+    ...field("Label", `${clip(result.label, 28)} — this machine, in the Core's \`pair ls\``, color),
+  );
   lines.push(...field("Current", currentSentence(result, isCurrent), color));
   // Reassurance, not a secret: the operator has just been told a credential
   // exists and has no way to see that it does. The path and the mode are the

@@ -245,6 +245,10 @@ export async function runCorePair(
       name,
       endpoint: blob.endpoint,
       replaced: replacing,
+      // What was sent to the Core as this machine's name, which is what the
+      // operator will look for in `actana pair ls` there — not the empty
+      // LABEL this registry stores, which means the Core's own alias.
+      label: args.label ?? deps.hostname,
       // **Read back, not inferred.** The block says which Core is current now,
       // and that is a claim about what is on disk — `writeCurrentCore` above
       // runs only when nothing was selected, so on a machine that already had

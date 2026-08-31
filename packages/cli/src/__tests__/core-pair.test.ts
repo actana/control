@@ -774,6 +774,28 @@ describe("actana core pair, at a terminal", () => {
     expect(screen).toContain("Settings -> Cores");
   });
 
+  it("names this machine as the Core will list it, from --label or the hostname", async () => {
+    // The one row about the far end. It is the name an operator looks for in
+    // `actana pair ls` on the Core when they come to revoke this client, and a
+    // certificate serial is not a name anybody recognises.
+    const labelled = await cli().run(pairArgv(["--label", "ada-laptop"]), {
+      stdoutIsTty: true,
+      pairing: fakePairing(),
+    });
+    expect(prose(labelled.out)).toContain("Label ada-laptop — this machine, in the Core's `pair ls`");
+
+    // With no --label the hostname is the honest default, and it is the value
+    // that was actually sent — not something this block made up to fill a row.
+    const pairing = fakePairing();
+    const bare = await cli().run(pairArgv(), { stdoutIsTty: true, pairing });
+    expect(pairing.paired[0]?.label).toBeTruthy();
+    expect(prose(bare.out)).toContain(`Label ${pairing.paired[0]?.label} —`);
+
+    // And nothing about it reaches the piped shape.
+    const piped = await cli().run(pairArgv(["--label", "ada-laptop"]), { pairing: fakePairing() });
+    expect(piped.out.join("\n")).not.toContain("ada-laptop");
+  });
+
   it("says where the credential landed and at what mode, and never what is in it", async () => {
     const run = await cli().run(pairArgv(), { stdoutIsTty: true, pairing: fakePairing() });
 
