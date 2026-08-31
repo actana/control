@@ -63,6 +63,19 @@ export type OpenSettingsEventDetail = { panel?: string };
  * before navigating away. Listened to by SettingsPanel. */
 export const CLOSE_SETTINGS_EVENT = "mc:close-settings";
 
+/**
+ * Dispatched whenever the Core registry gained or lost a row — a pairing that
+ * landed, a Core that was forgotten. Listened to by `~/lib/core-registry-changed`,
+ * which is what makes the first-run gate turn over at once rather than at the
+ * next registry poll.
+ *
+ * It carries no payload deliberately: the answer to "how many Cores are there"
+ * belongs to the server, and a count riding an event would be a second source
+ * of truth for the one number the gate is not allowed to be wrong about. The
+ * event says *ask again*, nothing more.
+ */
+export const CORE_REGISTRY_CHANGED_EVENT = "mc:core-registry-changed";
+
 export const ICON_COLORS = ["#ff5a1f", "#8ab4ff", "#c792ea", "#ff9466", "#f472b6", "#34d399", "#fb923c"];
 export const GROUP_COLORS = ["#ff5a1f", "#8ab4ff", "#c792ea", "#ff9466", "#f472b6", "#34d399", "#fb923c"];
 

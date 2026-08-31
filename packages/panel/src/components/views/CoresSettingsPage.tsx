@@ -6,6 +6,8 @@ import { Field, SettingsSection } from "~/components/views/SettingsParts";
 import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
 import { CoreNeedsUpdateNotice } from "~/components/views/CoreNeedsUpdate";
 import { api } from "~/lib/api";
+import { announceCoreRegistryChanged } from "~/lib/core-registry-changed";
+import { ADD_CORE_FIELD_LABEL } from "~/shared/core-onboarding";
 import { formatRelativeTime } from "~/lib/format-relative-time";
 import { coreOrder, type CoreDialStatus, type CoreWithDial } from "~/shared/cores";
 
@@ -74,6 +76,10 @@ export function CoresSettingsPage() {
    */
   const handlePaired = async (core: CoreWithDial) => {
     await refresh();
+    // The fleet just went from N to N+1. Anything else in this tab watching the
+    // registry — the first-run gate above all — re-reads now rather than at its
+    // next poll (#358).
+    announceCoreRegistryChanged();
     toast.success(`Core "${core.label}" paired.`);
   };
 
@@ -110,6 +116,10 @@ export function CoresSettingsPage() {
       await api.removeCore(core.id);
       setPendingRemoval(null);
       await refresh();
+      // And N to N-1. When that leaves zero, the first-run gate is what puts
+      // the pairing wizard back up — the gate is on the count, not on whether
+      // this Panel has ever been paired (#358).
+      announceCoreRegistryChanged();
       toast.success(`Core "${core.label}" removed.`);
     } catch (err) {
       toast.error(err instanceof Error ? err.message : "Failed to remove Core.");
@@ -164,7 +174,9 @@ export function CoresSettingsPage() {
             )}
           </Field>
 
-          <Field label="Add a Core">
+          {/* Named from the same constant the first-run wizard points at, so
+              the two paths name one place with one string (#358). */}
+          <Field label={ADD_CORE_FIELD_LABEL}>
             <AddCoreByPairing onPaired={handlePaired} />
           </Field>
         </>

@@ -25,7 +25,14 @@ import type { ProjectPresentation } from "~/db/schema";
 // is for Core-side content the event stream doesn't cover.
 
 const FLEET_POLL_MS = 15_000;
-const CORES_POLL_MS = 15_000;
+/**
+ * How often the registry is re-read, absent something saying it changed.
+ *
+ * Exported because the first-run gate polls the same registry for the same
+ * reason and had hand-copied the number (#358 review): one cadence, one place
+ * to change it, and no comment claiming two constants agree.
+ */
+export const CORES_POLL_MS = 15_000;
 
 /** Event kinds that change what a `tasksList` would return. */
 const TASK_EVENT_KINDS = /^(task:|session:|pty:)/;
