@@ -18,6 +18,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { X509Certificate } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import {
   loadMaterialFromFile,
   materialFilePath,
@@ -25,6 +26,7 @@ import {
   persistMaterialToFile,
   type PersistedMaterial,
 } from "@actana/shared/core-material-store";
+import { coreNameError } from "@actana/shared/blob-registry";
 import { normalisePairingCode, PAIRING_CODE_ALPHABET } from "@actana/shared/pairing-code";
 import { createPairingSession, PAIRING_SESSION_TTL_MS } from "@actana/shared/pairing-session";
 import {
@@ -37,7 +39,10 @@ import {
 } from "@actana/shared/pairing-store";
 import {
   describeDuration,
+  displayWidth,
+  FRAME_WIDTH,
   MAX_PAIRING_TTL_MS,
+  NAME_PLACEHOLDER,
   PANEL_INSTRUCTION,
   parseDuration,
   runPairCommand,
@@ -572,15 +577,33 @@ describe("actana pair new, at a terminal", () => {
     expect(screen()).toContain(sessionId);
   });
 
-  it("gives the Panel path, worded as the ticket words it", () => {
+  // The wording is pinned to the *form*, not to a paraphrase of it.
+  // `AddCoreByPairing.tsx` asks for the address first, gates everything behind
+  // a compared CA fingerprint — "the Panel does not send the code until they
+  // match" — and only then shows Session and Pairing code. An instruction that
+  // named only the code sent an operator to a form that wanted two things
+  // first, one of them the security-relevant one (#357 review B1).
+  it("gives the Panel path in the order the Panel's own form asks for it", () => {
     runTty(["new", "--label", "laptop"]);
     expect(screen()).toContain("From the Panel");
-    expect(screen()).toContain(
-      "Settings (gear icon) -> Cores -> Add Core, then enter the code above",
-    );
+    expect(screen()).toContain(PANEL_INSTRUCTION);
     expect(PANEL_INSTRUCTION).toBe(
-      "Settings (gear icon) -> Cores -> Add Core, then enter the code above",
+      "Settings (gear icon) -> Cores -> Add Core: this Core's address, then compare the " +
+        "CA fingerprint, then the session and the code",
     );
+    // Every field the form requires is named, in the form's order, and the
+    // fingerprint comparison is not dropped — it is what makes the first dial
+    // verifiable, and the frame above prints the fingerprint without this
+    // sentence saying what it is for.
+    const address = PANEL_INSTRUCTION.indexOf("address");
+    const fingerprint = PANEL_INSTRUCTION.indexOf("fingerprint");
+    const session = PANEL_INSTRUCTION.indexOf("session");
+    const code = PANEL_INSTRUCTION.indexOf("code");
+    expect(address).toBeGreaterThan(-1);
+    expect(fingerprint).toBeGreaterThan(address);
+    expect(session).toBeGreaterThan(fingerprint);
+    expect(code).toBeGreaterThan(session);
+    expect(PANEL_INSTRUCTION).toContain("compare");
   });
 
   it("gives the terminal path: the install, then a command with real values", () => {
@@ -595,6 +618,10 @@ describe("actana pair new, at a terminal", () => {
     expect(commands()).toEqual([
       `actana core pair laptop 10.0.0.5:8443 ${code} --session ${session.id} --fingerprint ${fingerprint}`,
     ]);
+    // One address, and it is the one the credential will name, so there is
+    // nothing to warn about.
+    expect(screen()).toContain("# dial 10.0.0.5:8443 — and that is the endpoint this code registers");
+    expect(screen()).not.toContain("still registers");
     // The install line comes before the command it installs the binary for.
     expect(screen().indexOf("npm i -g @actana/cli")).toBeLessThan(screen().indexOf("actana core pair "));
   });
@@ -618,6 +645,58 @@ describe("actana pair new, at a terminal", () => {
 
     const addresses = commands().map((command) => command.split(" ")[4]);
     expect(addresses).toEqual(["core:8443", "10.0.0.5:8443", "core.example.test:8443"]);
+  });
+
+  // #357 review B2. The endpoint a paired client keeps comes off the stored
+  // session, never off the address it dialled — so a code minted without
+  // `--public-host` registers the primary for *every* command in the block.
+  // A comment that said only "reachable at 10.0.0.5" was true about the dial
+  // and false about the result: pair from a machine that cannot resolve
+  // `core`, and `actana core status` fails right after a successful pairing
+  // with nothing on screen explaining it.
+  it("says which endpoint the credential will carry, per address", async () => {
+    material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+    persistMaterialToFile(materialPath, material);
+
+    expect(runTty(["new", "--label", "laptop"])).toBe(0);
+
+    const printed = screen();
+    // The primary dials and registers the same address: nothing to warn about.
+    expect(printed).toContain("# dial core:8443 — and that is the endpoint this code registers");
+    // Every other address says what it really leaves behind, and how to get a
+    // code that does register it — the `--public-host` workflow #347 designed.
+    for (const host of ["10.0.0.5", "core.example.test"]) {
+      expect(printed).toContain(`# dial ${host}:8443 — but this code still registers core:8443`);
+      expect(printed).toContain(
+        `#   to register ${host}:8443: actana pair new --label laptop --public-host ${host}`,
+      );
+    }
+    // And the untruth is gone: no address is described as one you keep unless
+    // it is one you keep.
+    expect(printed).not.toContain("reachable at 10.0.0.5");
+  });
+
+  it("drops --label from the re-mint hint when there is no usable label", async () => {
+    material = await mintFreshMaterial(["core", "10.0.0.5"]);
+    persistMaterialToFile(materialPath, material);
+
+    runTty(["new"]);
+
+    expect(screen()).toContain("#   to register 10.0.0.5:8443: actana pair new --public-host 10.0.0.5");
+  });
+
+  it("warns about nothing when --public-host made dial and endpoint agree", async () => {
+    material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+    persistMaterialToFile(materialPath, material);
+
+    expect(runTty(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
+
+    // The session records the choice, so redemption hands back 10.0.0.5 — the
+    // address the one command dials.
+    expect(store().listSessions()[0]!.endpointHost).toBe("10.0.0.5");
+    expect(screen()).toContain("# dial 10.0.0.5:8443 — and that is the endpoint this code registers");
+    expect(screen()).not.toContain("still registers");
+    expect(screen()).not.toContain("to register");
   });
 
   it("offers only the chosen address when --public-host chose one", async () => {
@@ -664,7 +743,7 @@ describe("actana pair new, at a terminal", () => {
 
   it("uses a placeholder name when there is no label to use", () => {
     runTty(["new"]);
-    expect(commands()[0]).toContain("actana core pair <name> ");
+    expect(commands()[0]).toContain("actana core pair NAME ");
   });
 
   it("uses a placeholder when the label is not a name the client registry takes", () => {
@@ -672,10 +751,48 @@ describe("actana pair new, at a terminal", () => {
     // does not. Pasting `my laptop` would fail on the far machine with a
     // message about a registry nobody mentioned.
     runTty(["new", "--label", "my laptop"]);
-    expect(commands()[0]).toContain("actana core pair <name> ");
+    expect(commands()[0]).toContain("actana core pair NAME ");
     // The label is still the label — it is on the frame and in the store.
     expect(screen()).toContain("my laptop");
     expect(store().listSessions()[0]!.label).toBe("my laptop");
+  });
+
+  // #357 review B3. `<name>` is not inert in a shell: pasted into bash it is
+  // "read stdin from a file called `name`, write stdout to a file called
+  // `10.0.0.5:8443`", and the command never runs. This is the assertion that
+  // was missing — not that a placeholder is *present*, but that the line the
+  // block promises is pasteable actually survives being pasted.
+  it("emits a line a real shell parses into the words it printed", () => {
+    for (const argv of [["new"], ["new", "--label", "my laptop"], ["new", "--label", "laptop"]]) {
+      runTty(argv);
+      const command = commands()[0]!;
+      // `sh -c 'printf %s\n <the line>'` is the whole test: a shell reads the
+      // line as a command with arguments and hands them back. A redirection,
+      // a glob or a quote would consume a word, redirect the output or fail
+      // outright — and each of those is a paste that does not work.
+      const echoed = execFileSync("/bin/sh", ["-c", `printf '%s\n' ${command}`], {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      expect(echoed.split("\n").filter(Boolean)).toEqual(command.split(" "));
+    }
+  });
+
+  it("never puts a shell metacharacter in the pasteable line", () => {
+    // The belt to the braces above: the line is built from a label, an address,
+    // a code, a uuid and colon-hex, and none of those may bring a character a
+    // shell would act on.
+    for (const argv of [["new"], ["new", "--label", "my laptop"], ["new", "--label", "laptop"]]) {
+      runTty(argv);
+      expect(commands()[0]).not.toMatch(/[<>|&;$`()'"*?[\]{}\\]/);
+    }
+  });
+
+  it("names the placeholder in one place, and it is shell-safe there", () => {
+    expect(NAME_PLACEHOLDER).toBe("NAME");
+    // A slot an operator forgets to edit registers a Core called NAME, which
+    // one `actana core rm NAME` undoes. A shell error undoes nothing.
+    expect(coreNameError(NAME_PLACEHOLDER)).toBeNull();
   });
 
   it("colours at a terminal, and the frame stays square anyway", () => {
@@ -687,6 +804,44 @@ describe("actana pair new, at a terminal", () => {
     const framed = out.filter((line) => line.includes("│")).map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
     expect(framed.length).toBeGreaterThan(5);
     expect(new Set(framed.map((line) => [...line].length))).toEqual(new Set([74]));
+  });
+
+  // #357 review N1. `String.length` is UTF-16 code units, and `--label` takes
+  // anything: a CJK label measured that way lands the right border early, and
+  // an over-long one pushes it out. The label is the row that gives — never
+  // the fingerprint, which wraps instead.
+  it("keeps the frame square for a wide label, measured in columns", () => {
+    runTty(["new", "--label", "笔记本"], NOW, { NO_COLOR: "1" });
+    const framed = out.filter((line) => line.includes("│"));
+    expect(framed.length).toBeGreaterThan(5);
+    for (const line of framed) expect(displayWidth(line)).toBe(FRAME_WIDTH);
+    expect(screen()).toContain("笔记本");
+  });
+
+  it("clips an over-long label rather than bending the frame", () => {
+    const long = "l".repeat(200);
+    runTty(["new", "--label", long], NOW, { NO_COLOR: "1" });
+
+    const framed = out.filter((line) => line.includes("│"));
+    for (const line of framed) expect(displayWidth(line)).toBe(FRAME_WIDTH);
+    // Clipped, and marked as clipped.
+    expect(screen()).toContain("…");
+    expect(screen()).not.toContain(long);
+    // The label the operator gave is untouched everywhere it matters: in the
+    // store, and in the piped shape.
+    expect(store().listSessions()[0]!.label).toBe(long);
+    expect(run(["new", "--label", long])).toBe(0);
+    expect(out).toContain(`Label          ${long}`);
+  });
+
+  it("clips the label and never the fingerprint", () => {
+    runTty(["new", "--label", "l".repeat(200)], NOW, { NO_COLOR: "1" });
+    const fingerprint = new X509Certificate(material.caCert).fingerprint256;
+    const framed = out.filter((line) => line.includes("│"));
+    const rejoined = framed
+      .map((line) => /([0-9A-F]{2}(?::[0-9A-F]{2}){7,}:?)/.exec(line)?.[1] ?? "")
+      .join("");
+    expect(rejoined).toBe(fingerprint);
   });
 
   it("degrades to no escapes under NO_COLOR, keeping every instruction", () => {

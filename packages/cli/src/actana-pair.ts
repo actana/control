@@ -127,6 +127,16 @@ Minting a code
   digest of it, so nothing — including \`pair ls\` — can print it again. A lost
   code is re-minted, not recovered.
 
+  **At a terminal it prints more than that.** Those facts come framed, with
+  both ways to spend them under it: what to click in the Panel, and a command
+  to paste on the machine being paired — \`actana core pair\` with this code,
+  this session and this fingerprint already in it, one per address this Core
+  answers on.
+
+  Redirect stdout and you get the labelled lines and nothing else, which is
+  what a script reads. That is the whole of the switch: there is no flag for
+  it, and \`pair new > code.txt\` or \`pair new | …\` gives the plain shape.
+
 Choosing an address
   A Core can be reachable more than one way at once — \`ACTANA_PUBLIC_HOST\` takes
   a comma-separated list, and every entry is in this Core's certificate. Pair a
@@ -296,6 +306,10 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
       sessionId,
       label,
       hosts: handoutHosts(material.serverHosts, endpointHost),
+      // What redemption will name, which is the chosen host when there is one
+      // and this Core's primary when there is not — the same resolution
+      // `core-pairing-wiring.ts` does, stated here so the block can say it.
+      credentialHost: endpointHost ?? primaryPublicHost(material.serverHosts),
       port: corePort(deps, materialPath),
       color: useColor(deps),
     })) {
@@ -471,7 +485,7 @@ function useColor(deps: ActanaCliDeps): boolean {
 }
 
 /** The frame's total width, borders included. Fixed, so the output is one shape. */
-const FRAME_WIDTH = 74;
+export const FRAME_WIDTH = 74;
 
 /** How far in from the left border the content starts. */
 const FRAME_GUTTER = 3;
@@ -495,6 +509,19 @@ export type PairingHandout = {
   label: string;
   /** The addresses to offer a pasteable command for, primary first. */
   hosts: readonly string[];
+  /**
+   * The address the **credential** will name, whichever of {@link hosts} was
+   * dialled (#357 review B2).
+   *
+   * Not the same question as "which address do I dial", and conflating the two
+   * is the bug this field exists to spell out. The endpoint a paired client
+   * keeps comes off the stored session, never off the address it dialled:
+   * `core-pairing-wiring.ts` reads `session.endpointHost` and falls back to the
+   * Core's primary. So a code minted with `--public-host` carries that host,
+   * and a code minted without one carries the primary for *every* command in
+   * the block — including the ones that dial something else.
+   */
+  credentialHost: string;
   port: number;
   color: boolean;
 };
@@ -539,7 +566,15 @@ export function pairingHandout(handout: PairingHandout): string[] {
   lines.push(frameRow([], color));
   lines.push(frameRow([{ text: "Session        ", style: ANSI.dim }, { text: sessionId }], color));
   if (label) {
-    lines.push(frameRow([{ text: "Label          ", style: ANSI.dim }, { text: label }], color));
+    // The one row whose content has no bound: `--label` takes whatever an
+    // operator wants to call a machine. Clipped to what the frame holds, and
+    // it is *this* row that gives — a label is a name the operator already
+    // knows and can read off `pair ls`, where the fingerprint is a value they
+    // have to compare character by character (#357 review N1).
+    const room = FRAME_WIDTH - 2 - FRAME_GUTTER - displayWidth("Label          ") - 1;
+    lines.push(
+      frameRow([{ text: "Label          ", style: ANSI.dim }, { text: clip(label, room) }], color),
+    );
   }
   lines.push(frameRow([], color));
   lines.push(frameEdge("bottom", color));
@@ -557,11 +592,18 @@ export function pairingHandout(handout: PairingHandout): string[] {
   // One command per address, **with the minted values already in it**. A
   // placeholder here would put the operator back where they started: reading
   // four fields off a screen and retyping them into a fifth thing.
+  //
+  // Each one says which endpoint the *credential* ends up naming, because for
+  // every address but one that is not the address the command dials — see
+  // {@link PairingHandout.credentialHost}. Saying only "reachable at X" would
+  // hand an operator a command that pairs and then leaves their client pointed
+  // somewhere it cannot reach, with nothing on the screen explaining why.
+  const credentialEndpoint = endpointAddress(handout.credentialHost, handout.port);
   for (const [index, host] of handout.hosts.entries()) {
-    const note = index === 0 && handout.hosts.length > 1 ? " (primary)" : "";
-    lines.push(
-      style(`  # on the machine being paired, reachable at ${host}${note}`, ANSI.dim, color),
-    );
+    const endpoint = endpointAddress(host, handout.port);
+    for (const note of hostNotes(handout, host, endpoint, credentialEndpoint)) {
+      lines.push(style(`  ${note}`, ANSI.dim, color));
+    }
     lines.push(`  ${corePairCommand(handout, host)}`);
     if (index < handout.hosts.length - 1) lines.push("");
   }
@@ -569,14 +611,61 @@ export function pairingHandout(handout: PairingHandout): string[] {
 }
 
 /**
- * The Panel path, worded once.
+ * The comment lines above one pasteable command.
  *
- * A constant rather than an inline string because the wording is the spec --
- * #357 names the click path exactly — and a test asserts this value rather
- * than a regex that would go on passing after somebody paraphrased it.
+ * Two shapes, and which one an address gets is the whole of #357 review B2:
+ *
+ *   - the address the credential will name — dial it, keep it, nothing to say;
+ *   - any other configured address — dial it and the pairing works, but the
+ *     client is left registered at `credentialEndpoint`, which on a machine
+ *     that cannot reach that name is a successful pairing followed by an
+ *     `actana core status` that fails for no visible reason.
+ *
+ * The second shape carries the fix rather than only the warning: one `pair new
+ * --public-host <addr>` mints a code whose redemption hands back *that*
+ * address, which is the workflow #347 and ADR 0038 designed and the one this
+ * block should be teaching.
+ */
+function hostNotes(
+  handout: PairingHandout,
+  host: string,
+  endpoint: string,
+  credentialEndpoint: string,
+): string[] {
+  if (endpoint === credentialEndpoint) {
+    return [`# dial ${endpoint} — and that is the endpoint this code registers`];
+  }
+  const label = handout.label && coreNameError(handout.label) === null ? ` --label ${handout.label}` : "";
+  return [
+    `# dial ${endpoint} — but this code still registers ${credentialEndpoint}`,
+    `#   to register ${endpoint}: actana pair new${label} --public-host ${host}`,
+  ];
+}
+
+/**
+ * The Panel path, worded once, and worded from the form rather than from
+ * memory (#357 review B1).
+ *
+ * `AddCoreByPairing.tsx` asks for things in a fixed order and gates them:
+ * the **Core address** first, with a "Check fingerprint" button beside it;
+ * then the **CA fingerprint**, typed and compared, and *"the Panel does not
+ * send the code until they match"*; and only past a verified fingerprint does
+ * step 3 exist at all — **Session**, then **Pairing code**, then an optional
+ * name. An instruction that said "then enter the code" sent an operator to a
+ * form that first wants an address this block never called a field, and then
+ * wants the fingerprint they had just been told they did not need — while the
+ * frame above prints that fingerprint prominently and never says what it is
+ * for. The comparison is the security-relevant step of the whole exchange
+ * (#280 step 3, #284); it is the one thing this line must not drop.
+ *
+ * A constant rather than an inline string because the wording is the spec, and
+ * a test asserts this value rather than a regex that would go on passing after
+ * somebody paraphrased it. `scripts/e2e-actana-setup-linux.mjs` pins it too:
+ * both move with this line.
  */
 export const PANEL_INSTRUCTION =
-  "Settings (gear icon) -> Cores -> Add Core, then enter the code above";
+  "Settings (gear icon) -> Cores -> Add Core: this Core's address, then compare the " +
+  "CA fingerprint, then the session and the code";
 
 /**
  * The line the operator pastes on the other machine.
@@ -607,15 +696,34 @@ function corePairCommand(handout: PairingHandout, host: string): string {
  * What the pasted command calls the Core.
  *
  * The `--label` when there is one and the client's registry would accept it,
- * and `<name>` otherwise. The check is `coreNameError` — the client's own rule
- * — rather than a second opinion about names written here: a label with a
- * space in it is a fine label and not a Core name, and pasting it would fail on
- * the far machine with a message about a registry nobody mentioned.
+ * and {@link NAME_PLACEHOLDER} otherwise. The check is `coreNameError` — the
+ * client's own rule — rather than a second opinion about names written here: a
+ * label with a space in it is a fine label and not a Core name, and pasting it
+ * would fail on the far machine with a message about a registry nobody
+ * mentioned.
  */
 function handoutName(label: string): string {
-  if (!label || coreNameError(label) !== null) return "<name>";
+  if (!label || coreNameError(label) !== null) return NAME_PLACEHOLDER;
   return label;
 }
+
+/**
+ * The name slot, when there is no usable label — and it is bare `NAME` rather
+ * than `<name>` for one reason (#357 review B3).
+ *
+ * `<name>` is not inert in a shell. Pasted into bash it is a redirection: read
+ * stdin from a file called `name`, and send stdout to a file named after the
+ * next word. The command never runs, and what the operator sees is
+ * `bash: name: No such file or directory` — a message that names neither
+ * `actana` nor the actual problem, on the one line whose whole promise is that
+ * it works when pasted. It fires on `actana pair new` with no `--label`, which
+ * is the documented default.
+ *
+ * `NAME` reads as a slot just as clearly, survives every shell, and if it is
+ * pasted unedited it registers a Core called `NAME` — recoverable with one
+ * `actana core rm NAME`, which a shell error is not.
+ */
+export const NAME_PLACEHOLDER = "NAME";
 
 /**
  * `host:port`, with an IPv6 literal bracketed.
@@ -665,9 +773,84 @@ function frameEdge(which: "top" | "bottom", color: boolean): string {
 function frameRow(spans: Span[], color: boolean): string {
   const plain = spans.map((span) => span.text).join("");
   const body = spans.map((span) => style(span.text, span.style, color)).join("");
-  const fill = Math.max(1, FRAME_WIDTH - 2 - FRAME_GUTTER - plain.length);
+  const fill = Math.max(1, FRAME_WIDTH - 2 - FRAME_GUTTER - displayWidth(plain));
   const bar = style("│", ANSI.dim, color);
   return `${bar}${" ".repeat(FRAME_GUTTER)}${body}${" ".repeat(fill)}${bar}`;
+}
+
+/**
+ * How many terminal columns `text` occupies.
+ *
+ * `String.length` is UTF-16 code units and a frame padded by it is crooked for
+ * anybody whose label is not Latin: `笔记本` is three code units and six
+ * columns, so the right border lands three early (#357 review N1). Counted per
+ * code point — a surrogate pair is one character, not two — with the wide
+ * ranges at two and the zero-width ones at nothing.
+ *
+ * Deliberately not a full `wcwidth`. This measures the four things that reach
+ * a frame row: ASCII, an operator's label, a UUID and colon-hex. Emoji with
+ * joiners and skin tones can still measure a column off, and the cost of that
+ * is a ragged border on one line — not a truncated fingerprint, which is the
+ * thing this file may never do.
+ */
+export function displayWidth(text: string): number {
+  let width = 0;
+  for (const character of text) {
+    const point = character.codePointAt(0) ?? 0;
+    if (isZeroWidth(point)) continue;
+    width += isWide(point) ? 2 : 1;
+  }
+  return width;
+}
+
+/** Combining marks and variation selectors: they attach, they take no column. */
+function isZeroWidth(point: number): boolean {
+  return (
+    (point >= 0x0300 && point <= 0x036f) ||
+    (point >= 0x200b && point <= 0x200f) ||
+    (point >= 0xfe00 && point <= 0xfe0f) ||
+    point === 0x2060 ||
+    point === 0xfeff
+  );
+}
+
+/** The double-width blocks: CJK, Hangul, kana, fullwidth forms, and emoji. */
+function isWide(point: number): boolean {
+  return (
+    (point >= 0x1100 && point <= 0x115f) ||
+    (point >= 0x2e80 && point <= 0xa4cf) ||
+    (point >= 0xac00 && point <= 0xd7a3) ||
+    (point >= 0xf900 && point <= 0xfaff) ||
+    (point >= 0xfe30 && point <= 0xfe6f) ||
+    (point >= 0xff00 && point <= 0xff60) ||
+    (point >= 0xffe0 && point <= 0xffe6) ||
+    (point >= 0x1f300 && point <= 0x1f64f) ||
+    (point >= 0x1f900 && point <= 0x1f9ff) ||
+    (point >= 0x20000 && point <= 0x3fffd)
+  );
+}
+
+/**
+ * `text` shortened to `columns` display columns, marked when it was shortened.
+ *
+ * **Only ever called on the label.** Truncation is a lie about a value, and
+ * there is exactly one value in this block cheap enough to tell it about: a
+ * label is a name the operator chose and can read back off `pair ls`. The
+ * fingerprint wraps instead — see {@link wrapFingerprint} — and nothing routes
+ * it through here.
+ */
+function clip(text: string, columns: number): string {
+  if (displayWidth(text) <= columns) return text;
+  let kept = "";
+  let width = 0;
+  for (const character of text) {
+    const next = width + displayWidth(character);
+    // One column held back for the marker, which is one column wide.
+    if (next > columns - 1) break;
+    kept += character;
+    width = next;
+  }
+  return `${kept}…`;
 }
 
 /** Wrap `text` in an escape sequence, or hand it back untouched. */
