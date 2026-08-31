@@ -58,6 +58,17 @@ describe("actana core add", () => {
     expect(help).toContain("actana core pair");
   });
 
+  // #357. The usage line in this help showed three positionals and no flags,
+  // while `readTicket` refuses a code that does not name its pairing session.
+  // A help that omits a required flag is a help that hands out a command line
+  // the program then rejects.
+  it("shows the flags `pair` actually requires", async () => {
+    const run = await cli().run(["core", "--help"]);
+    expect(run.out.join("\n")).toContain(
+      "actana core pair <name> <address> <code> --session <id> --fingerprint <sha256>",
+    );
+  });
+
   it("leaves the registry it wrote readable by exactly its owner", async () => {
     haveCore("prod");
     expect(statSync(coreBlobPath(cli().paths, "prod")).mode & 0o777).toBe(0o600);

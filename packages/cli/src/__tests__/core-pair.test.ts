@@ -314,6 +314,17 @@ describe("actana core pair — the command line", () => {
     }
   });
 
+  // #357. `readTicket` refuses a bare code without `--session <id>` or the
+  // joined `<session>:<code>` form, and this usage line used to show neither —
+  // so an operator who followed it exactly landed on a second refusal for a
+  // flag they had never been told about.
+  it("shows both required flags in the usage line it prints", async () => {
+    const run = await cli().run(["core", "pair", "prod"], { pairing: fakePairing() });
+    expect(run.err.join("\n")).toContain(
+      "actana core pair <name> <host:port> <code> --session <id> --fingerprint <sha256>",
+    );
+  });
+
   it("refuses a fourth argument without echoing it", async () => {
     const run = await cli().run(
       ["core", "pair", "prod", "core.test:8443", CODE, "WXYZ-6789", "--session", SESSION],
