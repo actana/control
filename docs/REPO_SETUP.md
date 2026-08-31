@@ -41,7 +41,7 @@ section is what each one is.
 | --- | --- | --- |
 | `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
 | `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read, Write, Delete`, not the account password |
-| `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second**, delete-capable PAT |
+| `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second** PAT, the only one pointed at a delete endpoint |
 | `NPM_TOKEN` | Secret | Publishing `@actana/sdk` and `@actana/cli` to npm from `release.yml` |
 | `APP_ID` | Secret | The GitHub App's numeric id. Every job in `promote.yml` that pushes |
 | `APP_PRIVATE_KEY` | Secret | That App's private key, the whole PEM. Same jobs — **both or neither** |
@@ -144,13 +144,19 @@ green on the first try and filled all four pages.
 Two consequences worth stating plainly:
 
 - **Never swap this secret for a narrower token.** It is the same credential
-  that pushes `panel`, `core`, `panel-dev` and `core-dev`, so narrowing it back
-  to `Read & Write` blanks the four pages again, and narrowing it below that
-  breaks every image push too.
-- **If you use a fine-grained (repository-scoped) token instead**, it needs the
-  **Repository Edit** permission on all four repositories, not just Read and
-  Write — Edit is what covers the description `PATCH`. The classic PAT above is
-  what this repository is set up and proved against.
+  that pushes `panel`, `core`, `panel-dev` and `core-dev`. Narrowing it back to
+  `Read & Write` does not blank the pages — the `PATCH` 403s and writes nothing,
+  so the last text written stays up while the weekly chore goes red and the four
+  pages quietly stop tracking `docs/images/`. That is harder to notice than a
+  blank page, not easier. Narrowing it below that breaks every image push too.
+- **There is no repository-scoped alternative to reach for.** A Docker Hub PAT
+  carries an account-wide permission level rather than a repository list, and
+  per-repository scoping needs an organization access token — the one credential
+  the `/v2/users/login` exchange rejects outright, above
+  ([ADR 0023](adr/0023-release-trains-and-digest-promotion.md) D38, *the
+  delete-capable credential*; [ADR 0016](adr/0016-the-0-1-0-shape.md) D31). So
+  this token can delete anywhere the account can reach. That is a property to
+  manage — one owner, recorded and rotated — not one to scope away.
 
 ### Rotating it — the token belongs to a person
 
@@ -165,8 +171,10 @@ the push, which is the worst moment to find out.
       an account that leaves as a compromised credential: revoke first,
       re-provision second
 
-To rotate, create the new token first — overwriting the secret is atomic, so
-nothing is unpublishable in between:
+To rotate, create the new token first — with the same **Read, Write, Delete**
+scope, because a rotation that quietly narrows it reintroduces
+[#359](https://github.com/actana/control/issues/359) — and overwrite second;
+overwriting the secret is atomic, so nothing is unpublishable in between:
 
 ```bash
 gh secret set DOCKERHUB_USERNAME --repo actana/control
@@ -205,17 +213,27 @@ what bounds the blast radius of the delete credential below.
       [`core-dev.md`](images/core-dev.md); typing something now only creates a
       thing to disagree with
 
-### `DOCKERHUB_CLEANUP_TOKEN` — the second, delete-capable token
+### `DOCKERHUB_CLEANUP_TOKEN` — the second token, the one aimed at deletes
 
 The weekly `dev-tag-sweep` chore deletes stale `pr-*` and `sha-*` tags from
 `panel-dev` and `core-dev`, and it runs on its own credential rather than on the
-push token. It is therefore a **second** PAT, and it is the more dangerous of
-the two in what it is *pointed at*: Docker Hub personal access tokens carry an
-account-wide permission level rather than a repository list, so either token
-could delete from `actana/panel` and `actana/core` — this is the only one aimed
-at a delete endpoint, and Docker Hub has no undelete.
+push token. Both tokens carry delete — the descriptions `PATCH` above is why the
+push token does — so the second PAT does not buy a narrower scope. It buys two
+things that survive that:
 
-The only thing preventing that is the hard-coded, exact-match repository
+- **Blast radius.** It appears in exactly one job, the weekly sweep, and never
+  in a job that pushes or promotes. The push token is on every PR build, train
+  build, release and promotion; keeping the one credential that is aimed at a
+  delete endpoint out of all of those is the point.
+- **Independent rotation.** It can be revoked the moment the sweep misbehaves,
+  without taking the publishing path down with it.
+
+What it does *not* buy is containment by scope: Docker Hub personal access
+tokens carry an account-wide permission level rather than a repository list, so
+either token could delete from `actana/panel` and `actana/core`, and Docker Hub
+has no undelete.
+
+The only thing bounding the sweep is the hard-coded, exact-match repository
 allowlist in `scripts/lib/dev-tag-sweep.mjs` — re-asserted before every delete
 call, refusing to run when empty, and unit-tested against a release repository
 handed to it by name ([ADR
