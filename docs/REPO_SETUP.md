@@ -40,7 +40,7 @@ section is what each one is.
 | Name | Kind | Needed for |
 | --- | --- | --- |
 | `DOCKERHUB_USERNAME` | Secret | Publishing `panel` and `core` to Docker Hub, and syncing each image's README |
-| `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read & Write`, not the account password |
+| `DOCKERHUB_TOKEN` | Secret | Same — one **personal** access token, `Read, Write, Delete`, not the account password |
 | `DOCKERHUB_CLEANUP_TOKEN` | Secret | The weekly `-dev` tag sweep, and nothing else — a **second**, delete-capable PAT |
 | `NPM_TOKEN` | Secret | Publishing `@actana/sdk` and `@actana/cli` to npm from `release.yml` |
 | `APP_ID` | Secret | The GitHub App's numeric id. Every job in `promote.yml` that pushes |
@@ -99,7 +99,7 @@ The scope itself must exist and the account must own it before the first
 release. `npm access list packages @actana` answers that, and an npm 404 on
 `@actana/sdk` before the first publish is expected rather than a problem.
 
-### It must be a *personal* access token, and one token does both jobs
+### It must be a *personal* access token, `Read, Write, Delete`, and one token does both jobs
 
 Pushing an image and editing a repository's description go through different
 systems: the image push authenticates to the **registry**, where an
@@ -110,10 +110,13 @@ API**, whose `/v2/users/login` endpoint refuses organization accounts outright �
 {"detail":"Cannot log into an organization account"}
 ```
 
-So an OAT would mean paying for a Docker Team or Business subscription **and
-still** provisioning a PAT. One PAT does both instead: create it under your
-**Account settings → Personal access tokens** with **Read & Write** scope, from
-an account with **Admin** on the org, and set `DOCKERHUB_USERNAME` to that
+So a Docker Hub **organization access token is not an option here** — it is
+rejected by the `/v2/users/login` JWT exchange no matter how it is scoped, and
+using one would mean paying for a Docker Team or Business subscription **and
+still** provisioning a PAT. Do not let anyone talk you into an OAT for this
+secret. One classic PAT does both jobs instead: create it under your **Account
+settings → Personal access tokens** with **Read, Write, Delete** scope, from an
+account with **Admin** on the org, and set `DOCKERHUB_USERNAME` to that
 account's own username (not the org — the org goes in `DOCKERHUB_NAMESPACE`).
 
 ```bash
@@ -124,6 +127,30 @@ gh variable set DOCKERHUB_NAMESPACE --repo actana/control --body actana
 
 A wrong pairing is the single most common way to get
 `unauthorized: incorrect username or password` from an otherwise correct setup.
+
+**`Read, Write, Delete` is the scope, and `Read & Write` is not enough.** The
+image pushes are satisfied by `Read & Write`, so a token scoped that way looks
+correct right up to the weekly `descriptions` chore, which fails every one of
+its four `PATCH /v2/repositories/…` calls with `HTTP 403 — access denied:
+insufficient scope` while the pushes keep working
+([#359](https://github.com/actana/control/issues/359)). Writing a repository's
+description is a delete-scope call on the Hub API. This was proved on the token
+itself rather than reasoned about: on 2026-08-31 the scope of the existing
+`DOCKERHUB_TOKEN` was widened to `Read, Write, Delete` in Docker Hub with **the
+secret value unchanged**, and the next dispatched run
+([33396982252](https://github.com/actana/control/actions/runs/33396982252)) went
+green on the first try and filled all four pages.
+
+Two consequences worth stating plainly:
+
+- **Never swap this secret for a narrower token.** It is the same credential
+  that pushes `panel`, `core`, `panel-dev` and `core-dev`, so narrowing it back
+  to `Read & Write` blanks the four pages again, and narrowing it below that
+  breaks every image push too.
+- **If you use a fine-grained (repository-scoped) token instead**, it needs the
+  **Repository Edit** permission on all four repositories, not just Read and
+  Write — Edit is what covers the description `PATCH`. The classic PAT above is
+  what this repository is set up and proved against.
 
 ### Rotating it — the token belongs to a person
 
@@ -181,11 +208,12 @@ what bounds the blast radius of the delete credential below.
 ### `DOCKERHUB_CLEANUP_TOKEN` — the second, delete-capable token
 
 The weekly `dev-tag-sweep` chore deletes stale `pr-*` and `sha-*` tags from
-`panel-dev` and `core-dev`, and delete is a permission the push token must never
-have. It is therefore a **second** PAT, and it is the more dangerous of the two:
-Docker Hub personal access tokens carry an account-wide permission level rather
-than a repository list, so this one can delete from `actana/panel` and
-`actana/core` as well, and Docker Hub has no undelete.
+`panel-dev` and `core-dev`, and it runs on its own credential rather than on the
+push token. It is therefore a **second** PAT, and it is the more dangerous of
+the two in what it is *pointed at*: Docker Hub personal access tokens carry an
+account-wide permission level rather than a repository list, so either token
+could delete from `actana/panel` and `actana/core` — this is the only one aimed
+at a delete endpoint, and Docker Hub has no undelete.
 
 The only thing preventing that is the hard-coded, exact-match repository
 allowlist in `scripts/lib/dev-tag-sweep.mjs` — re-asserted before every delete

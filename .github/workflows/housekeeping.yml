@@ -819,7 +819,7 @@ jobs:
             | jq -r '.token // empty')"
 
           if [[ -z "$jwt" ]]; then
-            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read & Write scope, from an account with Admin on the org. That one token serves the image push as well."
+            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read, Write, Delete scope, from an account with Admin on the org. That one token serves the image push as well."
             exit 1
           fi
 
