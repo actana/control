@@ -46,19 +46,33 @@
 // whose `bad-code` message quotes what it was handed — correct for a library
 // whose caller decides where text goes, wrong for a CLI whose stderr is a
 // terminal, a CI log and a shell history at once.
+//
+// **Two shapes, and `isatty(stdout)` is the whole of the switch (#360).** Down
+// a pipe this is what 0.4.2 printed and nothing else: one or two lines on a
+// success, one or two on a refusal, in the same words and the same order. At a
+// terminal both come framed — a green tick over the endpoint, an honest
+// `current` row and the four verbs a paired Core exists for; a red cross over
+// the reason and, for every class of failure, the command that fixes *that*
+// class. No flag chooses between them and deliberately no `--json`, exactly as
+// `actana pair new` decides it one machine over. `core-pair-results.ts` builds
+// both blocks and can see none of this; the one `if` per site is here.
+//
+// **What the command does is identical either way.** The credential that lands,
+// the `current` pointer, the exit code and what crosses the seam are the same
+// bytes at a terminal and down a pipe, because a command that *did* something
+// different at a terminal is a command no script can trust.
 
 import {
   CorePairingError,
   fetchCorePairingIdentity,
   pairWithCore,
   parsePairingTicket,
-  type CorePairingErrorDetail,
-  type CorePairingFailure,
   type CorePairingIdentity,
   type PairWithCoreOptions,
 } from "@actana/sdk/core-pairing.ts";
 import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
 import {
+  coreBlobPath,
   coreExists,
   coreNameError,
   readCurrentCore,
@@ -66,22 +80,25 @@ import {
   writeCurrentCore,
   type RegistryPaths,
 } from "./blob-registry.ts";
+import { useColor } from "./cli-frame.ts";
+import {
+  badNameSteps,
+  corePairingOutcome,
+  corePairRefusalBlock,
+  corePairSuccessBlock,
+  DEFECT_STEPS,
+  MISSING_ARGUMENTS_STEPS,
+  MISSING_SESSION_STEPS,
+  SESSION_DISAGREEMENT_STEPS,
+  TOO_MANY_ARGUMENTS_STEPS,
+  type CorePairStep,
+} from "./core-pair-results.ts";
 import { encodeRegistrationBlobText } from "./registration-blob-file.ts";
 import {
   EXIT_FAILURE,
   EXIT_OK,
-  EXIT_PAIR_CERTIFICATE_INVALID,
-  EXIT_PAIR_CORE_ERROR,
   EXIT_PAIR_FINGERPRINT_MISMATCH,
   EXIT_PAIR_FINGERPRINT_UNCONFIRMED,
-  EXIT_PAIR_HOSTNAME_MISMATCH,
-  EXIT_PAIR_MALFORMED_RESPONSE,
-  EXIT_PAIR_NO_CA,
-  EXIT_PAIR_NOT_PAIRABLE,
-  EXIT_PAIR_RATE_LIMITED,
-  EXIT_PAIR_REFUSED,
-  EXIT_PAIR_REJECTED,
-  EXIT_PAIR_UNREACHABLE,
   EXIT_USAGE,
 } from "./exit-codes.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -126,20 +143,34 @@ export async function runCorePair(
 ): Promise<number> {
   const [name, address, code, ...extra] = rest;
   if (name === undefined || address === undefined || code === undefined) {
-    deps.err("actana core pair: a name, an address and a code are required.");
-    // Both required flags, because both are (#357). `readTicket` below refuses
-    // a bare code without `--session`, and a usage line that omitted it sent the
-    // operator straight back here with the same three positionals and a fourth
-    // refusal.
-    deps.err("  actana core pair <name> <host:port> <code> --session <id> --fingerprint <sha256>");
-    deps.err("`actana pair new` on the Core prints the code, the fingerprint and the session.");
-    return EXIT_USAGE;
+    return refuse(deps, {
+      // Both required flags, because both are (#357). `readTicket` below
+      // refuses a bare code without `--session`, and a usage line that omitted
+      // it sent the operator straight back here with the same three
+      // positionals and a fourth refusal.
+      plain: [
+        "actana core pair: a name, an address and a code are required.",
+        "  actana core pair <name> <host:port> <code> --session <id> --fingerprint <sha256>",
+        "`actana pair new` on the Core prints the code, the fingerprint and the session.",
+      ],
+      headline: "A name, an address and a code are required.",
+      detail: [
+        "Nothing was dialled. These are the three values `actana pair new` reads out on the Core, " +
+          "in the order it reads them.",
+      ],
+      steps: MISSING_ARGUMENTS_STEPS,
+      exit: EXIT_USAGE,
+    });
   }
   if (extra.length > 0) {
-    // Never the value: an operator who typed the code twice, or put it after
-    // the address a second time, would have it echoed back at them.
-    deps.err("actana core pair: too many arguments — expected <name> <address> <code>.");
-    return EXIT_USAGE;
+    return refuse(deps, {
+      // Never the value: an operator who typed the code twice, or put it after
+      // the address a second time, would have it echoed back at them.
+      plain: ["actana core pair: too many arguments — expected <name> <address> <code>."],
+      headline: "Too many arguments — expected <name> <address> <code>.",
+      steps: TOO_MANY_ARGUMENTS_STEPS,
+      exit: EXIT_USAGE,
+    });
   }
 
   // The registry's own name validation, first and with its own wording: a name
@@ -147,8 +178,12 @@ export async function runCorePair(
   // `rm`, `status`, `shell` or `exec` could reach afterwards.
   const nameError = coreNameError(name);
   if (nameError) {
-    deps.err(`actana core pair: ${nameError}.`);
-    return EXIT_USAGE;
+    return refuse(deps, {
+      plain: [`actana core pair: ${nameError}.`],
+      headline: `That is not a name this registry will take — ${nameError}.`,
+      steps: badNameSteps(nameError),
+      exit: EXIT_USAGE,
+    });
   }
 
   // The ticket first, before anything is dialled and before an operator is
@@ -200,13 +235,44 @@ export async function runCorePair(
   writeCoreBlob(paths, name, encodeRegistrationBlobText({ ...blob, label: "" }));
   deps.verbose(`stored at ${paths.coresDir}/${name}.txt, mode 0600`);
 
-  const current = readCurrentCore(paths);
-  if (current === null) writeCurrentCore(paths, name);
+  const before = readCurrentCore(paths);
+  if (before === null) writeCurrentCore(paths, name);
 
+  if (deps.stdoutIsTty) {
+    // The operator's shape (#360). Cosmetic, and reachable only when there is
+    // a human at the other end: same credential, same pointer, same exit code.
+    for (const line of corePairSuccessBlock({
+      name,
+      endpoint: blob.endpoint,
+      replaced: replacing,
+      // What this machine put in the request, and nothing more is claimed of
+      // it (#366 review 2). The Core keeps the *session* label in its
+      // `pair ls`, not this one — see `CorePairSuccess.label`.
+      label: args.label ?? deps.hostname,
+      // **Read back, not inferred.** The block says which Core is current now,
+      // and that is a claim about what is on disk — `writeCurrentCore` above
+      // runs only when nothing was selected, so on a machine that already had
+      // a Core the honest answer is somebody else's name. Asserting it from
+      // the branch that was taken would be the same claim with nothing behind
+      // it, and it would send an operator to `core status` against the wrong
+      // Core.
+      current: readCurrentCore(paths),
+      // The path and the mode, never the contents.
+      credentialPath: coreBlobPath(paths, name),
+      color: useColor(deps),
+    })) {
+      deps.out(line);
+    }
+    return EXIT_OK;
+  }
+
+  // stdout, piped: **not one byte of this may move.** It is what every script
+  // that has ever wrapped `core pair` reads, and the block above exists
+  // precisely so that it does not have to change to give an operator more.
   deps.out(`${replacing ? "Replaced" : "Paired"} Core "${name}" → ${blob.endpoint}`);
-  if (current === null) deps.out(`\`current\` now points at "${name}".`);
-  else if (current !== name) {
-    deps.out(`\`current\` is still "${current}" — \`actana core use ${name}\` to switch.`);
+  if (before === null) deps.out(`\`current\` now points at "${name}".`);
+  else if (before !== name) {
+    deps.out(`\`current\` is still "${before}" — \`actana core use ${name}\` to switch.`);
   }
   return EXIT_OK;
 }
@@ -234,14 +300,36 @@ function readTicket(deps: ActanaCliDeps, code: string, session: string | null): 
   const explicit = session?.trim() ?? "";
 
   if (carried === "" && explicit === "") {
-    deps.err("actana core pair: a pairing code names the pairing session it belongs to.");
-    deps.err("Pass `--session <id>` — `actana pair new` prints it beside the code — or the <session>:<code> form.");
-    return { ok: false, exit: EXIT_USAGE };
+    return {
+      ok: false,
+      exit: refuse(deps, {
+        plain: [
+          "actana core pair: a pairing code names the pairing session it belongs to.",
+          "Pass `--session <id>` — `actana pair new` prints it beside the code — or the <session>:<code> form.",
+        ],
+        headline: "A pairing code names the pairing session it belongs to.",
+        detail: [
+          "Nothing was dialled: the ticket is read before anything is sent, so no attempt was spent " +
+            "and the code you were given is still good.",
+        ],
+        steps: MISSING_SESSION_STEPS,
+        exit: EXIT_USAGE,
+      }),
+    };
   }
   if (carried !== "" && explicit !== "" && carried !== explicit) {
-    deps.err("actana core pair: the code names one pairing session and `--session` names another.");
-    deps.err("Drop `--session`, or pass the bare code beside it — they have to agree.");
-    return { ok: false, exit: EXIT_USAGE };
+    return {
+      ok: false,
+      exit: refuse(deps, {
+        plain: [
+          "actana core pair: the code names one pairing session and `--session` names another.",
+          "Drop `--session`, or pass the bare code beside it — they have to agree.",
+        ],
+        headline: "The code names one pairing session and --session names another.",
+        steps: SESSION_DISAGREEMENT_STEPS,
+        exit: EXIT_USAGE,
+      }),
+    };
   }
 
   try {
@@ -267,9 +355,15 @@ function readTicket(deps: ActanaCliDeps, code: string, session: string | null): 
  */
 function badCode(deps: ActanaCliDeps): number {
   const outcome = corePairingOutcome("bad-code");
-  deps.err("actana core pair: that was not accepted as a pairing code — hyphen and case do not matter, its shape does.");
-  deps.err(outcome.next);
-  return outcome.exit;
+  return refuse(deps, {
+    plain: [
+      "actana core pair: that was not accepted as a pairing code — hyphen and case do not matter, its shape does.",
+      outcome.next,
+    ],
+    headline: "That was not accepted as a pairing code.",
+    steps: outcome.steps,
+    exit: outcome.exit,
+  });
 }
 
 /** A fingerprint the operator stands behind, or the exit code for the refusal. */
@@ -300,9 +394,19 @@ async function confirmFingerprint(
     return { ok: true, fingerprint: args.fingerprint };
   }
   if (!deps.interactive) {
-    deps.err("actana core pair: no fingerprint was given and there is no terminal to confirm one on.");
-    deps.err(corePairingOutcome("fingerprint-unconfirmed").next);
-    return { ok: false, exit: EXIT_PAIR_FINGERPRINT_UNCONFIRMED };
+    const outcome = corePairingOutcome("fingerprint-unconfirmed");
+    return {
+      ok: false,
+      exit: refuse(deps, {
+        plain: [
+          "actana core pair: no fingerprint was given and there is no terminal to confirm one on.",
+          outcome.next,
+        ],
+        headline: "No fingerprint was given, and there is no terminal to confirm one on.",
+        steps: outcome.steps,
+        exit: EXIT_PAIR_FINGERPRINT_UNCONFIRMED,
+      }),
+    };
   }
 
   let identity: CorePairingIdentity;
@@ -323,12 +427,27 @@ async function confirmFingerprint(
     false,
   );
   if (!matches) {
-    deps.err("actana core pair: the fingerprint was not confirmed, so the pairing code was not sent.");
-    deps.err(corePairingOutcome("fingerprint-mismatch").next);
+    const outcome = corePairingOutcome("fingerprint-mismatch");
     // A human comparing two strings and saying they differ is a mismatch, and
-    // it exits as one: the operator has performed exactly the check the SDK
-    // performs when it is given a fingerprint to hold the Core to.
-    return { ok: false, exit: EXIT_PAIR_FINGERPRINT_MISMATCH };
+    // it exits as one — and it gets the same remedy: the operator has just
+    // performed exactly the check the SDK performs when it is handed a
+    // fingerprint to hold the Core to, so there is nothing different to say.
+    return {
+      ok: false,
+      exit: refuse(deps, {
+        plain: [
+          "actana core pair: the fingerprint was not confirmed, so the pairing code was not sent.",
+          outcome.next,
+        ],
+        headline: "The fingerprint was not confirmed, so the pairing code was not sent.",
+        detail: [
+          "You compared the authority this address presents against the one `actana pair new` " +
+            "printed on the Core, and said they differ. That is the check doing its job.",
+        ],
+        steps: outcome.steps,
+        exit: EXIT_PAIR_FINGERPRINT_MISMATCH,
+      }),
+    };
   }
   // The confirmed value is handed back to `pair`, which dials again and
   // re-computes it: what the operator agreed to is enforced on the connection
@@ -346,8 +465,12 @@ async function confirmFingerprint(
 function reportPairingFailure(deps: ActanaCliDeps, err: unknown): number {
   if (!(err instanceof CorePairingError)) {
     const message = err instanceof Error ? err.message : String(err);
-    deps.err(`actana core pair: pairing failed — ${message}`);
-    return EXIT_FAILURE;
+    return refuse(deps, {
+      plain: [`actana core pair: pairing failed — ${message}`],
+      headline: `Pairing failed — ${message}`,
+      steps: DEFECT_STEPS,
+      exit: EXIT_FAILURE,
+    });
   }
   // `bad-code` is the one failure whose message is not relayed, because the
   // SDK's quotes the code — see {@link badCode}. Reaching it from here means
@@ -358,110 +481,65 @@ function reportPairingFailure(deps: ActanaCliDeps, err: unknown): number {
   if (err.failure === "bad-code") return badCode(deps);
 
   const outcome = corePairingOutcome(err.failure, err.detail);
-  deps.err(`actana core pair: ${err.message}`);
-  deps.err(outcome.next);
-  return outcome.exit;
+  return refuse(deps, {
+    // The SDK's sentence is the headline. It is written for a caller that
+    // decides where text goes, so the frame wraps it rather than trusting it
+    // to fit — but it is the accurate description of what happened, and
+    // rewording thirteen of them here would be thirteen places for the two
+    // accounts to drift apart.
+    plain: [`actana core pair: ${err.message}`, outcome.next],
+    headline: err.message,
+    steps: outcome.steps,
+    exit: outcome.exit,
+  });
 }
-
-/** What an operator should do next about a failure, and what this process exits with. */
-export type CorePairingOutcome = {
-  /** The code from `exit-codes.ts`. Contract: a script may branch on it. */
-  exit: number;
-  /** One line saying what to do next. Never quotes the code or any credential. */
-  next: string;
-};
 
 /**
- * Every failure the SDK distinguishes, given a number and a next step.
+ * Say no, in whichever of the two shapes stdout is entitled to (#360).
  *
- * One `switch` with no `default`, so a failure added to `CorePairingFailure`
- * stops this file compiling until somebody decides what an operator should do
- * about it — which is the only way a list like this stays honest.
+ * **`plain` is the contract and `headline`/`detail`/`steps` are the frame.**
+ * Two sets of strings rather than one set with the ornaments stripped off,
+ * because the piped lines are what every script that has ever grepped a
+ * pairing failure reads and the only way to keep them from drifting is to
+ * write them out at each site and assert them whole. A refusal that grew a
+ * better explanation this way cannot have moved a byte of the other one.
+ *
+ * The gate is `isatty(stdout)` — not stderr, which is where these lines go.
+ * That looks like the wrong stream to ask about and is deliberately the right
+ * one: `actana core pair … > /dev/null` and `… 2>&1 | tee` are both a program
+ * reading this output, and the promise is that **redirecting stdout gets the
+ * 0.4.2 shape on both streams**. One question, one answer, and no run where
+ * half the output is framed.
  */
-export function corePairingOutcome(
-  failure: CorePairingFailure,
-  detail: CorePairingErrorDetail = {},
-): CorePairingOutcome {
-  switch (failure) {
-    case "bad-address":
-      return {
-        exit: EXIT_USAGE,
-        next: "An address is host:port — the Core's TLS port, the one `actana status` reports on the Core.",
-      };
-    case "bad-code":
-      return {
-        exit: EXIT_USAGE,
-        next: "A pairing code is eight characters, written XXXX-XXXX. `actana pair new` prints a fresh one.",
-      };
-    case "bad-fingerprint":
-      return {
-        exit: EXIT_USAGE,
-        next: "A fingerprint is 32 bytes of hex, as AA:BB:… — copy the line `actana pair new` printed.",
-      };
-    case "unreachable":
-      return {
-        exit: EXIT_PAIR_UNREACHABLE,
-        next: "Check the Core is running and that address reaches it — `actana status` on the Core says where it listens.",
-      };
-    case "not-pairable":
-      return {
-        exit: EXIT_PAIR_NOT_PAIRABLE,
-        next: "Something answered there but it has no pairing endpoint — check it is a Core, and update it if it is old.",
-      };
-    case "no-ca-presented":
-      return {
-        exit: EXIT_PAIR_NO_CA,
-        next: "Nothing was presented to compare against the fingerprint — check the address is the Core's own TLS port.",
-      };
-    case "fingerprint-unconfirmed":
-      return {
-        exit: EXIT_PAIR_FINGERPRINT_UNCONFIRMED,
-        next: "Pass `--fingerprint <sha256>` — the code is never sent to a certificate authority nobody confirmed.",
-      };
-    case "fingerprint-mismatch":
-      return {
-        exit: EXIT_PAIR_FINGERPRINT_MISMATCH,
-        next:
-          "Do not retry until you know why: either that is not the Core you were told about, or its credentials " +
-          "were reissued and the fingerprint you have is stale. `actana pair new` prints the current one.",
-      };
-    case "hostname-mismatch":
-      return {
-        exit: EXIT_PAIR_HOSTNAME_MISMATCH,
-        next: "That is the right Core on an address its certificate does not cover — dial the one it was set up for.",
-      };
-    case "certificate-invalid":
-      return {
-        exit: EXIT_PAIR_CERTIFICATE_INVALID,
-        next: "The right Core, with a certificate that cannot be used — check the clock on both machines, then reissue it.",
-      };
-    case "refused":
-      return {
-        exit: EXIT_PAIR_REFUSED,
-        next: "Ask for a fresh code — `actana pair new` on the Core. Its audit log says which of the four this was.",
-      };
-    case "rate-limited":
-      return {
-        exit: EXIT_PAIR_RATE_LIMITED,
-        next:
-          detail.retryAfterSeconds === undefined
-            ? "Wait, then try again with a fresh code."
-            : `Wait ${detail.retryAfterSeconds} seconds, then try again with a fresh code.`,
-      };
-    case "rejected":
-      return {
-        exit: EXIT_PAIR_REJECTED,
-        next: "The Core would not accept the request itself — that is a bug on this side. Please report it.",
-      };
-    case "core-error":
-      return {
-        exit: EXIT_PAIR_CORE_ERROR,
-        next: "The Core failed while handling this — `actana logs` on the Core has the reason; nothing here does.",
-      };
-    case "malformed-response":
-      return {
-        exit: EXIT_PAIR_MALFORMED_RESPONSE,
-        next: "Something answered that is not a Core, or is not one this build understands. Check the address.",
-      };
+function refuse(
+  deps: ActanaCliDeps,
+  refusal: {
+    /** Exactly what 0.4.2 printed, in order. Never changes. */
+    plain: readonly string[];
+    headline: string;
+    detail?: readonly string[];
+    steps: readonly CorePairStep[];
+    exit: number;
+  },
+): number {
+  if (!deps.stdoutIsTty) {
+    for (const line of refusal.plain) deps.err(line);
+    return refusal.exit;
   }
+  for (const line of corePairRefusalBlock({
+    headline: refusal.headline,
+    detail: refusal.detail ?? [],
+    steps: refusal.steps,
+    color: useColor(deps),
+  })) {
+    deps.err(line);
+  }
+  return refusal.exit;
 }
+
+// The failure table moved to `core-pair-results.ts` with the rest of the
+// result surface (#360): it is what an operator is told, and it now carries
+// the concrete remedy per class as well as the one-line `next`. Re-exported
+// here because this is the module the verb lives in and the table is part of
+// what the verb promises.
+export { corePairingOutcome, type CorePairingOutcome } from "./core-pair-results.ts";
