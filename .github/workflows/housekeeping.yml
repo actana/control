@@ -699,9 +699,13 @@ jobs:
   # every delete call, it refuses to run when empty, and it is unit-tested
   # against a release repository being handed to it by name.
   #
-  # The credential is a *second* token, not the one the image push uses. That
-  # is the point: the push credential never gains delete, and the delete
-  # credential never appears in a job that touches a release repository.
+  # The credential is a *second* token, not the one the image push uses. Both
+  # carry delete now — the description PATCH in `descriptions` is a delete-scope
+  # call, so `DOCKERHUB_TOKEN` is `Read, Write, Delete` too (#359) — and the
+  # second token therefore buys separation rather than a narrower scope: it is
+  # the only credential pointed at a delete endpoint, it never appears in a job
+  # that touches a release repository, and it can be revoked or rotated without
+  # taking the publishing path down with it.
   dev-tag-sweep:
     name: Sweep the -dev image tags
     if: >-
@@ -797,7 +801,9 @@ jobs:
           DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
           OWNER: ${{ github.repository_owner }}
           # The same one PAT the image push uses — *not* the cleanup token.
-          # Descriptions are a write to a page, not a delete.
+          # It needs `Read, Write, Delete`: the PATCH below is a delete-scope
+          # call on the Hub API, and a `Read & Write` token 403s on it while
+          # image pushes keep working (#359). See docs/REPO_SETUP.md section 2.
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
         run: |
@@ -819,7 +825,7 @@ jobs:
             | jq -r '.token // empty')"
 
           if [[ -z "$jwt" ]]; then
-            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read & Write scope, from an account with Admin on the org. That one token serves the image push as well."
+            echo "::error title=Docker Hub auth failed::Could not exchange DOCKERHUB_USERNAME/DOCKERHUB_TOKEN for a JWT. This endpoint rejects organization access tokens ('Cannot log into an organization account') — use a PERSONAL access token with Read, Write, Delete scope, from an account with Admin on the org. That one token serves the image push as well."
             exit 1
           fi
 
@@ -857,7 +863,7 @@ jobs:
                   "https://hub.docker.com/v2/repositories/${namespace}/${repo}/")"
 
             if [[ "$status" != "200" ]]; then
-              echo "::error title=Failed to update $repo::HTTP $status — $(cat /tmp/resp.json)"
+              echo "::error title=Failed to update $repo::HTTP $status — $(cat /tmp/resp.json). A 403 'insufficient scope' here means DOCKERHUB_TOKEN is scoped Read & Write: this PATCH is a delete-scope call, so the token needs Read, Write, Delete (#359). Image pushes succeed on the narrower scope, which is why they stay green. See docs/REPO_SETUP.md section 2."
               return 1
             fi
             echo "✅ ${namespace}/${repo} — $bytes bytes of README, short description set"
