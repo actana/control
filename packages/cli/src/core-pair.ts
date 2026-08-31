@@ -127,8 +127,12 @@ export async function runCorePair(
   const [name, address, code, ...extra] = rest;
   if (name === undefined || address === undefined || code === undefined) {
     deps.err("actana core pair: a name, an address and a code are required.");
-    deps.err("  actana core pair <name> <host:port> <code> --fingerprint <sha256>");
-    deps.err("`actana pair new` on the Core prints the code and the fingerprint.");
+    // Both required flags, because both are (#357). `readTicket` below refuses
+    // a bare code without `--session`, and a usage line that omitted it sent the
+    // operator straight back here with the same three positionals and a fourth
+    // refusal.
+    deps.err("  actana core pair <name> <host:port> <code> --session <id> --fingerprint <sha256>");
+    deps.err("`actana pair new` on the Core prints the code, the fingerprint and the session.");
     return EXIT_USAGE;
   }
   if (extra.length > 0) {

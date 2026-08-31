@@ -65,7 +65,7 @@ const STATUS_TIMEOUT_MS = 15_000;
 export const CORE_HELP = `actana core — the Cores this machine can reach
 
 Usage
-  actana core pair <name> <address> <code>
+  actana core pair <name> <address> <code> --session <id> --fingerprint <sha256>
                                   enroll THIS machine on a Core
   actana core ls                  list the Cores this machine knows
   actana core use <name>          point \`current\` at a Core
