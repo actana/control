@@ -7,7 +7,7 @@
 </p>
 
 <p align="center">
-  <a href="docs/README.md">Docs</a> ·
+  <a href="https://control.actana.ai/docs">Docs</a> ·
   <a href="#quickstart">Quickstart</a> ·
   <a href="https://github.com/actana/control/releases">Releases</a> ·
   <a href="CONTRIBUTING.md">Contributing</a>
@@ -87,8 +87,10 @@ That last command prints a one-time pairing code, the Core's CA fingerprint and
 when the code expires. Open `http://localhost:7420`, create the Operator, and
 give "Add Core" the Core's address and that code — the Panel shows you the
 fingerprint it was presented before the code goes anywhere, so you can check it
-against the one on screen. [deploy/README.md](deploy/README.md) walks through
-the file itself — the volumes, the loopback port, adding a second Core.
+against the one on screen. The
+[Docker Compose guide](https://control.actana.ai/docs/get-started/docker-compose)
+walks through the file itself — the volumes, the loopback port, adding a second
+Core.
 
 **Installer** — turn a Linux or macOS (arm64) machine into a Core, as your own
 user, without sudo. Two commands, because installing is not activating: the
@@ -109,11 +111,15 @@ laptop, a workstation, a build box — paired to a Panel you deploy separately.
 beta on all three surfaces — the `x.y.z-beta` images, a prerelease with the
 three Core tarballs, and the CLI as an asset. The ref you fetch `install.sh`
 from is the channel, so installing one is the same two commands from the train's
-own URL. See [INSTALL.md §Installing a beta](INSTALL.md#installing-a-beta) and
+own URL. See [Installing a Beta](https://control.actana.ai/docs/install/installing-a-beta) and
 [ADR 0036](docs/adr/0036-the-beta-release-channel.md).
 
-Full paths: [deploy/README.md](deploy/README.md) for the reference Compose,
-[DEPLOY.md](DEPLOY.md) for the Panel, [INSTALL.md](INSTALL.md) for a Core.
+Full paths:
+[Docker Compose](https://control.actana.ai/docs/get-started/docker-compose) for
+the reference Compose,
+[Panel Installation](https://control.actana.ai/docs/install/panel-installation)
+for the Panel,
+[Install Core](https://control.actana.ai/docs/install/install-core) for a Core.
 
 ## Features
 
@@ -165,7 +171,7 @@ here? [Open an issue](https://github.com/actana/control/issues/new) — that is
 how a row gets added.
 
 Each Core needs the CLIs it runs, installed under its own user — see
-[Harness CLIs](INSTALL.md#harness-clis).
+[Harnesses](https://control.actana.ai/docs/core/harnesses).
 
 ## How it works
 
@@ -238,12 +244,13 @@ Reporting a vulnerability: [SECURITY.md](SECURITY.md).
 
 ## Documentation
 
-[**docs/**](docs/README.md) is the index, organised by the task you actually
-have — deploy a Panel, install a Core, configure it, back it up, contribute.
+[**control.actana.ai/docs**](https://control.actana.ai/docs) is the
+documentation — organised by the task you actually have: get started, deploy a
+Panel, install a Core, pair them, configure and observe the lot.
 
-Start with [DEPLOY.md](DEPLOY.md) and [INSTALL.md](INSTALL.md); read
-[CONTEXT.md](CONTEXT.md) before writing code, and [docs/adr/](docs/adr/) for why
-the architecture is the way it is.
+Contributor docs live in the repo: read [CONTEXT.md](CONTEXT.md) before writing
+code, [docs/adr/](docs/adr/) for why the architecture is the way it is, and
+[docs/](docs/README.md) for the in-repo index.
 
 ## Related Projects
 
