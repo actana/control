@@ -5,7 +5,19 @@
 #
 # then open http://localhost:7420, create the Operator, and give "Add Core" the
 # address core:8443 and that code — checking the fingerprint the Panel shows
-# against the one pair new printed. The Panel dials wss://core:8443 over this
+# against the one pair new printed.
+#
+# A Panel with no Cores opens on the first-run wizard, whose first two steps are
+# about installing a Core on another machine — which the line above has already
+# done, here, on this network. Skip them:
+#
+#   http://localhost:7420/?step=redeem
+#
+# It opens that wizard on its redeem step. The step is a shortcut and nothing
+# more: the address, the fingerprint comparison and the code are still asked
+# for, and a Panel that pairs nothing lands back on the wizard regardless.
+#
+# The Panel dials wss://core:8443 over this
 # network — which is why
 # ACTANA_PUBLIC_HOST below is the compose *service name* and not a real DNS
 # name. Both images are published, so a clean checkout needs nothing built.

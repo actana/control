@@ -66,7 +66,12 @@ const { FirstRunGate } = await import("../FirstRunGate");
 const { announceCoreRegistryChanged } = await import("~/lib/core-registry-changed");
 const { writeCachedCoreCount } = await import("~/lib/shell-query-cache");
 const { CURRENT_MC_VERSION } = await import("~/queries/mission-control-version");
-const { ADD_CORE_LOCATION, composeUpCoreCommand } = await import("~/shared/core-onboarding");
+const {
+  ADD_CORE_LOCATION,
+  COMPOSE_SHORTCUT_ACTION,
+  composePairNewCommand,
+  composeUpCoreCommand,
+} = await import("~/shared/core-onboarding");
 // Warm the chunk the gate loads lazily. `FirstRunWizard` is imported with
 // `React.lazy` — it has no business in the entry bundle of a Panel that has a
 // fleet — and an unpopulated module registry means React suspends on a promise
@@ -131,6 +136,9 @@ describe("the first-run gate (#358)", () => {
     // The gate seeds its first render from a localStorage count, so a value one
     // test wrote would decide the next test's first paint.
     window.localStorage.clear();
+    // The wizard reads `?step=` once, at mount. A parameter one test set would
+    // silently open the next test's wizard on a different screen.
+    window.history.replaceState({}, "", "/");
     vi.clearAllMocks();
     api.listCores.mockImplementation(async () => ({ cores: CORES }));
     api.inspectCoreForPairing.mockImplementation(async () => ({
@@ -428,6 +436,115 @@ describe("the first-run gate (#358)", () => {
       expect(wizard()).toBeTruthy();
       expect(dashboard()).toBeNull();
       expect(screen.getByRole("alert").textContent).toContain("that code has been used");
+    });
+  });
+
+  /**
+   * The Compose shortcut.
+   *
+   * `docker compose up -d` starts a Panel and a Core together, so the operator
+   * who came that way finished step 1 before the wizard existed for them. Two
+   * halves: a bar that says so, and a `?step=` link the Compose file hands out.
+   *
+   * What these hold is that the shortcut is a *starting position* — it moves
+   * the wizard and touches nothing else. The gate is still a live Core count,
+   * and the redemption is still the same form asking for the same fingerprint.
+   */
+  describe("the Compose shortcut", () => {
+    /** Which rail entry is current, 1-based, as the operator sees it. */
+    function currentStep(): number {
+      const rail = [...document.querySelectorAll("[aria-current='step']")];
+      const label = rail[0]?.textContent ?? "";
+      return Number(/Step (\d)/.exec(label)?.[1] ?? 0);
+    }
+
+    function bar(): HTMLElement | null {
+      return document.querySelector("[data-compose-shortcut]");
+    }
+
+    /** Open the Panel at a URL, the way the Compose file's link does. */
+    async function mountAt(search: string): Promise<void> {
+      window.history.replaceState({}, "", `/${search}`);
+      await mount();
+    }
+
+    it("opens on step 1 when nothing asked otherwise", async () => {
+      await mount();
+      expect(currentStep()).toBe(1);
+    });
+
+    it("opens on the redeem step for the link Compose prints", async () => {
+      await mountAt("?step=redeem");
+      expect(currentStep()).toBe(3);
+      // Not just the rail: the redemption form is the thing on screen.
+      expect(screen.getByLabelText("Core address")).toBeTruthy();
+    });
+
+    it("takes the step number too", async () => {
+      await mountAt("?step=3");
+      expect(currentStep()).toBe(3);
+    });
+
+    it("opens at the beginning on a stale or malformed link", async () => {
+      await mountAt("?step=nowhere");
+      expect(currentStep()).toBe(1);
+      expect(wizard()).toBeTruthy();
+    });
+
+    it("offers the bar on the steps it can skip, and not on the one it lands on", async () => {
+      await mount();
+      expect(bar()).toBeTruthy();
+      await goToStep(2);
+      expect(bar()).toBeTruthy();
+      await goToStep(3);
+      // Advertising the screen you are already reading, on the screen that is
+      // asking for a credential.
+      expect(bar()).toBeNull();
+    });
+
+    it("carries the one command Compose has genuinely not run yet", async () => {
+      // Skipping to step 3 without the mint command would strand the operator
+      // on a form asking for a code nothing has printed.
+      await mount();
+      expect(bar()?.textContent).toContain(composePairNewCommand(""));
+    });
+
+    it("jumps to the redeem step when clicked", async () => {
+      await mount();
+      expect(currentStep()).toBe(1);
+      await click(COMPOSE_SHORTCUT_ACTION);
+      expect(currentStep()).toBe(3);
+      expect(screen.getByLabelText("Core address")).toBeTruthy();
+    });
+
+    it("leaves every step reachable — it skips, it does not remove", async () => {
+      await mountAt("?step=redeem");
+      await goToStep(1);
+      expect(currentStep()).toBe(1);
+      expect(screen.getByText(composeUpCoreCommand(CURRENT_MC_VERSION))).toBeTruthy();
+    });
+
+    it("is not a way past the gate: the dashboard still costs a paired Core", async () => {
+      // The one thing a URL parameter must never buy. The gate reads the Core
+      // registry, and a deep link does not put a Core in it.
+      await mountAt("?step=redeem");
+      expect(wizard()).toBeTruthy();
+      expect(dashboard()).toBeNull();
+
+      await pair();
+
+      expect(dashboard()).toBeTruthy();
+      expect(wizard()).toBeNull();
+    });
+
+    it("still makes the operator compare the fingerprint", async () => {
+      // Skipping the reading does not skip the checking: step 3 is the same
+      // `AddCoreByPairing` Settings mounts, gated the same way.
+      await mountAt("?step=redeem");
+      type("Core address", "prod-vm-1.internal:7777");
+      await click("Check fingerprint");
+      expect(api.pairCore).not.toHaveBeenCalled();
+      expect(screen.getByLabelText("CA fingerprint from `actana pair new`")).toBeTruthy();
     });
   });
 });
