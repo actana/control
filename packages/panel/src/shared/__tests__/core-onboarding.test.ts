@@ -4,11 +4,17 @@ import { describe, expect, it } from "vitest";
 import {
   ADD_CORE_FIELD_LABEL,
   ADD_CORE_LOCATION,
+  COMPOSE_SHORTCUT_ACTION,
+  COMPOSE_SHORTCUT_NOTICE,
+  FIRST_RUN_STEP_IDS,
+  FIRST_RUN_STEP_PARAM,
   PAIR_NEW_OUTPUT,
+  REDEEM_STEP_LINK,
   composePairNewCommand,
   composeUpCoreCommand,
   coreImageTag,
   coreInstallPaths,
+  firstRunStepFromSearch,
   labelRefusal,
   pairNewCommand,
 } from "../core-onboarding";
@@ -230,5 +236,98 @@ describe("what the wizard puts on screen", () => {
 
   it("names the canonical Add-a-Core location once", () => {
     expect(ADD_CORE_LOCATION).toBe(`Settings → Cores → ${ADD_CORE_FIELD_LABEL}`);
+  });
+});
+
+/**
+ * The Compose shortcut.
+ *
+ * An operator who came from `deploy/docker-compose.yml` has a Core running
+ * beside this Panel before they ever see the wizard, so its first two screens
+ * are install advice for a machine they already provisioned. The parameter
+ * lets a link skip them; the bar tells them the link exists.
+ */
+describe("opening the wizard on a given step", () => {
+  it("takes the step's own id", () => {
+    expect(firstRunStepFromSearch("?step=install")).toBe(0);
+    expect(firstRunStepFromSearch("?step=mint")).toBe(1);
+    expect(firstRunStepFromSearch("?step=redeem")).toBe(2);
+  });
+
+  it("takes the 1-based number the rail puts on screen", () => {
+    // The rail is labelled "Step 1".."Step 3", and someone told to jump to the
+    // third step will type 3 before they will type `redeem`.
+    expect(firstRunStepFromSearch("?step=1")).toBe(0);
+    expect(firstRunStepFromSearch("?step=3")).toBe(2);
+  });
+
+  it("is forgiving about case and whitespace, and works with other parameters", () => {
+    expect(firstRunStepFromSearch("?step=REDEEM")).toBe(2);
+    expect(firstRunStepFromSearch("?step=%20redeem%20")).toBe(2);
+    expect(firstRunStepFromSearch("?foo=bar&step=redeem&baz=1")).toBe(2);
+    expect(firstRunStepFromSearch("step=redeem")).toBe(2);
+  });
+
+  it("says nothing rather than throwing when it is absent or unrecognised", () => {
+    // A stale bookmark opens the wizard at the beginning. It does not break it.
+    for (const search of ["", "?", "?other=1", "?step=", "?step=0", "?step=4", "?step=redem"]) {
+      expect(firstRunStepFromSearch(search)).toBeNull();
+    }
+  });
+
+  it("covers every step the wizard has, and invents none", () => {
+    expect(FIRST_RUN_STEP_IDS).toEqual(["install", "mint", "redeem"]);
+    for (const [index, id] of FIRST_RUN_STEP_IDS.entries()) {
+      expect(firstRunStepFromSearch(`?${FIRST_RUN_STEP_PARAM}=${id}`)).toBe(index);
+    }
+  });
+
+  it("has a link that opens the last step, and it is relative", () => {
+    // A Panel is reached at whatever address is in front of it; a link with an
+    // origin baked in would be right for exactly one deployment.
+    expect(firstRunStepFromSearch(REDEEM_STEP_LINK)).toBe(FIRST_RUN_STEP_IDS.length - 1);
+    expect(REDEEM_STEP_LINK.startsWith("?")).toBe(true);
+  });
+});
+
+describe("the Compose disclaimer", () => {
+  /** `deploy/docker-compose.yml`, read as text. */
+  const COMPOSE = readFileSync(
+    fileURLToPath(new URL("../../../../../deploy/docker-compose.yml", import.meta.url)),
+    "utf8",
+  );
+
+  it("is offered by the file it is about", () => {
+    // The bar is only half the feature: the operator has to be told the link
+    // exists somewhere they are already reading, and that is the Compose file
+    // whose `up -d` put them in this position.
+    expect(COMPOSE).toContain(REDEEM_STEP_LINK);
+  });
+
+  it("names the address that Compose actually serves the Core on", () => {
+    // `core:8443` is the compose service name, and it is what the redeem step's
+    // first field wants. A disclaimer that skipped two screens without saying
+    // this would strand the operator on the third.
+    expect(COMPOSE_SHORTCUT_NOTICE).toContain("core:8443");
+    expect(COMPOSE).toContain("core:8443");
+  });
+
+  it("asks rather than asserts, because nothing here can detect Compose", () => {
+    // The Panel has no marker for how it was started. The bar is therefore a
+    // question the operator answers about themselves — if it ever starts
+    // claiming, it is claiming something it cannot know.
+    expect(COMPOSE_SHORTCUT_NOTICE).toContain("?");
+  });
+
+  it("is worded as a move between steps, not as a way out of them", () => {
+    // The wizard is a gate, and `first-run-gate.test.tsx` scans every button on
+    // every step for the words an escape hatch gets named. This control lands
+    // on the step that pairs a Core — the gate's only exit — so it must not be
+    // called "Skip", and neither this label nor the notice may carry the words
+    // that guard is looking for.
+    expect(COMPOSE_SHORTCUT_ACTION).toBe("Jump to step 3");
+    for (const copy of [COMPOSE_SHORTCUT_ACTION, COMPOSE_SHORTCUT_NOTICE]) {
+      expect(copy).not.toMatch(/skip|dismiss|later|not now|close|continue anyway|explore/i);
+    }
   });
 });

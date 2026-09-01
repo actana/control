@@ -577,6 +577,95 @@ describe("actana pair new, at a terminal", () => {
     expect(screen()).toContain(sessionId);
   });
 
+  // The Panel's form asks for the address *first*, and until now the
+  // frame was the one surface that never said what to put in it — `Endpoint
+  // host` prints only down a pipe and only for `--public-host`. An operator at
+  // a terminal read four values off the box and had to derive the fifth.
+  describe("the endpoint row", () => {
+    /** The framed lines only, stripped of colour. */
+    function box(): string[] {
+      return out
+        .filter((line) => line.includes("│"))
+        .map((line) => line.replace(/\x1b\[[0-9;]*m/g, ""));
+    }
+
+    it("names the address inside the frame, not only under it", () => {
+      expect(runTty(["new", "--label", "laptop"])).toBe(0);
+      expect(box().some((line) => line.includes("Endpoint"))).toBe(true);
+      expect(box().some((line) => line.includes("10.0.0.5:8443"))).toBe(true);
+    });
+
+    it("sits above the fingerprint, the order the Panel's form gates them in", () => {
+      // Address, then fingerprint, then session and code — `PANEL_INSTRUCTION`.
+      // A box that has to be read out of order into the form is a box that
+      // will be read out of order into the form.
+      runTty(["new", "--label", "laptop"]);
+      const at = (needle: string) => box().findIndex((line) => line.includes(needle));
+      expect(at("Endpoint")).toBeGreaterThan(-1);
+      expect(at("CA fingerprint")).toBeGreaterThan(at("Endpoint"));
+      expect(at("Session")).toBeGreaterThan(at("CA fingerprint"));
+    });
+
+    it("is the address the credential names, not whichever one a command dials", async () => {
+      // The endpoint a paired client keeps comes off the stored session, so on
+      // a Core with three addresses there is still exactly one true answer to
+      // "what will this code register" — and it is the primary. Printing the
+      // dialled address here instead would contradict the `# dial …` notes.
+      material = await mintFreshMaterial(["core", "10.0.0.5", "core.example.test"]);
+      persistMaterialToFile(materialPath, material);
+
+      expect(runTty(["new", "--label", "laptop"])).toBe(0);
+
+      expect(box().some((line) => line.includes("Endpoint       core:8443"))).toBe(true);
+      // The other two are offered as commands, and only as commands.
+      for (const other of ["10.0.0.5:8443", "core.example.test:8443"]) {
+        expect(box().some((line) => line.includes(other))).toBe(false);
+        expect(commands().some((command) => command.includes(other))).toBe(true);
+      }
+    });
+
+    it("follows --public-host, because that is what the credential will carry", async () => {
+      material = await mintFreshMaterial(["core", "10.0.0.5"]);
+      persistMaterialToFile(materialPath, material);
+
+      expect(runTty(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
+
+      expect(box().some((line) => line.includes("Endpoint       10.0.0.5:8443"))).toBe(true);
+    });
+
+    it("wraps a long address rather than clipping it, and stays square", async () => {
+      // An address with an ellipsis in it is an address that fails to dial —
+      // the same rule the fingerprint follows, for the same reason.
+      const long = `a-very-long-core-host-name.${"sub.".repeat(8)}example.invalid`;
+      material = await mintFreshMaterial([long]);
+      persistMaterialToFile(materialPath, material);
+
+      expect(runTty(["new", "--label", "laptop"])).toBe(0);
+
+      // Measured on the plain text: an escape sequence has a length and no
+      // width, which is the whole reason `frameRow` pads the way it does.
+      for (const line of box()) expect(displayWidth(line)).toBe(FRAME_WIDTH);
+      for (const elision of ["...", "…"]) expect(screen()).not.toContain(elision);
+
+      // Nothing dropped: the rows under the `Endpoint` heading, in order and
+      // with nothing but the border and the gutter taken off, re-join to
+      // exactly the address — separators included.
+      const content = box().map((line) => line.replace(/^│/, "").replace(/│$/, "").trim());
+      const heading = content.findIndex((line) => line === "Endpoint");
+      expect(heading).toBeGreaterThan(-1);
+      const rest = content.slice(heading + 1);
+      const rejoined = rest.slice(0, rest.indexOf("")).join("");
+      expect(rejoined).toBe(`${long}:8443`);
+    });
+
+    it("changes nothing down a pipe", () => {
+      // The frame is where this row lives. The piped shape is what every script
+      // wrapping `pair new` reads, and it did not grow a field.
+      expect(run(["new", "--label", "laptop"])).toBe(0);
+      expect(out.some((line) => line.startsWith("Endpoint "))).toBe(false);
+    });
+  });
+
   // The wording is pinned to the *form*, not to a paraphrase of it.
   // `AddCoreByPairing.tsx` asks for the address first, gates everything behind
   // a compared CA fingerprint — "the Panel does not send the code until they

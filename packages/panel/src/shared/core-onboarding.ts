@@ -103,6 +103,95 @@ export function coreInstallPaths(panelVersion: string): readonly CoreInstallPath
 export const COMPOSE_EXEC_PREFIX = "docker compose -f deploy/docker-compose.yml exec core";
 
 /**
+ * The wizard's three steps, as ids, in the order the machine has to do them.
+ *
+ * Here rather than in the component because {@link firstRunStepFromSearch}
+ * parses them out of a URL and a link in `deploy/docker-compose.yml` writes one
+ * of them by hand. Three places naming the same three strings is how a deep
+ * link starts pointing at a step that no longer exists.
+ */
+export const FIRST_RUN_STEP_IDS = ["install", "mint", "redeem"] as const;
+export type FirstRunStepId = (typeof FIRST_RUN_STEP_IDS)[number];
+
+/** The query parameter that opens the wizard on a given step. */
+export const FIRST_RUN_STEP_PARAM = "step";
+
+/**
+ * Which step a URL asks for, or null for "start at the beginning".
+ *
+ * **This chooses a starting position and can do nothing else.** Every step is
+ * already reachable by clicking the rail, so a link that opens step 3 is a
+ * shortcut past two screens of reading and not a way around anything: the gate
+ * is a live Core count (`FirstRunGate`), the redemption is still a fingerprint
+ * comparison the operator performs, and a Panel with no paired Core lands back
+ * here on the next load whatever the URL said. Nothing downstream may read this
+ * value, and nothing about pairing may become easier because it was set.
+ *
+ * Both spellings are accepted because both are natural to type and neither is
+ * ambiguous: the step's id (`?step=redeem`) reads at a glance in the Compose
+ * file, and its 1-based position (`?step=3`) is what someone who has just been
+ * told "jump to the third step" will try. An unknown value is null rather than
+ * an error — a stale bookmark should open the wizard, not break it.
+ */
+export function firstRunStepFromSearch(search: string): 0 | 1 | 2 | null {
+  const raw = new URLSearchParams(search).get(FIRST_RUN_STEP_PARAM);
+  if (raw === null) return null;
+  const wanted = raw.trim().toLowerCase();
+
+  const byId = FIRST_RUN_STEP_IDS.indexOf(wanted as FirstRunStepId);
+  if (byId >= 0) return byId as 0 | 1 | 2;
+
+  // 1-based, because the rail is labelled "Step 1", "Step 2", "Step 3" and a
+  // person reading a URL off that screen counts from one.
+  if (/^[123]$/.test(wanted)) return (Number(wanted) - 1) as 0 | 1 | 2;
+
+  return null;
+}
+
+/**
+ * The deep link that opens the wizard on the redeem step.
+ *
+ * Relative, and deliberately not built from an origin: a Panel is reached at
+ * whatever address its operator put in front of it — `localhost:7420`, a LAN
+ * name, a reverse proxy — and this module has no business guessing which.
+ */
+export const REDEEM_STEP_LINK = `?${FIRST_RUN_STEP_PARAM}=redeem`;
+
+/**
+ * The disclaimer the wizard shows above the rail, for the operator whose Core
+ * is already running.
+ *
+ * `deploy/docker-compose.yml` brings up a `panel` **and** a `core` on one
+ * network, so an operator who came that way has done step 1 before they ever
+ * saw this screen — the machine is provisioned and the daemon is up. What they
+ * have not done is mint a code, which is one `exec` away, and the wizard's
+ * first two screens are two screens of install advice they do not need.
+ *
+ * **It is a disclaimer, not a detection.** Nothing in the Panel can tell that
+ * it came up under Compose: the container has no marker for it, the
+ * environment carries no flag, and inventing one would be a runtime dependency
+ * on a deployment shape the product does not otherwise care about. So the bar
+ * states the condition and lets the operator recognise themselves in it — which
+ * is also why it never hides a step or preselects one, and why the rail behind
+ * it keeps all three reachable.
+ */
+export const COMPOSE_SHORTCUT_NOTICE =
+  "Came here from `docker compose up -d`? Then the Core is already installed and running beside this Panel at `core:8443` — step 1 is done. Mint a code with the one command below and jump ahead.";
+
+/**
+ * The label on the bar's jump.
+ *
+ * **Worded as a move between steps, never as a way out of them.** The wizard is
+ * a gate — no skip, no dismiss, no later — and `first-run-gate.test.tsx` scans
+ * every button on every step for exactly those words. This control is not an
+ * exception to that rule: it goes *to* the step that pairs a Core, which is the
+ * gate's only exit condition, so naming it "Skip…" would describe the opposite
+ * of what it does and would rightly trip a guard that exists to catch an escape
+ * hatch somebody added later.
+ */
+export const COMPOSE_SHORTCUT_ACTION = "Jump to step 3";
+
+/**
  * What the canonical Add-a-Core surface is called, so the wizard and the
  * settings page name one place with one string (#358 asks for exactly that).
  *

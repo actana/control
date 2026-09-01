@@ -98,6 +98,7 @@ import {
   frameRow,
   style,
   useColor,
+  wrapText,
 } from "./cli-frame.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
@@ -542,6 +543,44 @@ export function pairingHandout(handout: PairingHandout): string[] {
     ),
   );
   lines.push(frameRow([], color));
+
+  /**
+   * The address, in the box, because the Panel asks for it **first**.
+   *
+   * `PANEL_INSTRUCTION` sends the operator to a form whose first field is this
+   * Core's address, and until this row the frame was the one surface that never
+   * said what to put in it: `Endpoint host` prints only down a pipe and only
+   * for `--public-host`, so an operator at a terminal — the audience this
+   * whole block exists for — read four values off a screen and then had to
+   * work the fifth out for themselves. It sits above the fingerprint for the
+   * same reason: address, then fingerprint, then session and code is the order
+   * the form gates them in, and the frame should be readable top to bottom
+   * into it.
+   *
+   * **It is `credentialHost`, not whichever address a command below dials.**
+   * The endpoint a paired client keeps comes off the stored session — see
+   * {@link PairingHandout.credentialHost} — so on a multi-address Core this row
+   * is the one address that is true of the credential no matter which command
+   * was pasted. The `# dial …` notes under `From a terminal` are what explain
+   * the others; this row does not compete with them.
+   */
+  const credentialEndpoint = endpointAddress(handout.credentialHost, handout.port);
+  const endpointLabel = "Endpoint       ";
+  const endpointRoom = FRAME_CONTENT_WIDTH - displayWidth(endpointLabel);
+  if (displayWidth(credentialEndpoint) <= endpointRoom) {
+    lines.push(
+      frameRow([{ text: endpointLabel, style: ANSI.dim }, { text: credentialEndpoint }], color),
+    );
+  } else {
+    // **Wrapped, never clipped**, on the same rule the fingerprint follows: an
+    // address with an ellipsis in it is an address that fails to dial, and
+    // `wrapText` breaks on the `:` and `.` a long hostname is built out of.
+    lines.push(frameRow([{ text: "Endpoint", style: ANSI.dim }], color));
+    for (const chunk of wrapText(credentialEndpoint, FRAME_CONTENT_WIDTH - 3)) {
+      lines.push(frameRow([{ text: `   ${chunk}` }], color));
+    }
+  }
+  lines.push(frameRow([], color));
   // **Wrapped, never truncated.** The fingerprint is what the client checks the
   // certificate against before it sends the code, so a fingerprint with an
   // ellipsis in it is not a fingerprint — it is an invitation to guess.
@@ -584,7 +623,8 @@ export function pairingHandout(handout: PairingHandout): string[] {
   // {@link PairingHandout.credentialHost}. Saying only "reachable at X" would
   // hand an operator a command that pairs and then leaves their client pointed
   // somewhere it cannot reach, with nothing on the screen explaining why.
-  const credentialEndpoint = endpointAddress(handout.credentialHost, handout.port);
+  // The same value the `Endpoint` row above prints — computed once, so the box
+  // and the notes can never disagree about which address the credential names.
   for (const [index, host] of handout.hosts.entries()) {
     const endpoint = endpointAddress(host, handout.port);
     for (const note of hostNotes(handout, host, endpoint, credentialEndpoint)) {

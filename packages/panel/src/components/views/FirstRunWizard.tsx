@@ -5,11 +5,15 @@ import { TextField } from "~/components/ui/TextField";
 import { AddCoreByPairing } from "~/components/views/AddCoreByPairing";
 import {
   ADD_CORE_LOCATION,
+  COMPOSE_SHORTCUT_ACTION,
+  COMPOSE_SHORTCUT_NOTICE,
   PAIR_NEW_OUTPUT,
   composePairNewCommand,
   coreInstallPaths,
+  firstRunStepFromSearch,
   labelRefusal,
   pairNewCommand,
+  type FirstRunStepId,
 } from "~/shared/core-onboarding";
 import type { CoreWithDial } from "~/shared/cores";
 import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
@@ -40,12 +44,19 @@ import { CURRENT_MC_VERSION } from "~/queries/mission-control-version";
  * reaches the Panel's dashboard exactly as often as standing still does: never.
  */
 
-/** The three steps, in the order the machine has to do them. */
+/**
+ * The three steps, in the order the machine has to do them.
+ *
+ * The ids are pinned to `FIRST_RUN_STEP_IDS` rather than spelled out freely:
+ * `?step=` parses against that tuple and `deploy/docker-compose.yml` links one
+ * of them, so a renamed step here has to be a renamed step there, and
+ * `satisfies` is what makes that a compile error instead of a dead link.
+ */
 const STEPS = [
   { id: "install", title: "Install the Core", blurb: "on the machine you want to drive" },
   { id: "mint", title: "Mint a pairing code", blurb: "on that machine, in its terminal" },
   { id: "redeem", title: "Redeem it here", blurb: "in this Panel, with what it printed" },
-] as const;
+] as const satisfies readonly { id: FirstRunStepId; title: string; blurb: string }[];
 
 type StepIndex = 0 | 1 | 2;
 
@@ -69,7 +80,23 @@ export function FirstRunWizard({
    */
   registryError?: string | null;
 }) {
-  const [step, setStep] = useState<StepIndex>(0);
+  /**
+   * Where to open, read from the URL once.
+   *
+   * In the initialiser rather than an effect, so the requested step is the
+   * first thing painted rather than a flash of step 1 that jumps — and read
+   * once rather than subscribed to, because this is a starting position and
+   * not a route. Nothing writes the parameter back as the operator moves, for
+   * the same reason: a wizard that rewrites the address bar mid-pairing makes
+   * the browser's back button look like a way out of a gate that has none.
+   *
+   * `window.location` and not the router, because the gate renders the wizard
+   * in place of the whole shell at whatever route the operator happened to
+   * land on — there is no wizard route to hang a validated search on.
+   */
+  const [step, setStep] = useState<StepIndex>(
+    () => firstRunStepFromSearch(window.location.search) ?? 0,
+  );
   // The name this Panel will be called on the Core, folded live into the mint
   // command. Kept here rather than inside step 2 so stepping away and back
   // does not silently drop what was typed.
@@ -98,6 +125,10 @@ export function FirstRunWizard({
       >
         <Header />
         {registryError && <RegistryErrorBox message={registryError} />}
+        {/* Only where it is an offer. On step 3 the operator is already where
+            it would send them, and a bar advertising the screen you are looking
+            at is noise on the one screen that is asking for a credential. */}
+        {step < 2 && <ComposeShortcutBar label={label} onSkip={() => setStep(2)} />}
         <StepRail step={step} onStep={setStep} />
 
         <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
@@ -174,6 +205,76 @@ function RegistryErrorBox({ message }: { message: string }) {
       This Panel could not read its own list of Cores, so it cannot tell an empty fleet from an
       unanswered question: {message}
     </div>
+  );
+}
+
+/**
+ * The Compose disclaimer — for the operator whose Core is already up.
+ *
+ * `deploy/docker-compose.yml` starts a Panel *and* a Core, so someone who came
+ * that way has finished step 1 without knowing it was a step, and the two
+ * screens in front of them are install advice for a machine they have already
+ * provisioned. This says so and hands them the one command that is genuinely
+ * still outstanding — the `exec` that mints a code — beside a jump to the
+ * screen that spends it.
+ *
+ * **It asserts nothing.** The Panel cannot tell how it was started
+ * (`COMPOSE_SHORTCUT_NOTICE`), so this is phrased as a question the operator
+ * answers, sits *beside* the rail rather than replacing it, and hides no step:
+ * someone who reads it and is not on Compose has lost one line of screen. That
+ * is the right trade against silently skipping an install step for somebody
+ * who needed it.
+ */
+function ComposeShortcutBar({ label, onSkip }: { label: string; onSkip: () => void }) {
+  return (
+    <div
+      data-compose-shortcut
+      style={{
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        padding: "10px 12px",
+        background: "var(--surface-0)",
+        border: "1px solid var(--border)",
+        borderLeft: "2px solid var(--accent)",
+        borderRadius: 7,
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div style={{ flex: 1, minWidth: 220, fontSize: 12.5, lineHeight: 1.5, color: "var(--text-dim)" }}>
+          <Ticked text={COMPOSE_SHORTCUT_NOTICE} />
+        </div>
+        <Btn variant="frame" size="sm" onClick={onSkip}>
+          {COMPOSE_SHORTCUT_ACTION}
+        </Btn>
+      </div>
+      <CommandLine command={composePairNewCommand(label)} />
+    </div>
+  );
+}
+
+/**
+ * Prose with `backticked` runs rendered as code.
+ *
+ * The onboarding strings are written once and read by a person, and the two
+ * values in this one — a command and an address — are things to be typed
+ * exactly. Marking them in the string keeps the copy in
+ * `core-onboarding.ts`, where a test can read it, rather than splitting one
+ * sentence across three JSX children.
+ */
+function Ticked({ text }: { text: string }) {
+  return (
+    <>
+      {text.split("`").map((piece, index) =>
+        index % 2 === 1 ? (
+          <code key={index} style={{ fontFamily: "var(--mono)", color: "var(--text)" }}>
+            {piece}
+          </code>
+        ) : (
+          <span key={index}>{piece}</span>
+        ),
+      )}
+    </>
   );
 }
 
