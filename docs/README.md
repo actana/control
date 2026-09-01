@@ -131,29 +131,21 @@ claim D38. Cite 0018 by file name or title, never by number alone.
   nothing at all (D40). It becomes the first step of `promote.yml` (#111),
   which gates the fast-forward onto `main` as well. Exactly one pause exists
   either way, and the checklist itself is unchanged
-- [`local-build-screen-recording.md`](local-build-screen-recording.md)
 
-## Historical record
+## Provenance
 
-These describe work that has already shipped. They are kept because they
-explain *why* the code looks the way it does — they are not a backlog, and new
-work does not go here (it goes in
+[`upstream.md`](upstream.md) — what this project inherited from
+`AgentSystemLabs/mission-control` and what it does not. See also
+[`../NOTICE`](../NOTICE).
+
+Work in progress is not tracked in this directory. It lives in
 [GitHub Issues](https://github.com/actana/control/issues); see
-[`agents/issue-tracker.md`](agents/issue-tracker.md)).
-
-- [`specs/`](specs/) — the specs for the fork's twelve scope-narrowing efforts
-- [`tickets/`](tickets/) — their ticket breakdowns
-- [`upstream/`](upstream/) — provenance and divergence from
-  `AgentSystemLabs/mission-control`, the project this was forked from at
-  `v0.49.0`. See also [`../NOTICE`](../NOTICE)
-- [`refactor-plan.md`](refactor-plan.md),
-  [`session-orchestrator-brief.md`](session-orchestrator-brief.md)
+[`agents/issue-tracker.md`](agents/issue-tracker.md).
 
 ## For harnesses
 
 [`agents/`](agents/) — configuration the engineering skills read:
 [`issue-tracker.md`](agents/issue-tracker.md) (where issues live),
-[`triage-labels.md`](agents/triage-labels.md) (the five triage roles),
-[`domain.md`](agents/domain.md) (how to consume `CONTEXT.md` and the ADRs), and
-[`upstream-harvest.md`](agents/upstream-harvest.md) (how to scout upstream
-without merging from it). The entry point is [`../AGENTS.md`](../AGENTS.md).
+[`triage-labels.md`](agents/triage-labels.md) (the five triage roles), and
+[`domain.md`](agents/domain.md) (how to consume `CONTEXT.md` and the ADRs). The
+entry point is [`../AGENTS.md`](../AGENTS.md).

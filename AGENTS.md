@@ -12,9 +12,9 @@ Five canonical roles as label strings: `needs-triage`, `needs-info`, `ready-for-
 
 Single-context — one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
-### Upstream harvesting
+### Upstream provenance
 
-This repo forked `AgentSystemLabs/mission-control` at `v0.49.0` — a read-only scouting target, never a merge parent. See `docs/agents/upstream-harvest.md`.
+This repo began as a fork of `AgentSystemLabs/mission-control` at `v0.49.0` and has since been rewritten around an original Core. Upstream is not a merge parent, not a remote, and not scouted — do not port from it. See `docs/upstream.md`.
 
 ### Release trains
 

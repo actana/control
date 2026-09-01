@@ -22,8 +22,8 @@ visibility is flipped from private to public.
       flag is the thing to revisit the moment this box is ticked.
 - [ ] Confirm the org/repo slug is `actana/control` everywhere
       (`grep -rn "actana/control"` should match; `grep -rn "AgentSystemLabs"`
-      should match **only** `NOTICE`, `docs/upstream/`, `docs/agents/upstream-harvest.md`,
-      and historical ADRs/specs — those are fork attribution and must not change).
+      should match **only** `NOTICE`, `docs/upstream.md`, and the ADRs — those
+      are fork attribution and must not change).
 
 ## 2. Secrets, variables, and environments
 

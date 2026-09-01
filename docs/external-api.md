@@ -320,5 +320,5 @@ lifecycle events back to Actana Control.
 
 ## See also
 
-- [Observability](observability.md) — where a Panel's and a Core's logs land
+- [Observability](https://control.actana.ai/docs/reference/observability) — where a Panel's and a Core's logs land
 - [`../DEPLOY.md#configuration`](../DEPLOY.md#configuration) — every environment variable
