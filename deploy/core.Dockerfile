@@ -8,9 +8,9 @@
 # update. The metal path — install.sh, `actana setup`, a user service — is
 # untouched and unrelated; this is a second distribution, not a replacement.
 #
-# CVE posture, stated accurately (D6) — measured on this file, on 2026-08-04,
-# from a single build of it scanned with `trivy image`. The write-up of that
-# run has since been deleted, so the numbers below are the surviving record.
+# CVE posture, stated accurately (D6) — measured on 2026-08-04, across this
+# file and cut-down variants of it, scanned with Trivy. The write-up of that
+# run was deleted in 96f7b07 and is readable at 96f7b07^.
 #
 # The base did change, but the base is NOT the mechanism, and anyone
 # summarising it that way will mislead the next reader. The base contributes
