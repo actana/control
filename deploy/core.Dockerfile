@@ -9,7 +9,8 @@
 # untouched and unrelated; this is a second distribution, not a replacement.
 #
 # CVE posture, stated accurately (D6) — measured on this file, on 2026-08-04,
-# and written up in docs/research/core-base-measure/core-image-2026-08-04.md.
+# from a single build of it scanned with `trivy image`. The write-up of that
+# run has since been deleted, so the numbers below are the surviving record.
 #
 # The base did change, but the base is NOT the mechanism, and anyone
 # summarising it that way will mislead the next reader. The base contributes
