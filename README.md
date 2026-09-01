@@ -191,9 +191,9 @@ is published at all.
 
 ```mermaid
 flowchart LR
-  B["Browser<br/>(one tab)"] -- panel-link (WSS) --> P["<b>Panel</b><br/>web service"]
-  P -- core-link (mTLS) --> C1["<b>Core</b> — laptop"]
-  P -- core-link (mTLS) --> C2["<b>Core</b> — workstation"]
+  B["Browser<br/>(one tab)"] -- "panel-link (WSS)" --> P["<b>Panel</b><br/>web service"]
+  P -- "core-link (mTLS)" --> C1["<b>Core</b> — laptop"]
+  P -- "core-link (mTLS)" --> C2["<b>Core</b> — workstation"]
   C1 --> H1["PTY → Harness → repo"]
   C2 --> H2["PTY → Harness → repo"]
 ```
