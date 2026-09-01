@@ -464,77 +464,74 @@ export function ensureSchema(sqlite: Database.Database): void {
   // current from here on.
   backfillTokenUsageRollup(sqlite);
 
-  // Actana Control removed the Mission Pet subsystem (docs/specs/02-remove-pet.md).
-  // Every boot idempotently drops the six pet_* rows from app_settings so a
-  // DB carried over from a pre-cutover Mission Control install doesn't keep
-  // dead pet state around. Stays in the tree for one release, then removed.
+  // Actana Control removed the Mission Pet subsystem. Every boot idempotently
+  // drops the six pet_* rows from app_settings so a DB carried over from a
+  // pre-cutover Mission Control install doesn't keep dead pet state around.
+  // Stays in the tree for one release, then removed.
   dropLegacyPetSettings(sqlite);
 
-  // Actana Control removed voice / Whisper (docs/specs/01-remove-whisper.md).
-  // Every boot idempotently drops the voice_command_aliases row from
-  // app_settings and any project_memories rows tagged source='voice', so a
-  // DB carried over from a pre-cutover install doesn't keep dead voice state
-  // around. Stays in the tree for one release, then removed.
+  // Actana Control removed voice / Whisper. Every boot idempotently drops the
+  // voice_command_aliases row from app_settings and any project_memories rows
+  // tagged source='voice', so a DB carried over from a pre-cutover install
+  // doesn't keep dead voice state around. Stays in the tree for one release,
+  // then removed.
   dropLegacyVoiceSettings(sqlite);
 
   // Actana Control removed the Scratch Pad, Custom Scripts / Launch Commands,
-  // and Prompt Search surfaces (docs/specs/07-remove-convenience.md). Every
-  // boot idempotently drops the prompts + scratch_pads tables plus the
-  // projects.launch_commands, projects.custom_scripts, and
-  // user_terminals.start_command columns so a DB carried over from a
-  // pre-cutover Mission Control install doesn't keep the dead schema around.
-  // Stays in the tree for one release, then removed.
+  // and Prompt Search surfaces. Every boot idempotently drops the prompts +
+  // scratch_pads tables plus the projects.launch_commands,
+  // projects.custom_scripts, and user_terminals.start_command columns so a DB
+  // carried over from a pre-cutover Mission Control install doesn't keep the
+  // dead schema around. Stays in the tree for one release, then removed.
   dropLegacyConvenienceSurfaces(sqlite);
 
-  // Actana Control removed Recall / project memory / code graph
-  // (docs/specs/04-remove-recall-and-memory.md). Every boot idempotently drops
-  // the project_memory table (+ its FTS5 shadow tables/triggers), the three
-  // graph_* tables and their indexes, and the ten recall_* rows (plus the
-  // stray code_graph_state legacy blob) from app_settings, so a DB carried
-  // over from a pre-cutover install doesn't keep dead recall state around.
-  // Stays in the tree for one release, then removed.
+  // Actana Control removed Recall / project memory / code graph. Every boot
+  // idempotently drops the project_memory table (+ its FTS5 shadow
+  // tables/triggers), the three graph_* tables and their indexes, and the ten
+  // recall_* rows (plus the stray code_graph_state legacy blob) from
+  // app_settings, so a DB carried over from a pre-cutover install doesn't keep
+  // dead recall state around. Stays in the tree for one release, then removed.
   dropLegacyRecallMemoryGraph(sqlite);
 
   // Actana Control removed bundled agent skills and the diagram HTTP API
-  // (docs/specs/05-remove-bundled-skills.md, ADR 0006). Every boot
-  // idempotently drops the task_diagrams table (+ its indexes and the
-  // 0012-rename dance leftover), and any diagram_* / ship_skill_* /
-  // diagram_skill_* rows from app_settings, so a DB carried over from a
-  // pre-cutover install doesn't keep the dead diagram state around.
-  // Stays in the tree for one release, then removed.
+  // (ADR 0006). Every boot idempotently drops the task_diagrams table (+ its
+  // indexes and the 0012-rename dance leftover), and any diagram_* /
+  // ship_skill_* / diagram_skill_* rows from app_settings, so a DB carried
+  // over from a pre-cutover install doesn't keep the dead diagram state
+  // around. Stays in the tree for one release, then removed.
   dropLegacyBundledSkillsSchema(sqlite);
 
   // Actana Control removed the IDE-adjacent file editor / finder / HTML
-  // preview / markdown annotator surface (docs/specs/06-remove-ide-adjacent.md).
-  // Every boot idempotently drops the two annotation_* rows from app_settings
-  // and scrubs file.finder / file.save entries from every keybindings:* blob,
-  // so a DB carried over from a pre-cutover install doesn't keep dead
-  // annotation settings or orphan hotkey overrides around. Stays in the tree
-  // for one release, then removed.
+  // preview / markdown annotator surface. Every boot idempotently drops the
+  // two annotation_* rows from app_settings and scrubs file.finder /
+  // file.save entries from every keybindings:* blob, so a DB carried over
+  // from a pre-cutover install doesn't keep dead annotation settings or
+  // orphan hotkey overrides around. Stays in the tree for one release, then
+  // removed.
   dropLegacyIdeAdjacentSettings(sqlite);
 
   // Actana Control removed the managed sandbox / remote VM subsystem
-  // (docs/specs/10-remove-sandbox.md, ADR 0009). Every boot idempotently drops
-  // the sandboxes table, the sandbox_id / scope_id columns and their indexes,
-  // and the sandbox.* / multiSandbox.* app_settings rows, so a DB carried over
-  // from a pre-cutover install doesn't keep the dead sandbox schema around.
-  // Stays in the tree for one release, then removed.
+  // (ADR 0009). Every boot idempotently drops the sandboxes table, the
+  // sandbox_id / scope_id columns and their indexes, and the sandbox.* /
+  // multiSandbox.* app_settings rows, so a DB carried over from a pre-cutover
+  // install doesn't keep the dead sandbox schema around. Stays in the tree
+  // for one release, then removed.
   dropLegacySandboxSchema(sqlite);
 
-  // Actana Control removed worktree management and git integration
-  // (docs/specs/11-remove-worktree-and-git.md). Every boot idempotently drops
-  // the worktrees table, the tasks/user_terminals worktree_id columns and
-  // their indexes, the projects branch / worktree_setup_command columns, and
-  // the worktree / git-diff app_settings rows. Sessions previously bound to a
-  // non-default worktree collapse to the project's single implicit path (rows
-  // are kept). Stays in the tree for one release, then removed.
+  // Actana Control removed worktree management and git integration. Every boot
+  // idempotently drops the worktrees table, the tasks/user_terminals
+  // worktree_id columns and their indexes, the projects branch /
+  // worktree_setup_command columns, and the worktree / git-diff app_settings
+  // rows. Sessions previously bound to a non-default worktree collapse to the
+  // project's single implicit path (rows are kept). Stays in the tree for one
+  // release, then removed.
   dropLegacyWorktreeSchema(sqlite);
 
-  // Actana Control adopted the Studio look as the sole Panel look
-  // (docs/specs/12-adopt-studio-look.md). Every boot idempotently drops the
-  // fourteen theming rows from app_settings — every theming setting other
-  // than dark/light (which lives in localStorage as mc:theme) collapsed to a
-  // fixed default. Stays in the tree for one release, then removed.
+  // Actana Control adopted the Studio look as the sole Panel look. Every boot
+  // idempotently drops the fourteen theming rows from app_settings — every
+  // theming setting other than dark/light (which lives in localStorage as
+  // mc:theme) collapsed to a fixed default. Stays in the tree for one release,
+  // then removed.
   dropLegacyThemeSettings(sqlite);
 
   // Actana Control removed the project-root terminal (issue 266). The Panel
