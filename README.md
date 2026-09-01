@@ -189,14 +189,15 @@ Panel dials the Core, never the reverse, so that port needs no route from the
 public internet. In the reference compose the two share a network and nothing
 is published at all.
 
-```mermaid
-flowchart LR
-  B["Browser<br/>(one tab)"] -- "panel-link (WSS)" --> P["<b>Panel</b><br/>web service"]
-  P -- "core-link (mTLS)" --> C1["<b>Core</b> — laptop"]
-  P -- "core-link (mTLS)" --> C2["<b>Core</b> — workstation"]
-  C1 --> H1["PTY → Harness → repo"]
-  C2 --> H2["PTY → Harness → repo"]
-```
+<!-- Pre-rendered SVGs, not a ```mermaid fence, so the diagram never depends
+     on GitHub's rich-display service. Source: docs/assets/core-link-flow.mmd -->
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/core-link-flow-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="docs/assets/core-link-flow-light.svg">
+    <img src="docs/assets/core-link-flow-light.svg" alt="One browser tab speaks panel-link (WSS) to the Panel; the Panel dials each Core over core-link (mTLS); every Core runs PTY, Harness, repo on its own machine" width="900">
+  </picture>
+</p>
 
 In the Panel, that diagram is one list — every Core's sessions in a single Fleet
 view, whichever machine they are running on:
