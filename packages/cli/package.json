@@ -1,6 +1,6 @@
 {
   "name": "@actana/cli",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "Actana Control CLI — the `actana` command: install and operate a Core on this machine, and drive Cores anywhere from the client nouns built on @actana/sdk.",
   "license": "MIT",
   "type": "module",

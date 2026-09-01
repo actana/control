@@ -77,7 +77,7 @@ BASE_URL="${ACTANA_BASE_URL:-}"
 # BSD `sed` on macOS requires an argument to `-i` and GNU `sed` accepts one:
 #
 #   sed -i.bak 's/^LINE=".*"$/LINE="x.y.z"/' install.sh && rm -f install.sh.bak
-LINE="0.4.3"
+LINE="0.4.4"
 
 say() {
   printf '%s\n' "$*"
