@@ -75,8 +75,7 @@ control/
 ├── designs/                Original HTML+JSX prototype (source of truth)
 ├── deploy/                 The two images and the one reference compose
 ├── INSTALL.md              Installing a Core
-├── DEPLOY.md               Deploying the Panel
-└── SPEC.md                 Approved product spec
+└── DEPLOY.md               Deploying the Panel
 ```
 
 ## Setup
@@ -323,7 +322,7 @@ Use the issue templates — they route to the right form and apply the
 `needs-triage` label, which is what the maintainers' triage pass looks for.
 A maintainer will move it to `needs-info`, `ready-for-agent`, `ready-for-human`,
 or `wontfix`. Those five labels are the whole vocabulary; see
-[`docs/agents/triage-labels.md`](docs/agents/triage-labels.md).
+[`.agents/triage-labels.md`](.agents/triage-labels.md).
 
 Do not file security problems as issues — see [`SECURITY.md`](SECURITY.md).
 

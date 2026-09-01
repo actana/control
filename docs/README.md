@@ -111,7 +111,6 @@ claim D38. Cite 0018 by file name or title, never by number alone.
 - [`domain-model.md`](domain-model.md) — product names, identifiers, and env-var prefixes
 - [`provider-usage.md`](provider-usage.md) — the multi-provider usage aggregator
 - [`harness-status-detection.md`](harness-status-detection.md) — how a Task's status is inferred
-- [`skills/`](skills/) — skill files for external CLIs
 
 ## Release and platform checklists
 
@@ -140,12 +139,12 @@ claim D38. Cite 0018 by file name or title, never by number alone.
 
 Work in progress is not tracked in this directory. It lives in
 [GitHub Issues](https://github.com/actana/control/issues); see
-[`agents/issue-tracker.md`](agents/issue-tracker.md).
+[`../.agents/issue-tracker.md`](../.agents/issue-tracker.md).
 
 ## For harnesses
 
-[`agents/`](agents/) — configuration the engineering skills read:
-[`issue-tracker.md`](agents/issue-tracker.md) (where issues live),
-[`triage-labels.md`](agents/triage-labels.md) (the five triage roles), and
-[`domain.md`](agents/domain.md) (how to consume `CONTEXT.md` and the ADRs). The
-entry point is [`../AGENTS.md`](../AGENTS.md).
+Nothing a coding CLI reads lives in this directory. The entry point is
+[`../AGENTS.md`](../AGENTS.md), and what it points at sits in
+[`../.agents/`](../.agents/) beside the skills: `issue-tracker.md` (where
+issues live), `triage-labels.md` (the five triage roles), and `domain.md`
+(how to consume `CONTEXT.md` and the ADRs).

@@ -311,12 +311,12 @@ over the panel link as core-link frames, because each Core owns that state
 
 `api-router.ts` is the authority; treat this table as a map, not a contract.
 
-## Skill file for external CLIs
+## Skills
 
-A drop-in skill for Claude Code / Codex / Cursor CLI lives in
-[`skills/actana-notify.md`](skills/actana-notify.md). Paste it
-into the CLI's instructions or memory so the harness knows to report its
-lifecycle events back to Actana Control.
+Nothing here is pasted into a Harness by hand. The `actana` CLI writes its two
+skills — `actana-sessions` and `actana-subagent` — into the skills directory of
+every Harness already on the machine. See
+[Skills](https://control.actana.ai/docs/cli/skills).
 
 ## See also
 

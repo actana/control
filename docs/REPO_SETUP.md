@@ -1150,7 +1150,7 @@ inherit and no remote to inherit them from.
 
 Two axes. **`type:`** says what a thing is; the bare words are the triage
 states the `/triage` skill reads (see
-[`agents/triage-labels.md`](agents/triage-labels.md)) — keep those five
+[`.agents/triage-labels.md`](../.agents/triage-labels.md)) — keep those five
 spelled exactly as they are, they are a contract.
 
 ```
