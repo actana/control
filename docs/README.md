@@ -1,20 +1,25 @@
 # Documentation
 
+**User documentation lives at
+[control.actana.ai/docs](https://control.actana.ai/docs)** — getting started,
+install, pairing, the Panel, Cores, the CLI and the reference. This directory
+is the contributor and repo-admin side.
+
 Start with the task you actually have.
 
 ## I want to run this
 
 | Goal | Read |
 | --- | --- |
-| Understand what this is before installing anything | [`../README.md`](../README.md) |
-| Deploy the **Panel** — the web service you drive everything from | [`../DEPLOY.md`](../DEPLOY.md) |
-| Turn a machine into a **Core** — install the Core bundle on it | [`../INSTALL.md`](../INSTALL.md) |
-| Get a Panel + Core pair running locally without provisioning anything | [`../deploy/docker-compose.yml`](../deploy/docker-compose.yml) |
-| Configure it — every environment variable | [`../DEPLOY.md#configuration`](../DEPLOY.md#configuration) |
-| Back it up, upgrade it, or restore it | [`../DEPLOY.md#backup`](../DEPLOY.md#backup) |
-| Fix an install that went wrong | [`../INSTALL.md#troubleshooting`](../INSTALL.md#troubleshooting) |
-| Drive it from another tool over HTTP | [`external-api.md`](external-api.md) |
-| See where the Panel's and a Core's logs land | [`observability.md`](observability.md) |
+| Understand what this is before installing anything | [Introduction](https://control.actana.ai/docs/introduction) |
+| Deploy the **Panel** — the web service you drive everything from | [Panel Installation](https://control.actana.ai/docs/install/panel-installation) |
+| Turn a machine into a **Core** — install the Core bundle on it | [Install Core](https://control.actana.ai/docs/install/install-core) |
+| Get a Panel + Core pair running locally without provisioning anything | [Docker Compose](https://control.actana.ai/docs/get-started/docker-compose) |
+| Configure it — every environment variable | [Environment Variables](https://control.actana.ai/docs/reference/environment-variables) |
+| Back it up, upgrade it, or restore it | [Panel Installation](https://control.actana.ai/docs/install/panel-installation) |
+| Fix an install that went wrong | [Troubleshooting](https://control.actana.ai/docs/install/troubleshooting) |
+| Drive it from another tool over HTTP | [HTTP Surfaces](https://control.actana.ai/docs/reference/http-surfaces) |
+| See where the Panel's and a Core's logs land | [Observability](https://control.actana.ai/docs/reference/observability) |
 
 The order that works: **deploy a Panel first**, then install a Core on each
 machine, then run `actana pair new` on that machine and spend the code it prints
@@ -106,7 +111,6 @@ claim D38. Cite 0018 by file name or title, never by number alone.
 - [`domain-model.md`](domain-model.md) — product names, identifiers, and env-var prefixes
 - [`provider-usage.md`](provider-usage.md) — the multi-provider usage aggregator
 - [`harness-status-detection.md`](harness-status-detection.md) — how a Task's status is inferred
-- [`skills/`](skills/) — skill files for external CLIs
 
 ## Release and platform checklists
 
@@ -126,29 +130,21 @@ claim D38. Cite 0018 by file name or title, never by number alone.
   nothing at all (D40). It becomes the first step of `promote.yml` (#111),
   which gates the fast-forward onto `main` as well. Exactly one pause exists
   either way, and the checklist itself is unchanged
-- [`local-build-screen-recording.md`](local-build-screen-recording.md)
 
-## Historical record
+## Provenance
 
-These describe work that has already shipped. They are kept because they
-explain *why* the code looks the way it does — they are not a backlog, and new
-work does not go here (it goes in
+[`upstream.md`](upstream.md) — what this project inherited from
+`AgentSystemLabs/mission-control` and what it does not. See also
+[`../NOTICE`](../NOTICE).
+
+Work in progress is not tracked in this directory. It lives in
 [GitHub Issues](https://github.com/actana/control/issues); see
-[`agents/issue-tracker.md`](agents/issue-tracker.md)).
-
-- [`specs/`](specs/) — the specs for the fork's twelve scope-narrowing efforts
-- [`tickets/`](tickets/) — their ticket breakdowns
-- [`upstream/`](upstream/) — provenance and divergence from
-  `AgentSystemLabs/mission-control`, the project this was forked from at
-  `v0.49.0`. See also [`../NOTICE`](../NOTICE)
-- [`refactor-plan.md`](refactor-plan.md),
-  [`session-orchestrator-brief.md`](session-orchestrator-brief.md)
+[`../.agents/issue-tracker.md`](../.agents/issue-tracker.md).
 
 ## For harnesses
 
-[`agents/`](agents/) — configuration the engineering skills read:
-[`issue-tracker.md`](agents/issue-tracker.md) (where issues live),
-[`triage-labels.md`](agents/triage-labels.md) (the five triage roles),
-[`domain.md`](agents/domain.md) (how to consume `CONTEXT.md` and the ADRs), and
-[`upstream-harvest.md`](agents/upstream-harvest.md) (how to scout upstream
-without merging from it). The entry point is [`../AGENTS.md`](../AGENTS.md).
+Nothing a coding CLI reads lives in this directory. The entry point is
+[`../AGENTS.md`](../AGENTS.md), and what it points at sits in
+[`../.agents/`](../.agents/) beside the skills: `issue-tracker.md` (where
+issues live), `triage-labels.md` (the five triage roles), and `domain.md`
+(how to consume `CONTEXT.md` and the ADRs).

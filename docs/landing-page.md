@@ -1,8 +1,8 @@
 # Landing page — control.actana.ai
 
 The plan for the marketing/onboarding page: what it says, how it looks, where
-it lives in the repo, and how it ships. Evidence behind every pattern choice is
-in [`research/landing-page/landing-page-references-2026-08-06.md`](research/landing-page/landing-page-references-2026-08-06.md)
+it lives in the repo, and how it ships. The evidence behind every pattern choice was a
+research pass over comparable landing pages, read on 2026-08-06
 — ten reference sites (Ollama, GitHub CLI, OpenCode, Starship, Bun, Charm,
 Ghostty, Warp, Atuin, mise), the Bunny APIs, the path-filter rules, and
 Qcentic's served brand tokens, each claim cited to its primary source.

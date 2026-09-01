@@ -22,8 +22,8 @@ visibility is flipped from private to public.
       flag is the thing to revisit the moment this box is ticked.
 - [ ] Confirm the org/repo slug is `actana/control` everywhere
       (`grep -rn "actana/control"` should match; `grep -rn "AgentSystemLabs"`
-      should match **only** `NOTICE`, `docs/upstream/`, `docs/agents/upstream-harvest.md`,
-      and historical ADRs/specs — those are fork attribution and must not change).
+      should match **only** `NOTICE`, `docs/upstream.md`, and the ADRs — those
+      are fork attribution and must not change).
 
 ## 2. Secrets, variables, and environments
 
@@ -1150,7 +1150,7 @@ inherit and no remote to inherit them from.
 
 Two axes. **`type:`** says what a thing is; the bare words are the triage
 states the `/triage` skill reads (see
-[`agents/triage-labels.md`](agents/triage-labels.md)) — keep those five
+[`.agents/triage-labels.md`](../.agents/triage-labels.md)) — keep those five
 spelled exactly as they are, they are a contract.
 
 ```

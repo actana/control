@@ -1,0 +1,12 @@
+%% Source for core-link-flow-{light,dark}.svg in this directory. The README
+%% embeds the pre-rendered SVGs rather than a ```mermaid fence so the diagram
+%% never depends on GitHub's rich-display service. To regenerate after editing:
+%% mmdc -i core-link-flow.mmd -o core-link-flow-light.svg
+%% mmdc -i core-link-flow.mmd -o core-link-flow-dark.svg -t dark
+%% (or any mermaid 11 renderer with htmlLabels:false, themes default/dark).
+flowchart LR
+  B["Browser<br/>(one tab)"] -- "panel-link (WSS)" --> P["Panel<br/>web service"]
+  P -- "core-link (mTLS)" --> C1["Core — laptop"]
+  P -- "core-link (mTLS)" --> C2["Core — workstation"]
+  C1 --> H1["PTY → Harness → repo"]
+  C2 --> H2["PTY → Harness → repo"]
