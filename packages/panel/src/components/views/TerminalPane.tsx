@@ -63,6 +63,7 @@ import {
   advanceTerminalRunningFallback,
   harnessUsesTerminalPromptFallback,
   IDLE_TERMINAL_RUNNING_FALLBACK,
+  noteTerminalWrite,
   type TerminalRunningFallback,
 } from "~/lib/task-status-sync";
 import { accumulateTerminalPrompt } from "~/lib/terminal-prompt-capture";
@@ -979,8 +980,9 @@ export function TerminalPane({
         null;
       // The Enter→running fallback for a Session whose hooks never announce a
       // turn's start: the one-shot latch AND the turn the operator is composing
-      // in this pane (issue 386). Rebuilt with the surface, like every other
-      // per-pane scratch value here.
+      // in this pane (issue 386). Declared with the surface but reset per pty
+      // in `wireTerminalInput` — a half-typed line, or a `pasting` latch, must
+      // not survive into the next harness process.
       let runningFallback: TerminalRunningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
       let promptCaptureBuffer = "";
       let promptTitlePosted = false;
@@ -1003,6 +1005,13 @@ export function TerminalPane({
       const writeToPty = async (data: string) => {
         const ptyId = activePtyId;
         if (!ptyId || !ptyApi || !mayWriteRef.current) return false;
+        // Every byte on this path skips xterm's keyboard, so `onData` never
+        // sees it: the dropped project path, the key map's Cmd+Backspace. Fold
+        // it into the same turn the fallback watches, or a dropped path
+        // followed by Enter starts a real turn against a card still reading
+        // `finished` (issue 386). It composes only — the Enter that submits it
+        // comes back through `onData`, which is where the PATCH is decided.
+        runningFallback = noteTerminalWrite(runningFallback, data);
         return ptyApi.write(ptyId, data);
       };
 
@@ -1215,6 +1224,13 @@ export function TerminalPane({
       };
 
       const wireTerminalInput = (ptyId: string) => {
+        // A new pty is a new harness process at a fresh prompt. Anything half
+        // entered against the last one is gone from the screen and must go from
+        // the pane's mirror of it too: a surviving composition makes the first
+        // stray Enter post `running`, and a surviving `pasting` latch swallows
+        // every `\r` for the life of the pane.
+        runningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
+        promptCaptureBuffer = "";
         term.onData((data) => {
           // A Reader sends nothing and reports nothing (issue 147). The return
           // is before the status and prompt-capture side effects deliberately:
@@ -1263,6 +1279,17 @@ export function TerminalPane({
                   taskId: descriptor.taskId,
                   status: "running",
                 });
+              } catch {
+                // Only the status mutation un-latches, and only its own catch
+                // may do it. Sharing one `try` with the title and the cache
+                // invalidations below meant a title-generator hiccup AFTER a
+                // successful PATCH cleared the latch anyway — and, because this
+                // handler re-reads the live value, a late failure from turn N
+                // could clear a latch turn N+1 had just set.
+                runningFallback = { ...runningFallback, posted: false };
+                return;
+              }
+              try {
                 // The prompt patches no column of its own: it only asks a
                 // title generator to name the session. Which generator depends
                 // on who owns the row — the Core's, for a Core-owned Session
@@ -1287,9 +1314,8 @@ export function TerminalPane({
                   queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
                 ]);
               } catch {
-                // The PATCH never landed — un-latch so the operator's next
-                // submitted turn tries again.
-                runningFallback = { ...runningFallback, posted: false };
+                // The row is already `running`; a missed title or a stale cache
+                // is not worth un-latching a turn that did start.
               }
             })();
           }

@@ -86,12 +86,27 @@ describe("advanceTerminalTurn", () => {
     expect(run.submits).toEqual([false, false, true]);
   });
 
+  it("holds a paste marker cut in half by a chunk boundary", () => {
+    // The opening marker needs all six bytes in one chunk to be recognised.
+    // Split at `ESC[200`, the `200` used to land in the composition as literal
+    // text and the pane never entered the paste at all.
+    const opening = typeInto(["\x1b[200", "~/a/b\x1b[201~"]);
+    expect(opening.state.composed).toBe("/a/b");
+    expect(opening.state.pasting).toBe(false);
+    expect(opening.submitted).toBe(false);
+    // The closing marker matters more: miss it and the pane pastes for ever,
+    // swallowing every Enter for the life of the pane.
+    const closing = typeInto(["\x1b[200~/a/b\x1b[201", "~", "\r"]);
+    expect(closing.submits).toEqual([false, false, true]);
+    expect(closing.state.pasting).toBe(false);
+  });
+
   it("ignores terminal-generated replies and cursor keys", () => {
     // Focus reports and device-attribute answers ride onData too; none of them
     // is the operator entering anything.
     expect(typeInto(["\x1b[I"]).state.composed).toBe("");
     expect(typeInto(["\x1b[?62;c"]).state.composed).toBe("");
-    const arrows = typeInto(["hi", "\x1b[A", "\x1b[B", "\r"]);
+    const arrows = typeInto(["hi", "\x1b[C", "\x1b[D", "\r"]);
     expect(arrows.state.composed).toBe("");
     expect(arrows.submitted).toBe(true);
   });
@@ -100,6 +115,46 @@ describe("advanceTerminalTurn", () => {
     expect(typeInto(["ab\x7f\x7f", "\r"]).submitted).toBe(false);
     expect(typeInto(["ship\x7f it", "\r"]).submitted).toBe(true);
     expect(typeInto(["ship\x7f"]).state.composed).toBe("shi");
+  });
+
+  it("honours the line cancels the harness itself honours", () => {
+    // Ctrl+C, Ctrl+U and Esc empty the line outright.
+    expect(typeInto(["hello", "\x03"]).state.composed).toBe("");
+    expect(typeInto(["hello", "\x15"]).state.composed).toBe("");
+    expect(typeInto(["hello", "\x1b"]).state.composed).toBe("");
+    // Ctrl+W kills the trailing WORD (with the space before it, as readline's
+    // unix-word-rubout does) — modelled as such rather than as a full clear, so
+    // "hello world" Ctrl+W Enter still submits "hello".
+    expect(typeInto(["hello", "\x17"]).state.composed).toBe("");
+    expect(typeInto(["hello world", "\x17"]).state.composed).toBe("hello");
+    // Delete takes one character, like Backspace does.
+    expect(typeInto(["h", "\x1b[3~"]).state.composed).toBe("");
+    expect(typeInto(["hello", "\x1b[3~"]).state.composed).toBe("hell");
+  });
+
+  it("counts a recalled prompt it cannot see as input standing at the prompt", () => {
+    // Up-arrow puts a previous prompt back on the line. The pane never sees
+    // those bytes, but the operator's Enter submits them all the same.
+    expect(typeInto(["\x1b[A", "\r"]).submitted).toBe(true);
+    expect(typeInto(["\x1bOA", "\r"]).submitted).toBe(true);
+    expect(typeInto(["\x1b[B", "\r"]).submitted).toBe(true);
+    // …and a cancel takes the recalled line away again.
+    expect(typeInto(["\x1b[A", "\x03", "\r"]).submitted).toBe(false);
+    expect(typeInto(["\x1b[A", "\x1b", "\r"]).submitted).toBe(false);
+    // A submit consumes it, so the next bare Enter starts nothing.
+    expect(typeInto(["\x1b[A", "\r", "\r"]).submits).toEqual([false, true, false]);
+  });
+
+  it("does not treat Shift+Enter as a submit", () => {
+    // The key map writes `ESC CR` for Shift+Enter — a newline inside the
+    // composer, not a submission of it.
+    expect(typeInto(["\x1b\r"]).submitted).toBe(false);
+    expect(typeInto(["line one", "\x1b\r", "line two", "\r"]).submits).toEqual([
+      false,
+      false,
+      false,
+      true,
+    ]);
   });
 
   it("handles a chunk that submits and then keeps typing", () => {
