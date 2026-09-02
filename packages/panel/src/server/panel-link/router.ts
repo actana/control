@@ -95,6 +95,61 @@ export interface PanelLinkSocket {
  */
 const DEFAULT_EVENT_BUFFER_SIZE = 2048;
 
+/**
+ * The event kinds a tab that has seen nothing is still owed on arrival.
+ *
+ * A finish is not like the rest of the log. Everything else a tab needs is
+ * re-derivable from a query it makes on mount — the grid reads status off
+ * `tasksList` — but the *notice* of a finish happens once, when the event goes
+ * past, and a tab that was not there when it did never learns of it at all
+ * (issue 388). Kinds, not payload shapes: the router routes on `kind` like
+ * every other layer, and a new finish-class kind joins by being named here.
+ */
+const FINISH_EVENT_KINDS = new Set(["session:finished"]);
+
+/**
+ * How many finish-class events a brand-new tab is handed on subscribe.
+ *
+ * Deliberately small: this is "you missed a finish", not a history. The tail is
+ * the recent end of it, so what a tab gets is the finishes it plausibly wants
+ * to be told about rather than every one since the link came up — and the
+ * browser is the only thing that can know whether it has announced one before,
+ * so it dedups what lands (see `use-session-finish-notifications`).
+ */
+const FINISH_REPLAY_LIMIT = 8;
+
+/**
+ * How far back a finish may be and still be worth announcing to a tab that
+ * missed it: 30 minutes.
+ *
+ * The count bound alone is not a bound on *age*. The buffer spans the whole
+ * life of a core-link connection, and a link that came up this morning against
+ * a Core that ran overnight holds every finish since — so a first visit from a
+ * profile that has announced none of them (a second device, a private window,
+ * cleared site data) would be handed eight per Core, each with its own toast,
+ * ding and OS notification, for Sessions that ended hours ago.
+ *
+ * Thirty minutes is "the operator stepped away and came back", which is the
+ * gap #388 is about. Beyond it the finish is not news, and the grid saying
+ * `finished` is the right way to learn about it.
+ *
+ * Measured on the Core's own `ts` — when the Session actually finished — and
+ * deliberately not on when the service buffered it: `bind` empties the buffer
+ * on every new Core-side connection, so a redial re-fills it with old events
+ * that a receipt clock would call brand new. An event whose `ts` is unusable is
+ * kept, because failing toward the notice is the whole point of the fix.
+ */
+const FINISH_REPLAY_MAX_AGE_MS = 30 * 60_000;
+
+/**
+ * Whether an event is known to predate `oldest`. An event with no usable `ts`
+ * is not — see {@link FINISH_REPLAY_MAX_AGE_MS} on why the unknown case keeps
+ * the notice rather than dropping it.
+ */
+function isOlderThan(event: CoreLinkEvent, oldest: number): boolean {
+  return Number.isFinite(event.ts) && event.ts > 0 && event.ts < oldest;
+}
+
 export type PanelLinkRouterOptions = {
   eventBufferSize?: number;
 };
@@ -276,11 +331,27 @@ export class PanelLinkRouter {
    * gets the head rather than the buffer: its views load current state through
    * queries, and replaying thousands of historical events at it would only make
    * it refetch what it is already fetching.
+   *
+   * With one exception, and it is the exception that names the rule: the finish
+   * (issue 388). A tab that opened after a Session finished has no query that
+   * would tell it a finish *happened* — `tasksList` says the row is finished,
+   * which is a state, not an event, and the toast and the ding are the Panel's
+   * answer to the event. So the finish-class tail rides along, bounded on both
+   * axes a flood could arrive on — {@link FINISH_REPLAY_LIMIT} of them, none
+   * older than {@link FINISH_REPLAY_MAX_AGE_MS} — and the cursor still jumps to
+   * head: these are a notice the tab missed, not a place in the log it is
+   * behind at.
    */
   replayFor(coreId: string, lastEventId: number): { events: CoreLinkEvent[]; head: number } {
     const state = this.cores.get(coreId);
     if (!state) return { events: [], head: 0 };
-    if (lastEventId <= 0) return { events: [], head: state.head };
+    if (lastEventId <= 0) {
+      const oldest = Date.now() - FINISH_REPLAY_MAX_AGE_MS;
+      const finishes = state.buffer.filter(
+        (e) => FINISH_EVENT_KINDS.has(e.kind) && !isOlderThan(e, oldest),
+      );
+      return { events: finishes.slice(-FINISH_REPLAY_LIMIT), head: state.head };
+    }
     return {
       events: state.buffer.filter((e) => e.eventId > lastEventId),
       head: state.head,

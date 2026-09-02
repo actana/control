@@ -83,14 +83,22 @@ function remoteFinishFrame(overrides: {
   eventId?: number;
   id?: string;
   projectId?: string;
+  ts?: number;
 } = {}) {
-  const { coreId = "core-a", eventId = 42, id = "task-42", projectId = "project-9" } =
-    overrides;
+  const {
+    coreId = "core-a",
+    eventId = 42,
+    id = "task-42",
+    projectId = "project-9",
+    // A Core's clock, close enough to this browser's that the row reads as a
+    // finish that just happened. A test about age says so with its own `ts`.
+    ts = Date.now(),
+  } = overrides;
   return {
     coreId,
     event: {
       eventId,
-      ts: 1_700_000_000_000,
+      ts,
       kind: "session:finished",
       ptyId: null,
       taskId: id,
@@ -187,6 +195,142 @@ describe("useSessionFinishNotifications — integration", () => {
     expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
     expect(loadSessionFinishNotifications()).toHaveLength(1);
     hook.unmount();
+  });
+
+  it("still announces a finish to a tab opened after it happened", () => {
+    // Nothing was watching when the Session ended; the service hands the finish
+    // to the tab the operator opens next, marked as replay (issue 388).
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame(), coldReplay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    expect(h.playDing).toHaveBeenCalledTimes(1);
+    expect(toastText()).toContain("Session finished — Remote Project on Core A");
+    expect(loadSessionFinishNotifications()).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it("does not double-toast the tab that was watching when the replay repeats it", () => {
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    // The same finish again, this time answering a subscribe from nothing.
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame(), coldReplay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    expect(h.playDing).toHaveBeenCalledTimes(1);
+    expect(loadSessionFinishNotifications()).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it("does not re-announce, in a second tab, what the first tab already announced", () => {
+    const first = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    // A second tab: its own module scope, the same browser storage. The finish
+    // is still in the service's buffer, so it is replayed there too.
+    __resetSessionFinishDedupForTests();
+    const second = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame(), coldReplay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    expect(h.playDing).toHaveBeenCalledTimes(1);
+    second.unmount();
+  });
+
+  it("announces a live finish in every open tab, replay dedup or not", () => {
+    const first = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    first.unmount();
+
+    // A second tab that was also open: the event happens *to it* as well, and a
+    // record of what this browser has said must not silence that.
+    __resetSessionFinishDedupForTests();
+    const second = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
+    second.unmount();
+  });
+
+  it("announces a second finish of the same Session, replayed, under its own eventId", () => {
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 42 })));
+    // Resumed and finished again: a different event, and a notice of its own.
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame({ eventId: 77 }), coldReplay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
+  it("dates a replayed finish by when it finished, not by when the tab opened", () => {
+    // Finished at 02:00; the operator opens the Panel at 09:00 and is handed it.
+    const finishedAt = Date.now() - 7 * 60 * 60_000;
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() =>
+      h.fleetHandler?.({ ...remoteFinishFrame({ ts: finishedAt }), coldReplay: true }),
+    );
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    const [row] = loadSessionFinishNotifications();
+    expect(row?.finishedAt).toBe(finishedAt);
+    hook.unmount();
+  });
+
+  it("sorts a replayed old finish below a newer one instead of on top of it", () => {
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() =>
+      h.fleetHandler?.(remoteFinishFrame({ eventId: 90, id: "task-new", ts: Date.now() })),
+    );
+    act(() =>
+      h.fleetHandler?.({
+        ...remoteFinishFrame({
+          eventId: 12,
+          id: "task-old",
+          ts: Date.now() - 7 * 60 * 60_000,
+        }),
+        coldReplay: true,
+      }),
+    );
+
+    // Newest first, and the row that really is newest is the one on top.
+    expect(loadSessionFinishNotifications().map((n) => n.id)).toEqual([
+      "task-new",
+      "task-old",
+    ]);
+    hook.unmount();
+  });
+
+  it("stamps a Core clock that is not usable with the time the finish arrived", () => {
+    const before = Date.now();
+    const hook = renderHook(() => useSessionFinishNotifications());
+    // A Core running ahead must not pin its row to the top of the list, and a
+    // Core sending no time at all still gets a row.
+    act(() => h.fleetHandler?.(remoteFinishFrame({ id: "task-ahead", ts: before + 60_000 })));
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 43, id: "task-none", ts: 0 })));
+
+    for (const row of loadSessionFinishNotifications()) {
+      expect(row.finishedAt).toBeGreaterThanOrEqual(before);
+      expect(row.finishedAt).toBeLessThanOrEqual(Date.now());
+    }
+    hook.unmount();
+  });
+
+  it("announces a catch-up after a blip, which is a gap this tab was watching", () => {
+    // Another tab announced it live and wrote the durable key; this tab's
+    // socket was down for the same seconds and comes back with a cursor.
+    const first = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    first.unmount();
+
+    __resetSessionFinishDedupForTests();
+    const second = renderHook(() => useSessionFinishNotifications());
+    // No `coldReplay`: the reconnect asked from a cursor, not from nothing.
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
+    second.unmount();
   });
 
   it("keeps a Panel-local toast title free of the ' on ' suffix", () => {

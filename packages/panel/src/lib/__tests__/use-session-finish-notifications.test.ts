@@ -37,6 +37,9 @@ describe("normalizeSessionFinishedEvent — SSE", () => {
       coreId: null,
       coreAlias: null,
       eventId: null,
+      // The Panel's own stream is live by construction: no older time to carry,
+      // so the dispatch stamps it with the clock that is right for it.
+      finishedAt: null,
       sessionId: "task-1",
       projectId: "project-1",
       projectName: "Core",
@@ -94,6 +97,9 @@ describe("normalizeSessionFinishedEvent — fleet", () => {
       coreId: "core-a",
       coreAlias: "Core A",
       eventId: 42,
+      // The Core's own `ts`, carried so a replayed finish is dated by when it
+      // finished rather than by when a tab was handed it (issue 388).
+      finishedAt: 1_700_000_000_000,
       sessionId: "task-42",
       projectId: "project-9",
       projectName: "Remote",

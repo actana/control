@@ -99,11 +99,43 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+/**
+ * One domain event as a tab is handed it, with the one thing about its delivery
+ * a listener can act on: whether this tab had ever seen anything from that Core
+ * when it asked (issue 388).
+ */
+export type PanelLinkEventMessage = {
+  coreId: string;
+  event: CoreLinkEvent;
+  /**
+   * True only for events answering a `subscribe` this tab sent from a cursor of
+   * **zero** — the tail handed to a tab that had seen nothing.
+   *
+   * Deliberately narrower than "arrived as replay". A reconnect catch-up is
+   * also a replay, but it is a gap *this tab lived through*: the operator was
+   * looking at it when the Session ended and the socket blipped, and a listener
+   * that treats that like a fresh tab goes quiet in the window they were
+   * watching. Narrower again than the send window it is tracked in: a
+   * re-subscribe on a live socket (a view remounting) can carry a genuinely
+   * live event past this flag, and a cursor above zero is what keeps it live.
+   */
+  coldReplay?: boolean;
+};
+
 type Watch = {
   /** How many callers asked to watch this Core; the subscribe lives while > 0. */
   refs: number;
   /** The highest eventId this tab has seen from the Core. */
   cursor: number;
+  /**
+   * The cursor this tab's outstanding `subscribe` was sent from, or null when
+   * none is outstanding — opened by the frame that asks and closed by the
+   * `eventsReplayed` marker that answers it.
+   *
+   * Zero means this tab had seen nothing when it asked, which is the one case
+   * a listener is told about: see {@link PanelLinkEventMessage.coldReplay}.
+   */
+  subscribedFrom: number | null;
 };
 
 export class PanelLinkClient {
@@ -147,7 +179,7 @@ export class PanelLinkClient {
    */
   private readonly claimedPtys = new Map<string, Set<string>>();
 
-  private readonly eventListeners = new Set<(msg: { coreId: string; event: CoreLinkEvent }) => void>();
+  private readonly eventListeners = new Set<(msg: PanelLinkEventMessage) => void>();
   private readonly dataListeners = new Set<
     (msg: { coreId: string; ptyId: string; data: string; seq: number }) => void
   >();
@@ -242,7 +274,7 @@ export class PanelLinkClient {
    * hold; the tab keeps watching while anyone else still is.
    */
   watch(coreId: string): () => void {
-    const watch = this.watching.get(coreId) ?? { refs: 0, cursor: 0 };
+    const watch = this.watching.get(coreId) ?? { refs: 0, cursor: 0, subscribedFrom: null };
     watch.refs++;
     this.watching.set(coreId, watch);
     if (watch.refs === 1) this.sendSubscribe(coreId);
@@ -304,7 +336,7 @@ export class PanelLinkClient {
     await this.request(coreId, { type: "ptyUnsubscribe", ptyId });
   }
 
-  onEvent(cb: (msg: { coreId: string; event: CoreLinkEvent }) => void): () => void {
+  onEvent(cb: (msg: PanelLinkEventMessage) => void): () => void {
     this.eventListeners.add(cb);
     return () => this.eventListeners.delete(cb);
   }
@@ -620,7 +652,10 @@ export class PanelLinkClient {
    */
   private sendSubscribe(coreId: string): void {
     if (!this.socket || !this.open) return;
-    const cursor = this.watching.get(coreId)?.cursor ?? 0;
+    const watch = this.watching.get(coreId);
+    const cursor = watch?.cursor ?? 0;
+    // The window the answer lands in opens here and closes on `eventsReplayed`.
+    if (watch) watch.subscribedFrom = cursor;
     this.rawSend(
       encodePanelLinkFrame({
         t: "core",
@@ -739,12 +774,15 @@ export class PanelLinkClient {
         // not re-fire listeners that drive refetches.
         if (watch && inner.event.eventId <= watch.cursor) return;
         if (watch) watch.cursor = inner.event.eventId;
-        for (const cb of this.eventListeners) cb({ coreId, event: inner.event });
+        const coldReplay = watch?.subscribedFrom === 0;
+        for (const cb of this.eventListeners) cb({ coreId, event: inner.event, coldReplay });
         return;
       }
       case "eventsReplayed": {
         const watch = this.watching.get(coreId);
-        if (watch && inner.lastEventId > watch.cursor) watch.cursor = inner.lastEventId;
+        if (!watch) return;
+        if (inner.lastEventId > watch.cursor) watch.cursor = inner.lastEventId;
+        watch.subscribedFrom = null;
         return;
       }
       case "data":
