@@ -283,6 +283,29 @@ describe("OpenCode hook API", () => {
     });
   });
 
+  it("does not settle a Session waiting on a permission prompt (issue 390)", async () => {
+    // The parent raised the prompt and is blocked on it; a child session going
+    // idle must not write `finished` over that, which would also clear the
+    // pending question the operator still has to answer.
+    const capturedSessionId = "ses_captured_session";
+
+    await start(capturedSessionId);
+    await postHook({ hook_event_name: "PermissionRequest", session_id: capturedSessionId });
+    expect(getTask(taskId)?.status).toBe("needs-input");
+
+    const childStop = await postHook({
+      hook_event_name: "Stop",
+      session_id: "ses_leaked_child",
+    });
+
+    expect(childStop?.status).toBe(200);
+    await expect(childStop?.json()).resolves.toEqual({ ok: true, event: "Stop" });
+    expect(getTask(taskId)).toMatchObject({
+      claudeSessionId: capturedSessionId,
+      status: "needs-input",
+    });
+  });
+
   it("still settles the Session on a Stop from a different session (issue 390)", async () => {
     // A resumed OpenCode process, or a child session whose `idle` slipped past
     // the plugin's parent/child filter. This used to be acked and dropped, so

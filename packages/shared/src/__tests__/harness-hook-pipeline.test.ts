@@ -321,14 +321,22 @@ describe("a turn end from a session this task never captured (issue 390)", () =>
     expect(body).toEqual({ ok: true, body: { ok: true, status: "finished" } });
   });
 
-  it("settles a task parked on needs-input too", () => {
+  it("leaves a task parked on needs-input waiting (review finding 3)", () => {
+    // The PTY-exit settle acts on `running` and `needs-input` together, and
+    // that is not a precedent that transfers: there the process is dead, so an
+    // open question is moot. Here it is alive and may be blocked on exactly
+    // that question — a leaked OpenCode child going idle must not write
+    // `finished` over a parent waiting on a permission prompt, which would
+    // also take the Panel's pending-question overlay with it.
     const h = harness();
     h.post({ hook_event_name: "UserPromptSubmit", prompt: "ask me something" });
     h.post({ hook_event_name: "Notification", notification_type: "permission_prompt" });
     expect(h.task.status).toBe("needs-input");
 
-    h.post({ hook_event_name: "Stop", session_id: FOREIGN });
-    expect(h.task.status).toBe("finished");
+    const result = h.post({ hook_event_name: "Stop", session_id: FOREIGN });
+    expect(h.task.status).toBe("needs-input");
+    expect(result).toEqual({ outcome: "ok", event: "Stop" });
+    expect(h.writes).toEqual(["running", "needs-input"]);
   });
 
   it("settles Cursor's turn-end events on the same terms", () => {
@@ -353,20 +361,69 @@ describe("a turn end from a session this task never captured (issue 390)", () =>
     expect(h.captured).toEqual([SESSION_ID]);
   });
 
-  it("holds instead of finishing while a tracked subagent is in flight", () => {
-    // The conservative half: an OpenCode child's leaked idle must not ding a
-    // parent whose fan-out this pipeline can see is still working.
+  it("settles a fanned-out turn whose resume lost its SessionStart (review finding 1)", () => {
+    // The wedge an earlier draft of this fix had, and issue 390's own symptom
+    // reproduced inside the fix for it. A clean resume never reaches the
+    // foreign branch — `SessionStart` is a capture event, so it adopts the new
+    // id and clears the dead process's subagents. This is the resume where
+    // that POST was LOST, so the pre-resume process's tracked subagents are
+    // still counted, and nothing can ever clear them: their `SubagentStop` died
+    // with the process, and the resumed session's own subagent events carry the
+    // new id, so they are dropped as foreign before the bookkeeping runs. The
+    // only other way out was the two-hour TTL — two hours of a card on
+    // `running` with its `Stop` acked.
     const h = harness();
     h.post({ hook_event_name: "UserPromptSubmit", prompt: "fan out" });
     h.post({ hook_event_name: "SubagentStart", agent_id: "sub-1" });
+    h.post({ hook_event_name: "SubagentStart", agent_id: "sub-2" });
 
-    h.post({ hook_event_name: "Stop", session_id: FOREIGN });
-    expect(h.task.status).toBe("running");
+    const result = h.post({ hook_event_name: "Stop", session_id: FOREIGN });
 
-    // And the real finish still lands when the fan-out reports in.
-    h.post({ hook_event_name: "SubagentStop", agent_id: "sub-1" });
-    h.post({ hook_event_name: "Stop" });
     expect(h.task.status).toBe("finished");
+    expect(result).toEqual({ outcome: "ok", event: "Stop", status: "finished" });
+  });
+
+  it("drops the tracked subagents on entry, so the next turn is not held", () => {
+    // The clear is what makes the settle honest rather than conditional, and
+    // it must outlive this event: a stale entry left behind would hold the
+    // NEXT turn's owned Stop for the whole TTL.
+    const h = harness();
+    h.post({ hook_event_name: "UserPromptSubmit", prompt: "fan out" });
+    h.post({ hook_event_name: "SubagentStart", agent_id: "sub-1" });
+    h.post({ hook_event_name: "Stop", session_id: FOREIGN });
+    expect(h.task.status).toBe("finished");
+
+    h.post({ hook_event_name: "UserPromptSubmit", prompt: "next turn" });
+    expect(h.post({ hook_event_name: "Stop" })).toEqual({
+      outcome: "ok",
+      event: "Stop",
+      status: "finished",
+    });
+  });
+
+  it("does not hold on subagents posted under the foreign id either", () => {
+    // Review finding 2: the hold this function used to carry could not engage
+    // in either shape that reaches it. A resumed session's subagent events
+    // carry the NEW id, so they never reach `noteSubagentStart` at all — they
+    // are dropped as foreign, exactly like every other foreign claim — and
+    // opencode, whose child sessions are the other shape, posts no subagent
+    // lifecycle events in the first place.
+    const h = harness();
+    h.post({ hook_event_name: "UserPromptSubmit", prompt: "fan out" });
+
+    const start = h.post({
+      hook_event_name: "SubagentStart",
+      session_id: FOREIGN,
+      agent_id: "resumed-sub",
+    });
+    expect(start).toEqual({ outcome: "foreign-session", event: "SubagentStart" });
+
+    // Nothing was tracked, so the turn end settles straight through.
+    expect(h.post({ hook_event_name: "Stop", session_id: FOREIGN })).toEqual({
+      outcome: "ok",
+      event: "Stop",
+      status: "finished",
+    });
   });
 
   it("leaves an already-settled task exactly as it settled", () => {

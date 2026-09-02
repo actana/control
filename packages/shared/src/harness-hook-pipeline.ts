@@ -218,12 +218,21 @@ export function handleHarnessHookEvent(
     // hook that changed nothing is indistinguishable, from the harness side,
     // from one that worked.
     //
-    // Two shapes reach here. A RESUME — the harness came back with a new
-    // session id and the stored one belongs to a process that is gone — where
-    // the settle is simply correct. And an OPENCODE CHILD, whose `session.idle`
-    // leaked past the plugin's own parent/child filter; there the parent may
-    // still be working, which is why the settle below is the conservative one
-    // rather than a plain fall-through into the status write.
+    // Two shapes reach here, and neither is a clean one.
+    //
+    // A RESUME whose capture event was LOST. A clean resume never gets this
+    // far: Claude Code fires `SessionStart`, the capture branch above adopts
+    // the new id and clears the dead process's subagents, and the `Stop` that
+    // follows matches. So this branch fires when that `SessionStart` dropped —
+    // and the settle is simply correct, because the stored id belongs to a
+    // process that is gone.
+    //
+    // An OPENCODE CHILD whose `session.idle` leaked past the plugin's own
+    // parent/child filter; there the parent may still be working. Nothing in
+    // this pipeline can see that work — opencode posts no subagent lifecycle
+    // events at all — so the only thing standing between a leaked child and a
+    // working parent's card is the status check in `settleForeignTurnEnd`.
+    // That is stated plainly there rather than dressed up as a guarantee.
     if (!isTurnEndEvent(event)) return { outcome: "foreign-session", event };
     return settleForeignTurnEnd(taskId, task, event, ports);
   }
@@ -410,22 +419,48 @@ export function hookResultResponse(result: HookPipelineResult): {
 
 /**
  * Settle a task on a turn end that arrived under a session id this task never
- * captured. Deliberately narrower than the matching-session path, in the two
- * places where a foreign turn end is weaker evidence than an owned one:
+ * captured.
  *
- *  - **Only a task still claiming active work is settled.** `running` and
- *    `needs-input` are the statuses that go on being wrong until something
- *    corrects them, and they are the same pair the PTY-exit settle acts on.
- *    Every other status is an answer already given, and a `Stop` from a
- *    session this task never captured is the weakest evidence there is for
- *    overwriting one. `ready` is excluded for the reason #387 spelled out:
- *    `CoreTaskWriter` appends `session:finished` on that transition, so a
- *    stray child's turn end would ding a Session still titled "Waiting for
- *    initial prompt…" — a Session that never ran a turn to end.
- *  - **The subagent hold still applies.** Work this pipeline can see in flight
- *    outranks a turn end from anywhere, so a foreign `Stop` over a live
- *    fan-out holds on `running` and arms the same drain backstop a matching
- *    one would, rather than dinging mid-work.
+ * **The tracked subagents are dropped on entry, and that is load-bearing.** A
+ * turn end under an unrecognised id means a new harness process — the same
+ * sentence the `setSessionId` wrapper writes when a capture event adopts a new
+ * id — so the old session's subagents died with it. Nothing else can clear
+ * them: their `SubagentStop` can never arrive, and the new session's own
+ * subagent events carry the new id, so they hit the foreign return above
+ * BEFORE the bookkeeping and are dropped. The only other route out is the two
+ * hour `ACTIVE_SUBAGENT_TTL_MS`, and holding on that stale set is how an
+ * earlier draft of this function reproduced issue 390 inside the fix for it: a
+ * fanned-out turn that resumed with a lost `SessionStart` sat on `running` for
+ * two hours with its `Stop` acked.
+ *
+ * `clearTaskFinished` goes with it by the `sessionProcessExited` precedent: no
+ * re-invocation can follow the process that stamped the old finish, so a
+ * laggard lifecycle POST from it must read as stale rather than heal the card.
+ * It drops a mark, it does not suppress one — when the settle below proceeds,
+ * `noteTaskFinished` stamps a fresh finish, so the one-second heal window
+ * behaves exactly as it does after any other hook-driven finish. The clear is
+ * what the paths that do NOT settle are left with.
+ *
+ * **There is no subagent hold here, deliberately.** It would be theatre. After
+ * the clear the set is empty by construction, and it could not have engaged in
+ * either shape that reaches this function anyway: a resumed session's subagent
+ * events are dropped as foreign before `noteSubagentStart` is ever reached, and
+ * opencode — the harness the child shape belongs to — posts no subagent
+ * lifecycle events at all, so `hasActiveSubagents` is structurally false for
+ * every opencode Session. The status check below is the only real guard, and
+ * saying so is worth more than a branch that can only fire on stale state.
+ *
+ * **Only `running` is settled.** Not `needs-input`: the pair the PTY-exit
+ * settle acts on looks like the right precedent and is not one, because there
+ * the process is DEAD and an open question is moot, while here it is alive and
+ * may be blocked on exactly that question. A leaked opencode child going idle
+ * would otherwise write `finished` over a parent waiting on a permission
+ * prompt — and the Panel clears the pending question on any transition off
+ * `needs-input`, so the overlay would go with it. `ready` is out for #387's
+ * reason: `CoreTaskWriter` appends `session:finished` on that transition, and a
+ * Session titled "Waiting for initial prompt…" has no turn to end. Every other
+ * status is an answer already given, and a turn end from a session this task
+ * never captured is the weakest evidence there is for overwriting one.
  *
  * The session id is NOT captured here. A `Stop` is not a capture event, and
  * adopting an OpenCode child's id would hand the rest of that child's
@@ -437,15 +472,12 @@ function settleForeignTurnEnd(
   event: string,
   ports: HookPipelinePorts,
 ): HookPipelineResult {
-  if (task.status !== "running" && task.status !== "needs-input") {
+  clearSubagentActivity(taskId);
+  clearTaskFinished(taskId);
+  if (task.status !== "running") {
     // No `status` on the result, for the reason the exit settle gives: the
     // settle is conditional, and echoing one would claim a transition that did
     // not happen. The outcome is still `ok` — the hook was understood.
-    return { outcome: "ok", event };
-  }
-  if (hasActiveSubagents(taskId)) {
-    ports.updateStatus(taskId, "running");
-    armDeferredFinish(taskId, (id) => finishQuietTask(id, ports));
     return { outcome: "ok", event };
   }
   if (!ports.updateStatus(taskId, "finished")) return { outcome: "task-not-found", event };
