@@ -211,11 +211,14 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(kinds()).toContain("task:updated");
   });
 
-  it("finishes a bare Session whose PTY exited cleanly", async () => {
+  it("raises no completion ding for a bare Session whose PTY exited cleanly", async () => {
+    // A clean exit of a Session that never ran a turn is still only a process
+    // going away. `finished` here would append `session:finished` and ding the
+    // operator for "Waiting for initial prompt…".
     const status = new CoreHarnessStatus({ writer });
     status.sessionExited(TASK_ID, 0);
-    expect(rowStatus()).toBe("finished");
-    expect(kinds()).toContain("session:finished");
+    expect(rowStatus()).toBe("disconnected");
+    expect(kinds()).not.toContain("session:finished");
   });
 
   it("reports a Session parked on a dialog nobody answered as needs-input", async () => {
