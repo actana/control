@@ -65,7 +65,6 @@ import {
   ensureClaudeShiftEnterBinding,
   type PtyCoreDeps,
 } from "./pty-manager";
-import { mapHookEventToStatus } from "@actana/shared/harness-hook-events";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import {
@@ -263,24 +262,21 @@ async function startCore(): Promise<void> {
   let hookReceiver: HarnessHookReceiver | null = null;
   try {
     hookReceiver = await startHarnessHookReceiver((taskId, payload, eventNameFallback) => {
+      const result = harnessStatus.receiveHook(taskId, payload, eventNameFallback);
       // A hook that landed is this Session talking, whatever it said — that is
       // what keeps the quiet-Session backstop off a turn that is really
-      // running (issue 243). Reported as its own kind, because a Session whose
-      // hooks arrive is one the idle rule must defer to (issue 391).
+      // running (issue 243) — and it is also the end of the idle rule's claim
+      // on the row, because the pipeline has just decided the status (issue
+      // 391).
       //
-      // Which kind depends on what the event means, and the map that already
-      // knows is the one the pipeline uses. Only an event that maps to
-      // `running` may take a backstop finish back: `SubagentStart`,
-      // `SubagentStop` and an unmatched `PostToolUse` map to nothing exactly
-      // so a post-turn helper cannot heal a finished card (#385), and this
-      // path is not allowed to reopen that door.
-      const meansRunning =
-        mapHookEventToStatus({
-          ...payload,
-          hook_event_name: payload.hook_event_name || eventNameFallback,
-        }) === "running";
-      sessionBackstop?.noteActivity(taskId, meansRunning ? "turn" : "hook");
-      return harnessStatus.receiveHook(taskId, payload, eventNameFallback);
+      // Reported *after* the pipeline, and only for a hook the pipeline
+      // accepted: `reconcileSessionId` drops a POST carrying another session's
+      // id (base `2bdcb56`), and a hook from a harness process this Session no
+      // longer owns is not evidence that this Session is alive.
+      if (result.body?.ignored !== "foreign-session") {
+        sessionBackstop?.noteActivity(taskId, "hook");
+      }
+      return result;
     });
   } catch (err) {
     console.error(`[core-entry] hook-receiver.start-failed: ${err}`);

@@ -166,14 +166,17 @@ five-second burst of PTY output and asks three questions in order:
    appended progress (pytest's dots, a log line) from reading as a spinner. The
    exception is a burst with no controls that follows one that repainted: that
    is the tail of a frame, not a new line.
-2. **Do the digits belong to a clock?** Digits are dropped only from a *line*
-   that carries a spinner glyph or a duration (`1m 12s`, `2h`), and kept
-   everywhere else — so `Downloading 41.2 MB / 900 MB`, `Compiled 41 files`,
-   `[12:34:07] Compiled 43 files` and `✔ 43 passed` stay the changing content
-   they are. Both halves are deliberately narrow: the glyph set is the braille,
-   sparkle and circle frames a spinner cycles (not ✔ ✗ ❯, which are status
-   marks), and a duration needs its unit letter (`\d+:\d{2}` alone is the
-   wall-clock stamp a build prints in front of every line).
+2. **Do the digits belong to a clock?** Every digit is dropped from a line a
+   *spinner* is drawing, because the whole line is a frame — clock, token
+   count, context percentage. On every other line only the **duration token**
+   itself is dropped (`12.3s`, `1m 12s`), never the rest of the line's digits:
+   `Compiled 41 files in 3.2s`, `✔ 43 passed in 12.3s` and
+   `[1,234 / 5,678] Compiling …; 45s` are what a build actually prints, and
+   their counts are their only changing content. Both halves are deliberately
+   narrow: the glyph set is the braille, sparkle and circle frames a spinner
+   cycles (not ✔ ✗ ❯, which are status marks), and a duration needs its unit
+   letter (`\d+:\d{2}` alone is the wall-clock stamp a build prints in front of
+   every line).
 3. **Is any word new?** What survives — escapes, control bytes and spinner
    glyphs dropped, whitespace collapsed — is the frame's words. The burst is
    `output` when it carries a word the last two bursts (about ten seconds of
@@ -198,7 +201,7 @@ whichever fires first:
 | Rule | Fires when | Window |
 | --- | --- | --- |
 | Quiet | nothing at all — no hook, no byte of any kind | 15 minutes |
-| Idle | bytes still arriving (heard within the last 2 minutes), nothing new on screen, no hook, **and** nothing printed since the last hook | 8 minutes, confirmed by 2 consecutive sweeps |
+| Idle | bytes still arriving (heard within the last 2 minutes), nothing new on screen, no hook, **and** nothing printed since the last hook *within the 15-minute deference bound below* | 8 minutes, confirmed by 2 consecutive sweeps |
 
 The idle rule is the finish-class backstop the quiet rule cannot be: it does not
 wait for the redraws to stop, because they never do. Three things narrow it, and
@@ -228,18 +231,23 @@ Which rule settled a row is in `session-backstop.settled`'s `rule` field.
 ### The idle rule takes its own finish back
 
 A `finished` written by the **idle rule** is marked, and the next `output`-class
-burst — or a hook the event map reads as `running` — returns the row to
-`running` inside half an hour (`session-backstop.reopened`). Nothing else is
-marked: an operator's finish, a hook's finish and the quiet rule's finish are
-never reopened by stray bytes, and a row anyone else has moved since is left
-exactly as they left it.
+burst returns the row to `running` inside half an hour
+(`session-backstop.reopened`). Three things end that claim, and each of them
+ends it for good:
 
-Which hooks may reopen is the same seam the pipeline uses, and for the same
-reason: `mapHookEventToStatus` returning `running` (`UserPromptSubmit`,
-`beforeSubmitPrompt`, `PermissionReplied`, an `AskUserQuestion` `PostToolUse`).
-`SubagentStart`, `SubagentStop` and an unmatched `PostToolUse` map to nothing
-precisely so a post-turn helper cannot heal a finished card, and this path does
-not undo that.
+- **Any hook.** A hook hands the row to the pipeline, which decides the status
+  from the event — a `Stop` writes the authoritative `finished`, a
+  `UserPromptSubmit` writes `running`. So no hook of any kind reopens anything,
+  and a post-turn `SubagentStart`, `SubagentStop` or unmatched `PostToolUse`
+  cannot heal a finished card, which is the bug #385 closed.
+- **Anyone else writing the row.** The settle records the row's `updatedAt` and
+  the reopen requires it unchanged. Asking only whether the row still says
+  `finished` is not enough: a real `Stop` writes `finished` over a `finished`,
+  and the post-turn composer paint that follows would otherwise reopen it.
+- **The PTY exiting**, and the half-hour grace expiring.
+
+An operator's finish and the quiet rule's finish are never marked in the first
+place.
 
 This exists because the obvious recovery does not: `harness-hook-events.ts` maps
 only `UserPromptSubmit`, `CursorBeforeSubmitPrompt` and `PermissionReplied` to
@@ -252,6 +260,17 @@ What a wrong idle settle still costs, stated rather than argued away: it emits
 session wait` unblocks on) and clears the tracked subagent set. The reopen puts
 the status back; it cannot un-send a notification or restore that set, which
 expires on its own after two hours.
+
+**A harness parked on a dialog nobody matched is settled too.** Only
+`hasClaudeInterruptPrompt` and `hasCodexHookReviewPrompt` turn a screen into
+`needs-input`; any other permission or approval box repaints statically, which
+is the idle condition exactly, so the Session is settled `finished` at ~9–10
+minutes while it waits for a human — and `needs-input` being out of the sweep's
+scope does not help, because the row never reached `needs-input`. The reopen
+cannot help either until somebody answers. This is the same harness class the
+rule targets (the one whose hooks are not arriving is the one whose
+`needs-input` hook is also not arriving), and it is tracked as
+[#469](https://github.com/actana/control/issues/469) rather than fixed here.
 
 The classifier's own limits, which bound how often that can happen: a turn whose
 tool prints nothing at all is indistinguishable from one that ended; a progress

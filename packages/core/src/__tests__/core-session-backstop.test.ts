@@ -24,7 +24,6 @@ import {
 import { CoreTaskWriter } from "../core-task-writer";
 import { CoreSessionBackstop } from "../core-session-backstop";
 import { PtyOutputActivityWatcher } from "../pty-output-activity";
-import { mapHookEventToStatus } from "@actana/shared/harness-hook-events";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 
 // The backstop nobody has to arm (issue 243 part 2), against this Core's real
@@ -374,33 +373,46 @@ describe("settling a turn whose end nobody reported", () => {
       expect(statusOf("t-1")).toBe("running");
     });
 
-    it("returns the row to running for a hook that means the turn is running", () => {
+    it("is not reopened by a hook, whatever the hook means", () => {
+      // A hook hands the row back to the pipeline, which decides the status
+      // from the event: a `UserPromptSubmit` writes `running` there, a `Stop`
+      // writes `finished`. Either way this rule's claim on the row is over —
+      // and it must be, because a `Stop` writes `finished` over a `finished`
+      // and reopening that is the post-turn resurrection #385 closed.
       insert("t-1", "running");
       const backstop = makeBackstop();
       settleByIdleRule(backstop);
 
-      // `UserPromptSubmit`, `PermissionReplied`, an `AskUserQuestion`
-      // `PostToolUse` — the events `mapHookEventToStatus` reads as `running`.
       nowMs += MINUTE;
-      backstop.noteActivity("t-1", "turn");
-      expect(statusOf("t-1")).toBe("running");
+      backstop.noteActivity("t-1", "hook");
+      expect(statusOf("t-1")).toBe("finished");
+
+      // And the marker is gone with it: the composer paint that follows a real
+      // `Stop` finds nothing to take back (review of PR 455, round 3).
+      nowMs += MINUTE;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
     });
 
-    it("is not reopened by a post-turn helper's hook", () => {
-      // Review of PR 455, round 2, finding 2. `SubagentStart`, `SubagentStop`
-      // and an unmatched `PostToolUse` map to no status precisely so a
-      // post-turn helper cannot heal a finished card (#385, `5d33f0c`). They
-      // reach this as `hook`: activity, never a reopen.
+    it("never takes back a finish another writer wrote over it", () => {
+      // The shape the round-3 review drove: the real terminal `Stop` lands
+      // just after the idle rule settled, the pipeline writes the
+      // authoritative finish — `finished` over `finished`, so the status alone
+      // cannot tell them apart — and then the post-turn TUI paints its
+      // composer. Only the row's `updatedAt` separates the two finishes.
       insert("t-1", "running");
       const backstop = makeBackstop();
       settleByIdleRule(backstop);
 
-      nowMs += 5 * MINUTE;
-      backstop.noteActivity("t-1", "hook");
+      nowMs += 30 * 1000;
+      coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "finished" });
+      const after = getLastEventId();
+
+      nowMs += 30 * 1000;
+      backstop.noteActivity("t-1", "output");
       expect(statusOf("t-1")).toBe("finished");
-      nowMs += MINUTE;
-      backstop.noteActivity("t-1", "hook");
-      expect(statusOf("t-1")).toBe("finished");
+      // No reopen, so no re-settle, so no second `session:finished` toast.
+      expect(kindsSince(after)).toEqual([]);
     });
 
     it("is not reopened by more of the same repainting", () => {
@@ -544,26 +556,6 @@ describe("settling a turn whose end nobody reported", () => {
       nowMs += MINUTE;
       expect(backstop.sweepOnce()).toEqual(["t-1"]);
       expect(statusOf("t-1")).toBe("finished");
-    });
-  });
-
-  // The seam `core-entry.ts` keys the activity kind on. It lives in
-  // `harness-hook-events.ts`, which this PR does not touch — so what is pinned
-  // here is the contract the wiring depends on: which events may take a
-  // backstop finish back, and which must never.
-  describe("which hooks are allowed to take a finish back", () => {
-    it("maps a turn's own events to running, and helpers' to nothing", () => {
-      for (const hook_event_name of ["UserPromptSubmit", "beforeSubmitPrompt", "PermissionReplied"]) {
-        expect(mapHookEventToStatus({ hook_event_name })).toBe("running");
-      }
-      for (const hook_event_name of ["SubagentStart", "SubagentStop", "PostToolUse"]) {
-        expect(mapHookEventToStatus({ hook_event_name })).not.toBe("running");
-      }
-      // The one `PostToolUse` that does mean the turn resumed: the operator
-      // answered the question it asked.
-      expect(
-        mapHookEventToStatus({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" }),
-      ).toBe("running");
     });
   });
 
