@@ -29,7 +29,7 @@ import {
   noteSubagentStart,
   noteSubagentStop,
   noteTaskFinished,
-  taskFinishedRecently,
+  taskFinishedWithinRaceWindow,
 } from "./subagent-activity";
 import type { TaskStatus } from "./domain";
 
@@ -190,26 +190,38 @@ export function handleHarnessHookEvent(
   // FOREGROUND turn ends — background subagents keep running, then their
   // completion re-invokes the main harness, whose own Stop follows. Track which
   // subagents are active so the Stop mapping below can hold the session on
-  // "running" until the last one is done. These events carry no status, but a
-  // subagent event arriving MOMENTS after a task finished means the Stop won
-  // the race against the turn's own subagent lifecycle POST — work is still
-  // happening, so heal to running, and arm the drain backstop in case no
-  // further Stop follows.
+  // "running" until the last one is done.
   //
-  // Beyond that window, a subagent event on a finished task is one of Claude
-  // Code's post-turn internal helpers (away-summary generation fires
-  // SubagentStart/Stop when the user refocuses a finished session, with no
-  // Stop after). Healing on those wedges tasks on "running" forever; ignore
-  // them for status, and don't record their starts either — a lost helper
+  // On a task that is ALREADY finished these events carry no status of their
+  // own, and un-finishing the card is only right when the turn can still
+  // plausibly be working. Two things say so, and nothing else does:
+  //
+  //   - a tracked subagent from that turn is still in flight (the set is
+  //     non-empty), so the finish landed over live work; or
+  //   - the finish is younger than the sub-second POST race, i.e. this event
+  //     is the turn's own lifecycle POST that lost the race to the Stop.
+  //
+  // Everything else on a finished task is one of Claude Code's post-turn
+  // internal helpers — away-summary generation and the title helper fire
+  // SubagentStart/Stop when the operator refocuses a finished session or
+  // clicks the just-finished pin, with no Stop to follow. Those must not write
+  // "running" (issue 385): the card would flip back to running seconds after
+  // completing and stay there until the drain backstop noticed. Ignore them
+  // for status, and don't record their starts either — a lost helper
   // SubagentStop would otherwise hold the NEXT turn's Stop for the whole TTL.
   if (isSubagentLifecycleEvent(event)) {
-    const staleFinished = task.status === "finished" && !taskFinishedRecently(taskId);
+    // Read the tracked set BEFORE this event touches it: a helper's own
+    // SubagentStart must not be the evidence that work is in flight.
+    const inTurn =
+      task.status !== "finished" ||
+      hasActiveSubagents(taskId) ||
+      taskFinishedWithinRaceWindow(taskId);
     if (event === HARNESS_HOOK_EVENTS.subagentStart) {
-      if (!staleFinished) noteSubagentStart(taskId, payload.agent_id);
+      if (inTurn) noteSubagentStart(taskId, payload.agent_id);
     } else {
       noteSubagentStop(taskId, payload.agent_id);
     }
-    if (task.status === "finished" && !staleFinished) {
+    if (task.status === "finished" && inTurn) {
       ports.updateStatus(taskId, "running");
       armDeferredFinish(taskId, (id) => finishQuietTask(id, ports));
     }

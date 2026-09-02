@@ -58,14 +58,23 @@ maps to a status on its own, but one arriving **moments after** a task finished
 heals it back to `running` (a `Stop` won the race against the turn's own subagent
 lifecycle POST).
 
-That heal is scoped to a 30-second recent-finish window because Claude Code also
-runs **post-turn internal helpers** whose subagent events carry the parent
-session id: refocusing a finished session generates an *away summary*, firing
-`SubagentStart`/`SubagentStop` minutes after the finish, with no `Stop` to
-follow. Healing on those wedges tasks on `running` forever (the original
-stuck-on-running bug). Beyond the window, helper events are ignored for status
-and their starts are not tracked — a lost helper stop would otherwise hold the
-next turn's `Stop` for the whole TTL.
+A finished task is healed on **two conditions only**: a subagent tracked from
+that turn is still in flight, or the finish is younger than
+`FINISH_RACE_WINDOW_MS` (one second — both POSTs leave the same harness process
+microseconds apart, so the real race is sub-second). Everything else is one of
+Claude Code's **post-turn internal helpers**, whose subagent events carry the
+parent session id: refocusing a finished session, or clicking its just-finished
+pin, generates an *away summary* or a title, firing `SubagentStart`/`SubagentStop`
+with no `Stop` to follow. Those are ignored for status, and their starts are not
+tracked either — a lost helper stop would otherwise hold the next turn's `Stop`
+for the whole TTL.
+
+The window was 30 seconds until issue 385, which is 30,000× the race it was
+sized for: every helper firing within half a minute of a finish flipped the card
+back to `running`, and the operator watched a completed Session un-complete
+itself the moment they clicked it. Time is not what tells in-turn work from a
+helper — the tracked active-subagent set is. Widening this window again
+re-opens that bug.
 
 Backstops, so a `SubagentStop` that never arrives (lost POST, killed process) —
 or a healed `running` that no `Stop` will ever follow — cannot hold a task on
@@ -74,7 +83,7 @@ fourth is armed by nothing, which is the point (issue 243):
 
 - Tracked entries expire after 2 hours (kept long on purpose — a short TTL would
   prematurely finish sessions whose subagents legitimately run long).
-- A held `Stop` (and a recent-finish heal) arms a once-a-minute recheck. Once the
+- A held `Stop` (and a subagent heal) arms a once-a-minute recheck. Once the
   tracked set is idle — drained by real `SubagentStop`s or by expiry — a 3-minute
   drain grace starts: if the re-invoked main harness's own `Stop` lands the finish
   within it (the normal flow), the backstop's promotion is a no-op (it only fires

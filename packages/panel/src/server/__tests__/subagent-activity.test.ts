@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  FINISH_RACE_WINDOW_MS,
   armDeferredFinish,
   clearSubagentActivity,
   disarmDeferredFinish,
@@ -7,13 +8,12 @@ import {
   noteSubagentStart,
   noteSubagentStop,
   noteTaskFinished,
-  taskFinishedRecently,
+  taskFinishedWithinRaceWindow,
 } from "../services/subagent-activity";
 
 const TTL_MS = 2 * 60 * 60 * 1000;
 const RECHECK_MS = 60 * 1000;
 const DRAIN_GRACE_MS = 3 * 60 * 1000;
-const RECENT_FINISH_MS = 30 * 1000;
 
 const realNow = Date.now;
 
@@ -180,17 +180,23 @@ describe("deferred finish backstop", () => {
   });
 });
 
-describe("recent-finish window", () => {
-  it("reports a finish as recent only within the window", () => {
+describe("finish race window", () => {
+  it("reports a finish as raced only within the window", () => {
     const taskId = "task-finish-window";
-    expect(taskFinishedRecently(taskId)).toBe(false);
+    expect(taskFinishedWithinRaceWindow(taskId)).toBe(false);
 
     noteTaskFinished(taskId);
-    expect(taskFinishedRecently(taskId)).toBe(true);
+    expect(taskFinishedWithinRaceWindow(taskId)).toBe(true);
 
     // Beyond the window, a subagent event is a post-turn helper, not a raced
     // lifecycle POST from the finished turn.
-    Date.now = () => realNow() + RECENT_FINISH_MS + 1;
-    expect(taskFinishedRecently(taskId)).toBe(false);
+    Date.now = () => realNow() + FINISH_RACE_WINDOW_MS + 1;
+    expect(taskFinishedWithinRaceWindow(taskId)).toBe(false);
+  });
+
+  it("stays sub-second — the race it models, not a grace period (issue 385)", () => {
+    // The window was 30s, 30,000x the loopback POST race it was sized for,
+    // which let post-turn helper subagents resurrect a finished card.
+    expect(FINISH_RACE_WINDOW_MS).toBeLessThanOrEqual(1_000);
   });
 });

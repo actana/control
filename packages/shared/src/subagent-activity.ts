@@ -9,10 +9,12 @@
 //
 // Claude Code also runs internal helper agents AFTER a session finishes
 // (away-summary generation on refocus, title helpers) whose subagent events
-// carry the parent session id but precede no further Stop. The recent-finish
-// window (taskFinishedRecently) keeps those from healing a finished task back
-// to "running", and the drain grace in armDeferredFinish un-wedges any that
-// slip through.
+// carry the parent session id but precede no further Stop. A finished task is
+// healed back to "running" only for work it can still plausibly be doing —
+// a tracked subagent from the turn is still in flight, or the finish is
+// younger than the sub-second POST race (taskFinishedWithinRaceWindow) — so
+// those helpers cannot resurrect a finished card. The drain grace in
+// armDeferredFinish un-wedges anything that still slips through.
 //
 // In-memory and bounded like the controller's other per-task maps: losing
 // state (app restart) merely restores the legacy finish-on-Stop behavior.
@@ -40,12 +42,18 @@ const DEFERRED_FINISH_RECHECK_MS = 60 * 1000;
 // after) can't leave the task wedged on "running".
 const DRAIN_FINISH_GRACE_MS = 3 * 60 * 1000;
 
-// How long after a task finishes a subagent event can still plausibly belong
-// to the finished turn (a Stop that won the race against the turn's own
-// SubagentStart POST — a sub-second race in practice). Beyond this window a
-// subagent event on a finished task is a post-turn internal helper, not
-// resumed work, and must not heal the task back to "running".
-const RECENT_FINISH_WINDOW_MS = 30 * 1000;
+// How long after a task finishes a subagent event can still be the turn's own
+// lifecycle POST that LOST the race to the Stop POST. Both are loopback POSTs
+// emitted by the same harness process microseconds apart, so the real race is
+// sub-second; one second is its generous outer bound.
+//
+// This is deliberately tiny. The window used to be 30s (issue 385), 30,000x
+// the race it was sized for, which turned every post-turn helper subagent —
+// the away-summary and title helpers Claude Code fires when the operator
+// refocuses or clicks a just-finished pin — into a resurrection of the
+// finished card. Widening it again re-opens that bug: the way to let genuine
+// in-turn work hold a finish is the tracked active-subagent set, not time.
+export const FINISH_RACE_WINDOW_MS = 1_000;
 
 type TaskSubagents = {
   /** agent_id → start time, for payloads that identify the subagent. */
@@ -83,14 +91,15 @@ export function noteTaskFinished(taskId: string): void {
 }
 
 /**
- * True while a subagent event can still mean "the finished Stop raced the
- * turn's own subagent lifecycle POSTs". Unknown tasks report false — after a
- * restart the heal stays off until a real finish is observed again.
+ * True only while a subagent event can still mean "the finished Stop raced the
+ * turn's own subagent lifecycle POSTs" — a sub-second window, not a grace
+ * period. Unknown tasks report false: after a restart the heal stays off until
+ * a real finish is observed again.
  */
-export function taskFinishedRecently(taskId: string): boolean {
+export function taskFinishedWithinRaceWindow(taskId: string): boolean {
   const finishedAt = finishedAtByTask.get(taskId);
   if (finishedAt === undefined) return false;
-  return Date.now() - finishedAt <= RECENT_FINISH_WINDOW_MS;
+  return Date.now() - finishedAt <= FINISH_RACE_WINDOW_MS;
 }
 
 /**
