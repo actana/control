@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "@tanstack/react-router";
+import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -69,7 +69,12 @@ type RailRow = {
 
 // Memoized: the shell re-renders on route/settings changes, but ProjectBar's
 // only props are stable primitives — it should re-render only when they change
-// or its own query subscriptions move, never just because the shell did.
+// or its own query subscriptions move, never just because the shell did. The
+// highlight ring is the one thing in here that *does* track the route, so it
+// reads the pathname through `useRouterState` (which subscribes) rather than
+// off `useRouter().state` (which does not): without that subscription the memo
+// swallowed the re-render and the ring stayed on the previously clicked pin
+// until an unrelated render moved it (#376).
 export const ProjectBar = memo(function ProjectBar({
   // Pin routes through the coreId-parameterised mutation surface; the
   // remaining projects / order wiring still reads the Panel's own rows,
@@ -81,6 +86,11 @@ export const ProjectBar = memo(function ProjectBar({
   coreId?: string | null;
 }) {
   const router = useRouter();
+  // Subscribed read of the route. `router.state` is a plain snapshot taken at
+  // render time and notifies nobody when it moves, so the ring has to come off
+  // a subscription for a same-Core pin click — which changes only the route —
+  // to repaint the rail in the same frame as the navigation (#376).
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const queryClient = useQueryClient();
   const { data: panelProjects } = useProjects();
   // A Core's pinned projects live on its own Core — pull them via a small
@@ -711,7 +721,7 @@ export const ProjectBar = memo(function ProjectBar({
   // into it from that isolated view.
   if (railClusters.length === 0) return null;
 
-  const activeId = router.state.location.pathname.match(/^\/projects\/([^/]+)/)?.[1];
+  const activeId = pathname.match(/^\/projects\/([^/]+)/)?.[1];
   const activeIndex = visible.findIndex((p) => p.id === activeId);
 
   // Group-number labels only earn their space when a real group exists. With
@@ -796,6 +806,10 @@ export const ProjectBar = memo(function ProjectBar({
       {activeIndex >= 0 && (
         <div
           aria-hidden
+          // The ring is a positioned overlay rather than a border on the tile,
+          // so nothing in the DOM otherwise says which project it sits on.
+          // Naming it makes "the ring is on B" assertable (#376).
+          data-active-project-id={activeProject?.id}
           style={{
             position: "absolute",
             top: PAD_TOP,
