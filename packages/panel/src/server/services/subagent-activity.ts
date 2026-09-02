@@ -5,8 +5,9 @@
 // process holds its own state; only the code is shared. Re-exported here to
 // preserve existing import paths.
 export {
+  FINISH_RACE_WINDOW_MS,
   noteTaskFinished,
-  taskFinishedRecently,
+  taskFinishedWithinRaceWindow,
   clearTaskFinished,
   noteSubagentStart,
   noteSubagentStop,

@@ -18,7 +18,7 @@ const { TITLE_WAITING } = await import("~/lib/task-sentinels");
 const LOOPBACK_HEADERS = { origin: "http://127.0.0.1:5173" };
 const SESSION_ID = "00000000-0000-4000-8000-000000000000";
 
-// Some cases shift Date.now past the recent-finish heal window; always restore.
+// Some cases pin or shift Date.now around the finish race window; always restore.
 const realNow = Date.now;
 afterEach(() => {
   Date.now = realNow;
@@ -378,10 +378,15 @@ describe("background subagents over the claude hook API", () => {
   it("heals a finished task when a late subagent event loses the race to Stop", async () => {
     await prompt();
     // Stop wins the race against the just-launched subagent's SubagentStart.
+    // Both POSTs leave the same harness process microseconds apart, so the
+    // clock is pinned: the heal window is that race, not the round trip.
+    const raceInstant = realNow();
+    Date.now = () => raceInstant;
     expect((await stop()).status).toBe("finished");
 
     await subagent("SubagentStart", "late-sub");
     expect(getTask(taskId)?.status).toBe("running");
+    Date.now = realNow;
 
     await subagent("SubagentStop", "late-sub");
     expect((await stop()).status).toBe("finished");
@@ -418,10 +423,12 @@ describe("background subagents over the claude hook API", () => {
     await prompt();
     expect((await stop()).status).toBe("finished");
 
-    // Minutes later the user refocuses the pane and Claude Code's internal
-    // away-summary helper fires SubagentStart/Stop — with no Stop to follow.
-    // The finished status must hold (this was the stuck-on-running bug).
-    Date.now = () => realNow() + 31_000;
+    // Seconds later the user refocuses the pane, or clicks the just-finished
+    // pin, and Claude Code's internal away-summary helper fires
+    // SubagentStart/Stop — with no Stop to follow. The finished status must
+    // hold. Five seconds was INSIDE the old 30s heal window (issue 385): the
+    // card flipped back to running and stayed there until the drain backstop.
+    Date.now = () => realNow() + 5_000;
     await subagent("SubagentStart", "away-helper");
     expect(getTask(taskId)?.status).toBe("finished");
     await subagent("SubagentStop", "away-helper");

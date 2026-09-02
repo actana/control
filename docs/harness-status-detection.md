@@ -58,14 +58,55 @@ maps to a status on its own, but one arriving **moments after** a task finished
 heals it back to `running` (a `Stop` won the race against the turn's own subagent
 lifecycle POST).
 
-That heal is scoped to a 30-second recent-finish window because Claude Code also
-runs **post-turn internal helpers** whose subagent events carry the parent
-session id: refocusing a finished session generates an *away summary*, firing
-`SubagentStart`/`SubagentStop` minutes after the finish, with no `Stop` to
-follow. Healing on those wedges tasks on `running` forever (the original
-stuck-on-running bug). Beyond the window, helper events are ignored for status
-and their starts are not tracked — a lost helper stop would otherwise hold the
-next turn's `Stop` for the whole TTL.
+A finished task is healed on **two conditions only**: a subagent tracked from
+that turn is still in flight, or the finish is younger than
+`FINISH_RACE_WINDOW_MS` (one second, inclusive). Everything else is one of
+Claude Code's **post-turn internal helpers**, whose subagent events carry the
+parent session id: refocusing a finished session, or clicking its just-finished
+pin, generates an *away summary* or a title, firing `SubagentStart`/`SubagentStop`
+with no `Stop` to follow. Those are ignored for status, and their starts are not
+tracked either — a lost helper stop would otherwise hold the next turn's `Stop`
+for the whole TTL.
+
+**Of those two, the clock is what decides the raced-POST case.** Every
+hook-driven finish leaves the tracked set empty by construction — the `finished`
+mapping is downgraded to `running` whenever `hasActiveSubagents` is true, the
+drain's `finishQuietTask` runs only after an idle set, `sessionProcessExited`
+clears the set first, and the Core's session backstop clears before it stamps
+the finish. The active-set condition therefore guards a `finished` written by one
+of the *other* status writers (a core-link task mutation through
+`CoreTaskWriter`, which clears nothing), not the race. Worth keeping — just not
+what protects in-turn work here.
+
+### What the window measures, and what that costs
+
+The window is sized on **emission**: the `Stop` and the turn's own
+`SubagentStart` leave the same harness process microseconds apart. It is
+evaluated on **arrival** — the finish is stamped when the `Stop` POST was
+*handled*, and compared against when the subagent POST is handled. Delivery is
+not microseconds: the hook command is
+`curl -sS -f -m 3 --retry 2 --retry-delay 1` (`packages/core/src/harness-hooks.ts`),
+whose own comment bounds the worst case at *"about eleven seconds"* and names
+the trigger as *"a Core busy serving PTY fan-out and SQLite writes"* — exactly
+what a fan-out turn creates.
+
+So a **retry-delayed in-turn `SubagentStart` is knowingly traded away**. One that
+eats a `-m 3` timeout lands ~4s after a `Stop` that already wrote `finished`,
+finds an empty set and a 4s-old finish, and is dropped *and* never tracked; the
+card reads `finished` through a live fan-out, and no backstop corrects it (every
+backstop below fixes a task stuck on `running`; none fixes one stuck on
+`finished`). That residual is filed as **issue 440**.
+
+The window was 30 seconds until issue 385. That covered the retry tail
+incidentally, at the price of every post-turn helper resurrecting the card for
+half a minute after *every* finish — the operator watched a completed Session
+un-complete itself the moment they clicked it. Widening it back to absorb the
+~11s retry budget puts a pin click at +5s inside it again and re-opens 385. A
+single scalar clock cannot tell a retry-delayed in-turn event from a post-turn
+helper, so one of the two has to lose, and the one visible on every finish is the
+one that was fixed. Telling them apart needs evidence rather than elapsed time —
+a payload discriminator, an emission timestamp, or the W1 status arbiter; issue
+440 sketches those.
 
 Backstops, so a `SubagentStop` that never arrives (lost POST, killed process) —
 or a healed `running` that no `Stop` will ever follow — cannot hold a task on
@@ -74,7 +115,7 @@ fourth is armed by nothing, which is the point (issue 243):
 
 - Tracked entries expire after 2 hours (kept long on purpose — a short TTL would
   prematurely finish sessions whose subagents legitimately run long).
-- A held `Stop` (and a recent-finish heal) arms a once-a-minute recheck. Once the
+- A held `Stop` (and a subagent heal) arms a once-a-minute recheck. Once the
   tracked set is idle — drained by real `SubagentStop`s or by expiry — a 3-minute
   drain grace starts: if the re-invoked main harness's own `Stop` lands the finish
   within it (the normal flow), the backstop's promotion is a no-op (it only fires
