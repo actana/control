@@ -21,7 +21,7 @@ import {
   queryActiveTasks,
   queryArchivedTasks,
   queryStrandedReadyTasks,
-  queryTaskEverWorked,
+  queryTaskProvenNeverWorked,
   queryProjects,
   queryTask,
   queryTasks,
@@ -211,21 +211,21 @@ export function listBootSweepTasks(): CoreLinkTaskSnapshot[] {
 }
 
 /**
- * Has this Session ever reported work (issue 387, review finding 2)? The read
- * behind the relaunch reset in `core-session-relaunch.ts`.
+ * Positive proof that this Session never worked (issue 387, review finding 2).
+ * The read behind the relaunch reset in `core-session-relaunch.ts`.
  *
- * Answers `false` on an unavailable DB, like every read here. That is the safe
- * direction: `false` only permits a reset the caller has already narrowed to a
- * settled row, and a Core that cannot read its log should not be refusing to
- * correct a card either.
+ * Answers `false` on an unavailable DB, like every read here — and `false` is
+ * the conservative answer for this one: it forbids the reset. A Core that
+ * cannot read its own event log has no business overwriting a card on the
+ * strength of what that log does not say.
  */
-export function taskEverWorked(taskId: string): boolean {
+export function taskProvenNeverWorked(taskId: string): boolean {
   const conn = ensureConnection();
   if (!conn) return false;
   try {
-    return queryTaskEverWorked(conn as unknown as CoreQuerySqlite, taskId);
+    return queryTaskProvenNeverWorked(conn as unknown as CoreQuerySqlite, taskId);
   } catch (err) {
-    log.warn("core-query.task-ever-worked-failed", { taskId, error: String(err) });
+    log.warn("core-query.task-proven-never-worked-failed", { taskId, error: String(err) });
     return false;
   }
 }

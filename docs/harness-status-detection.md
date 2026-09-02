@@ -345,7 +345,10 @@ Sessions whose process is gone:
   no agent spawn behind it is left alone. The evidence is permanent — nothing
   prunes `event_log` — so the first boot after this shipped settled every
   historical spawned `ready` row in one batch, and every boot since sees only
-  what the run before it stranded.
+  what the run before it stranded. That batch also reorders the operator's
+  lists: a status patch stamps `updated_at`, which Fleet and Archived both
+  order by, so every row it settles floats to the top at the boot time, above
+  recent work, and there is no undoing it.
 
   The quiet-Session backstop deliberately does **not** see these rows: it reads
   the narrow `listActiveTasks`, and a bare Session waiting on its first prompt
@@ -362,14 +365,36 @@ Sessions whose process is gone:
   harness, it waits at its prompt, and no hook fires until the first prompt —
   so the card would read `disconnected` over a live harness, on every harness
   family. On an **agent** spawn (never a `shell` or `shellSession` one), a row
-  in a settled status that has **never worked** goes back to `ready`.
+  sitting on **`disconnected`** that is **proven never to have worked** goes
+  back to `ready`.
+
+  Both halves of that are narrower than they look, and deliberately so, because
+  this write destroys information when it is wrong.
+
+  `disconnected` rather than "any settled status": before `ready` became a
+  status a Session can leave it was one-way, so a Session that never worked
+  could only ever *be* `ready`, and the only status the two fallbacks above
+  write for one is `disconnected`. `finished`, `terminated` and `interrupted`
+  are therefore unreachable for such a Session — every row wearing one worked
+  for it — and excluding them here means a real card cannot be overwritten
+  even if the history read below is wrong.
 
   "Never worked" is read from the event log, not the row: every status change
   on a Core-owned row appends a `task:updated` carrying the status that was
-  *patched* (`queryTaskEverWorked`), and any status other than `ready` /
+  *patched* (`queryTaskProvenNeverWorked`), and any status other than `ready` /
   `disconnected` says a turn happened — including on a harness that goes
   straight from `ready` to `finished` without ever reporting `running`. A
   `finished` Session being reopened is being resumed, and keeps its card.
+
+  That read sees **only status-bearing `task:updated` events, and those start
+  at v0.4.0** (`2dd34a8`): before it the payload was `{taskId, projectId}` and
+  nothing else. Since `event_log` is never pruned, a Core upgraded from 0.3.x
+  still holds status-less rows for Sessions that ran for hours, and their
+  silence is indistinguishable from a Session that never ran a turn. So the
+  read demands *positive* evidence — a row the fallbacks above settled always
+  carries a `"status":"disconnected"` update, so a row with no status-bearing
+  update at all is a legacy log, and the answer is "cannot tell, do not reset"
+  rather than "never worked".
 
 ## Terminal-input fallback
 

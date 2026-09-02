@@ -6,7 +6,7 @@ import {
   queryArchivedTasks,
   queryProjects,
   queryStrandedReadyTasks,
-  queryTaskEverWorked,
+  queryTaskProvenNeverWorked,
   queryTasks,
   type CoreQuerySqlite,
 } from "../core-query";
@@ -477,55 +477,75 @@ describe("queryStrandedReadyTasks (the ready zombie, issue 387)", () => {
   });
 });
 
-describe("queryTaskEverWorked (the relaunch reset's gate, issue 387)", () => {
+describe("queryTaskProvenNeverWorked (the relaunch reset's gate, issue 387)", () => {
   let db: Database.Database;
   beforeEach(() => {
     db = openDb();
     addEventLog(db);
   });
 
-  it("is false for a Session whose row only ever moved between ready and disconnected", () => {
+  it("proves it for a row that only ever moved between ready and disconnected", () => {
     // The bare Session: born `ready`, settled `disconnected` by the sweep or
-    // the PTY-exit path, and nothing in between. Nothing here is a turn.
+    // the PTY-exit path, and nothing in between. Nothing here is a turn — and
+    // that `disconnected` is the positive evidence that this log can speak.
     taskUpdated(db, "t-bare", "disconnected");
-    expect(queryTaskEverWorked(asQuery(db), "t-bare")).toBe(false);
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(true);
   });
 
-  it("is false when the row changed without a status patch at all", () => {
-    // A rename, a pin, an archive: `CoreTaskWriter` omits `status` from the
-    // payload unless the mutation carried one, which is what makes this read
-    // possible in the first place.
-    taskUpdated(db, "t-renamed");
-    expect(queryTaskEverWorked(asQuery(db), "t-renamed")).toBe(false);
+  it("refuses to prove it for a log that predates v0.4.0", () => {
+    // `task:updated` only began carrying `status` in 2dd34a8 (v0.4.0), and
+    // `event_log` is never pruned, so a Core upgraded from 0.3.x still holds
+    // status-less rows for Sessions that worked for hours. Read as "did any
+    // turn happen", their absence looks exactly like a Session that never ran
+    // one — and answering "never worked" there overwrites a real card.
+    taskUpdated(db, "t-legacy");
+    taskUpdated(db, "t-legacy");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-legacy")).toBe(false);
   });
 
-  it("is true for every status that only a turn produces", () => {
+  it("refuses to prove it for a row with no history at all", () => {
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-unknown")).toBe(false);
+  });
+
+  it("still proves it when a status-less update sits beside the evidence", () => {
+    // A rename or a pin writes no status; on a current Core the settle beside
+    // it does, and that is what makes the log readable.
+    taskUpdated(db, "t-bare");
+    taskUpdated(db, "t-bare", "disconnected");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(true);
+  });
+
+  it("is false for every status that only a turn produces", () => {
     for (const status of ["running", "needs-input", "interrupted", "finished", "terminated"]) {
       const taskId = `t-${status}`;
       taskUpdated(db, taskId, "disconnected");
       taskUpdated(db, taskId, status);
-      expect(queryTaskEverWorked(asQuery(db), taskId)).toBe(true);
+      expect(queryTaskProvenNeverWorked(asQuery(db), taskId)).toBe(false);
     }
   });
 
-  it("is true for a harness that goes straight from ready to finished", () => {
+  it("is false for a harness that goes straight from ready to finished", () => {
     // Some harnesses never report `running`; the finish is the only patch.
     taskUpdated(db, "t-quiet", "finished");
-    expect(queryTaskEverWorked(asQuery(db), "t-quiet")).toBe(true);
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-quiet")).toBe(false);
   });
 
   it("reads only this Session's own history", () => {
     taskUpdated(db, "t-other", "running");
-    expect(queryTaskEverWorked(asQuery(db), "t-bare")).toBe(false);
+    taskUpdated(db, "t-bare", "disconnected");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(true);
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-other")).toBe(false);
   });
 
-  it("ignores events that are not task:updated", () => {
+  it("takes no evidence from an event that is not task:updated", () => {
+    // A `pty:spawn` says a process started, not that a turn did — and it is
+    // not proof the log carries statuses either.
     spawnedPty(db, "t-bare");
-    expect(queryTaskEverWorked(asQuery(db), "t-bare")).toBe(false);
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(false);
   });
 
   it("is false when there is no event log to read", () => {
-    expect(queryTaskEverWorked(asQuery(openDb()), "t-bare")).toBe(false);
+    expect(queryTaskProvenNeverWorked(asQuery(openDb()), "t-bare")).toBe(false);
   });
 });
 

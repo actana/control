@@ -12,7 +12,7 @@ import {
   configureCoreQueryStore,
   coreQueryStore,
   disposeCoreQueryStore,
-  taskEverWorked,
+  taskProvenNeverWorked,
 } from "../core-query-store";
 import {
   appendEvent,
@@ -47,8 +47,15 @@ describe("putting a relaunched Session back on ready", () => {
     if (status !== "ready") writer.mutate({ op: "update", taskId, status });
   };
   const statusOf = (taskId: string) => coreQueryStore.getTask(taskId)?.status;
+  /**
+   * A `task:updated` in the shape `CoreTaskWriter` wrote it BEFORE v0.4.0 —
+   * `{taskId, projectId}` and no status (2dd34a8 added the status field). The
+   * only way to reproduce the history a Core upgraded from 0.3.x still holds.
+   */
+  const legacyUpdate = (taskId: string) =>
+    appendEvent("task:updated", JSON.stringify({ taskId, projectId: "p1" }), { taskId });
   const relaunch = (taskId: string) =>
-    readySessionOnAgentSpawn({ writer, everWorked: taskEverWorked }, taskId);
+    readySessionOnAgentSpawn({ writer, provenNeverWorked: taskProvenNeverWorked }, taskId);
 
   beforeEach(() => {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-session-relaunch-"));
@@ -103,6 +110,58 @@ describe("putting a relaunched Session back on ready", () => {
 
     expect(relaunch("t-swept")).toBe(false);
     expect(statusOf("t-swept")).toBe("disconnected");
+  });
+
+  it("does not reset a legacy finished row whose updates carry no status", () => {
+    // A Core upgraded from 0.3.x. This Session ran for hours and finished; its
+    // whole history predates the status field, so the event log holds no proof
+    // either way. Read as "did any turn happen" the answer comes out backwards
+    // and destroys the operator's record — so the reset must not fire, and the
+    // status check must not offer `finished` as a candidate in the first place.
+    coreMutationStore.mutateTask({
+      op: "create",
+      taskId: "t-legacy",
+      projectId: "p1",
+      title: "t-legacy",
+      agent: "claude-code",
+      status: "finished",
+    });
+    legacyUpdate("t-legacy");
+    legacyUpdate("t-legacy");
+
+    expect(relaunch("t-legacy")).toBe(false);
+    expect(statusOf("t-legacy")).toBe("finished");
+  });
+
+  it("does not reset a legacy disconnected row either", () => {
+    // The same old log, on the one status the reset does consider. Here the
+    // narrowed status set gives no protection at all and the evidence check is
+    // the only thing standing between a Session that worked and a wiped card.
+    coreMutationStore.mutateTask({
+      op: "create",
+      taskId: "t-legacy-gone",
+      projectId: "p1",
+      title: "t-legacy-gone",
+      agent: "claude-code",
+      status: "disconnected",
+    });
+    legacyUpdate("t-legacy-gone");
+
+    expect(relaunch("t-legacy-gone")).toBe(false);
+    expect(statusOf("t-legacy-gone")).toBe("disconnected");
+  });
+
+  it("never considers a status a never-worked Session cannot be wearing", () => {
+    // Before issue 387 `ready` was one-way, and the only status this Core's own
+    // settles write for a never-worked row is `disconnected`. So these three
+    // are unreachable by construction, and are not candidates — no log read
+    // needed, and none trusted.
+    for (const status of ["finished", "terminated", "interrupted"]) {
+      const taskId = `t-${status}`;
+      insert(taskId, status);
+      expect(relaunch(taskId)).toBe(false);
+      expect(statusOf(taskId)).toBe(status);
+    }
   });
 
   it("does not disturb a live turn, or a Session already ready", () => {
@@ -161,7 +220,10 @@ describe("putting a relaunched Session back on ready", () => {
     });
 
     expect(
-      readySessionOnAgentSpawn({ writer: failing, everWorked: taskEverWorked }, "t-bare"),
+      readySessionOnAgentSpawn(
+        { writer: failing, provenNeverWorked: taskProvenNeverWorked },
+        "t-bare",
+      ),
     ).toBe(false);
     expect(statusOf("t-bare")).toBe("disconnected");
   });

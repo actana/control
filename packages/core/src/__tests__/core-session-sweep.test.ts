@@ -50,9 +50,19 @@ describe("settling the Sessions a Core restart stranded", () => {
     }
   };
   const statusOf = (taskId: string) => coreQueryStore.getTask(taskId)?.status;
-  /** The `pty:spawn` the Core appends when it starts a harness for a task. */
-  const spawnPty = (taskId: string) =>
-    appendEvent("pty:spawn", JSON.stringify({ taskId }), { ptyId: `pty-${taskId}`, taskId });
+  /**
+   * The `pty:spawn` the Core appends when it starts a harness for a task, in
+   * the shape `recordPtySpawn` writes — `shellSession` included, because the
+   * sweep's evidence query reads it.
+   */
+  const spawnPty = (taskId: string) => {
+    const ptyId = `pty-${taskId}`;
+    return appendEvent(
+      "pty:spawn",
+      JSON.stringify({ ptyId, taskId, shellSession: false }),
+      { ptyId, taskId },
+    );
+  };
 
   beforeEach(() => {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-session-sweep-"));

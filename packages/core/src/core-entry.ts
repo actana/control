@@ -96,7 +96,7 @@ import {
   coreQueryStore,
   listActiveTasks,
   listBootSweepTasks,
-  taskEverWorked,
+  taskProvenNeverWorked,
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
@@ -426,7 +426,10 @@ async function startCore(): Promise<void> {
     // so the card would read `disconnected` over a healthy harness.
     relaunchPort: {
       agentSpawned: (taskId) =>
-        void readySessionOnAgentSpawn({ writer: taskWriter, everWorked: taskEverWorked }, taskId),
+        void readySessionOnAgentSpawn(
+          { writer: taskWriter, provenNeverWorked: taskProvenNeverWorked },
+          taskId,
+        ),
     },
     // Issue 11: back the `agentsAvailabilityList` frame with the current
     // snapshot from the Core's own PATH probe. The event stream carries
