@@ -40,6 +40,78 @@ export function activeGroupLabel(
   return groups?.find((g) => g.id === active)?.name ?? "All projects";
 }
 
+/** The wire shape of an active group: "all" is stored as null. */
+function storedActiveGroup(active: ActiveProjectGroup): string | null {
+  return active === ACTIVE_GROUP_ALL ? null : active;
+}
+
+/** The active group a settings row carries (null reads as "all"). */
+function activeGroupOf(settings: Pick<AppSettings, "activeProjectGroup">): ActiveProjectGroup {
+  return settings.activeProjectGroup ?? ACTIVE_GROUP_ALL;
+}
+
+/**
+ * Generation guard over the optimistic active-group write (#384).
+ *
+ * `setActiveGroup` writes the cache first and PATCHes second, and two PATCHes
+ * in flight are not ordered: pick group A then group B and A's answer can land
+ * last, carrying the server's *older* `activeProjectGroup` back over B — the
+ * rail reverts to an older group under the cursor. So each local write takes
+ * the next generation, and a settings answer is applied only while its
+ * generation is still the newest; an older PATCH resolving late is dropped.
+ *
+ * The ledger also remembers the last group the server acknowledged, which is
+ * where a failed write puts the rail back — never some older group that merely
+ * happened to be on screen before the click.
+ */
+export function createActiveGroupWriteLedger(initial: ActiveProjectGroup = ACTIVE_GROUP_ALL) {
+  let latest = 0;
+  let inFlight = 0;
+  let acknowledged: ActiveProjectGroup = initial;
+
+  return {
+    /** Claim the generation for one local (optimistic) write. */
+    beginWrite(): number {
+      latest += 1;
+      inFlight += 1;
+      return latest;
+    },
+    /** Settle a write; true only while its answer is still the newest one. */
+    settleWrite(generation: number): boolean {
+      if (inFlight > 0) inFlight -= 1;
+      return generation === latest;
+    },
+    /** Record the group the server confirmed for the newest write. */
+    acknowledge(group: ActiveProjectGroup): void {
+      acknowledged = group;
+    },
+    /**
+     * Adopt a settings answer nobody here asked for (first load, refetch,
+     * another window's write arriving on an invalidation) as the acknowledged
+     * truth — but only while no local write is in flight, since a cache read
+     * during a race is this tab's own optimistic value, not the server's.
+     */
+    observe(group: ActiveProjectGroup): void {
+      if (inFlight === 0) acknowledged = group;
+    },
+    /** Where a failed write puts the rail back. */
+    lastAcknowledged(): ActiveProjectGroup {
+      return acknowledged;
+    },
+  };
+}
+
+export type ActiveGroupWriteLedger = ReturnType<typeof createActiveGroupWriteLedger>;
+
+/** One ledger per tab: every `useActiveGroup` caller writes the same setting,
+ *  so the generations have to be drawn from a single counter. */
+let writes = createActiveGroupWriteLedger();
+
+/** @internal — tests start from a fresh generation counter. */
+export function __resetActiveGroupWritesForTests(): void {
+  writes = createActiveGroupWriteLedger();
+}
+
 /**
  * The globally active project group — the single source of truth is the
  * settings query cache (so every consumer re-renders together); localStorage
@@ -71,20 +143,47 @@ export function useActiveGroup(): {
     return groups.some((g) => g.id === raw) ? raw : ACTIVE_GROUP_ALL;
   }, [raw, groups]);
 
-  const setActiveGroup = useCallback(
-    (next: ActiveProjectGroup) => {
-      writeCachedActiveProjectGroup(next);
+  // Anything the settings query itself delivers is the server's word, so long
+  // as this tab has no write of its own outstanding.
+  useEffect(() => {
+    if (settings === undefined) return;
+    writes.observe(activeGroupOf(settings));
+  }, [settings]);
+
+  /** The optimistic half: localStorage + settings cache, no request. */
+  const showActiveGroup = useCallback(
+    (group: ActiveProjectGroup) => {
+      writeCachedActiveProjectGroup(group);
       queryClient.setQueryData<AppSettings>(queryKeys.settings, (current) =>
-        current ? { ...current, activeProjectGroup: next === ACTIVE_GROUP_ALL ? null : next } : current,
+        current ? { ...current, activeProjectGroup: storedActiveGroup(group) } : current,
       );
-      void api
-        .updateSettings({ activeProjectGroup: next === ACTIVE_GROUP_ALL ? null : next })
-        .then((updated) => queryClient.setQueryData(queryKeys.settings, updated))
-        .catch((error) => {
-          console.error("[settings] failed to persist active project group:", error);
-        });
     },
     [queryClient],
+  );
+
+  const setActiveGroup = useCallback(
+    (next: ActiveProjectGroup) => {
+      const generation = writes.beginWrite();
+      showActiveGroup(next);
+      void api
+        .updateSettings({ activeProjectGroup: storedActiveGroup(next) })
+        .then((updated) => {
+          // A newer selection was made while this PATCH was out: its answer is
+          // the older truth, so it is dropped rather than rendered.
+          if (!writes.settleWrite(generation)) return;
+          writes.acknowledge(activeGroupOf(updated));
+          writeCachedActiveProjectGroup(activeGroupOf(updated));
+          queryClient.setQueryData(queryKeys.settings, updated);
+        })
+        .catch((error) => {
+          console.error("[settings] failed to persist active project group:", error);
+          // Same guard, and then back to what the server last acknowledged —
+          // a superseded failure leaves the newer selection alone.
+          if (!writes.settleWrite(generation)) return;
+          showActiveGroup(writes.lastAcknowledged());
+        });
+    },
+    [queryClient, showActiveGroup],
   );
 
   // Self-heal persistence when the active group was deleted: the memo above
