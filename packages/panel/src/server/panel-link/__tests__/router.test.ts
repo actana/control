@@ -385,6 +385,50 @@ describe("panel-link router · replay from a tab's cursor", () => {
     expect(fresh.tab.coreFrames("core_a")).toEqual([{ type: "eventsReplayed", lastEventId: 2 }]);
   });
 
+  it("still hands a brand-new tab the finishes it was not open for", () => {
+    const link = source.bring("core_a");
+    subscribe(openTab().session, "core_a", 0);
+    link.pushEvent(event(1));
+    link.pushEvent(event(2, "session:finished"));
+    link.pushEvent(event(3));
+
+    // The tab the operator opens after the Session ended (issue 388).
+    const fresh = openTab();
+    subscribe(fresh.session, "core_a", 0);
+
+    // The finish, and only the finish: the rest of the log is what its queries
+    // are already fetching, but nothing re-derives the *notice* of a finish.
+    expect(fresh.tab.eventIds("core_a")).toEqual([2]);
+    expect(fresh.tab.coreFrames("core_a").at(-1)).toEqual({
+      type: "eventsReplayed",
+      lastEventId: 3,
+    });
+  });
+
+  it("bounds the finish replay to the recent tail rather than the whole log", () => {
+    const link = source.bring("core_a");
+    subscribe(openTab().session, "core_a", 0);
+    for (let id = 1; id <= 12; id++) link.pushEvent(event(id, "session:finished"));
+
+    const fresh = openTab();
+    subscribe(fresh.session, "core_a", 0);
+
+    // "You missed a finish", not a history: the newest eight, oldest first.
+    expect(fresh.tab.eventIds("core_a")).toEqual([5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  it("does not replay a finish to a tab that already has a cursor past it", () => {
+    const link = source.bring("core_a");
+    const { tab, session } = openTab();
+    subscribe(session, "core_a", 0);
+    link.pushEvent(event(1, "session:finished"));
+
+    // A reconnect, from the cursor the tab reached: it saw that finish live.
+    subscribe(session, "core_a", 1);
+
+    expect(tab.eventIds("core_a")).toEqual([1]);
+  });
+
   it("keeps live events flowing after the replay, in order and without repeats", () => {
     const link = source.bring("core_a");
     const { tab, session } = openTab();

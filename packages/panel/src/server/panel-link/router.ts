@@ -95,6 +95,29 @@ export interface PanelLinkSocket {
  */
 const DEFAULT_EVENT_BUFFER_SIZE = 2048;
 
+/**
+ * The event kinds a tab that has seen nothing is still owed on arrival.
+ *
+ * A finish is not like the rest of the log. Everything else a tab needs is
+ * re-derivable from a query it makes on mount — the grid reads status off
+ * `tasksList` — but the *notice* of a finish happens once, when the event goes
+ * past, and a tab that was not there when it did never learns of it at all
+ * (issue 388). Kinds, not payload shapes: the router routes on `kind` like
+ * every other layer, and a new finish-class kind joins by being named here.
+ */
+const FINISH_EVENT_KINDS = new Set(["session:finished"]);
+
+/**
+ * How many finish-class events a brand-new tab is handed on subscribe.
+ *
+ * Deliberately small: this is "you missed a finish", not a history. The tail is
+ * the recent end of it, so what a tab gets is the finishes it plausibly wants
+ * to be told about rather than every one since the link came up — and the
+ * browser is the only thing that can know whether it has announced one before,
+ * so it dedups what lands (see `use-session-finish-notifications`).
+ */
+const FINISH_REPLAY_LIMIT = 8;
+
 export type PanelLinkRouterOptions = {
   eventBufferSize?: number;
 };
@@ -276,11 +299,22 @@ export class PanelLinkRouter {
    * gets the head rather than the buffer: its views load current state through
    * queries, and replaying thousands of historical events at it would only make
    * it refetch what it is already fetching.
+   *
+   * With one exception, and it is the exception that names the rule: the finish
+   * (issue 388). A tab that opened after a Session finished has no query that
+   * would tell it a finish *happened* — `tasksList` says the row is finished,
+   * which is a state, not an event, and the toast and the ding are the Panel's
+   * answer to the event. So the finish-class tail rides along, bounded by
+   * {@link FINISH_REPLAY_LIMIT}, and the cursor still jumps to head: these are
+   * a notice the tab missed, not a place in the log it is behind at.
    */
   replayFor(coreId: string, lastEventId: number): { events: CoreLinkEvent[]; head: number } {
     const state = this.cores.get(coreId);
     if (!state) return { events: [], head: 0 };
-    if (lastEventId <= 0) return { events: [], head: state.head };
+    if (lastEventId <= 0) {
+      const finishes = state.buffer.filter((e) => FINISH_EVENT_KINDS.has(e.kind));
+      return { events: finishes.slice(-FINISH_REPLAY_LIMIT), head: state.head };
+    }
     return {
       events: state.buffer.filter((e) => e.eventId > lastEventId),
       head: state.head,

@@ -483,6 +483,36 @@ describe("the live read path, browser to Core", () => {
     }, 10_000);
   });
 
+  it("gives a tab opened after a Session finished the finish it was never there for", { timeout: 20_000 }, async () => {
+    const { coreId, core } = await pair();
+    // The Panel service is up and dialing this Core; no browser is on it. The
+    // Session ends anyway, and the log is the only record that it did (#388).
+    core.log.push("task:statusChanged");
+    core.log.push("session:finished");
+
+    // The service is what has to have them before the question means anything:
+    // a tab that subscribed while they were still in flight would be told live,
+    // which proves nothing about a tab that was never there. This one watches
+    // them land and goes away again.
+    const witness = await openTab();
+    witness.subscribe(coreId, 0);
+    await vi.waitFor(
+      () => expect(witness.events(coreId).map((e) => e.kind)).toContain("session:finished"),
+      10_000,
+    );
+    witness.close();
+
+    const fresh = await openTab();
+    fresh.subscribe(coreId, 0);
+
+    await vi.waitFor(
+      () => expect(fresh.events(coreId).map((e) => e.kind)).toContain("session:finished"),
+      10_000,
+    );
+    // The finish only: the rest of what it missed is what its queries fetch.
+    expect(fresh.events(coreId).map((e) => e.kind)).not.toContain("task:statusChanged");
+  });
+
   it("replays what a tab missed while its link was down", { timeout: 20_000 }, async () => {
     const { coreId, core } = await pair();
     const before = await openTab();

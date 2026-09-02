@@ -189,6 +189,73 @@ describe("useSessionFinishNotifications — integration", () => {
     hook.unmount();
   });
 
+  it("still announces a finish to a tab opened after it happened", () => {
+    // Nothing was watching when the Session ended; the service hands the finish
+    // to the tab the operator opens next, marked as replay (issue 388).
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame(), replay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    expect(h.playDing).toHaveBeenCalledTimes(1);
+    expect(toastText()).toContain("Session finished — Remote Project on Core A");
+    expect(loadSessionFinishNotifications()).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it("does not double-toast the tab that was watching when the replay repeats it", () => {
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    // The same finish again, this time as the answer to a re-subscribe.
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame(), replay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    expect(h.playDing).toHaveBeenCalledTimes(1);
+    expect(loadSessionFinishNotifications()).toHaveLength(1);
+    hook.unmount();
+  });
+
+  it("does not re-announce, in a second tab, what the first tab already announced", () => {
+    const first = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    first.unmount();
+
+    // A second tab: its own module scope, the same browser storage. The finish
+    // is still in the service's buffer, so it is replayed there too.
+    __resetSessionFinishDedupForTests();
+    const second = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame(), replay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(1);
+    expect(h.playDing).toHaveBeenCalledTimes(1);
+    second.unmount();
+  });
+
+  it("announces a live finish in every open tab, replay dedup or not", () => {
+    const first = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+    first.unmount();
+
+    // A second tab that was also open: the event happens *to it* as well, and a
+    // record of what this browser has said must not silence that.
+    __resetSessionFinishDedupForTests();
+    const second = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame()));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
+    second.unmount();
+  });
+
+  it("announces a second finish of the same Session, replayed, under its own eventId", () => {
+    const hook = renderHook(() => useSessionFinishNotifications());
+    act(() => h.fleetHandler?.(remoteFinishFrame({ eventId: 42 })));
+    // Resumed and finished again: a different event, and a notice of its own.
+    act(() => h.fleetHandler?.({ ...remoteFinishFrame({ eventId: 77 }), replay: true }));
+
+    expect(h.mcToastCustom).toHaveBeenCalledTimes(2);
+    hook.unmount();
+  });
+
   it("keeps a Panel-local toast title free of the ' on ' suffix", () => {
     const hook = renderHook(() => useSessionFinishNotifications());
     act(() => h.sseHandler?.(panelLocalFinishEvent()));

@@ -14,10 +14,12 @@ import { showSessionFinishOsNotification } from "~/lib/os-notifications";
 import {
   SESSION_FINISH_NOTIFICATIONS_STORAGE_KEY,
   SESSION_NOTIFICATIONS_CHANGED_EVENT,
+  hasAnnouncedFinish,
   loadAppNotifications,
   mergeSessionFinishNotification,
   pruneAppNotifications,
   publishAppNotifications,
+  recordAnnouncedFinish,
   requestSessionNotificationOpen,
   type SessionFinishNotification,
   type SessionNotificationPruneTarget,
@@ -65,7 +67,13 @@ function markSeen(key: string): boolean {
   return true;
 }
 
-// Test hook — do not use in production code. Renderer-only.
+/**
+ * Test hook — do not use in production code. Renderer-only.
+ *
+ * Clears this tab's half of the dedup only. The other half — what the *browser*
+ * has announced (issue 388) — lives in storage on purpose, so calling this and
+ * leaving storage alone is exactly the state a newly opened tab is in.
+ */
 export function __resetSessionFinishDedupForTests() {
   seenFinishKeys.clear();
 }
@@ -127,6 +135,13 @@ export function normalizeSessionFinishedEvent(
     taskTitle,
   };
 }
+
+/**
+ * How a finish reached this tab. `live` is the event happening; `replay` is the
+ * service handing a tab that just opened a finish it was not there for — the
+ * fix for a new tab getting no notice at all (issue 388).
+ */
+type FinishDelivery = "live" | "replay";
 
 type RemoteDeletionKind = "task" | "project";
 
@@ -235,8 +250,20 @@ export function useSessionFinishNotifications() {
   }, []);
 
   const dispatchNormalizedFinish = useCallback(
-    (finish: NormalizedFinish) => {
-      if (!markSeen(dedupKey(finish))) return;
+    (finish: NormalizedFinish, delivery: FinishDelivery = "live") => {
+      const key = dedupKey(finish);
+      // A replayed finish is one this tab was not open for (issue 388). It is
+      // announced only if nothing in this browser has announced it already:
+      // two tabs open when a Session finishes should both say so — that is one
+      // event reaching two surfaces — but a tab opened *afterwards* is being
+      // told about the same announcement a second time, which is noise.
+      if (delivery === "replay" && hasAnnouncedFinish(key)) return;
+      if (!markSeen(key)) return;
+      // Remembered across tabs only for a finish the Core numbered. An SSE
+      // finish has no eventId, so its key cannot tell one finish of a Session
+      // from the next one, and a durable record of it would silence a real
+      // second finish forever.
+      if (finish.eventId !== null) recordAnnouncedFinish(key);
 
       const notification: SessionFinishNotification = {
         kind: "session-finished",
@@ -457,7 +484,7 @@ export function useSessionFinishNotifications() {
       const alias = coreAliasByIdRef.current.get(msg.coreId) ?? null;
       const finish = normalizeSessionFinishedEvent("fleet", msg, alias);
       if (!finish) return;
-      dispatchNormalizedFinish(finish);
+      dispatchNormalizedFinish(finish, msg.replay === true ? "replay" : "live");
     });
     return () => {
       for (const release of releases) release();

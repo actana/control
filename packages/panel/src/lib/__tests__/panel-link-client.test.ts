@@ -246,6 +246,46 @@ describe("panel link · reconnect and replay", () => {
     link.close();
   });
 
+  it("says which events were replay and which happened just now", () => {
+    const link = client();
+    link.watch("core_a");
+    const socket = live();
+    const seen: Array<[number, boolean]> = [];
+    link.onEvent(({ event: e, replay }) => seen.push([e.eventId, replay === true]));
+
+    // Everything before the caught-up marker answers the subscribe.
+    socket.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(4) } });
+    socket.push({ t: "core", coreId: "core_a", frame: { type: "eventsReplayed", lastEventId: 4 } });
+    socket.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(5) } });
+
+    expect(seen).toEqual([
+      [4, true],
+      [5, false],
+    ]);
+    link.close();
+  });
+
+  it("reopens the replay window on the subscribe a reconnect sends", () => {
+    const link = client();
+    link.watch("core_a");
+    const first = live();
+    const seen: Array<[number, boolean]> = [];
+    link.onEvent(({ event: e, replay }) => seen.push([e.eventId, replay === true]));
+    first.push({ t: "core", coreId: "core_a", frame: { type: "eventsReplayed", lastEventId: 4 } });
+    first.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(5) } });
+
+    first.drop();
+    vi.advanceTimersByTime(20);
+    const second = live();
+    second.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(6) } });
+
+    expect(seen).toEqual([
+      [5, false],
+      [6, true],
+    ]);
+    link.close();
+  });
+
   it("fails in-flight requests on a drop rather than hanging until timeout", async () => {
     const link = client();
     const socket = live();

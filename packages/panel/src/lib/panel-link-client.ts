@@ -99,11 +99,30 @@ type Pending = {
   timer: ReturnType<typeof setTimeout>;
 };
 
+/**
+ * One domain event as a tab is handed it, with the one thing about its delivery
+ * a listener can act on: whether it arrived live or as replay (issue 388).
+ */
+export type PanelLinkEventMessage = {
+  coreId: string;
+  event: CoreLinkEvent;
+  /** True while this is the answer to a `subscribe`, not something that just happened. */
+  replay?: boolean;
+};
+
 type Watch = {
   /** How many callers asked to watch this Core; the subscribe lives while > 0. */
   refs: number;
   /** The highest eventId this tab has seen from the Core. */
   cursor: number;
+  /**
+   * Whether the events arriving right now are the answer to a `subscribe` —
+   * true from the frame that asks to the `eventsReplayed` marker that closes
+   * it. Passed on to listeners because a replayed event and a live one are not
+   * the same fact: the live one just happened, the replayed one may be a thing
+   * this browser has already told the operator about (issue 388).
+   */
+  replaying: boolean;
 };
 
 export class PanelLinkClient {
@@ -147,7 +166,7 @@ export class PanelLinkClient {
    */
   private readonly claimedPtys = new Map<string, Set<string>>();
 
-  private readonly eventListeners = new Set<(msg: { coreId: string; event: CoreLinkEvent }) => void>();
+  private readonly eventListeners = new Set<(msg: PanelLinkEventMessage) => void>();
   private readonly dataListeners = new Set<
     (msg: { coreId: string; ptyId: string; data: string; seq: number }) => void
   >();
@@ -242,7 +261,7 @@ export class PanelLinkClient {
    * hold; the tab keeps watching while anyone else still is.
    */
   watch(coreId: string): () => void {
-    const watch = this.watching.get(coreId) ?? { refs: 0, cursor: 0 };
+    const watch = this.watching.get(coreId) ?? { refs: 0, cursor: 0, replaying: false };
     watch.refs++;
     this.watching.set(coreId, watch);
     if (watch.refs === 1) this.sendSubscribe(coreId);
@@ -304,7 +323,7 @@ export class PanelLinkClient {
     await this.request(coreId, { type: "ptyUnsubscribe", ptyId });
   }
 
-  onEvent(cb: (msg: { coreId: string; event: CoreLinkEvent }) => void): () => void {
+  onEvent(cb: (msg: PanelLinkEventMessage) => void): () => void {
     this.eventListeners.add(cb);
     return () => this.eventListeners.delete(cb);
   }
@@ -620,7 +639,10 @@ export class PanelLinkClient {
    */
   private sendSubscribe(coreId: string): void {
     if (!this.socket || !this.open) return;
-    const cursor = this.watching.get(coreId)?.cursor ?? 0;
+    const watch = this.watching.get(coreId);
+    const cursor = watch?.cursor ?? 0;
+    // The window a replay lands in opens here and closes on `eventsReplayed`.
+    if (watch) watch.replaying = true;
     this.rawSend(
       encodePanelLinkFrame({
         t: "core",
@@ -739,12 +761,15 @@ export class PanelLinkClient {
         // not re-fire listeners that drive refetches.
         if (watch && inner.event.eventId <= watch.cursor) return;
         if (watch) watch.cursor = inner.event.eventId;
-        for (const cb of this.eventListeners) cb({ coreId, event: inner.event });
+        const replay = watch?.replaying === true;
+        for (const cb of this.eventListeners) cb({ coreId, event: inner.event, replay });
         return;
       }
       case "eventsReplayed": {
         const watch = this.watching.get(coreId);
-        if (watch && inner.lastEventId > watch.cursor) watch.cursor = inner.lastEventId;
+        if (!watch) return;
+        if (inner.lastEventId > watch.cursor) watch.cursor = inner.lastEventId;
+        watch.replaying = false;
         return;
       }
       case "data":
