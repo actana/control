@@ -254,6 +254,44 @@ describe("actana events tail, across a Core restart", () => {
     expect(idsOf(result.out)).toEqual([1501]);
   }, 60_000);
 
+  it("reads a history longer than one tail exactly once, in order, and then exits", async () => {
+    // The printing side of the capped-tail walk (#402 review, non-blocking
+    // note), against the Core that produces it. This is the mirror of the test
+    // above and the one shape #205's review blocked on, now reachable on a path
+    // that did not exist then: a `--limit` read re-subscribes **while printing**,
+    // so a cursor moved wrong shows up here as a duplicated line or a hole,
+    // neither of which throws or logs anywhere.
+    //
+    // 1500 events past the cursor against a cap of 1000: the first marker is a
+    // receipt for a tail the Core cut short, the walk asks again from it, and
+    // only an empty tail ends the read. The dedup underneath is the durable
+    // client's; this is what proves it holds on this path rather than assuming
+    // it does.
+    const log = arrayEventLog();
+    fillPastTheCap(log);
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    // A ceiling well past the log: what ends this run is the end of the
+    // history, not the count.
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--since", "start", "--limit", "2000"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    const ids = idsOf(result.out);
+    expect(ids).toHaveLength(1_500);
+    // Each exactly once, in order. A replay storm is a repeat here; a moved
+    // cursor is a gap.
+    expect(ids).toEqual(Array.from({ length: 1_500 }, (_, i) => i + 1));
+    // More than one read, so the cap was really hit and this exercised the walk
+    // rather than a single tail that happened to fit.
+    expect(log.tailReads).toBeGreaterThan(1);
+  }, 60_000);
+
   it("leaves the stored cursor alone when --since asks for a one-off rewind", async () => {
     const log = arrayEventLog();
     const port = await freePort();

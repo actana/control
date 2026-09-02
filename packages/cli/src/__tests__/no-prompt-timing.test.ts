@@ -21,21 +21,47 @@
 // status. Passing a number is not scheduling; that is why the sweep below looks
 // for the scheduling primitives themselves.
 //
-// **One file is allowed to hold a timer, and it is named here rather than
-// waved through** (#161, merged into #160's rule). `harness install` waits for
-// a verdict a vendor installer takes minutes to produce, so it carries a
-// deadline and a progress tick of its own. That is the same trade
-// `--wait-timeout` already makes and it fails the same way: it re-sends
-// nothing, it cannot make a Harness look installed sooner, and its expiry is
-// reported as *this side* giving up ("the Core reported no outcome within 15
-// minutes. The install may still be running there."), never as an outcome. The
-// difference from `--wait-timeout` is only which package the timer object sits
-// in, which is not the thing ADR 0026 moved.
+// **Two files are allowed to hold a timer, and both are named here rather than
+// waved through** (#161, merged into #160's rule; #402 added the second). Each
+// buys the same thing and is admitted on the same three properties — the ones
+// `--wait-timeout` already has. A listed timer **re-sends nothing**, it
+// **cannot make the thing it waits for happen any sooner**, and its expiry is
+// **reported as this side giving up** rather than as an outcome. A timer with
+// all three is a limit on patience. A timer missing any of them is the 450 ms
+// nudge wearing a table row as cover, and no reason admits it.
+//
+//   • `harness-command.ts` waits for a verdict a vendor installer takes minutes
+//     to produce, so it carries a deadline and a progress tick of its own. It
+//     re-sends no install, it cannot make a Harness look installed sooner, and
+//     it expires saying "the Core reported no outcome within 15 minutes. The
+//     install may still be running there." — this side giving up, never an
+//     outcome. The difference from `--wait-timeout` is only which package the
+//     timer object sits in, which is not the thing ADR 0026 moved.
+//
+//   • `events-command.ts` waits for a Core to answer `subscribe` at all (#402).
+//     A contended Core that never replays sends no `event` and no
+//     `eventsReplayed`, so an `events tail --limit` has neither its ceiling nor
+//     the end of the log left to end on and waits for ever — which is what an
+//     operator reported against a live Core, with the event they were waiting
+//     for already in its database. The deadline re-sends no `subscribe`, it
+//     cannot make an event arrive sooner, and it expires **non-zero**, saying
+//     the Core stopped answering and that the read did not finish. It is
+//     disarmed the moment the Core says where its log ends, and it is cleared
+//     while the link is down, so it can only ever fire at a Core that is
+//     connected and silent.
+//
+//     And note what it is not: this rule is about the path from an operator's
+//     text to a Harness's stdin, and `events tail` is a read of a log with
+//     nothing on that path at all. Being listed here does not exempt it from
+//     `TOUCHES_A_SESSION` below, which is what would catch it if that ever
+//     changed.
 //
 // The allowance is a table with a reason per row, so it stays a rule: a new
 // timer in any other file still fails, a timer in a file that writes to a
 // Session fails even if it is listed, and a row for a file that no longer
-// exists fails rather than quietly widening.
+// exists fails rather than quietly widening. Growing the table is meant to cost
+// a paragraph up here, argued the way the two above are — that cost is the rule
+// working, not friction to route around.
 //
 // **Scoped to the client half since #288**, for the same reason and by the same
 // table as the shell-out ban one file over (`module-halves.ts`). This package

@@ -56,13 +56,30 @@
 //     proving #161's criterion. There was no read to finish, so it follows and
 //     stops at n, which is what `--limit` has always meant.
 //
-//   • **That a stuck subscribe cannot wedge either of them.** A Core that never
+//   • **That a stuck subscribe cannot wedge any of them.** A Core that never
 //     answers `subscribe` sends no event and no marker, so neither the ceiling
 //     nor the end of the log is ever reached and the command has nothing to do
 //     but wait — which is the other half of #402's report, a Core under
-//     contention. Until the log's end is known, a `--limit` run holds a
-//     deadline on its patience; it prints what it did get, says on stderr that
-//     the Core stopped answering, and exits.
+//     contention. So **every** `--limit` run holds a deadline on its patience
+//     until the log's end is known, on both sides of the printing switch: a
+//     first run is walking to the tip and a run with a cursor is walking to the
+//     end, and a Core that answers neither wedges both. `--limit 30` with no
+//     cursor and no `--since` is the invocation an operator is most likely to
+//     type, and it is the one this must cover.
+//
+//     It expires as *this side giving up*, never as an outcome: what was
+//     printed goes out, stderr says the Core stopped answering, and the exit is
+//     a failure — a read cut off partway is not a read that finished, and a
+//     script reads `$?` rather than English.
+//
+//     It is disarmed once the log's end is known, because past that point
+//     silence is a Core with nothing to say and waiting through it is the whole
+//     of what a follow does. And it does not run while the link is down: a
+//     dropped socket is not a Core refusing to answer, `DurableCoreClient`
+//     re-dials and replays the whole tail from the cursor, and a deadline that
+//     fired through a Core restart would truncate a read the reconnect was
+//     about to complete — breaking the promise this file's own help text makes
+//     three paragraphs down.
 //
 // Nothing here handles SIGINT, and that is deliberate. Ctrl-C ends this the way
 // it ends `tail -f`: the default signal disposition, no handler. There is
@@ -132,10 +149,18 @@ Where it ends
   it follows and stops after n events. Without --limit, a tail follows until
   Ctrl-C either way.
 
+  A --limit run gives the Core 30s to answer at all. A Core that goes silent
+  before it has said where its log ends leaves the run with nothing to end on,
+  so it stops: what arrived is on stdout, the reason is on stderr, and it exits
+  non-zero because a read that stopped partway is not a read that finished. The
+  clock comes off once the log's end is known — from there it is following, and
+  a follow waits.
+
 Reconnects
   The link re-establishes itself and replays from the cursor, so a Core restart
   or a dropped network costs neither a repeated event nor a missed one. Notices
-  about the link go to stderr; stdout carries events only.
+  about the link go to stderr; stdout carries events only. A dropped link is not
+  a Core going silent: the 30s above is not running while it is down.
 
   Ctrl-C ends it. Nothing is buffered.`;
 
@@ -223,20 +248,40 @@ async function eventsTail(
     // operator asked for still finished, and has nothing more to wait for.
     let read = 0;
     let settled = false;
-    // Only consulted while `printing` is off — once the log's end is known
-    // there is nothing left to learn, and every later marker is just a
-    // reconnect catching up.
-    const tip = trackEventTip(client, deps);
-    // The same walk, on the other side of the switch. A first run walks the log
-    // to find its tip and prints none of it; a `--limit` run walks it to find
-    // its end and prints all of it. The question asked of each marker is the
-    // same one — did this close an empty tail, or is the Core capping a replay
-    // — so it is asked with the same tracker rather than with a second opinion.
+    // One walk of the log per run, and never both of these.
     //
-    // Retired once the end is known: after that every marker is a reconnect
-    // catching up, exactly as on the other side, and there is nothing left to
-    // ask.
-    let history = limit.value !== null && fromStart ? trackEventTip(client, deps) : null;
+    // Which one is decided before the first frame and cannot change: `printing`
+    // is initialised from `fromStart` and is only ever switched *on*, so a run
+    // that starts printing never enters the `!printing` branch, and `history`
+    // is non-null only when `fromStart` — the case that branch cannot reach.
+    // They ask the same question of every marker (did this close an empty tail,
+    // or is the Core capping a replay) and it is `event-tip.ts` that answers
+    // it, so they are two of the same thing rather than two opinions.
+    //
+    // Two objects rather than one with a mode because they differ in exactly
+    // one place, and it is the one that matters: when the hunt gives up after
+    // `MAX_TIP_ROUNDS`, a run still looking for the tip really does carry on,
+    // and a run reading history is about to stop. Same walk, different sentence
+    // at the end of it.
+    const tip = trackEventTip(client, deps);
+    // Set when the walk below settled for an approximation rather than reaching
+    // the end of the log. A run that ends here has not read what it was asked
+    // for, whatever its last marker said.
+    let approximate = false;
+    let history =
+      limit.value !== null && fromStart
+        ? trackEventTip(client, deps, {
+            // The number is taken from `tipFrom`'s return where the run ends;
+            // all this needs to record is that it is an approximation.
+            onRoundsExhausted: () => {
+              approximate = true;
+            },
+          })
+        : null;
+    // Whether the Core still owes this run an answer. `--limit` is the whole of
+    // it: a tail with no ceiling is a follow, and a follow has nothing to give
+    // up on. Cleared the moment the log's end is known, whichever walk found it.
+    let timing = limit.value !== null;
     let idle: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (code: number) => {
@@ -256,31 +301,39 @@ async function eventsTail(
      *
      * Re-armed on every frame that *is* an answer, so the clock only ever runs
      * while the Core is silent — a long log is a Core answering, slowly and
-     * correctly. Disarmed for good once the end of the log is known, because
-     * past that point silence is a Core with nothing to say and waiting through
-     * it is the whole of what a follow does.
+     * correctly. Armed on both sides of the printing switch, because a run
+     * walking to the tip and a run walking to the end of the history are wedged
+     * by the same silence.
      *
-     * When it fires, what was printed is what the subscribe gave up: a
-     * truncated read still succeeded, and a subscribe that answered nothing at
-     * all is a failure with a reason on stderr rather than a hang.
+     * Expiry is this side giving up and is reported as one: a read that stopped
+     * partway is not a read that finished, so it exits a failure however many
+     * events it managed. The events it did get are already on stdout and stay
+     * there — a truncated file plus a non-zero status is something a script can
+     * act on; a truncated file plus a 0 is not.
      */
     const waitForAnswer = () => {
-      if (history === null || settled) return;
+      if (!timing || settled) return;
       if (idle !== null) clearTimeout(idle);
       idle = setTimeout(() => {
         deps.err(
           `actana events tail: ${name ?? endpoint} stopped answering the event ` +
-            `subscription; stopping with ${printed} event(s) printed.`,
+            `subscription; giving up with ${printed} event(s) printed. This read did not finish.`,
         );
-        finish(read > 0 ? EXIT_OK : EXIT_FAILURE);
+        finish(EXIT_FAILURE);
       }, SUBSCRIBE_ANSWER_MS);
+    };
+
+    /** Stop timing the Core: it has answered, or there is nothing left to ask. */
+    const stopTiming = () => {
+      timing = false;
+      if (idle !== null) clearTimeout(idle);
+      idle = null;
     };
 
     /** Stop watching for the end of the log, and stop timing the Core. */
     const stopReading = () => {
       history = null;
-      if (idle !== null) clearTimeout(idle);
-      idle = null;
+      stopTiming();
     };
 
     const offEvent = client.onEvent(({ event }) => {
@@ -294,6 +347,7 @@ async function eventsTail(
         // a receipt for what the Core sent, not a statement that it has no more
         // (`event-tip.ts`).
         tip.saw(event.eventId);
+        waitForAnswer();
         return;
       }
       // Counted before the filter, and before the ceiling: this is history the
@@ -320,7 +374,14 @@ async function eventsTail(
         // A capped replay: the rest has been asked for and another marker is
         // coming. Printing stays off, which is the whole point — this is the
         // history the operator did not ask to see.
-        if (end === null) return;
+        if (end === null) {
+          waitForAnswer();
+          return;
+        }
+        // The end of the log, found. This run has its answer, so the deadline
+        // comes off here as well as in `stopReading` — from here it is a
+        // follow, and a follow waits through any amount of quiet.
+        stopTiming();
         deps.verbose(`the Core's log ends at #${end}; following from there`);
         printing = true;
         return;
@@ -338,6 +399,20 @@ async function eventsTail(
       }
       stopReading();
 
+      // Not the end of the log — the number `event-tip.ts` settled for after
+      // `MAX_TIP_ROUNDS` of a Core appending faster than this side could drain
+      // it. Its own message says the hunt is carrying on, and that sentence was
+      // written for the caller that does: this one is stopping, so it says so
+      // itself and stops the way every other unfinished read does.
+      if (approximate) {
+        deps.err(
+          `actana events tail: ${name ?? endpoint} appended events faster than they could be ` +
+            `read; giving up at #${end} with ${printed} event(s) printed. This read did not finish.`,
+        );
+        finish(EXIT_FAILURE);
+        return;
+      }
+
       // Nothing was there to read: this is a follow that has just been told the
       // log is empty past where it started, and a follow waits. `--limit` keeps
       // the meaning it has always had for it — stop after n.
@@ -352,6 +427,18 @@ async function eventsTail(
     });
 
     const offDown = client.onDisconnected(({ error }) => {
+      // The clock stops while the link is down, and this is the whole of the
+      // reason: a dropped socket is not a Core refusing to answer. Nothing can
+      // arrive to re-arm the deadline until the link is back, and
+      // `DurableCoreClient` re-dials with a backoff that tops out at five
+      // seconds and never gives up — so a deadline left running would fire
+      // through a Core restart and truncate a read the reconnect was seconds
+      // from completing, on a `core update` or a reboot. The help text below
+      // promises that a restart costs neither a repeated event nor a missed
+      // one; this is what keeps that true for a `--limit` run.
+      if (idle !== null) clearTimeout(idle);
+      idle = null;
+
       // stderr, always: on the `--json` path stdout is the event stream, and a
       // consumer parsing it should never have to recognise a status line.
       deps.err(`link to ${name ?? endpoint} dropped${error ? ` — ${error}` : ""}; reconnecting…`);
@@ -359,6 +446,10 @@ async function eventsTail(
 
     const offUp = client.onReady(() => {
       deps.verbose("link re-established; replaying from the cursor");
+      // A fresh `subscribe` has gone out on the new connection, so the Core
+      // owes an answer again and the clock starts again — from now, not from
+      // whenever the old socket last said anything.
+      waitForAnswer();
     });
 
     waitForAnswer();

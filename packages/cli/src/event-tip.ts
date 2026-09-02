@@ -88,6 +88,22 @@ export type EventTipOptions = {
    * connection and can wait; a one-shot client cannot, and passes a reject.
    */
   onSendFailed?: () => void;
+  /**
+   * Called **instead of** the stderr line below when the hunt gives up after
+   * {@link MAX_TIP_ROUNDS} and settles for the highest id it saw.
+   *
+   * The default sentence says the caller is carrying on from an approximate
+   * number, and for the caller it was written for — a first run about to follow
+   * — that is exactly what happens. `events tail --limit` on the printing side
+   * is not: it takes the returned number as the end of the history and stops
+   * there, so "carrying on" would be told to an operator whose command has
+   * already exited (#402 review, finding 5). A caller that ends here says so in
+   * its own words, and gets to decide that an approximation is not a finished
+   * read.
+   *
+   * The number handed over is the same one `tipFrom` is about to return.
+   */
+  onRoundsExhausted?: (seen: number) => void;
 };
 
 /**
@@ -124,11 +140,15 @@ export function trackEventTip(
       if (rounds >= MAX_TIP_ROUNDS) {
         // Stated rather than swallowed. This is the one path where the number
         // handed back is approximate, and an operator reading a surprising
-        // first line deserves the reason on stderr.
-        deps.err(
-          `this Core appended events faster than they could be read (${MAX_TIP_ROUNDS} rounds); ` +
-            `carrying on from #${seen}, which may be behind its log's end.`,
-        );
+        // first line deserves the reason on stderr — from whichever caller
+        // knows what it is about to do with the number.
+        if (opts.onRoundsExhausted) opts.onRoundsExhausted(seen);
+        else {
+          deps.err(
+            `this Core appended events faster than they could be read (${MAX_TIP_ROUNDS} rounds); ` +
+              `carrying on from #${seen}, which may be behind its log's end.`,
+          );
+        }
         return seen;
       }
 
