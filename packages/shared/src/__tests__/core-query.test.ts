@@ -5,6 +5,7 @@ import {
   queryActiveTasks,
   queryArchivedTasks,
   queryProjects,
+  queryStrandedReadyTasks,
   queryTasks,
   type CoreQuerySqlite,
 } from "../core-query";
@@ -101,6 +102,27 @@ function insertTask(
     t.icon ?? null,
     t.updatedAt ?? 1,
   );
+}
+
+/** The Core's event log, as far as the stranded-ready read needs it. */
+function addEventLog(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE event_log (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      pty_id TEXT,
+      task_id TEXT,
+      payload TEXT NOT NULL
+    );
+  `);
+}
+
+/** Record the `pty:spawn` the Core appends when it starts a harness. */
+function spawnedPty(db: Database.Database, taskId: string | null): void {
+  db.prepare(
+    "INSERT INTO event_log (ts, kind, pty_id, task_id, payload) VALUES (?, ?, ?, ?, ?)",
+  ).run(1, "pty:spawn", "pty-1", taskId, "{}");
 }
 
 describe("queryProjects", () => {
@@ -322,6 +344,96 @@ describe("queryActiveTasks (the Core's boot sweep read, issue 243)", () => {
   it("returns empty when the tasks table does not exist", () => {
     const empty = new Database(":memory:");
     expect(queryActiveTasks(asQuery(empty))).toEqual([]);
+    empty.close();
+  });
+});
+
+describe("queryStrandedReadyTasks (the ready zombie, issue 387)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+    addEventLog(db);
+  });
+
+  it("finds a ready row a PTY was spawned for, and no other ready row", () => {
+    // The bare Session: a PTY of some previous run, no hook ever fired, still
+    // sitting on "Waiting for initial prompt…" hours after the process died.
+    insertTask(db, { taskId: "t-zombie", projectId: "p1", status: "ready" });
+    spawnedPty(db, "t-zombie");
+    // The Session the operator created and has not started. It has no process
+    // because it never had one — sweeping it would be the regression.
+    insertTask(db, { taskId: "t-unstarted", projectId: "p1", status: "ready" });
+
+    expect(queryStrandedReadyTasks(asQuery(db)).map((t) => t.taskId)).toEqual(["t-zombie"]);
+  });
+
+  it("leaves every other status to the query that owns it", () => {
+    for (const status of ["running", "needs-input", "finished", "disconnected"]) {
+      insertTask(db, { taskId: `t-${status}`, projectId: "p1", status });
+      spawnedPty(db, `t-${status}`);
+    }
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+  });
+
+  it("ignores a spawn recorded against some other Session", () => {
+    insertTask(db, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    spawnedPty(db, "t-other");
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+  });
+
+  it("does not read a shell PTY, which belongs to no task at all", () => {
+    insertTask(db, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    spawnedPty(db, null);
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+  });
+
+  it("includes an archived row, and spans every project", () => {
+    insertTask(db, { taskId: "t-arch", projectId: "p1", status: "ready", archived: true });
+    spawnedPty(db, "t-arch");
+    insertTask(db, { taskId: "t-p2", projectId: "p2", status: "ready" });
+    spawnedPty(db, "t-p2");
+    expect(queryStrandedReadyTasks(asQuery(db)).map((t) => t.taskId).sort()).toEqual([
+      "t-arch",
+      "t-p2",
+    ]);
+  });
+
+  it("maps the row the way every other listing here does", () => {
+    insertTask(db, {
+      taskId: "t-zombie",
+      projectId: "p1",
+      status: "ready",
+      title: "Waiting for initial prompt…",
+      agent: "opencode",
+      pinned: true,
+      updatedAt: 42,
+    });
+    spawnedPty(db, "t-zombie");
+    expect(queryStrandedReadyTasks(asQuery(db))[0]).toMatchObject({
+      taskId: "t-zombie",
+      projectId: "p1",
+      title: "Waiting for initial prompt…",
+      agent: "opencode",
+      status: "ready",
+      pinned: true,
+      archived: false,
+      claudeSessionId: null,
+      updatedAt: 42,
+    });
+  });
+
+  it("returns empty when there is no event log to read the evidence from", () => {
+    // A Core whose log never bootstrapped sweeps nothing extra rather than
+    // failing its whole boot read — and rather than sweeping every ready row.
+    const noLog = openDb();
+    insertTask(noLog, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    expect(queryStrandedReadyTasks(asQuery(noLog))).toEqual([]);
+    noLog.close();
+  });
+
+  it("returns empty when the tasks table does not exist", () => {
+    const empty = new Database(":memory:");
+    expect(queryStrandedReadyTasks(asQuery(empty))).toEqual([]);
     empty.close();
   });
 });

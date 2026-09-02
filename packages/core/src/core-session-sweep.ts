@@ -45,8 +45,15 @@ const STRANDED_STATUS = "disconnected";
 
 export type CoreSessionSweepDeps = {
   /**
-   * Every row this Core still claims is working. `listActiveTasks` from
+   * Every row a PTY of the previous run left behind. `listBootSweepTasks` from
    * `core-query-store.ts` in the daemon; an array in tests.
+   *
+   * That is the rows claiming `running` / `needs-input`, plus the `ready` rows
+   * this Core once spawned a PTY for (issue 387) — a bare Session waiting on
+   * its first prompt never leaves `ready`, so no status filter would ever have
+   * caught it and no hook was ever going to arrive for it either. A `ready`
+   * row with no `pty:spawn` behind it is not in the list and must not be: that
+   * is a Session the operator has simply not started yet.
    */
   listActiveTasks: () => CoreLinkTaskSnapshot[];
   /** The one seam a task row changes through, events included. */
@@ -54,8 +61,8 @@ export type CoreSessionSweepDeps = {
 };
 
 /**
- * Settle every Session this Core's database still claims is working, and
- * return the ids that moved.
+ * Settle every Session a PTY of the previous run stranded, and return the ids
+ * that moved.
  *
  * Called once per boot. A row that vanishes between the read and the write
  * (deleted by a Panel racing the boot) answers `null` from the writer and is

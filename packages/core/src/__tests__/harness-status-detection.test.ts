@@ -196,6 +196,28 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(rowStatus()).toBe("terminated");
   });
 
+  it("settles a bare Session left on ready when its PTY dies (issue 387)", async () => {
+    // The zombie found live on pairdemo: spawned, never prompted, so not one
+    // hook ever arrived for it and no Stop was ever coming. The row is created
+    // `ready` in beforeEach and nothing here posts a hook at all.
+    const status = new CoreHarnessStatus({ writer });
+    expect(rowStatus()).toBe("ready");
+
+    status.sessionExited(TASK_ID, 1);
+
+    expect(rowStatus()).toBe("disconnected");
+    // `disconnected` is not a finish: no ding for a Session that never worked.
+    expect(kinds()).not.toContain("session:finished");
+    expect(kinds()).toContain("task:updated");
+  });
+
+  it("finishes a bare Session whose PTY exited cleanly", async () => {
+    const status = new CoreHarnessStatus({ writer });
+    status.sessionExited(TASK_ID, 0);
+    expect(rowStatus()).toBe("finished");
+    expect(kinds()).toContain("session:finished");
+  });
+
   it("reports a Session parked on a dialog nobody answered as needs-input", async () => {
     // Issue 177 finding 3. Prompt delivery abandons rather than guessing (ADR
     // 0026 D5), and until now that decision was a log line on the Core: the
