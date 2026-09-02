@@ -391,3 +391,102 @@ describe("a drag held over a collapsed folder", () => {
     expect(writes()[0]![0]).toContain("path=incoming%2Fbye.txt");
   });
 });
+
+// #400. The drawer floats over the Project board, and the board is a drop
+// target too — it reads the drop into its own fresh array of `File` handles and
+// hands that to this panel as a `pendingDrop`. A new array is a new identity, so
+// the consume effect's guard cannot tell it from a drop it has never seen, and
+// the one gesture becomes two uploads. Nothing downstream can catch that: by the
+// time the second write reaches the Core it is a well-formed request for the
+// same bytes, and the Core reports it as an overwrite. The event has to stop at
+// the innermost target that understood it, which is this panel.
+describe("a drop on the drawer, with the board behind it", () => {
+  const FOLDERED = [
+    { type: "entry", path: "incoming", size: 0, mtime: 1, mode: 0o040755, sha256: null, kind: "directory" },
+    { type: "entry", path: "readme.md", size: 4, mtime: 1, mode: 0o100644, sha256: null, kind: "file" },
+  ];
+
+  /** A listing re-served on every read, with every upload answered as written. */
+  function serving(entries: unknown[]): void {
+    fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
+      if (init?.method === "PUT") {
+        const path = new URL(url, "http://panel.test").searchParams.get("path") ?? "";
+        return ndjsonResponse([
+          { type: "entry", path, size: 2, mtime: 1, mode: 0o100644, sha256: null, result: "written" },
+          { type: "done", entries: 1, bytes: 2 },
+        ]);
+      }
+      return ndjsonResponse([...entries, { type: "done" }]);
+    });
+  }
+
+  /** The panel as an operator meets it: inside the board that also takes drops. */
+  function onBoard(): { drop: ReturnType<typeof vi.fn>; dragOver: ReturnType<typeof vi.fn> } {
+    const drop = vi.fn();
+    const dragOver = vi.fn();
+    render(
+      <div data-testid="board" onDragOver={dragOver} onDrop={drop}>
+        <ProjectFilesPanel coreId="core_a" projectId="p1" projectName="acme" />
+      </div>,
+    );
+    return { drop, dragOver };
+  }
+
+  it.each([
+    ["the drawer background", FOLDERED, () => screen.getByTestId("project-files-panel")],
+    ["the drawer header", FOLDERED, () => screen.getByText("acme")],
+    ["the empty state", [], () => screen.getByText("Nothing here yet")],
+    ["a row that is not a folder", FOLDERED, () => row("readme.md")],
+  ])("uploads once to the Project root when the file lands on %s", async (_where, entries, target) => {
+    serving(entries);
+    const board = onBoard();
+    const at = await waitFor(target);
+
+    const dataTransfer = fileDrag([new File(["hi"], "hello.txt")]);
+    fireEvent.dragOver(at, { dataTransfer });
+    fireEvent.drop(at, { dataTransfer });
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toContain("path=hello.txt");
+    // The board never hears either half of the gesture, which is the whole of
+    // the fix: a board that heard the drop would upload these same bytes again.
+    expect(board.drop).not.toHaveBeenCalled();
+    expect(board.dragOver).not.toHaveBeenCalled();
+
+    // And it stays at one after everything the upload set in motion has settled
+    // — the re-read of the listing, and the render that re-read causes.
+    await waitFor(() => expect(screen.getByText("written")).toBeTruthy());
+    expect(writes()).toHaveLength(1);
+  });
+
+  it("still writes once, under the folder, when the file lands on a folder row", async () => {
+    serving(FOLDERED);
+    const board = onBoard();
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming", "readme.md"]));
+
+    const dataTransfer = fileDrag([new File(["hi"], "hello.txt")]);
+    fireEvent.dragOver(row("incoming"), { dataTransfer });
+    fireEvent.drop(row("incoming"), { dataTransfer });
+
+    await waitFor(() => expect(writes()).toHaveLength(1));
+    expect(writes()[0]![0]).toContain("path=incoming%2Fhello.txt");
+    expect(board.drop).not.toHaveBeenCalled();
+  });
+
+  it("leaves a drop on the board outside the drawer to the board", async () => {
+    serving(FOLDERED);
+    const board = onBoard();
+    await waitFor(() => expect(renderedPaths()).toEqual(["incoming", "readme.md"]));
+
+    const dataTransfer = fileDrag([new File(["hi"], "hello.txt")]);
+    fireEvent.dragOver(screen.getByTestId("board"), { dataTransfer });
+    fireEvent.drop(screen.getByTestId("board"), { dataTransfer });
+
+    expect(board.dragOver).toHaveBeenCalledTimes(1);
+    expect(board.drop).toHaveBeenCalledTimes(1);
+    // The panel took nothing: outside the drawer the board owns the drop, and
+    // stopping propagation inside the drawer must not have narrowed that.
+    await waitFor(() => expect(fetchMock.mock.calls.length).toBeGreaterThan(0));
+    expect(writes()).toHaveLength(0);
+  });
+});
