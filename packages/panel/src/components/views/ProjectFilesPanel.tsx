@@ -29,6 +29,11 @@
 // and the row stops the event so the panel behind it does not take the same
 // drop a second time as a write to the root.
 //
+// **The panel root stops the drop too** (#400). The board behind the drawer is
+// a drop target in its own right, so a drop that reached both wrote the file
+// twice. The rule is the same one the rows follow: the innermost target that
+// understands the drop is the one that answers for it.
+//
 // **A drag held on a folder opens it** (#228). With the first two in place a
 // drop could still only reach a folder that happened to be open before the drag
 // began, because a drag cannot click a chevron. The timing lives in
@@ -172,9 +177,19 @@ export function ProjectFilesPanel({
       data-testid="project-files-panel"
       // The Project root, which is where a drop lands unless a folder row
       // claimed it first — those stop the event before it reaches here (#227).
+      //
+      // And this root stops it in turn (#400). The board underneath is a drop
+      // target too, and its handler re-reads the same `DataTransfer` into a
+      // fresh array of `File` handles — a new array identity, so the consume
+      // effect's guard above sees a drop it has never taken and sends it. One
+      // gesture, two uploads, the second reported as an overwrite of the first.
+      // The drawer is on top and it is the more specific target, so it is the
+      // one that answers: exactly the reasoning the folder rows already apply
+      // to this panel, applied one level out.
       onDragOver={(e) => {
         if (!dragCarriesFiles(e)) return;
         e.preventDefault();
+        e.stopPropagation();
         e.dataTransfer.dropEffect = "copy";
         setDragging(true);
         setDropTarget(null);
@@ -190,6 +205,8 @@ export function ProjectFilesPanel({
       onDrop={(e) => {
         if (!dragCarriesFiles(e)) return;
         e.preventDefault();
+        // The upload for this gesture happens here and only here (#400).
+        e.stopPropagation();
         setDragging(false);
         setDropTarget(null);
         spring.cancel();
