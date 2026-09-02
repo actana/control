@@ -84,7 +84,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-running", "running");
     insert("t-waiting", "needs-input");
 
-    const settled = sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
 
     expect(settled.sort()).toEqual(["t-running", "t-waiting"]);
     expect(statusOf("t-running")).toBe("disconnected");
@@ -102,7 +102,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     // filter — a queue of unstarted work must not read as a fleet of deaths.
     insert("t-ready", "ready");
 
-    expect(sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
     expect(statusOf("t-finished")).toBe("finished");
     expect(statusOf("t-interrupted")).toBe("interrupted");
     expect(statusOf("t-ready")).toBe("ready");
@@ -116,7 +116,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     spawnPty("t-zombie");
     insert("t-unstarted", "ready");
 
-    expect(sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer })).toEqual([
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([
       "t-zombie",
     ]);
     expect(statusOf("t-zombie")).toBe("disconnected");
@@ -128,7 +128,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-zombie", "ready");
     spawnPty("t-zombie");
 
-    const settled = sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
 
     expect(settled.sort()).toEqual(["t-running", "t-zombie"]);
     expect(statusOf("t-running")).toBe("disconnected");
@@ -140,7 +140,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     spawnPty("t-zombie");
     const before = getLastEventId();
 
-    sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer });
+    sweepStrandedSessions({ listBootSweepTasks, writer });
 
     const appended = readEventTail(before, 100);
     expect(appended.filter((e) => e.kind === "task:updated").map((e) => e.taskId)).toEqual([
@@ -152,7 +152,7 @@ describe("settling the Sessions a Core restart stranded", () => {
 
   it("sweeps an archived row too — it is the same stale row, one tab away", () => {
     insert("t-archived", "running", true);
-    const settled = sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
     expect(settled).toEqual(["t-archived"]);
     expect(statusOf("t-archived")).toBe("disconnected");
   });
@@ -161,7 +161,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-running", "running");
     const before = getLastEventId();
 
-    sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer });
+    sweepStrandedSessions({ listBootSweepTasks, writer });
 
     const appended = readEventTail(before, 100);
     const updates = appended.filter((e) => e.kind === "task:updated");
@@ -173,10 +173,10 @@ describe("settling the Sessions a Core restart stranded", () => {
 
   it("is a no-op on the second boot, because the first one settled everything", () => {
     insert("t-running", "running");
-    sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer });
+    sweepStrandedSessions({ listBootSweepTasks, writer });
     const after = getLastEventId();
 
-    expect(sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
     expect(getLastEventId()).toBe(after);
   });
 
@@ -200,14 +200,14 @@ describe("settling the Sessions a Core restart stranded", () => {
       eventLog: { appendEvent, getLastEventId, readEventTail },
     });
 
-    expect(sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer: failing })).toEqual(["t-b"]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer: failing })).toEqual(["t-b"]);
     expect(statusOf("t-b")).toBe("disconnected");
     expect(statusOf("t-a")).toBe("running");
   });
 
   it("sweeps nothing, and says nothing, on a Core with no stranded rows", () => {
     const before = getLastEventId();
-    expect(sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
     expect(getLastEventId()).toBe(before);
   });
 });
