@@ -38,6 +38,10 @@ import { shouldFlashPinnedProjectLogo } from "./project-bar-activity";
 import { getPinnedProjectStatusDots } from "./project-bar-status-dots";
 
 const HOTKEY_LIMIT = PINNED_SLOT_COUNT;
+// Cluster key of the trailing tile the scoped rail keeps for the project the
+// route is actually on when the active group hides it (#378). It is a
+// selection affordance only: no chord, no reorder, no drop slot.
+const OFF_GROUP_CLUSTER_KEY = "mc-off-group";
 const DRAG_THRESHOLD_PX = 4;
 
 const ITEM_WIDTH = 58;
@@ -192,11 +196,34 @@ export const ProjectBar = memo(function ProjectBar({
     for (const group of groups) if (!seen.has(group.id)) out.push(group);
     return out;
   }, [groupDragOrder, groups]);
+  // Which project the route is on, read before the clusters are built: a
+  // scoped rail has to be able to put that project back on screen when the
+  // active group would otherwise hide it (#378).
+  const activeId = useMemo(() => pathname.match(/^\/projects\/([^/]+)/)?.[1], [pathname]);
   const railClusters = useMemo(() => {
     if (!groupScoped) return clusterPinnedByGroup(sortedPinned, orderedGroups);
     const cluster = getGroupRailCluster(projects ?? [], orderedGroups, activeGroup);
-    return cluster.projects.length > 0 ? [cluster] : [];
-  }, [activeGroup, groupScoped, orderedGroups, sortedPinned, projects]);
+    const scoped = cluster.projects.length > 0 ? [cluster] : [];
+    // #378: opening a project in group A and switching the GroupSwitcher to B
+    // left the page on A while the rail showed B with no ring — the rail
+    // claiming nothing was open while the operator was plainly inside a
+    // project. The filter still decides which pins are *workable*; the project
+    // you are on keeps a tile regardless, in a trailing cluster of its own
+    // named after the group that does own it, so the ring has somewhere to sit.
+    // Nothing here navigates: the URL stays on the open project.
+    const open = activeId ? (projects ?? []).find((p) => p.id === activeId) : undefined;
+    if (!open || cluster.projects.some((p) => p.id === open.id)) return scoped;
+    const owner = orderedGroups.find((g) => g.id === open.groupId);
+    return [
+      ...scoped,
+      {
+        key: OFF_GROUP_CLUSTER_KEY,
+        label: owner?.name ?? "Ungrouped",
+        color: owner?.color ?? null,
+        projects: [open],
+      },
+    ];
+  }, [activeGroup, activeId, groupScoped, orderedGroups, sortedPinned, projects]);
   const visible = useMemo(() => railClusters.flatMap((c) => c.projects), [railClusters]);
   const visibleById = useMemo(
     () => new Map(visible.map((project) => [project.id, project])),
@@ -233,7 +260,12 @@ export const ProjectBar = memo(function ProjectBar({
   // rail). In group-workspace mode that's the group's pinned subset — the
   // alphabetical unpinned tail is not reorderable — and persistProjectOrder
   // splices the subset back into the global pinned order.
-  pinnedIdsRef.current = visible
+  // The off-group tile (#378) is an affordance, not part of this rail's order:
+  // counting it would splice a project the active group does not contain into
+  // the persisted pinned order on the next keyboard reorder.
+  pinnedIdsRef.current = railClusters
+    .filter((cluster) => cluster.key !== OFF_GROUP_CLUSTER_KEY)
+    .flatMap((cluster) => cluster.projects)
     .filter((project) => project.pinned)
     .map((project) => project.id);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -719,9 +751,11 @@ export const ProjectBar = memo(function ProjectBar({
   // headers are stable project drop targets. The scoped rail still disappears
   // when the selected group has no projects because there is nothing to move
   // into it from that isolated view.
+  // when the selected group has no projects because there is nothing to move
+  // into it from that isolated view — unless the open project is parked there
+  // as the off-group affordance, which is the whole point of it (#378).
   if (railClusters.length === 0) return null;
 
-  const activeId = pathname.match(/^\/projects\/([^/]+)/)?.[1];
   const activeIndex = visible.findIndex((p) => p.id === activeId);
 
   // Group-number labels only earn their space when a real group exists. With
@@ -1064,11 +1098,14 @@ export const ProjectBar = memo(function ProjectBar({
           {cluster.projects.map((project, projectIndex) => {
         const idx = flatIndexById.get(project.id)!;
         const isActive = idx === activeIndex;
+        // The open-but-filtered-out project (#378). It shows and it rings; it
+        // does not take a chord, a reorder or a drop.
+        const isOffGroup = cluster.key === OFF_GROUP_CLUSTER_KEY;
         // Project numbers restart per cluster when group chords are visible;
         // the no-groups rail has one flat cluster, so these are direct slots.
         const projectNumber = projectIndex + 1;
         const groupNumber = clusterIndex + 1;
-        const hotkey = projectNumber <= HOTKEY_LIMIT ? projectNumber : null;
+        const hotkey = !isOffGroup && projectNumber <= HOTKEY_LIMIT ? projectNumber : null;
         const chordHint = directProjectShortcuts
           ? pinnedSlotBinding(projectNumber)
           : `${pinnedSlotBinding(groupNumber)} ${projectNumber}`;
@@ -1095,7 +1132,10 @@ export const ProjectBar = memo(function ProjectBar({
             : null;
         const tooltip = [
           hotkey ? `${project.name} (${chordHint})` : project.name,
-          project.pinned ? "Drag or press Shift+Arrow Up/Down to reorder pinned projects" : null,
+          isOffGroup ? "Open now — outside the active group" : null,
+          !isOffGroup && project.pinned
+            ? "Drag or press Shift+Arrow Up/Down to reorder pinned projects"
+            : null,
           needsInputLabel,
           runningLabel,
           finishedLabel,
@@ -1123,16 +1163,19 @@ export const ProjectBar = memo(function ProjectBar({
           <button
             key={project.id}
             type="button"
-            data-pinned-item={project.pinned ? true : undefined}
+            data-pinned-item={!isOffGroup && project.pinned ? true : undefined}
+            data-off-group={isOffGroup ? true : undefined}
             data-cluster-id={cluster.key}
             data-project-id={project.id}
             title={tooltip}
             aria-label={tooltip}
-            aria-keyshortcuts={project.pinned ? "Shift+ArrowUp Shift+ArrowDown" : undefined}
+            aria-keyshortcuts={
+              !isOffGroup && project.pinned ? "Shift+ArrowUp Shift+ArrowDown" : undefined
+            }
             onPointerDown={(e) => {
               // Only pinned tiles reorder — the group workspace's alphabetical
               // unpinned tail has a computed order with nothing to drag.
-              if (project.pinned) startProjectPointerDrag(project.id, e);
+              if (!isOffGroup && project.pinned) startProjectPointerDrag(project.id, e);
             }}
             onDragStart={(e) => e.preventDefault()}
             // Drop a file from the desktop onto a Project's tile and it goes to
@@ -1179,7 +1222,7 @@ export const ProjectBar = memo(function ProjectBar({
               showHoverLabel(project.name, e);
             }}
             onKeyDown={(e) => {
-              if (!project.pinned) return;
+              if (isOffGroup || !project.pinned) return;
               if (!e.shiftKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
               e.preventDefault();
               movePinnedProjectByKeyboard(project.id, e.key === "ArrowUp" ? -1 : 1);
@@ -1214,14 +1257,16 @@ export const ProjectBar = memo(function ProjectBar({
               zIndex: isDragging ? 6 : isActive ? 3 : clusterDragging ? 5 : 1,
               cursor: clusterDragging
                 ? "grabbing"
-                : !project.pinned
+                : isOffGroup || !project.pinned
                   ? "pointer"
                   : reorderSaving
                     ? "default"
                     : isDragging
                       ? "grabbing"
                       : "grab",
-              opacity: isDragging ? 0.92 : 1,
+              // Dimmed, but ringed: "you are here, and here is not in this
+              // group" reads at a glance without a second badge (#378).
+              opacity: isDragging ? 0.92 : isOffGroup ? 0.72 : 1,
               transform: `translateY(${tileOffset}px)`,
               boxShadow: isDragging
                 ? "0 0 0 2px color-mix(in srgb, var(--accent) 70%, white), 0 10px 24px -10px rgba(0, 0, 0, 0.6)"
