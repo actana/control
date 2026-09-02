@@ -272,8 +272,10 @@ async function startCore(): Promise<void> {
       // Reported *after* the pipeline, and only for a hook the pipeline
       // accepted: `reconcileSessionId` drops a POST carrying another session's
       // id (base `2bdcb56`), and a hook from a harness process this Session no
-      // longer owns is not evidence that this Session is alive.
-      if (result.body?.ignored !== "foreign-session") {
+      // longer owns is not evidence that this Session is alive. `ok` is the
+      // positive test — it is already false for a row this Core does not have
+      // — and `foreign-session` is the one rejection that answers `ok`.
+      if (result.ok && result.body?.ignored !== "foreign-session") {
         sessionBackstop?.noteActivity(taskId, "hook");
       }
       return result;

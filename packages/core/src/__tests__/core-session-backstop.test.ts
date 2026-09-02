@@ -24,6 +24,8 @@ import {
 import { CoreTaskWriter } from "../core-task-writer";
 import { CoreSessionBackstop } from "../core-session-backstop";
 import { PtyOutputActivityWatcher } from "../pty-output-activity";
+import { CoreHarnessStatus } from "../core-harness-status";
+import type { HarnessHookBody } from "@actana/shared/harness-hook-pipeline";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 
 // The backstop nobody has to arm (issue 243 part 2), against this Core's real
@@ -352,6 +354,18 @@ describe("settling a turn whose end nobody reported", () => {
         backstop.noteActivity("t-1", "redraw");
       }
     };
+    /**
+     * A hook, through the real pipeline and then to the backstop — the wiring
+     * `core-entry.ts` has, so what the pipeline does or does not write to the
+     * row is part of what is under test.
+     */
+    const deliverHook = (backstop: CoreSessionBackstop, payload: HarnessHookBody) => {
+      const harnessStatus = new CoreHarnessStatus({ writer });
+      const result = harnessStatus.receiveHook("t-1", payload);
+      if (result.ok && result.body?.ignored !== "foreign-session") {
+        backstop.noteActivity("t-1", "hook");
+      }
+    };
     /** Paint until the idle rule has settled the row, and assert it did. */
     const settleByIdleRule = (backstop: CoreSessionBackstop) => {
       paintFor(backstop, IDLE_MS + MINUTE);
@@ -373,25 +387,86 @@ describe("settling a turn whose end nobody reported", () => {
       expect(statusOf("t-1")).toBe("running");
     });
 
-    it("is not reopened by a hook, whatever the hook means", () => {
-      // A hook hands the row back to the pipeline, which decides the status
-      // from the event: a `UserPromptSubmit` writes `running` there, a `Stop`
-      // writes `finished`. Either way this rule's claim on the row is over —
-      // and it must be, because a `Stop` writes `finished` over a `finished`
-      // and reopening that is the post-turn resurrection #385 closed.
+    it("is not reopened by a Stop, which decided the row itself", () => {
+      // Driven through the real pipeline rather than a synthetic kind: a
+      // terminal `Stop` writes `finished` over this rule's `finished`, which
+      // moves `updated_at` and ends the claim. The post-turn composer paint
+      // that follows must find nothing to take back (review of PR 455, round
+      // 3) — and the previous version of this test used a bare
+      // `noteActivity(id, "hook")`, which never touches the pipeline, which is
+      // how round 4's regression got past it.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+      const after = getLastEventId();
+
+      nowMs += 30 * 1000;
+      deliverHook(backstop, { hook_event_name: "Stop" });
+      expect(statusOf("t-1")).toBe("finished");
+
+      nowMs += 30 * 1000;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
+      // The `Stop`'s own write is a `finished` over a `finished`, so it raises
+      // no second notification either.
+      expect(kindsSince(after)).not.toContain("session:finished");
+    });
+
+    it("is still reopened after a tool call's hook, which decided nothing", () => {
+      // Review of PR 455, round 4. `PostToolUse` is installed unmatched, so
+      // every ordinary tool call fires one — within milliseconds of the tool
+      // completing, while this classifier reports once every five seconds, so
+      // hook-then-output is the normal ordering. The pipeline writes nothing
+      // for it on a row that is not `needs-input`, so it has decided nothing
+      // and the recovery must survive it.
       insert("t-1", "running");
       const backstop = makeBackstop();
       settleByIdleRule(backstop);
 
-      nowMs += MINUTE;
-      backstop.noteActivity("t-1", "hook");
+      nowMs += 30 * 1000;
+      deliverHook(backstop, { hook_event_name: "PostToolUse", tool_name: "Bash" });
       expect(statusOf("t-1")).toBe("finished");
 
-      // And the marker is gone with it: the composer paint that follows a real
-      // `Stop` finds nothing to take back (review of PR 455, round 3).
-      nowMs += MINUTE;
+      // The build's output lands half a minute later, and the turn is visibly
+      // not over.
+      nowMs += 30 * 1000;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("survives a reopen write that failed, and tries again", () => {
+      // The marker is spent only once the write has landed: a SQLite busy
+      // against the concurrent event-log writer must not cost the one chance
+      // this rule has to take its own finish back (review of PR 455, round 4).
+      insert("t-1", "running");
+      let reopenFails = true;
+      const flaky = {
+        readTask: (taskId: string) => writer.readTask(taskId),
+        mutate: (mutation: { op: string; status?: string }) => {
+          if (reopenFails && mutation.op === "update" && mutation.status === "running") {
+            throw new Error("database is locked");
+          }
+          return writer.mutate(mutation as never);
+        },
+      } as unknown as CoreTaskWriter;
+      const backstop = new CoreSessionBackstop({
+        listActiveTasks,
+        writer: flaky,
+        hasLivePty: (taskId) => livePtys.has(taskId),
+        now: () => nowMs,
+        quietMs: QUIET_MS,
+      });
+      settleByIdleRule(backstop);
+
+      nowMs += 30 * 1000;
       backstop.noteActivity("t-1", "output");
       expect(statusOf("t-1")).toBe("finished");
+
+      // Five seconds later the next burst arrives, and the database is back.
+      reopenFails = false;
+      nowMs += 5 * 1000;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("running");
     });
 
     it("never takes back a finish another writer wrote over it", () => {

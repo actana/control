@@ -173,7 +173,10 @@ const SPINNER_GLYPH_PATTERN = /[\u2800-\u28ff\u2731-\u273d\u25d0-\u25d3\u25e2-\u
  * direction that fails safe.
  *
  * Global, because what it matches is what gets dropped: a duration is removed
- * as a *token*, not as a licence to drop every digit on its line. `✔ 43 passed
+ * as a *token*, not as a licence to drop every digit on its line. Being global
+ * it carries a `lastIndex`, so it is for `replace` only — never `test`, which
+ * would answer differently every other call. Its neighbour above is
+ * deliberately not global for that reason. `✔ 43 passed
  * in 12.3s` and `Compiled 41 files in 3.2s` are the standard build-progress
  * shapes, and their counts are the only thing changing — taking those with the
  * elapsed time settles a live build (review of PR 455, round 3).

@@ -235,19 +235,30 @@ burst returns the row to `running` inside half an hour
 (`session-backstop.reopened`). Three things end that claim, and each of them
 ends it for good:
 
-- **Any hook.** A hook hands the row to the pipeline, which decides the status
-  from the event — a `Stop` writes the authoritative `finished`, a
-  `UserPromptSubmit` writes `running`. So no hook of any kind reopens anything,
-  and a post-turn `SubagentStart`, `SubagentStop` or unmatched `PostToolUse`
-  cannot heal a finished card, which is the bug #385 closed.
 - **Anyone else writing the row.** The settle records the row's `updatedAt` and
   the reopen requires it unchanged. Asking only whether the row still says
   `finished` is not enough: a real `Stop` writes `finished` over a `finished`,
   and the post-turn composer paint that follows would otherwise reopen it.
+  This is also the only thing that reads a hook — a hook the pipeline wrote a
+  status for moved the row; `SubagentStart`, `SubagentStop` and an unmatched
+  `PostToolUse` write nothing, decide nothing, and leave the recovery armed,
+  which matters because `PostToolUse` is installed unmatched and fires on every
+  ordinary tool call.
 - **The PTY exiting**, and the half-hour grace expiring.
 
-An operator's finish and the quiet rule's finish are never marked in the first
-place.
+No hook of any kind *reopens* a row: only an `output`-class burst does, so a
+post-turn helper cannot heal a finished card, which is the bug #385 closed. An
+operator's finish and the quiet rule's finish are never marked in the first
+place. The marker is spent only once the reopening write has landed, so a
+failed write leaves the next burst able to try again.
+
+An idle-rule finish is reopened by **anything new on that screen**, and the
+classifier cannot tell the harness's own output from the echo of an operator
+typing into the composer — so a correct finish can be taken back by somebody
+starting to type and not pressing Enter. Pressing Enter makes it right again (a
+`UserPromptSubmit` is a real new turn); the exposed window is "typed but not
+submitted", and it is tracked as
+[#475](https://github.com/actana/control/issues/475).
 
 This exists because the obvious recovery does not: `harness-hook-events.ts` maps
 only `UserPromptSubmit`, `CursorBeforeSubmitPrompt` and `PermissionReplied` to

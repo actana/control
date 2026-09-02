@@ -77,9 +77,9 @@
 //      ({@link IDLE_REOPEN_MS}). Nothing else is marked, so an operator's
 //      finish and the quiet rule's finish are never reopened by stray bytes;
 //      no hook of any kind reopens anything, because a post-turn helper
-//      healing a finished card is the bug #385 closed; and the marker is
-//      dropped the moment any hook arrives or anyone else writes the row, so
-//      a finish that a real `Stop` wrote is never taken back either.
+//      healing a finished card is the bug #385 closed; and the claim ends the
+//      moment anyone else writes the row — which is how a finish that a real
+//      `Stop` wrote is never taken back, since that write moves `updatedAt`.
 //   2. **It defers to hooks, for a while.** A Session whose hooks arrive has a
 //      better witness than its pixels: if it has printed anything real since
 //      its last hook it is mid-turn — a single `Bash` call emits no hook until
@@ -95,10 +95,14 @@
 // `session:finished` (the operator's completion toast, and the signal
 // `actana session wait` unblocks on) and clears the tracked subagent set. The
 // reopen puts the status back; it cannot un-send a notification or restore
-// that set, which expires on its own (#464). And a harness parked on a
-// permission dialog nobody pattern-matched repaints it statically, which is
-// this rule's condition exactly — it is settled like any idle screen, and that
-// is #469.
+// that set, which expires on its own (#464 — which also records that a hooked
+// harness flaps the same way a hookless one does, and that `forget()` drops
+// `hookAt` with the rest of the stamps). A harness parked on a permission
+// dialog nobody pattern-matched repaints it statically, which is this rule's
+// condition exactly, so it is settled like any idle screen (#469). And the
+// reopen cannot tell the harness's own output from the echo of an operator
+// typing, so a correct finish can be taken back by somebody starting to type
+// (#475).
 //
 // Only `running` is in scope. `needs-input` is a Session waiting on a human,
 // which is a state it is allowed to sit in indefinitely and silently; a card
@@ -338,14 +342,17 @@ export class CoreSessionBackstop {
       if (oldest === undefined) break;
       this.lastActivity.delete(oldest);
     }
-    // A hook hands the row back to the pipeline: whatever it writes — a
-    // `Stop`'s finish, a `UserPromptSubmit`'s `running` — is authoritative,
-    // and a finish this rule wrote before it is not this file's to take back
-    // any more. Dropping the marker here is what keeps a post-turn composer
-    // paint from reopening a row a real `Stop` has since finished (review of
-    // PR 455, round 3).
-    if (isHook) this.idleSettled.delete(taskId);
-    else if (kind === "output") this.reopenIfIdleSettled(taskId, now);
+    // No hook ever reopens a row — a post-turn helper healing a finished card
+    // is the bug #385 closed. What a hook does *not* do is end this rule's
+    // claim on its own: `SubagentStart`, `SubagentStop` and an unmatched
+    // `PostToolUse` map to no status and the pipeline writes nothing for them,
+    // so dropping the marker there would disarm the recovery for every
+    // ordinary tool call — `PostToolUse` is installed unmatched, and it lands
+    // milliseconds after a tool completes while this classifier reports once
+    // every five seconds (review of PR 455, round 4). A hook that *did* decide
+    // the status moved the row, and {@link reopenIfIdleSettled}'s `updatedAt`
+    // comparison is what reads that — the same test, done honestly.
+    if (kind === "output") this.reopenIfIdleSettled(taskId, now);
   }
 
   /**
@@ -359,7 +366,10 @@ export class CoreSessionBackstop {
    * writes `finished` over a `finished`, and reopening that is exactly the
    * post-turn resurrection #385 closed. So the settle records the row's
    * `updatedAt` and the reopen requires it unchanged; anybody else's write,
-   * whatever status it left behind, ends this rule's claim.
+   * whatever status it left behind, ends this rule's claim. That is also the
+   * only thing that reads a hook: a hook the pipeline wrote a status for moved
+   * the row, and one it wrote nothing for decided nothing and leaves the
+   * recovery armed.
    *
    * The subagent set cleared by the settle cannot be restored, which is the
    * one part of a wrong idle settle that does not come back; it expires on
@@ -368,13 +378,24 @@ export class CoreSessionBackstop {
   private reopenIfIdleSettled(taskId: string, now: number): void {
     const marker = this.idleSettled.get(taskId);
     if (marker === undefined) return;
-    this.idleSettled.delete(taskId);
-    if (now - marker.at > (this.deps.reopenMs ?? IDLE_REOPEN_MS)) return;
+    if (now - marker.at > (this.deps.reopenMs ?? IDLE_REOPEN_MS)) {
+      this.idleSettled.delete(taskId);
+      return;
+    }
     try {
       const task = this.deps.writer.readTask(taskId);
-      if (task?.status !== "finished") return;
-      if (task.updatedAt !== marker.rowUpdatedAt) return;
+      // Somebody else's status, or somebody else's write under the same
+      // status: either way the row is theirs now and this claim is over.
+      if (task?.status !== "finished" || task.updatedAt !== marker.rowUpdatedAt) {
+        this.idleSettled.delete(taskId);
+        return;
+      }
+      // The marker is dropped only once the write has actually landed. A
+      // `mutate` that throws or answers `null` — SQLite busy against the
+      // concurrent event-log writer — must leave the next burst five seconds
+      // from now able to try again, rather than having spent the one chance.
       if (!this.deps.writer.mutate({ op: "update", taskId, status: "running" })) return;
+      this.idleSettled.delete(taskId);
       log.info("session-backstop.reopened", { taskId, quietForMs: now - marker.at });
     } catch (err) {
       log.warn("session-backstop.reopen-failed", { taskId, error: String(err) });
