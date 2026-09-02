@@ -101,13 +101,25 @@ type Pending = {
 
 /**
  * One domain event as a tab is handed it, with the one thing about its delivery
- * a listener can act on: whether it arrived live or as replay (issue 388).
+ * a listener can act on: whether this tab had ever seen anything from that Core
+ * when it asked (issue 388).
  */
 export type PanelLinkEventMessage = {
   coreId: string;
   event: CoreLinkEvent;
-  /** True while this is the answer to a `subscribe`, not something that just happened. */
-  replay?: boolean;
+  /**
+   * True only for events answering a `subscribe` this tab sent from a cursor of
+   * **zero** — the tail handed to a tab that had seen nothing.
+   *
+   * Deliberately narrower than "arrived as replay". A reconnect catch-up is
+   * also a replay, but it is a gap *this tab lived through*: the operator was
+   * looking at it when the Session ended and the socket blipped, and a listener
+   * that treats that like a fresh tab goes quiet in the window they were
+   * watching. Narrower again than the send window it is tracked in: a
+   * re-subscribe on a live socket (a view remounting) can carry a genuinely
+   * live event past this flag, and a cursor above zero is what keeps it live.
+   */
+  coldReplay?: boolean;
 };
 
 type Watch = {
@@ -116,13 +128,14 @@ type Watch = {
   /** The highest eventId this tab has seen from the Core. */
   cursor: number;
   /**
-   * Whether the events arriving right now are the answer to a `subscribe` —
-   * true from the frame that asks to the `eventsReplayed` marker that closes
-   * it. Passed on to listeners because a replayed event and a live one are not
-   * the same fact: the live one just happened, the replayed one may be a thing
-   * this browser has already told the operator about (issue 388).
+   * The cursor this tab's outstanding `subscribe` was sent from, or null when
+   * none is outstanding — opened by the frame that asks and closed by the
+   * `eventsReplayed` marker that answers it.
+   *
+   * Zero means this tab had seen nothing when it asked, which is the one case
+   * a listener is told about: see {@link PanelLinkEventMessage.coldReplay}.
    */
-  replaying: boolean;
+  subscribedFrom: number | null;
 };
 
 export class PanelLinkClient {
@@ -261,7 +274,7 @@ export class PanelLinkClient {
    * hold; the tab keeps watching while anyone else still is.
    */
   watch(coreId: string): () => void {
-    const watch = this.watching.get(coreId) ?? { refs: 0, cursor: 0, replaying: false };
+    const watch = this.watching.get(coreId) ?? { refs: 0, cursor: 0, subscribedFrom: null };
     watch.refs++;
     this.watching.set(coreId, watch);
     if (watch.refs === 1) this.sendSubscribe(coreId);
@@ -641,8 +654,8 @@ export class PanelLinkClient {
     if (!this.socket || !this.open) return;
     const watch = this.watching.get(coreId);
     const cursor = watch?.cursor ?? 0;
-    // The window a replay lands in opens here and closes on `eventsReplayed`.
-    if (watch) watch.replaying = true;
+    // The window the answer lands in opens here and closes on `eventsReplayed`.
+    if (watch) watch.subscribedFrom = cursor;
     this.rawSend(
       encodePanelLinkFrame({
         t: "core",
@@ -761,15 +774,15 @@ export class PanelLinkClient {
         // not re-fire listeners that drive refetches.
         if (watch && inner.event.eventId <= watch.cursor) return;
         if (watch) watch.cursor = inner.event.eventId;
-        const replay = watch?.replaying === true;
-        for (const cb of this.eventListeners) cb({ coreId, event: inner.event, replay });
+        const coldReplay = watch?.subscribedFrom === 0;
+        for (const cb of this.eventListeners) cb({ coreId, event: inner.event, coldReplay });
         return;
       }
       case "eventsReplayed": {
         const watch = this.watching.get(coreId);
         if (!watch) return;
         if (inner.lastEventId > watch.cursor) watch.cursor = inner.lastEventId;
-        watch.replaying = false;
+        watch.subscribedFrom = null;
         return;
       }
       case "data":

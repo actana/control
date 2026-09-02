@@ -118,6 +118,38 @@ const FINISH_EVENT_KINDS = new Set(["session:finished"]);
  */
 const FINISH_REPLAY_LIMIT = 8;
 
+/**
+ * How far back a finish may be and still be worth announcing to a tab that
+ * missed it: 30 minutes.
+ *
+ * The count bound alone is not a bound on *age*. The buffer spans the whole
+ * life of a core-link connection, and a link that came up this morning against
+ * a Core that ran overnight holds every finish since — so a first visit from a
+ * profile that has announced none of them (a second device, a private window,
+ * cleared site data) would be handed eight per Core, each with its own toast,
+ * ding and OS notification, for Sessions that ended hours ago.
+ *
+ * Thirty minutes is "the operator stepped away and came back", which is the
+ * gap #388 is about. Beyond it the finish is not news, and the grid saying
+ * `finished` is the right way to learn about it.
+ *
+ * Measured on the Core's own `ts` — when the Session actually finished — and
+ * deliberately not on when the service buffered it: `bind` empties the buffer
+ * on every new Core-side connection, so a redial re-fills it with old events
+ * that a receipt clock would call brand new. An event whose `ts` is unusable is
+ * kept, because failing toward the notice is the whole point of the fix.
+ */
+const FINISH_REPLAY_MAX_AGE_MS = 30 * 60_000;
+
+/**
+ * Whether an event is known to predate `oldest`. An event with no usable `ts`
+ * is not — see {@link FINISH_REPLAY_MAX_AGE_MS} on why the unknown case keeps
+ * the notice rather than dropping it.
+ */
+function isOlderThan(event: CoreLinkEvent, oldest: number): boolean {
+  return Number.isFinite(event.ts) && event.ts > 0 && event.ts < oldest;
+}
+
 export type PanelLinkRouterOptions = {
   eventBufferSize?: number;
 };
@@ -304,15 +336,20 @@ export class PanelLinkRouter {
    * (issue 388). A tab that opened after a Session finished has no query that
    * would tell it a finish *happened* — `tasksList` says the row is finished,
    * which is a state, not an event, and the toast and the ding are the Panel's
-   * answer to the event. So the finish-class tail rides along, bounded by
-   * {@link FINISH_REPLAY_LIMIT}, and the cursor still jumps to head: these are
-   * a notice the tab missed, not a place in the log it is behind at.
+   * answer to the event. So the finish-class tail rides along, bounded on both
+   * axes a flood could arrive on — {@link FINISH_REPLAY_LIMIT} of them, none
+   * older than {@link FINISH_REPLAY_MAX_AGE_MS} — and the cursor still jumps to
+   * head: these are a notice the tab missed, not a place in the log it is
+   * behind at.
    */
   replayFor(coreId: string, lastEventId: number): { events: CoreLinkEvent[]; head: number } {
     const state = this.cores.get(coreId);
     if (!state) return { events: [], head: 0 };
     if (lastEventId <= 0) {
-      const finishes = state.buffer.filter((e) => FINISH_EVENT_KINDS.has(e.kind));
+      const oldest = Date.now() - FINISH_REPLAY_MAX_AGE_MS;
+      const finishes = state.buffer.filter(
+        (e) => FINISH_EVENT_KINDS.has(e.kind) && !isOlderThan(e, oldest),
+      );
       return { events: finishes.slice(-FINISH_REPLAY_LIMIT), head: state.head };
     }
     return {

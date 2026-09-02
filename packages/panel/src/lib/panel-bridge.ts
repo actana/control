@@ -97,7 +97,8 @@ export type PanelBridge = {
   watchCore(coreId: string): () => void;
   /**
    * Domain events from every watched Core, tagged with their owner — and with
-   * whether they arrived live or as the answer to a subscribe (issue 388).
+   * whether they answered a subscribe this tab sent having seen nothing
+   * (issue 388).
    */
   onEvent(cb: (msg: PanelLinkEventMessage) => void): () => void;
   /** Dial-status changes, pushed by the service as it finds them. */

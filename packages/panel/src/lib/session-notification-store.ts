@@ -199,7 +199,15 @@ export function recordAnnouncedFinish(key: string) {
   }
 }
 
-/** Forget every announcement. Used by tests and by a storage reset. */
+/**
+ * Forget every announcement.
+ *
+ * Nothing in the app calls this, and that is the decision, not an omission:
+ * clearing the bell empties a *list the operator has read*, while this is the
+ * record of what was already said out loud. Wiring the two together would make
+ * "clear notifications" the gesture that lets an old finish announce itself
+ * again in the next tab. Tests use it to build a browser that has said nothing.
+ */
 export function clearAnnouncedFinishes() {
   if (typeof window === "undefined") return;
   try {

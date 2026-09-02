@@ -92,7 +92,7 @@ _Avoid_: ssh, terminal, console (too overloaded)
 ### Transport concepts
 
 **Event**:
-A discrete thing that happened on a Core — task status change, hook fired, question menu appeared, run finished, shell output. Has a monotonic `eventId` per Core. Persisted in the Core's SQLite; pushed live over the core-link; replayed by `lastEventId` cursor on Panel reconnect. The Panel never misses an event.
+A discrete thing that happened on a Core — task status change, hook fired, question menu appeared, run finished, shell output. Has a monotonic `eventId` per Core. Persisted in the Core's SQLite; pushed live over the core-link; replayed by `lastEventId` cursor on Panel reconnect. The Panel *service* never misses an event; a browser **tab** carries its own cursor, in memory, starting at zero, so a tab that opens after the fact has missed everything and loads current state through queries instead. The one thing no query re-derives — that a Session *finished* — is replayed to such a tab on purpose, bounded by count and by age (#388).
 _Avoid_: message, notification (a notification is one *use* of an Event)
 
 **Event cursor** (`lastEventId`):

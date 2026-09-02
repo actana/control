@@ -31,6 +31,16 @@ export type NormalizedFinish = {
   coreId: string | null;
   coreAlias: string | null;
   eventId: number | null;
+  /**
+   * When the Session actually finished, off the event's own `ts`; null when the
+   * source carries no time and "now" is the truth (the Panel's SSE stream is
+   * live by construction).
+   *
+   * A replayed finish may be hours old — that is what the replay is for — and
+   * stamping it `Date.now()` would put it at the top of the bell above rows
+   * that really are newer, and at the 200 cap push one of them out.
+   */
+  finishedAt: number | null;
   sessionId: string;
   projectId: string;
   projectName: string;
@@ -97,6 +107,9 @@ export function normalizeSessionFinishedEvent(
       coreId: null,
       coreAlias: null,
       eventId: null,
+      // The Panel's own stream pushes as it happens; there is no older time to
+      // carry, and the dispatch stamps it with the clock that is right for it.
+      finishedAt: null,
       sessionId,
       projectId,
       projectName,
@@ -129,6 +142,7 @@ export function normalizeSessionFinishedEvent(
     coreId: msg.coreId,
     coreAlias,
     eventId: typeof event.eventId === "number" ? event.eventId : null,
+    finishedAt: finishedAtFrom(event.ts),
     sessionId,
     projectId,
     projectName,
@@ -137,11 +151,28 @@ export function normalizeSessionFinishedEvent(
 }
 
 /**
- * How a finish reached this tab. `live` is the event happening; `replay` is the
- * service handing a tab that just opened a finish it was not there for — the
- * fix for a new tab getting no notice at all (issue 388).
+ * How a finish reached this tab. `live` is the event happening — including a
+ * gap this tab was away for and caught up on, which the operator was watching.
+ * `cold-replay` is the service handing a tab that had seen *nothing* a finish
+ * it was never there for: the fix for a new tab getting no notice at all
+ * (issue 388), and the only delivery whose announcement is second-guessed.
  */
-type FinishDelivery = "live" | "replay";
+type FinishDelivery = "live" | "cold-replay";
+
+/**
+ * The Core's `ts` for the event, as a time this Panel will sort and render by —
+ * or null when it cannot be one.
+ *
+ * Two Cores' clocks and this browser's are three clocks, and only one of them
+ * orders the bell. A `ts` that is not a positive finite number says nothing, and
+ * one in the future would pin its row to the top of the list for as long as the
+ * skew lasts; both fall back to the arrival clock. A `ts` in the past is taken
+ * as given: that is the fact the replay exists to carry.
+ */
+function finishedAtFrom(ts: unknown): number | null {
+  if (typeof ts !== "number" || !Number.isFinite(ts) || ts <= 0) return null;
+  return ts > Date.now() ? null : ts;
+}
 
 type RemoteDeletionKind = "task" | "project";
 
@@ -252,12 +283,15 @@ export function useSessionFinishNotifications() {
   const dispatchNormalizedFinish = useCallback(
     (finish: NormalizedFinish, delivery: FinishDelivery = "live") => {
       const key = dedupKey(finish);
-      // A replayed finish is one this tab was not open for (issue 388). It is
-      // announced only if nothing in this browser has announced it already:
+      // A cold-replayed finish is one this tab was not open for (issue 388). It
+      // is announced only if nothing in this browser has announced it already:
       // two tabs open when a Session finishes should both say so — that is one
       // event reaching two surfaces — but a tab opened *afterwards* is being
-      // told about the same announcement a second time, which is noise.
-      if (delivery === "replay" && hasAnnouncedFinish(key)) return;
+      // told about the same announcement a second time, which is noise. Two
+      // tabs opened in the same instant can still both read "not announced" and
+      // both say it; that lands on the two-tabs-open outcome the line above
+      // allows, so it is left as it is rather than locked.
+      if (delivery === "cold-replay" && hasAnnouncedFinish(key)) return;
       if (!markSeen(key)) return;
       // Remembered across tabs only for a finish the Core numbered. An SSE
       // finish has no eventId, so its key cannot tell one finish of a Session
@@ -271,7 +305,9 @@ export function useSessionFinishNotifications() {
         projectId: finish.projectId,
         projectName: finish.projectName,
         taskTitle: finish.taskTitle,
-        finishedAt: Date.now(),
+        // The event's own time when it carries one: a finish replayed at 09:00
+        // happened at 02:00, and the list is ordered and capped on this.
+        finishedAt: finish.finishedAt ?? Date.now(),
         coreId: finish.coreId,
         coreAlias: finish.coreAlias,
       };
@@ -484,7 +520,7 @@ export function useSessionFinishNotifications() {
       const alias = coreAliasByIdRef.current.get(msg.coreId) ?? null;
       const finish = normalizeSessionFinishedEvent("fleet", msg, alias);
       if (!finish) return;
-      dispatchNormalizedFinish(finish, msg.replay === true ? "replay" : "live");
+      dispatchNormalizedFinish(finish, msg.coldReplay === true ? "cold-replay" : "live");
     });
     return () => {
       for (const release of releases) release();

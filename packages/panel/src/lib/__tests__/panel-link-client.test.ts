@@ -246,12 +246,12 @@ describe("panel link · reconnect and replay", () => {
     link.close();
   });
 
-  it("says which events were replay and which happened just now", () => {
+  it("says which events answer a subscribe from a tab that had seen nothing", () => {
     const link = client();
     link.watch("core_a");
     const socket = live();
     const seen: Array<[number, boolean]> = [];
-    link.onEvent(({ event: e, replay }) => seen.push([e.eventId, replay === true]));
+    link.onEvent(({ event: e, coldReplay }) => seen.push([e.eventId, coldReplay === true]));
 
     // Everything before the caught-up marker answers the subscribe.
     socket.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(4) } });
@@ -265,12 +265,12 @@ describe("panel link · reconnect and replay", () => {
     link.close();
   });
 
-  it("reopens the replay window on the subscribe a reconnect sends", () => {
+  it("does not call a reconnect catch-up a cold replay — this tab lived through it", () => {
     const link = client();
     link.watch("core_a");
     const first = live();
     const seen: Array<[number, boolean]> = [];
-    link.onEvent(({ event: e, replay }) => seen.push([e.eventId, replay === true]));
+    link.onEvent(({ event: e, coldReplay }) => seen.push([e.eventId, coldReplay === true]));
     first.push({ t: "core", coreId: "core_a", frame: { type: "eventsReplayed", lastEventId: 4 } });
     first.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(5) } });
 
@@ -279,9 +279,11 @@ describe("panel link · reconnect and replay", () => {
     const second = live();
     second.push({ t: "core", coreId: "core_a", frame: { type: "event", event: event(6) } });
 
+    // The gap it was away for is a gap it was watching: the tab asked from a
+    // cursor of 5, not from nothing.
     expect(seen).toEqual([
       [5, false],
-      [6, true],
+      [6, false],
     ]);
     link.close();
   });
