@@ -159,6 +159,60 @@ notifications as `needs-input` creates false positives that later flip to
 These values were tuned against the failure modes above. Do not change them
 without a failure that says so.
 
+### The session-id guard, and the one event it does not drop
+
+A hook is addressed by **task id**, read out of the PTY's own environment. The
+`session_id` in the payload is a second, weaker fact: the harness's own name for
+the conversation. The pipeline stores the first one it sees on a *capture* event
+(`UserPromptSubmit`, `SessionStart`, and their Cursor spellings) and, from then
+on, drops any non-capture event carrying a different id — a `foreign-session`.
+That is what stops a stranger's question, subagent count or permission prompt
+from claiming a card it does not own, and a capture event is still free to adopt
+a new id, because a new session id means a new harness process.
+
+**A turn end is the exception** (#390). `Stop` — and Cursor's `stop` and
+`afterAgentResponse` — claims nothing; it reports that a turn ended, on a PTY
+that is this task's whatever the harness calls its session. Two shapes produce
+one under an unrecognised id: a **resume**, where the stored id belongs to a
+process that is gone and no further capture event is coming, and an **OpenCode
+child** whose `session.idle` leaked past the plugin's parent/child filter.
+Dropping it was still an *ack* — `{ ok: true, ignored: "foreign-session" }` — so
+the harness saw its hook accepted while the card sat on `running` and no
+`session:finished` ever fired.
+
+So a foreign turn end settles the task instead, on terms narrower than an owned
+one's:
+
+- **The tracked subagents are dropped on entry**, with the recent-finish mark.
+  A turn end under an unrecognised id means a new harness process, so the old
+  session's subagents died with it — and nothing else can clear them. Their
+  `SubagentStop` died with the process, and the new session's own subagent
+  events carry the new id, so they are dropped as foreign *before* the
+  bookkeeping. The only other route out is the 2-hour `ACTIVE_SUBAGENT_TTL_MS`,
+  and waiting on it is how the first cut of this settle reproduced #390 inside
+  the fix for it: a fanned-out turn that resumed with a lost `SessionStart` sat
+  on `running` for two hours with its `Stop` acked.
+- **There is no subagent hold, deliberately.** After the clear the tracked set
+  is empty by construction, and it could not have engaged in either shape that
+  reaches here anyway: a resumed session's subagent events are dropped as
+  foreign before they are ever counted, and opencode — whose child sessions are
+  the other shape — posts no subagent lifecycle events at all, so
+  `hasActiveSubagents` is structurally false for every opencode Session. **The
+  status check below is the only real guard**, and a leaked child *can* finish
+  a working parent's `running` card. That is the residual, stated rather than
+  papered over; the parent's next `session.status: busy` corrects it.
+- **Only `running` is settled** — not `needs-input`. The PTY-exit settle acts on
+  both, and it is not a precedent that transfers: there the process is dead, so
+  an open question is moot, while here it is alive and may be blocked on exactly
+  that question. A leaked child going idle would otherwise write `finished` over
+  a parent waiting on a permission prompt, taking the pending-question overlay
+  with it. `ready` is out for #387's reason: `CoreTaskWriter` appends
+  `session:finished` on that transition, and a Session titled "Waiting for
+  initial prompt…" has no turn to end.
+- **The session id is not captured.** A `Stop` is not a capture event; adopting
+  an OpenCode child's id would hand the rest of that child's lifecycle the
+  Session's card.
+
 ## The hook receiver
 
 The Core exposes a small **loopback HTTP** listener a hook's shell command can
@@ -509,13 +563,25 @@ Three details are load-bearing and none of them is guessable from the docs:
 - **`permission.asked` is the event the binary emits.** The `@opencode-ai/sdk`
   type union calls it `permission.updated`, and that string does not appear in
   the 1.18.18 binary at all. The plugin listens for both.
-- **Posts are queued, not fired in parallel.** A `Stop` that overtook the
-  `SessionStart` carrying the session id would be discarded by the Core as
-  belonging to a session it has never heard of — #230 again with a new cause.
-  Nothing awaits the queue, so a hook still never holds up a turn.
+- **Posts are queued, not fired in parallel.** Order is meaning here. A
+  `chat.message` that overtook the `SessionStart` before it would name the
+  Session from a prompt the Core cannot yet attribute, and a `permission.replied`
+  that overtook its `permission.asked` would leave the card on `needs-input`
+  for a question already answered — #230 again with a new cause. (A `Stop` that
+  overtakes the capture event is no longer among the casualties: since #390 it
+  settles rather than being discarded. That is a narrowed blast radius, not a
+  reason to stop queueing.) Nothing awaits the queue, so a hook still never
+  holds up a turn.
 - **A child session is a subagent.** `session.created` carries `parentID`, so
   the plugin knows a child by name rather than guessing from ordering, and a
-  subagent's `idle` never settles the Session's card.
+  subagent's `idle` never settles the Session's card. Filtering it at the
+  source is the whole guard — one that leaks through, a child created before
+  the plugin loaded, reaches the Core as a `Stop` under an unrecognised session
+  id and now settles rather than being dropped (see the session-id guard
+  above). Nothing downstream can catch it: opencode posts no subagent lifecycle
+  events, so the pipeline has no way to see the parent still working. All that
+  narrows it is the `running`-only status check, and the parent's next
+  `session.status: busy` puts the card back.
 
 `permission.replied` is also why opencode needs no unmatched `PostToolUse`
 subscription: Claude Code fires nothing when a permission is *granted* and has
