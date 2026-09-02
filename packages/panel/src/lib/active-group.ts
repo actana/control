@@ -57,17 +57,26 @@ function activeGroupOf(settings: Pick<AppSettings, "activeProjectGroup">): Activ
  * in flight are not ordered: pick group A then group B and A's answer can land
  * last, carrying the server's *older* `activeProjectGroup` back over B — the
  * rail reverts to an older group under the cursor. So each local write takes
- * the next generation, and a settings answer is applied only while its
- * generation is still the newest; an older PATCH resolving late is dropped.
+ * the next generation, and a settings answer may only *paint* while its
+ * generation is still the newest; an older PATCH resolving late paints nothing.
  *
- * The ledger also remembers the last group the server acknowledged, which is
- * where a failed write puts the rail back — never some older group that merely
- * happened to be on screen before the click.
+ * Acknowledgement is tracked separately from painting, because the two ask
+ * different questions. "May this answer paint?" is about the newest *write*.
+ * "Did the server confirm this group?" is about the newest *answer* — and a
+ * superseded PATCH that succeeded did confirm its group, so it must be
+ * recorded even though it may not paint. Dropping it is what let a later
+ * failure roll the rail back past a group the server was actually holding.
+ *
+ * `lastAcknowledged()` is where a failed write puts the rail back — never some
+ * older group that merely happened to be on screen before the click.
  */
 export function createActiveGroupWriteLedger(initial: ActiveProjectGroup = ACTIVE_GROUP_ALL) {
   let latest = 0;
   let inFlight = 0;
   let acknowledged: ActiveProjectGroup = initial;
+  /** The write whose answer `acknowledged` came from; 0 for a seed/observe. */
+  let acknowledgedGeneration = 0;
+  let seeded = false;
 
   return {
     /** Claim the generation for one local (optimistic) write. */
@@ -76,23 +85,49 @@ export function createActiveGroupWriteLedger(initial: ActiveProjectGroup = ACTIV
       inFlight += 1;
       return latest;
     },
+    /** Is `generation` still the newest local write? No side effect. */
+    isCurrent(generation: number): boolean {
+      return generation === latest;
+    },
     /** Settle a write; true only while its answer is still the newest one. */
     settleWrite(generation: number): boolean {
       if (inFlight > 0) inFlight -= 1;
       return generation === latest;
     },
-    /** Record the group the server confirmed for the newest write. */
-    acknowledge(group: ActiveProjectGroup): void {
+    /**
+     * Record the group the server confirmed for one write. Refuses an answer
+     * older than the one already recorded, so a late-landing older PATCH
+     * cannot un-acknowledge a newer one.
+     */
+    acknowledge(generation: number, group: ActiveProjectGroup): void {
+      if (generation < acknowledgedGeneration) return;
+      acknowledgedGeneration = generation;
       acknowledged = group;
+      seeded = true;
     },
     /**
      * Adopt a settings answer nobody here asked for (first load, refetch,
      * another window's write arriving on an invalidation) as the acknowledged
      * truth — but only while no local write is in flight, since a cache read
-     * during a race is this tab's own optimistic value, not the server's.
+     * during a race is this tab's own optimistic value, not the server's. It
+     * outranks every write issued so far, so it takes the newest generation.
      */
     observe(group: ActiveProjectGroup): void {
-      if (inFlight === 0) acknowledged = group;
+      if (inFlight > 0) return;
+      acknowledgedGeneration = latest;
+      acknowledged = group;
+      seeded = true;
+    },
+    /**
+     * Best guess at what the server holds before any of it is known — the
+     * localStorage seed the rail is already rendering. Once anything real has
+     * been acknowledged or observed this is a no-op, and it never overwrites a
+     * write in flight.
+     */
+    seed(group: ActiveProjectGroup): void {
+      if (seeded || inFlight > 0) return;
+      seeded = true;
+      acknowledged = group;
     },
     /** Where a failed write puts the rail back. */
     lastAcknowledged(): ActiveProjectGroup {
@@ -144,11 +179,15 @@ export function useActiveGroup(): {
   }, [raw, groups]);
 
   // Anything the settings query itself delivers is the server's word, so long
-  // as this tab has no write of its own outstanding.
+  // as this tab has no write of its own outstanding. Before it hydrates there
+  // is no server answer to adopt, so the ledger is seeded with the value the
+  // rail is already rendering — otherwise a click made during that window and
+  // then failing would roll back to "All projects" rather than to the group
+  // the operator was on.
   useEffect(() => {
-    if (settings === undefined) return;
-    writes.observe(activeGroupOf(settings));
-  }, [settings]);
+    if (settings === undefined) writes.seed(raw);
+    else writes.observe(activeGroupOf(settings));
+  }, [settings, raw]);
 
   /** The optimistic half: localStorage + settings cache, no request. */
   const showActiveGroup = useCallback(
@@ -164,24 +203,49 @@ export function useActiveGroup(): {
   const setActiveGroup = useCallback(
     (next: ActiveProjectGroup) => {
       const generation = writes.beginWrite();
-      showActiveGroup(next);
-      void api
-        .updateSettings({ activeProjectGroup: storedActiveGroup(next) })
-        .then((updated) => {
-          // A newer selection was made while this PATCH was out: its answer is
-          // the older truth, so it is dropped rather than rendered.
-          if (!writes.settleWrite(generation)) return;
-          writes.acknowledge(activeGroupOf(updated));
-          writeCachedActiveProjectGroup(activeGroupOf(updated));
-          queryClient.setQueryData(queryKeys.settings, updated);
-        })
-        .catch((error) => {
-          console.error("[settings] failed to persist active project group:", error);
-          // Same guard, and then back to what the server last acknowledged —
-          // a superseded failure leaves the newer selection alone.
-          if (!writes.settleWrite(generation)) return;
-          showActiveGroup(writes.lastAcknowledged());
-        });
+      void (async () => {
+        // The house pattern for an optimistic settings write (see
+        // `UsageSettingsPage.tsx` and `ProvidersSettingsPage.tsx`): a settings
+        // GET already in flight would answer with the pre-PATCH row and paint
+        // it straight over the optimistic write, so it is cancelled first.
+        await queryClient.cancelQueries({ queryKey: queryKeys.settings });
+        // That await means two rapid clicks resume in an order the click order
+        // does not settle, so the optimistic paint takes the same currency
+        // guard the answers do.
+        if (writes.isCurrent(generation)) showActiveGroup(next);
+
+        let updated: AppSettings | undefined;
+        let failure: unknown;
+        try {
+          updated = await api.updateSettings({ activeProjectGroup: storedActiveGroup(next) });
+        } catch (error) {
+          failure = error;
+        }
+
+        // Exactly once per write, whatever happened above: `settleWrite` is the
+        // only thing that decrements the in-flight count, and settling twice
+        // would let `observe` adopt this tab's own optimistic value.
+        const current = writes.settleWrite(generation);
+
+        if (updated === undefined) {
+          console.error("[settings] failed to persist active project group:", failure);
+          // A superseded failure leaves the newer selection alone; the newest
+          // one goes back to what the server last acknowledged.
+          if (current) showActiveGroup(writes.lastAcknowledged());
+          return;
+        }
+
+        // The server did confirm this group, superseded or not — recording it
+        // is what keeps a later failure from rolling back past it.
+        writes.acknowledge(generation, activeGroupOf(updated));
+        // …but only the newest answer may paint.
+        if (!current) return;
+        // A merge rather than a full-row replace: `updated` carries every other
+        // setting at its pre-PATCH value, so replacing the row would undo a
+        // concurrent edit to a neighbouring key (a section collapsed mid-flight
+        // popping back open).
+        showActiveGroup(activeGroupOf(updated));
+      })();
     },
     [queryClient, showActiveGroup],
   );

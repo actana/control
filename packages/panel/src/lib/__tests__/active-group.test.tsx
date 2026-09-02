@@ -54,18 +54,19 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function mount(initial: string | null) {
+/** `initial` is what the server holds; `undefined` leaves settings unhydrated. */
+function mount(initial: string | null | undefined) {
   const client = new QueryClient({
     defaultOptions: {
       queries: { retry: false, staleTime: Infinity, refetchOnMount: false, refetchOnWindowFocus: false },
     },
   });
-  client.setQueryData(queryKeys.settings, settingsWith(initial));
+  if (initial !== undefined) client.setQueryData(queryKeys.settings, settingsWith(initial));
   client.setQueryData(queryKeys.groups, GROUPS);
   const wrapper = ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
-  return renderHook(() => useActiveGroup(), { wrapper });
+  return { client, ...renderHook(() => useActiveGroup(), { wrapper }) };
 }
 
 /**
@@ -98,7 +99,7 @@ afterEach(() => {
 });
 
 describe("the active-group write ledger", () => {
-  it("only calls the newest write current", () => {
+  it("only reports the newest write as current", () => {
     const ledger = createActiveGroupWriteLedger(ACTIVE_GROUP_ALL);
     const first = ledger.beginWrite();
     const second = ledger.beginWrite();
@@ -109,8 +110,40 @@ describe("the active-group write ledger", () => {
   it("keeps the acknowledged group until a newer answer confirms one", () => {
     const ledger = createActiveGroupWriteLedger("g-a");
     expect(ledger.lastAcknowledged()).toBe("g-a");
-    ledger.acknowledge("g-b");
+    ledger.acknowledge(ledger.beginWrite(), "g-b");
     expect(ledger.lastAcknowledged()).toBe("g-b");
+  });
+
+  it("refuses an acknowledgement older than the one already recorded", () => {
+    const ledger = createActiveGroupWriteLedger("g-a");
+    const first = ledger.beginWrite();
+    const second = ledger.beginWrite();
+    ledger.acknowledge(second, "g-c");
+    // The older PATCH answers last; its group is the server's older truth.
+    ledger.acknowledge(first, "g-b");
+    expect(ledger.lastAcknowledged()).toBe("g-c");
+  });
+
+  it("records a superseded answer that the server did confirm", () => {
+    const ledger = createActiveGroupWriteLedger("g-a");
+    const first = ledger.beginWrite();
+    ledger.beginWrite();
+    // The older write is no longer the one that may paint...
+    expect(ledger.settleWrite(first)).toBe(false);
+    // ...but the server took it, so it is the group a later failure returns to.
+    ledger.acknowledge(first, "g-b");
+    expect(ledger.lastAcknowledged()).toBe("g-b");
+  });
+
+  it("seeds once, and never over something already known", () => {
+    const ledger = createActiveGroupWriteLedger();
+    ledger.seed("g-a");
+    expect(ledger.lastAcknowledged()).toBe("g-a");
+    ledger.seed("g-b");
+    expect(ledger.lastAcknowledged()).toBe("g-a");
+    ledger.observe("g-c");
+    ledger.seed("g-d");
+    expect(ledger.lastAcknowledged()).toBe("g-c");
   });
 
   it("ignores a settings read taken while a local write is in flight", () => {
@@ -121,6 +154,19 @@ describe("the active-group write ledger", () => {
     expect(ledger.lastAcknowledged()).toBe("g-a");
     ledger.settleWrite(generation);
     ledger.observe("g-b");
+    expect(ledger.lastAcknowledged()).toBe("g-b");
+  });
+
+  it("lets an observed answer outrank every write older than the newest", () => {
+    const ledger = createActiveGroupWriteLedger("g-a");
+    const first = ledger.beginWrite();
+    const second = ledger.beginWrite();
+    ledger.settleWrite(first);
+    ledger.settleWrite(second);
+    // A refetch answered while nothing was in flight: it is the server's word
+    // on every write issued so far.
+    ledger.observe("g-b");
+    ledger.acknowledge(first, "g-c");
     expect(ledger.lastAcknowledged()).toBe("g-b");
   });
 });
@@ -192,12 +238,103 @@ describe("useActiveGroup under racing PATCHes", () => {
     expect(result.current.activeGroup).toBe("g-b");
   });
 
+  // The interleaving the review found: the older write is the one the server
+  // took, so the failure of the newer one must land there — not on the value
+  // from before either click.
+  it("rolls back to the group an older, superseded PATCH confirmed", async () => {
+    const b = deferred<AppSettings>();
+    const c = deferred<AppSettings>();
+    updateSettings.mockReturnValueOnce(b.promise).mockReturnValueOnce(c.promise);
+
+    // The server holds "g-a"; the operator clicks "g-b" then "g-c".
+    const { result } = mount("g-a");
+    act(() => result.current.setActiveGroup("g-b"));
+    act(() => result.current.setActiveGroup("g-c"));
+    await settle();
+    expect(result.current.activeGroup).toBe("g-c");
+
+    // "g-b" is superseded and paints nothing, but the server did take it.
+    b.resolve(settingsWith("g-b"));
+    await settle();
+    expect(result.current.activeGroup).toBe("g-c");
+
+    c.reject(new Error("PATCH /api/settings failed"));
+    await settle();
+    expect(result.current.activeGroup).toBe("g-b");
+    expect(window.localStorage.getItem(ACTIVE_PROJECT_GROUP_STORAGE_KEY)).toBe("g-b");
+  });
+
+  // Same root cause, one step earlier: with no settings answer yet, the ledger
+  // has to be seeded from the value the rail is running off.
+  it("rolls a failed first click back to the cached group, not to All projects", async () => {
+    window.localStorage.setItem(ACTIVE_PROJECT_GROUP_STORAGE_KEY, "g-a");
+    const first = deferred<AppSettings>();
+    updateSettings.mockReturnValueOnce(first.promise);
+
+    // Settings are unhydrated, so there is no cached row for the optimistic
+    // write to land in — localStorage is where the rollback is observable.
+    const { result } = mount(undefined);
+    expect(result.current.activeGroup).toBe("g-a");
+
+    act(() => result.current.setActiveGroup("g-b"));
+    await settle();
+    expect(window.localStorage.getItem(ACTIVE_PROJECT_GROUP_STORAGE_KEY)).toBe("g-b");
+
+    first.reject(new Error("PATCH /api/settings failed"));
+    await settle();
+    expect(window.localStorage.getItem(ACTIVE_PROJECT_GROUP_STORAGE_KEY)).toBe("g-a");
+  });
+
+  // The GET half of the race: a settings read already in flight would answer
+  // with the pre-PATCH row and paint it over the optimistic write.
+  it("cancels an in-flight settings read before writing", async () => {
+    const only = deferred<AppSettings>();
+    updateSettings.mockReturnValueOnce(only.promise);
+
+    const { client, result } = mount("g-a");
+    const cancelQueries = vi.spyOn(client, "cancelQueries");
+
+    act(() => result.current.setActiveGroup("g-b"));
+    await settle();
+
+    expect(cancelQueries).toHaveBeenCalledWith({ queryKey: queryKeys.settings });
+    expect(cancelQueries.mock.invocationCallOrder[0]).toBeLessThan(
+      updateSettings.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("keeps a neighbouring setting a concurrent edit changed mid-flight", async () => {
+    const only = deferred<AppSettings>();
+    updateSettings.mockReturnValueOnce(only.promise);
+
+    const { client, result } = mount("g-a");
+    act(() => result.current.setActiveGroup("g-b"));
+    await settle();
+
+    // Something else writes the settings row while the PATCH is out.
+    act(() => {
+      client.setQueryData<AppSettings>(queryKeys.settings, (current) =>
+        current ? { ...current, collapsedProjectGroups: ["pinned"] } : current,
+      );
+    });
+
+    // The answer carries that key at its pre-edit value; merging keeps the edit.
+    only.resolve({ activeProjectGroup: "g-b", collapsedProjectGroups: null } as AppSettings);
+    await settle();
+    expect(result.current.activeGroup).toBe("g-b");
+    expect(client.getQueryData<AppSettings>(queryKeys.settings)?.collapsedProjectGroups).toEqual([
+      "pinned",
+    ]);
+  });
+
   it("still applies a lone answer, and stores 'all' as null", async () => {
     const only = deferred<AppSettings>();
     updateSettings.mockReturnValueOnce(only.promise);
 
     const { result } = mount("g-a");
     act(() => result.current.setActiveGroup(ACTIVE_GROUP_ALL));
+    // The PATCH goes out behind `cancelQueries`, so it is not synchronous.
+    await settle();
     expect(updateSettings).toHaveBeenCalledWith({ activeProjectGroup: null });
 
     only.resolve(settingsWith(null));
