@@ -320,21 +320,20 @@ describe("actana events tail, across a Core restart", () => {
     expect(idsOf(result.out)).toEqual([3]);
   }, 60_000);
 
-  it("never lets the cursor pass a --kind match the operator was not shown", async () => {
-    // #403's second criterion: Ctrl-C must not persist a cursor past unseen
-    // matching events. The old walk counted the finish, let the durable client
-    // advance and persist the cursor past it, and printed nothing — so the
-    // operator killing the hung command lost that event for every later run
-    // too, silently and with nothing in the log to notice.
-    //
-    // There is no signal handler to raise here (`events tail` takes the default
-    // disposition on purpose), so the interrupt is modelled where it actually
-    // bites: the cursor on disk is sampled while the run is still walking, and
-    // whatever moment that sample lands in is a moment a Ctrl-C could have
-    // landed in. The finish must already be on stdout by then.
+  it("answers a bounded first --kind run with the newest match, not the oldest", async () => {
+    // Round-1 review, blocking finding 1, with the reviewer's own log. A first
+    // run has no cursor, so it subscribes from #0 and its walk covers the whole
+    // retained log — nothing prunes the store. A run that printed matches as
+    // they went past therefore answered with the *earliest* finish the Core
+    // still held: `#3`, possibly weeks old and carrying a different taskId,
+    // returned with exit 0 for a question about the session that just finished
+    // at `#22`. A visible hang is a better failure than a confident wrong
+    // answer, which is why this is the finding that blocked the round.
     const log = arrayEventLog();
-    for (let i = 0; i < 21; i += 1) log.push("task:updated"); // #1 – #21
-    log.push("session:finished"); // #22
+    for (let i = 0; i < 2; i += 1) log.push("task:updated"); // #1 – #2
+    log.push("session:finished", '{"taskId":"t-old"}'); // #3, weeks ago
+    for (let i = 0; i < 18; i += 1) log.push("task:updated"); // #4 – #21
+    log.push("session:finished", '{"taskId":"t-now"}'); // #22, just watched
     for (let i = 0; i < 8; i += 1) log.push("task:updated"); // #23 – #30
 
     const port = await freePort();
@@ -342,42 +341,68 @@ describe("actana events tail, across a Core restart", () => {
     fixture = makeCliFixture();
     registerCore(fixture.paths, "inproc", core.blobText);
 
-    const printed: string[] = [];
-    // `--limit 2` against a log holding one finish: the ceiling cannot be
-    // reached on history, so the run is still going at the moment the sample
-    // below is taken — which is what makes it an interrupt rather than an exit.
-    const tail = fixture.run(
-      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "2"],
-      { connect: connectCore, onOut: (line) => printed.push(line) },
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: connectCore },
     );
 
-    const dir = cursorsDir(fixture.paths);
-    const cursor = (): number => {
-      if (!existsSync(dir)) return 0;
-      const [file] = readdirSync(dir);
-      if (file === undefined) return 0;
-      const raw = readFileSync(path.join(dir, file), "utf8").trim();
-      return raw === "" ? 0 : Number(raw);
-    };
-
-    await waitFor(() => cursor() >= 22, "the cursor never reached the finish");
-    expect(
-      idsOf(printed),
-      "the cursor stood past a session:finished that had never been printed",
-    ).toContain(22);
-
-    // And it does walk on past it — which is exactly why the printing has to
-    // happen on the way. The finish is behind the cursor now and unreachable to
-    // every later run; the only reason it is not lost is that it has been seen.
-    await waitFor(() => cursor() >= 30, "the walk never reached the end of the history");
-    expect(idsOf(printed)).toEqual([22]);
-
-    // A second finish, live, so the run ends on its ceiling rather than
-    // following for the rest of the suite.
-    log.push("session:finished");
-    const result = await tail;
     expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
-    expect(idsOf(result.out)).toEqual([22, 31]);
+    // One line, and the finish the operator actually watched happen.
+    expect(idsOf(result.out)).toEqual([22]);
+    expect(JSON.parse(result.out[0]!).payload).toContain("t-now");
+  }, 60_000);
+
+  it("delivers --kind matches exactly once and in order across a capped replay", async () => {
+    // The case the round-1 review asked for by name, and its own numbers. The
+    // Core streams at most `EVENT_TAIL_LIMIT` (1000) events per tail and closes
+    // with a marker reporting the last id it *sent*, so a 1500-event log takes
+    // three rounds to walk — and the ring holding the newest matches has to
+    // survive every re-ask. A repeat here is a replay storm through the filter;
+    // a gap is a match dropped at a round boundary.
+    const log = arrayEventLog();
+    for (let i = 1; i <= 1_500; i += 1) {
+      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "task:updated");
+    }
+
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "3"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    expect(idsOf(result.out)).toEqual([500, 1_200, 1_450]);
+    // More than one tail read, so this really did cross the cap rather than fit
+    // inside a single replay that happened to be big enough.
+    expect(log.tailReads).toBeGreaterThan(1);
+  }, 60_000);
+
+  it("keeps only the newest --limit matches when the walk crosses the cap", async () => {
+    // The same shape, asked a narrower question. `--limit 2` against three
+    // finishes spread across three rounds is where a ring that resets per tail,
+    // or one that keeps the first n it meets, gives a different and wrong
+    // answer — `[500, 1200]` instead of the two most recent.
+    const log = arrayEventLog();
+    for (let i = 1; i <= 1_500; i += 1) {
+      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "task:updated");
+    }
+
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "2"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    expect(idsOf(result.out)).toEqual([1_200, 1_450]);
   }, 60_000);
 
   it("leaves the stored cursor alone when --since asks for a one-off rewind", async () => {

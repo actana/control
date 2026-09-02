@@ -503,11 +503,7 @@ describe("actana events tail", () => {
     // walking to the tip — and the finish it was typed to find is already in
     // that tail. Counting it and moving on was the defect: nothing on stdout,
     // and then a wait for a second `session:finished` that nobody was going to
-    // produce. On `HEAD~1` this case does not fail an assertion, it hangs.
-    //
-    // No marker is sent here on purpose. The run ends on its ceiling, in the
-    // middle of the walk, which is what "prints one and exits" has to mean for
-    // an operator whose Core has nothing further to say.
+    // produce. On the parent this case does not fail an assertion, it hangs.
     await withRegisteredCore();
     const core = fakeCore({});
 
@@ -521,16 +517,94 @@ describe("actana events tail", () => {
     core.emitEvent({ eventId: 1, kind: "task:created" });
     core.emitEvent({ eventId: 2, kind: "session:finished", taskId: "t-1" });
     core.emitEvent({ eventId: 3, kind: "task:updated" });
+    await settle();
+
+    // Nothing yet, and that is the point of the round-1 review's finding: which
+    // match is the newest is not knowable until the log has an end, so the walk
+    // holds rather than prints. A run that answered here would be answering
+    // with the oldest match the Core still holds.
+    expect(printed).toEqual([]);
+
+    core.emitReplayed(3);
+    await settle();
+    // A receipt, not the tip — the walk carries on and keeps holding.
+    expect(core.subscribes).toContain(3);
+    expect(printed).toEqual([]);
+
+    core.emitReplayed(3);
 
     const result = await run;
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toHaveLength(1);
     expect(JSON.parse(result.out[0]!)).toMatchObject({ eventId: 2, kind: "session:finished" });
-    // Printed as it went past, not gathered up at the end of the walk: the
-    // cursor advances per delivered event, so a line that waits for the end of
-    // the tail is a line a Ctrl-C can lose.
-    expect(printed).toHaveLength(1);
     expect(core.closed).toBe(true);
+  });
+
+  it("holds the newest --limit matches of the walk, not the first it finds", async () => {
+    // Round-1 review, blocking finding 1, at this suite's level. A first run
+    // walks the whole retained log, so "the first match" and "the match the
+    // operator just watched happen" are the same event only on a Core with no
+    // history. Three finishes go past, spread over two rounds of a capped
+    // replay, and `--limit 2` must answer with the last two.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "2"],
+      { connect: core.connect },
+    );
+    await settle();
+
+    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-old" });
+    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 3, kind: "session:finished", taskId: "t-mid" });
+    core.emitReplayed(3);
+    await settle();
+    // The ring survives the re-ask: it is one walk, however many tails it takes.
+    expect(core.subscribes).toContain(3);
+
+    core.emitEvent({ eventId: 4, kind: "session:finished", taskId: "t-new" });
+    core.emitReplayed(4);
+    await settle();
+    core.emitReplayed(4);
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    // #3 and #4 — in the order the Core appended them, and not #1, which is the
+    // one a run that printed on the way past would have answered with.
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([3, 4]);
+    expect(result.out.map((line) => JSON.parse(line).taskId)).toEqual(["t-mid", "t-new"]);
+  });
+
+  it("hands over what the walk was holding when the Core stops answering", async () => {
+    // The deadline is this side giving up, and #439 settled what that looks
+    // like: what was read goes to stdout, the reason to stderr, and the exit is
+    // non-zero because a read cut off partway is not a read that finished. A
+    // walk that is holding matches has read them — the cursor has already moved
+    // past them — so dropping them on the way out would lose them for every
+    // later run to buy nothing.
+    vi.useFakeTimers();
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "3"],
+      { connect: core.connect },
+    );
+    await vi.advanceTimersByTimeAsync(0);
+
+    core.emitEvent({ eventId: 1, kind: "session:finished" });
+    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    // …and then nothing: no marker, no further event, no end of the log.
+    await vi.advanceTimersByTimeAsync(SUBSCRIBE_ANSWER_MS + 1);
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_FAILURE);
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([1]);
+    const said = result.err.join("\n");
+    expect(said).toContain("stopped answering");
+    expect(said).toContain("held from an unfinished walk");
+    expect(said).toContain("did not finish");
   });
 
   it("still prints none of the kinds a first run was not asked for", async () => {
