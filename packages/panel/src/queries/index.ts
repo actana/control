@@ -1,6 +1,7 @@
-import { useMemo } from "react";
-import { queryOptions, useQuery } from "@tanstack/react-query";
+import { useEffect } from "react";
+import { hashKey, queryOptions, useQuery, useQueryClient } from "@tanstack/react-query";
 import { api } from "~/lib/api";
+import { retainProjectScope, watchProjectScope } from "~/lib/visible-project-scope";
 import { setHookToken } from "~/lib/hook-token";
 import { syncDefaultRuntimeDefaults } from "~/lib/default-model-store";
 import { getPanelBridge } from "~/lib/panel-bridge";
@@ -153,6 +154,9 @@ export const tasksQueryOptions = (
     // helpers so writes land in the same bucket the query reads from.
     queryKey: tasksCacheKey(projectId, coreId),
     queryFn: async ({ client }) => {
+      // Stamped before the read, asked after it: an uncached pin can answer
+      // long after the operator clicked away from it (issue 381).
+      const operatorLeft = watchProjectScope(projectId, coreId);
       if (coreId) {
         // Core task loading over the panel link (ADR-0005): the
         // Core on `coreId` owns the rows, so the query goes down that
@@ -166,7 +170,14 @@ export const tasksQueryOptions = (
         // different consumer — the Archived tab, which needs it while the
         // active view is showing. Park it in its own bucket rather than
         // widening this list's shape for every reader of it.
-        client.setQueryData(queryKeys.coreArchivedTaskCount(projectId, coreId), archivedCount);
+        //
+        // Not parked once the operator has left this project+core: the list
+        // this number rode in on is reverted by `useTasks`' cancellation, and a
+        // count that outlives its own list would label the Archived tab from a
+        // read that was thrown away.
+        if (!operatorLeft()) {
+          client.setQueryData(queryKeys.coreArchivedTaskCount(projectId, coreId), archivedCount);
+        }
         return tasks.map(remoteTaskFromSnapshot);
       }
       // A Panel-owned project's list carries its archived rows already, so
@@ -323,14 +334,66 @@ export const updateCheckQueryOptions = () =>
     staleTime: UPDATE_CHECK_STALE_MS,
   });
 
+/**
+ * Tie one project-scoped query to the project+core that is actually on screen.
+ *
+ * Reading an uncached pin is slower than clicking away from it. During
+ * A then B then A, B's project and task reads are still in flight when the URL
+ * is already back on A, and what they were going to materialize — B's
+ * sessions, B's archived count, the focus that follows them — would land on
+ * A's URL (issue 381).
+ *
+ * While the query is being read by something on screen the scope is retained,
+ * so a cold pin the operator stays on loads exactly as before — the 30s
+ * `staleTime` is untouched, and nothing here makes a read start any later.
+ * When the last reader of a scope goes away, an *in-flight* fetch for it is
+ * cancelled: react-query reverts the query to the state it had before the
+ * fetch, and the answer, whenever it turns up, is discarded rather than
+ * written. Coming back to that pin later simply reads it again.
+ *
+ * Only a fetch in flight is cancelled. A settled query keeps its data, so
+ * leaving a project never throws away rows the operator would see on return.
+ */
+function useScopedToVisibleProject(
+  queryKey: readonly unknown[],
+  projectId: string,
+  coreId: string | null,
+): void {
+  const queryClient = useQueryClient();
+  // The key is rebuilt every render; its hash is what actually changes.
+  const keyHash = hashKey(queryKey);
+  useEffect(() => {
+    // `useTasks("")` is how the grid's hidden-session bar asks before it has a
+    // scope at all — no project, nothing to keep on screen.
+    if (!projectId) return;
+    return retainProjectScope(projectId, coreId, () => {
+      // Nothing in flight is nothing to abandon: a settled query keeps its
+      // rows, so leaving never costs the operator the cache they come back to.
+      if (queryClient.isFetching({ queryKey, exact: true }) === 0) return;
+      // `revert: true` (the default) puts the query back the way it was before
+      // this fetch, and the answer is dropped when it eventually turns up.
+      void queryClient.cancelQueries({ queryKey, exact: true });
+    });
+    // `keyHash` stands in for `queryKey` in the deps: the key is rebuilt every
+    // render, its hash only changes when the key really does.
+  }, [queryClient, projectId, coreId, keyHash]);
+}
+
 export const useProjects = () => useQuery(projectsQueryOptions());
-export const useProject = (id: string, opts?: { coreId?: string | null }) =>
-  useQuery(projectQueryOptions(id, opts));
+export const useProject = (id: string, opts?: { coreId?: string | null }) => {
+  const options = projectQueryOptions(id, opts);
+  useScopedToVisibleProject(options.queryKey, id, opts?.coreId ?? null);
+  return useQuery(options);
+};
 export const useGroups = () => useQuery(groupsQueryOptions());
 export const useTasks = (
   projectId: string,
   opts?: { coreId?: string | null },
-) => useQuery(tasksQueryOptions(projectId, opts));
+) => {
+  const options = tasksQueryOptions(projectId, opts);
+  useScopedToVisibleProject(options.queryKey, projectId, opts?.coreId ?? null);
+  return useQuery(options);
+};
 /**
  * A Core project's archived Sessions. A null `coreId` is a Panel-owned
  * project, which sources them from its own task list — the query stays
@@ -372,11 +435,17 @@ export const useCoreArchivedTaskCount = (projectId: string, coreId: string | nul
  * identity stable across list refetches, so a consumer (e.g. a terminal pane
  * header) re-renders only when ITS task changes — not on every task:* event.
  */
-export const useTask = (projectId: string, taskId: string) =>
-  useQuery({
-    ...tasksQueryOptions(projectId),
+export const useTask = (projectId: string, taskId: string) => {
+  const options = tasksQueryOptions(projectId);
+  // A pane reading one row is a live reader of the same bucket the board
+  // reads, so it holds the scope open too — otherwise the board unmounting
+  // would cancel a fetch this pane is still waiting on.
+  useScopedToVisibleProject(options.queryKey, projectId, null);
+  return useQuery({
+    ...options,
     select: (tasks) => tasks.find((t) => t.id === taskId),
   });
+};
 export const useSettings = () => useQuery(settingsQueryOptions());
 export const useHookToken = () => useQuery(hookTokenQueryOptions());
 export const useUsage = (days: number = DEFAULT_USAGE_DAYS) =>
