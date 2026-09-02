@@ -42,6 +42,30 @@ function emptyFleet(): FleetMergeResult {
 }
 
 /**
+ * Structural equality for the plain, JSON-shaped values a fan-out settles on.
+ *
+ * Task and project snapshots are flat records of scalars, one optional nested
+ * `lock` deep, held in arrays — so a recursive own-key walk is the whole of it,
+ * and it is bounded by the same row count `mergeFleetTasks` just paid for.
+ * Nothing here needs to handle a Date, a Map or a cycle, and it must not
+ * pretend to: it is used only to answer "did this read change anything".
+ */
+function sameSnapshot(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  for (const key of keys) {
+    if (!Object.hasOwn(right, key)) return false;
+    if (!sameSnapshot(left[key], right[key])) return false;
+  }
+  return true;
+}
+
+/**
  * "Nothing filed yet", shared by identity so a re-read that finds no filing
  * doesn't re-join every row. Read-only — nothing ever writes into it.
  */
@@ -116,6 +140,10 @@ export function useFleetTasks(): {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refreshing = useRef(false);
+  // An event arrived while a fan-out was in flight and its finish is not in
+  // that fan-out's answers. Set by the dropped call, read by the loop that
+  // owns the refresh — see `run` below.
+  const pending = useRef(false);
   const coresRef = useRef<CoreWithDial[]>(cores);
   coresRef.current = cores;
   // Which Cores exist, and whether each is reachable — the two things a change
@@ -127,9 +155,10 @@ export function useFleetTasks(): {
   );
   const coreIds = useMemo(() => cores.map((c) => c.id).join(","), [cores]);
 
-  const run = useCallback(async () => {
-    if (!bridge || refreshing.current) return;
-    refreshing.current = true;
+  const fanOut = useCallback(async (): Promise<boolean> => {
+    // Unreachable through `run`, which guards the same thing; false is the
+    // safe answer either way — no link, nothing to re-read.
+    if (!bridge) return false;
     try {
       const results = await Promise.all(
         coresRef.current.map(async (core): Promise<CoreFanOutResult> => {
@@ -156,15 +185,50 @@ export function useFleetTasks(): {
           }
         }),
       );
-      setFleet(mergeFleetTasks(results));
+      // Keep the previous object when the fan-out settled on the same answer.
+      // `fleet.rows` is a dependency of memos and effects several layers up,
+      // and a fresh array on every event would tear those down for nothing —
+      // the merge is already O(rows), so comparing it costs the same order.
+      const merged = mergeFleetTasks(results);
+      setFleet((prev) => (sameSnapshot(prev, merged) ? prev : merged));
       setError(null);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setLoading(false);
-      refreshing.current = false;
     }
   }, [bridge]);
+
+  const run = useCallback(async () => {
+    if (!bridge) return;
+    if (refreshing.current) {
+      // The fan-out in flight was launched *before* this event, so its answers
+      // cannot contain what the event announced — a `session:finished` that
+      // lands here used to be dropped outright, leaving the row running until
+      // the 15s poll or the next event (#389). Remember it instead.
+      pending.current = true;
+      return;
+    }
+    refreshing.current = true;
+    try {
+      do {
+        // Cleared before the read, not after: anything that arrives while this
+        // very pass is in flight has to survive into the next one.
+        pending.current = false;
+        // One trailing pass per burst, not one per event: every event landing
+        // during a pass sets the same flag, and the loop reads it once.
+        // A failed pass stops the loop rather than spinning on the error, and
+        // leaves `pending` exactly as the burst left it — clearing it here
+        // would drop the backlog on the error path, which is #389 again in
+        // miniature. The next event or the poll picks it up.
+        if (!(await fanOut())) break;
+      } while (pending.current);
+    } finally {
+      refreshing.current = false;
+    }
+  }, [bridge, fanOut]);
 
   // Watch every Core so its task events reach this tab, and refetch when one
   // lands. This is what "without refresh" means: an agent finishing on a VM
@@ -354,6 +418,11 @@ export function useCoreTasks(
  * Core fact, so this is a live read per Core rather than anything the Panel
  * remembers — and it re-reads when a Core says a pin changed, so two Panels on
  * one Core agree.
+ *
+ * The rail's activity dot is `taskCounts`, and a Core-owned pin has no Panel
+ * row to count, so every dot here is dark. That is issue #377's, and PR #457
+ * derives them from Core task snapshots on top of the coalescing loop below —
+ * at which point they settle correctly mid-refresh for free (#389 acceptance 2).
  */
 export function useRemotePinnedProjects(): {
   projects: ProjectWithCounts[];
