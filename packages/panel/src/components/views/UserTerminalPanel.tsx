@@ -455,10 +455,17 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
                   <UserTerminalPane
                     terminal={s.terminal}
                     ptyId={s.ptyId}
-                    cwd={s.terminal.cwd || project?.path || ""}
+                    // Kind and cwd come from the session, never from whichever
+                    // scope happens to be current: reading them off the ambient
+                    // scope is what let a reload spawn a home shell where the
+                    // operator had opened a VM shell (issue 394). The session's
+                    // cwd is authoritative even when empty — a VM shell opens at
+                    // the Core's own home, and substituting the project in scope
+                    // for that would rebuild the pane on every scope change.
+                    cwd={s.cwd}
                     coreId={sessionCoreId}
-                    isHome={homeActive}
-                    shellSession={s.shellSession === true}
+                    isHome={s.kind === "home"}
+                    shellSession={s.kind === "vm-shell"}
                     focused={focusedId === s.terminal.id}
                     onFocus={() => focusTerminal(s.terminal.id)}
                     onPtyReady={(ptyId) => setPtyId(s.terminal.id, ptyId, sessionCoreId)}

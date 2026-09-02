@@ -16,6 +16,16 @@ import type { UserTerminal } from "~/db/schema";
 import { HOME_TERMINAL_PROJECT_ID } from "~/shared/home-terminal";
 import { scopeKeyForProject, type ScopedProject } from "./scoped-project";
 import { readJson, writeJson } from "./local-storage-json";
+import {
+  forgetIdentities,
+  pruneIdentities,
+  readIdentityMap,
+  restoreUserTerminals,
+  writeIdentityMap,
+  type UserTerminalIdentity,
+  type UserTerminalIdentityMap,
+  type UserTerminalKind,
+} from "./user-terminal-identity";
 
 // Every terminal this store opens is a VM Shell Session (issue 266). The
 // project-root creator — `createTerminal`, `api.createUserTerminal`, the
@@ -48,17 +58,26 @@ type Session = {
    */
   coreId?: string;
   /**
-   * True when this session is a VM Shell Session (issue 06) — a free-form
-   * shell on the Core's machine, distinct from a project-scoped or home
-   * shell. In-memory only (never persisted): a VM shell reuses the
-   * home-terminal row for its lifecycle, but spawns with `shellSession: true`
-   * (no project-root requirement) and renders with a distinct "VM shell"
-   * surface. Lost on cold reload — by design it is never auto-spawned; the
-   * operator re-opens it with the explicit "New Terminal" gesture. Within a
-   * renderer session it survives Panel reconnect via the core-link's PTY
-   * replay (the ptyId is tracked here and reattached on WS reconnect).
+   * Which shell this is — the pane spawns exactly this kind and nothing else.
+   * A VM Shell Session (issue 06) reuses the home-terminal row for its
+   * lifecycle but spawns with `shellSession: true` (no project-root
+   * requirement) and renders with a distinct "VM shell" surface.
+   *
+   * Persisted alongside the scope and Core in the identity map, because it was
+   * being kept in memory only: after a reload the row came back with no kind
+   * at all and Home re-spawned it as a plain home shell — a different shell
+   * from the one the operator opened (issue 394). Within a renderer session it
+   * still survives Panel reconnect via the core-link's PTY replay (the ptyId
+   * is tracked here and reattached on WS reconnect).
    */
-  shellSession?: boolean;
+  kind: UserTerminalKind;
+  /**
+   * The cwd this shell opens at, as recorded when it was opened — empty for
+   * kinds the Core resolves itself (a VM shell's login shell, a home shell).
+   * Carried on the session so the pane's spawn does not depend on whichever
+   * project happens to be in scope when the pane mounts.
+   */
+  cwd: string;
 };
 
 type Ctx = {
@@ -153,7 +172,20 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     writeJson(PANEL_OPEN_STORAGE_KEY, panelOpenByProject);
   }, [panelOpenByProject]);
-  const loadedProjectsRef = useRef<Set<string>>(new Set());
+  // Terminal id -> the shell it is: scope, Core, kind, cwd (issue 394). The row
+  // in `home_terminals` carries none of that, so without this map a reload can
+  // only guess — and guessing is what put a project's VM shell on Home as a
+  // home shell. See user-terminal-identity.ts.
+  const [identities, setIdentities] = useState<UserTerminalIdentityMap>(() => readIdentityMap());
+  useEffect(() => {
+    writeIdentityMap(identities);
+  }, [identities]);
+  // Read by the restore effect, which must see the map as it was persisted
+  // without re-running every time an open or a kill rewrites it.
+  const identitiesRef = useRef<UserTerminalIdentityMap>(identities);
+  useEffect(() => {
+    identitiesRef.current = identities;
+  }, [identities]);
   // Mirror of sessionsByProject. killTerminal reads this synchronously instead
   // of via a setState updater, since React 18 skips eager-state evaluation
   // when the fiber already has pending lanes (e.g. when the same click also
@@ -194,39 +226,65 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
 
   // There is no per-project terminal list to lazy-load any more: the
   // `user_terminals` table and its routes went with the project-root path
-  // (issue 266). A project scope's bucket is whatever this app run opened in
-  // it, and the only persisted list left is the home one below.
+  // (issue 266), so every terminal this store has ever opened is a row in the
+  // one home list — whichever scope it was opened in.
   //
-  // Lazy-load persisted home terminals the first time the home bucket is
-  // active. Mirrors the per-project loader; home sessions then survive
-  // navigation in the same sessionsByProject bucket.
+  // That single list is what makes restore possible at all. Once per app run,
+  // as soon as any scope is current, fetch it and hand each row back to the
+  // bucket its persisted identity names, as the kind of shell that identity
+  // records. A row whose identity is missing is NOT restored: nothing here
+  // knows which shell it was, and issue 394's rule is that a reload shows a
+  // terminal gone on purpose rather than quietly spawning a different one from
+  // Home. Identities for rows the server no longer has are pruned in the same
+  // pass, so the bucket cannot grow forever.
+  const restoreStartedRef = useRef(false);
   useEffect(() => {
-    if (!homeActive) return;
-    const key = HOME_SCOPE_KEY;
-    if (loadedProjectsRef.current.has(key)) return;
-    loadedProjectsRef.current.add(key);
+    if (!scopeKey) return;
+    if (restoreStartedRef.current) return;
+    restoreStartedRef.current = true;
 
     let cancelled = false;
     void (async () => {
       try {
         const { terminals } = await api.listHomeTerminals();
         if (cancelled) return;
+        const restored = restoreUserTerminals(terminals, identitiesRef.current);
         setSessionsByProject((prev) => {
-          if (prev[key]) return prev; // a create call beat us to it
-          return { ...prev, [key]: terminals.map((t) => ({ terminal: t, ptyId: null })) };
+          let next = prev;
+          for (const [key, entries] of Object.entries(restored)) {
+            if (prev[key]) continue; // an open beat us to this bucket
+            next = next === prev ? { ...prev } : next;
+            next[key] = entries.map(({ terminal, identity }) => ({
+              terminal,
+              ptyId: null,
+              coreId: identity.coreId ?? undefined,
+              kind: identity.kind,
+              cwd: identity.cwd,
+            }));
+          }
+          return next;
         });
         setFocusedByProject((prev) => {
-          if (prev[key] !== undefined) return prev;
-          return { ...prev, [key]: terminals[0]?.id ?? null };
+          let next = prev;
+          for (const [key, entries] of Object.entries(restored)) {
+            if (prev[key] !== undefined) continue;
+            next = next === prev ? { ...prev } : next;
+            next[key] = entries[0]?.terminal.id ?? null;
+          }
+          return next;
         });
+        const liveIds = new Set(terminals.map((t) => t.id));
+        setIdentities((prev) => pruneIdentities(prev, liveIds));
       } catch {
-        loadedProjectsRef.current.delete(key);
+        // Transient failure (offline, Panel restarting): let a later scope
+        // change try again rather than leaving the operator with no terminals.
+        restoreStartedRef.current = false;
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [homeActive]);
+  }, [scopeKey]);
 
   // Navigating to a project pre-fetches the terminal JS chunks and **nothing
   // else** (issue 266). What used to be here also called
@@ -299,19 +357,31 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
     async (coreId?: string): Promise<UserTerminal | null> => {
       // A VM Shell Session lives on the Core itself, not in a project — so it
       // needs a Core in scope and nothing else. It reuses the home-terminal row
-      // for persistence/lifecycle but is flagged `shellSession` in-memory so
-      // the pane spawns it with `shellSession: true` (skipping project-root
-      // validation) and renders the distinct "VM shell" surface. Never
-      // auto-spawned — this is the explicit gesture, and since issue 266 it is
-      // the only one: both "New Terminal" controls call exactly this.
+      // for persistence/lifecycle and is marked `kind: "vm-shell"` so the pane
+      // spawns it with `shellSession: true` (skipping project-root validation)
+      // and renders the distinct "VM shell" surface. Never auto-spawned — this
+      // is the explicit gesture, and since issue 266 it is the only one: both
+      // "New Terminal" controls call exactly this.
       if (!coreId || !scopeKey) return null;
       const key = scopeKey;
       const { terminal } = await api.createHomeTerminal({
         name: "VM shell",
       });
+      // Record what this shell is before it is shown, so a reload one keystroke
+      // later restores this shell and not some default (issue 394). A VM shell
+      // opens at the Core's own home via a login shell, so its recorded cwd is
+      // empty: the browser sends no path for it, and pinning one here would
+      // make a restored pane rebuild against a cwd its spawn never used.
+      const identity: UserTerminalIdentity = {
+        scopeKey: key,
+        coreId,
+        kind: "vm-shell",
+        cwd: "",
+      };
+      setIdentities((prev) => ({ ...prev, [terminal.id]: identity }));
       updateSessions(key, (prev) => [
         ...prev,
-        { terminal, ptyId: null, shellSession: true, coreId },
+        { terminal, ptyId: null, coreId, kind: identity.kind, cwd: identity.cwd },
       ]);
       setFocusFor(key, terminal.id);
       setPanelOpenByProject((prev) => ({ ...prev, [key]: true }));
@@ -387,9 +457,9 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       } catch {
         /* swallow */
       }
-      // The in-memory VM-shell `shellSession` flag lived on this session
-      // object, which the filter above already removed — nothing further to
-      // clean (the flag is never persisted; see createVmShellTerminal).
+      // A killed terminal is gone for good — drop its identity with it, so the
+      // map never restores a shell whose row no longer exists.
+      setIdentities((prev) => forgetIdentities(prev, [id]));
     },
     []
   );
@@ -403,7 +473,7 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
       for (const id of ids) {
         await killTerminal(id);
       }
-      for (const key of keys) loadedProjectsRef.current.delete(key);
+      setIdentities((prev) => forgetIdentities(prev, ids));
       setSessionsByProject(dropProjectKeys(projectId));
       setFocusedByProject(dropProjectKeys(projectId));
       setHiddenIdsByProject(dropProjectKeys(projectId));
