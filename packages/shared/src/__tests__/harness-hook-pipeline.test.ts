@@ -20,7 +20,13 @@ import type { TaskStatus } from "../domain";
 // clicks the just-finished pin (away-summary generation, the title helper)
 // resurrected a completed card. A heal is legitimate only when the turn can
 // still plausibly be working — a tracked subagent is in flight, or the finish
-// is younger than the sub-second POST race.
+// is younger than FINISH_RACE_WINDOW_MS (one second, inclusive).
+//
+// For the raced-POST case the clock is the whole gate: every hook-driven finish
+// leaves the tracked set empty by construction, so the active-set disjunct only
+// covers a "finished" written by another status writer. What that costs — a
+// retry-delayed in-turn SubagentStart, dropped rather than healed — is filed as
+// issue 440.
 
 const SESSION_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -103,8 +109,9 @@ describe("subagent events on a finished task (issue 385)", () => {
   });
 
   it("stays finished across the whole old 30s heal window", () => {
-    // Every one of these used to write "running": the window was 30s, tuned
-    // 30,000x the sub-second race it was built for.
+    // Every one of these used to write "running": the window was 30s, where
+    // the race it models is the microseconds between two POSTs leaving the
+    // same harness process.
     for (const afterMs of [2_000, 5_000, 15_000, 29_000]) {
       const h = harness();
       h.post({ hook_event_name: "UserPromptSubmit", prompt: "do the thing" });
@@ -153,8 +160,12 @@ describe("subagent events on a finished task (issue 385)", () => {
     h.post({ hook_event_name: "UserPromptSubmit", prompt: "fan out" });
     h.post({ hook_event_name: "SubagentStart", agent_id: "sub-1" });
 
-    // One of the other status writers (structural note W1: three of them, no
-    // arbiter) lands "finished" while sub-1 is demonstrably still working.
+    // Reaching past the pipeline is the point, not a shortcut: no hook-driven
+    // finish can leave the tracked set non-empty, so this branch is only ever
+    // reachable from one of the OTHER status writers (structural note W1:
+    // three of them, no arbiter) landing "finished" over live work — a
+    // core-link task mutation through CoreTaskWriter, say, which clears
+    // nothing.
     h.ports.updateStatus(h.taskId, "finished");
 
     // Long past any POST race, but the turn's own set says work is in flight,

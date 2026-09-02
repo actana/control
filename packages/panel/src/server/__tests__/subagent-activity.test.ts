@@ -194,9 +194,11 @@ describe("finish race window", () => {
     expect(taskFinishedWithinRaceWindow(taskId)).toBe(false);
   });
 
-  it("stays sub-second — the race it models, not a grace period (issue 385)", () => {
-    // The window was 30s, 30,000x the loopback POST race it was sized for,
-    // which let post-turn helper subagents resurrect a finished card.
+  it("stays at one second inclusive — a race window, not a grace period (issue 385)", () => {
+    // The window was 30s, which let post-turn helper subagents resurrect a
+    // finished card for half a minute after every finish. Widening it back to
+    // absorb the hook curl's ~11s retry tail re-opens that bug — see
+    // FINISH_RACE_WINDOW_MS and issue 440 for the residual that buys.
     expect(FINISH_RACE_WINDOW_MS).toBeLessThanOrEqual(1_000);
   });
 });

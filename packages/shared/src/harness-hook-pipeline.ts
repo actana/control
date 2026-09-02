@@ -198,8 +198,24 @@ export function handleHarnessHookEvent(
   //
   //   - a tracked subagent from that turn is still in flight (the set is
   //     non-empty), so the finish landed over live work; or
-  //   - the finish is younger than the sub-second POST race, i.e. this event
-  //     is the turn's own lifecycle POST that lost the race to the Stop.
+  //   - the finish is younger than FINISH_RACE_WINDOW_MS (one second,
+  //     inclusive), i.e. this event is the turn's own lifecycle POST that lost
+  //     the race to the Stop.
+  //
+  // Which of those two actually decides the raced-POST case this exists for?
+  // The clock, alone. Every HOOK-DRIVEN finish leaves the tracked set empty by
+  // construction: the finished mapping below is downgraded to "running"
+  // whenever hasActiveSubagents is true, so the finish write only happens with
+  // an idle set; finishQuietTask runs only after the drain observed an idle
+  // set; the sessionProcessExited branch calls clearSubagentActivity first;
+  // and the Core's session backstop clears before it calls noteTaskFinished.
+  // The active-set disjunct is therefore not the safety net for a raced POST —
+  // it guards a "finished" written by one of the OTHER status writers (a
+  // core-link task mutation through CoreTaskWriter, say, which clears
+  // nothing). That is worth keeping; it is just not what protects in-turn work
+  // here. The clock is, and its cost is documented on FINISH_RACE_WINDOW_MS
+  // and filed as issue 440: a retry-delayed in-turn SubagentStart landing
+  // after the Stop is dropped, not healed.
   //
   // Everything else on a finished task is one of Claude Code's post-turn
   // internal helpers — away-summary generation and the title helper fire
