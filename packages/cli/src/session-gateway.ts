@@ -236,6 +236,11 @@ export type SessionGateway = {
    * declined. `enter` adds a carriage return as a **separate write to the same
    * PTY**, resolved once for both, so there is no window between them in which
    * the text lands and the return is sent somewhere else — or nowhere.
+   *
+   * Still an option and still off when it is not passed: this is the mechanism,
+   * and *whether a send submits* is the command's decision, made once in
+   * `sessionSend` (#404). The gateway writing a return nobody asked for would
+   * put that decision in two places.
    */
   send(taskId: string, text: string, opts?: { enter?: boolean }): Promise<boolean>;
   /**
@@ -417,6 +422,9 @@ class CoreLinkSessionGateway implements SessionGateway {
     // is its own write of its own byte — never glued to the text.
     if (text.length > 0 && !(await this.client.write(ptyId, text))) return false;
     if (!opts.enter) return true;
+    // Its own write, never `text + "\r"`. A harness that treats a paste as one
+    // unit would otherwise swallow the return with the characters and start no
+    // turn — the failure #404 is about, arriving by the other door.
     return this.client.write(ptyId, "\r");
   }
 
@@ -460,10 +468,12 @@ class CoreLinkSessionGateway implements SessionGateway {
    * second `findByTask` between them, so there is no window in which the harness
    * could move, exit, or finish a turn unobserved.
    *
-   * The delivery is two writes when `--enter` was asked for — the text, then the
-   * carriage return, exactly as `send` has always done it (ADR 0026: this side
-   * appends nothing on its own). Both are stamped and the wait counts from the
-   * **later** stamp, because the turn starts at the return, not at the text.
+   * The delivery is two writes when the caller asked for the return — the text,
+   * then the carriage return, exactly as `send` has always done it (ADR 0026:
+   * this side appends nothing the caller did not ask for). Both are stamped and
+   * the wait counts from the **later** stamp, because the turn starts at the
+   * return, not at the text. Since #404 the command asks for it by default, so
+   * this is the ordinary path rather than the flagged one.
    */
   private async attached(
     taskId: string,

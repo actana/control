@@ -538,7 +538,9 @@ describe("actana session wait, and send --wait (#289)", () => {
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
     // One call for the write and the wait — the gateway resolves the PTY once
     // and there is no window between the delivery and the start of the wait.
-    expect(sent).toEqual([{ text: "carry on", enter: false }]);
+    // `enter: true` since #404: the write a `--wait` waits for is one that
+    // submits, because a turn nothing started never ends.
+    expect(sent).toEqual([{ text: "carry on", enter: true }]);
     expect(run.err.join("\n")).toContain("Sent 8 characters");
     expect(run.err.join("\n")).toContain("needs-input");
   });
@@ -625,42 +627,132 @@ describe("actana session wait, and send --wait (#289)", () => {
 });
 
 describe("actana session send", () => {
-  it("writes exactly what it was given, once", async () => {
+  /** Record what the verb asked the gateway to write, in one place. */
+  function recordingGateway(calls: Array<{ text: string; enter: boolean | undefined }>) {
+    return fakeSessionGateway({
+      send: async (_taskId, text, opts) => {
+        calls.push({ text, enter: opts?.enter });
+        return true;
+      },
+    });
+  }
+
+  it("writes exactly what it was given, and submits it (#404)", async () => {
     await withRegisteredCore();
-    const writes: string[] = [];
+    const calls: Array<{ text: string; enter: boolean | undefined }> = [];
     const run = await cli().run(["session", "send", "task_1", "yes", "please"], {
-      sessions: fakeSessionGateway({
-        send: async (_taskId, text) => {
-          writes.push(text);
-          return true;
-        },
-      }),
+      sessions: recordingGateway(calls),
     });
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
-    // Joined the way a shell already joined them, and nothing appended: no
-    // carriage return, no second write, no timer (ADR 0026).
-    expect(writes).toEqual(["yes please"]);
+    // Joined the way a shell already joined them, unaltered — and the return
+    // asked for, because a send starts a turn. That the return is its own write
+    // rather than glued to the text is asserted against a real Core in
+    // `in-process-core-session.test.ts`.
+    expect(calls).toEqual([{ text: "yes please", enter: true }]);
     expect(run.out).toEqual([]);
+    expect(run.err.join("\n")).toContain("and a carriage return");
   });
 
-  it("asks for the return in the same call, so the PTY is resolved once", async () => {
+  it("types without submitting under --no-enter, and says so on the way out (#404)", async () => {
+    await withRegisteredCore();
+    const calls: Array<{ text: string; enter: boolean | undefined }> = [];
+    const run = await cli().run(["session", "send", "task_1", "continue", "--no-enter"], {
+      sessions: recordingGateway(calls),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(calls).toEqual([{ text: "continue", enter: false }]);
+    // The exit path is the other half of the acceptance: a send that started no
+    // turn is allowed and is never quiet about it.
+    const err = run.err.join("\n");
+    expect(err).toContain("nothing was submitted");
+    expect(err).toContain("no turn has started");
+    expect(err).toContain("actana session send task_1 --enter");
+  });
+
+  it("still accepts --enter, which now asks for what already happens (#404)", async () => {
     await withRegisteredCore();
     const calls: Array<{ text: string; enter: boolean | undefined }> = [];
     const run = await cli().run(["session", "send", "task_1", "2", "--enter", "--json"], {
-      sessions: fakeSessionGateway({
-        send: async (_taskId, text, opts) => {
-          calls.push({ text, enter: opts?.enter });
-          return true;
-        },
-      }),
+      sessions: recordingGateway(calls),
     });
     expect(run.code).toBe(EXIT_OK);
     // One call, not two: the gateway resolves the PTY once and writes both, so
     // there is no window in which the text lands and the return goes nowhere.
-    // That the return is a *separate write* to that PTY is asserted against a
-    // real Core in `in-process-core-session.test.ts`.
     expect(calls).toEqual([{ text: "2", enter: true }]);
-    expect(JSON.parse(run.out.join("\n"))).toMatchObject({ enter: true, delivered: true });
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({
+      enter: true,
+      submitted: true,
+      delivered: true,
+    });
+    // The flag changed nothing: the same command line without it writes the
+    // same two things.
+    const without: Array<{ text: string; enter: boolean | undefined }> = [];
+    const bare = await cli().run(["session", "send", "task_1", "2", "--json"], {
+      sessions: recordingGateway(without),
+    });
+    expect(bare.code).toBe(EXIT_OK);
+    expect(without).toEqual(calls);
+  });
+
+  it("reports the missing submission in --json as well, on both streams", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "send", "task_1", "2", "--no-enter", "--json"], {
+      sessions: fakeSessionGateway({ send: async () => true }),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    // The document keeps the `--json` rule — only JSON on stdout — and carries
+    // the fact, so a script never has to read prose to learn no turn started.
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({ enter: false, submitted: false });
+    expect(run.err.join("\n")).toContain("nothing was submitted");
+  });
+
+  it("refuses --enter and --no-enter together rather than picking one", async () => {
+    await withRegisteredCore();
+    // Nothing is dialled: the fixture's gateway would throw if it were, which is
+    // the assertion that a contradiction is caught before a byte is written.
+    const run = await cli().run(["session", "send", "task_1", "2", "--enter", "--no-enter"], {
+      sessions: fakeSessionGateway(),
+    });
+    expect(run.code).toBe(EXIT_USAGE);
+    expect(run.err.join("\n")).toContain("contradict each other");
+  });
+
+  it("submits a follow-up sent with --wait, and warns when --no-enter left no turn", async () => {
+    await withRegisteredCore();
+    const calls: Array<{ text: string; enter: boolean | undefined }> = [];
+    const outcome = { status: "finished", exited: true, exitCode: 0 } as const;
+    const run = await cli().run(["session", "send", "task_1", "carry on", "--wait"], {
+      sessions: fakeSessionGateway({
+        sendAndWait: async (_taskId, text, opts) => {
+          calls.push({ text, enter: opts?.enter });
+          return fakeStartedSession({ wait: async () => outcome });
+        },
+      }),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    // #405 is the hang; this is only that the wait path takes the same default
+    // the plain path does, so the turn it waits for is one that actually starts.
+    expect(calls).toEqual([{ text: "carry on", enter: true }]);
+
+    calls.length = 0;
+    const typed = await cli().run(["session", "send", "task_1", "carry on", "--wait", "--no-enter"], {
+      sessions: fakeSessionGateway({
+        sendAndWait: async (_taskId, text, opts) => {
+          calls.push({ text, enter: opts?.enter });
+          return fakeStartedSession({ wait: async () => outcome });
+        },
+      }),
+    });
+    expect(calls).toEqual([{ text: "carry on", enter: false }]);
+    expect(typed.err.join("\n")).toContain("nothing was submitted");
+  });
+
+  it("says in its help that Enter is the default and --no-enter opts out", async () => {
+    const help = await cli().run(["session", "--help"]);
+    const text = help.out.join("\n");
+    expect(text).toContain("--no-enter");
+    expect(text).toContain("Enter is the default");
+    expect(text).toContain("No turn starts");
   });
 
   it("refuses empty stdin rather than reporting a delivery it never made", async () => {
