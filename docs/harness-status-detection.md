@@ -23,6 +23,7 @@ about everything else on a Core — as an Event replayed off its cursor.
 | Hook delivery misses | `packages/core/src/harness-hook-delivery.ts` |
 | Quiet-Session backstop | `packages/core/src/core-session-backstop.ts` |
 | Boot sweep | `packages/core/src/core-session-sweep.ts` |
+| Relaunch reset | `packages/core/src/core-session-relaunch.ts` |
 
 The Panel keeps a hook endpoint (`POST /api/hooks/<slug>`) for its own remaining
 local task rows, running the same shared pipeline. A Core-owned Session never
@@ -35,11 +36,13 @@ outside the process. The Core installs them per workspace at spawn time, so each
 Session reports its own state.
 
 A new Session starts in `ready` (terminal spawned, prompt waiting). The first
-hook flips it.
+hook flips it — and if no hook ever comes, a dead-process fallback does (see
+below): `ready` is not a resting place for a Session whose process is gone.
 
 | Hook event                         | Mapped status   | Meaning                                  |
 | ---------------------------------- | --------------- | ---------------------------------------- |
 | _(spawn)_                          | `ready`         | Terminal up, operator hasn't typed yet   |
+| _(agent respawn)_                  | `ready`         | Harness up again for a Session that never worked |
 | `UserPromptSubmit`                 | `running`       | Prompt submitted; work began             |
 | `Stop`                             | `finished`\*    | Foreground turn ended (see below)        |
 | `SubagentStart` / `SubagentStop`   | _(bookkeeping)_ | Tracks still-active subagents            |
@@ -305,6 +308,21 @@ Sessions whose process is gone:
   The Panel's own exit patch no longer fires for a Core-owned row: it was
   unconditional, so it would overwrite an `interrupted` Session with `finished`
   and raise a spurious `session:finished` besides.
+
+  **`ready` settles here too** (issue 387), and it is the one status in scope
+  that describes no work. A *bare* Session — spawned with no prompt, sitting on
+  "Waiting for initial prompt…" — never leaves `ready` until its first
+  `UserPromptSubmit`, so not one hook ever fires for it and there is no `Stop`
+  to wait for. Left out, its row went on claiming to be waiting for a prompt
+  for as long as the database existed; one was found alive on a Core hours
+  after its PTY died, and still there after the container was recreated.
+
+  It settles on a scale of its own: **`disconnected`, whatever the exit code**.
+  `terminated` would say a turn was killed, and `finished` would say work
+  completed — `CoreTaskWriter` appends `session:finished` on exactly that
+  transition, so a bare Session the operator closes with `/exit` would ring a
+  completion ding for a turn that never ran. `disconnected` claims only that
+  the process went away, which is the whole of what is known.
 - **Boot sweep** — `core-session-sweep.ts` runs once per Core boot, before the
   PTY core, the hook receiver or the core-link server can produce a Session of
   this run. At that moment no PTY of this process exists, so every row still
@@ -314,11 +332,44 @@ Sessions whose process is gone:
   `task:updated` event a connected Panel re-renders from — a sweep nobody is
   told about leaves the operator looking at the same wrong card.
 
+  **Spawned `ready` rows are orphans too** (issue 387), for the same reason the
+  PTY-exit settle covers them: a bare Session's PTY dies with the Core and no
+  hook was ever going to report it. They cannot be swept on the status alone,
+  because `ready` is also the status of a Session the operator created and has
+  not started — flipping a queue of unstarted work to `disconnected` on every
+  restart would trade one wrong card for many. The discriminator is whether
+  this Core ever spawned a *harness* for the row, read from the `pty:spawn` in
+  the event log (`queryStrandedReadyTasks`). The row cannot answer it: there is
+  no "was started" column, and the harness session id is no help either, since
+  Claude Code's `SessionStart` captures one before any turn. A `ready` row with
+  no agent spawn behind it is left alone. The evidence is permanent — nothing
+  prunes `event_log` — so the first boot after this shipped settled every
+  historical spawned `ready` row in one batch, and every boot since sees only
+  what the run before it stranded.
+
+  The quiet-Session backstop deliberately does **not** see these rows: it reads
+  the narrow `listActiveTasks`, and a bare Session waiting on its first prompt
+  is allowed to sit silent for as long as the operator likes.
+
   `disconnected` rather than `finished` or `terminated`: it is the status the
   Panel already uses for a process that went away without reporting, and it
   claims nothing about how the work ended. The Panel has had this sweep for its
   own rows all along; what it never had was scope over Core-owned ones, which is
   every Session on a remote Core (issue 243).
+- **Relaunch reset** — the mirror of the two above (`core-session-relaunch.ts`).
+  Once `ready` is a status a Session can leave, something has to write it back:
+  the operator reopens a settled bare Session, the Core spawns a healthy
+  harness, it waits at its prompt, and no hook fires until the first prompt —
+  so the card would read `disconnected` over a live harness, on every harness
+  family. On an **agent** spawn (never a `shell` or `shellSession` one), a row
+  in a settled status that has **never worked** goes back to `ready`.
+
+  "Never worked" is read from the event log, not the row: every status change
+  on a Core-owned row appends a `task:updated` carrying the status that was
+  *patched* (`queryTaskEverWorked`), and any status other than `ready` /
+  `disconnected` says a turn happened — including on a harness that goes
+  straight from `ready` to `finished` without ever reporting `running`. A
+  `finished` Session being reopened is being resumed, and keeps its card.
 
 ## Terminal-input fallback
 
@@ -336,6 +387,12 @@ Session had neither hooks nor a fallback and never left `ready`.
 The narrower question matters: Cursor and Codex both take our hooks file and
 report a turn's *end*, so "hooks were installed" would suppress the fallback and
 leave their Sessions on `ready` for the whole first turn.
+
+Note that neither of those failures parks a Session on `ready` forever any more
+(issue 387). A Session sitting on `ready` whose PTY then dies is settled by the
+PTY-exit path, and one whose Core dies under it is settled by the boot sweep;
+what a missing `running` signal costs is a card that under-reports a live turn,
+not a row that outlives its process.
 
 ### The CLI has no equivalent, and says so
 

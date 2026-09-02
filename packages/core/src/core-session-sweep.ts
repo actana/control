@@ -55,7 +55,7 @@ export type CoreSessionSweepDeps = {
    * row with no `pty:spawn` behind it is not in the list and must not be: that
    * is a Session the operator has simply not started yet.
    */
-  listActiveTasks: () => CoreLinkTaskSnapshot[];
+  listBootSweepTasks: () => CoreLinkTaskSnapshot[];
   /** The one seam a task row changes through, events included. */
   writer: CoreTaskWriter;
 };
@@ -71,7 +71,7 @@ export type CoreSessionSweepDeps = {
  * of the fleet's Sessions wedged.
  */
 export function sweepStrandedSessions(deps: CoreSessionSweepDeps): string[] {
-  const stranded = deps.listActiveTasks();
+  const stranded = deps.listBootSweepTasks();
   if (stranded.length === 0) return [];
 
   const settled: string[] = [];
