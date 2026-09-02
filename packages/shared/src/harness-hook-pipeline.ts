@@ -248,6 +248,23 @@ export function handleHarnessHookEvent(
   // showing active work is wrong — settle it by exit code. Tasks already in a
   // settled state (finished, interrupted, …) keep it: the exit of an idle
   // session isn't news. Dead process ⇒ its subagents died with it.
+  //
+  // `ready` is in scope too (issue 387), and it is the one status here that
+  // does not describe work in progress. It describes a Session that has not
+  // started one — a bare Session sitting on "Waiting for initial prompt…",
+  // whose harness is up and whose first `UserPromptSubmit` has not arrived.
+  // Nothing else settles it: no hook ever fired for that Session, so there is
+  // no Stop to wait for, and the boot sweep's status filter did not see it
+  // either. Left out, its row goes on claiming to be waiting for a prompt for
+  // as long as the database exists — a zombie found alive on a Core hours
+  // after its PTY died, and still there after the container was recreated.
+  //
+  // It settles on a scale of its own: `disconnected`, not `terminated`. A
+  // non-zero exit out of a turn is a turn that was killed, which is what
+  // `terminated` says; a non-zero exit out of a Session that never ran a turn
+  // says only that the process went away, which is the one thing
+  // `disconnected` claims and the honest answer here. A clean exit is a clean
+  // exit in either case.
   if (event === HARNESS_HOOK_EVENTS.sessionProcessExited) {
     clearSubagentActivity(taskId);
     // No re-invocation can follow a dead process: laggard subagent POSTs still
@@ -255,6 +272,8 @@ export function handleHarnessHookEvent(
     clearTaskFinished(taskId);
     if (task.status === "running" || task.status === "needs-input") {
       ports.updateStatus(taskId, payload.exit_code === 0 ? "finished" : "terminated");
+    } else if (task.status === "ready") {
+      ports.updateStatus(taskId, payload.exit_code === 0 ? "finished" : "disconnected");
     }
     // No `status` on the result: the settle is conditional, and a host that
     // echoed one would be claiming a transition that may not have happened.
