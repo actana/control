@@ -259,12 +259,17 @@ export function handleHarnessHookEvent(
   // as long as the database exists — a zombie found alive on a Core hours
   // after its PTY died, and still there after the container was recreated.
   //
-  // It settles on a scale of its own: `disconnected`, not `terminated`. A
-  // non-zero exit out of a turn is a turn that was killed, which is what
-  // `terminated` says; a non-zero exit out of a Session that never ran a turn
-  // says only that the process went away, which is the one thing
-  // `disconnected` claims and the honest answer here. A clean exit is a clean
-  // exit in either case.
+  // It settles on a scale of its own: `disconnected`, whatever the exit code.
+  // Neither of the other two answers is true of a Session that never ran a
+  // turn. `terminated` says a turn was killed. `finished` says work completed,
+  // and it is not just a label — `CoreTaskWriter` appends `session:finished`
+  // on exactly that transition, so an operator who opens a bare Session and
+  // types `/exit` would get a completion ding for a Session still titled
+  // "Waiting for initial prompt…". `disconnected` claims only that the process
+  // went away, which is the whole of what is known. #387's acceptance allows
+  // either ("disconnected or finished"); this is the one that agrees with the
+  // boot sweep, which settles the same Session with the same reasoning and
+  // deliberately raises no notification.
   if (event === HARNESS_HOOK_EVENTS.sessionProcessExited) {
     clearSubagentActivity(taskId);
     // No re-invocation can follow a dead process: laggard subagent POSTs still
@@ -273,7 +278,7 @@ export function handleHarnessHookEvent(
     if (task.status === "running" || task.status === "needs-input") {
       ports.updateStatus(taskId, payload.exit_code === 0 ? "finished" : "terminated");
     } else if (task.status === "ready") {
-      ports.updateStatus(taskId, payload.exit_code === 0 ? "finished" : "disconnected");
+      ports.updateStatus(taskId, "disconnected");
     }
     // No `status` on the result: the settle is conditional, and a host that
     // echoed one would be claiming a transition that may not have happened.

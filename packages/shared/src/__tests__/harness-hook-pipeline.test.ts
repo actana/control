@@ -226,10 +226,14 @@ describe("a PTY exit settles a Session that never started a turn (issue 387)", (
     expect(h.writes).toEqual(["disconnected"]);
   });
 
-  it("settles a ready Session to finished when the exit was clean", () => {
+  it("settles a ready Session to disconnected on a clean exit too", () => {
+    // Not `finished`. That transition is what `CoreTaskWriter` appends
+    // `session:finished` on, and a Session that never ran a turn must not ring
+    // a completion ding — the boot sweep settles the same Session silently.
     const h = harness();
     h.post({ hook_event_name: EXITED, exit_code: 0 });
-    expect(h.task.status).toBe("finished");
+    expect(h.task.status).toBe("disconnected");
+    expect(h.writes).toEqual(["disconnected"]);
   });
 
   it("settles without a Stop hook ever arriving", () => {
