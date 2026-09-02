@@ -1,6 +1,6 @@
 {
   "name": "@actana/panel",
-  "version": "0.4.4",
+  "version": "0.4.5",
   "description": "Actana Control Panel — service + UI (TanStack Start SSR server and the browser app).",
   "license": "MIT",
   "private": true,
