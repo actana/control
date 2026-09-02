@@ -60,9 +60,10 @@ import {
 } from "~/lib/harness-command";
 import { getDefaultModelForHarness } from "~/lib/default-model-store";
 import {
-  terminalInputStartsTurn,
+  advanceTerminalRunningFallback,
   harnessUsesTerminalPromptFallback,
-  shouldResetTerminalRunningFallback,
+  IDLE_TERMINAL_RUNNING_FALLBACK,
+  type TerminalRunningFallback,
 } from "~/lib/task-status-sync";
 import { accumulateTerminalPrompt } from "~/lib/terminal-prompt-capture";
 import { prefetchTerminalModules } from "~/lib/prefetch-terminal-modules";
@@ -976,7 +977,11 @@ export function TerminalPane({
       let duringReplayData: SequencedPtyData[] = [];
       let duringReplayExit: { ptyId: string; exitCode: number; signal?: number } | null =
         null;
-      let fallbackRunningPosted = false;
+      // The Enter→running fallback for a Session whose hooks never announce a
+      // turn's start: the one-shot latch AND the turn the operator is composing
+      // in this pane (issue 386). Rebuilt with the surface, like every other
+      // per-pane scratch value here.
+      let runningFallback: TerminalRunningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
       let promptCaptureBuffer = "";
       let promptTitlePosted = false;
       const stopWatchingColorScheme = watchTerminalColorScheme((colorScheme) => {
@@ -1234,15 +1239,21 @@ export function TerminalPane({
             submittedPrompt = captured.submitted;
           }
 
-          // Cursor CLI still does not fire beforeSubmitPrompt, so Enter is the
-          // per-turn running signal. Re-arm after the task leaves "running"
-          // (stop → finished, needs-input, etc.) so a second prompt in the same
-          // session updates the card again.
-          if (shouldResetTerminalRunningFallback(liveTaskStatusRef.current)) {
-            fallbackRunningPosted = false;
-          }
-          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data, hooksReportTurnStart)) {
-            fallbackRunningPosted = true;
+          // Cursor CLI still does not fire beforeSubmitPrompt, so a submitted
+          // prompt is the per-turn running signal. "Submitted" is the whole
+          // point of issue 386: the latch re-arms once the task leaves
+          // "running" (stop → finished, needs-input, …) so a second prompt in
+          // the same session updates the card again — but on its own that made
+          // every newline after settlement a new turn, so a stray Enter or a
+          // pasted path resurrected `running`. The fallback now waits for the
+          // operator to actually enter something and submit it.
+          const fallbackStep = advanceTerminalRunningFallback(runningFallback, {
+            data,
+            currentStatus: liveTaskStatusRef.current,
+            hooksReportTurnStart,
+          });
+          runningFallback = fallbackStep.state;
+          if (fallbackStep.postRunning) {
             void (async () => {
               try {
                 // Same routing as the exit patch above: a turn-start status is
@@ -1276,7 +1287,9 @@ export function TerminalPane({
                   queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
                 ]);
               } catch {
-                fallbackRunningPosted = false;
+                // The PATCH never landed — un-latch so the operator's next
+                // submitted turn tries again.
+                runningFallback = { ...runningFallback, posted: false };
               }
             })();
           }
