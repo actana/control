@@ -214,7 +214,7 @@ export const ADD_CORE_LOCATION = `Settings → Cores → ${ADD_CORE_FIELD_LABEL}
  * **The set is the set that command prints, not a shorter one.** `pair new`
  * emits `Label` whenever `--label` is given, and the wizard always teaches
  * `--label` — so `Label` belongs here, between `Expires` and `Session`, in the
- * order `packages/cli/src/actana-pair.ts` writes them. (`Endpoint host` is the
+ * order `packages/cli/src/actana-pair.ts` writes them. (`Address host` is the
  * sixth line and is not here: it appears only for `--public-host`, which this
  * wizard does not teach.) The CLI's own suite pins that set for this exact
  * invocation, and `__tests__/core-onboarding.test.ts` reads it from there.
