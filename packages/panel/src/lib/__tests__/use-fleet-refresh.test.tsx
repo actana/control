@@ -171,7 +171,7 @@ describe("useFleetTasks — a finish that lands during an in-flight refresh", ()
       "task:updated",
       "task:updated",
       "session:finished",
-      "pty:exited",
+      "pty:exit",
       "task:updated",
       "session:finished",
     ]) {
@@ -186,6 +186,53 @@ describe("useFleetTasks — a finish that lands during an in-flight refresh", ()
 
     // One trailing pass for the whole burst, and nothing behind it.
     expect(h.listTasksCalls).toBe(3);
+    expect(h.inFlight).toHaveLength(0);
+  });
+
+  it("does not drop a finish that lands inside the trailing pass itself", async () => {
+    // The loop is a `do…while`, not a single trailing pass, and this is the
+    // only case that can tell those apart. Rewriting `run` to "settle, then at
+    // most one extra read" passes every other test in this file while quietly
+    // re-narrowing #389 to the second event — so this case is what stops that
+    // refactor at CI rather than in an operator's Fleet view.
+    h.tasks = [task("task-1", "running"), task("task-2", "running")];
+    const { result } = renderHook(() => useFleetTasks());
+
+    await waitForRead(1);
+    await settleOldestRead();
+    await waitFor(() => expect(result.current.fleet.rows).toHaveLength(2));
+
+    // Read 2 opens, and the first Session finishes inside it.
+    await emit("task:updated");
+    await waitForRead(2);
+    h.tasks = [task("task-1", "finished"), task("task-2", "running")];
+    await emit("session:finished");
+
+    // Read 2 answers with the pre-finish snapshot, which arms the trailing
+    // pass — read 3.
+    await settleOldestRead();
+    await waitFor(() => expect(h.listTasksCalls).toBe(3));
+
+    // The second Session finishes while *that trailing pass* is in flight.
+    // A single-trailing-pass implementation has nowhere left to put this.
+    h.tasks = [task("task-1", "finished"), task("task-2", "finished")];
+    await emit("session:finished");
+
+    // Read 3 answers with a snapshot that predates the second finish...
+    await settleOldestRead();
+    // ...so a fourth read has to follow it.
+    await waitFor(() => expect(h.listTasksCalls).toBe(4));
+    await settleOldestRead();
+
+    await waitFor(() =>
+      expect(result.current.fleet.rows.map((row) => [row.taskId, row.status]).sort()).toEqual([
+        ["task-1", "finished"],
+        ["task-2", "finished"],
+      ]),
+    );
+    // Four reads and no more: mount, the event, and one trailing pass for each
+    // of the two bursts — not one per event, and not one left running.
+    expect(h.listTasksCalls).toBe(4);
     expect(h.inFlight).toHaveLength(0);
   });
 

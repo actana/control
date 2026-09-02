@@ -42,6 +42,30 @@ function emptyFleet(): FleetMergeResult {
 }
 
 /**
+ * Structural equality for the plain, JSON-shaped values a fan-out settles on.
+ *
+ * Task and project snapshots are flat records of scalars, one optional nested
+ * `lock` deep, held in arrays — so a recursive own-key walk is the whole of it,
+ * and it is bounded by the same row count `mergeFleetTasks` just paid for.
+ * Nothing here needs to handle a Date, a Map or a cycle, and it must not
+ * pretend to: it is used only to answer "did this read change anything".
+ */
+function sameSnapshot(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = a as Record<string, unknown>;
+  const right = b as Record<string, unknown>;
+  const keys = Object.keys(left);
+  if (keys.length !== Object.keys(right).length) return false;
+  for (const key of keys) {
+    if (!Object.hasOwn(right, key)) return false;
+    if (!sameSnapshot(left[key], right[key])) return false;
+  }
+  return true;
+}
+
+/**
  * "Nothing filed yet", shared by identity so a re-read that finds no filing
  * doesn't re-join every row. Read-only — nothing ever writes into it.
  */
@@ -161,7 +185,12 @@ export function useFleetTasks(): {
           }
         }),
       );
-      setFleet(mergeFleetTasks(results));
+      // Keep the previous object when the fan-out settled on the same answer.
+      // `fleet.rows` is a dependency of memos and effects several layers up,
+      // and a fresh array on every event would tear those down for nothing —
+      // the merge is already O(rows), so comparing it costs the same order.
+      const merged = mergeFleetTasks(results);
+      setFleet((prev) => (sameSnapshot(prev, merged) ? prev : merged));
       setError(null);
       return true;
     } catch (err) {
@@ -190,13 +219,14 @@ export function useFleetTasks(): {
         pending.current = false;
         // One trailing pass per burst, not one per event: every event landing
         // during a pass sets the same flag, and the loop reads it once.
-        // A failed pass stops the loop rather than spinning on the error —
-        // whatever arrived during it is picked up by the next event or poll.
+        // A failed pass stops the loop rather than spinning on the error, and
+        // leaves `pending` exactly as the burst left it — clearing it here
+        // would drop the backlog on the error path, which is #389 again in
+        // miniature. The next event or the poll picks it up.
         if (!(await fanOut())) break;
       } while (pending.current);
     } finally {
       refreshing.current = false;
-      pending.current = false;
     }
   }, [bridge, fanOut]);
 
