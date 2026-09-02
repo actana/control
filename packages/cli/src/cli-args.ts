@@ -69,13 +69,16 @@ export type ParsedArgs = {
    * A `send` presses Enter by default now, so on a send that carries text this
    * flag asks for what was going to happen anyway — a no-op preserved because
    * orchestration scripts written against the old default pass it, and a CLI
-   * that started rejecting it would break every one of them for no gain. On a
-   * send with **no** text it still means what it always meant: a bare carriage
-   * return is the whole message.
+   * that started rejecting it would break every one of them for no gain.
+   *
+   * **Not a no-op on a send with no text**, which is why the flag is not merely
+   * tolerated: there it still means what it always meant — a bare carriage
+   * return is the whole message — and it is what `sessionSend`'s empty-text
+   * refusals and its `--no-enter` warning both point the operator at.
    */
   enter: boolean;
   /**
-   * `--no-enter`: type the text and stop there, submitting nothing (#404).
+   * `--no-enter`: type the text and send no carriage return after it (#404).
    *
    * The opt-out from the new default, for the one case that genuinely wants
    * keystrokes without a turn — filling a composer, answering the numbered

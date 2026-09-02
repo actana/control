@@ -645,7 +645,7 @@ describe("actana session send", () => {
     });
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
     // Joined the way a shell already joined them, unaltered — and the return
-    // asked for, because a send starts a turn. That the return is its own write
+    // asked for, because a send is a message. That the return is its own write
     // rather than glued to the text is asserted against a real Core in
     // `in-process-core-session.test.ts`.
     expect(calls).toEqual([{ text: "yes please", enter: true }]);
@@ -664,8 +664,8 @@ describe("actana session send", () => {
     // The exit path is the other half of the acceptance: a send that started no
     // turn is allowed and is never quiet about it.
     const err = run.err.join("\n");
-    expect(err).toContain("nothing was submitted");
-    expect(err).toContain("no turn has started");
+    expect(err).toContain("no carriage return followed the text");
+    expect(err).toContain("started no turn");
     expect(err).toContain("actana session send task_1 --enter");
   });
 
@@ -703,7 +703,7 @@ describe("actana session send", () => {
     // The document keeps the `--json` rule — only JSON on stdout — and carries
     // the fact, so a script never has to read prose to learn no turn started.
     expect(JSON.parse(run.out.join("\n"))).toMatchObject({ enter: false, submitted: false });
-    expect(run.err.join("\n")).toContain("nothing was submitted");
+    expect(run.err.join("\n")).toContain("started no turn");
   });
 
   it("refuses --enter and --no-enter together rather than picking one", async () => {
@@ -744,15 +744,47 @@ describe("actana session send", () => {
       }),
     });
     expect(calls).toEqual([{ text: "carry on", enter: false }]);
-    expect(typed.err.join("\n")).toContain("nothing was submitted");
+    expect(typed.err.join("\n")).toContain("started no turn");
+
+    // And stderr is the **only** signal on this path. The wait's document is
+    // `start --wait --json`'s key set, which #289 requires one parser to read
+    // across all three verbs, so it gains no `submitted` field — the help text
+    // names that exception rather than the document growing a key.
+    const asJson = await cli().run(
+      ["session", "send", "task_1", "carry on", "--wait", "--no-enter", "--json"],
+      {
+        sessions: fakeSessionGateway({
+          sendAndWait: async () => fakeStartedSession({ wait: async () => outcome }),
+        }),
+      },
+    );
+    const document = JSON.parse(asJson.out.join("\n"));
+    expect(document.submitted).toBeUndefined();
+    expect(document.enter).toBeUndefined();
+    expect(asJson.err.join("\n")).toContain("started no turn");
   });
 
-  it("says in its help that Enter is the default and --no-enter opts out", async () => {
+  it("says in its help what submits, what does not, and what each is not", async () => {
     const help = await cli().run(["session", "--help"]);
     const text = help.out.join("\n");
     expect(text).toContain("--no-enter");
-    expect(text).toContain("Enter is the default");
-    expect(text).toContain("No turn starts");
+    expect(text).toContain("This starts no turn");
+    // The four statements the review of #462 found untrue, each pinned to the
+    // wording that replaced it, so none of them can drift back in.
+    //
+    // 1. `--enter` is not a blanket no-op: with no text it is the whole message.
+    expect(text).toContain("only meaningful with no text");
+    // 2. A separate write is necessary and not sufficient — ADR 0026 saw a
+    //    separate return absorbed anyway, and the gate that answers that is the
+    //    Core's, not this path's.
+    expect(text).toContain("Separate is necessary and not sufficient");
+    expect(text).toContain("150 ms later, absorbed anyway");
+    // 3. `--wait` after `--no-enter` is not "nothing to await": it hangs on an
+    //    idle Session and answers the *running* turn on a busy one.
+    expect(text).toContain("A `--wait` after it is not waiting");
+    expect(text).toContain("resolves on *that* turn's end and reports it as this send's");
+    // 4. `submitted` is on the plain document only, never the wait's (#289).
+    expect(text).toContain("**not** on the `--wait` document");
   });
 
   it("refuses empty stdin rather than reporting a delivery it never made", async () => {

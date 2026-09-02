@@ -311,7 +311,7 @@ describe("actana session, against a Core in this process", () => {
     const typed = await fixture!.run(["session", "send", "task_live", "2", "--no-enter"], withCore());
     expect(typed.code, typed.err.join("\n")).toBe(EXIT_OK);
     expect(writes).toEqual(["2", "\r", "2", "\r", "2"]);
-    expect(typed.err.join("\n")).toContain("no turn has started");
+    expect(typed.err.join("\n")).toContain("started no turn");
   }, 30_000);
 
   it("kills a Session this CLI did not start", async () => {

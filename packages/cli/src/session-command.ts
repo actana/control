@@ -95,8 +95,8 @@ Flags
   --cwd <path>        start: a directory on the Core, inside the Project
   --title <text>      start: what the Session is called in \`ls\`
   --raw               logs: the bytes, escape codes and all, unrendered
-  --enter             send: accepted, and does nothing — Enter is the default
-  --no-enter          send: type the text and submit nothing. No turn starts
+  --enter             send: only meaningful with no text — a bare carriage return
+  --no-enter          send: type the text and send no return. This starts no turn
   --read-only         attach: watch without claiming the Session's write lock
   --dangerously-skip-permissions
                       start/resume: run the harness without permission prompts
@@ -146,21 +146,39 @@ Awaiting a turn
   \`--wait-timeout\` there is no deadline: a turn takes as long as the work takes.
 
 Sending text, and what submits it
-  \`send <session> <text>\` **presses Enter** — the text, then a carriage return
-  as its own separate write, so a harness that pastes cannot swallow the return
-  with the text. That is the default because it is what the words mean: a send
-  that left the characters in the composer with no turn started looked delivered
-  and was not (#404).
+  \`send <session> <text>\` **presses Enter** — that is, the text goes out and a
+  carriage return follows it as its own separate write, never glued onto the
+  text, and what the harness does with that return is the harness's. That is the
+  default because it is what the words mean: a send that left the characters in
+  the composer with no turn started looked delivered and was not (#404).
+
+  Separate is necessary and not sufficient. ADR 0026's second observed failure
+  is a return that was already its own write, 150 ms later, absorbed anyway by a
+  harness rendering the text as a paste; what answers that is the length-scaled
+  pause and the quiet gate on the **Core's** delivery path (ADR 0026 D6), which
+  a \`send\` does not have and does not grow one here. A long enough \`send\` can
+  still be pasted with its return eaten. A *starting* prompt, which does go
+  through that gate, is \`session start\`.
 
   \`--no-enter\` is the opt-out, for typing without submitting: filling a
   composer, or answering a numbered dialog before the return that confirms it.
   It says so on the way out, every time, because a send that started no turn is
-  the failure this default exists to end. **Nothing is awaitable after it** —
-  \`--wait\` has no turn to wait for.
+  the failure this default exists to end. **A \`--wait\` after it is not waiting
+  for your text.** On an idle Session no turn ends, so the wait runs out the
+  \`--wait-timeout\` — or, with none given, does not return. On a Session already
+  mid-turn it resolves on *that* turn's end and reports it as this send's, for a
+  turn this send did not start. Both are #405's and neither is fixed here.
+
+  \`--json\` on a plain send carries the same fact as a \`submitted\` field. It is
+  **not** on the \`--wait\` document, which prints \`start --wait --json\`'s keys
+  and no others so one parser reads every verb (#289) — there the line on stderr
+  is the only signal.
 
   \`--enter\` is still accepted and does nothing on a send that carries text, so
   a script written against the old default keeps working. On a send with no text
-  it still means what it meant: a bare carriage return, and nothing else.
+  it is not a no-op: it is still the way to say a bare carriage return is the
+  whole message, which is what this verb's \`--no-enter\` warning and its
+  refusals of an empty send both point you at.
 
 Who delivers the prompt
   The Core does (ADR 0026). It waits for the harness to settle, answers the
@@ -566,22 +584,36 @@ async function sessionLogs(
  * What `--no-enter` says on the way out, on every path that takes it.
  *
  * The second half of #404's acceptance: a send that submits nothing is allowed,
- * and it is never quiet. It names the flag that caused it, says where the text
- * actually is, and gives the one command that finishes the job — because the
- * operator this was written for is the one staring at a Session that looks sent
- * to and has not moved.
+ * and it is never quiet. It names the flag that caused it, says what was left
+ * out, and gives the command that sends it — because the operator this was
+ * written for is the one staring at a Session that looks sent to and has not
+ * moved.
+ *
+ * It claims nothing it cannot see. Where the text ended up is the harness's
+ * business and this side never observes it, and whether a carriage return
+ * submits anything is the harness's too — so this says what *this process did*:
+ * no return went out, and no turn was started by this send.
  */
 const NOT_SUBMITTED_WARNING = (taskId: string): string =>
-  `actana session send: --no-enter, so nothing was submitted — the text is sitting in the ` +
-  `harness's composer and no turn has started. \`actana session send ${taskId} --enter\` presses Enter.`;
+  `actana session send: --no-enter, so no carriage return followed the text — this send ` +
+  `started no turn. \`actana session send ${taskId} --enter\` sends the carriage return.`;
 
 /**
  * `actana session send <session> <text>` — the equivalent of typing.
  *
  * **A send submits the turn** (#404). The text goes first, verbatim, and a
  * carriage return follows it as a **second write to the same PTY** — never
- * glued onto the text, so a harness that pastes cannot absorb the return along
- * with the characters. What changed in #404 is only which of the two spellings
+ * glued onto the text, because a glued return is one a harness rendering the
+ * write as a paste absorbs along with the characters.
+ *
+ * Separate is necessary and **not sufficient**: ADR 0026's second observed
+ * failure is a return that was already its own write, sent 150 ms later,
+ * absorbed anyway. What answers that is D6's
+ * length-scaled pause and quiet gate on the *Core's* delivery path, which this
+ * one has not got and must not grow — a client that timed its own submit would
+ * be doing prompt delivery. A long enough `send` can therefore still land as a
+ * paste with its return eaten; the prompt that does go through the gate is
+ * `session start`'s. What changed in #404 is only which of the two spellings
  * needs a flag: sending text and starting no turn was the surprising default,
  * and an operator who typed `session send $SID "continue"` watched the
  * characters sit in a composer with nothing to await.
@@ -604,9 +636,9 @@ const NOT_SUBMITTED_WARNING = (taskId: string): string =>
  *
  * `--wait` adds no timing either (#289): it asks the Core to stamp the delivery
  * in its event log and then waits for the first settling status *after* that
- * stamp. The text is the same text, written at the same moment, with the same
- * nothing appended — what `--wait` changes is when this process hangs up, not
- * what the harness receives.
+ * stamp. The text is the same text, written at the same moment, followed by the
+ * same return under the same rules — what `--wait` changes is when this process
+ * hangs up, not what the harness receives.
  */
 async function sessionSend(
   deps: ActanaCliDeps,
@@ -670,6 +702,11 @@ async function sessionSend(
       deps.verbose(`sending ${text.length} characters to session ${taskId}${andReturn}, then waiting`);
       const session = await gateway.sendAndWait(taskId, text, { enter: submit });
       deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
+      // Stderr is the *only* signal on this path, and deliberately: the wait's
+      // document is `start --wait --json`'s key set and nothing else, because
+      // #289 requires one parser to read all three verbs. A `submitted` field
+      // here would buy this warning a machine-readable form at the price of
+      // that, so the help text names the exception instead.
       if (!submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
       return awaitAttachedTurn(deps, args, session, timeout.ms);
     }
@@ -683,7 +720,8 @@ async function sessionSend(
       // `enter` keeps its old name and its old meaning — a carriage return was
       // written — so a parser built on it keeps reading the same fact. `submitted`
       // is the same fact under the name that says what it is *for*, which is the
-      // question #404 was about.
+      // question #404 was about. Both are on **this** document only; the `--wait`
+      // path's shape is #289's and is not extended here.
       deps.out(
         formatJson({ taskId, characters: text.length, enter: submit, submitted: submit, delivered }),
       );
