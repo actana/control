@@ -22,6 +22,7 @@ about everything else on a Core — as an Event replayed off its cursor.
 | PTY exit settle | `packages/core/src/pty-manager.ts` → `onSessionExit` |
 | Hook delivery misses | `packages/core/src/harness-hook-delivery.ts` |
 | Quiet-Session backstop | `packages/core/src/core-session-backstop.ts` |
+| Redraw vs. real output | `packages/core/src/pty-output-activity.ts` |
 | Boot sweep | `packages/core/src/core-session-sweep.ts` |
 | Relaunch reset | `packages/core/src/core-session-relaunch.ts` |
 
@@ -130,9 +131,10 @@ fourth is armed by nothing, which is the point (issue 243):
   background work), and when the PTY process exits.
 - **The quiet-Session backstop** (`core-session-backstop.ts`) sweeps the
   database once a minute and settles any row still claiming `running` that has
-  gone quiet. Nothing arms it, so it covers the case the three above cannot: a
-  turn whose terminal `Stop` was the POST that dropped, where nothing was held,
-  nothing was healed and no subagent was ever tracked.
+  gone quiet — or that is still painting a TUI with nothing new on it. Nothing
+  arms it, so it covers the case the three above cannot: a turn whose terminal
+  `Stop` was the POST that dropped, where nothing was held, nothing was healed
+  and no subagent was ever tracked.
 
 Elapsed time is not what "quiet" means, and it could not be — a turn may run for
 hours. A working harness never stops talking: every tool call fires the
@@ -145,11 +147,56 @@ being told. A live PTY makes that settle a `finished`; no live PTY makes it a
 `disconnected`, because a process that went away did not finish. `needs-input`
 is never swept — a Session waiting on a human may wait silently forever.
 
-The trade is knowingly paid: a harness that works in total silence for longer
-than the window gets a card that reads `finished` while it is still going.
-Nothing is killed, and the next `UserPromptSubmit` puts the row back on
-`running`. Before it, a lost `Stop` wedged the Session until a human edited the
-row by hand — while the Panel said the opposite.
+### Idle redraws are not activity (issue 391)
+
+That rule has a hole in it, and it is the case an operator hits most: the
+harness whose hooks are not arriving is usually the harness whose TUI is still
+on screen. Codex before its hooks have been reviewed with `/hooks`, or any
+harness whose terminal `Stop` was the POST that dropped, keeps painting a
+spinner and a clock for as long as the process lives. Counted as activity,
+those bytes mean fifteen minutes of total silence never arrives and the card
+claims `running` indefinitely.
+
+So the bytes are read rather than counted. `pty-output-activity.ts` reduces
+each five-second burst of PTY output to the words on screen — escapes, control
+bytes, spinner glyphs and **digits** dropped, whitespace collapsed — and calls
+the burst
+
+- **`output`** when it carries a word the last two bursts (about ten seconds of
+  screen) do not already contain: a tool result, a diff, a line of prose;
+- **`redraw`** when every word in it was already on screen a moment ago: the
+  same frame with the counter moved on.
+
+A word shorter than three characters is ignored, because a burst boundary can
+fall inside a word and `Think` + `ing` must not read as two new words a second.
+The memory is two bursts and not the whole turn on purpose: a harness that
+reads the same file twice is working, not repainting. Hooks are always
+`output` — nothing a harness bothers to POST is a repaint.
+
+The backstop therefore has two rules, and a `running` Session settles on
+whichever fires first:
+
+| Rule | Fires when | Window |
+| --- | --- | --- |
+| Quiet | nothing at all — no hook, no byte of any kind | 15 minutes |
+| Idle | bytes still arriving (heard within the last 2 minutes), but nothing new on screen and no hook | 5 minutes |
+
+The idle rule is the finish-class backstop the quiet rule cannot be: it does not
+wait for the redraws to stop, because they never do. It applies only to a
+Session this Core has actually heard bytes from — a row it has only ever read
+from the database is judged by the quiet rule alone, since a Core that heard no
+bytes cannot know whether the ones it missed were redraws. Which settles it is
+in `session-backstop.settled`'s `rule` field.
+
+The trade is knowingly paid, and it is the same one the fifteen-minute window
+already made: a turn that puts nothing new on screen for five minutes, on a
+harness whose hooks are also not arriving, gets a card that reads `finished`
+while it is still going — as does output that changes only in its digits
+(`Compiled 41 files`, `Compiled 42 files`), which is indistinguishable from a
+counter. Nothing is killed, no process is touched, and the next hook, the next
+new thing on screen, or the next `UserPromptSubmit` puts the row back on
+`running`. Before any of this, a lost `Stop` wedged the Session until a human
+edited the row by hand — while the Panel said the opposite.
 
 `Notification` is also intentionally narrowed to `permission_prompt`. Claude Code
 sends idle input reminders through the same hook event, so treating all

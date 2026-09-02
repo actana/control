@@ -302,8 +302,11 @@ async function startCore(): Promise<void> {
     onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
     // A harness that is working redraws its spinner into the PTY about once a
     // second. Silence there, and no hooks either, is what the backstop below
-    // reads as "this turn ended and nobody said so" (issue 243).
-    onSessionOutputActivity: ({ taskId }) => sessionBackstop?.noteActivity(taskId),
+    // reads as "this turn ended and nobody said so" (issue 243) — and a
+    // spinner that is all that is left, with nothing new on screen behind it,
+    // is what it reads as an idle TUI nobody will ever hear a `Stop` from
+    // (issue 391). The PTY core says which of the two arrived.
+    onSessionOutputActivity: ({ taskId, kind }) => sessionBackstop?.noteActivity(taskId, kind),
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
