@@ -50,8 +50,11 @@ describe("openClickedSession", () => {
 
   it("prefers the active row when both lists carry the id (Panel-owned project)", () => {
     const terminals = openerStub();
-    const fromTasks = task("t1", { archived: true });
-    const fromArchived = task("t1", { archived: true });
+    // Distinct `title`s, and an identity assertion on the argument: two
+    // structurally equal fixtures would pass whichever object the helper picked,
+    // leaving the tasks-first order the fix depends on untested.
+    const fromTasks = task("t1", { archived: true, title: "from tasks" });
+    const fromArchived = task("t1", { archived: true, title: "from archivedTasks" });
 
     openClickedSession("t1", {
       tasks: [fromTasks],
@@ -61,7 +64,12 @@ describe("openClickedSession", () => {
       terminals,
     });
 
-    expect(terminals.openSession).toHaveBeenCalledWith(project, fromTasks, { coreId: null });
+    expect(terminals.openSession.mock.calls[0]?.[1]).toBe(fromTasks);
+    expect(terminals.openSession).toHaveBeenCalledWith(
+      project,
+      expect.objectContaining({ title: "from tasks" }),
+      { coreId: null },
+    );
   });
 
   it("opens nothing for an id in neither list", () => {

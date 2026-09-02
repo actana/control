@@ -29,6 +29,11 @@ import { dragCarriesFiles, useProjectFilesAvailability } from "~/lib/use-project
 import { takeProjectFileDrop } from "~/lib/pending-file-drop";
 import { archiveOpenSession, invalidateSessionQueries } from "~/lib/archive-session";
 import { openClickedSession } from "~/lib/open-clicked-session";
+import {
+  activeSessionWentAway,
+  rememberActiveSession,
+  type LastActiveSession,
+} from "~/lib/active-session-memory";
 import { consumeProjectOnboardIntent, type ProjectOnboardIntent } from "~/lib/project-onboard-intent";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
@@ -532,7 +537,7 @@ function ProjectPage() {
   // Scope the ref to {projectId, taskId} so the route component being reused
   // across project switches doesn't make a stale ref look like a deletion in
   // the new project (which would auto-open a session there).
-  const lastActiveRef = useRef<{ projectId: string; taskId: string } | null>(null);
+  const lastActiveRef = useRef<LastActiveSession | null>(null);
   const activeTaskId = terminals.activeTaskIdFor(selectedScopeKey);
   const lastHiddenSessionRef = useRef<{ projectId: string; taskId: string } | null>(null);
   const archiveSessionRef = useRef<(taskId: string) => void>(() => undefined);
@@ -545,19 +550,41 @@ function ProjectPage() {
     window.addEventListener(ARCHIVE_ACTIVE_SESSION_EVENT, onArchiveRequest);
     return () => window.removeEventListener(ARCHIVE_ACTIVE_SESSION_EVENT, onArchiveRequest);
   }, []);
+  // Tell "the active session was deleted" from "the operator deselected it":
+  // only the first hands the scope a replacement session. `archivedTasks` joins
+  // the inputs because an archived row is never in the visible list, so without
+  // it every deselect on one reads as a deletion — see `active-session-memory`.
   useEffect(() => {
     if (activeTaskId !== null) {
-      lastActiveRef.current = { projectId: selectedScopeKey, taskId: activeTaskId };
+      lastActiveRef.current = rememberActiveSession(activeTaskId, selectedScopeKey, {
+        tasks,
+        archivedTasks,
+        previous: lastActiveRef.current,
+      });
       return;
     }
     const prev = lastActiveRef.current;
     if (!prev || prev.projectId !== selectedScopeKey || !terminalProject) return;
     const visible = tasks.filter((t) => !t.archived);
-    if (visible.some((t) => t.id === prev.taskId)) return;
+    if (!activeSessionWentAway(prev, selectedScopeKey, visible)) {
+      // An archived row leaving the slot is always a deselect, and it can never
+      // turn up in `visible` later — forget it instead of re-deciding it every
+      // time the task list moves. A live row still on screen is kept, so its
+      // deletion while deselected is still caught.
+      if (prev.archived) lastActiveRef.current = null;
+      return;
+    }
     lastActiveRef.current = null;
     const next = pickByPriority(visible);
     if (next) toggleTerminalSession(terminalProject, next);
-  }, [activeTaskId, tasks, terminalProject, toggleTerminalSession, selectedScopeKey]);
+  }, [
+    activeTaskId,
+    tasks,
+    archivedTasks,
+    terminalProject,
+    toggleTerminalSession,
+    selectedScopeKey,
+  ]);
 
   // Rehydrate after reload: if a persisted activeTaskId resolves to an
   // existing task for this project, materialize a session entry so the panel
