@@ -555,24 +555,27 @@ describe("actana events tail", () => {
     );
     await settle();
 
-    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-old" });
+    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-oldest" });
     core.emitEvent({ eventId: 2, kind: "task:updated" });
-    core.emitEvent({ eventId: 3, kind: "session:finished", taskId: "t-mid" });
+    core.emitEvent({ eventId: 3, kind: "session:finished", taskId: "t-old" });
     core.emitReplayed(3);
     await settle();
     // The ring survives the re-ask: it is one walk, however many tails it takes.
     expect(core.subscribes).toContain(3);
 
-    core.emitEvent({ eventId: 4, kind: "session:finished", taskId: "t-new" });
-    core.emitReplayed(4);
+    core.emitEvent({ eventId: 4, kind: "session:finished", taskId: "t-mid" });
+    core.emitEvent({ eventId: 5, kind: "session:finished", taskId: "t-new" });
+    core.emitReplayed(5);
     await settle();
-    core.emitReplayed(4);
+    core.emitReplayed(5);
 
     const result = await run;
     expect(result.code).toBe(EXIT_OK);
-    // #3 and #4 — in the order the Core appended them, and not #1, which is the
-    // one a run that printed on the way past would have answered with.
-    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([3, 4]);
+    // #4 and #5 — in the order the Core appended them, and not #1, which is the
+    // one a run that printed on the way past would have answered with. Four
+    // matches through a ring of two also turns its write index over twice,
+    // which is where a rotation that read from the wrong slot shows up.
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([4, 5]);
     expect(result.out.map((line) => JSON.parse(line).taskId)).toEqual(["t-mid", "t-new"]);
   });
 
@@ -638,6 +641,124 @@ describe("actana events tail", () => {
     const result = await run;
     expect(result.code).toBe(EXIT_OK);
     expect(JSON.parse(result.out[0]!).eventId).toBe(3);
+  });
+
+  it("does not answer a bounded --kind run from a tip it could only approximate", async () => {
+    // Round-2 review, blocking. The last hiding place of round-1's finding 1.
+    // `tipFrom` hands back its approximation as an ordinary number after
+    // MAX_TIP_ROUNDS, so a walk that took it as the tip flushed its ring and
+    // exited 0 — with whatever matches it happened to see, which on a Core
+    // racing ahead of the reader are the oldest in the log. Everything a script
+    // can observe, exit code and stdout, was then indistinguishable from a
+    // correct answer, and stderr said the run was "carrying on" after it had
+    // exited.
+    //
+    // `event-tip.ts` names this caller by hand: a caller that ends on the
+    // number says so in its own words and decides that an approximation is not
+    // a finished read.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: core.connect },
+    );
+    await settle();
+
+    // A stale finish first, then a Core that keeps the hunt asking past the
+    // round it gives up on. MAX_TIP_ROUNDS is 200 and lives in `event-tip.ts`.
+    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-stale" });
+    for (let round = 2; round <= 202; round += 1) {
+      core.emitEvent({ eventId: round, kind: "task:updated" });
+      core.emitReplayed(round);
+    }
+
+    const result = await run;
+    // Not a 0, and not the stale finish presented as the answer.
+    expect(
+      result.code,
+      "a bounded --kind run answered from an approximate tip and called it a success",
+    ).toBe(EXIT_FAILURE);
+    const said = result.err.join("\n");
+    expect(said).toContain("appended events faster than they could be read");
+    expect(said).toContain("did not finish");
+    // The sentence written for a run that really is about to follow, which this
+    // one is not: it has exited.
+    expect(said).not.toContain("carrying on");
+    // What it held still goes out — a short read is reported by its status, not
+    // by withholding what it read (#439) — and the sentence counts it.
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([1]);
+    expect(said).toContain("1 of them held from an unfinished walk");
+    expect(core.closed).toBe(true);
+  });
+
+  it("still carries on from an approximate tip when the walk is not the answer", async () => {
+    // The other half of the split, and why the fix above is narrower than
+    // `--limit`. A run with a ceiling but no `--kind` prints nothing on the
+    // walk: its ceiling is spent on live events, so an approximate tip costs it
+    // a short replay rather than its answer. It really is "a first run about to
+    // follow", which is the caller `event-tip.ts` wrote its default sentence
+    // for — so it keeps that sentence and keeps following.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(["events", "tail", "--json", "--limit", "1"], { connect: core.connect });
+    await settle();
+
+    // The hunt gives up on the round after the last one it will take, so 201
+    // rounds of non-empty tail is where it settles and printing switches on.
+    for (let round = 1; round <= 201; round += 1) {
+      core.emitEvent({ eventId: round, kind: "task:updated" });
+      core.emitReplayed(round);
+    }
+    await settle();
+
+    // Still following, and told why in the words `event-tip.ts` chose.
+    core.emitEvent({ eventId: 202, kind: "session:finished" });
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([202]);
+    expect(result.err.join("\n")).toContain("carrying on from");
+  });
+
+  it("streams --kind matches as they arrive when there is no --limit", async () => {
+    // Round-2 review, should-fix: the `recent === null` branch of the walk had
+    // no test, and it is what the help paragraph advertises. Without a ceiling
+    // there is no n to choose between, every match is going to be printed
+    // anyway, so they go out as they go past rather than into a ring.
+    //
+    // Deliberately never awaited: a tail with no --limit is a follow and has no
+    // ending, which is the whole point of the case. Nothing is armed either —
+    // the 30s deadline belongs to bounded runs — so there is no timer to leak.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const printed: string[] = [];
+    void cli().run(["events", "tail", "--json", "--kind", "session:finished"], {
+      connect: core.connect,
+      onOut: (line) => printed.push(line),
+    });
+    await settle();
+
+    core.emitEvent({ eventId: 1, kind: "session:finished", taskId: "t-1" });
+    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitEvent({ eventId: 3, kind: "session:finished", taskId: "t-2" });
+    await settle();
+
+    // Both matches, in order, while the walk is still going — no ring, no wait
+    // for the tip. The unasked-for kind in the middle stays quiet, as ever.
+    expect(printed.map((line) => JSON.parse(line).eventId)).toEqual([1, 3]);
+
+    core.emitReplayed(3);
+    await settle();
+    core.emitReplayed(3);
+    await settle();
+
+    // …and then it follows, which is what a tail with no ceiling does.
+    core.emitEvent({ eventId: 4, kind: "task:updated" });
+    core.emitEvent({ eventId: 5, kind: "session:finished", taskId: "t-3" });
+    await settle();
+    expect(printed.map((line) => JSON.parse(line).eventId)).toEqual([1, 3, 5]);
   });
 
   it("stops timing the Core once it has said where its log ends", async () => {
