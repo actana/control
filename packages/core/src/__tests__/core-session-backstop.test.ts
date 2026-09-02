@@ -24,6 +24,7 @@ import {
 import { CoreTaskWriter } from "../core-task-writer";
 import { CoreSessionBackstop } from "../core-session-backstop";
 import { PtyOutputActivityWatcher } from "../pty-output-activity";
+import { mapHookEventToStatus } from "@actana/shared/harness-hook-events";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 
 // The backstop nobody has to arm (issue 243 part 2), against this Core's real
@@ -373,14 +374,33 @@ describe("settling a turn whose end nobody reported", () => {
       expect(statusOf("t-1")).toBe("running");
     });
 
-    it("returns the row to running for a hook, too", () => {
+    it("returns the row to running for a hook that means the turn is running", () => {
       insert("t-1", "running");
       const backstop = makeBackstop();
       settleByIdleRule(backstop);
 
+      // `UserPromptSubmit`, `PermissionReplied`, an `AskUserQuestion`
+      // `PostToolUse` — the events `mapHookEventToStatus` reads as `running`.
+      nowMs += MINUTE;
+      backstop.noteActivity("t-1", "turn");
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("is not reopened by a post-turn helper's hook", () => {
+      // Review of PR 455, round 2, finding 2. `SubagentStart`, `SubagentStop`
+      // and an unmatched `PostToolUse` map to no status precisely so a
+      // post-turn helper cannot heal a finished card (#385, `5d33f0c`). They
+      // reach this as `hook`: activity, never a reopen.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      nowMs += 5 * MINUTE;
+      backstop.noteActivity("t-1", "hook");
+      expect(statusOf("t-1")).toBe("finished");
       nowMs += MINUTE;
       backstop.noteActivity("t-1", "hook");
-      expect(statusOf("t-1")).toBe("running");
+      expect(statusOf("t-1")).toBe("finished");
     });
 
     it("is not reopened by more of the same repainting", () => {
@@ -445,29 +465,67 @@ describe("settling a turn whose end nobody reported", () => {
   // ─── Review of PR 455, finding 2: a harness whose hooks work is not judged
   // on its pixels ───
   describe("deferring to a harness that can report itself", () => {
-    it("never settles a long tool call on a hooked harness", () => {
+    /** Paint a spinner frame every second for `ms`, reporting each as a redraw. */
+    const paintFor = (backstop: CoreSessionBackstop, ms: number) => {
+      for (let elapsed = 0; elapsed < ms; elapsed += FRAME_MS) {
+        nowMs += FRAME_MS;
+        backstop.noteActivity("t-1", "redraw");
+      }
+    };
+
+    it("never settles a tool call inside the deference bound", () => {
       // Claude Code installs `PreToolUse` with an `AskUserQuestion` matcher, so
-      // a single `Bash` call emits no hook at all until it completes. Half an
-      // hour of `pnpm build` behind a spinner, on a harness whose hooks are
-      // working perfectly, must not be called over.
+      // a single `Bash` call emits no hook at all until it completes. Ten
+      // minutes of `pnpm build` behind a spinner, on a harness whose hooks are
+      // working, must not be called over — and the eight-minute window would
+      // otherwise reach it at nine.
       insert("t-1", "running");
       const backstop = makeBackstop();
 
       backstop.noteActivity("t-1", "hook");
       nowMs += MINUTE;
       backstop.noteActivity("t-1", "output");
-      for (let minute = 0; minute < 30; minute += 1) {
-        for (let second = 0; second < 60; second += 1) {
-          nowMs += FRAME_MS;
-          backstop.noteActivity("t-1", "redraw");
-        }
+      for (let minute = 0; minute < 13; minute += 1) {
+        paintFor(backstop, MINUTE);
         expect(backstop.sweepOnce()).toEqual([]);
       }
       expect(statusOf("t-1")).toBe("running");
 
-      // And the tool finally completes: `PostToolUse` lands, the count of
-      // output since the last hook resets, and nothing has been lost.
+      // And the tool completes: `PostToolUse` lands, the count of output since
+      // the last hook resets, and the deference starts again from here.
       backstop.noteActivity("t-1", "hook");
+      paintFor(backstop, 5 * MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("settles a dropped Stop on a hooked harness, on the longer clock", () => {
+      // Review of PR 455, round 2, finding 1: the deference used to last
+      // forever, so the second failure #391 names — "a dropped Stop POST" —
+      // was never settled at all. Four hours of spinner read `running`.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+
+      backstop.noteActivity("t-1", "hook");
+      nowMs += MINUTE;
+      backstop.noteActivity("t-1", "output");
+
+      // The turn ends. Its `Stop` drops. The TUI paints on.
+      paintFor(backstop, 13 * MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
+
+      // Past the quarter-hour the deference is bounded at, the screen is the
+      // only evidence left and the rule reads it — two sweeps, as ever.
+      paintFor(backstop, 3 * MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      paintFor(backstop, MINUTE);
+      expect(backstop.sweepOnce()).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
+
+      // And a tool call that really was running for seventeen minutes takes
+      // its finish back the moment it prints.
+      backstop.noteActivity("t-1", "output");
       expect(statusOf("t-1")).toBe("running");
     });
 
@@ -486,6 +544,26 @@ describe("settling a turn whose end nobody reported", () => {
       nowMs += MINUTE;
       expect(backstop.sweepOnce()).toEqual(["t-1"]);
       expect(statusOf("t-1")).toBe("finished");
+    });
+  });
+
+  // The seam `core-entry.ts` keys the activity kind on. It lives in
+  // `harness-hook-events.ts`, which this PR does not touch — so what is pinned
+  // here is the contract the wiring depends on: which events may take a
+  // backstop finish back, and which must never.
+  describe("which hooks are allowed to take a finish back", () => {
+    it("maps a turn's own events to running, and helpers' to nothing", () => {
+      for (const hook_event_name of ["UserPromptSubmit", "beforeSubmitPrompt", "PermissionReplied"]) {
+        expect(mapHookEventToStatus({ hook_event_name })).toBe("running");
+      }
+      for (const hook_event_name of ["SubagentStart", "SubagentStop", "PostToolUse"]) {
+        expect(mapHookEventToStatus({ hook_event_name })).not.toBe("running");
+      }
+      // The one `PostToolUse` that does mean the turn resumed: the operator
+      // answered the question it asked.
+      expect(
+        mapHookEventToStatus({ hook_event_name: "PostToolUse", tool_name: "AskUserQuestion" }),
+      ).toBe("running");
     });
   });
 
@@ -525,9 +603,10 @@ describe("settling a turn whose end nobody reported", () => {
       const watcher = new PtyOutputActivityWatcher();
 
       // Half an hour of a live turn: a spinner every second, and a tool line
-      // nobody has seen before every twenty. Words, not numbers — a line that
-      // differs from the last one only in its digits is a counter, and this
-      // reads counters as the repaints they are (see `pty-output-activity.ts`).
+      // nobody has seen before every twenty. Words, not numbers — not because
+      // a number would fail (since `c0283d9` a digit only reads as a clock on
+      // a line carrying a spinner glyph or an elapsed-time pattern), but so
+      // this test turns on the thing it is about: new content on screen.
       const words = "resolver adapter migration checkout transcript envelope".split(" ");
       for (let second = 0; second < 30 * 60; second += 1) {
         const chunk =

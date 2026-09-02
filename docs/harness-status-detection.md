@@ -167,17 +167,25 @@ five-second burst of PTY output and asks three questions in order:
    exception is a burst with no controls that follows one that repainted: that
    is the tail of a frame, not a new line.
 2. **Do the digits belong to a clock?** Digits are dropped only from a *line*
-   that carries a spinner glyph or an elapsed-time pattern (`1m 12s`, `0:42`),
-   and kept everywhere else — so `Downloading 41.2 MB / 900 MB`, `Compiled 41
-   files` and `Tests 41 passed` stay the changing content they are.
+   that carries a spinner glyph or a duration (`1m 12s`, `2h`), and kept
+   everywhere else — so `Downloading 41.2 MB / 900 MB`, `Compiled 41 files`,
+   `[12:34:07] Compiled 43 files` and `✔ 43 passed` stay the changing content
+   they are. Both halves are deliberately narrow: the glyph set is the braille,
+   sparkle and circle frames a spinner cycles (not ✔ ✗ ❯, which are status
+   marks), and a duration needs its unit letter (`\d+:\d{2}` alone is the
+   wall-clock stamp a build prints in front of every line).
 3. **Is any word new?** What survives — escapes, control bytes and spinner
    glyphs dropped, whitespace collapsed — is the frame's words. The burst is
    `output` when it carries a word the last two bursts (about ten seconds of
    screen) do not already contain, and `redraw` when every word in it was
    already on screen a moment ago. The scan runs from the *end* of the burst,
-   where a TUI puts what is new, and a number is matched whole (`40` is a
-   substring of `(400)`) while a word is matched loosely, so a burst boundary
-   inside `Think`/`ing` is not read as two new words a second.
+   where a TUI puts what is new, and as deep as the memory it is compared
+   against — deep enough to find a line painted above a static footer, and no
+   deeper, since the part that cannot be remembered would otherwise read as
+   new. A number is matched whole (`40` is a substring of `(400)`) while a word
+   is matched loosely, so a burst boundary inside `Think`/`ing` is not read as
+   two new words a second. A burst that erases the display and puts nothing in
+   its place empties the memory: the screen is blank, so the next line is new.
 
 The memory is two bursts and not the whole turn on purpose: a harness that
 reads the same file twice is working, not repainting. A hook is its own kind of
@@ -199,12 +207,19 @@ each is there for a failure that was found rather than imagined:
 - **It applies only to a Session this Core has heard bytes from.** A row it has
   only ever read from the database is judged by the quiet rule alone, since a
   Core that heard no bytes cannot know whether the ones it missed were redraws.
-- **It defers to hooks.** If a Session has printed anything real since its last
-  hook, it is mid-turn and the rule stands down: a single `Bash` call emits no
-  hook until it completes (Claude Code installs `PreToolUse` with an
-  `AskUserQuestion` matcher), so a six-minute build has nothing but its TUI to
-  say so. The rule is for the harness that cannot report itself at all — Codex
-  before `/hooks` has been reviewed.
+- **It defers to hooks, for fifteen minutes.** If a Session has printed
+  anything real since its last hook, it is mid-turn and the rule stands down: a
+  single `Bash` call emits no hook until it completes (Claude Code installs
+  `PreToolUse` with an `AskUserQuestion` matcher), so a six-minute build has
+  nothing but its TUI to say so. The deference is **bounded**, because
+  deferring forever would mean a dropped `Stop` on a harness whose hooks work
+  is never settled at all — the other half of #391. Past the bound the screen
+  is the only evidence left and the rule reads it, so:
+
+  | harness | settles after its last new output |
+  | --- | --- |
+  | never sent a hook (Codex before `/hooks`) | ~9–10 minutes |
+  | hooks arrive, `Stop` dropped | ~16–17 minutes |
 - **It asks twice.** The condition must hold across two consecutive sweeps, one
   minute apart, before a row moves.
 
@@ -213,10 +228,18 @@ Which rule settled a row is in `session-backstop.settled`'s `rule` field.
 ### The idle rule takes its own finish back
 
 A `finished` written by the **idle rule** is marked, and the next `output`-class
-burst or hook on that Session inside half an hour returns the row to `running`
-(`session-backstop.reopened`). Nothing else is marked: an operator's finish, a
-hook's finish and the quiet rule's finish are never reopened by stray bytes, and
-a row anyone else has moved since is left exactly as they left it.
+burst — or a hook the event map reads as `running` — returns the row to
+`running` inside half an hour (`session-backstop.reopened`). Nothing else is
+marked: an operator's finish, a hook's finish and the quiet rule's finish are
+never reopened by stray bytes, and a row anyone else has moved since is left
+exactly as they left it.
+
+Which hooks may reopen is the same seam the pipeline uses, and for the same
+reason: `mapHookEventToStatus` returning `running` (`UserPromptSubmit`,
+`beforeSubmitPrompt`, `PermissionReplied`, an `AskUserQuestion` `PostToolUse`).
+`SubagentStart`, `SubagentStop` and an unmatched `PostToolUse` map to nothing
+precisely so a post-turn helper cannot heal a finished card, and this path does
+not undo that.
 
 This exists because the obvious recovery does not: `harness-hook-events.ts` maps
 only `UserPromptSubmit`, `CursorBeforeSubmitPrompt` and `PermissionReplied` to

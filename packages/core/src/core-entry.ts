@@ -65,6 +65,7 @@ import {
   ensureClaudeShiftEnterBinding,
   type PtyCoreDeps,
 } from "./pty-manager";
+import { mapHookEventToStatus } from "@actana/shared/harness-hook-events";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import {
@@ -266,7 +267,19 @@ async function startCore(): Promise<void> {
       // what keeps the quiet-Session backstop off a turn that is really
       // running (issue 243). Reported as its own kind, because a Session whose
       // hooks arrive is one the idle rule must defer to (issue 391).
-      sessionBackstop?.noteActivity(taskId, "hook");
+      //
+      // Which kind depends on what the event means, and the map that already
+      // knows is the one the pipeline uses. Only an event that maps to
+      // `running` may take a backstop finish back: `SubagentStart`,
+      // `SubagentStop` and an unmatched `PostToolUse` map to nothing exactly
+      // so a post-turn helper cannot heal a finished card (#385), and this
+      // path is not allowed to reopen that door.
+      const meansRunning =
+        mapHookEventToStatus({
+          ...payload,
+          hook_event_name: payload.hook_event_name || eventNameFallback,
+        }) === "running";
+      sessionBackstop?.noteActivity(taskId, meansRunning ? "turn" : "hook");
       return harnessStatus.receiveHook(taskId, payload, eventNameFallback);
     });
   } catch (err) {

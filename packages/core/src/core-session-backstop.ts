@@ -72,15 +72,21 @@
 // So the rule now pays its own bill, three ways.
 //
 //   1. **It takes the finish back.** A `finished` written by the *idle* rule
-//      is marked, and the next `output`-class burst or hook on that Session
-//      returns the row to `running` ({@link IDLE_REOPEN_MS}). Nothing else is
-//      marked, so an operator's finish, a hook's finish and the quiet rule's
-//      finish are never reopened by stray bytes.
-//   2. **It defers to hooks.** A Session whose hooks arrive has a better
-//      witness than its pixels: if it has printed anything real since its last
-//      hook it is mid-turn — a single `Bash` call emits no hook until it
-//      completes — and the idle rule stands down. The rule is for the harness
-//      that cannot report itself at all.
+//      is marked, and the next `output`-class burst — or a hook that means the
+//      turn is running — returns the row to `running`
+//      ({@link IDLE_REOPEN_MS}). Nothing else is marked, so an operator's
+//      finish, a hook's finish and the quiet rule's finish are never reopened
+//      by stray bytes; and a `SubagentStart`, a `SubagentStop` or an unmatched
+//      `PostToolUse` never reopens anything, because a post-turn helper
+//      healing a finished card is the bug #385 closed.
+//   2. **It defers to hooks, for a while.** A Session whose hooks arrive has a
+//      better witness than its pixels: if it has printed anything real since
+//      its last hook it is mid-turn — a single `Bash` call emits no hook until
+//      it completes — and the idle rule stands down. But only for
+//      {@link HOOK_DEFERENCE_MS}: deferring forever would mean a dropped
+//      `Stop` on a hooked harness is never settled at all, which is the other
+//      half of #391. Past the bound the screen is the only evidence left, and
+//      the rule reads it.
 //   3. **It asks twice.** {@link IDLE_SWEEPS_REQUIRED} consecutive sweeps must
 //      agree before a row moves.
 //
@@ -171,6 +177,26 @@ const IDLE_SWEEPS_REQUIRED = 2;
 const IDLE_REOPEN_MS = 30 * 60 * 1000;
 
 /**
+ * How long a hook keeps the idle rule off a Session that has printed something
+ * since it.
+ *
+ * The deference exists because a hooked harness mid-tool-call and a hooked
+ * harness whose `Stop` dropped look identical from here, and settling the
+ * first is the worse mistake. But an unbounded deference settles neither: the
+ * review of PR 455 drove four hours of spinner on a Session whose `Stop` had
+ * dropped and got `running`, which is the second failure #391 names, put back.
+ *
+ * So it is bounded, at the same quarter of an hour the quiet rule already
+ * calls long enough to be over. Under it, a tool call that has printed nothing
+ * new is protected — and it does not need to be protected for long, because
+ * the eight-minute window plus its confirming sweep already clears a
+ * six-minute call with no hook gate at all. Over it, the screen is the only
+ * evidence left and the idle rule reads it, so a dropped `Stop` on a hooked
+ * harness settles at about sixteen minutes rather than never.
+ */
+const HOOK_DEFERENCE_MS = 15 * 60 * 1000;
+
+/**
  * How recently bytes must have arrived for the idle rule to apply at all.
  *
  * The idle rule's whole premise is "the harness is still there, and painting".
@@ -213,19 +239,32 @@ export type CoreSessionBackstopDeps = {
   paintingMs?: number;
   /** Overrides {@link IDLE_REOPEN_MS}. */
   reopenMs?: number;
+  /** Overrides {@link HOOK_DEFERENCE_MS}. */
+  hookDeferenceMs?: number;
   intervalMs?: number;
 };
 
 /**
  * What a Session was heard doing.
  *
- * `hook` is a POST from the harness's own lifecycle hooks — the strongest
- * signal there is, and the one that says this harness *can* report itself.
- * `output` is a burst of PTY output that put something new on screen. `redraw`
- * is a burst that repainted what was already there. Only `redraw` leaves the
- * idle rule's clock running.
+ * `turn` is a hook the harness's own event map reads as the turn running —
+ * `UserPromptSubmit`, `CursorBeforeSubmitPrompt`, `PermissionReplied`, an
+ * `AskUserQuestion` `PostToolUse`. It is the only hook kind that may take back
+ * a finish: `SubagentStart`, `SubagentStop` and an unmatched `PostToolUse` map
+ * to no status precisely so they cannot resurrect a finished card (#385,
+ * `5d33f0c`), and this path must not undo that.
+ *
+ * `hook` is any other accepted hook. It is still activity — it keeps both
+ * rules off — and it is still the evidence that this harness can report
+ * itself; it simply never reopens a row.
+ *
+ * `output` is a burst of PTY output that put something new on screen; it is
+ * activity, and it does reopen an idle-settled row, because new content on
+ * screen is the harness itself saying the turn was not over. `redraw` is a
+ * burst that repainted what was already there, and is the only kind that
+ * leaves the idle rule's clock running.
  */
-export type SessionActivityKind = "hook" | "output" | "redraw";
+export type SessionActivityKind = "turn" | "hook" | "output" | "redraw";
 
 /** What this Core has heard from one Session, and what it made of it. */
 type SessionActivity = {
@@ -279,16 +318,19 @@ export class CoreSessionBackstop {
     // Re-insert so insertion order approximates recency for the cap below.
     this.lastActivity.delete(taskId);
     const progress = kind !== "redraw";
+    const isHook = kind === "hook" || kind === "turn";
+    // Only a hook that means the turn is running, or new content on screen,
+    // may take a finish back. Every other hook is activity and nothing more.
+    const mayReopen = kind === "turn" || kind === "output";
     this.lastActivity.set(taskId, {
       heardAt: now,
       // A redraw is the harness being there, not the turn getting anywhere:
       // it keeps the quiet rule off and leaves the idle rule's clock running.
       outputAt: progress ? now : (prior?.outputAt ?? 0),
-      hookAt: kind === "hook" ? now : (prior?.hookAt ?? 0),
+      hookAt: isHook ? now : (prior?.hookAt ?? 0),
       // A hook resets the count; an `output` burst adds to it. Both are read
       // by the idle rule as "this harness has more to say".
-      outputSinceHook:
-        kind === "hook" ? 0 : (prior?.outputSinceHook ?? 0) + (kind === "output" ? 1 : 0),
+      outputSinceHook: isHook ? 0 : (prior?.outputSinceHook ?? 0) + (kind === "output" ? 1 : 0),
       // Any progress breaks a run of idle sweeps.
       idleSweeps: progress ? 0 : (prior?.idleSweeps ?? 0),
     });
@@ -297,7 +339,7 @@ export class CoreSessionBackstop {
       if (oldest === undefined) break;
       this.lastActivity.delete(oldest);
     }
-    if (progress) this.reopenIfIdleSettled(taskId, now);
+    if (mayReopen) this.reopenIfIdleSettled(taskId, now);
   }
 
   /**
@@ -377,7 +419,14 @@ export class CoreSessionBackstop {
         // if it has printed anything real since its last hook, it is mid-turn
         // and the hook that ends the turn is still coming. A Session that has
         // never had a hook — the case #391 is about — has only its screen.
-        const hooksSpeakForIt = stamps.hookAt > 0 && stamps.outputSinceHook > 0;
+        // ...and only for as long as a tool call could plausibly still be
+        // running. An unbounded deference never settles a dropped `Stop` on a
+        // hooked harness, which is the other half of #391.
+        const hookDeferenceMs = this.deps.hookDeferenceMs ?? HOOK_DEFERENCE_MS;
+        const hooksSpeakForIt =
+          stamps.hookAt > 0 &&
+          stamps.outputSinceHook > 0 &&
+          now - stamps.hookAt < hookDeferenceMs;
         const idleNow = painting && !hooksSpeakForIt && now - lastOutput >= idleMs;
         stamps.idleSweeps = idleNow ? stamps.idleSweeps + 1 : 0;
         if (stamps.idleSweeps < IDLE_SWEEPS_REQUIRED) continue;
