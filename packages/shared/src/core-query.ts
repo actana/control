@@ -208,6 +208,60 @@ export function queryActiveTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[
 }
 
 /**
+ * Every `ready` task on this Core that a PTY was once spawned for (issue 387).
+ *
+ * `ready` is the status a Session is born in, so it cannot be swept on the
+ * strength of the status alone: a Session the operator created and has not
+ * started yet is `ready`, has no process, and is correctly `ready` — flipping
+ * it to `disconnected` on every Core restart would make a whole queue of
+ * unstarted work look like it had died.
+ *
+ * What separates the two is whether this Core ever spawned a PTY for the row.
+ * A bare Session — one started with no prompt, sitting on "Waiting for initial
+ * prompt…" — spawns its harness immediately and stays `ready` until the first
+ * `UserPromptSubmit`, so no hook ever fires for it and no status writer ever
+ * touches it. Kill the Core under it and nothing comes back: the boot sweep's
+ * `running` / `needs-input` filter never saw it, and the row outlived a
+ * container recreate still claiming to be waiting for a prompt that nothing
+ * was left to read. That is the zombie this query finds.
+ *
+ * The evidence is the `pty:spawn` the Core appended when it started the
+ * harness. It is read from the event log rather than the task row because the
+ * row records no such thing — there is no "was started" column, and the
+ * harness session id stays `null` precisely in the bare case, where no hook
+ * ever arrives to set it.
+ *
+ * Archived rows are included and no project filter applies, for the same
+ * reasons as {@link queryActiveTasks}. A log whose `pty:spawn` has aged out
+ * answers nothing for that row, which fails toward leaving it alone. Returns
+ * an empty array when either table is absent.
+ */
+export function queryStrandedReadyTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[] {
+  let rows: TaskRow[];
+  try {
+    rows = sqlite
+      .prepare(
+        `SELECT t.id AS id, t.project_id AS project_id, t.title AS title,
+                t.title_manually_set AS title_manually_set,
+                t.claude_session_id AS claude_session_id, t.agent AS agent,
+                t.status AS status, t.pinned AS pinned, t.archived AS archived,
+                t.icon AS icon, t.updated_at AS updated_at
+         FROM tasks t
+         WHERE t.status = 'ready'
+           AND EXISTS (
+             SELECT 1 FROM event_log e
+             WHERE e.task_id = t.id AND e.kind = 'pty:spawn'
+           )
+         ORDER BY t.updated_at DESC`,
+      )
+      .all() as TaskRow[];
+  } catch {
+    return [];
+  }
+  return rows.map(taskRowToSnapshot);
+}
+
+/**
  * How many archived tasks this Core holds, optionally scoped to one project.
  *
  * The Panel needs this number continuously — it gates the Archived tab, labels

@@ -95,6 +95,7 @@ import {
   disposeCoreQueryStore,
   coreQueryStore,
   listActiveTasks,
+  listBootSweepTasks,
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
@@ -236,7 +237,11 @@ async function startCore(): Promise<void> {
   // them. Swept here: after the writer exists (each settle appends the event a
   // Panel re-renders from) and before the PTY core, the hook receiver or the
   // core-link server can produce a Session of THIS run that would be in scope.
-  sweepStrandedSessions({ listActiveTasks, writer: taskWriter });
+  //
+  // `listBootSweepTasks` widens that read by the one class of orphan the
+  // status filter could never see: a bare Session left on `ready`, whose PTY
+  // spawned and died without a single hook ever firing for it (issue 387).
+  sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer: taskWriter });
 
   const titleGenerator = new CoreTitleGenerator({ writer: taskWriter });
   const harnessStatus = new CoreHarnessStatus({
