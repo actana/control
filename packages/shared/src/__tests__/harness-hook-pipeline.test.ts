@@ -206,3 +206,72 @@ describe("in-turn subagents hold the finish", () => {
     expect(h.task.status).toBe("finished");
   });
 });
+
+describe("a PTY exit settles a Session that never started a turn (issue 387)", () => {
+  // The live zombie this pins: a bare Session on `ready`, PTY spawned, no
+  // prompt ever submitted — so no hook ever fired for it, and no Stop was
+  // ever coming. Before this, the exit settle skipped `ready` and the row
+  // went on saying "Waiting for initial prompt…" hours after its process died.
+  const EXITED = "MissionControlSessionEnded";
+
+  it("settles a ready Session to disconnected when its PTY dies badly", () => {
+    const h = harness();
+    expect(h.task.status).toBe("ready");
+
+    h.post({ hook_event_name: EXITED, exit_code: 1 });
+
+    // Not `terminated`: nothing was killed mid-turn, because there was no
+    // turn. All that is known is that the process went away.
+    expect(h.task.status).toBe("disconnected");
+    expect(h.writes).toEqual(["disconnected"]);
+  });
+
+  it("settles a ready Session to disconnected on a clean exit too", () => {
+    // Not `finished`. That transition is what `CoreTaskWriter` appends
+    // `session:finished` on, and a Session that never ran a turn must not ring
+    // a completion ding — the boot sweep settles the same Session silently.
+    const h = harness();
+    h.post({ hook_event_name: EXITED, exit_code: 0 });
+    expect(h.task.status).toBe("disconnected");
+    expect(h.writes).toEqual(["disconnected"]);
+  });
+
+  it("settles without a Stop hook ever arriving", () => {
+    const h = harness();
+    // The whole point: the Session is spawned and left alone. Nothing but the
+    // exit is ever posted, and the row still moves off `ready`.
+    h.post({ hook_event_name: "SessionStart", source: "startup" });
+    expect(h.task.status).toBe("ready");
+
+    h.post({ hook_event_name: EXITED, exit_code: 143 });
+    expect(h.task.status).toBe("disconnected");
+  });
+
+  it("keeps the running/needs-input settle on its own scale", () => {
+    // `terminated` still means a turn that was killed — widening `ready` must
+    // not have widened this.
+    const running = harness();
+    running.post({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+    running.post({ hook_event_name: EXITED, exit_code: 1 });
+    expect(running.task.status).toBe("terminated");
+
+    const waiting = harness();
+    waiting.post({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+    waiting.post({ hook_event_name: "Notification", notification_type: "permission_prompt" });
+    expect(waiting.task.status).toBe("needs-input");
+    waiting.post({ hook_event_name: EXITED, exit_code: 0 });
+    expect(waiting.task.status).toBe("finished");
+  });
+
+  it("still leaves an already-settled Session exactly as it settled", () => {
+    const h = harness();
+    h.post({ hook_event_name: "UserPromptSubmit", prompt: "go" });
+    h.post({ hook_event_name: "Stop" });
+    expect(h.task.status).toBe("finished");
+
+    h.post({ hook_event_name: EXITED, exit_code: 1 });
+    // The exit of an idle session is not news, and must not overwrite the
+    // finish that was actually reported.
+    expect(h.task.status).toBe("finished");
+  });
+});

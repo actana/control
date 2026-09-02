@@ -212,6 +212,40 @@ describe("harnessLaunchMode", () => {
     ).toBe("resume");
   });
 
+  it("starts Claude Code fresh until a session id is captured (issue 387)", () => {
+    // The bare Session issue 387 settles: never prompted, so no hook ever
+    // captured an id for it, and the settle moved it off `ready`. Resuming
+    // would be `claude --resume` into a conversation that never existed.
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "claude-code",
+        status: "disconnected",
+        claudeSessionId: null,
+      } satisfies Task),
+    ).toBe("new");
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "claude-code",
+        status: "finished",
+        claudeSessionId: null,
+      } satisfies Task),
+    ).toBe("new");
+    // A Session that did have a turn still resumes off its captured id, and a
+    // fresh one still starts new — neither half of the gate moved.
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "claude-code",
+        status: "disconnected",
+      } satisfies Task),
+    ).toBe("resume");
+    expect(
+      harnessLaunchMode({ ...baseTask, agent: "claude-code", status: "ready" } satisfies Task),
+    ).toBe("new");
+  });
+
   it("starts OpenCode fresh until a ses_* id is captured", () => {
     expect(
       harnessLaunchMode({

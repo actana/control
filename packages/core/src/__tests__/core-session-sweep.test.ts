@@ -12,7 +12,7 @@ import {
   configureCoreQueryStore,
   coreQueryStore,
   disposeCoreQueryStore,
-  listActiveTasks,
+  listBootSweepTasks,
 } from "../core-query-store";
 import {
   appendEvent,
@@ -50,6 +50,19 @@ describe("settling the Sessions a Core restart stranded", () => {
     }
   };
   const statusOf = (taskId: string) => coreQueryStore.getTask(taskId)?.status;
+  /**
+   * The `pty:spawn` the Core appends when it starts a harness for a task, in
+   * the shape `recordPtySpawn` writes — `shellSession` included, because the
+   * sweep's evidence query reads it.
+   */
+  const spawnPty = (taskId: string) => {
+    const ptyId = `pty-${taskId}`;
+    return appendEvent(
+      "pty:spawn",
+      JSON.stringify({ ptyId, taskId, shellSession: false }),
+      { ptyId, taskId },
+    );
+  };
 
   beforeEach(() => {
     userDataDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-session-sweep-"));
@@ -81,7 +94,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-running", "running");
     insert("t-waiting", "needs-input");
 
-    const settled = sweepStrandedSessions({ listActiveTasks, writer });
+    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
 
     expect(settled.sort()).toEqual(["t-running", "t-waiting"]);
     expect(statusOf("t-running")).toBe("disconnected");
@@ -93,17 +106,64 @@ describe("settling the Sessions a Core restart stranded", () => {
     // claim about work whose end was actually reported.
     insert("t-finished", "finished");
     insert("t-interrupted", "interrupted");
+    // A Session the operator created and has not started: `ready`, no PTY, no
+    // `pty:spawn` behind it. Issue 387 widened the sweep to `ready`, and this
+    // row is the reason that widening is evidence-gated rather than a status
+    // filter — a queue of unstarted work must not read as a fleet of deaths.
     insert("t-ready", "ready");
 
-    expect(sweepStrandedSessions({ listActiveTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
     expect(statusOf("t-finished")).toBe("finished");
     expect(statusOf("t-interrupted")).toBe("interrupted");
     expect(statusOf("t-ready")).toBe("ready");
   });
 
+  it("sweeps the bare Session a dead PTY left on ready (issue 387)", () => {
+    // The live pairdemo zombie: spawned before a container recreate, never
+    // prompted, so `running` / `needs-input` never described it and no Stop
+    // was ever going to arrive. It outlived the recreate on the old filter.
+    insert("t-zombie", "ready");
+    spawnPty("t-zombie");
+    insert("t-unstarted", "ready");
+
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([
+      "t-zombie",
+    ]);
+    expect(statusOf("t-zombie")).toBe("disconnected");
+    expect(statusOf("t-unstarted")).toBe("ready");
+  });
+
+  it("sweeps a leftover ready row alongside the rows that claim to be working", () => {
+    insert("t-running", "running");
+    insert("t-zombie", "ready");
+    spawnPty("t-zombie");
+
+    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
+
+    expect(settled.sort()).toEqual(["t-running", "t-zombie"]);
+    expect(statusOf("t-running")).toBe("disconnected");
+    expect(statusOf("t-zombie")).toBe("disconnected");
+  });
+
+  it("settles a swept ready row without claiming its work finished", () => {
+    insert("t-zombie", "ready");
+    spawnPty("t-zombie");
+    const before = getLastEventId();
+
+    sweepStrandedSessions({ listBootSweepTasks, writer });
+
+    const appended = readEventTail(before, 100);
+    expect(appended.filter((e) => e.kind === "task:updated").map((e) => e.taskId)).toEqual([
+      "t-zombie",
+    ]);
+    // Nobody knows how that Session would have ended — no ding rides out.
+    expect(appended.map((e) => e.kind)).not.toContain("session:finished");
+  });
+
   it("sweeps an archived row too — it is the same stale row, one tab away", () => {
     insert("t-archived", "running", true);
-    expect(sweepStrandedSessions({ listActiveTasks, writer })).toEqual(["t-archived"]);
+    const settled = sweepStrandedSessions({ listBootSweepTasks, writer });
+    expect(settled).toEqual(["t-archived"]);
     expect(statusOf("t-archived")).toBe("disconnected");
   });
 
@@ -111,7 +171,7 @@ describe("settling the Sessions a Core restart stranded", () => {
     insert("t-running", "running");
     const before = getLastEventId();
 
-    sweepStrandedSessions({ listActiveTasks, writer });
+    sweepStrandedSessions({ listBootSweepTasks, writer });
 
     const appended = readEventTail(before, 100);
     const updates = appended.filter((e) => e.kind === "task:updated");
@@ -123,10 +183,10 @@ describe("settling the Sessions a Core restart stranded", () => {
 
   it("is a no-op on the second boot, because the first one settled everything", () => {
     insert("t-running", "running");
-    sweepStrandedSessions({ listActiveTasks, writer });
+    sweepStrandedSessions({ listBootSweepTasks, writer });
     const after = getLastEventId();
 
-    expect(sweepStrandedSessions({ listActiveTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
     expect(getLastEventId()).toBe(after);
   });
 
@@ -150,14 +210,14 @@ describe("settling the Sessions a Core restart stranded", () => {
       eventLog: { appendEvent, getLastEventId, readEventTail },
     });
 
-    expect(sweepStrandedSessions({ listActiveTasks, writer: failing })).toEqual(["t-b"]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer: failing })).toEqual(["t-b"]);
     expect(statusOf("t-b")).toBe("disconnected");
     expect(statusOf("t-a")).toBe("running");
   });
 
   it("sweeps nothing, and says nothing, on a Core with no stranded rows", () => {
     const before = getLastEventId();
-    expect(sweepStrandedSessions({ listActiveTasks, writer })).toEqual([]);
+    expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
     expect(getLastEventId()).toBe(before);
   });
 });

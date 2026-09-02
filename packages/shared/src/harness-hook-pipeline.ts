@@ -248,6 +248,28 @@ export function handleHarnessHookEvent(
   // showing active work is wrong — settle it by exit code. Tasks already in a
   // settled state (finished, interrupted, …) keep it: the exit of an idle
   // session isn't news. Dead process ⇒ its subagents died with it.
+  //
+  // `ready` is in scope too (issue 387), and it is the one status here that
+  // does not describe work in progress. It describes a Session that has not
+  // started one — a bare Session sitting on "Waiting for initial prompt…",
+  // whose harness is up and whose first `UserPromptSubmit` has not arrived.
+  // Nothing else settles it: no hook ever fired for that Session, so there is
+  // no Stop to wait for, and the boot sweep's status filter did not see it
+  // either. Left out, its row goes on claiming to be waiting for a prompt for
+  // as long as the database exists — a zombie found alive on a Core hours
+  // after its PTY died, and still there after the container was recreated.
+  //
+  // It settles on a scale of its own: `disconnected`, whatever the exit code.
+  // Neither of the other two answers is true of a Session that never ran a
+  // turn. `terminated` says a turn was killed. `finished` says work completed,
+  // and it is not just a label — `CoreTaskWriter` appends `session:finished`
+  // on exactly that transition, so an operator who opens a bare Session and
+  // types `/exit` would get a completion ding for a Session still titled
+  // "Waiting for initial prompt…". `disconnected` claims only that the process
+  // went away, which is the whole of what is known. #387's acceptance allows
+  // either ("disconnected or finished"); this is the one that agrees with the
+  // boot sweep, which settles the same Session with the same reasoning and
+  // deliberately raises no notification.
   if (event === HARNESS_HOOK_EVENTS.sessionProcessExited) {
     clearSubagentActivity(taskId);
     // No re-invocation can follow a dead process: laggard subagent POSTs still
@@ -255,6 +277,8 @@ export function handleHarnessHookEvent(
     clearTaskFinished(taskId);
     if (task.status === "running" || task.status === "needs-input") {
       ports.updateStatus(taskId, payload.exit_code === 0 ? "finished" : "terminated");
+    } else if (task.status === "ready") {
+      ports.updateStatus(taskId, "disconnected");
     }
     // No `status` on the result: the settle is conditional, and a host that
     // echoed one would be claiming a transition that may not have happened.
