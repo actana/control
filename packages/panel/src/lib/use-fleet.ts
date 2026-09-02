@@ -7,11 +7,8 @@ import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
 import {
-  emptyTaskCounts,
-  fleetProjectKey,
   projectPresentationById,
   projectRowFromSnapshot,
-  taskCountsByFleetProject,
   type ProjectWithCounts,
 } from "~/shared/projects";
 import type { ProjectPresentation } from "~/db/schema";
@@ -392,23 +389,17 @@ export function useCoreTasks(
  * remembers — and it re-reads when a Core says a pin changed, so two Panels on
  * one Core agree.
  *
- * Each row's `taskCounts` — the rail's activity dot — is joined on from the
- * Fleet fan-out's settled rows rather than counted separately, so the dot and
- * the Fleet row for the same project are two readings of one snapshot and
- * cannot disagree (#389).
+ * The rail's activity dot is `taskCounts`, and a Core-owned pin has no Panel
+ * row to count, so every dot here is dark. That is issue #377's, and PR #457
+ * derives them from Core task snapshots on top of the coalescing loop below —
+ * at which point they settle correctly mid-refresh for free (#389 acceptance 2).
  */
 export function useRemotePinnedProjects(): {
   projects: ProjectWithCounts[];
   refresh: () => void;
 } {
   const bridge = getPanelBridge();
-  // The rail's activity dot is `taskCounts`, and a Core-owned pin has no Panel
-  // row to count — so the counts come from the same *kind* of read the Fleet
-  // row does, settled together, rather than from a separate tally that can
-  // disagree with the row it stands for (#389). This is a second `useFleetTasks`
-  // instance, so a page showing both the rail and Fleet fans out twice; the
-  // alternative is a dot that is dark whatever the Core is doing.
-  const { fleet, cores } = useFleetTasks();
+  const { cores } = useCores();
   const [pinned, setPinned] = useState<ProjectWithCounts[]>([]);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
@@ -471,19 +462,6 @@ export function useRemotePinnedProjects(): {
     };
   }, [bridge, coreIds]);
 
-  // Join the pins onto the fleet's counts. `projectRowFromSnapshot` has no
-  // answer for task counts — a project snapshot carries no tasks — so without
-  // this every Core-owned pin renders a permanently dark dot, and the one
-  // event that would have lit it is the one the refresh used to drop.
-  const projects = useMemo(() => {
-    const counts = taskCountsByFleetProject(fleet.rows);
-    return pinned.map((project) => ({
-      ...project,
-      taskCounts:
-        counts.get(fleetProjectKey(project.coreId ?? "", project.id)) ?? emptyTaskCounts(),
-    }));
-  }, [pinned, fleet.rows]);
-
-  return { projects, refresh };
+  return { projects: pinned, refresh };
 }
 

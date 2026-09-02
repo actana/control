@@ -14,7 +14,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
-import { mergeFleetTasks } from "~/shared/fleet-merge";
 
 const CORE_ID = "core-a";
 const PROJECT_ID = "project-1";
@@ -25,10 +24,8 @@ const h = vi.hoisted(() => ({
   /** One entry per in-flight `listTasks`, oldest first. */
   inFlight: [] as { settle: () => void }[],
   listTasksCalls: 0,
-  listProjectsCalls: 0,
   /** What the Core would answer *right now*. Mutated by the tests. */
   tasks: [] as CoreLinkTaskSnapshot[],
-  pinned: true,
 }));
 
 function task(taskId: string, status: string): CoreLinkTaskSnapshot {
@@ -62,7 +59,6 @@ vi.mock("~/lib/api", () => ({
         },
       ],
     }),
-    listProjectPresentation: async () => ({ presentation: [] }),
   },
 }));
 
@@ -77,25 +73,6 @@ const bridge = {
   },
   onDialStatus: () => () => {},
   onConnectionChange: () => () => {},
-  listProjects: async () => {
-    h.listProjectsCalls++;
-    return [
-      {
-        projectId: PROJECT_ID,
-        name: "Control",
-        path: "/srv/control",
-        icon: "CO",
-        iconColor: "#888888",
-        pinned: h.pinned,
-        rememberHarnessSettings: false,
-        savedHarness: null,
-        savedSkipPermissions: false,
-        savedBareSession: false,
-        defaultGridView: false,
-        updatedAt: 1_000,
-      },
-    ];
-  },
   // Held open until the test says so: the whole bug lives in this window.
   listTasks: () => {
     h.listTasksCalls++;
@@ -108,8 +85,7 @@ const bridge = {
 
 vi.mock("~/lib/panel-bridge", () => ({ getPanelBridge: () => bridge }));
 
-const { useFleetTasks, useRemotePinnedProjects } = await import("~/lib/use-fleet");
-const { fleetProjectKey, taskCountsByFleetProject } = await import("~/shared/projects");
+const { useFleetTasks } = await import("~/lib/use-fleet");
 
 /** Let the oldest held `listTasks` answer, with the Core's current rows. */
 async function settleOldestRead(): Promise<void> {
@@ -140,9 +116,7 @@ beforeEach(() => {
   h.eventHandlers.clear();
   h.inFlight = [];
   h.listTasksCalls = 0;
-  h.listProjectsCalls = 0;
   h.tasks = [task("task-1", "running")];
-  h.pinned = true;
 });
 
 afterEach(() => {
@@ -232,71 +206,5 @@ describe("useFleetTasks — a finish that lands during an in-flight refresh", ()
     await waitFor(() => expect(h.listTasksCalls).toBe(3));
     await settleOldestRead();
     expect(h.listTasksCalls).toBe(3);
-  });
-});
-
-describe("useRemotePinnedProjects — pin activity dots", () => {
-  it("counts a pinned project from the same settled fan-out the row came from", async () => {
-    const { result } = renderHook(() => useRemotePinnedProjects());
-
-    await waitForRead(1);
-    await settleOldestRead();
-    await waitFor(() => expect(result.current.projects).toHaveLength(1));
-    // Running work lights the dot: the counts are the fan-out's, not zeroes.
-    await waitFor(() => expect(result.current.projects[0]?.taskCounts.running).toBe(1));
-    expect(result.current.projects[0]?.taskCounts.activeNonDone).toBe(1);
-
-    // The same mid-refresh finish, seen from the rail.
-    await emit("task:updated");
-    await waitForRead(2);
-    h.tasks = [task("task-1", "finished")];
-    await emit("session:finished");
-    await settleOldestRead();
-    await waitFor(() => expect(h.listTasksCalls).toBe(3));
-    await settleOldestRead();
-
-    await waitFor(() => expect(result.current.projects[0]?.taskCounts.finished).toBe(1));
-    const counts = result.current.projects[0]!.taskCounts;
-    expect(counts.running).toBe(0);
-    expect(counts.activeNonDone).toBe(0);
-    expect(counts.total).toBe(1);
-  });
-});
-
-describe("taskCountsByFleetProject", () => {
-  it("tallies exactly the rows mergeFleetTasks settled on", () => {
-    const rows = mergeFleetTasks([
-      {
-        coreId: CORE_ID,
-        coreLabel: "Warehouse VM",
-        ok: true,
-        lastSeenAt: 1_000,
-        tasks: [
-          task("task-1", "finished"),
-          task("task-2", "running"),
-          task("task-3", "needs-input"),
-          { ...task("task-4", "running"), archived: true },
-        ],
-      },
-    ]).rows;
-
-    const counts = taskCountsByFleetProject(rows);
-    const forProject = counts.get(fleetProjectKey(CORE_ID, PROJECT_ID));
-
-    // The archived row is not in `rows`, so it is not in the counts either.
-    expect(forProject?.total).toBe(rows.length);
-    expect(forProject?.finished).toBe(1);
-    expect(forProject?.running).toBe(1);
-    expect(forProject?.["needs-input"]).toBe(1);
-    expect(forProject?.activeNonDone).toBe(2);
-  });
-
-  it("keys by Core so two Cores sharing a project id do not merge", () => {
-    const counts = taskCountsByFleetProject([
-      { coreId: "core-a", projectId: PROJECT_ID, status: "running" },
-      { coreId: "core-b", projectId: PROJECT_ID, status: "running" },
-    ]);
-    expect(counts.get(fleetProjectKey("core-a", PROJECT_ID))?.running).toBe(1);
-    expect(counts.get(fleetProjectKey("core-b", PROJECT_ID))?.running).toBe(1);
   });
 });
