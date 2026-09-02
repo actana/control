@@ -161,6 +161,21 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(kinds()).toContain("session:finished");
   });
 
+  it("finishes on a Stop whose session id is not the stored one (issue 390)", async () => {
+    // The operator-visible miss: a resumed harness (or an OpenCode child whose
+    // idle leaked past the plugin's filter) posts its Stop under a session id
+    // this task never captured. It used to be acked as `foreign-session` and
+    // dropped before any status write, so the card stayed on `running` and the
+    // notification consumer never heard a thing.
+    await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+    expect(rowStatus()).toBe("running");
+
+    await postHook({ hook_event_name: "Stop", session_id: "sess-2-after-resume" });
+
+    expect(rowStatus()).toBe("finished");
+    expect(kinds()).toContain("session:finished");
+  });
+
   it("holds the finish while a background subagent is still working", async () => {
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
     await postHook({

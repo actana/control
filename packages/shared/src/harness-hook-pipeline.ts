@@ -119,6 +119,20 @@ function isSubagentLifecycleEvent(event: string): boolean {
   );
 }
 
+/**
+ * The turn-end family: every event whose mapping is `finished`. Named apart
+ * from that mapping because the foreign-session branch below has to recognise
+ * a turn end BEFORE any status is written, and reading the mapping there would
+ * make every future `finished` mapping a foreign settle by accident.
+ */
+function isTurnEndEvent(event: string): boolean {
+  return (
+    event === HARNESS_HOOK_EVENTS.stop ||
+    event === HARNESS_HOOK_EVENTS.cursorStop ||
+    event === HARNESS_HOOK_EVENTS.cursorAfterAgentResponse
+  );
+}
+
 function reconcileSessionId(
   task: HookTaskFacts,
   taskId: string,
@@ -184,7 +198,35 @@ export function handleHarnessHookEvent(
       clearSubagentActivity(id);
     },
   });
-  if (sessionResult === "foreign-session") return { outcome: "foreign-session", event };
+  if (sessionResult === "foreign-session") {
+    // A turn end is the one foreign event that must not be dropped (issue 390).
+    //
+    // Everything else the guard rejects is an event that would CLAIM the task
+    // for a session it does not own — a question overlay, a subagent count, a
+    // `running` from a stranger's prompt — and dropping those is the whole
+    // point of the guard. A `Stop` claims nothing. It reports that a turn
+    // ended, and the task it reports about is not in question: the hook was
+    // addressed by task id, out of the PTY's own environment, so the PTY that
+    // posted this belongs to this task whatever the harness calls its session.
+    //
+    // Dropping it was still an ack — `{ ok: true, ignored: "foreign-session" }`
+    // — so the harness saw its hook accepted, the card stayed on `running`, and
+    // no `session:finished` ever fired. Nothing else was coming: the session id
+    // is only re-captured by `UserPromptSubmit`/`SessionStart`, and a resumed
+    // harness that already submitted its prompt fires neither again. That is
+    // the operator-visible miss, and it is worse than any settle: an ack for a
+    // hook that changed nothing is indistinguishable, from the harness side,
+    // from one that worked.
+    //
+    // Two shapes reach here. A RESUME — the harness came back with a new
+    // session id and the stored one belongs to a process that is gone — where
+    // the settle is simply correct. And an OPENCODE CHILD, whose `session.idle`
+    // leaked past the plugin's own parent/child filter; there the parent may
+    // still be working, which is why the settle below is the conservative one
+    // rather than a plain fall-through into the status write.
+    if (!isTurnEndEvent(event)) return { outcome: "foreign-session", event };
+    return settleForeignTurnEnd(taskId, task, event, ports);
+  }
 
   // Sub-agent lifecycle bookkeeping. Claude fires the top-level Stop when the
   // FOREGROUND turn ends — background subagents keep running, then their
@@ -364,6 +406,51 @@ export function hookResultResponse(result: HookPipelineResult): {
           : { ok: true, event: result.event },
       };
   }
+}
+
+/**
+ * Settle a task on a turn end that arrived under a session id this task never
+ * captured. Deliberately narrower than the matching-session path, in the two
+ * places where a foreign turn end is weaker evidence than an owned one:
+ *
+ *  - **Only a task still claiming active work is settled.** `running` and
+ *    `needs-input` are the statuses that go on being wrong until something
+ *    corrects them, and they are the same pair the PTY-exit settle acts on.
+ *    Every other status is an answer already given, and a `Stop` from a
+ *    session this task never captured is the weakest evidence there is for
+ *    overwriting one. `ready` is excluded for the reason #387 spelled out:
+ *    `CoreTaskWriter` appends `session:finished` on that transition, so a
+ *    stray child's turn end would ding a Session still titled "Waiting for
+ *    initial prompt…" — a Session that never ran a turn to end.
+ *  - **The subagent hold still applies.** Work this pipeline can see in flight
+ *    outranks a turn end from anywhere, so a foreign `Stop` over a live
+ *    fan-out holds on `running` and arms the same drain backstop a matching
+ *    one would, rather than dinging mid-work.
+ *
+ * The session id is NOT captured here. A `Stop` is not a capture event, and
+ * adopting an OpenCode child's id would hand the rest of that child's
+ * lifecycle the Session's card.
+ */
+function settleForeignTurnEnd(
+  taskId: string,
+  task: HookTaskFacts,
+  event: string,
+  ports: HookPipelinePorts,
+): HookPipelineResult {
+  if (task.status !== "running" && task.status !== "needs-input") {
+    // No `status` on the result, for the reason the exit settle gives: the
+    // settle is conditional, and echoing one would claim a transition that did
+    // not happen. The outcome is still `ok` — the hook was understood.
+    return { outcome: "ok", event };
+  }
+  if (hasActiveSubagents(taskId)) {
+    ports.updateStatus(taskId, "running");
+    armDeferredFinish(taskId, (id) => finishQuietTask(id, ports));
+    return { outcome: "ok", event };
+  }
+  if (!ports.updateStatus(taskId, "finished")) return { outcome: "task-not-found", event };
+  noteTaskFinished(taskId);
+  return { outcome: "ok", event, status: "finished" };
 }
 
 /**

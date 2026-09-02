@@ -159,6 +159,42 @@ notifications as `needs-input` creates false positives that later flip to
 These values were tuned against the failure modes above. Do not change them
 without a failure that says so.
 
+### The session-id guard, and the one event it does not drop
+
+A hook is addressed by **task id**, read out of the PTY's own environment. The
+`session_id` in the payload is a second, weaker fact: the harness's own name for
+the conversation. The pipeline stores the first one it sees on a *capture* event
+(`UserPromptSubmit`, `SessionStart`, and their Cursor spellings) and, from then
+on, drops any non-capture event carrying a different id — a `foreign-session`.
+That is what stops a stranger's question, subagent count or permission prompt
+from claiming a card it does not own, and a capture event is still free to adopt
+a new id, because a new session id means a new harness process.
+
+**A turn end is the exception** (#390). `Stop` — and Cursor's `stop` and
+`afterAgentResponse` — claims nothing; it reports that a turn ended, on a PTY
+that is this task's whatever the harness calls its session. Two shapes produce
+one under an unrecognised id: a **resume**, where the stored id belongs to a
+process that is gone and no further capture event is coming, and an **OpenCode
+child** whose `session.idle` leaked past the plugin's parent/child filter.
+Dropping it was still an *ack* — `{ ok: true, ignored: "foreign-session" }` — so
+the harness saw its hook accepted while the card sat on `running` and no
+`session:finished` ever fired.
+
+So a foreign turn end settles the task instead, on terms narrower than an owned
+one's:
+
+- **Only `running` and `needs-input` are settled** — the same pair the PTY-exit
+  settle acts on. Every other status is an answer already given. `ready` is
+  excluded for #387's reason: `CoreTaskWriter` appends `session:finished` on
+  that transition, and a Session titled "Waiting for initial prompt…" has no
+  turn to end.
+- **The subagent hold still applies.** A foreign `Stop` over a live fan-out
+  holds on `running` and arms the same drain backstop, rather than dinging
+  mid-work.
+- **The session id is not captured.** A `Stop` is not a capture event; adopting
+  an OpenCode child's id would hand the rest of that child's lifecycle the
+  Session's card.
+
 ## The hook receiver
 
 The Core exposes a small **loopback HTTP** listener a hook's shell command can
@@ -515,7 +551,11 @@ Three details are load-bearing and none of them is guessable from the docs:
   Nothing awaits the queue, so a hook still never holds up a turn.
 - **A child session is a subagent.** `session.created` carries `parentID`, so
   the plugin knows a child by name rather than guessing from ordering, and a
-  subagent's `idle` never settles the Session's card.
+  subagent's `idle` never settles the Session's card. Filtering it at the
+  source is the point: one that leaks through — a child created before the
+  plugin loaded — reaches the Core as a `Stop` under an unrecognised session
+  id, which now settles rather than being dropped (see the session-id guard
+  above), held back only by the subagent bookkeeping OpenCode does not feed.
 
 `permission.replied` is also why opencode needs no unmatched `PostToolUse`
 subscription: Claude Code fires nothing when a permission is *granted* and has
