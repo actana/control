@@ -214,6 +214,82 @@ describe("a reload keeps the same user terminal on the same project (issue 394)"
     await waitFor(() => expect(readIdentityMap()).toEqual({}));
   });
 
+  it("still restores when the operator navigates while the list is in flight", async () => {
+    // The regression this pins: the restore ran once per app run and threw its
+    // answer away if the scope changed first, latching the guard on. Landing on
+    // one project on a cold Panel and clicking another before the list answers
+    // then left every scope empty, with no retry — the very symptom #394 is
+    // about. Restore is decided by each row's identity, not by the scope that
+    // happened to be current when the request went out, so a navigation
+    // mid-flight cannot change the right answer.
+    window.localStorage.setItem(
+      IDENTITY_STORAGE_KEY,
+      JSON.stringify({
+        t1: { scopeKey: PROJECT_SCOPE, coreId: "core_a", kind: "vm-shell", cwd: "" },
+      }),
+    );
+    let answer: (value: { terminals: UserTerminal[] }) => void = () => {};
+    listHomeTerminals.mockReturnValue(
+      new Promise<{ terminals: UserTerminal[] }>((resolve) => {
+        answer = resolve;
+      }),
+    );
+
+    const view = await loadOnProject();
+    await waitFor(() => expect(listHomeTerminals).toHaveBeenCalledTimes(1));
+    // Navigate away while the request is still open.
+    await act(async () => {
+      view.result.current.setProject(OTHER_PROJECT, "core_a");
+    });
+    await act(async () => {
+      answer({ terminals: [row("t1")] });
+    });
+
+    await waitFor(() =>
+      expect(view.result.current.sessionsByScope[PROJECT_SCOPE]).toHaveLength(1),
+    );
+    const restored = view.result.current.sessionsByScope[PROJECT_SCOPE]![0]!;
+    expect(restored.terminal.id).toBe("t1");
+    expect(restored.kind).toBe("vm-shell");
+    // Still one list call: the answer was used, not discarded and re-requested.
+    expect(listHomeTerminals).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps both when a terminal is opened before the list answers", async () => {
+    window.localStorage.setItem(
+      IDENTITY_STORAGE_KEY,
+      JSON.stringify({
+        before: { scopeKey: PROJECT_SCOPE, coreId: "core_a", kind: "vm-shell", cwd: "" },
+      }),
+    );
+    let answer: (value: { terminals: UserTerminal[] }) => void = () => {};
+    listHomeTerminals.mockReturnValue(
+      new Promise<{ terminals: UserTerminal[] }>((resolve) => {
+        answer = resolve;
+      }),
+    );
+    createHomeTerminal.mockImplementation(async () => ({ terminal: row("opened") }));
+
+    const view = await loadOnProject();
+    await act(async () => {
+      await view.result.current.createVmShellTerminal("core_a");
+    });
+    await act(async () => {
+      answer({ terminals: [row("before")] });
+    });
+
+    // The pre-reload terminal joins the one just opened rather than the whole
+    // bucket being skipped because it was no longer empty.
+    await waitFor(() => expect(view.result.current.sessions).toHaveLength(2));
+    expect(view.result.current.sessions.map((s) => s.terminal.id)).toEqual([
+      "before",
+      "opened",
+    ]);
+    // And the identity written during the window survives the prune the answer
+    // triggers: it is absent from that answer because it did not exist yet.
+    expect(Object.keys(readIdentityMap()).sort()).toEqual(["before", "opened"]);
+  });
+
   it("leaves the identity alone when the list call fails, and retries later", async () => {
     window.localStorage.setItem(
       IDENTITY_STORAGE_KEY,
