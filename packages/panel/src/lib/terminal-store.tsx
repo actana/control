@@ -65,7 +65,15 @@ type Ctx = {
   activeFor: (projectId: string) => OpenTerminal | null;
   /** The active taskId persisted for `projectId` (null = explicitly closed). */
   activeTaskIdFor: (projectId: string) => string | null;
-  /** Click a card: select if not active, deselect (hide panel) if already active. */
+  /**
+   * Select `task` in `project`'s scope. Navigation, not a toggle: the requested
+   * task always ends up active, so calling this for the already-active task
+   * keeps it selected rather than hiding the panel. See `nextActiveByProject`.
+   *
+   * The name is a misnomer kept on purpose — renaming it would touch
+   * `projects.$id.tsx`, which parallel tickets own. Read it as "select". To
+   * hide the panel, call `deselect`; nothing here will do it for you.
+   */
   toggle: (
     project: ScopedProject,
     task: Task,
@@ -372,17 +380,23 @@ function isRemoteTask(taskId: string): boolean {
  *
  * Selecting a session — a pin in the sidebar, a card in the list — is
  * navigation, not a toggle: the requested task always ends up active. A repeat
- * request for the already-active task therefore keeps it selected (the caller
- * re-focuses its terminal) instead of clearing the scope, and a rapid
- * A -> B -> A burst lands on A. Clearing the selection here on a repeat click
- * was what closed the panel under the operator and made those bursts bounce.
+ * request for the already-active task keeps it selected, and a rapid
+ * A -> B -> A burst lands on A. Returns `activeByProject` unchanged when the
+ * request is a no-op, so callers can hand the result straight to `setState`
+ * without forcing a re-render; the caller's own focus request still fires.
  *
- * Deselect is its own gesture with its own path: the session panel's close
- * button and the `terminal.close` hotkey both call `deselect`. `projects.$id.tsx`
- * documents the same rule for card clicks.
+ * This replaced `nextActiveTaskId`, which returned `null` — a cleared scope,
+ * which is the panel close — when the requested task was already active and
+ * its session was materialized. Every call site guarded that combination away,
+ * so the branch was not reachable through today's callers (#443 review); it is
+ * removed as a trap, before a sixth caller arrives without the guard. It is
+ * *not* evidence for the operator symptom in #380, which stays open.
  *
- * Returns `activeByProject` unchanged when the request is a no-op, so callers
- * can hand the result straight to `setState` without forcing a re-render.
+ * Clearing a scope is a separate gesture with its own writers: `deselect`
+ * (the pane's hide affordance, the `terminal.close` hotkey, and the
+ * delete/archive-with-no-replacement paths), `close` and `closeForProject`.
+ * Nothing on a selection path may clear. `projects.$id.tsx` documents the same
+ * rule for card clicks.
  */
 export function nextActiveByProject(
   activeByProject: Record<string, string | null>,

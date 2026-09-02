@@ -143,9 +143,10 @@ describe("nextActiveByProject", () => {
     });
   });
 
-  // #380 AC1: the pin click is navigation, not a toggle. A repeat request for
-  // the already-active task must leave it selected — returning null here is
-  // what deselected the scope and closed the panel under the operator.
+  // Selection is navigation, not a toggle: a repeat request for the
+  // already-active task leaves it selected. The old `nextActiveTaskId` returned
+  // null here whenever a session was materialized, and a null scope is the panel
+  // close. Materialization is no longer an input to the decision at all.
   it("keeps the task active when it is requested again", () => {
     expect(nextActiveByProject({ [scope]: "task-1" }, scope, "task-1")).toEqual({
       [scope]: "task-1",
@@ -157,16 +158,10 @@ describe("nextActiveByProject", () => {
     expect(nextActiveByProject(prev, scope, "task-1")).toBe(prev);
   });
 
-  it("re-selects a task whose session is already materialized", () => {
-    // The old signature took a `hasMaterializedSession` flag and deselected
-    // when it was true; materialization is no longer part of the decision.
-    const prev = { [scope]: "task-1" };
-    expect(nextActiveByProject(prev, scope, "task-1")[scope]).toBe("task-1");
-  });
-
-  // #380 AC2: a rapid A -> B -> A burst follows the last click and never
-  // passes through a null (panel-closing) selection.
-  it("follows the last click across a rapid A -> B -> A burst", () => {
+  // A rapid burst follows the last request and never passes through a null
+  // (panel-closing) selection. Seeded on A and requesting A first, so this is a
+  // repeat-A -> B -> A: a superset of the plain A -> B -> A burst.
+  it("follows the last request across a rapid repeat-A -> B -> A burst", () => {
     const seen: (string | null)[] = [];
     let state: Record<string, string | null> = { [scope]: "task-a" };
     for (const requested of ["task-a", "task-b", "task-a"]) {
