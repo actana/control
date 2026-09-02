@@ -750,8 +750,6 @@ export const ProjectBar = memo(function ProjectBar({
   // In All mode, real groups remain useful even without pinned projects: their
   // headers are stable project drop targets. The scoped rail still disappears
   // when the selected group has no projects because there is nothing to move
-  // into it from that isolated view.
-  // when the selected group has no projects because there is nothing to move
   // into it from that isolated view — unless the open project is parked there
   // as the off-group affordance, which is the whole point of it (#378).
   if (railClusters.length === 0) return null;
