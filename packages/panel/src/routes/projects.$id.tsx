@@ -28,6 +28,7 @@ import { filesFromDrop, type DroppedFile } from "~/lib/core-files";
 import { dragCarriesFiles, useProjectFilesAvailability } from "~/lib/use-project-files";
 import { takeProjectFileDrop } from "~/lib/pending-file-drop";
 import { archiveOpenSession, invalidateSessionQueries } from "~/lib/archive-session";
+import { openClickedSession } from "~/lib/open-clicked-session";
 import { consumeProjectOnboardIntent, type ProjectOnboardIntent } from "~/lib/project-onboard-intent";
 import { useHideableMenu } from "~/lib/hideable-elements";
 import { DEFAULT_HEADER_BUTTON_VISIBILITY } from "~/shared/header-buttons";
@@ -1373,15 +1374,13 @@ function ProjectPage() {
   // hide the panel — only the session panel close button (or terminal.close
   // hotkey) deselects.
   const selectTerminal = (taskId: string) => {
-    const task = tasks.find((t) => t.id === taskId);
-    if (!task || !terminalProject) return;
-    terminals.openSession(terminalProject, task, { coreId });
-    // Move the caret into the session's terminal so the user can type right
-    // away. Switching to an already-built (cached) surface reattaches without
-    // focusing, so without this the card click selects the session but leaves
-    // the terminal blurred until a second manual click. TerminalPanel consumes
-    // this request and re-asserts focus across the pane remount.
-    terminals.focusGridSession(taskId);
+    openClickedSession(taskId, {
+      tasks,
+      archivedTasks,
+      project: terminalProject,
+      coreId,
+      terminals,
+    });
   };
 
   const toggleSessionPinned = async (taskId: string) => {
