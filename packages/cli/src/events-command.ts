@@ -20,8 +20,9 @@
 //     tail starts at the end of the log, the way `tail -f` does. The Core has no
 //     frame that answers "what is your tip", so the tip is learned the way it is
 //     published — subscribe, let the tail stream, read `eventsReplayed` — and
-//     everything up to it is counted, not printed. A first run that printed it
-//     would be the replay storm, produced deliberately.
+//     everything up to it is counted, not printed, bar the one exception two
+//     paragraphs down. A first run that printed it would be the replay storm,
+//     produced deliberately.
 //
 //     One `eventsReplayed` is *not* enough to conclude the log has ended: the
 //     Core caps a replay tail at `EVENT_TAIL_LIMIT` and the marker reports what
@@ -413,8 +414,9 @@ async function eventsTail(
       if (!printing) {
         const end = tip.tipFrom(lastEventId);
         // A capped replay: the rest has been asked for and another marker is
-        // coming. Printing stays off, which is the whole point — this is the
-        // history the operator did not ask to see.
+        // coming. The walk stays where it is, which is the whole point — the
+        // history going past is the history the operator did not ask to see,
+        // and `--kind` has already taken the part of it they did.
         if (end === null) {
           waitForAnswer();
           return;
