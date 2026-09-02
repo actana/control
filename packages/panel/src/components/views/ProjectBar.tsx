@@ -33,6 +33,7 @@ import {
   clusterPinnedByGroup,
   getGroupRailCluster,
   usesDirectRailProjectShortcuts,
+  type RailCluster,
 } from "~/lib/rail-projects";
 import { shouldFlashPinnedProjectLogo } from "./project-bar-activity";
 import { getPinnedProjectStatusDots } from "./project-bar-status-dots";
@@ -200,30 +201,60 @@ export const ProjectBar = memo(function ProjectBar({
   // scoped rail has to be able to put that project back on screen when the
   // active group would otherwise hide it (#378).
   const activeId = useMemo(() => pathname.match(/^\/projects\/([^/]+)/)?.[1], [pathname]);
-  const railClusters = useMemo(() => {
-    if (!groupScoped) return clusterPinnedByGroup(sortedPinned, orderedGroups);
+  // The clusters the rail draws, plus the name of the workspace it is drawing.
+  // The label travels WITH the clusters because it can no longer be read back
+  // off them: since #378 appends a cluster, `railClusters[0]` is the active
+  // group's cluster only when that group has projects, and guessing wrong made
+  // the rail's landmark announce the group that owns the OTHER project.
+  const rail = useMemo((): { clusters: RailCluster<ProjectWithCounts>[]; label: string } => {
+    if (!groupScoped) {
+      return {
+        clusters: clusterPinnedByGroup(sortedPinned, orderedGroups),
+        label: "Pinned projects",
+      };
+    }
     const cluster = getGroupRailCluster(projects ?? [], orderedGroups, activeGroup);
     const scoped = cluster.projects.length > 0 ? [cluster] : [];
+    // `getGroupRailCluster` names the active group even when it is empty, which
+    // is exactly the case the rail used to have no name for.
+    const label = cluster.label;
     // #378: opening a project in group A and switching the GroupSwitcher to B
     // left the page on A while the rail showed B with no ring — the rail
     // claiming nothing was open while the operator was plainly inside a
     // project. The filter still decides which pins are *workable*; the project
-    // you are on keeps a tile regardless, in a trailing cluster of its own
-    // named after the group that does own it, so the ring has somewhere to sit.
+    // you are on keeps a tile in a trailing cluster of its own, named after the
+    // group that does own it, so the ring has somewhere to sit.
     // Nothing here navigates: the URL stays on the open project.
+    //
+    // Scope, stated exactly: this holds for a group-scoped rail — group → group
+    // and group → Ungrouped. It does NOT hold for group → All, which returns
+    // above: All is the pinned rail, so an unpinned project opened from a
+    // group's workspace still loses its tile there. Same symptom, same gesture,
+    // deliberately not fixed here — see #474. Extending it is not a one-liner:
+    // in All `showClusterLabels` is true, so a synthetic cluster would render a
+    // real `data-cluster-header` / `data-group-handle`, entering the drag row
+    // snapshot and the group-handle list, and taking a group digit that
+    // `__root.tsx` (which resolves chords from the untouched `getRailClusters`)
+    // knows nothing about. That is a design change, not a branch.
     const open = activeId ? (projects ?? []).find((p) => p.id === activeId) : undefined;
-    if (!open || cluster.projects.some((p) => p.id === open.id)) return scoped;
+    if (!open || cluster.projects.some((p) => p.id === open.id)) {
+      return { clusters: scoped, label };
+    }
     const owner = orderedGroups.find((g) => g.id === open.groupId);
-    return [
-      ...scoped,
-      {
-        key: OFF_GROUP_CLUSTER_KEY,
-        label: owner?.name ?? "Ungrouped",
-        color: owner?.color ?? null,
-        projects: [open],
-      },
-    ];
+    return {
+      clusters: [
+        ...scoped,
+        {
+          key: OFF_GROUP_CLUSTER_KEY,
+          label: owner?.name ?? "Ungrouped",
+          color: owner?.color ?? null,
+          projects: [open],
+        },
+      ],
+      label,
+    };
   }, [activeGroup, activeId, groupScoped, orderedGroups, sortedPinned, projects]);
+  const railClusters = rail.clusters;
   const visible = useMemo(() => railClusters.flatMap((c) => c.projects), [railClusters]);
   const visibleById = useMemo(
     () => new Map(visible.map((project) => [project.id, project])),
@@ -809,7 +840,13 @@ export const ProjectBar = memo(function ProjectBar({
     });
   }
   const flatIndexById = new Map(visible.map((project, index) => [project.id, index]));
-  const railLabel = groupScoped ? (railClusters[0]?.label ?? "Group") : "Pinned projects";
+  // Named after the ACTIVE group, never after whatever cluster happens to be
+  // first: with an empty active group the off-group tile is index 0, and
+  // reading the label off it had the `role="navigation"` landmark announcing
+  // "Alpha group projects" while the GroupSwitcher read "Empty group" (#378
+  // review). The rail asserting something false about grouping is the very
+  // thing this PR is fixing; the accessibility surface counts too.
+  const railLabel = rail.label;
 
   const menuProject = menu ? visibleById.get(menu.id) ?? null : null;
 

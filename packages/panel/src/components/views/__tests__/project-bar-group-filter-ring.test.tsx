@@ -208,6 +208,16 @@ function tileOrNull(container: HTMLElement, id: string): HTMLElement | null {
   return container.querySelector<HTMLElement>(`[data-project-id="${id}"]`);
 }
 
+/** Every tile the rail is currently drawing for one project. */
+function tilesFor(container: HTMLElement, id: string): NodeListOf<HTMLElement> {
+  return container.querySelectorAll<HTMLElement>(`[data-project-id="${id}"]`);
+}
+
+/** The accessible name of the rail's `role="navigation"` landmark. */
+function railName(container: HTMLElement): string | null {
+  return container.querySelector(".mc-project-rail")?.getAttribute("aria-label") ?? null;
+}
+
 afterEach(() => {
   cleanup();
   panelProjects = [];
@@ -241,6 +251,13 @@ describe("ProjectBar selection across a group switch", () => {
     expect(tileOrNull(container, PROJECT_B.id)).not.toBeNull();
     expect(tile(container, PROJECT_A.id).dataset.offGroup).toBe("true");
     expect(tile(container, PROJECT_B.id).dataset.offGroup).toBeUndefined();
+    // Exactly one tile, never two. The off-group cluster is appended only when
+    // the scoped cluster does not already hold the project, and both lists are
+    // derived from the same `projects` array — so a second tile would mean the
+    // guard had gone wrong, and the ring's `data-active-project-id` would no
+    // longer name one place on screen.
+    expect(tilesFor(container, PROJECT_A.id)).toHaveLength(1);
+    expect(container.querySelectorAll("[data-off-group]")).toHaveLength(1);
   });
 
   it("keeps the affordance even when the group switched to is empty", async () => {
@@ -257,6 +274,30 @@ describe("ProjectBar selection across a group switch", () => {
     expect(router.state.location.pathname).toBe(`/projects/${PROJECT_A.id}`);
     expect(ringOn(container)).toBe(PROJECT_A.id);
     expect(tile(container, PROJECT_A.id).dataset.offGroup).toBe("true");
+    expect(tilesFor(container, PROJECT_A.id)).toHaveLength(1);
+  });
+
+  it("names the rail after the active group, not after the off-group tile", async () => {
+    const { view } = await mountRail();
+    const container = view.container;
+
+    fireEvent.click(tile(container, PROJECT_A.id));
+    await settle();
+    expect(railName(container)).toBe(`${GROUP_A.name} projects`);
+
+    // A destination that still has pins of its own: the landmark follows the
+    // switcher, and the appended tile does not get a say.
+    await switchGroupTo(GROUP_B.id);
+    expect(railName(container)).toBe(`${GROUP_B.name} projects`);
+
+    // The case that made this a regression rather than a nicety. With an empty
+    // active group the off-group cluster is the ONLY cluster, so a label read
+    // off `railClusters[0]` announced "Alpha group projects" while the
+    // GroupSwitcher read "Empty group" — the rail asserting something false
+    // about grouping, which is the whole of #378, on the a11y surface.
+    await switchGroupTo(GROUP_EMPTY.id);
+    expect(railName(container)).toBe(`${GROUP_EMPTY.name} projects`);
+    expect(railName(container)).not.toContain(GROUP_A.name);
   });
 
   it("gives the off-group tile no chord badge, no drag slot and no reorder", async () => {
