@@ -474,8 +474,9 @@ describe("actana events tail", () => {
     // operator asked for still finished, and has nothing left to wait for —
     // reading `printed` here would hang exactly where #402 hung, one flag over.
     //
-    // The first-run half of the kind filter — history skipped while the cursor
-    // advances past it — is #403 and is not touched here.
+    // This is the run *with* a cursor. The first-run half of the filter — where
+    // a named kind is printed out of the walk to the tip — is #403 and is the
+    // two cases below.
     await withRegisteredCore();
     const core = fakeCore({});
 
@@ -495,6 +496,74 @@ describe("actana events tail", () => {
     expect(result.code).toBe(EXIT_OK);
     expect(result.out).toEqual([]);
     expect(core.closed).toBe(true);
+  });
+
+  it("prints a --kind match out of a first run's tail, and ends on it", async () => {
+    // #403, frame for frame. No stored cursor and no --since, so this run is
+    // walking to the tip — and the finish it was typed to find is already in
+    // that tail. Counting it and moving on was the defect: nothing on stdout,
+    // and then a wait for a second `session:finished` that nobody was going to
+    // produce. On `HEAD~1` this case does not fail an assertion, it hangs.
+    //
+    // No marker is sent here on purpose. The run ends on its ceiling, in the
+    // middle of the walk, which is what "prints one and exits" has to mean for
+    // an operator whose Core has nothing further to say.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const printed: string[] = [];
+    const run = cli().run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: core.connect, onOut: (line) => printed.push(line) },
+    );
+    await settle();
+
+    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 2, kind: "session:finished", taskId: "t-1" });
+    core.emitEvent({ eventId: 3, kind: "task:updated" });
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toHaveLength(1);
+    expect(JSON.parse(result.out[0]!)).toMatchObject({ eventId: 2, kind: "session:finished" });
+    // Printed as it went past, not gathered up at the end of the walk: the
+    // cursor advances per delivered event, so a line that waits for the end of
+    // the tail is a line a Ctrl-C can lose.
+    expect(printed).toHaveLength(1);
+    expect(core.closed).toBe(true);
+  });
+
+  it("still prints none of the kinds a first run was not asked for", async () => {
+    // The guard on #403's narrowing. The replay storm is a history nobody asked
+    // for, and it is still suppressed exactly as it was — what changed is that
+    // naming a kind counts as asking for it. Everything else in the tail stays
+    // as quiet on a first run as it has always been.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const printed: string[] = [];
+    const run = cli().run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: core.connect, onOut: (line) => printed.push(line) },
+    );
+    await settle();
+
+    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 2, kind: "task:updated" });
+    core.emitReplayed(2);
+    await settle();
+    // A receipt, not the tip: the walk carries on from #2 (`event-tip.ts`).
+    expect(core.subscribes).toContain(2);
+    core.emitReplayed(2);
+    await settle();
+
+    // Two events of history, no finish among them, and nothing on stdout.
+    expect(printed).toEqual([]);
+
+    core.emitEvent({ eventId: 3, kind: "session:finished" });
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(JSON.parse(result.out[0]!).eventId).toBe(3);
   });
 
   it("stops timing the Core once it has said where its log ends", async () => {

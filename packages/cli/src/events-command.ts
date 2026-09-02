@@ -29,6 +29,18 @@
 //     the loop that closes it; this file feeds it the two frames and keeps
 //     quiet until it says the log has an end.
 //
+//     **`--kind` is the one thing that speaks during that walk**, and that is
+//     #403. The storm the silence prevents is a history nobody asked for; naming
+//     kinds is asking for them. After a session has finished,
+//     `--kind session:finished --limit 1` walked past the very event it was
+//     typed to find, printed nothing, and waited for a second finish that was
+//     never coming — and the cursor, which the durable client advances and
+//     persists per event delivered, had moved past that finish, so Ctrl-C put it
+//     out of the next run's reach too. So a named kind is printed out of this
+//     tail as it goes past; every other kind stays as quiet as it has always
+//     been. The decision is the flag the operator typed and never the state of
+//     the log, so the command means one thing on every Core.
+//
 //   • **Where the cursor lives.** `FileCursorStorage`, so the second run of a
 //     command picks up where the first left off. A reconnect *within* a run is
 //     already covered by the in-memory cursor; a restart is not, and a CLI is
@@ -135,6 +147,10 @@ Where it starts
   Each Core gets a cursor under the config directory, so a second run carries on
   from where the first stopped. With no cursor and no --since, a tail starts at
   the end of the log — like \`tail -f\`, not like \`cat\`.
+
+  --kind is the exception: naming kinds is asking for them, so a first run prints
+  the ones already in the log before it goes on following. Everything else in
+  that history stays unprinted, as it would have been anyway.
 
   --since does not move the stored cursor: a one-off rewind leaves the
   follow-along stream where it was.
@@ -336,6 +352,20 @@ async function eventsTail(
       stopTiming();
     };
 
+    /**
+     * One event onto stdout, with the ceiling checked behind it.
+     *
+     * Both walks print through here — the run reading the history past its
+     * cursor, and the first run's walk to the tip once `--kind` has named what
+     * it is walking for (#403). One formatter and one ceiling, so "at most n"
+     * cannot come to mean two things on the two sides of the printing switch.
+     */
+    const emit = (event: CoreLinkEvent) => {
+      deps.out(args.json ? formatEventJson(event) : formatEventLine(event));
+      printed += 1;
+      if (limit.value !== null && printed >= limit.value) finish(EXIT_OK);
+    };
+
     const offEvent = client.onEvent(({ event }) => {
       // Everything reaching here is already past the cursor and already deduped
       // — that is the durable client's contract, and it is what makes a
@@ -348,6 +378,19 @@ async function eventsTail(
         // (`event-tip.ts`).
         tip.saw(event.eventId);
         waitForAnswer();
+        // …except for the kinds the operator named. The argument is in the
+        // header (#403): the storm this silence prevents is a history nobody
+        // asked for, and `--kind` is the asking.
+        //
+        // Printed *here*, as the event goes past, rather than gathered up and
+        // replayed once the tip is known — which is what keeps the cursor
+        // honest. `DurableCoreClient.deliverEvent` advances and persists the
+        // cursor per event delivered, so a Ctrl-C leaves it at the last event
+        // this side was handed; every match up to that event has already been
+        // on stdout, and the cursor cannot come to rest beyond a match the
+        // operator was never shown.
+        if (kinds.size === 0 || !kinds.has(event.kind)) return;
+        emit(event);
         return;
       }
       // Counted before the filter, and before the ceiling: this is history the
@@ -359,9 +402,7 @@ async function eventsTail(
         waitForAnswer();
       }
       if (kinds.size > 0 && !kinds.has(event.kind)) return;
-      deps.out(args.json ? formatEventJson(event) : formatEventLine(event));
-      printed += 1;
-      if (limit.value !== null && printed >= limit.value) finish(EXIT_OK);
+      emit(event);
     });
 
     // The marker that closes a replay tail. On a first run it is also how the

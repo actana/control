@@ -292,6 +292,94 @@ describe("actana events tail, across a Core restart", () => {
     expect(log.tailReads).toBeGreaterThan(1);
   }, 60_000);
 
+  it("prints the finish already in the log on a first --kind run, and exits", async () => {
+    // #403's first criterion, against the Core that produces it and the cursor
+    // file a real run writes. This is the command an operator types after a
+    // session has finished, on a machine that has never followed this Core: no
+    // stored cursor, no --since, and the answer already in the log. It used to
+    // print nothing and never exit.
+    const log = arrayEventLog();
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    log.push("session:started");
+    log.push("task:created");
+    log.push("session:finished");
+    log.push("task:updated");
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    // One event, and the one that was asked for. The three around it are the
+    // history nobody asked for and are still not printed.
+    expect(idsOf(result.out)).toEqual([3]);
+  }, 60_000);
+
+  it("never lets the cursor pass a --kind match the operator was not shown", async () => {
+    // #403's second criterion: Ctrl-C must not persist a cursor past unseen
+    // matching events. The old walk counted the finish, let the durable client
+    // advance and persist the cursor past it, and printed nothing — so the
+    // operator killing the hung command lost that event for every later run
+    // too, silently and with nothing in the log to notice.
+    //
+    // There is no signal handler to raise here (`events tail` takes the default
+    // disposition on purpose), so the interrupt is modelled where it actually
+    // bites: the cursor on disk is sampled while the run is still walking, and
+    // whatever moment that sample lands in is a moment a Ctrl-C could have
+    // landed in. The finish must already be on stdout by then.
+    const log = arrayEventLog();
+    for (let i = 0; i < 21; i += 1) log.push("task:updated"); // #1 – #21
+    log.push("session:finished"); // #22
+    for (let i = 0; i < 8; i += 1) log.push("task:updated"); // #23 – #30
+
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    const printed: string[] = [];
+    // `--limit 2` against a log holding one finish: the ceiling cannot be
+    // reached on history, so the run is still going at the moment the sample
+    // below is taken — which is what makes it an interrupt rather than an exit.
+    const tail = fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "2"],
+      { connect: connectCore, onOut: (line) => printed.push(line) },
+    );
+
+    const dir = cursorsDir(fixture.paths);
+    const cursor = (): number => {
+      if (!existsSync(dir)) return 0;
+      const [file] = readdirSync(dir);
+      if (file === undefined) return 0;
+      const raw = readFileSync(path.join(dir, file), "utf8").trim();
+      return raw === "" ? 0 : Number(raw);
+    };
+
+    await waitFor(() => cursor() >= 22, "the cursor never reached the finish");
+    expect(
+      idsOf(printed),
+      "the cursor stood past a session:finished that had never been printed",
+    ).toContain(22);
+
+    // And it does walk on past it — which is exactly why the printing has to
+    // happen on the way. The finish is behind the cursor now and unreachable to
+    // every later run; the only reason it is not lost is that it has been seen.
+    await waitFor(() => cursor() >= 30, "the walk never reached the end of the history");
+    expect(idsOf(printed)).toEqual([22]);
+
+    // A second finish, live, so the run ends on its ceiling rather than
+    // following for the rest of the suite.
+    log.push("session:finished");
+    const result = await tail;
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    expect(idsOf(result.out)).toEqual([22, 31]);
+  }, 60_000);
+
   it("leaves the stored cursor alone when --since asks for a one-off rewind", async () => {
     const log = arrayEventLog();
     const port = await freePort();
