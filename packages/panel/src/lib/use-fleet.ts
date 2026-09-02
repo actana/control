@@ -402,10 +402,12 @@ export function useRemotePinnedProjects(): {
   refresh: () => void;
 } {
   const bridge = getPanelBridge();
-  // The same fan-out the Fleet view renders, not a second one: the rail's
-  // activity dot is `taskCounts`, a Core-owned pin has no Panel row to count,
-  // and a dot counted from a different read is a dot that can disagree with
-  // the row it stands for. One settled snapshot feeds both (#389).
+  // The rail's activity dot is `taskCounts`, and a Core-owned pin has no Panel
+  // row to count — so the counts come from the same *kind* of read the Fleet
+  // row does, settled together, rather than from a separate tally that can
+  // disagree with the row it stands for (#389). This is a second `useFleetTasks`
+  // instance, so a page showing both the rail and Fleet fans out twice; the
+  // alternative is a dot that is dark whatever the Core is doing.
   const { fleet, cores } = useFleetTasks();
   const [pinned, setPinned] = useState<ProjectWithCounts[]>([]);
   const [refreshNonce, setRefreshNonce] = useState(0);
