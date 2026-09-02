@@ -60,9 +60,11 @@ import {
 } from "~/lib/harness-command";
 import { getDefaultModelForHarness } from "~/lib/default-model-store";
 import {
-  terminalInputStartsTurn,
+  advanceTerminalRunningFallback,
   harnessUsesTerminalPromptFallback,
-  shouldResetTerminalRunningFallback,
+  IDLE_TERMINAL_RUNNING_FALLBACK,
+  noteTerminalWrite,
+  type TerminalRunningFallback,
 } from "~/lib/task-status-sync";
 import { accumulateTerminalPrompt } from "~/lib/terminal-prompt-capture";
 import { prefetchTerminalModules } from "~/lib/prefetch-terminal-modules";
@@ -976,7 +978,12 @@ export function TerminalPane({
       let duringReplayData: SequencedPtyData[] = [];
       let duringReplayExit: { ptyId: string; exitCode: number; signal?: number } | null =
         null;
-      let fallbackRunningPosted = false;
+      // The Enter→running fallback for a Session whose hooks never announce a
+      // turn's start: the one-shot latch AND the turn the operator is composing
+      // in this pane (issue 386). Declared with the surface but reset per pty
+      // in `wireTerminalInput` — a half-typed line, or a `pasting` latch, must
+      // not survive into the next harness process.
+      let runningFallback: TerminalRunningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
       let promptCaptureBuffer = "";
       let promptTitlePosted = false;
       const stopWatchingColorScheme = watchTerminalColorScheme((colorScheme) => {
@@ -998,6 +1005,13 @@ export function TerminalPane({
       const writeToPty = async (data: string) => {
         const ptyId = activePtyId;
         if (!ptyId || !ptyApi || !mayWriteRef.current) return false;
+        // Every byte on this path skips xterm's keyboard, so `onData` never
+        // sees it: the dropped project path, the key map's Cmd+Backspace. Fold
+        // it into the same turn the fallback watches, or a dropped path
+        // followed by Enter starts a real turn against a card still reading
+        // `finished` (issue 386). It composes only — the Enter that submits it
+        // comes back through `onData`, which is where the PATCH is decided.
+        runningFallback = noteTerminalWrite(runningFallback, data);
         return ptyApi.write(ptyId, data);
       };
 
@@ -1210,6 +1224,13 @@ export function TerminalPane({
       };
 
       const wireTerminalInput = (ptyId: string) => {
+        // A new pty is a new harness process at a fresh prompt. Anything half
+        // entered against the last one is gone from the screen and must go from
+        // the pane's mirror of it too: a surviving composition makes the first
+        // stray Enter post `running`, and a surviving `pasting` latch swallows
+        // every `\r` for the life of the pane.
+        runningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
+        promptCaptureBuffer = "";
         term.onData((data) => {
           // A Reader sends nothing and reports nothing (issue 147). The return
           // is before the status and prompt-capture side effects deliberately:
@@ -1234,15 +1255,21 @@ export function TerminalPane({
             submittedPrompt = captured.submitted;
           }
 
-          // Cursor CLI still does not fire beforeSubmitPrompt, so Enter is the
-          // per-turn running signal. Re-arm after the task leaves "running"
-          // (stop → finished, needs-input, etc.) so a second prompt in the same
-          // session updates the card again.
-          if (shouldResetTerminalRunningFallback(liveTaskStatusRef.current)) {
-            fallbackRunningPosted = false;
-          }
-          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data, hooksReportTurnStart)) {
-            fallbackRunningPosted = true;
+          // Cursor CLI still does not fire beforeSubmitPrompt, so a submitted
+          // prompt is the per-turn running signal. "Submitted" is the whole
+          // point of issue 386: the latch re-arms once the task leaves
+          // "running" (stop → finished, needs-input, …) so a second prompt in
+          // the same session updates the card again — but on its own that made
+          // every newline after settlement a new turn, so a stray Enter or a
+          // pasted path resurrected `running`. The fallback now waits for the
+          // operator to actually enter something and submit it.
+          const fallbackStep = advanceTerminalRunningFallback(runningFallback, {
+            data,
+            currentStatus: liveTaskStatusRef.current,
+            hooksReportTurnStart,
+          });
+          runningFallback = fallbackStep.state;
+          if (fallbackStep.postRunning) {
             void (async () => {
               try {
                 // Same routing as the exit patch above: a turn-start status is
@@ -1252,6 +1279,17 @@ export function TerminalPane({
                   taskId: descriptor.taskId,
                   status: "running",
                 });
+              } catch {
+                // Only the status mutation un-latches, and only its own catch
+                // may do it. Sharing one `try` with the title and the cache
+                // invalidations below meant a title-generator hiccup AFTER a
+                // successful PATCH cleared the latch anyway — and, because this
+                // handler re-reads the live value, a late failure from turn N
+                // could clear a latch turn N+1 had just set.
+                runningFallback = { ...runningFallback, posted: false };
+                return;
+              }
+              try {
                 // The prompt patches no column of its own: it only asks a
                 // title generator to name the session. Which generator depends
                 // on who owns the row — the Core's, for a Core-owned Session
@@ -1276,7 +1314,8 @@ export function TerminalPane({
                   queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
                 ]);
               } catch {
-                fallbackRunningPosted = false;
+                // The row is already `running`; a missed title or a stale cache
+                // is not worth un-latching a turn that did start.
               }
             })();
           }
