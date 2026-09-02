@@ -7,6 +7,8 @@ import {
 } from "~/shared/ui-preferences";
 
 export type RailProject = PinnedOrderable & {
+  /** The Core that owns this row; absent/null means the Panel's own rows. */
+  coreId?: string | null;
   groupId: string | null;
   name: string;
 };
@@ -92,4 +94,46 @@ export function getRailClusters<T extends RailProject>(
   }
   const cluster = getGroupRailCluster(projects, groups, activeGroup);
   return cluster.projects.length > 0 ? [cluster] : [];
+}
+
+/**
+ * The rail's project list: the Panel's own rows plus every Core's pins, tagged
+ * with the Core that owns them (see `useRemotePinnedProjects`). Concatenation
+ * order matches ProjectBar's so a pinned-order tie breaks the same way in both;
+ * `getPinnedProjects` orders the result from there.
+ */
+export function mergeRailProjects<T extends RailProject>(
+  panelProjects: readonly T[] | undefined,
+  remotePinned: readonly T[],
+): T[] {
+  return [...(panelProjects ?? []), ...remotePinned];
+}
+
+/**
+ * The project a rail chord addresses, given the clusters the rail renders.
+ *
+ * Badges number projects from 1 *within their cluster*, so a chord is a group
+ * digit (absent when the rail is one flat directly-addressable list) plus a
+ * project digit — and this resolves both against the very clusters the badges
+ * were drawn from. Hotkeys and badges disagreeing is the whole of #379.
+ */
+export function resolveRailChordTarget<T extends RailProject>(
+  clusters: readonly RailCluster<T>[],
+  groupDigit: number | null,
+  projectDigit: number,
+): T | undefined {
+  const cluster = groupDigit == null ? clusters[0] : clusters[groupDigit - 1];
+  return cluster?.projects[projectDigit - 1];
+}
+
+/** All a rail navigation needs: which project, and which Core owns it. */
+export type RailTarget = { id: string; coreId?: string | null };
+
+/**
+ * The search params a rail navigation carries. A Core-owned pin must keep its
+ * `?coreId=`, or the project page addresses the Panel's own DB instead of the
+ * Core that owns the row — a 404, or the wrong project (#379).
+ */
+export function railNavigateSearch(target: RailTarget): { coreId: string } | undefined {
+  return target.coreId ? { coreId: target.coreId } : undefined;
 }
