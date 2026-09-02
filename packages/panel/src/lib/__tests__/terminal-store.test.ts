@@ -3,7 +3,7 @@ import type { Task } from "~/db/schema";
 import {
   archivedSessionsEligibleForReap,
   commandForTask,
-  nextActiveTaskId,
+  nextActiveByProject,
   resolveActiveTaskIdForProject,
   type OpenTerminal,
 } from "../terminal-store";
@@ -130,17 +130,58 @@ describe("commandForTask", () => {
   });
 });
 
-describe("nextActiveTaskId", () => {
-  it("keeps a stale persisted active task open when no session is materialized", () => {
-    expect(nextActiveTaskId("task-1", "task-1", false)).toBe("task-1");
-  });
+describe("nextActiveByProject", () => {
+  const scope = "project-1";
 
-  it("hides a task that is already active and materialized", () => {
-    expect(nextActiveTaskId("task-1", "task-1", true)).toBeNull();
+  it("selects a task in a scope that had none", () => {
+    expect(nextActiveByProject({}, scope, "task-1")).toEqual({ [scope]: "task-1" });
   });
 
   it("switches active tasks", () => {
-    expect(nextActiveTaskId("task-1", "task-2", true)).toBe("task-2");
+    expect(nextActiveByProject({ [scope]: "task-1" }, scope, "task-2")).toEqual({
+      [scope]: "task-2",
+    });
+  });
+
+  // #380 AC1: the pin click is navigation, not a toggle. A repeat request for
+  // the already-active task must leave it selected — returning null here is
+  // what deselected the scope and closed the panel under the operator.
+  it("keeps the task active when it is requested again", () => {
+    expect(nextActiveByProject({ [scope]: "task-1" }, scope, "task-1")).toEqual({
+      [scope]: "task-1",
+    });
+  });
+
+  it("returns the same map object for a repeat request so no re-render is forced", () => {
+    const prev = { [scope]: "task-1" };
+    expect(nextActiveByProject(prev, scope, "task-1")).toBe(prev);
+  });
+
+  it("re-selects a task whose session is already materialized", () => {
+    // The old signature took a `hasMaterializedSession` flag and deselected
+    // when it was true; materialization is no longer part of the decision.
+    const prev = { [scope]: "task-1" };
+    expect(nextActiveByProject(prev, scope, "task-1")[scope]).toBe("task-1");
+  });
+
+  // #380 AC2: a rapid A -> B -> A burst follows the last click and never
+  // passes through a null (panel-closing) selection.
+  it("follows the last click across a rapid A -> B -> A burst", () => {
+    const seen: (string | null)[] = [];
+    let state: Record<string, string | null> = { [scope]: "task-a" };
+    for (const requested of ["task-a", "task-b", "task-a"]) {
+      state = nextActiveByProject(state, scope, requested);
+      seen.push(state[scope] ?? null);
+    }
+    expect(seen).toEqual(["task-a", "task-b", "task-a"]);
+    expect(seen).not.toContain(null);
+    expect(state[scope]).toBe("task-a");
+  });
+
+  it("leaves other scopes untouched", () => {
+    expect(
+      nextActiveByProject({ "project-2": "task-9" }, scope, "task-1"),
+    ).toEqual({ "project-2": "task-9", [scope]: "task-1" });
   });
 });
 

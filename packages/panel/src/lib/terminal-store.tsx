@@ -367,14 +367,31 @@ function isRemoteTask(taskId: string): boolean {
   return remoteTaskIds.has(taskId);
 }
 
-export function nextActiveTaskId(
-  currentTaskId: string | null,
-  requestedTaskId: string,
-  hasMaterializedSession: boolean
-): string | null {
-  return currentTaskId === requestedTaskId && hasMaterializedSession
-    ? null
-    : requestedTaskId;
+/**
+ * The scope-to-active-task map after a request to select `requestedTaskId`.
+ *
+ * Selecting a session — a pin in the sidebar, a card in the list — is
+ * navigation, not a toggle: the requested task always ends up active. A repeat
+ * request for the already-active task therefore keeps it selected (the caller
+ * re-focuses its terminal) instead of clearing the scope, and a rapid
+ * A -> B -> A burst lands on A. Clearing the selection here on a repeat click
+ * was what closed the panel under the operator and made those bursts bounce.
+ *
+ * Deselect is its own gesture with its own path: the session panel's close
+ * button and the `terminal.close` hotkey both call `deselect`. `projects.$id.tsx`
+ * documents the same rule for card clicks.
+ *
+ * Returns `activeByProject` unchanged when the request is a no-op, so callers
+ * can hand the result straight to `setState` without forcing a re-render.
+ */
+export function nextActiveByProject(
+  activeByProject: Record<string, string | null>,
+  scopeKey: string,
+  requestedTaskId: string
+): Record<string, string | null> {
+  return activeByProject[scopeKey] === requestedTaskId
+    ? activeByProject
+    : { ...activeByProject, [scopeKey]: requestedTaskId };
 }
 
 /** Grace period before an un-selected archived session's PTY is reaped. */
@@ -583,9 +600,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     const session = sessionsRef.current.find((s) => s.taskId === taskId);
     if (!session) return;
     const scopeKey = scopeKeyForProject(session.project);
-    setActiveByProject((prev) =>
-      prev[scopeKey] === taskId ? prev : { ...prev, [scopeKey]: taskId },
-    );
+    setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, taskId));
   }, []);
   const getGridFocusedTaskId = useCallback(() => gridFocusedTaskIdRef.current, []);
   // Pending "New row" request: the grid drops the next new session into a fresh
@@ -666,9 +681,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       opts?: { awaitCreate?: boolean; coreId?: string | null },
     ) => {
       const scopeKey = scopeKeyForProject(project);
-      const hadSession = sessionsRef.current.some(
-        (p) => p.taskId === task.id && scopeKeyForProject(p.project) === scopeKey
-      );
       setSessions((prev) => {
         const existing = prev.find(
           (p) => p.taskId === task.id && scopeKeyForProject(p.project) === scopeKey
@@ -700,11 +712,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         };
         return [...prev, next];
       });
-      setActiveByProject((prev) => {
-        const curr = prev[scopeKey] ?? null;
-        const next = nextActiveTaskId(curr, task.id, hadSession);
-        return curr === next ? prev : { ...prev, [scopeKey]: next };
-      });
+      setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, task.id));
     },
     []
   );
@@ -755,9 +763,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           },
         ];
       });
-      setActiveByProject((prev) =>
-        prev[scopeKey] === task.id ? prev : { ...prev, [scopeKey]: task.id }
-      );
+      setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, task.id));
     },
     []
   );
@@ -830,9 +836,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   const setActiveSession = useCallback((project: ScopedProject, taskId: string) => {
     const scopeKey = scopeKeyForProject(project);
-    setActiveByProject((prev) =>
-      prev[scopeKey] === taskId ? prev : { ...prev, [scopeKey]: taskId }
-    );
+    setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, taskId));
   }, []);
 
   const adoptTaskId = useCallback((fromTaskId: string, task: Task) => {
