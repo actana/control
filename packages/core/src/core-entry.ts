@@ -264,8 +264,9 @@ async function startCore(): Promise<void> {
     hookReceiver = await startHarnessHookReceiver((taskId, payload, eventNameFallback) => {
       // A hook that landed is this Session talking, whatever it said — that is
       // what keeps the quiet-Session backstop off a turn that is really
-      // running (issue 243).
-      sessionBackstop?.noteActivity(taskId);
+      // running (issue 243). Reported as its own kind, because a Session whose
+      // hooks arrive is one the idle rule must defer to (issue 391).
+      sessionBackstop?.noteActivity(taskId, "hook");
       return harnessStatus.receiveHook(taskId, payload, eventNameFallback);
     });
   } catch (err) {

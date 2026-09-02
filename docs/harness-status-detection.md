@@ -157,21 +157,32 @@ spinner and a clock for as long as the process lives. Counted as activity,
 those bytes mean fifteen minutes of total silence never arrives and the card
 claims `running` indefinitely.
 
-So the bytes are read rather than counted. `pty-output-activity.ts` reduces
-each five-second burst of PTY output to the words on screen — escapes, control
-bytes, spinner glyphs and **digits** dropped, whitespace collapsed — and calls
-the burst
+So the bytes are read rather than counted. `pty-output-activity.ts` takes each
+five-second burst of PTY output and asks three questions in order:
 
-- **`output`** when it carries a word the last two bursts (about ten seconds of
-  screen) do not already contain: a tool result, a diff, a line of prose;
-- **`redraw`** when every word in it was already on screen a moment ago: the
-  same frame with the counter moved on.
+1. **Did the burst erase anything?** A repaint is defined by what it destroys —
+   a carriage return, an erase, a cursor jump. A burst that only appends
+   scrolled the screen, so it is `output` by construction. This is what keeps
+   appended progress (pytest's dots, a log line) from reading as a spinner. The
+   exception is a burst with no controls that follows one that repainted: that
+   is the tail of a frame, not a new line.
+2. **Do the digits belong to a clock?** Digits are dropped only from a *line*
+   that carries a spinner glyph or an elapsed-time pattern (`1m 12s`, `0:42`),
+   and kept everywhere else — so `Downloading 41.2 MB / 900 MB`, `Compiled 41
+   files` and `Tests 41 passed` stay the changing content they are.
+3. **Is any word new?** What survives — escapes, control bytes and spinner
+   glyphs dropped, whitespace collapsed — is the frame's words. The burst is
+   `output` when it carries a word the last two bursts (about ten seconds of
+   screen) do not already contain, and `redraw` when every word in it was
+   already on screen a moment ago. The scan runs from the *end* of the burst,
+   where a TUI puts what is new, and a number is matched whole (`40` is a
+   substring of `(400)`) while a word is matched loosely, so a burst boundary
+   inside `Think`/`ing` is not read as two new words a second.
 
-A word shorter than three characters is ignored, because a burst boundary can
-fall inside a word and `Think` + `ing` must not read as two new words a second.
 The memory is two bursts and not the whole turn on purpose: a harness that
-reads the same file twice is working, not repainting. Hooks are always
-`output` — nothing a harness bothers to POST is a repaint.
+reads the same file twice is working, not repainting. A hook is its own kind of
+activity and always counts as progress — nothing a harness bothers to POST is a
+repaint.
 
 The backstop therefore has two rules, and a `running` Session settles on
 whichever fires first:
@@ -179,24 +190,54 @@ whichever fires first:
 | Rule | Fires when | Window |
 | --- | --- | --- |
 | Quiet | nothing at all — no hook, no byte of any kind | 15 minutes |
-| Idle | bytes still arriving (heard within the last 2 minutes), but nothing new on screen and no hook | 5 minutes |
+| Idle | bytes still arriving (heard within the last 2 minutes), nothing new on screen, no hook, **and** nothing printed since the last hook | 8 minutes, confirmed by 2 consecutive sweeps |
 
 The idle rule is the finish-class backstop the quiet rule cannot be: it does not
-wait for the redraws to stop, because they never do. It applies only to a
-Session this Core has actually heard bytes from — a row it has only ever read
-from the database is judged by the quiet rule alone, since a Core that heard no
-bytes cannot know whether the ones it missed were redraws. Which settles it is
-in `session-backstop.settled`'s `rule` field.
+wait for the redraws to stop, because they never do. Three things narrow it, and
+each is there for a failure that was found rather than imagined:
 
-The trade is knowingly paid, and it is the same one the fifteen-minute window
-already made: a turn that puts nothing new on screen for five minutes, on a
-harness whose hooks are also not arriving, gets a card that reads `finished`
-while it is still going — as does output that changes only in its digits
-(`Compiled 41 files`, `Compiled 42 files`), which is indistinguishable from a
-counter. Nothing is killed, no process is touched, and the next hook, the next
-new thing on screen, or the next `UserPromptSubmit` puts the row back on
-`running`. Before any of this, a lost `Stop` wedged the Session until a human
-edited the row by hand — while the Panel said the opposite.
+- **It applies only to a Session this Core has heard bytes from.** A row it has
+  only ever read from the database is judged by the quiet rule alone, since a
+  Core that heard no bytes cannot know whether the ones it missed were redraws.
+- **It defers to hooks.** If a Session has printed anything real since its last
+  hook, it is mid-turn and the rule stands down: a single `Bash` call emits no
+  hook until it completes (Claude Code installs `PreToolUse` with an
+  `AskUserQuestion` matcher), so a six-minute build has nothing but its TUI to
+  say so. The rule is for the harness that cannot report itself at all — Codex
+  before `/hooks` has been reviewed.
+- **It asks twice.** The condition must hold across two consecutive sweeps, one
+  minute apart, before a row moves.
+
+Which rule settled a row is in `session-backstop.settled`'s `rule` field.
+
+### The idle rule takes its own finish back
+
+A `finished` written by the **idle rule** is marked, and the next `output`-class
+burst or hook on that Session inside half an hour returns the row to `running`
+(`session-backstop.reopened`). Nothing else is marked: an operator's finish, a
+hook's finish and the quiet rule's finish are never reopened by stray bytes, and
+a row anyone else has moved since is left exactly as they left it.
+
+This exists because the obvious recovery does not: `harness-hook-events.ts` maps
+only `UserPromptSubmit`, `CursorBeforeSubmitPrompt` and `PermissionReplied` to
+`running` — `PostToolUse`, `SubagentStart` and `SubagentStop` map to nothing —
+and the PTY output path writes no status at all. Without the marker, a row
+settled early stays `finished` until the operator's next prompt.
+
+What a wrong idle settle still costs, stated rather than argued away: it emits
+`session:finished` (the operator's completion toast, and the signal `actana
+session wait` unblocks on) and clears the tracked subagent set. The reopen puts
+the status back; it cannot un-send a notification or restore that set, which
+expires on its own after two hours.
+
+The classifier's own limits, which bound how often that can happen: a turn whose
+tool prints nothing at all is indistinguishable from one that ended; a progress
+line that is both spinner-prefixed and nothing but numbers has its digits
+dropped as a clock; and the rule depends on the spinner phrase being static — a
+harness whose spinner rotates its gerund (`✻ Herding… / Simmering… /
+Pondering…`) puts a new word on screen every rotation, so the idle rule never
+fires for it at all. Before any of this, a lost `Stop` wedged the Session until
+a human edited the row by hand — while the Panel said the opposite.
 
 `Notification` is also intentionally narrowed to `permission_prompt`. Claude Code
 sends idle input reminders through the same hook event, so treating all

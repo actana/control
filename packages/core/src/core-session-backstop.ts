@@ -41,8 +41,8 @@
 // So output is read rather than counted (`pty-output-activity.ts`): a burst
 // that puts a word on screen that was not already there is `output`, and a
 // burst that repaints what is already there — spinner glyph, bigger number,
-// same words — is `redraw`. Hooks are always `output`; nothing a harness
-// bothers to POST is a repaint.
+// same words — is `redraw`. A hook is its own kind and always counts as
+// progress; nothing a harness bothers to POST is a repaint.
 //
 // That gives this file two rules rather than one, and a Session settles on
 // whichever fires first:
@@ -59,12 +59,36 @@
 // A turn that is genuinely printing output re-stamps the second rule with
 // every burst, so the rule that can end it is the same one that always could.
 //
-// The trade is stated plainly: a harness that works in total silence for
-// longer than the quiet window gets a card that says `finished` while it is
-// still going. Nothing is killed, no process is touched, and the next turn's
-// `UserPromptSubmit` puts the row back on `running`. Against that: before this
-// file, a lost `Stop` wedged a Session on `running` until a human edited the
-// row by hand — and the whole failure mode is that the Panel says otherwise.
+// ─── What a wrong idle settle costs, and how it is paid back ───
+//
+// The first cut of this said the mistake was cheap because "the next hook or
+// byte of real output puts the row back on `running`". That was not true, and
+// the review of PR 455 was right to block on it: `harness-hook-events.ts` maps
+// only `UserPromptSubmit`, `CursorBeforeSubmitPrompt` and `PermissionReplied`
+// to `running` — `PostToolUse`, `SubagentStart` and `SubagentStop` map to
+// nothing — and the PTY output path writes no status at all. A row settled
+// early stayed `finished` until the operator's next prompt.
+//
+// So the rule now pays its own bill, three ways.
+//
+//   1. **It takes the finish back.** A `finished` written by the *idle* rule
+//      is marked, and the next `output`-class burst or hook on that Session
+//      returns the row to `running` ({@link IDLE_REOPEN_MS}). Nothing else is
+//      marked, so an operator's finish, a hook's finish and the quiet rule's
+//      finish are never reopened by stray bytes.
+//   2. **It defers to hooks.** A Session whose hooks arrive has a better
+//      witness than its pixels: if it has printed anything real since its last
+//      hook it is mid-turn — a single `Bash` call emits no hook until it
+//      completes — and the idle rule stands down. The rule is for the harness
+//      that cannot report itself at all.
+//   3. **It asks twice.** {@link IDLE_SWEEPS_REQUIRED} consecutive sweeps must
+//      agree before a row moves.
+//
+// What still costs, and is not claimed otherwise: the settle emits
+// `session:finished` (the operator's completion toast, and the signal
+// `actana session wait` unblocks on) and clears the tracked subagent set. The
+// reopen puts the status back; it cannot un-send a notification or restore
+// that set, which expires on its own.
 //
 // Only `running` is in scope. `needs-input` is a Session waiting on a human,
 // which is a state it is allowed to sit in indefinitely and silently; a card
@@ -96,21 +120,55 @@ const QUIET_SETTLE_MS = 15 * 60 * 1000;
  * anything new on screen and without a hook before this settles it (issue
  * 391).
  *
- * Five minutes, and the two directions it is chosen against are not the ones
- * above. Below it sits the gap between one piece of real output and the next
- * within a live turn: a tool call that prints as it goes, a model streaming
- * prose, a build logging its steps — all of them beat five minutes by orders
- * of magnitude, and any of them re-stamps the window. Above it sits the only
- * thing this rule is for: a harness that ended its turn, never said so, and is
- * now painting a clock at an operator who is waiting on a card. Five minutes
- * is a wait; fifteen was the whole Fleet view losing its meaning.
+ * Eight minutes, raised from the five this shipped for review. The direction
+ * it is chosen against is not the quiet rule's: below it sits the gap between
+ * one piece of real output and the next inside a live turn, and the review of
+ * PR 455 found that gap is longer than a spinner tick suggests. A single
+ * `Bash` tool call emits no hook until it completes — Claude Code installs
+ * `PreToolUse` with an `AskUserQuestion` matcher — so a six-minute build on a
+ * harness whose hooks work perfectly has nothing but its TUI to say so.
+ * Eight minutes plus {@link IDLE_SWEEPS_REQUIRED} sweeps clears that build,
+ * and is still a wait an operator can sit through where "never" is not.
  *
- * What it costs: a turn whose tool prints nothing at all for five minutes, on
- * a harness whose hooks are also not arriving, reads `finished` while it runs.
- * Nothing is killed, and the next hook or byte of real output puts the row
- * back on `running`.
+ * Above it sits the only thing this rule is for: a harness that ended its turn,
+ * never said so, and is now painting a clock at an operator waiting on a card.
+ *
+ * What it costs is bounded three ways rather than argued away: the rule fires
+ * only for a Session whose hooks are not arriving (see `outputSinceHook`), only
+ * after the condition has held across two sweeps, and a `finished` it writes is
+ * taken back by the next `output`-class burst — {@link IDLE_REOPEN_MS}.
  */
-const IDLE_REDRAW_SETTLE_MS = 5 * 60 * 1000;
+const IDLE_REDRAW_SETTLE_MS = 8 * 60 * 1000;
+
+/**
+ * How many consecutive sweeps must agree before the idle rule settles a row.
+ *
+ * The sweep runs once a minute, so this is a minute of confirmation on top of
+ * the window — cheap, and it costs a mis-timed settle nothing but a minute.
+ * The review of PR 455 asked for it by name: one sweep is one sample of a
+ * screen, and a screen can be between frames.
+ */
+const IDLE_SWEEPS_REQUIRED = 2;
+
+/**
+ * How long after an idle-rule settle the same Session may be un-finished by
+ * new output.
+ *
+ * The whole argument for a window shorter than fifteen minutes is that the
+ * mistake is cheap. It was not: a hook does not un-finish a row
+ * (`harness-hook-events.ts` maps only `UserPromptSubmit`,
+ * `CursorBeforeSubmitPrompt` and `PermissionReplied` to `running`), and the PTY
+ * output path writes no status at all — so before this, a row the idle rule
+ * settled early stayed `finished` until the operator's next prompt. Now the
+ * rule that wrote it takes it back: any `output`-class burst or hook inside
+ * this window puts the row back on `running`.
+ *
+ * Half an hour, because the thing being recovered from is a long tool call, and
+ * because the marker is only ever set by this rule — an operator's finish, a
+ * hook's finish and the quiet rule's finish are never reopened, whatever the
+ * harness writes to its PTY afterwards.
+ */
+const IDLE_REOPEN_MS = 30 * 60 * 1000;
 
 /**
  * How recently bytes must have arrived for the idle rule to apply at all.
@@ -153,26 +211,53 @@ export type CoreSessionBackstopDeps = {
   idleMs?: number;
   /** Overrides {@link STILL_PAINTING_MS}. */
   paintingMs?: number;
+  /** Overrides {@link IDLE_REOPEN_MS}. */
+  reopenMs?: number;
   intervalMs?: number;
 };
 
 /**
- * What a Session was heard doing. `output` is a hook, or a burst of PTY output
- * that put something new on screen; `redraw` is a burst that repainted what
- * was already there. Only `output` holds the idle rule off.
+ * What a Session was heard doing.
+ *
+ * `hook` is a POST from the harness's own lifecycle hooks — the strongest
+ * signal there is, and the one that says this harness *can* report itself.
+ * `output` is a burst of PTY output that put something new on screen. `redraw`
+ * is a burst that repainted what was already there. Only `redraw` leaves the
+ * idle rule's clock running.
  */
-export type SessionActivityKind = "output" | "redraw";
+export type SessionActivityKind = "hook" | "output" | "redraw";
+
+/** What this Core has heard from one Session, and what it made of it. */
+type SessionActivity = {
+  /** Last time anything at all arrived — a hook, or any byte. */
+  heardAt: number;
+  /** Last time something new appeared: a hook, or an `output` burst. */
+  outputAt: number;
+  /** Last hook, or `0` if this Core has never had one for this Session. */
+  hookAt: number;
+  /**
+   * `output` bursts since that hook. The idle rule needs this to be zero for a
+   * Session whose hooks work: a harness that printed something real since its
+   * last hook is mid-turn, and its next hook is the tool call finishing.
+   */
+  outputSinceHook: number;
+  /** Consecutive sweeps in which the idle condition has held. */
+  idleSweeps: number;
+};
 
 /**
  * The Core's quiet-Session backstop. One instance per Core process; the hook
  * receiver and the PTY output path feed it, and it feeds the task writer.
  */
 export class CoreSessionBackstop {
+  /** Per Session: what this Core has heard from it. A redraw moves `heardAt` only. */
+  private readonly lastActivity = new Map<string, SessionActivity>();
   /**
-   * Per Session: when it was last heard at all, and when it was last heard
-   * saying something new. A redraw moves `heardAt` only.
+   * Sessions this instance's *idle* rule wrote a `finished` for, and when.
+   * Nothing else is ever in here — not the quiet rule, not a hook's finish,
+   * not an operator's — so nothing else can be reopened by stray bytes.
    */
-  private readonly lastActivity = new Map<string, { heardAt: number; outputAt: number }>();
+  private readonly idleSettled = new Map<string, number>();
   private timer: ReturnType<typeof setInterval> | null = null;
 
   constructor(private readonly deps: CoreSessionBackstopDeps) {}
@@ -182,9 +267,10 @@ export class CoreSessionBackstop {
    * wrote output. Cheap on purpose: it is called from the PTY data path (the
    * caller throttles and classifies) and from every accepted hook.
    *
-   * `kind` says which of the two rules at the top of this file the call feeds.
-   * It defaults to `output` because every caller that has an opinion is
-   * reporting real work: a hook that landed is not a repaint.
+   * `kind` says what was heard, and the default is `output` because a caller
+   * with no opinion is reporting real work. The hook receiver passes `hook`,
+   * which additionally tells the idle rule that this harness can report
+   * itself; the PTY path passes what the classifier made of the bytes.
    */
   noteActivity(taskId: string, kind: SessionActivityKind = "output"): void {
     if (!taskId) return;
@@ -192,22 +278,59 @@ export class CoreSessionBackstop {
     const prior = this.lastActivity.get(taskId);
     // Re-insert so insertion order approximates recency for the cap below.
     this.lastActivity.delete(taskId);
+    const progress = kind !== "redraw";
     this.lastActivity.set(taskId, {
       heardAt: now,
       // A redraw is the harness being there, not the turn getting anywhere:
       // it keeps the quiet rule off and leaves the idle rule's clock running.
-      outputAt: kind === "output" ? now : (prior?.outputAt ?? 0),
+      outputAt: progress ? now : (prior?.outputAt ?? 0),
+      hookAt: kind === "hook" ? now : (prior?.hookAt ?? 0),
+      // A hook resets the count; an `output` burst adds to it. Both are read
+      // by the idle rule as "this harness has more to say".
+      outputSinceHook:
+        kind === "hook" ? 0 : (prior?.outputSinceHook ?? 0) + (kind === "output" ? 1 : 0),
+      // Any progress breaks a run of idle sweeps.
+      idleSweeps: progress ? 0 : (prior?.idleSweeps ?? 0),
     });
     while (this.lastActivity.size > MAX_TRACKED_TASKS) {
       const oldest = this.lastActivity.keys().next().value;
       if (oldest === undefined) break;
       this.lastActivity.delete(oldest);
     }
+    if (progress) this.reopenIfIdleSettled(taskId, now);
+  }
+
+  /**
+   * Take back a `finished` this instance's idle rule wrote, because the
+   * harness has just proved the turn was still running.
+   *
+   * Only a row this rule settled is eligible, only while the marker is inside
+   * {@link IDLE_REOPEN_MS}, and only if the row still says `finished` — a
+   * status anyone else has since written is theirs, and the marker is dropped
+   * rather than argued with. The subagent set cleared by the settle cannot be
+   * restored, which is the one part of a wrong idle settle that does not come
+   * back; it expires on its own.
+   */
+  private reopenIfIdleSettled(taskId: string, now: number): void {
+    const settledAt = this.idleSettled.get(taskId);
+    if (settledAt === undefined) return;
+    this.idleSettled.delete(taskId);
+    if (now - settledAt > (this.deps.reopenMs ?? IDLE_REOPEN_MS)) return;
+    try {
+      if (this.deps.writer.readTask(taskId)?.status !== "finished") return;
+      if (!this.deps.writer.mutate({ op: "update", taskId, status: "running" })) return;
+      log.info("session-backstop.reopened", { taskId, quietForMs: now - settledAt });
+    } catch (err) {
+      log.warn("session-backstop.reopen-failed", { taskId, error: String(err) });
+    }
   }
 
   /** Forget a Session — its process is gone and something else settled it. */
   forget(taskId: string): void {
     this.lastActivity.delete(taskId);
+    // A process that is gone writes no more bytes, so nothing is left that
+    // could justify reopening the row.
+    this.idleSettled.delete(taskId);
   }
 
   start(): void {
@@ -244,12 +367,23 @@ export class CoreSessionBackstop {
       // alone — and only ever by this rule, because a Core that has heard no
       // bytes cannot know whether the ones it missed were redraws.
       const quiet = now - lastHeard >= quietMs;
-      // Idle: the harness is demonstrably still painting, and nothing new has
-      // appeared on screen for the short window (issue 391).
-      const painting = stamps !== undefined && now - stamps.heardAt <= paintingMs;
-      const lastOutput = Math.max(stamps?.outputAt ?? 0, task.updatedAt);
-      const idle = painting && now - lastOutput >= idleMs;
-      if (!quiet && !idle) continue;
+      if (!quiet && stamps) {
+        // Idle: the harness is demonstrably still painting, nothing new has
+        // appeared on screen for the window, and its hooks are not the thing
+        // carrying the turn (issue 391, narrowed by the review of PR 455).
+        const painting = now - stamps.heardAt <= paintingMs;
+        const lastOutput = Math.max(stamps.outputAt, task.updatedAt);
+        // A Session whose hooks arrive has a better witness than its pixels:
+        // if it has printed anything real since its last hook, it is mid-turn
+        // and the hook that ends the turn is still coming. A Session that has
+        // never had a hook — the case #391 is about — has only its screen.
+        const hooksSpeakForIt = stamps.hookAt > 0 && stamps.outputSinceHook > 0;
+        const idleNow = painting && !hooksSpeakForIt && now - lastOutput >= idleMs;
+        stamps.idleSweeps = idleNow ? stamps.idleSweeps + 1 : 0;
+        if (stamps.idleSweeps < IDLE_SWEEPS_REQUIRED) continue;
+      } else if (!quiet) {
+        continue;
+      }
       if (this.settle(task.taskId, quiet ? "quiet" : "idle")) settled.push(task.taskId);
     }
     return settled;
@@ -271,6 +405,16 @@ export class CoreSessionBackstop {
       clearSubagentActivity(taskId);
       if (status === "finished") noteTaskFinished(taskId);
       this.forget(taskId);
+      // Only the idle rule leaves a marker, and only a `finished` can be taken
+      // back — a `disconnected` row has no process left to change its mind.
+      if (rule === "idle" && status === "finished") {
+        this.idleSettled.set(taskId, this.now());
+        while (this.idleSettled.size > MAX_TRACKED_TASKS) {
+          const oldest = this.idleSettled.keys().next().value;
+          if (oldest === undefined) break;
+          this.idleSettled.delete(oldest);
+        }
+      }
       log.info("session-backstop.settled", { taskId, status, rule });
       return true;
     } catch (err) {

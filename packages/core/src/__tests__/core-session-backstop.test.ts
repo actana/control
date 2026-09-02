@@ -37,7 +37,7 @@ import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 const QUIET_MS = 15 * 60 * 1000;
 const MINUTE = 60 * 1000;
 /** The idle-redraw window this file leaves at its production default. */
-const IDLE_MS = 5 * MINUTE;
+const IDLE_MS = 8 * MINUTE;
 /** How often a painting TUI writes a frame. */
 const FRAME_MS = 1000;
 
@@ -244,18 +244,40 @@ describe("settling a turn whose end nobody reported", () => {
       const backstop = makeBackstop();
       const before = getLastEventId();
 
-      // Four minutes of clock. The old rule sees a chatty harness; this one
-      // sees a screen on which nothing has happened.
-      paintFor(backstop, 4 * MINUTE);
+      // Seven minutes of clock. The old rule sees a chatty harness; this one
+      // sees a screen on which nothing has happened — but not yet for long
+      // enough.
+      paintFor(backstop, 7 * MINUTE);
       expect(backstop.sweepOnce()).toEqual([]);
       expect(statusOf("t-1")).toBe("running");
 
-      // Past five, and the operator gets the finish nobody reported — well
-      // inside the quarter-hour that would never have arrived.
+      // Past eight, and one sweep is still not enough: the rule asks twice,
+      // because one sweep is one sample of a screen.
       paintFor(backstop, 2 * MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
+
+      // The second sweep agrees, and the operator gets the finish nobody
+      // reported — well inside the quarter-hour that would never have arrived.
+      paintFor(backstop, MINUTE);
       expect(backstop.sweepOnce()).toEqual(["t-1"]);
       expect(statusOf("t-1")).toBe("finished");
       expect(kindsSince(before)).toContain("session:finished");
+    });
+
+    it("starts the two sweeps over when something new appears", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+
+      paintFor(backstop, IDLE_MS + MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+
+      // A tool result lands between the two sweeps. The run is broken, and the
+      // window starts again from here.
+      backstop.noteActivity("t-1", "output");
+      paintFor(backstop, MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      expect(statusOf("t-1")).toBe("running");
     });
 
     it("never settles a turn that is still putting things on screen", () => {
@@ -277,11 +299,11 @@ describe("settling a turn whose end nobody reported", () => {
       const backstop = makeBackstop();
 
       // A long tool call: nothing but the spinner on screen, but the harness
-      // is POSTing `PostToolUse` at the receiver, which calls this with no
-      // kind at all. A hook is never a repaint.
+      // is POSTing `PostToolUse` at the receiver, which calls this with `hook`.
+      // A hook is never a repaint.
       for (let minute = 0; minute < 30; minute += 1) {
         paintFor(backstop, MINUTE);
-        if (minute % 4 === 0) backstop.noteActivity("t-1");
+        if (minute % 4 === 0) backstop.noteActivity("t-1", "hook");
         expect(backstop.sweepOnce()).toEqual([]);
       }
       expect(statusOf("t-1")).toBe("running");
@@ -309,8 +331,161 @@ describe("settling a turn whose end nobody reported", () => {
       const backstop = makeBackstop();
 
       paintFor(backstop, IDLE_MS + MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      paintFor(backstop, MINUTE);
       expect(backstop.sweepOnce()).toEqual(["t-1"]);
       expect(statusOf("t-1")).toBe("disconnected");
+    });
+  });
+
+  // ─── Review of PR 455, finding 1: the finish this rule writes comes back ───
+  //
+  // The argument for a window shorter than fifteen minutes is that the mistake
+  // is cheap. Nothing made it cheap: a `PostToolUse` maps to no status, and the
+  // PTY output path writes none at all, so a row settled early stayed
+  // `finished` until the operator's next prompt. The rule now takes it back —
+  // and only the rule's own finishes, never anybody else's.
+  describe("taking back a finish the idle rule wrote", () => {
+    const paintFor = (backstop: CoreSessionBackstop, ms: number) => {
+      for (let elapsed = 0; elapsed < ms; elapsed += FRAME_MS) {
+        nowMs += FRAME_MS;
+        backstop.noteActivity("t-1", "redraw");
+      }
+    };
+    /** Paint until the idle rule has settled the row, and assert it did. */
+    const settleByIdleRule = (backstop: CoreSessionBackstop) => {
+      paintFor(backstop, IDLE_MS + MINUTE);
+      expect(backstop.sweepOnce()).toEqual([]);
+      paintFor(backstop, MINUTE);
+      expect(backstop.sweepOnce()).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
+    };
+
+    it("returns the row to running when real output finally arrives", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      // The six-minute build prints its first line. The turn was live all
+      // along, and the card says so again without an operator touching it.
+      nowMs += MINUTE;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("returns the row to running for a hook, too", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      nowMs += MINUTE;
+      backstop.noteActivity("t-1", "hook");
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("is not reopened by more of the same repainting", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      paintFor(backstop, 5 * MINUTE);
+      expect(statusOf("t-1")).toBe("finished");
+    });
+
+    it("never reopens a finish the quiet rule wrote", () => {
+      // The marker is set by the idle rule alone. A Session that went silent
+      // and was settled for it is finished, and bytes arriving later — an
+      // operator scrolling the pane, a harness's parting paint — do not undo
+      // an operator-visible finish.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      nowMs += QUIET_MS + MINUTE;
+      expect(backstop.sweepOnce()).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
+
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
+    });
+
+    it("leaves a row alone once someone else has moved it", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      // The operator archived it, or the PTY exit settled it. Whatever the row
+      // says now, it is not this rule's `finished` any more.
+      coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "terminated" });
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("terminated");
+    });
+
+    it("stops offering to reopen once the grace has passed", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      nowMs += 31 * MINUTE;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
+    });
+
+    it("does not reopen a Session whose process is gone", () => {
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+
+      // The PTY exit path calls this; there are no more bytes coming, and any
+      // that do arrive belong to nothing.
+      backstop.forget("t-1");
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
+    });
+  });
+
+  // ─── Review of PR 455, finding 2: a harness whose hooks work is not judged
+  // on its pixels ───
+  describe("deferring to a harness that can report itself", () => {
+    it("never settles a long tool call on a hooked harness", () => {
+      // Claude Code installs `PreToolUse` with an `AskUserQuestion` matcher, so
+      // a single `Bash` call emits no hook at all until it completes. Half an
+      // hour of `pnpm build` behind a spinner, on a harness whose hooks are
+      // working perfectly, must not be called over.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+
+      backstop.noteActivity("t-1", "hook");
+      nowMs += MINUTE;
+      backstop.noteActivity("t-1", "output");
+      for (let minute = 0; minute < 30; minute += 1) {
+        for (let second = 0; second < 60; second += 1) {
+          nowMs += FRAME_MS;
+          backstop.noteActivity("t-1", "redraw");
+        }
+        expect(backstop.sweepOnce()).toEqual([]);
+      }
+      expect(statusOf("t-1")).toBe("running");
+
+      // And the tool finally completes: `PostToolUse` lands, the count of
+      // output since the last hook resets, and nothing has been lost.
+      backstop.noteActivity("t-1", "hook");
+      expect(statusOf("t-1")).toBe("running");
+    });
+
+    it("still settles a harness that has never sent a hook", () => {
+      // Codex before `/hooks` has been reviewed: no hook has ever arrived, so
+      // the screen is the only witness there is, and the rule reads it.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      backstop.noteActivity("t-1", "output");
+
+      for (let second = 0; second < 10 * 60; second += 1) {
+        nowMs += FRAME_MS;
+        backstop.noteActivity("t-1", "redraw");
+      }
+      expect(backstop.sweepOnce()).toEqual([]);
+      nowMs += MINUTE;
+      expect(backstop.sweepOnce()).toEqual(["t-1"]);
+      expect(statusOf("t-1")).toBe("finished");
     });
   });
 
