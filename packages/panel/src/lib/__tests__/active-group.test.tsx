@@ -13,11 +13,12 @@ import type { AppSettings } from "~/lib/api";
 import type { Group } from "~/db/schema";
 
 const updateSettings = vi.fn();
+const getSettings = vi.fn();
 
 vi.mock("~/lib/api", () => ({
   api: {
     updateSettings: (body: unknown) => updateSettings(body),
-    getSettings: () => Promise.reject(new Error("settings must be primed in these tests")),
+    getSettings: () => getSettings(),
     listGroups: () => Promise.reject(new Error("groups must be primed in these tests")),
   },
 }));
@@ -54,6 +55,21 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+/**
+ * A client whose settings query really fetches — no primed row, so the first
+ * GET is genuinely in flight and can be cancelled (or not) for real.
+ */
+function mountLive() {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Infinity, refetchOnWindowFocus: false } },
+  });
+  client.setQueryData(queryKeys.groups, GROUPS);
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  return { client, ...renderHook(() => useActiveGroup(), { wrapper }) };
+}
+
 /** `initial` is what the server holds; `undefined` leaves settings unhydrated. */
 function mount(initial: string | null | undefined) {
   const client = new QueryClient({
@@ -88,6 +104,8 @@ async function settle() {
 
 beforeEach(() => {
   updateSettings.mockReset();
+  getSettings.mockReset();
+  getSettings.mockRejectedValue(new Error("settings must be primed in these tests"));
   window.localStorage.clear();
   __resetActiveGroupWritesForTests();
   vi.spyOn(console, "error").mockImplementation(() => {});
@@ -101,8 +119,8 @@ afterEach(() => {
 describe("the active-group write ledger", () => {
   it("only reports the newest write as current", () => {
     const ledger = createActiveGroupWriteLedger(ACTIVE_GROUP_ALL);
-    const first = ledger.beginWrite();
-    const second = ledger.beginWrite();
+    const first = ledger.beginWrite("g-b");
+    const second = ledger.beginWrite("g-c");
     expect(ledger.settleWrite(first)).toBe(false);
     expect(ledger.settleWrite(second)).toBe(true);
   });
@@ -110,14 +128,14 @@ describe("the active-group write ledger", () => {
   it("keeps the acknowledged group until a newer answer confirms one", () => {
     const ledger = createActiveGroupWriteLedger("g-a");
     expect(ledger.lastAcknowledged()).toBe("g-a");
-    ledger.acknowledge(ledger.beginWrite(), "g-b");
+    ledger.acknowledge(ledger.beginWrite("g-b"), "g-b");
     expect(ledger.lastAcknowledged()).toBe("g-b");
   });
 
   it("refuses an acknowledgement older than the one already recorded", () => {
     const ledger = createActiveGroupWriteLedger("g-a");
-    const first = ledger.beginWrite();
-    const second = ledger.beginWrite();
+    const first = ledger.beginWrite("g-b");
+    const second = ledger.beginWrite("g-c");
     ledger.acknowledge(second, "g-c");
     // The older PATCH answers last; its group is the server's older truth.
     ledger.acknowledge(first, "g-b");
@@ -126,8 +144,8 @@ describe("the active-group write ledger", () => {
 
   it("records a superseded answer that the server did confirm", () => {
     const ledger = createActiveGroupWriteLedger("g-a");
-    const first = ledger.beginWrite();
-    ledger.beginWrite();
+    const first = ledger.beginWrite("g-b");
+    ledger.beginWrite("g-c");
     // The older write is no longer the one that may paint...
     expect(ledger.settleWrite(first)).toBe(false);
     // ...but the server took it, so it is the group a later failure returns to.
@@ -148,7 +166,7 @@ describe("the active-group write ledger", () => {
 
   it("ignores a settings read taken while a local write is in flight", () => {
     const ledger = createActiveGroupWriteLedger("g-a");
-    const generation = ledger.beginWrite();
+    const generation = ledger.beginWrite("g-b");
     // The optimistic value is this tab's own, not the server's word.
     ledger.observe("g-b");
     expect(ledger.lastAcknowledged()).toBe("g-a");
@@ -159,8 +177,8 @@ describe("the active-group write ledger", () => {
 
   it("lets an observed answer outrank every write older than the newest", () => {
     const ledger = createActiveGroupWriteLedger("g-a");
-    const first = ledger.beginWrite();
-    const second = ledger.beginWrite();
+    const first = ledger.beginWrite("g-b");
+    const second = ledger.beginWrite("g-c");
     ledger.settleWrite(first);
     ledger.settleWrite(second);
     // A refetch answered while nothing was in flight: it is the server's word
@@ -325,6 +343,62 @@ describe("useActiveGroup under racing PATCHes", () => {
     expect(client.getQueryData<AppSettings>(queryKeys.settings)?.collapsedProjectGroups).toEqual([
       "pinned",
     ]);
+  });
+
+  // The self-heal effect PATCHes "all" whenever the stored group is missing from
+  // the group list. Restoring that group on failure re-arms it: one request per
+  // round trip, for as long as the server keeps saying no.
+  it("does not restore a deleted group when the self-heal PATCH fails", async () => {
+    updateSettings.mockImplementation(() => Promise.reject(new Error("offline")));
+    window.localStorage.setItem(ACTIVE_PROJECT_GROUP_STORAGE_KEY, "g-gone");
+
+    // Settings hold a group this Panel's group list no longer has.
+    const { client, result } = mount("g-gone");
+    await settle();
+    await settle();
+    await settle();
+
+    expect(result.current.activeGroup).toBe(ACTIVE_GROUP_ALL);
+    // Exactly one PATCH: the self-heal ran once and stayed run.
+    expect(updateSettings).toHaveBeenCalledTimes(1);
+    // And the deleted id is not written back anywhere it could outlive the tab.
+    expect(window.localStorage.getItem(ACTIVE_PROJECT_GROUP_STORAGE_KEY)).toBe(ACTIVE_GROUP_ALL);
+    expect(client.getQueryData<AppSettings>(queryKeys.settings)?.activeProjectGroup).toBeNull();
+  });
+
+  // The rail is live and clickable during boot, painted from `placeholderData`
+  // while the first settings GET is still out. Cancelling that read would leave
+  // the query pending and idle with nothing scheduled to retry it, and nothing
+  // in the Panel refetches this key — so the row must be allowed to land.
+  it("lets the first settings GET finish, and the click still wins", async () => {
+    const boot = deferred<AppSettings>();
+    const patch = deferred<AppSettings>();
+    getSettings.mockReturnValueOnce(boot.promise);
+    updateSettings.mockReturnValueOnce(patch.promise);
+
+    const { client, result } = mountLive();
+    await settle();
+    expect(client.getQueryState(queryKeys.settings)?.fetchStatus).toBe("fetching");
+
+    act(() => result.current.setActiveGroup("g-b"));
+    await settle();
+    // The boot read was not cancelled, and it is the only one there will be.
+    expect(client.getQueryState(queryKeys.settings)?.fetchStatus).toBe("fetching");
+    expect(getSettings).toHaveBeenCalledTimes(1);
+
+    // It answers with the pre-click row...
+    boot.resolve(settingsWith("g-a"));
+    await settle();
+    expect(client.getQueryData<AppSettings>(queryKeys.settings)).toBeDefined();
+    expect(client.getQueryState(queryKeys.settings)?.status).toBe("success");
+    // ...and the click, which is newer than that read, stands on top of it.
+    expect(result.current.activeGroup).toBe("g-b");
+
+    patch.resolve(settingsWith("g-b"));
+    await settle();
+    expect(result.current.activeGroup).toBe("g-b");
+    // The rail still responds: the cache is populated, so writes land.
+    expect(client.getQueryData<AppSettings>(queryKeys.settings)?.activeProjectGroup).toBe("g-b");
   });
 
   it("still applies a lone answer, and stores 'all' as null", async () => {

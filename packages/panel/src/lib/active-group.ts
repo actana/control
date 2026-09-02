@@ -51,6 +51,24 @@ function activeGroupOf(settings: Pick<AppSettings, "activeProjectGroup">): Activ
 }
 
 /**
+ * What the rail actually renders for a stored group: a group id the loaded
+ * group list no longer has (deleted here, or by another window) shows as "all".
+ * Held apart from `useActiveGroup` because two callers need the same answer —
+ * the memo that renders it, and the failure path, which must never put a group
+ * back that this function would refuse.
+ */
+export function displayedActiveGroup(
+  stored: ActiveProjectGroup,
+  groups: Group[] | undefined,
+): ActiveProjectGroup {
+  if (!isGroupIdActive(stored)) return stored;
+  // The list hasn't loaded, so nothing is known to be missing yet; a slow fetch
+  // must not flash the unscoped view.
+  if (groups === undefined) return stored;
+  return groups.some((g) => g.id === stored) ? stored : ACTIVE_GROUP_ALL;
+}
+
+/**
  * Generation guard over the optimistic active-group write (#384).
  *
  * `setActiveGroup` writes the cache first and PATCHes second, and two PATCHes
@@ -77,13 +95,35 @@ export function createActiveGroupWriteLedger(initial: ActiveProjectGroup = ACTIV
   /** The write whose answer `acknowledged` came from; 0 for a seed/observe. */
   let acknowledgedGeneration = 0;
   let seeded = false;
+  /** The newest selection, and whether an arriving row may still overrule it. */
+  let latestGroup: ActiveProjectGroup = initial;
+  let guarded = false;
 
   return {
     /** Claim the generation for one local (optimistic) write. */
-    beginWrite(): number {
+    beginWrite(group: ActiveProjectGroup): number {
       latest += 1;
       inFlight += 1;
+      latestGroup = group;
+      guarded = true;
       return latest;
+    },
+    /**
+     * The selection a settings row arriving now must not overrule, or null.
+     *
+     * A read that was already out when the click happened answers with the
+     * pre-click row, and during boot that read is the *only* one there will
+     * ever be — nothing in the Panel refetches this key — so it cannot simply
+     * be cancelled. The guard lifts as soon as a row agrees with the selection,
+     * which for a hydrated cache is the optimistic write itself, one render
+     * later. It is released outright when the newest write rolls back, because
+     * then the rail is no longer speaking for that selection.
+     */
+    guardedGroup(): ActiveProjectGroup | null {
+      return guarded ? latestGroup : null;
+    },
+    releaseGuard(): void {
+      guarded = false;
     },
     /** Is `generation` still the newest local write? No side effect. */
     isCurrent(generation: number): boolean {
@@ -170,24 +210,8 @@ export function useActiveGroup(): {
       : (settings.activeProjectGroup ?? ACTIVE_GROUP_ALL);
 
   // A stale group id (group deleted, possibly by another window) falls back to
-  // "all" — but only once the group list has actually loaded, so a slow fetch
-  // doesn't flash the unscoped view.
-  const activeGroup = useMemo(() => {
-    if (!isGroupIdActive(raw)) return raw;
-    if (groups === undefined) return raw;
-    return groups.some((g) => g.id === raw) ? raw : ACTIVE_GROUP_ALL;
-  }, [raw, groups]);
-
-  // Anything the settings query itself delivers is the server's word, so long
-  // as this tab has no write of its own outstanding. Before it hydrates there
-  // is no server answer to adopt, so the ledger is seeded with the value the
-  // rail is already rendering — otherwise a click made during that window and
-  // then failing would roll back to "All projects" rather than to the group
-  // the operator was on.
-  useEffect(() => {
-    if (settings === undefined) writes.seed(raw);
-    else writes.observe(activeGroupOf(settings));
-  }, [settings, raw]);
+  // "all".
+  const activeGroup = useMemo(() => displayedActiveGroup(raw, groups), [raw, groups]);
 
   /** The optimistic half: localStorage + settings cache, no request. */
   const showActiveGroup = useCallback(
@@ -200,15 +224,50 @@ export function useActiveGroup(): {
     [queryClient],
   );
 
+  useEffect(() => {
+    // Before settings hydrate there is no server answer to adopt, so the ledger
+    // is seeded with the value the rail is *rendering* — the validated one, not
+    // the raw id, or a failed first click could roll the rail onto a group the
+    // memo above refuses to display.
+    if (settings === undefined) {
+      writes.seed(activeGroup);
+      return;
+    }
+    const guarded = writes.guardedGroup();
+    // A row that disagrees with the newest local selection is answering a read
+    // older than the click — the boot GET, above all, which is the one read
+    // that must be allowed to finish. The selection goes back on top of it.
+    if (guarded !== null && activeGroupOf(settings) !== guarded) {
+      showActiveGroup(guarded);
+      return;
+    }
+    if (guarded !== null) writes.releaseGuard();
+    // Anything the settings query delivers with no local write of this tab's
+    // outstanding is the server's word.
+    writes.observe(activeGroupOf(settings));
+  }, [settings, activeGroup, showActiveGroup]);
+
   const setActiveGroup = useCallback(
     (next: ActiveProjectGroup) => {
-      const generation = writes.beginWrite();
+      const generation = writes.beginWrite(next);
       void (async () => {
         // The house pattern for an optimistic settings write (see
         // `UsageSettingsPage.tsx` and `ProvidersSettingsPage.tsx`): a settings
         // GET already in flight would answer with the pre-PATCH row and paint
         // it straight over the optimistic write, so it is cancelled first.
-        await queryClient.cancelQueries({ queryKey: queryKeys.settings });
+        //
+        // Only once the row has landed, though. Those pages render after
+        // settings resolve; this hook is live during boot, painting the rail
+        // from `placeholderData` while the first GET is still out. Cancelling
+        // that one reverts the query to pending/idle with nothing scheduled,
+        // and nothing in the Panel refetches this key — the row would never
+        // arrive, every `setQueryData` against the empty cache would be a
+        // no-op, and the rail would stop responding. So the initial load is
+        // left to finish and `guardedGroup` puts this selection back on top of
+        // whatever it answers with.
+        if (queryClient.getQueryData(queryKeys.settings) !== undefined) {
+          await queryClient.cancelQueries({ queryKey: queryKeys.settings });
+        }
         // That await means two rapid clicks resume in an order the click order
         // does not settle, so the optimistic paint takes the same currency
         // guard the answers do.
@@ -230,8 +289,17 @@ export function useActiveGroup(): {
         if (updated === undefined) {
           console.error("[settings] failed to persist active project group:", failure);
           // A superseded failure leaves the newer selection alone; the newest
-          // one goes back to what the server last acknowledged.
-          if (current) showActiveGroup(writes.lastAcknowledged());
+          // one goes back to what the server last acknowledged — and stops
+          // speaking for the selection it failed to save.
+          if (!current) return;
+          writes.releaseGuard();
+          const restore = writes.lastAcknowledged();
+          // Never a group the rail would refuse to display. The settings row
+          // can hold a group another window deleted; putting it back would
+          // re-arm the self-heal effect below, which PATCHes "all", which
+          // fails, which restores it again — one request per round trip for as
+          // long as the server keeps saying no.
+          if (displayedActiveGroup(restore, groups) === restore) showActiveGroup(restore);
           return;
         }
 
@@ -247,7 +315,7 @@ export function useActiveGroup(): {
         showActiveGroup(activeGroupOf(updated));
       })();
     },
-    [queryClient, showActiveGroup],
+    [queryClient, showActiveGroup, groups],
   );
 
   // Self-heal persistence when the active group was deleted: the memo above
