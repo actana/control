@@ -1,5 +1,5 @@
 import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
-import { TASK_STATUSES, type Harness } from "@actana/shared/domain";
+import { isActiveStatus, isTaskStatus, TASK_STATUSES, type Harness } from "@actana/shared/domain";
 import type { Project, ProjectPresentation, TaskStatus } from "~/db/schema";
 
 export type ProjectWithCounts = Project & {
@@ -50,6 +50,64 @@ export function projectSettingsFromSnapshot(
   };
 }
 
+/** The count block every {@link ProjectWithCounts} carries. */
+export type ProjectTaskCounts = ProjectWithCounts["taskCounts"];
+
+/**
+ * A count block with every status at zero — "this project has no active work",
+ * as opposed to "nobody has counted yet". The Panel's own rows are counted
+ * server-side; this is what a row built from a Core snapshot starts as, and
+ * what a project the fleet fan-out returned no rows for settles at.
+ */
+export function emptyTaskCounts(): ProjectTaskCounts {
+  return {
+    ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
+    total: 0,
+    activeNonDone: 0,
+  };
+}
+
+/** How a fleet row is addressed per project: project ids are only Core-unique. */
+export function fleetProjectKey(coreId: string, projectId: string): string {
+  return `${coreId}/${projectId}`;
+}
+
+/**
+ * Per-project counts derived from the Fleet fan-out's own rows, keyed by
+ * {@link fleetProjectKey}.
+ *
+ * The pin rail draws an activity dot from `taskCounts`, and a Core-owned pin
+ * has no Panel database row to count — so the counts have to come from the
+ * same `tasksList` answer the Fleet row came from. Deriving them here rather
+ * than from a second read is what makes a dot and its row agree by
+ * construction: one snapshot in, both readings out (#389 acceptance 2).
+ *
+ * The arithmetic mirrors the server's own `decorate()` — archived rows are
+ * already dropped by `mergeFleetTasks`, `total` is the rows counted, and
+ * `activeNonDone` is the active-but-unfinished subset — so a Core-owned
+ * project and a Panel-owned one light the same dot for the same work.
+ */
+export function taskCountsByFleetProject(
+  rows: readonly { coreId: string; projectId: string; status: string }[],
+): Map<string, ProjectTaskCounts> {
+  const byProject = new Map<string, ProjectTaskCounts>();
+  for (const row of rows) {
+    const key = fleetProjectKey(row.coreId, row.projectId);
+    let counts = byProject.get(key);
+    if (!counts) {
+      counts = emptyTaskCounts();
+      byProject.set(key, counts);
+    }
+    counts.total++;
+    // A Core may name a status this Panel does not model; it still counts
+    // toward `total` but has no bucket of its own to land in.
+    if (!isTaskStatus(row.status)) continue;
+    counts[row.status]++;
+    if (isActiveStatus(row.status) && row.status !== "finished") counts.activeNonDone++;
+  }
+  return byProject;
+}
+
 /**
  * A Core's project snapshot as the row every project surface renders.
  *
@@ -86,11 +144,7 @@ export function projectRowFromSnapshot(
     ...projectSettingsFromSnapshot(snapshot),
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
-    taskCounts: {
-      ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
-      total: 0,
-      activeNonDone: 0,
-    },
+    taskCounts: emptyTaskCounts(),
     preview: null,
     githubUrl: null,
     repoKey: null,

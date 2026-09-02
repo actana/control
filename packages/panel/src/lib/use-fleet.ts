@@ -7,8 +7,11 @@ import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";
 import {
+  emptyTaskCounts,
+  fleetProjectKey,
   projectPresentationById,
   projectRowFromSnapshot,
+  taskCountsByFleetProject,
   type ProjectWithCounts,
 } from "~/shared/projects";
 import type { ProjectPresentation } from "~/db/schema";
@@ -116,6 +119,10 @@ export function useFleetTasks(): {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const refreshing = useRef(false);
+  // An event arrived while a fan-out was in flight and its finish is not in
+  // that fan-out's answers. Set by the dropped call, read by the loop that
+  // owns the refresh — see `run` below.
+  const pending = useRef(false);
   const coresRef = useRef<CoreWithDial[]>(cores);
   coresRef.current = cores;
   // Which Cores exist, and whether each is reachable — the two things a change
@@ -127,9 +134,10 @@ export function useFleetTasks(): {
   );
   const coreIds = useMemo(() => cores.map((c) => c.id).join(","), [cores]);
 
-  const run = useCallback(async () => {
-    if (!bridge || refreshing.current) return;
-    refreshing.current = true;
+  const fanOut = useCallback(async (): Promise<boolean> => {
+    // Unreachable through `run`, which guards the same thing; false is the
+    // safe answer either way — no link, nothing to re-read.
+    if (!bridge) return false;
     try {
       const results = await Promise.all(
         coresRef.current.map(async (core): Promise<CoreFanOutResult> => {
@@ -158,13 +166,42 @@ export function useFleetTasks(): {
       );
       setFleet(mergeFleetTasks(results));
       setError(null);
+      return true;
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      return false;
     } finally {
       setLoading(false);
-      refreshing.current = false;
     }
   }, [bridge]);
+
+  const run = useCallback(async () => {
+    if (!bridge) return;
+    if (refreshing.current) {
+      // The fan-out in flight was launched *before* this event, so its answers
+      // cannot contain what the event announced — a `session:finished` that
+      // lands here used to be dropped outright, leaving the row running until
+      // the 15s poll or the next event (#389). Remember it instead.
+      pending.current = true;
+      return;
+    }
+    refreshing.current = true;
+    try {
+      do {
+        // Cleared before the read, not after: anything that arrives while this
+        // very pass is in flight has to survive into the next one.
+        pending.current = false;
+        // One trailing pass per burst, not one per event: every event landing
+        // during a pass sets the same flag, and the loop reads it once.
+        // A failed pass stops the loop rather than spinning on the error —
+        // whatever arrived during it is picked up by the next event or poll.
+        if (!(await fanOut())) break;
+      } while (pending.current);
+    } finally {
+      refreshing.current = false;
+      pending.current = false;
+    }
+  }, [bridge, fanOut]);
 
   // Watch every Core so its task events reach this tab, and refetch when one
   // lands. This is what "without refresh" means: an agent finishing on a VM
@@ -354,13 +391,22 @@ export function useCoreTasks(
  * Core fact, so this is a live read per Core rather than anything the Panel
  * remembers — and it re-reads when a Core says a pin changed, so two Panels on
  * one Core agree.
+ *
+ * Each row's `taskCounts` — the rail's activity dot — is joined on from the
+ * Fleet fan-out's settled rows rather than counted separately, so the dot and
+ * the Fleet row for the same project are two readings of one snapshot and
+ * cannot disagree (#389).
  */
 export function useRemotePinnedProjects(): {
   projects: ProjectWithCounts[];
   refresh: () => void;
 } {
   const bridge = getPanelBridge();
-  const { cores } = useCores();
+  // The same fan-out the Fleet view renders, not a second one: the rail's
+  // activity dot is `taskCounts`, a Core-owned pin has no Panel row to count,
+  // and a dot counted from a different read is a dot that can disagree with
+  // the row it stands for. One settled snapshot feeds both (#389).
+  const { fleet, cores } = useFleetTasks();
   const [pinned, setPinned] = useState<ProjectWithCounts[]>([]);
   const [refreshNonce, setRefreshNonce] = useState(0);
   const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
@@ -423,6 +469,19 @@ export function useRemotePinnedProjects(): {
     };
   }, [bridge, coreIds]);
 
-  return { projects: pinned, refresh };
+  // Join the pins onto the fleet's counts. `projectRowFromSnapshot` has no
+  // answer for task counts — a project snapshot carries no tasks — so without
+  // this every Core-owned pin renders a permanently dark dot, and the one
+  // event that would have lit it is the one the refresh used to drop.
+  const projects = useMemo(() => {
+    const counts = taskCountsByFleetProject(fleet.rows);
+    return pinned.map((project) => ({
+      ...project,
+      taskCounts:
+        counts.get(fleetProjectKey(project.coreId ?? "", project.id)) ?? emptyTaskCounts(),
+    }));
+  }, [pinned, fleet.rows]);
+
+  return { projects, refresh };
 }
 
