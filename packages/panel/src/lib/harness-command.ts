@@ -23,7 +23,19 @@ export function harnessUsesPersistedSession(agent: Harness): boolean {
 
 export function harnessLaunchMode(task: Task): HarnessLaunchMode {
   if (task.agent === "claude-code") {
-    return task.status === "ready" ? "new" : "resume";
+    // Both halves are load-bearing, the way they are for codex below.
+    //
+    // `status !== "ready"` alone read as "this Session has had a conversation",
+    // which was true only while `ready` was a one-way status. Issue 387 moves a
+    // Session off `ready` when its PTY dies — so a bare Session that was never
+    // prompted, and therefore never had a session id captured for it, now
+    // reaches this branch reading `disconnected`. Resuming it means
+    // `claude --resume <id>` against a conversation that never existed: the
+    // spawn dies on the spot, and the operator is shown the retry notice.
+    //
+    // A Session with no captured id has nothing to resume INTO, whatever its
+    // status says, so it starts new.
+    return task.claudeSessionId && task.status !== "ready" ? "resume" : "new";
   }
   if (task.agent === "cursor-cli") {
     return "resume";
