@@ -34,11 +34,12 @@
 // reading as a spinner (review of PR 455, finding 2).
 //
 // **Do the digits belong to a clock?** Digits are how a counter changes, so
-// they cannot count as new content — but only where they are a counter. They
-// are dropped from a *line* that carries a spinner glyph or an elapsed-time
-// pattern (`1m 12s`, `0:42`), and kept everywhere else, so `Downloading 41.2
-// MB / 900 MB`, `Compiled 41 files` and `Tests 41 passed` stay the changing
-// content they are while `⠹ Working (1m 12s)` reduces to its words.
+// they cannot count as new content — but only where they are a counter. Every
+// digit goes from a line a *spinner* is drawing, because the whole line is a
+// frame; everywhere else only the duration token itself goes (`12.3s`,
+// `1m 12s`). So `⠹ Working (1m 12s)` reduces to its words, while `Downloading
+// 41.2 MB / 900 MB`, `Compiled 41 files in 3.2s` and `✔ 43 passed in 12.3s`
+// keep the counts that are the only thing changing on them.
 //
 // **Is any word new?** What survives — escapes, control bytes and spinner
 // glyphs dropped, whitespace collapsed — is the frame's words. The burst is
@@ -74,9 +75,10 @@
 // that never fires is safe in a way that a wrong finish is not.
 //
 // None of these is load-bearing on its own: the caller narrows further (it
-// wants two consecutive idle sweeps, and it ignores this signal entirely for a
-// harness whose hooks are arriving), and a `finished` it wrote for a Session
-// that was only idle here is taken back by the next `output` burst — see
+// wants two consecutive idle sweeps, and it stands down while a hooked
+// harness's hooks are still speaking for it — for a bounded time, after which
+// it reads the screen anyway), and a `finished` it wrote for a Session that was
+// only idle here is taken back by the next `output` burst — see
 // `core-session-backstop.ts`.
 
 /** What a burst of PTY output was: something new on screen, or a repaint. */
@@ -160,7 +162,7 @@ const FRAME_GLYPH_PATTERN = /[\u2022\u00b7\u2500-\u25ff\u2700-\u27bf\u2800-\u28f
  */
 const SPINNER_GLYPH_PATTERN = /[\u2800-\u28ff\u2731-\u273d\u25d0-\u25d3\u25e2-\u25e5\u25f0-\u25f7]/;
 /**
- * An elapsed-time counter on a line: `12s`, `1m 12s`, `2h`.
+ * An elapsed-time counter: `12s`, `1m 12s`, `12.3s`, `2h`.
  *
  * A unit letter is required, and it must end the token. That keeps `900 MB`
  * and `3.1 MB/s` — sizes and rates, which are content — off this pattern, and
@@ -169,8 +171,14 @@ const SPINNER_GLYPH_PATTERN = /[\u2800-\u28ff\u2731-\u273d\u25d0-\u25d3\u25e2-\u
  * calling that a clock loses the count beside it (review of PR 455). A colon
  * counter with no spinner glyph beside it is left as content, which is the
  * direction that fails safe.
+ *
+ * Global, because what it matches is what gets dropped: a duration is removed
+ * as a *token*, not as a licence to drop every digit on its line. `✔ 43 passed
+ * in 12.3s` and `Compiled 41 files in 3.2s` are the standard build-progress
+ * shapes, and their counts are the only thing changing — taking those with the
+ * elapsed time settles a live build (review of PR 455, round 3).
  */
-const ELAPSED_PATTERN = /\d+\s*[hms]\b/;
+const ELAPSED_PATTERN = /\d+(?:[.,]\d+)?\s*[hms]\b/g;
 
 /**
  * Did this burst erase or move anything, or did it only append?
@@ -207,9 +215,14 @@ export function normalizePtyOutput(text: string): string {
     .replace(ESCAPE_PATTERN, " ")
     .replace(CONTROL_PATTERN, " ");
   const lines = plain.split(/[\r\n]+/).map((line) => {
-    const isClock = SPINNER_GLYPH_PATTERN.test(line) || ELAPSED_PATTERN.test(line);
+    // A line a spinner is drawing is a frame, and every number on it is part
+    // of the frame — the elapsed time, the token count, the context percentage.
+    // A line without one is content, and only the duration token on it is a
+    // clock; the count beside it is what changes when work happens.
     const words = line.replace(FRAME_GLYPH_PATTERN, " ");
-    return isClock ? words.replace(/\d/g, "") : words;
+    return SPINNER_GLYPH_PATTERN.test(line)
+      ? words.replace(/\d/g, "")
+      : words.replace(ELAPSED_PATTERN, " ");
   });
   return lines.join(" ").replace(/\s+/g, " ").trim();
 }

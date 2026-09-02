@@ -298,6 +298,35 @@ describe("telling a clock from the numbers that are the content", () => {
     expect(runFor12Minutes((tick) => `\x1b[2K\r• ${tick} passed`)).toBe(144);
   });
 
+  it("keeps a count that shares its line with an elapsed time", () => {
+    // Review of PR 455, round 3: one duration token used to take every digit
+    // on its line with it, and a count beside an elapsed time is the standard
+    // build-progress shape — Bazel, Gradle and every watch-mode runner print
+    // it. Each of those was a live turn read as idle.
+    expect(runFor12Minutes((tick) => `\x1b[2K\r✔ ${tick} passed in ${tick / 10}s`)).toBe(144);
+    expect(
+      runFor12Minutes((tick) => `\x1b[2K\rCompiled ${tick} files in ${tick / 10}s`),
+    ).toBe(144);
+    expect(
+      runFor12Minutes((tick) => `\x1b[2K\r[${tick},234 / 5,678] Compiling foo.cc; ${tick}s`),
+    ).toBe(144);
+  });
+
+  it("drops the duration itself, and only that", () => {
+    expect(normalizePtyOutput("\x1b[2K\r✔ 43 passed in 12.3s")).toBe("43 passed in");
+    expect(normalizePtyOutput("\x1b[2K\rCompiled 41 files in 3.2s")).toBe("Compiled 41 files in");
+    // A wall-clock stamp is not a duration, so nothing on that line is
+    // dropped at all — the stamp changes, and so does the count.
+    expect(normalizePtyOutput("\x1b[2K\r[12:34:07] Compiled 43 files")).toBe(
+      "[12:34:07] Compiled 43 files",
+    );
+    // A spinner's line is a frame, and every number on it belongs to the
+    // frame — the clock, the token count, the context percentage.
+    expect(normalizePtyOutput("\x1b[2K\r⠹ Working (1m 12s · ↑ 1.2k tokens)")).toBe(
+      "Working (m s ↑ .k tokens)",
+    );
+  });
+
   it("still calls a braille or sparkle spinner's counter a clock", () => {
     expect(runFor12Minutes((tick) => `\x1b[2K\r⠹ Working (${tick}s)`)).toBe(1);
     expect(runFor12Minutes((tick) => `\x1b[2K\r✻ Thinking (${tick}s)`)).toBe(1);
