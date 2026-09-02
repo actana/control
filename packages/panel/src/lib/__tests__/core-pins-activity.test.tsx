@@ -23,6 +23,7 @@ import type {
 } from "@actana/sdk/core-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import { getPinnedProjectStatusDots } from "~/components/views/project-bar-status-dots";
+import type { ProjectWithCounts } from "~/shared/projects";
 
 const CORE_ID = "core-a";
 const PROJECT_ID = "project-1";
@@ -138,7 +139,7 @@ async function dial(state: CoreDialStatus["state"]): Promise<void> {
   });
 }
 
-function pinFor(projects: { id: string }[], projectId = PROJECT_ID) {
+function pinFor(projects: readonly ProjectWithCounts[], projectId = PROJECT_ID) {
   return projects.find((p) => p.id === projectId);
 }
 
