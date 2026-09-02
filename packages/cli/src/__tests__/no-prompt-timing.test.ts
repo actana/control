@@ -66,13 +66,15 @@ const SCHEDULERS = [
 /**
  * The files allowed to schedule, and the reason each is.
  *
- * One row, and it buys a wait on a Core's own verdict rather than a nudge at a
- * harness. Anything that writes to a Session is barred from this table by the
+ * Two rows, and each buys a wait on a Core's own answer rather than a nudge at
+ * a harness. Anything that writes to a Session is barred from this table by the
  * test below it — that is the boundary the rule is actually about.
  */
 const SCHEDULING_ALLOWED: Record<string, string> = {
   "harness-command.ts":
     "waits for the Core's install verdict: a deadline on this side's patience and a progress tick, neither of which re-sends anything (#161)",
+  "events-command.ts":
+    "a deadline on a subscribe the Core never answers, so `--limit` cannot be wedged by a contended Core (#402). It re-sends nothing, it cannot make an event arrive sooner, and its expiry is reported as this side giving up",
 };
 
 /** Modules that put text or keystrokes into a Session. Never allowed a timer. */

@@ -34,6 +34,36 @@
 //     already covered by the in-memory cursor; a restart is not, and a CLI is
 //     restarted constantly.
 //
+//   • **Where a `--limit` run ends.** This is #402. On a live Core,
+//     `events tail --since 13 --limit 30 --json` printed the nine events past
+//     the cursor and then sat until it was killed: the `session:finished` the
+//     operator was waiting for was event #22, already in SQLite, already on
+//     their screen, and the only way out of the loop was a thirtieth event that
+//     nobody was going to append. `--limit` is a ceiling on what gets printed,
+//     and it was being waited on as a quota.
+//
+//     So a run that was given somewhere to start from — `--since`, or a cursor
+//     a previous run left — and that **found history there** has read what it
+//     was asked for, and ends at the end of that history however few events it
+//     turned out to be. The end is found the same way a first run finds the tip
+//     and by the same code: `event-tip.ts`, one marker at a time, until one
+//     closes an empty tail.
+//
+//     A run that found *no* history is the case this deliberately leaves alone.
+//     Nothing past the cursor is what a follow looks like at the moment it
+//     starts — it is `--since start` against a log that has not been written to
+//     yet, and `events-tail-cursor.test.ts` is that run, across a Core restart,
+//     proving #161's criterion. There was no read to finish, so it follows and
+//     stops at n, which is what `--limit` has always meant.
+//
+//   • **That a stuck subscribe cannot wedge either of them.** A Core that never
+//     answers `subscribe` sends no event and no marker, so neither the ceiling
+//     nor the end of the log is ever reached and the command has nothing to do
+//     but wait — which is the other half of #402's report, a Core under
+//     contention. Until the log's end is known, a `--limit` run holds a
+//     deadline on its patience; it prints what it did get, says on stderr that
+//     the Core stopped answering, and exits.
+//
 // Nothing here handles SIGINT, and that is deliberate. Ctrl-C ends this the way
 // it ends `tail -f`: the default signal disposition, no handler. There is
 // nothing to flush — every line is written as it arrives, and the cursor file is
@@ -56,6 +86,20 @@ import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
 
+/**
+ * How long a bounded run waits for a Core that has gone quiet.
+ *
+ * Armed only on a `--limit` run reading history, re-armed on every event and
+ * every marker: what it exists to catch is a subscribe that never answers, and
+ * a long log is a Core answering — slowly, and correctly. The same 30s
+ * `harness install` gives the same frame, for the same reason.
+ *
+ * Without it, "read the log and exit" still has one way not to exit, and it is
+ * the way #402 was reported: a contended Core, a subscribe that never replays,
+ * and a command with nothing to do but wait.
+ */
+const SUBSCRIBE_ANSWER_MS = 30_000;
+
 export const EVENTS_HELP = `actana events tail — follow a Core's event log
 
 Usage
@@ -67,7 +111,7 @@ Flags
   --since <id>     start after this event id, instead of the stored cursor
   --since start    start at the beginning of the log the Core still holds
   --kind <kind>    only this kind; repeat the flag for more than one
-  --limit <n>      stop after n events instead of following
+  --limit <n>      print at most n events, then exit
   --verbose        explain the steps, on stderr. Never prints a blob.
 
 Where it starts
@@ -77,6 +121,16 @@ Where it starts
 
   --since does not move the stored cursor: a one-off rewind leaves the
   follow-along stream where it was.
+
+Where it ends
+  --limit is a ceiling, not a quota. A run that starts from --since or a stored
+  cursor and finds events already in the log prints them and exits at the end of
+  that history, however far short of n it stops. It does not wait for a Core to
+  produce the difference.
+
+  With nothing in the log past where it started, there is no history to read, so
+  it follows and stops after n events. Without --limit, a tail follows until
+  Ctrl-C either way.
 
 Reconnects
   The link re-establishes itself and replays from the cursor, so a Core restart
@@ -168,16 +222,60 @@ async function eventsTail(
     // there is nothing left to learn, and every later marker is just a
     // reconnect catching up.
     const tip = trackEventTip(client, deps);
+    // The same walk, on the other side of the switch. A first run walks the log
+    // to find its tip and prints none of it; a `--limit` run walks it to find
+    // its end and prints all of it. The question asked of each marker is the
+    // same one — did this close an empty tail, or is the Core capping a replay
+    // — so it is asked with the same tracker rather than with a second opinion.
+    //
+    // Retired once the end is known: after that every marker is a reconnect
+    // catching up, exactly as on the other side, and there is nothing left to
+    // ask.
+    let history = limit.value !== null && fromStart ? trackEventTip(client, deps) : null;
+    let idle: ReturnType<typeof setTimeout> | null = null;
 
     const finish = (code: number) => {
       if (settled) return;
       settled = true;
+      if (idle !== null) clearTimeout(idle);
       offEvent();
       offReplayed();
       offDown();
       offUp();
       client.close();
       resolve(code);
+    };
+
+    /**
+     * Re-arm the deadline on the Core's answer to `subscribe`.
+     *
+     * Re-armed on every frame that *is* an answer, so the clock only ever runs
+     * while the Core is silent — a long log is a Core answering, slowly and
+     * correctly. Disarmed for good once the end of the log is known, because
+     * past that point silence is a Core with nothing to say and waiting through
+     * it is the whole of what a follow does.
+     *
+     * When it fires, what was printed is what the subscribe gave up: a
+     * truncated read still succeeded, and a subscribe that answered nothing at
+     * all is a failure with a reason on stderr rather than a hang.
+     */
+    const waitForAnswer = () => {
+      if (history === null || settled) return;
+      if (idle !== null) clearTimeout(idle);
+      idle = setTimeout(() => {
+        deps.err(
+          `actana events tail: ${name ?? endpoint} stopped answering the event ` +
+            `subscription; stopping with ${printed} event(s).`,
+        );
+        finish(printed > 0 ? EXIT_OK : EXIT_FAILURE);
+      }, SUBSCRIBE_ANSWER_MS);
+    };
+
+    /** Stop watching for the end of the log, and stop timing the Core. */
+    const stopReading = () => {
+      history = null;
+      if (idle !== null) clearTimeout(idle);
+      idle = null;
     };
 
     const offEvent = client.onEvent(({ event }) => {
@@ -193,6 +291,11 @@ async function eventsTail(
         tip.saw(event.eventId);
         return;
       }
+      // Counted before the filter, and before the ceiling: this is history the
+      // Core sent, and how much of it the operator asked to see changes nothing
+      // about whether there is more of it to come.
+      history?.saw(event.eventId);
+      waitForAnswer();
       if (kinds.size > 0 && !kinds.has(event.kind)) return;
       deps.out(args.json ? formatEventJson(event) : formatEventLine(event));
       printed += 1;
@@ -215,6 +318,29 @@ async function eventsTail(
         return;
       }
       deps.verbose(`caught up to #${lastEventId}`);
+      if (history === null) return;
+
+      // Everything the Core holds past this run's cursor has now been sent —
+      // unless this marker closed a capped tail, in which case the tracker has
+      // already asked again and another marker is coming.
+      const end = history.tipFrom(lastEventId);
+      if (end === null) {
+        waitForAnswer();
+        return;
+      }
+      stopReading();
+
+      // Nothing was there to read: this is a follow that has just been told the
+      // log is empty past where it started, and a follow waits. `--limit` keeps
+      // the meaning it has always had for it — stop after n.
+      if (printed === 0) {
+        deps.verbose(`the Core's log ends at #${end}; nothing to read, following from there`);
+        return;
+      }
+      deps.verbose(
+        `the Core's log ends at #${end}; --limit is a ceiling, and ${printed} event(s) is the log`,
+      );
+      finish(EXIT_OK);
     });
 
     const offDown = client.onDisconnected(({ error }) => {
@@ -227,6 +353,7 @@ async function eventsTail(
       deps.verbose("link re-established; replaying from the cursor");
     });
 
+    waitForAnswer();
     if (limit.value === 0) finish(EXIT_OK);
   }).catch((err: unknown) => {
     deps.err(`actana events tail: ${errorText(err)}`);

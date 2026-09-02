@@ -11,14 +11,14 @@
 // be the replay storm the ticket names, produced deliberately on the first
 // command an operator types.
 
-import { describe, it, expect, afterEach } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 import {
   fakeCore,
   makeCliFixture,
   registerCore,
   type CliFixture,
 } from "./cli-harness.ts";
-import { EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
+import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {
@@ -28,7 +28,15 @@ function cli(): CliFixture {
 afterEach(() => {
   fixture?.cleanup();
   fixture = null;
+  vi.useRealTimers();
 });
+
+/**
+ * The 30s a bounded run gives a Core that has gone quiet, jumped rather than
+ * waited out. `events-command.ts` holds the constant; a test that hard-coded a
+ * shorter one would be testing a different command.
+ */
+const SUBSCRIBE_ANSWER_MS = 30_000;
 
 async function withRegisteredCore(): Promise<void> {
   registerCore(cli().paths, "prod");
@@ -195,6 +203,155 @@ describe("actana events tail", () => {
     // A consumer parsing stdout must never have to recognise a status line.
     expect(result.out).toHaveLength(1);
     JSON.parse(result.out[0]!);
+  });
+
+  // ─── #402: --limit reads history and exits ────────────────────────────────
+  //
+  // On live pairdemo, `events tail --since 13 --limit 30 --json` sat until it
+  // was killed. The nine events past #13 were already in SQLite — the
+  // `session:finished` the operator was waiting for among them — and the
+  // command printed them and then waited for twenty-one more that no one was
+  // ever going to append. `--limit` is a ceiling on a read of the log, not a
+  // quota the command blocks on.
+
+  it("exits from history when the log holds fewer events than --limit", async () => {
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    // The pairdemo run, frame for frame: a cursor at #13, a ceiling of 30, and
+    // a Core whose log ends at #22 with the finish already in it.
+    const run = cli().run(["events", "tail", "--since", "13", "--limit", "30", "--json"], {
+      connect: core.connect,
+    });
+    await settle();
+
+    for (let eventId = 14; eventId <= 21; eventId += 1) {
+      core.emitEvent({ eventId, kind: "task:updated" });
+    }
+    core.emitEvent({ eventId: 22, kind: "session:finished", taskId: "t-1" });
+    core.emitReplayed(22);
+    await settle();
+
+    // One marker is a receipt for what was sent, not a statement that the log
+    // has ended, so the run asks again from where it got to — the same
+    // discipline a first run's tip hunt uses (`event-tip.ts`).
+    expect(core.subscribes).toContain(22);
+    core.emitReplayed(22);
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    // Nine events, not thirty, and the command is back at the prompt.
+    expect(result.out).toHaveLength(9);
+    const rows = result.out.map((line) => JSON.parse(line));
+    expect(rows[0].eventId).toBe(14);
+    expect(rows[8]).toMatchObject({ eventId: 22, kind: "session:finished" });
+    expect(core.closed).toBe(true);
+  });
+
+  it("prints the history it was given when the subscribe never replays or pushes", async () => {
+    // The other half of #402: the Core is contended, the subscribe answers with
+    // a tail and then goes silent — no `eventsReplayed`, no live push, nothing
+    // to close the loop on. The events are already here; a command that holds
+    // them hostage to a marker that is not coming is the hang, reported.
+    vi.useFakeTimers();
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(["events", "tail", "--since", "13", "--limit", "30", "--json"], {
+      connect: core.connect,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+
+    for (let eventId = 14; eventId <= 22; eventId += 1) {
+      core.emitEvent({ eventId, kind: eventId === 22 ? "session:finished" : "task:updated" });
+    }
+    // And now the Core says nothing at all, for as long as anyone is willing to
+    // wait. Nobody is: the deadline is re-armed on every frame, so it runs from
+    // the last thing the Core actually said.
+    await vi.advanceTimersByTimeAsync(SUBSCRIBE_ANSWER_MS);
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([
+      14, 15, 16, 17, 18, 19, 20, 21, 22,
+    ]);
+    expect(result.err.join("\n")).toContain("stopped answering");
+    expect(core.closed).toBe(true);
+  });
+
+  it("does not wedge on a subscribe that answers nothing at all", async () => {
+    // Nothing printed and nothing to print: the run still ends, and it ends
+    // saying why rather than exiting 0 on a Core it never heard from.
+    vi.useFakeTimers();
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(["events", "tail", "--since", "13", "--limit", "30", "--json"], {
+      connect: core.connect,
+    });
+    await vi.advanceTimersByTimeAsync(SUBSCRIBE_ANSWER_MS);
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_FAILURE);
+    expect(result.out).toHaveLength(0);
+    expect(result.err.join("\n")).toContain("stopped answering");
+    expect(core.closed).toBe(true);
+  });
+
+  it("still follows when the log had nothing past where the run started", async () => {
+    // The case #402 deliberately leaves alone, and the one `events-tail-cursor`
+    // is built on: a cursor with an empty log past it is what a follow looks
+    // like at the moment it starts, so there is no read to finish and `--limit`
+    // keeps the meaning it has always had. Ending here would end the run before
+    // its first line.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(["events", "tail", "--json", "--since", "start", "--limit", "2"], {
+      connect: core.connect,
+    });
+    await settle();
+
+    // Caught up, with nothing to have caught up on.
+    core.emitReplayed(0);
+    await settle();
+
+    core.emitEvent({ eventId: 1, kind: "task:created" });
+    core.emitEvent({ eventId: 2, kind: "session:finished" });
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([1, 2]);
+  });
+
+  it("stops timing the Core once it has said where its log ends", async () => {
+    // The deadline covers a subscribe that never answers, not a Core with
+    // nothing to say. Once the end of the log is known the run is following,
+    // and a follow that gave up after thirty quiet seconds would be a worse
+    // hang than the one #402 fixed — silent, and on a Core behaving perfectly.
+    vi.useFakeTimers();
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(["events", "tail", "--json", "--since", "start", "--limit", "1"], {
+      connect: core.connect,
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    core.emitReplayed(0);
+    await vi.advanceTimersByTimeAsync(SUBSCRIBE_ANSWER_MS * 3);
+
+    // Still here, an hour of quiet later.
+    let ended = false;
+    void run.then(() => {
+      ended = true;
+    });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ended).toBe(false);
+
+    core.emitEvent({ eventId: 1, kind: "session:finished" });
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(JSON.parse(result.out[0]!).eventId).toBe(1);
   });
 
   it("rejects a --since or --limit that is not a number", async () => {
