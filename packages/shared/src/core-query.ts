@@ -231,10 +231,30 @@ export function queryActiveTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[
  * harness session id stays `null` precisely in the bare case, where no hook
  * ever arrives to set it.
  *
+ * Only an agent spawn is evidence. A `pty:spawn` is recorded for the `shell`
+ * and `shellSession` variants too, which carry a `taskId` for routing but are
+ * not harness work. The VM-shell variant is excluded here by the payload's
+ * `shellSession` flag. The plain `shell: true` variant is not distinguishable
+ * in the payload — it records `shellSession: false`, the same as an agent —
+ * and is separated by its task id instead: those spawns are addressed with a
+ * synthetic id (`cli_shell_<uuid>`, or a user-terminal id) that matches no
+ * `tasks` row, so the join drops them. The test pins that shape.
+ *
  * Archived rows are included and no project filter applies, for the same
- * reasons as {@link queryActiveTasks}. A log whose `pty:spawn` has aged out
- * answers nothing for that row, which fails toward leaving it alone. Returns
- * an empty array when either table is absent.
+ * reasons as {@link queryActiveTasks}.
+ *
+ * **The evidence is permanent.** Nothing in this repo prunes `event_log` —
+ * there is no `DELETE FROM event_log` anywhere — so a `pty:spawn` recorded a
+ * year ago still answers for its row. The consequence is a one-time batch: on
+ * the first Core boot after this ships, EVERY historical `ready` row that ever
+ * had a harness spawned settles to `disconnected` at once, each appending its
+ * own `task:updated`. That is the backlog of zombies this query exists to
+ * find, arriving in one go because nothing was looking for them before; every
+ * later boot sees only what the run before it stranded. If `event_log` ever
+ * grows a retention window, a row whose spawn has aged out stops being swept —
+ * it would read as never-started, which is the safe direction to fail in.
+ *
+ * Returns an empty array when either table is absent.
  */
 export function queryStrandedReadyTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[] {
   let rows: TaskRow[];
@@ -250,7 +270,9 @@ export function queryStrandedReadyTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSn
          WHERE t.status = 'ready'
            AND EXISTS (
              SELECT 1 FROM event_log e
-             WHERE e.task_id = t.id AND e.kind = 'pty:spawn'
+             WHERE e.task_id = t.id
+               AND e.kind = 'pty:spawn'
+               AND e.payload NOT LIKE '%"shellSession":true%'
            )
          ORDER BY t.updated_at DESC`,
       )
@@ -259,6 +281,59 @@ export function queryStrandedReadyTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSn
     return [];
   }
   return rows.map(taskRowToSnapshot);
+}
+
+/**
+ * Has this Session ever reported work — has any status change on its row ever
+ * described a turn (issue 387, review finding 2)?
+ *
+ * The question a relaunch has to answer. Issue 387 moves a stranded `ready`
+ * row to a settled status, and nothing writes `ready` back, so a bare Session
+ * the operator reopens would sit at `disconnected` while its harness waits at
+ * the prompt. Resetting the row on spawn is only right for a Session that
+ * never worked: a genuinely finished one is being resumed, and its card must
+ * keep saying so.
+ *
+ * The row cannot answer it. `claude_session_id` is captured on `SessionStart`
+ * for Claude Code — the Core installs that hook — so a bare Session that has
+ * never run a turn can still carry an id. What does answer it is the event
+ * log, where every status change on a Core-owned row is a `task:updated`
+ * carrying the status that was PATCHED (`core-task-writer.ts` is careful to
+ * record the patch rather than the resulting row, for exactly this kind of
+ * reader).
+ *
+ * So: a turn is any patched status other than the two a Session can reach
+ * without ever having worked — `ready` (its birth, and this reset) and
+ * `disconnected` (the sweep and the PTY-exit settle). `running`,
+ * `needs-input`, `interrupted`, `finished` and `terminated` each say a turn
+ * happened, including on a harness that goes straight from `ready` to
+ * `finished` without ever reporting `running`.
+ *
+ * Matched with `LIKE` against the payload because the status rides in the JSON
+ * body rather than a column; `status` is the last key the writer emits, and the
+ * `"status":"…"` shape is fully quoted, so the patterns cannot straddle fields.
+ * The read is bounded by `event_log_task_idx`. Answers `false` when either the
+ * log or the row is unreadable — the safe direction, because `false` only ever
+ * permits a reset that the caller's own status check has already narrowed to a
+ * settled row.
+ */
+export function queryTaskEverWorked(sqlite: CoreQuerySqlite, taskId: string): boolean {
+  try {
+    const rows = sqlite
+      .prepare(
+        `SELECT 1 AS hit FROM event_log
+         WHERE task_id = ?
+           AND kind = 'task:updated'
+           AND payload LIKE '%"status":"%'
+           AND payload NOT LIKE '%"status":"ready"%'
+           AND payload NOT LIKE '%"status":"disconnected"%'
+         LIMIT 1`,
+      )
+      .all(taskId);
+    return rows.length > 0;
+  } catch {
+    return false;
+  }
 }
 
 /**

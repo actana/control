@@ -378,6 +378,12 @@ export type PtyCoreLinkServerOptions = {
    */
   promptPort?: { submitted(taskId: string, prompt: string): void };
   /**
+   * An agent PTY was spawned for this Session (issue 387, review finding 2).
+   * Optional: a Core without it simply never resets a relaunched Session's
+   * card. See `core-session-relaunch.ts` for what the port does with it.
+   */
+  relaunchPort?: { agentSpawned(taskId: string): void };
+  /**
    * Snapshot of this Core's CLI availability (issue 11). When omitted, the
    * `agentsAvailabilityList` frame answers with an empty map — the Panel's
    * per-Core availability store then falls back to "checking…" until the
@@ -655,6 +661,7 @@ export class PtyCoreLinkServer {
   private readonly directoryPort: CoreDirectoryPort | null;
   private readonly execPort: CoreExecPort | null;
   private readonly promptPort: { submitted(taskId: string, prompt: string): void } | null;
+  private readonly relaunchPort: { agentSpawned(taskId: string): void } | null;
   private readonly protocolVersion: string;
   private readonly announceMultiConnection: boolean;
   private readonly announceFiles: boolean;
@@ -730,6 +737,7 @@ export class PtyCoreLinkServer {
     this.directoryPort = opts.directoryPort ?? null;
     this.execPort = opts.execPort ?? null;
     this.promptPort = opts.promptPort ?? null;
+    this.relaunchPort = opts.relaunchPort ?? null;
     this.protocolVersion = opts.protocolVersion ?? CORE_LINK_PROTOCOL_VERSION;
     this.announceMultiConnection = opts.announceMultiConnection ?? true;
     this.taskWriter =
@@ -1437,6 +1445,14 @@ export class PtyCoreLinkServer {
           // wants this PTY still has to ask.
           conn.subscribePty(ptyId, false);
           this.recordPtySpawn(ptyId, frame.opts.taskId, shellSession);
+          // A harness is alive for this Session again. If its row settled
+          // while it had never run a turn — the bare Session issue 387 sweeps
+          // — the card is now wrong in the other direction, and nothing else
+          // will correct it: no hook fires until the first prompt. The port
+          // decides; a shell spawn never asks (issue 387, review finding 2).
+          if (frame.opts.shellSession !== true && frame.opts.agent) {
+            this.relaunchPort?.agentSpawned(frame.opts.taskId);
+          }
           // `hooksReportTurnStart` is what lets the Panel arm its
           // terminal-input fallback on reality rather than on the harness
           // family (issue 84): a Session whose hooks will not announce the

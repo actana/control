@@ -96,6 +96,7 @@ import {
   coreQueryStore,
   listActiveTasks,
   listBootSweepTasks,
+  taskEverWorked,
 } from "./core-query-store";
 import {
   configureCoreMutationStore,
@@ -110,6 +111,7 @@ import { CoreTitleGenerator } from "./core-title-generator";
 import { startHarnessHookReceiver, type HarnessHookReceiver } from "./harness-hook-receiver";
 import { HookDeliveryMonitor, hookMissLogPath } from "./harness-hook-delivery";
 import { sweepStrandedSessions } from "./core-session-sweep";
+import { readySessionOnAgentSpawn } from "./core-session-relaunch";
 import { CoreSessionBackstop } from "./core-session-backstop";
 import { verifyBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
 import { loadOrMintMaterial, type LoadOrMintResult } from "./core-first-run";
@@ -241,7 +243,7 @@ async function startCore(): Promise<void> {
   // `listBootSweepTasks` widens that read by the one class of orphan the
   // status filter could never see: a bare Session left on `ready`, whose PTY
   // spawned and died without a single hook ever firing for it (issue 387).
-  sweepStrandedSessions({ listActiveTasks: listBootSweepTasks, writer: taskWriter });
+  sweepStrandedSessions({ listBootSweepTasks, writer: taskWriter });
 
   const titleGenerator = new CoreTitleGenerator({ writer: taskWriter });
   const harnessStatus = new CoreHarnessStatus({
@@ -417,6 +419,14 @@ async function startCore(): Promise<void> {
     // Session gets named at all (issue 84).
     promptPort: {
       submitted: (taskId, prompt) => titleGenerator.schedule(taskId, prompt),
+    },
+    // The other side of issue 387's sweep: a bare Session that settled while
+    // it had never run a turn is put back on `ready` when a harness is spawned
+    // for it again. Nothing else would — no hook fires until the first prompt,
+    // so the card would read `disconnected` over a healthy harness.
+    relaunchPort: {
+      agentSpawned: (taskId) =>
+        void readySessionOnAgentSpawn({ writer: taskWriter, everWorked: taskEverWorked }, taskId),
     },
     // Issue 11: back the `agentsAvailabilityList` frame with the current
     // snapshot from the Core's own PATH probe. The event stream carries

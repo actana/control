@@ -21,6 +21,7 @@ import {
   queryActiveTasks,
   queryArchivedTasks,
   queryStrandedReadyTasks,
+  queryTaskEverWorked,
   queryProjects,
   queryTask,
   queryTasks,
@@ -207,6 +208,26 @@ export function listStrandedReadyTasks(): CoreLinkTaskSnapshot[] {
  */
 export function listBootSweepTasks(): CoreLinkTaskSnapshot[] {
   return [...listActiveTasks(), ...listStrandedReadyTasks()];
+}
+
+/**
+ * Has this Session ever reported work (issue 387, review finding 2)? The read
+ * behind the relaunch reset in `core-session-relaunch.ts`.
+ *
+ * Answers `false` on an unavailable DB, like every read here. That is the safe
+ * direction: `false` only permits a reset the caller has already narrowed to a
+ * settled row, and a Core that cannot read its log should not be refusing to
+ * correct a card either.
+ */
+export function taskEverWorked(taskId: string): boolean {
+  const conn = ensureConnection();
+  if (!conn) return false;
+  try {
+    return queryTaskEverWorked(conn as unknown as CoreQuerySqlite, taskId);
+  } catch (err) {
+    log.warn("core-query.task-ever-worked-failed", { taskId, error: String(err) });
+    return false;
+  }
 }
 
 /** Close the connection. Called on Core shutdown. */
