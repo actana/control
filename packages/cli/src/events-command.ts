@@ -217,6 +217,11 @@ async function eventsTail(
 
   return new Promise<number>((resolve) => {
     let printed = 0;
+    // Events the Core sent past this run's cursor, filter or no filter. What
+    // decides whether there was history to read is what the *Core* had, never
+    // what `--kind` let through — a read of a log that held nothing this
+    // operator asked for still finished, and has nothing more to wait for.
+    let read = 0;
     let settled = false;
     // Only consulted while `printing` is off — once the log's end is known
     // there is nothing left to learn, and every later marker is just a
@@ -265,9 +270,9 @@ async function eventsTail(
       idle = setTimeout(() => {
         deps.err(
           `actana events tail: ${name ?? endpoint} stopped answering the event ` +
-            `subscription; stopping with ${printed} event(s).`,
+            `subscription; stopping with ${printed} event(s) printed.`,
         );
-        finish(printed > 0 ? EXIT_OK : EXIT_FAILURE);
+        finish(read > 0 ? EXIT_OK : EXIT_FAILURE);
       }, SUBSCRIBE_ANSWER_MS);
     };
 
@@ -294,8 +299,11 @@ async function eventsTail(
       // Counted before the filter, and before the ceiling: this is history the
       // Core sent, and how much of it the operator asked to see changes nothing
       // about whether there is more of it to come.
-      history?.saw(event.eventId);
-      waitForAnswer();
+      if (history !== null) {
+        history.saw(event.eventId);
+        read += 1;
+        waitForAnswer();
+      }
       if (kinds.size > 0 && !kinds.has(event.kind)) return;
       deps.out(args.json ? formatEventJson(event) : formatEventLine(event));
       printed += 1;
@@ -333,12 +341,12 @@ async function eventsTail(
       // Nothing was there to read: this is a follow that has just been told the
       // log is empty past where it started, and a follow waits. `--limit` keeps
       // the meaning it has always had for it — stop after n.
-      if (printed === 0) {
+      if (read === 0) {
         deps.verbose(`the Core's log ends at #${end}; nothing to read, following from there`);
         return;
       }
       deps.verbose(
-        `the Core's log ends at #${end}; --limit is a ceiling, and ${printed} event(s) is the log`,
+        `the Core's log ends at #${end}; ${read} event(s) read, ${printed} printed — --limit is a ceiling`,
       );
       finish(EXIT_OK);
     });

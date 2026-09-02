@@ -324,6 +324,35 @@ describe("actana events tail", () => {
     expect(result.out.map((line) => JSON.parse(line).eventId)).toEqual([1, 2]);
   });
 
+  it("ends a read whose history matched no --kind, rather than following", async () => {
+    // What decides whether there was history to read is what the Core had, not
+    // what the filter let through. A read of a log that held nothing this
+    // operator asked for still finished, and has nothing left to wait for —
+    // reading `printed` here would hang exactly where #402 hung, one flag over.
+    //
+    // The first-run half of the kind filter — history skipped while the cursor
+    // advances past it — is #403 and is not touched here.
+    await withRegisteredCore();
+    const core = fakeCore({});
+
+    const run = cli().run(
+      ["events", "tail", "--json", "--since", "13", "--limit", "30", "--kind", "session:finished"],
+      { connect: core.connect },
+    );
+    await settle();
+
+    core.emitEvent({ eventId: 14, kind: "task:updated" });
+    core.emitEvent({ eventId: 15, kind: "task:updated" });
+    core.emitReplayed(15);
+    await settle();
+    core.emitReplayed(15);
+
+    const result = await run;
+    expect(result.code).toBe(EXIT_OK);
+    expect(result.out).toEqual([]);
+    expect(core.closed).toBe(true);
+  });
+
   it("stops timing the Core once it has said where its log ends", async () => {
     // The deadline covers a subscribe that never answers, not a Core with
     // nothing to say. Once the end of the log is known the run is following,
