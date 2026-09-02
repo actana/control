@@ -94,13 +94,47 @@ export function forgetIdentities(
   return next ?? map;
 }
 
-/** Drop entries whose terminal no longer exists, so the bucket cannot grow forever. */
+/**
+ * Drop entries whose terminal no longer exists, so the bucket cannot grow forever.
+ *
+ * `liveIds` is a snapshot from a list call, and a terminal can be opened while
+ * that call is in flight: its identity is written, its row exists, and neither
+ * is in the snapshot. Pruning on the snapshot alone would delete that identity
+ * and strand its row — unrestorable on the next load and never cleaned up
+ * either, since restore only knows rows it can identify. So a candidate set is
+ * required: only ids that were already known when the request was issued may be
+ * pruned, which is exactly the set the answer is evidence about.
+ */
 export function pruneIdentities(
   map: UserTerminalIdentityMap,
   liveIds: ReadonlySet<string>,
+  candidateIds: ReadonlySet<string>,
 ): UserTerminalIdentityMap {
-  const stale = Object.keys(map).filter((id) => !liveIds.has(id));
+  const stale = Object.keys(map).filter((id) => candidateIds.has(id) && !liveIds.has(id));
   return forgetIdentities(map, stale);
+}
+
+/**
+ * Persist this tab's change as a change, not as a whole-bucket overwrite.
+ *
+ * The map is shared by every tab on this Panel, and each one holds a snapshot
+ * taken when it mounted. Writing that snapshot back would delete identities
+ * another tab wrote in the meantime — and an identity is not a preference: lose
+ * it and its terminal can never be restored again, and its row is never cleaned
+ * up. So the stored map is re-read at write time and only this tab's own delta
+ * is applied: entries it added or changed are written, and entries it removed —
+ * and only those — are removed.
+ */
+export function commitIdentityChange(
+  before: UserTerminalIdentityMap,
+  after: UserTerminalIdentityMap,
+): UserTerminalIdentityMap {
+  const merged: UserTerminalIdentityMap = { ...readIdentityMap(), ...after };
+  for (const id of Object.keys(before)) {
+    if (!(id in after)) delete merged[id];
+  }
+  writeIdentityMap(merged);
+  return merged;
 }
 
 /**

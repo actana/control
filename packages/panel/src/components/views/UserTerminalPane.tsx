@@ -160,8 +160,13 @@ export function UserTerminalPane({
     // pane makes and which machine it makes it on, so leaving them out let a
     // pane that first rendered with no Core — or before a restored session's
     // kind was known — keep the shell that first render started: the wrong one.
+    //
+    // The separator is U+0001, written as an escape so the source stays plain
+    // text: a cwd may contain spaces, so a space would leave the key injective
+    // only by luck of the other fields' shapes, while a control character
+    // cannot occur in any of them.
     const kind = shellSession ? "vm-shell" : isHome ? "home" : "project";
-    const buildKey = `${coreId ?? ""} ${kind} ${cwd} ${retryNonce}`;
+    const buildKey = [coreId ?? "", kind, cwd, retryNonce].join("\u0001");
     const container = containerRef.current;
     if (!container) return;
 

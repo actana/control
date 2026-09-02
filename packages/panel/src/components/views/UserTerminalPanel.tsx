@@ -430,8 +430,10 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
             const onlyVisible = visibleSessions.length === 1;
             const weight = paneWeights[s.terminal.id] ?? 1;
             const prev = visibleSessions[i - 1];
-            // A session restored from the API carries no Core; it runs on
-            // whichever one this route is on.
+            // A session's own Core wins: a restored one carries the Core its
+            // identity recorded (issue 394), and a freshly opened one the Core
+            // it was opened on. The route's Core is the fallback for a session
+            // that somehow has none, not the usual answer.
             const sessionCoreId = s.coreId ?? coreId;
             return (
               <Fragment key={s.terminal.id}>

@@ -17,11 +17,11 @@ import { HOME_TERMINAL_PROJECT_ID } from "~/shared/home-terminal";
 import { scopeKeyForProject, type ScopedProject } from "./scoped-project";
 import { readJson, writeJson } from "./local-storage-json";
 import {
+  commitIdentityChange,
   forgetIdentities,
   pruneIdentities,
   readIdentityMap,
   restoreUserTerminals,
-  writeIdentityMap,
   type UserTerminalIdentity,
   type UserTerminalIdentityMap,
   type UserTerminalKind,
@@ -177,14 +177,15 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   // only guess — and guessing is what put a project's VM shell on Home as a
   // home shell. See user-terminal-identity.ts.
   const [identities, setIdentities] = useState<UserTerminalIdentityMap>(() => readIdentityMap());
+  // What this tab last wrote. The persisted map is shared with every other tab
+  // on this Panel, so the write applies this tab's delta against it rather than
+  // overwriting it with this tab's snapshot — losing an identity costs a
+  // terminal that can never be restored, not a preference.
+  const committedIdentitiesRef = useRef<UserTerminalIdentityMap>(identities);
   useEffect(() => {
-    writeIdentityMap(identities);
-  }, [identities]);
-  // Read by the restore effect, which must see the map as it was persisted
-  // without re-running every time an open or a kill rewrites it.
-  const identitiesRef = useRef<UserTerminalIdentityMap>(identities);
-  useEffect(() => {
-    identitiesRef.current = identities;
+    if (identities === committedIdentitiesRef.current) return;
+    commitIdentityChange(committedIdentitiesRef.current, identities);
+    committedIdentitiesRef.current = identities;
   }, [identities]);
   // Mirror of sessionsByProject. killTerminal reads this synchronously instead
   // of via a setState updater, since React 18 skips eager-state evaluation
@@ -237,30 +238,55 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
   // terminal gone on purpose rather than quietly spawning a different one from
   // Home. Identities for rows the server no longer has are pruned in the same
   // pass, so the bucket cannot grow forever.
+  //
+  // **The run is deliberately not cancellable.** What it restores is decided by
+  // each row's identity, not by whichever scope happened to be current when the
+  // request went out, so a navigation mid-flight changes nothing about the
+  // right answer. Gating the writes on a cleanup flag made navigating during
+  // the fetch — landing on a project on a cold Panel and clicking another one
+  // before the list answers — throw the answer away while the once-per-run
+  // guard stayed latched: no terminals in any scope, no retry, for the rest of
+  // the app run, which is the very symptom this restore exists to remove. The
+  // three setters below are idempotent under their own guards and a setState
+  // after unmount is a no-op, so there is nothing for a cancel to protect.
   const restoreStartedRef = useRef(false);
   useEffect(() => {
     if (!scopeKey) return;
     if (restoreStartedRef.current) return;
     restoreStartedRef.current = true;
 
-    let cancelled = false;
+    // Only identities that already existed when the request went out may be
+    // pruned by its answer. One opened while the list is in flight is absent
+    // from that answer for a reason that is not "the row is gone".
+    const prunable = new Set(Object.keys(readIdentityMap()));
+
     void (async () => {
       try {
         const { terminals } = await api.listHomeTerminals();
-        if (cancelled) return;
-        const restored = restoreUserTerminals(terminals, identitiesRef.current);
+        // Re-read rather than close over the mount-time map: another tab may
+        // have opened a terminal since, and its row is in this answer.
+        const restored = restoreUserTerminals(terminals, readIdentityMap());
         setSessionsByProject((prev) => {
           let next = prev;
           for (const [key, entries] of Object.entries(restored)) {
-            if (prev[key]) continue; // an open beat us to this bucket
+            const current = prev[key] ?? [];
+            const alreadyOpen = new Set(current.map((s) => s.terminal.id));
+            // Merge by terminal id, never by bucket: opening one terminal in a
+            // scope before the list answers must not drop every terminal that
+            // scope had before the reload.
+            const additions = entries
+              .filter(({ terminal }) => !alreadyOpen.has(terminal.id))
+              .map(({ terminal, identity }) => ({
+                terminal,
+                ptyId: null,
+                coreId: identity.coreId ?? undefined,
+                kind: identity.kind,
+                cwd: identity.cwd,
+              }));
+            if (additions.length === 0) continue;
             next = next === prev ? { ...prev } : next;
-            next[key] = entries.map(({ terminal, identity }) => ({
-              terminal,
-              ptyId: null,
-              coreId: identity.coreId ?? undefined,
-              kind: identity.kind,
-              cwd: identity.cwd,
-            }));
+            // Restored terminals predate anything opened this run.
+            next[key] = [...additions, ...current];
           }
           return next;
         });
@@ -274,16 +300,13 @@ export function UserTerminalProvider({ children }: { children: ReactNode }) {
           return next;
         });
         const liveIds = new Set(terminals.map((t) => t.id));
-        setIdentities((prev) => pruneIdentities(prev, liveIds));
+        setIdentities((prev) => pruneIdentities(prev, liveIds, prunable));
       } catch {
         // Transient failure (offline, Panel restarting): let a later scope
         // change try again rather than leaving the operator with no terminals.
         restoreStartedRef.current = false;
       }
     })();
-    return () => {
-      cancelled = true;
-    };
   }, [scopeKey]);
 
   // Navigating to a project pre-fetches the terminal JS chunks and **nothing
