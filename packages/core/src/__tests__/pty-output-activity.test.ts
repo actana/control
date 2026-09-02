@@ -269,6 +269,56 @@ describe("the burst shapes a live turn actually produces", () => {
   });
 });
 
+// Review of PR 455, round 2, finding 3: "is this line carrying a clock" was
+// over-matching, and every over-match is a live turn read as idle.
+describe("telling a clock from the numbers that are the content", () => {
+  const runFor12Minutes = (frame: (tick: number) => string) => {
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    let output = 0;
+    for (let tick = 0; tick < (12 * 60) / 5; tick += 1) {
+      if (watcher.push(frame(tick), now) === "output") output += 1;
+      now += WINDOW + 1;
+    }
+    return output;
+  };
+
+  it("does not call a wall-clock log stamp an elapsed-time counter", () => {
+    // `\d+:\d{2}` matches the timestamp a build prints in front of every line,
+    // and calling that a clock took the count beside it with it.
+    expect(
+      runFor12Minutes((tick) => `\x1b[2K\r[12:34:${String(tick % 60).padStart(2, "0")}] Compiled ${tick} files`),
+    ).toBe(144);
+  });
+
+  it("does not call a check mark or a prompt caret a spinner", () => {
+    // ✔ and ❯ were inside the Dingbats block the pattern used to take whole.
+    expect(runFor12Minutes((tick) => `\x1b[2K\r✔ ${tick} passed`)).toBe(144);
+    expect(runFor12Minutes((tick) => `\x1b[2K\r❯ step ${tick} of 900`)).toBe(144);
+    expect(runFor12Minutes((tick) => `\x1b[2K\r• ${tick} passed`)).toBe(144);
+  });
+
+  it("still calls a braille or sparkle spinner's counter a clock", () => {
+    expect(runFor12Minutes((tick) => `\x1b[2K\r⠹ Working (${tick}s)`)).toBe(1);
+    expect(runFor12Minutes((tick) => `\x1b[2K\r✻ Thinking (${tick}s)`)).toBe(1);
+  });
+});
+
+describe("what the last burst was, when the last burst said nothing", () => {
+  it("still counts as a repaint for the burst that follows it", () => {
+    // Review of PR 455, round 2, finding 4: the empty-normalisation return
+    // used to skip re-arming the flag, so an appended line after a bare screen
+    // clear lost its "nothing was erased, so it is new" path.
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    expect(watcher.push("\x1b[2K\rSpinner Working here", now)).toBe("output");
+    now += WINDOW + 1;
+    expect(watcher.push("\x1b[H\x1b[2J", now)).toBe("redraw");
+    now += WINDOW + 1;
+    expect(watcher.push("Spinner Working here\n", now)).toBe("output");
+  });
+});
+
 describe("finding what is new at the end of a very large burst", () => {
   it("sees a new tool line under a full-viewport repaint", () => {
     // Review of PR 455, finding 3: the scan was front-first and capped, but
@@ -289,5 +339,62 @@ describe("finding what is new at the end of a very large burst", () => {
     expect(
       watcher.push(`\x1b[2J\x1b[H${viewport} Ran pnpm vitest packages/core`, now),
     ).toBe("output");
+  });
+
+  it("sees a new line painted above the bottom of the screen", () => {
+    // Review of PR 455, round 2, finding 5: the scan is tail-first, which is
+    // the right bias, but a cap below a viewport's worth of words hid novelty
+    // painted above the static footer under it.
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    const body = Array.from({ length: 900 }, (_, i) => `body${i}text${i % 5}`).join(" ");
+    const footer = Array.from({ length: 500 }, (_, i) => `footer${i}row${i % 3}`).join(" ");
+    expect(watcher.push(`\x1b[2J\x1b[H${body} ${footer}`, now)).toBe("output");
+
+    now += WINDOW + 1;
+    expect(watcher.push(`\x1b[2J\x1b[H${body} ${footer}`, now)).toBe("redraw");
+
+    now += WINDOW + 1;
+    expect(
+      watcher.push(`\x1b[2J\x1b[H${body} Edited packages/core/src/thing.ts ${footer}`, now),
+    ).toBe("output");
+  });
+
+  it("keeps its footing on a burst larger than either cap", () => {
+    // A hundred-row viewport on a wide terminal is well past both the pending
+    // cap (64 KB) and the remembered cap (16 KB). The tail is what is kept and
+    // the tail is what is compared, so the same screen twice is still a
+    // repaint, and a line appended under it is still work.
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    const huge = Array.from(
+      { length: 12_000 },
+      (_, i) => `cell${i}col${i % 11}`,
+    ).join(" ");
+    expect(huge.length).toBeGreaterThan(128 * 1024);
+    expect(watcher.push(`\x1b[2J\x1b[H${huge}`, now)).toBe("output");
+
+    now += WINDOW + 1;
+    expect(watcher.push(`\x1b[2J\x1b[H${huge}`, now)).toBe("redraw");
+
+    now += WINDOW + 1;
+    expect(watcher.push(`\x1b[2J\x1b[H${huge} Ran pnpm build`, now)).toBe("output");
+  });
+
+  it("drops the oldest chunks of an over-long window, never the newest", () => {
+    // The cap is enforced by dropping whole chunks off the front rather than
+    // re-slicing one string per chunk, which is what the PTY data path can
+    // afford. What survives is the end of the window.
+    const watcher = new PtyOutputActivityWatcher();
+    let now = WINDOW + 1;
+    expect(watcher.push("\x1b[2J\x1b[Hopening frame", now)).toBe("output");
+
+    // 128 chunks of a kilobyte inside one window: the oldest fall off the
+    // front, and none of them costs a report.
+    for (let i = 0; i < 128; i += 1) {
+      expect(watcher.push(`\r\x1b[K${`filler${i} `.repeat(90)}`, now + i)).toBeNull();
+    }
+    now += WINDOW + 1;
+    expect(watcher.push("\r\x1b[Ktail line that nobody has seen", now)).toBe("output");
   });
 });

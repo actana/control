@@ -9,6 +9,13 @@
 // as the process lives. Those bytes never stop, so "fifteen minutes with no
 // output" never arrives, and the card claims `running` forever.
 //
+// Both are in scope, on different clocks. A harness this Core has never had a
+// hook from is read from its screen straight away; one whose hooks arrive is
+// deferred to while a tool call could still plausibly be running, and read
+// from its screen after that — see `HOOK_DEFERENCE_MS` in
+// `core-session-backstop.ts`. What this file must never do is let either wait
+// forever.
+//
 // So the bytes have to be read rather than counted. Not parsed — a TUI frame
 // is cursor moves and colour, and every harness draws a different one — but
 // reduced to the question the backstop actually asks: *did anything new appear
@@ -111,8 +118,18 @@ const MAX_REMEMBERED_CHARS = 16 * 1024;
  */
 const MIN_WORD_LENGTH = 3;
 
-/** Cap on the words compared per burst, so a huge paste stays cheap. */
-const MAX_WORDS_PER_BURST = 400;
+/**
+ * How much of a burst is compared, counted in characters from its end.
+ *
+ * Tied to {@link MAX_REMEMBERED_CHARS} on purpose, and that is the whole rule:
+ * compare about as much of the burst as was remembered of the screen. A scan
+ * shallower than the memory hides novelty painted above a static footer (the
+ * mirror of the front-first scan the review of PR 455 found); a scan deeper
+ * than the memory reports the part it cannot remember as new, which would
+ * leave a full-viewport repaint reading as work forever. The margin keeps the
+ * scan inside the memory even when the two disagree by a word.
+ */
+const MAX_SCANNED_CHARS = MAX_REMEMBERED_CHARS - 1024;
 
 // OSC (`ESC ] … BEL` / `ESC ] … ESC \`), CSI (`ESC [ … final`), and the
 // two-byte escapes. Ordered widest-first: an OSC payload can contain what
@@ -131,15 +148,29 @@ const CONTROL_PATTERN = /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/g;
 // Glyphs a spinner cycles through, and the rules a frame is drawn with:
 // braille, block elements, geometric shapes, box drawing, dingbats, bullets.
 const FRAME_GLYPH_PATTERN = /[\u2022\u00b7\u2500-\u25ff\u2700-\u27bf\u2800-\u28ff]/g;
-// The subset of those that a spinner actually cycles: braille and dingbats.
-// Box drawing is a border and says nothing about whether a line is a clock.
-const SPINNER_GLYPH_PATTERN = /[\u2800-\u28ff\u2700-\u27bf\u25d0-\u25d3\u25e2-\u25e5]/;
 /**
- * An elapsed-time counter on a line: `12s`, `1m 12s`, `2h`, `0:42`, `1:02:03`.
- * Deliberately narrow — a unit letter must end the token, so `900 MB` and
- * `3.1 MB/s` are sizes and rates, which are content, not clocks.
+ * The glyphs a spinner actually cycles through: braille frames, the sparkle
+ * and asterisk set, and the circle-fill and circle-quadrant frames.
+ *
+ * Narrowed after the review of PR 455 found the whole Dingbats block in here:
+ * `✔ 43 passed` and `❯ step 43 of 900` are a status mark and a prompt, not
+ * spinner frames, and a line marked as a clock loses the digits that are its
+ * only changing content. Box drawing is a border and is not here either — it
+ * says nothing about whether a line is counting.
  */
-const ELAPSED_PATTERN = /\d+\s*[hms]\b|\d+:\d{2}/;
+const SPINNER_GLYPH_PATTERN = /[\u2800-\u28ff\u2731-\u273d\u25d0-\u25d3\u25e2-\u25e5\u25f0-\u25f7]/;
+/**
+ * An elapsed-time counter on a line: `12s`, `1m 12s`, `2h`.
+ *
+ * A unit letter is required, and it must end the token. That keeps `900 MB`
+ * and `3.1 MB/s` — sizes and rates, which are content — off this pattern, and
+ * it is also why `0:42` is not here: `\d+:\d{2}` matches the wall-clock stamp
+ * a build prints in front of every line (`[12:34:07] Compiled 43 files`), and
+ * calling that a clock loses the count beside it (review of PR 455). A colon
+ * counter with no spinner glyph beside it is left as content, which is the
+ * direction that fails safe.
+ */
+const ELAPSED_PATTERN = /\d+\s*[hms]\b/;
 
 /**
  * Did this burst erase or move anything, or did it only append?
@@ -149,6 +180,9 @@ const ELAPSED_PATTERN = /\d+\s*[hms]\b|\d+:\d{2}/;
  * has none of those — it scrolled the screen, so it is new by construction.
  * Exported for the tests.
  */
+/** An erase of the whole display (or its scrollback), which leaves it blank. */
+const ERASE_DISPLAY_PATTERN = /\x1b\[[0-3]?J/;
+
 export function repaintsInPlace(text: string): boolean {
   return (
     /\r(?!\n)/.test(text) ||
@@ -186,75 +220,133 @@ export function normalizePtyOutput(text: string): string {
  * were — and `null` in between, which is the throttle the PTY data path needs.
  */
 export class PtyOutputActivityWatcher {
-  private pending = "";
+  /**
+   * Chunks since the last report, oldest first, and their total length. A list
+   * rather than one growing string: the cap is enforced by dropping whole
+   * chunks off the front, so a chatty PTY never re-copies the whole buffer per
+   * chunk on the Core's hottest path.
+   */
+  private readonly pending: string[] = [];
+  private pendingChars = 0;
   private reportedAt = 0;
   private repaintedLast = false;
   private readonly remembered: string[] = [];
+  /** {@link remembered} as a word set, rebuilt when it changes. */
+  private rememberedSet: Set<string> | null = null;
 
   /**
    * Take a chunk. Returns the kind when the window has elapsed and this burst
    * is being reported, or `null` while it is still being accumulated.
    */
   push(chunk: string, now: number): PtyOutputActivityKind | null {
-    this.pending += chunk;
-    if (this.pending.length > MAX_PENDING_CHARS) {
-      this.pending = this.pending.slice(-MAX_PENDING_CHARS);
+    this.pending.push(chunk);
+    this.pendingChars += chunk.length;
+    // Keep the tail, because that is where a TUI puts what is new. One chunk
+    // always survives, however large it is on its own.
+    while (this.pendingChars > MAX_PENDING_CHARS && this.pending.length > 1) {
+      this.pendingChars -= this.pending.shift()?.length ?? 0;
     }
     if (now - this.reportedAt <= OUTPUT_ACTIVITY_WINDOW_MS) return null;
     this.reportedAt = now;
-    const burst = this.pending;
-    this.pending = "";
+    const burst = this.pending.join("");
+    this.pending.length = 0;
+    this.pendingChars = 0;
     return this.classify(burst);
   }
 
   private classify(burst: string): PtyOutputActivityKind {
+    // Read and re-arm before anything can return: a burst of pure cursor
+    // movement is still a repaint, and leaving the flag stale would deny the
+    // *next* burst the appended-text path that makes new output new by
+    // construction (review of PR 455).
+    const repainted = repaintsInPlace(burst);
+    const wasRepainting = this.repaintedLast;
+    this.repaintedLast = repainted;
+
     const normalized = normalizePtyOutput(burst);
     // A burst that reduces to nothing is pure cursor movement — a repaint of
-    // the same characters, or of none.
-    if (!normalized) return "redraw";
+    // the same characters, or of none. If it wiped the display and put nothing
+    // in its place, the screen is now blank: what was on it is not "already on
+    // screen" any more, and the next line to arrive is new (review of PR 455).
+    if (!normalized) {
+      if (ERASE_DISPLAY_PATTERN.test(burst)) this.forgetScreen();
+      return "redraw";
+    }
     // Nothing was erased, so nothing was replaced: this text scrolled onto the
     // screen and is new whatever it says. The exception is a screen that was
     // being repainted a moment ago — then a burst with no controls of its own
     // is the tail of a frame whose head arrived in the last burst, not a line
     // of appended output.
-    const repainted = repaintsInPlace(burst);
-    const wasRepainting = this.repaintedLast;
-    this.repaintedLast = repainted;
     if (!repainted && !wasRepainting) {
       this.remember(normalized);
       return "output";
     }
-    const onScreen = ` ${this.remembered.join(" ")} `;
+
     const words = normalized.split(" ");
-    let novel = false;
-    // From the end: a TUI paints what is new at the bottom, and `push` keeps
-    // the tail of an oversized burst, so the front is the wrong end to cap.
-    let scanned = 0;
-    for (let i = words.length - 1; i >= 0 && scanned < MAX_WORDS_PER_BURST; i -= 1) {
-      const word = words[i];
-      // Fragments are what a burst boundary inside a word leaves behind, and
-      // they say nothing either way — but a short number is a count, not a
-      // fragment.
-      if (word.length < MIN_WORD_LENGTH && !/\d/.test(word)) continue;
-      scanned += 1;
-      // A number is matched whole. `40` is a substring of `(400)` and a
-      // count that reads as already-seen is a live turn read as idle; a word
-      // is matched loosely on purpose, so a split `Think`/`ing` still is.
-      const numeric = /\d/.test(word) && !/[A-Za-z]/.test(word);
-      if (numeric ? onScreen.includes(` ${word} `) : onScreen.includes(word)) continue;
-      novel = true;
-      break;
-    }
+    const novel = this.hasNewWord(words);
     this.remember(normalized);
     return novel ? "output" : "redraw";
   }
 
+  /**
+   * Does this burst carry a word the screen did not already have?
+   *
+   * Scanned from the end, where a TUI puts what is new and where `push` keeps
+   * the bytes of an oversized burst. The remembered words are a set, so the
+   * scan is a hash lookup per word rather than a substring search, so it can
+   * run as deep as the memory it is comparing against — deep enough to find a
+   * new line painted above a static footer (review of PR 455). The substring
+   * fallback is what tolerates a burst boundary inside a word — `Think` and
+   * `ing` are both inside a remembered `Thinking` — and only a word the set
+   * missed pays for it.
+   */
+  private hasNewWord(words: string[]): boolean {
+    const onScreen = ` ${this.remembered.join(" ")} `;
+    const onScreenWords = this.rememberedWords();
+    let scanned = 0;
+    for (let i = words.length - 1; i >= 0 && scanned < MAX_SCANNED_CHARS; i -= 1) {
+      const word = words[i];
+      scanned += word.length + 1;
+      // Fragments are what a burst boundary inside a word leaves behind, and
+      // they say nothing either way — but a short number is a count, not a
+      // fragment.
+      const numeric = /\d/.test(word) && !/[A-Za-z]/.test(word);
+      if (word.length < MIN_WORD_LENGTH && !numeric) continue;
+      if (onScreenWords.has(word)) continue;
+      // A number is matched whole. `40` is a substring of `(400)`, and a count
+      // that reads as already-seen is a live turn read as idle.
+      if (!numeric && onScreen.includes(word)) continue;
+      return true;
+    }
+    return false;
+  }
+
+  /** The remembered bursts' words, built once per burst and cached. */
+  private rememberedWords(): Set<string> {
+    if (!this.rememberedSet) {
+      this.rememberedSet = new Set(this.remembered.join(" ").split(" "));
+    }
+    return this.rememberedSet;
+  }
+
+  /** The screen was wiped; nothing that was on it counts as being on it. */
+  private forgetScreen(): void {
+    this.remembered.length = 0;
+    this.rememberedSet = null;
+  }
+
   private remember(normalized: string): void {
-    this.remembered.push(
-      normalized.length > MAX_REMEMBERED_CHARS
-        ? normalized.slice(-MAX_REMEMBERED_CHARS)
-        : normalized,
-    );
+    this.rememberedSet = null;
+    let kept = normalized;
+    if (kept.length > MAX_REMEMBERED_CHARS) {
+      kept = kept.slice(-MAX_REMEMBERED_CHARS);
+      // Start at a whole word: a slice through the middle of one leaves a
+      // fragment that matches nothing, and the scan would read the word it
+      // cut in half as new.
+      const firstSpace = kept.indexOf(" ");
+      if (firstSpace > 0) kept = kept.slice(firstSpace + 1);
+    }
+    this.remembered.push(kept);
     while (this.remembered.length > REMEMBERED_BURSTS) this.remembered.shift();
   }
 }
