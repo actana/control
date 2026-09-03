@@ -290,18 +290,28 @@ describe("actana session, against a Core in this process", () => {
     expect(raw.out.join("\n")).toContain("\u001B[1G");
   }, 30_000);
 
-  it("sends exactly the bytes it was given, and adds a return only when asked", async () => {
+  it("sends exactly the bytes it was given, and the return as its own write (#404)", async () => {
     const { writes } = await coreWithSessions();
 
+    // The default submits: the text, then the carriage return as a **second**
+    // write to the same PTY — never `"2\r"` as one, because a harness that
+    // treats a paste as one unit would swallow the return with the characters.
+    // No timer between them: prompt delivery is still the Core's (ADR 0026).
     const sent = await fixture!.run(["session", "send", "task_live", "2"], withCore());
     expect(sent.code, sent.err.join("\n")).toBe(EXIT_OK);
-    // No carriage return, no second write, no timer: prompt delivery is the
-    // Core's (ADR 0026) and `send` is the equivalent of typing.
-    expect(writes).toEqual(["2"]);
+    expect(writes).toEqual(["2", "\r"]);
 
+    // `--enter` asks for what already happened, and a script that passes it
+    // keeps working.
     const withEnter = await fixture!.run(["session", "send", "task_live", "2", "--enter"], withCore());
     expect(withEnter.code).toBe(EXIT_OK);
-    expect(writes).toEqual(["2", "2", "\r"]);
+    expect(writes).toEqual(["2", "\r", "2", "\r"]);
+
+    // And the opt-out reaches the wire as one write and nothing else.
+    const typed = await fixture!.run(["session", "send", "task_live", "2", "--no-enter"], withCore());
+    expect(typed.code, typed.err.join("\n")).toBe(EXIT_OK);
+    expect(writes).toEqual(["2", "\r", "2", "\r", "2"]);
+    expect(typed.err.join("\n")).toContain("started no turn");
   }, 30_000);
 
   it("kills a Session this CLI did not start", async () => {

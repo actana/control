@@ -719,6 +719,16 @@ export class CoreSession {
    * question the harness asked (`send("2")` then `send("\r")`), an escape
    * (`send("\u001B")`), a follow-up typed into a harness already at its prompt.
    *
+   * **A follow-up that is meant to start a turn needs the return, and it is the
+   * caller who writes it** — `send(text)` then `send("\r")`, two writes, never
+   * `send(text + "\r")`. A harness that treats a paste as one unit swallows a
+   * glued return with the characters and starts nothing. This is the primitive
+   * `actana session send` is built on, and since #404 that command writes the
+   * second call by default rather than only under `--enter`: the default moved
+   * in the CLI, where a verb means "send a message", and not here, where the
+   * method means "type these bytes" and is what the Panel and every other
+   * client type through.
+   *
    * Resolves false when the Core did not accept the write — a PTY that has
    * exited. Rejects when another Core client holds this Session's lock.
    */
