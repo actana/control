@@ -99,6 +99,38 @@ describe("the vocabulary (ADR 0036 C1, ADR 0037 D1)", () => {
     expect(lineOf("1.2.4-rc.1")).toBe("1.2.4");
   });
 
+  // ADR 0023 D46, checked here because this module is the reason that clause
+  // is cheap. A sub-beta train `beta/0.4.5-f1` hands `--expected 0.4.5-f1` to
+  // the push-time and promotion-time assertions, and they must compare the
+  // manifests against the **line** — the tree on a sub-beta carries `0.4.5`,
+  // exactly as the plain train's does. That already worked, and this is what
+  // says so: the vocabulary is unamended by D46, and a change here that broke
+  // it would strand a sub-beta's every push with nothing else red.
+  it("reads a sub-beta train's version as a prerelease of its line (ADR 0023 D46)", () => {
+    expect(versionProblem("0.4.5-f1")).toBeNull();
+    expect(channelOf("0.4.5-f1")).toBe("prerelease");
+    expect(lineOf("0.4.5-f1")).toBe("0.4.5");
+    expect(lineOf("0.4.5-f12")).toBe("0.4.5");
+    // Not a line and not a beta: a sub-beta is neither published nor cut for.
+    // `betaOf` and `trainImageTagFor` take a line and refuse this, which is
+    // what makes `beta-release.yml` strip the suffix before it composes
+    // anything rather than discovering the problem at the registry.
+    expect(isLine("0.4.5-f1")).toBe(false);
+    expect(isBeta("0.4.5-f1")).toBe(false);
+    expect(() => betaOf("0.4.5-f1")).toThrow(/not a line/);
+    expect(() => trainImageTagFor("0.4.5-f1")).toThrow(/not a line/);
+  });
+
+  // The whole reason the suffix is `-fN` and not `.N`, in one assertion. A
+  // fourth dot is not semver: it is not a line, not a prerelease of one, and
+  // not a version this repository writes — so a train named `beta/0.4.5.1`
+  // would fail here, after the cut, on every push.
+  it("has no reading at all for a fourth dot (ADR 0023 D46)", () => {
+    expect(lineOf("0.4.5.1")).toBeNull();
+    expect(channelOf("0.4.5.1")).toBeNull();
+    expect(versionProblem("0.4.5.1")).toMatch(/not a version this repository publishes/);
+  });
+
   it("resolves every publication of a line back to that line", () => {
     expect(lineOf("0.4.1")).toBe("0.4.1");
     expect(lineOf("0.4.1-beta")).toBe("0.4.1");
