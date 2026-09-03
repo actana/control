@@ -183,9 +183,9 @@ export const STATUS_READ_RETRY_MS = 250;
  * first blip would report a turn as unobservable while it was being observed
  * again.
  *
- * Thirty seconds because that is several of `DurableCoreClient`'s
- * reconnects: its backoff runs 500 ms, 1 s, 2 s, 4 s and then every 5 s, so a
- * link that is coming back has had six or more attempts by the time this fires.
+ * Thirty seconds because that is several of `DurableCoreClient`'s reconnects:
+ * its backoff runs 500 ms, 1 s, 2 s, 4 s and then every 5 s, so a link that is
+ * coming back has had six or more attempts by the time this fires.
  * A link that has not come back by then is not a blip, and the wait behind it
  * has nothing left to hear.
  *
@@ -469,11 +469,12 @@ function turnTimeoutMessage(opts: {
  * The link to the Core went down while a wait was running, and did not come
  * back (#396).
  *
- * **Its whole reason for existing is that it is not a status.** A wait had three
- * ways to end before this: a settled status, which is the Core reporting a turn
- * ended; a deadline ({@link CoreSessionTurnTimeoutError}), which is this side
- * giving up on a clock it set itself; and — for a link that dropped — nothing at
- * all, which is the bug. The obvious cheap fix is the forbidden one: resolving
+ * **Its whole reason for existing is that it is not a status.** Three things can
+ * stop a wait, and before this only two of them ended it: a settled status,
+ * which is the Core reporting a turn ended; a deadline
+ * ({@link CoreSessionTurnTimeoutError}), which is this side giving up on a clock
+ * it set itself; and a link that dropped, which ended nothing and simply went
+ * quiet — the bug. The obvious cheap fix is the forbidden one: resolving
  * the wait with whatever status the Session was last seen at would report a turn
  * as ended on the evidence that this side stopped listening. That is a false
  * completion, which is the exact failure ADR 0033 exists to remove, so a lost
