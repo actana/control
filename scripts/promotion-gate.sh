@@ -113,6 +113,20 @@ train="$HEAD"
 sha="${HEAD_SHA:-not reported by the event payload}"
 pr="${PR_NUMBER:+ (#$PR_NUMBER)}"
 
+# A sub-beta head is still red here, and that is the point (ADR 0023 D46).
+# Waving it through would exit 0, satisfy `docs/rulesets/main.json`'s required
+# context, and re-enable the merge button on a pull request that must never be
+# merged — the exact failure this file exists to make impossible. What changes
+# is only the dispatch printed below: `promote.yml` refuses a sub-beta, so
+# telling a reader to run it against one would send them to a second refusal
+# instead of to the merge-back that is the actual next step.
+if [[ "$train" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+-f[0-9]+$ ]]; then
+  plain="${train%-f*}"
+  next="gh pr create --base $plain --head $train   # then promote $plain"
+else
+  next="gh workflow run promote.yml -f train=$train"
+fi
+
 announce "Do not merge this pull request — it is a gate, not a merge" \
 "DO NOT PRESS THE MERGE BUTTON ON THIS PULL REQUEST$pr.
 
@@ -123,7 +137,7 @@ for a promotion gate.
 
 Do this instead:
 
-    gh workflow run promote.yml -f train=$train
+    $next
 
 ADR 0023 D5 — \`main\` advances only by fast-forward. Not a squash, not a merge
 commit. A fast-forward makes the commit on \`main\` byte-identical to the tip

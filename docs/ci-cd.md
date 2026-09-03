@@ -119,6 +119,12 @@ D1).
                                                         the same digest ──┘
 ```
 
+A train may carry a `-fN` **sub-beta** suffix — `beta/0.4.5-f1` — when a fix
+has to be taken while it is frozen for approval (D46). It is a branch of that
+train and not a version of its own: the tree still says `0.4.5`, it merges back
+into `beta/0.4.5`, and it never promotes. See
+[§Taking a fix onto a frozen train](#taking-a-fix-onto-a-frozen-train-a-sub-beta).
+
 Five things follow from that, and each is enforced rather than asked for:
 
 - **A pull request targets the open train, never `main`.** GitHub bases new
@@ -1288,6 +1294,49 @@ first place — this is the same cut, done again.
 throws that work away. Retarget the open pull requests, cherry-pick the squash
 commits onto the new train, and only then delete the old one. That is also the
 fallback when a post-hotfix rebase conflicts (D24).
+
+#### Taking a fix onto a frozen train: a sub-beta
+
+A train is frozen for approval and a small fix has to ride it. Re-cutting throws
+the train away; merging straight into it moves the tip the reviewer worked the
+checklist against. **Cut a sub-beta** (ADR 0023 D46) — a branch of the train,
+named for it:
+
+```bash
+git fetch origin
+git switch -c beta/0.4.5-f1 origin/beta/0.4.5
+git push --no-verify -u origin beta/0.4.5-f1   # --no-verify: the same #269 note as a cut
+```
+
+**That is the whole cut.** A sub-beta writes no version: the suffix names the
+branch, and the six manifests and `install.sh`'s stamp keep saying `0.4.5`, so
+there is nothing here to rewrite and nothing to revert later.
+
+The suffix is `-f` plus digits and nothing else. `beta/0.4.5.1` is refused
+everywhere a train name is read, because a fourth dot is not semver — npm, the
+version-agreement checker and the publish rehearsal all reject it — and
+`0.4.5-f1` is a legal prerelease of the same line.
+
+Then work it like a train: pull requests target `beta/0.4.5-f1`, every merge
+republishes **`beta-0.4.5-f1`** — its own moving tag, so it cannot overwrite the
+plain train's image — and when it is done, merge it back:
+
+```bash
+gh pr create --base beta/0.4.5 --head beta/0.4.5-f1 --title "chore(release): fold beta/0.4.5-f1 into beta/0.4.5"
+```
+
+**`beta/0.4.5-f1` never promotes.** The release is `v0.4.5` with no suffix, so
+the plain train is what carries the promotion pull request and what
+`promote.yml` is dispatched on. Three checks say so if you try: `Train rules`
+on a `beta/0.4.5-f1 → main` pull request, `promote.yml`'s pause on the
+dispatch, and the `Promotion gate` refusal, which prints the merge-back instead
+of a dispatch. Delete the sub-beta after the merge-back, the way a train is
+deleted after promotion (D4).
+
+Cutting a beta from a sub-beta works and publishes the **line**: `v0.4.5-beta`,
+`actana-core-0.4.5-beta-*.tar.gz`, exactly as a cut from the plain train does
+(ADR 0036 C1). Only the image `source_tag` differs, and it differs because it
+must.
 
 ### Working the train, and the freeze window
 

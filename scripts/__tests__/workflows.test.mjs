@@ -937,7 +937,12 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
   it("builds the version by concatenation and refuses any counter (C1)", () => {
     const job = code(jobBlock(source, "resolve"));
     expect(job).toContain('version="${train#beta/}"');
-    expect(job).toContain('beta_version="$version-beta"');
+    // The **line**, which on a plain train is `version` itself and on a
+    // sub-beta is `version` with its `-fN` off (ADR 0023 D46). C1's ban is
+    // untouched by that: the beta string is still one concatenation from a
+    // bare `x.y.z`, and the assertion below still refuses everything else.
+    expect(job).toContain('line="${version%-f*}"');
+    expect(job).toContain('beta_version="$line-beta"');
     expect(job).toContain("=~ ^[0-9]+\\.[0-9]+\\.[0-9]+-beta$");
     expect(job).toContain('tag="v$beta_version"');
     // The three dialects a counter actually arrives in. None of them belongs
@@ -1299,7 +1304,7 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     }
     // And the string that expands there cannot be `latest` or anything else:
     // `resolve` builds it by one concatenation and refuses any other shape.
-    expect(code(jobBlock(source, "resolve"))).toContain('beta_version="$version-beta"');
+    expect(code(jobBlock(source, "resolve"))).toContain('beta_version="$line-beta"');
     expect(code(jobBlock(source, "resolve"))).toContain(
       '^[0-9]+\\.[0-9]+\\.[0-9]+-beta$',
     );
@@ -1542,8 +1547,14 @@ describe("the beta cut (ADR 0036 C1, C3, D7, D9-D11, D13, D14)", () => {
     // `betaVersion("0.4.1-beta")` throws, so the wrong one is caught at
     // runtime — but only after a macOS leg and three tarballs have been paid
     // for, and the point of C1 is that no surface derives a second time.
-    expect(job).toContain("BETA_LINE: ${{ needs.resolve.outputs.version }}");
+    //
+    // It is `line` and not `version`: on a sub-beta train `version` is the
+    // branch name `0.4.5-f1` (ADR 0023 D46), which `betaVersion` rejects for
+    // the same reason it rejects a counted beta — and there is no `-f1`
+    // release to pack for. `line` is `0.4.5` on both kinds of train.
+    expect(job).toContain("BETA_LINE: ${{ needs.resolve.outputs.line }}");
     expect(job).not.toContain("BETA_LINE: ${{ needs.resolve.outputs.beta_version }}");
+    expect(job).not.toContain("BETA_LINE: ${{ needs.resolve.outputs.version }}");
   });
 
   // The guard on the flag rather than on the artifact. `install=ok` is emitted
@@ -1731,6 +1742,99 @@ describe("the manifest version assertion (ADR 0023 D3, amended by #152 and #157)
 // Every assertion here is about a shape that is invisible in a green run. A
 // dispatch that lost its `--ref` publishes correctly for as long as the default
 // branch happens to agree with the train — which is exactly how this shipped.
+// ADR 0023 D46. `Train rules` is the one guard in this change that cannot be
+// run here: its `beta/*` and `main` cases call `gh api` and `gh run list` and
+// are about the ref graph rather than about a name. The behaviours that *are*
+// about a name — the branch-name convention, the promotion dispatch, the train
+// image tag, the beta cut and the survivor filter — are executed against the
+// real bash in `scripts/__tests__/train-name.test.mjs`. What is left for this
+// file is the shape of the two decisions inside that job, and the record they
+// cite, both of which a grep is the honest tool for.
+describe("sub-beta trains (ADR 0023 D46)", () => {
+  const ci = read("ci.yml");
+  const rules = code(jobBlock(ci, "train-rules"));
+
+  it("refuses a sub-beta promotion pull request by name, not by falling through", () => {
+    // "Not a train branch" would be a true statement about the wrong thing: it
+    // *is* a train branch, and the author is right that it carries the fixes.
+    // The refusal has to name the merge-back or it sends them to re-read D3.
+    expect(rules).toContain('"$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+-f[0-9]+$');
+    expect(rules).toContain("A sub-beta train does not promote");
+    expect(rules).toMatch(/beta\/\$\{version%-f\*\}/);
+  });
+
+  it("accepts a sub-beta as a base, and asserts the tree against the line", () => {
+    // The clause that keeps D3 untouched: the suffix names the branch, so the
+    // six manifests and the installer stamp on `beta/0.4.5-f1` still say
+    // `0.4.5`. Asserting `$version` here would demand a version no cut writes
+    // and fail every pull request into a sub-beta.
+    expect(rules).toContain('"$version" =~ ^[0-9]+\\.[0-9]+\\.[0-9]+(-f[0-9]+)?$');
+    expect(rules).toContain('line="${version%-f*}"');
+    expect(rules).toContain('assert_versions "$line"');
+    // Once, for the promotion pull request whose head *is* the plain train —
+    // and not a second time under a `beta/*` base, where `$version` may carry
+    // a suffix the tree does not.
+    expect(rules.match(/assert_versions "\$version"/g)).toHaveLength(1);
+  });
+
+  it("lets a sub-beta merge back into its own train and nothing else", () => {
+    // The one train-headed pull request the model has besides a promotion.
+    // Matched against this base, so a sub-beta of another line targeting this
+    // train is still refused by the convention below it.
+    expect(rules).toContain('"$version" == "$line" && "$HEAD" =~ ^beta/');
+    expect(rules).toContain("-f[0-9]+$");
+  });
+
+  it("keeps the widening to -fN in every guard that reads a train name", () => {
+    // The failure this pins is a guard widened to `-[0-9A-Za-z.-]+`, which is
+    // the obvious edit and admits `-rc.N` (D30) and `-beta` (ADR 0036 C1) —
+    // two shapes that mean something else entirely. Every train-name regex in
+    // the workflows is enumerated and held to the same suffix.
+    const trainPatterns = [];
+    for (const file of ["ci.yml", "promote.yml", "beta-release.yml"]) {
+      for (const match of read(file).matchAll(/\[0-9\]\+\\\.\[0-9\]\+\\\.\[0-9\]\+([^\s"']*)/g)) {
+        trainPatterns.push([file, match[1]]);
+      }
+    }
+    expect(trainPatterns.length, "no train-name patterns found — the shape moved").toBeGreaterThan(
+      4,
+    );
+    for (const [file, suffix] of trainPatterns) {
+      expect(
+        ["$", "(-f[0-9]+)?$", "-f[0-9]+$", "-beta$"],
+        `${file} carries a train-name suffix this ADR does not define: ${suffix}`,
+      ).toContain(suffix);
+    }
+  });
+
+  it("cuts a beta of the line from either kind of train (ADR 0036 C1)", () => {
+    const beta = code(jobBlock(read("beta-release.yml"), "resolve"));
+    expect(beta).toContain('line="${version%-f*}"');
+    expect(beta).toContain('beta_version="$line-beta"');
+    // The C1 assertion is not widened. It is what refuses everything the
+    // concatenation above cannot produce, and D46 gave it nothing new to allow.
+    expect(beta).toContain("^[0-9]+\\.[0-9]+\\.[0-9]+-beta$");
+    expect(beta).not.toContain("-f[0-9]+)?-beta$");
+  });
+
+  it("is written down where the branch model is (ADR 0023)", () => {
+    // The mechanism is in the workflows; the reason the suffix is `-fN` rather
+    // than a fourth dot is only in the record, and it is the part that stops
+    // the next person "fixing" the guards to accept `0.4.5.1`.
+    const adr = fs.readFileSync(
+      path.join(repoRoot, "docs/adr/0023-release-trains-and-digest-promotion.md"),
+      "utf8",
+    );
+    expect(adr).toMatch(/\*\*D46 /);
+    expect(adr).toContain("beta/0.4.5-f1");
+    expect(adr).toContain("not semver");
+    // And the runbook a person actually follows.
+    const runbook = fs.readFileSync(path.join(repoRoot, "docs/ci-cd.md"), "utf8");
+    expect(runbook).toContain("sub-beta");
+    expect(runbook).toContain("ADR 0023 D46");
+  });
+});
+
 describe("the promotion runs the promoted commit's own release workflow (#326)", () => {
   const promote = read("promote.yml");
   const release = read("release.yml");

@@ -120,6 +120,33 @@ describe("the promotion gate guard (#264, ADR 0023 D5, D16)", () => {
     expect(written).toContain("gh workflow run promote.yml -f train=beta/0.3.3");
   });
 
+  // ADR 0023 D46. A sub-beta head into `main` is still red, and being red is
+  // the point: exiting 0 here would satisfy `docs/rulesets/main.json`'s
+  // required context and hand back the merge button on a pull request that
+  // must never be merged — the exact failure this file exists to prevent.
+  // Only the printed next step changes, because `promote.yml` refuses a
+  // sub-beta dispatch and sending the reader there would be a second refusal
+  // instead of an answer.
+  it("stays red on a sub-beta head, and prints the merge-back instead", () => {
+    const { status, out } = run({ ...gatePullRequest, HEAD: "beta/0.4.5-f1" });
+    expect(status, "a sub-beta gate must fail this check too").toBe(1);
+    expect(out).toContain("gh pr create --base beta/0.4.5 --head beta/0.4.5-f1");
+    expect(out, "promote.yml refuses this dispatch — do not send anyone to it").not.toContain(
+      "gh workflow run promote.yml -f train=beta/0.4.5-f1",
+    );
+    // The annotation carries it whole, the same way the plain refusal does.
+    const annotation = out.split("\n").find((line) => line.startsWith("::error title="));
+    expect(annotation).toContain("gh pr create --base beta/0.4.5");
+  });
+
+  it("keeps the plain train's dispatch exactly as it was", () => {
+    // D46 must not have moved the instruction on the pull request that is
+    // ninety-nine promotions in a hundred.
+    const { out } = run({ ...gatePullRequest, HEAD: "beta/0.4.5" });
+    expect(out).toContain("gh workflow run promote.yml -f train=beta/0.4.5");
+    expect(out).not.toContain("gh pr create");
+  });
+
   // Criterion 6. Everything that is not a gate pull request reaches a
   // mergeable state, and each of these is an early successful exit rather
   // than a skipped job (D33).

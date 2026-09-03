@@ -176,6 +176,13 @@ exactly one kind of change — the promotion of a whole train — and there is n
 exception for hotfixes, documentation, or reverts
 ([ADR 0023](docs/adr/0023-release-trains-and-digest-promotion.md) D1).
 
+The open train sometimes carries a **sub-beta** suffix — `beta/0.4.5-f1`,
+`beta/0.4.5-f2` — when a fix has to be taken while the train is frozen for
+approval (D46). That is still the open train; target it the same way. It is a
+variation of `beta/0.4.5`, not a new version: nothing in the tree changes name,
+it merges back into `beta/0.4.5` when it is done, and the release is `v0.4.5`
+with no suffix either way.
+
 GitHub will not help you here: it bases every new pull request on the default
 branch, which is still `main`. So the first one you open targets the wrong
 thing, a required check called `Train rules` fails, and a bot comments telling
