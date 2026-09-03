@@ -15,10 +15,13 @@ import {
  *
  * The Panel has no project row for a Core-owned Project — it lives on its Core
  * and reaches the Panel as a core-link snapshot. But group membership, the card
- * image and the launch URL are the Panel operator's filing, not Core facts:
- * they mean nothing on the Core and no frame carries them. This service is
- * where they live, keyed to the Core's project id, so `PATCH /api/projects/:id`
- * no longer 404s on the only fields it could still legitimately be asked for.
+ * image, the launch URL and where the pin sits on this Panel's rail (#382) are
+ * the Panel operator's filing, not Core facts: they mean nothing on the Core
+ * and no frame carries them. The rail slot has a reason of its own — the rail
+ * interleaves several Cores' pins with the Panel's, so no single Core is in a
+ * position to hold a number in that sequence. This service is where all four
+ * live, keyed to the Core's project id, so `PATCH /api/projects/:id` no longer
+ * 404s on the only fields it could still legitimately be asked for.
  *
  * Every write is an upsert: the first time an operator files a Core-owned
  * project into a group, there is nothing to update.
@@ -92,8 +95,11 @@ export function upsertProjectPresentation(
  * numbering space, which is what lets the merged list sort back into the
  * operator's order after a reload.
  *
- * All of it or none of it: a reorder that lands half its slots is the
- * silently-wrong order this issue is about, not a smaller version of it.
+ * All of it or none of it, within this half: a write that landed some of these
+ * slots would be the silently-wrong order this issue is about, not a smaller
+ * version of it. It does not make the reorder as a whole atomic — the Panel's
+ * own rows are written by `reorderPinnedProjects` in a separate transaction
+ * over a separate request, and there is no transaction spanning the two.
  */
 export function reorderCorePins(slots: readonly CorePinSlot[]): ProjectPresentation[] {
   const write = getSqlite().transaction(() =>

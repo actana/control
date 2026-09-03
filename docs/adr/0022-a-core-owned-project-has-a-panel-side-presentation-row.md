@@ -74,6 +74,13 @@ Core-owned and unchanged; only its position among the pins is Panel-local, and
 that is the operator's filing of somebody else's Project in exactly the sense
 this ADR already means.
 
+The two halves are **not one transaction**, and cannot be: they are two
+requests against two tables, and the Core-owned half is transactional only
+within itself. If the Panel's order write commits and the Core half then fails,
+the rail is half-applied under a failure toast; the client reverts what it can
+and re-reads the rest. Closing that would need a single endpoint owning both
+tables, which is a larger claim than this amendment makes.
+
 One consequence is worth stating because it constrains both write paths: the
 two halves share **one numbering space**. A reorder sends the whole rail to
 `PATCH /api/projects/pinned-order`, which now numbers its own rows by their

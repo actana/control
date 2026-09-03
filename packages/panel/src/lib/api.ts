@@ -260,9 +260,10 @@ export const api = {
 
   /**
    * Panel-local presentation for Core-owned projects (issue 98) — the group,
-   * card image and launch URL the Panel keeps for a project whose row lives on
-   * its Core. Read as one list and joined onto Core snapshots client-side; the
-   * Panel server has no transport of its own to a Core to join them for us.
+   * card image, launch URL and rail slot (#382) the Panel keeps for a project
+   * whose row lives on its Core. Read as one list and joined onto Core
+   * snapshots client-side; the Panel server has no transport of its own to a
+   * Core to join them for us.
    */
   listProjectPresentation: () =>
     req<{ presentation: ProjectPresentation[] }>("/api/project-presentation"),
