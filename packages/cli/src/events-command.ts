@@ -20,14 +20,48 @@
 //     tail starts at the end of the log, the way `tail -f` does. The Core has no
 //     frame that answers "what is your tip", so the tip is learned the way it is
 //     published — subscribe, let the tail stream, read `eventsReplayed` — and
-//     everything up to it is counted, not printed. A first run that printed it
-//     would be the replay storm, produced deliberately.
+//     everything up to it is counted, not printed, bar the one exception two
+//     paragraphs down. A first run that printed it would be the replay storm,
+//     produced deliberately.
 //
 //     One `eventsReplayed` is *not* enough to conclude the log has ended: the
 //     Core caps a replay tail at `EVENT_TAIL_LIMIT` and the marker reports what
 //     it sent rather than what it has. `event-tip.ts` is that whole argument and
 //     the loop that closes it; this file feeds it the two frames and keeps
 //     quiet until it says the log has an end.
+//
+//     **`--kind` is the one thing that speaks during that walk**, and that is
+//     #403. The storm the silence prevents is a history nobody asked for; naming
+//     kinds is asking for them. After a session has finished,
+//     `--kind session:finished --limit 1` walked past the very event it was
+//     typed to find, printed nothing, and waited for a second finish that was
+//     never coming. So a named kind is taken out of this tail; every other kind
+//     stays as quiet as it has always been. What decides it is the flag the
+//     operator typed and never the state of the log.
+//
+//     **Which** matches, though, is a second question with a second answer, and
+//     printing them on the way past gets it wrong. This walk covers the whole
+//     retained log — it subscribes from `0`, and nothing prunes the store — so
+//     the first match to go past is the *oldest* one the Core still holds, and
+//     `--limit 1` would answer a question about the session that just finished
+//     with a finish from weeks ago, exit 0, and be believed. Newest needs the
+//     end of the log, and the end of the log needs the walk. So the walk holds
+//     the last n matches it has seen and prints them when the tip is known: n
+//     and no more, whatever the log's length, and the answer is the newest n.
+//
+//     That costs the property the printing bought. A held match is one the
+//     stored cursor has already passed, so an interrupt during the walk loses
+//     it — and the cursor outruns stdout on the ordinary exit path too, because
+//     `DurableCoreClient.deliverEvent` persists before any listener runs and
+//     frames already in flight keep arriving after `finish` has closed the
+//     client. **That is #442, it is not fixed here, and #403 stays open until
+//     it lands.**
+//
+//     Without `--limit` there is no n to choose between, so matches stream as
+//     they arrive: every one of them is going to be printed anyway, and holding
+//     them would buy nothing and cost an unbounded array. What it does cost is
+//     said out loud in the help text — `--kind` bounds *what* is printed, and
+//     only `--limit` bounds *how much*.
 //
 //   • **Where the cursor lives.** `FileCursorStorage`, so the second run of a
 //     command picks up where the first left off. A reconnect *within* a run is
@@ -117,6 +151,51 @@ import type { ParsedArgs } from "./cli-args.ts";
  */
 const SUBSCRIBE_ANSWER_MS = 30_000;
 
+/**
+ * The last `capacity` events handed to it, oldest first, at O(1) per event.
+ *
+ * A rotated write index rather than `push` + `shift`, because the walk this
+ * serves runs the length of a Core's whole retained log: `shift` moves every
+ * held element on every match once the ring is full, which is quadratic in the
+ * log for a wide filter and a large ceiling (`--kind task:updated --limit 5000`
+ * over a hundred thousand events is the shape). The memory is the same either
+ * way — `capacity` events and no more, whatever the log's length.
+ *
+ * {@link MatchRing.drain} empties it, so a second call yields nothing: the
+ * events it held are the caller's now, and a ring that could hand the same
+ * event over twice would be a second chance to print it.
+ */
+type MatchRing = {
+  add: (event: CoreLinkEvent) => void;
+  /** Everything held, oldest first, and the ring emptied. */
+  drain: () => CoreLinkEvent[];
+};
+
+function matchRing(capacity: number): MatchRing {
+  const held: CoreLinkEvent[] = [];
+  // Where the next event goes once `held` is full — the oldest slot, which is
+  // also where a drain has to start reading to give them back in order.
+  let next = 0;
+
+  return {
+    add: (event) => {
+      if (held.length < capacity) {
+        held.push(event);
+        return;
+      }
+      held[next] = event;
+      next = (next + 1) % capacity;
+    },
+    drain: () => {
+      const inOrder =
+        held.length < capacity ? held.slice() : [...held.slice(next), ...held.slice(0, next)];
+      held.length = 0;
+      next = 0;
+      return inOrder;
+    },
+  };
+}
+
 export const EVENTS_HELP = `actana events tail — follow a Core's event log
 
 Usage
@@ -135,6 +214,18 @@ Where it starts
   Each Core gets a cursor under the config directory, so a second run carries on
   from where the first stopped. With no cursor and no --since, a tail starts at
   the end of the log — like \`tail -f\`, not like \`cat\`.
+
+  --kind is the exception: naming kinds is asking for them, so a first run prints
+  the ones already in the log before it goes on following. Everything else in
+  that history stays unprinted, as it would have been anyway.
+
+  With --limit n that is the newest n of them, not the first n found: the run
+  reads to the end of the log before it can know which are newest, so it holds
+  the last n it saw and prints them once it does.
+
+  Without --limit it is all of them — every event of those kinds the Core still
+  holds, which on a Core that has been up for weeks is not a short list. --kind
+  bounds what gets printed; --limit is what bounds how much.
 
   --since does not move the stored cursor: a one-off rewind leaves the
   follow-along stream where it was.
@@ -263,7 +354,71 @@ async function eventsTail(
     // `MAX_TIP_ROUNDS`, a run still looking for the tip really does carry on,
     // and a run reading history is about to stop. Same walk, different sentence
     // at the end of it.
-    const tip = trackEventTip(client, deps);
+    /**
+     * The last `--limit` matches seen on the walk to the tip, or null when
+     * there is no walk to hold them for.
+     *
+     * A first run's walk covers the **whole retained log** — it subscribes from
+     * `0` because there is no cursor, and nothing prunes `event_log_store`. So
+     * a `--kind` match printed as it goes past is the *oldest* match the Core
+     * still holds, and `--limit 1` after a session finished answers with a
+     * finish from weeks ago, exit 0, and is believed. That is worse than the
+     * hang #403 reports, because the hang was visible; it is the same hazard
+     * `event-tip.ts` argues for `harness install`, where a stale
+     * `harness:installFailed` must not be read as this install's verdict.
+     *
+     * Which match is the newest cannot be known before the walk ends, so the
+     * walk holds the last n it has seen — n and no more, whatever the log's
+     * length — and prints them once the tip is known. Bounded memory, and the
+     * answer is the newest n rather than the oldest.
+     *
+     * Null, and matches stream as they arrive, when there is no n to choose
+     * between them: without `--limit` every match is printed anyway, so holding
+     * them would buy nothing and cost an unbounded array.
+     */
+    const recentCap =
+      !fromStart && kinds.size > 0 && limit.value !== null && limit.value > 0 ? limit.value : 0;
+    let recent: MatchRing | null = recentCap > 0 ? matchRing(recentCap) : null;
+
+    /**
+     * Whether the walk to the tip is what produces this run's answer.
+     *
+     * Narrower than `--limit`, deliberately, and this is the divergence the
+     * round-2 review invited an argument for. `event-tip.ts` splits its callers
+     * into "a first run about to follow", for whom its default sentence about
+     * carrying on from an approximate number is true, and a caller that *ends*
+     * on the number, for whom it is a sentence printed after the process has
+     * exited. Which side a run falls on is not `--limit`:
+     *
+     *   • `--limit 5` with no `--kind` still follows. The walk prints nothing,
+     *     the ceiling is spent on live events, and an approximate tip costs it
+     *     a short replay rather than its answer — it really is about to follow,
+     *     so the default sentence stays true and this leaves it alone.
+     *   • `--limit 5 --kind session:finished` ends on the walk. Its answer *is*
+     *     the ring flushed at the tip, so a tip that is not the tip means the
+     *     newest matches were never seen and the run is about to hand back
+     *     stale ones with a 0.
+     *
+     * Which is exactly the ring's own condition, so it is read off the ring.
+     */
+    const tipEndsThisRun = recentCap > 0;
+
+    // Set when the walk to the tip settled for an approximation rather than
+    // reaching the end of the log, on a run whose walk is what produces its
+    // answer. See `tipEndsThisRun` above for why that is narrower than
+    // `--limit`.
+    let tipApproximate = false;
+    const tip = trackEventTip(
+      client,
+      deps,
+      tipEndsThisRun
+        ? {
+            onRoundsExhausted: () => {
+              tipApproximate = true;
+            },
+          }
+        : {},
+    );
     // Set when the walk below settled for an approximation rather than reaching
     // the end of the log. A run that ends here has not read what it was asked
     // for, whatever its last marker said.
@@ -315,9 +470,13 @@ async function eventsTail(
       if (!timing || settled) return;
       if (idle !== null) clearTimeout(idle);
       idle = setTimeout(() => {
+        // What the walk was holding goes out before the run does — see
+        // `handOverRecent`. The tally is read after the writes, so the sentence
+        // counts what actually reached stdout.
+        const held = handOverRecent();
         deps.err(
           `actana events tail: ${name ?? endpoint} stopped answering the event ` +
-            `subscription; giving up with ${printed} event(s) printed. This read did not finish.`,
+            `subscription; giving up with ${tally(held)}. This read did not finish.`,
         );
         finish(EXIT_FAILURE);
       }, SUBSCRIBE_ANSWER_MS);
@@ -336,6 +495,70 @@ async function eventsTail(
       stopTiming();
     };
 
+    /** One event onto stdout. One formatter, wherever the event came from. */
+    const write = (event: CoreLinkEvent) => {
+      deps.out(args.json ? formatEventJson(event) : formatEventLine(event));
+      printed += 1;
+    };
+
+    /**
+     * One event onto stdout, with the ceiling checked behind it.
+     *
+     * Every path that prints on a run that is still going prints through here,
+     * so "at most n" cannot come to mean two things on the two sides of the
+     * printing switch. The one path that does not is the deadline below, which
+     * is already ending the run and must end it its own way.
+     */
+    const emit = (event: CoreLinkEvent) => {
+      write(event);
+      if (limit.value !== null && printed >= limit.value) finish(EXIT_OK);
+    };
+
+    /**
+     * Print what the walk was holding, now that the log's end is known.
+     *
+     * Detached before the first line goes out, so a `finish` reached inside the
+     * loop cannot leave a second flush behind it, and re-checked against
+     * `settled` per event because the ceiling can be reached partway through.
+     */
+    const flushRecent = () => {
+      if (recent === null) return;
+      const held = recent.drain();
+      recent = null;
+      for (const event of held) {
+        if (settled) return;
+        emit(event);
+      }
+    };
+
+    /**
+     * Hand the walk's held matches over on a run that is ending unfinished, and
+     * say how many went out.
+     *
+     * Two endings need this and neither of them is an answer: a Core that
+     * stopped answering `subscribe`, and a tip the hunt could only approximate.
+     * In both the matches are real, they are past this run's cursor, and the
+     * cursor has already moved over them — dropping them would lose them for
+     * every later run to buy nothing, and #439 settled that a partial read is
+     * reported by its exit code rather than by withholding what it read.
+     *
+     * `write` rather than `emit`, so the ceiling cannot turn an ending that
+     * failed into an `EXIT_OK`. It cannot be exceeded either way: a live ring
+     * means the walk printed nothing, so `printed` is 0 and the ring holds at
+     * most n.
+     */
+    const handOverRecent = (): number => {
+      if (recent === null) return 0;
+      const held = recent.drain();
+      recent = null;
+      for (const event of held) write(event);
+      return held.length;
+    };
+
+    /** "…3 event(s) printed, 1 of them held from an unfinished walk". */
+    const tally = (held: number): string =>
+      `${printed} event(s) printed${held > 0 ? `, ${held} of them held from an unfinished walk` : ""}`;
+
     const offEvent = client.onEvent(({ event }) => {
       // Everything reaching here is already past the cursor and already deduped
       // — that is the durable client's contract, and it is what makes a
@@ -348,6 +571,30 @@ async function eventsTail(
         // (`event-tip.ts`).
         tip.saw(event.eventId);
         waitForAnswer();
+        // …except for the kinds the operator named. The argument is in the
+        // header (#403): the storm this silence prevents is a history nobody
+        // asked for, and `--kind` is the asking.
+        //
+        // Held rather than printed when there is a `--limit` to choose between
+        // them, for the reason on `recent`: this walk covers the whole retained
+        // log, so printing on the way past answers with its oldest match.
+        //
+        // The trade is stated rather than hidden. Printing on the way past kept
+        // the stored cursor from outrunning what had been shown, and holding
+        // gives that up: the cursor advances and persists per event delivered,
+        // so an interrupt during the walk loses what the ring is holding. It is
+        // not a property this branch can keep on its own — the cursor outruns
+        // stdout on the ordinary exit path too, because
+        // `DurableCoreClient.deliverEvent` persists before any listener runs and
+        // frames already in flight keep arriving after `finish` has closed the
+        // client. That is #442, it is not fixed here, and #403 stays open until
+        // it lands.
+        if (kinds.size === 0 || !kinds.has(event.kind)) return;
+        if (recent === null) {
+          emit(event);
+          return;
+        }
+        recent.add(event);
         return;
       }
       // Counted before the filter, and before the ceiling: this is history the
@@ -359,9 +606,7 @@ async function eventsTail(
         waitForAnswer();
       }
       if (kinds.size > 0 && !kinds.has(event.kind)) return;
-      deps.out(args.json ? formatEventJson(event) : formatEventLine(event));
-      printed += 1;
-      if (limit.value !== null && printed >= limit.value) finish(EXIT_OK);
+      emit(event);
     });
 
     // The marker that closes a replay tail. On a first run it is also how the
@@ -372,18 +617,43 @@ async function eventsTail(
       if (!printing) {
         const end = tip.tipFrom(lastEventId);
         // A capped replay: the rest has been asked for and another marker is
-        // coming. Printing stays off, which is the whole point — this is the
-        // history the operator did not ask to see.
+        // coming. The walk stays where it is, which is the whole point — the
+        // history going past is the history the operator did not ask to see,
+        // and `--kind` has already taken the part of it they did.
         if (end === null) {
           waitForAnswer();
           return;
         }
+        // Not the end of the log — the number `event-tip.ts` settled for after
+        // `MAX_TIP_ROUNDS` of a Core appending faster than this side could
+        // drain it, on a run whose answer *is* this walk. Taking it as the tip
+        // would flush the ring and exit 0 with whatever matches this side
+        // happened to see, which on a Core racing ahead are the oldest ones in
+        // the log — the round-1 defect, in its last hiding place. So this run
+        // ends the way the reading side below ends and the way `event-tip.ts`
+        // asks its ending callers to: its own sentence, and a failure.
+        //
+        // What it holds still goes out. It is a short read rather than a wrong
+        // answer once the exit code says so, and the events are past the cursor
+        // either way.
+        if (tipApproximate) {
+          const held = handOverRecent();
+          deps.err(
+            `actana events tail: ${name ?? endpoint} appended events faster than they could be ` +
+              `read; giving up at #${end} with ${tally(held)}. This read did not finish.`,
+          );
+          finish(EXIT_FAILURE);
+          return;
+        }
+
         // The end of the log, found. This run has its answer, so the deadline
         // comes off here as well as in `stopReading` — from here it is a
         // follow, and a follow waits through any amount of quiet.
         stopTiming();
         deps.verbose(`the Core's log ends at #${end}; following from there`);
         printing = true;
+        // The newest matches the walk saw, now that "newest" has a meaning.
+        flushRecent();
         return;
       }
       deps.verbose(`caught up to #${lastEventId}`);
@@ -407,7 +677,7 @@ async function eventsTail(
       if (approximate) {
         deps.err(
           `actana events tail: ${name ?? endpoint} appended events faster than they could be ` +
-            `read; giving up at #${end} with ${printed} event(s) printed. This read did not finish.`,
+            `read; giving up at #${end} with ${tally(0)}. This read did not finish.`,
         );
         finish(EXIT_FAILURE);
         return;

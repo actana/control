@@ -430,8 +430,10 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
             const onlyVisible = visibleSessions.length === 1;
             const weight = paneWeights[s.terminal.id] ?? 1;
             const prev = visibleSessions[i - 1];
-            // A session restored from the API carries no Core; it runs on
-            // whichever one this route is on.
+            // A session's own Core wins: a restored one carries the Core its
+            // identity recorded (issue 394), and a freshly opened one the Core
+            // it was opened on. The route's Core is the fallback for a session
+            // that somehow has none, not the usual answer.
             const sessionCoreId = s.coreId ?? coreId;
             return (
               <Fragment key={s.terminal.id}>
@@ -455,10 +457,17 @@ export function UserTerminalPanel({ coreId }: { coreId?: string }) {
                   <UserTerminalPane
                     terminal={s.terminal}
                     ptyId={s.ptyId}
-                    cwd={s.terminal.cwd || project?.path || ""}
+                    // Kind and cwd come from the session, never from whichever
+                    // scope happens to be current: reading them off the ambient
+                    // scope is what let a reload spawn a home shell where the
+                    // operator had opened a VM shell (issue 394). The session's
+                    // cwd is authoritative even when empty — a VM shell opens at
+                    // the Core's own home, and substituting the project in scope
+                    // for that would rebuild the pane on every scope change.
+                    cwd={s.cwd}
                     coreId={sessionCoreId}
-                    isHome={homeActive}
-                    shellSession={s.shellSession === true}
+                    isHome={s.kind === "home"}
+                    shellSession={s.kind === "vm-shell"}
                     focused={focusedId === s.terminal.id}
                     onFocus={() => focusTerminal(s.terminal.id)}
                     onPtyReady={(ptyId) => setPtyId(s.terminal.id, ptyId, sessionCoreId)}
