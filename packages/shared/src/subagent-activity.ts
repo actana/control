@@ -9,10 +9,12 @@
 //
 // Claude Code also runs internal helper agents AFTER a session finishes
 // (away-summary generation on refocus, title helpers) whose subagent events
-// carry the parent session id but precede no further Stop. The recent-finish
-// window (taskFinishedRecently) keeps those from healing a finished task back
-// to "running", and the drain grace in armDeferredFinish un-wedges any that
-// slip through.
+// carry the parent session id but precede no further Stop. A finished task is
+// healed back to "running" only for work it can still plausibly be doing —
+// a tracked subagent from the turn is still in flight, or the finish is
+// younger than FINISH_RACE_WINDOW_MS (taskFinishedWithinRaceWindow) — so those
+// helpers cannot resurrect a finished card. The drain grace in
+// armDeferredFinish un-wedges anything that still slips through.
 //
 // In-memory and bounded like the controller's other per-task maps: losing
 // state (app restart) merely restores the legacy finish-on-Stop behavior.
@@ -40,12 +42,39 @@ const DEFERRED_FINISH_RECHECK_MS = 60 * 1000;
 // after) can't leave the task wedged on "running".
 const DRAIN_FINISH_GRACE_MS = 3 * 60 * 1000;
 
-// How long after a task finishes a subagent event can still plausibly belong
-// to the finished turn (a Stop that won the race against the turn's own
-// SubagentStart POST — a sub-second race in practice). Beyond this window a
-// subagent event on a finished task is a post-turn internal helper, not
-// resumed work, and must not heal the task back to "running".
-const RECENT_FINISH_WINDOW_MS = 30 * 1000;
+// How long after a task finishes a subagent event can still be the turn's own
+// lifecycle POST that LOST the race to the Stop POST. One second, inclusive
+// (the comparison below is `<=`).
+//
+// Be honest about what this measures. It is sized on EMISSION: the Stop and
+// the turn's own SubagentStart leave the same harness process microseconds
+// apart. It is evaluated on ARRIVAL — noteTaskFinished stamps when the Stop
+// POST was HANDLED, and the comparison runs when the subagent POST is handled.
+// Delivery is not microseconds. The hook command in
+// packages/core/src/harness-hooks.ts is
+// `curl -sS -f -m 3 --retry 2 --retry-delay 1`, and its own comment puts the
+// worst case at "about eleven seconds", triggered by "a Core busy serving PTY
+// fan-out and SQLite writes" — precisely the condition a fan-out turn creates.
+//
+// So this window does NOT cover a retry-delayed in-turn SubagentStart. One
+// that eats a `-m 3` timeout lands ~4s after a Stop that already wrote
+// "finished": it finds an empty tracked set and a 4s-old finish, so it is
+// dropped AND never tracked, and the card reads finished through a live
+// fan-out with no backstop (every backstop here corrects a task stuck on
+// "running", none corrects one stuck on "finished"). That is knowingly traded
+// away — see issue 440, filed for the residual.
+//
+// The trade: the window was 30s (issue 385), which meant every post-turn
+// helper subagent — the away-summary and title helpers Claude Code fires when
+// the operator refocuses or clicks a just-finished pin — resurrected the
+// finished card for half a minute after EVERY finish. Widening this back to
+// absorb the ~11s retry budget puts a pin click at +5s inside it again and
+// re-opens 385. A single scalar clock cannot tell a retry-delayed in-turn
+// event from a post-turn helper, so one of the two has to lose; the
+// operator-visible-on-every-finish one is the one that was fixed. Telling them
+// apart needs evidence rather than elapsed time (a payload discriminator, an
+// emission timestamp, or the W1 status arbiter) — issue 440 sketches those.
+export const FINISH_RACE_WINDOW_MS = 1_000;
 
 type TaskSubagents = {
   /** agent_id → start time, for payloads that identify the subagent. */
@@ -83,14 +112,16 @@ export function noteTaskFinished(taskId: string): void {
 }
 
 /**
- * True while a subagent event can still mean "the finished Stop raced the
- * turn's own subagent lifecycle POSTs". Unknown tasks report false — after a
- * restart the heal stays off until a real finish is observed again.
+ * True only while a subagent event can still mean "the finished Stop raced the
+ * turn's own subagent lifecycle POSTs" — one second inclusive, a race window
+ * and not a grace period. It measures ARRIVAL, not emission; see
+ * FINISH_RACE_WINDOW_MS above for what that costs. Unknown tasks report false:
+ * after a restart the heal stays off until a real finish is observed again.
  */
-export function taskFinishedRecently(taskId: string): boolean {
+export function taskFinishedWithinRaceWindow(taskId: string): boolean {
   const finishedAt = finishedAtByTask.get(taskId);
   if (finishedAt === undefined) return false;
-  return Date.now() - finishedAt <= RECENT_FINISH_WINDOW_MS;
+  return Date.now() - finishedAt <= FINISH_RACE_WINDOW_MS;
 }
 
 /**

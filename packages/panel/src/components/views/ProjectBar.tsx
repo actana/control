@@ -1,6 +1,6 @@
 import { Fragment, memo, useCallback, useEffect, useMemo, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import { createPortal } from "react-dom";
-import { useRouter } from "@tanstack/react-router";
+import { useRouter, useRouterState } from "@tanstack/react-router";
 import { useQueryClient } from "@tanstack/react-query";
 import { CircleAlert } from "lucide-react";
 import { toast } from "sonner";
@@ -28,16 +28,26 @@ import { api } from "~/lib/api";
 import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
 import { saveProjectEdits } from "~/lib/save-project-edits";
 import { getPinnedProjects, mergeSubsetOrder, reorderPinnedIds } from "~/lib/pinned-project-order";
+import {
+  applyCorePinFiling,
+  settleCorePinFiling,
+  type CorePinFiling,
+} from "~/lib/core-pins-engine";
 import { ACTIVE_GROUP_ALL, useActiveGroup } from "~/lib/active-group";
 import {
   clusterPinnedByGroup,
   getGroupRailCluster,
   usesDirectRailProjectShortcuts,
+  type RailCluster,
 } from "~/lib/rail-projects";
 import { shouldFlashPinnedProjectLogo } from "./project-bar-activity";
 import { getPinnedProjectStatusDots } from "./project-bar-status-dots";
 
 const HOTKEY_LIMIT = PINNED_SLOT_COUNT;
+// Cluster key of the trailing tile the scoped rail keeps for the project the
+// route is actually on when the active group hides it (#378). It is a
+// selection affordance only: no chord, no reorder, no drop slot.
+const OFF_GROUP_CLUSTER_KEY = "mc-off-group";
 const DRAG_THRESHOLD_PX = 4;
 
 const ITEM_WIDTH = 58;
@@ -69,7 +79,12 @@ type RailRow = {
 
 // Memoized: the shell re-renders on route/settings changes, but ProjectBar's
 // only props are stable primitives — it should re-render only when they change
-// or its own query subscriptions move, never just because the shell did.
+// or its own query subscriptions move, never just because the shell did. The
+// highlight ring is the one thing in here that *does* track the route, so it
+// reads the pathname through `useRouterState` (which subscribes) rather than
+// off `useRouter().state` (which does not): without that subscription the memo
+// swallowed the re-render and the ring stayed on the previously clicked pin
+// until an unrelated render moved it (#376).
 export const ProjectBar = memo(function ProjectBar({
   // Pin routes through the coreId-parameterised mutation surface; the
   // remaining projects / order wiring still reads the Panel's own rows,
@@ -81,6 +96,11 @@ export const ProjectBar = memo(function ProjectBar({
   coreId?: string | null;
 }) {
   const router = useRouter();
+  // Subscribed read of the route. `router.state` is a plain snapshot taken at
+  // render time and notifies nobody when it moves, so the ring has to come off
+  // a subscription for a same-Core pin click — which changes only the route —
+  // to repaint the rail in the same frame as the navigation (#376).
+  const pathname = useRouterState({ select: (state) => state.location.pathname });
   const queryClient = useQueryClient();
   const { data: panelProjects } = useProjects();
   // A Core's pinned projects live on its own Core — pull them via a small
@@ -122,6 +142,15 @@ export const ProjectBar = memo(function ProjectBar({
     [cores],
   );
   const sortedPinned = useMemo(() => getPinnedProjects(projects ?? []), [projects]);
+  // Who owns each row on the rail. A Core's pins carry their Core on `.coreId`
+  // (see `useRemotePinnedProjects`); the Panel's own rows are the untagged
+  // remainder. Every write the rail makes has to ask this per ROW, not per
+  // rail: a mixed rail is the ordinary case, and the Panel's own reorder and
+  // PATCH endpoints can only write the rows in the Panel's database (#382).
+  const coreIdByProject = useMemo(
+    () => new Map((projects ?? []).map((project) => [project.id, project.coreId ?? null])),
+    [projects],
+  );
   const { activeGroup } = useActiveGroup();
   // With a group active the rail becomes that group's workspace: every project
   // in the group (pinned first), not just pinned ones. With "all" active it
@@ -182,11 +211,64 @@ export const ProjectBar = memo(function ProjectBar({
     for (const group of groups) if (!seen.has(group.id)) out.push(group);
     return out;
   }, [groupDragOrder, groups]);
-  const railClusters = useMemo(() => {
-    if (!groupScoped) return clusterPinnedByGroup(sortedPinned, orderedGroups);
+  // Which project the route is on, read before the clusters are built: a
+  // scoped rail has to be able to put that project back on screen when the
+  // active group would otherwise hide it (#378).
+  const activeId = useMemo(() => pathname.match(/^\/projects\/([^/]+)/)?.[1], [pathname]);
+  // The clusters the rail draws, plus the name of the workspace it is drawing.
+  // The label travels WITH the clusters because it can no longer be read back
+  // off them: since #378 appends a cluster, `railClusters[0]` is the active
+  // group's cluster only when that group has projects, and guessing wrong made
+  // the rail's landmark announce the group that owns the OTHER project.
+  const rail = useMemo((): { clusters: RailCluster<ProjectWithCounts>[]; label: string } => {
+    if (!groupScoped) {
+      return {
+        clusters: clusterPinnedByGroup(sortedPinned, orderedGroups),
+        label: "Pinned projects",
+      };
+    }
     const cluster = getGroupRailCluster(projects ?? [], orderedGroups, activeGroup);
-    return cluster.projects.length > 0 ? [cluster] : [];
-  }, [activeGroup, groupScoped, orderedGroups, sortedPinned, projects]);
+    const scoped = cluster.projects.length > 0 ? [cluster] : [];
+    // `getGroupRailCluster` names the active group even when it is empty, which
+    // is exactly the case the rail used to have no name for.
+    const label = cluster.label;
+    // #378: opening a project in group A and switching the GroupSwitcher to B
+    // left the page on A while the rail showed B with no ring — the rail
+    // claiming nothing was open while the operator was plainly inside a
+    // project. The filter still decides which pins are *workable*; the project
+    // you are on keeps a tile in a trailing cluster of its own, named after the
+    // group that does own it, so the ring has somewhere to sit.
+    // Nothing here navigates: the URL stays on the open project.
+    //
+    // Scope, stated exactly: this holds for a group-scoped rail — group → group
+    // and group → Ungrouped. It does NOT hold for group → All, which returns
+    // above: All is the pinned rail, so an unpinned project opened from a
+    // group's workspace still loses its tile there. Same symptom, same gesture,
+    // deliberately not fixed here — see #474. Extending it is not a one-liner:
+    // in All `showClusterLabels` is true, so a synthetic cluster would render a
+    // real `data-cluster-header` / `data-group-handle`, entering the drag row
+    // snapshot and the group-handle list, and taking a group digit that
+    // `__root.tsx` (which resolves chords from the untouched `getRailClusters`)
+    // knows nothing about. That is a design change, not a branch.
+    const open = activeId ? (projects ?? []).find((p) => p.id === activeId) : undefined;
+    if (!open || cluster.projects.some((p) => p.id === open.id)) {
+      return { clusters: scoped, label };
+    }
+    const owner = orderedGroups.find((g) => g.id === open.groupId);
+    return {
+      clusters: [
+        ...scoped,
+        {
+          key: OFF_GROUP_CLUSTER_KEY,
+          label: owner?.name ?? "Ungrouped",
+          color: owner?.color ?? null,
+          projects: [open],
+        },
+      ],
+      label,
+    };
+  }, [activeGroup, activeId, groupScoped, orderedGroups, sortedPinned, projects]);
+  const railClusters = rail.clusters;
   const visible = useMemo(() => railClusters.flatMap((c) => c.projects), [railClusters]);
   const visibleById = useMemo(
     () => new Map(visible.map((project) => [project.id, project])),
@@ -223,7 +305,12 @@ export const ProjectBar = memo(function ProjectBar({
   // rail). In group-workspace mode that's the group's pinned subset — the
   // alphabetical unpinned tail is not reorderable — and persistProjectOrder
   // splices the subset back into the global pinned order.
-  pinnedIdsRef.current = visible
+  // The off-group tile (#378) is an affordance, not part of this rail's order:
+  // counting it would splice a project the active group does not contain into
+  // the persisted pinned order on the next keyboard reorder.
+  pinnedIdsRef.current = railClusters
+    .filter((cluster) => cluster.key !== OFF_GROUP_CLUSTER_KEY)
+    .flatMap((cluster) => cluster.projects)
     .filter((project) => project.pinned)
     .map((project) => project.id);
   const closeMenu = useCallback(() => setMenu(null), []);
@@ -266,6 +353,25 @@ export const ProjectBar = memo(function ProjectBar({
   // or one group's pinned subset in group-workspace mode), plus the group
   // reassignment when the tile was dropped into a different cluster. The
   // optimistic update applies both, so the rail re-clusters instantly.
+  //
+  // Both halves go to the owner of each ROW (#382). The rail mixes this
+  // Panel's pins with every Core's, and neither of the Panel's own write paths
+  // can touch a Core-owned row: `reorderPinnedProjects` validates the order
+  // against the Panel's `projects` table and rejects an id that is not in it,
+  // and `PATCH /api/projects/:id` 404s for a project the Panel holds no row
+  // for. A mixed rail sent to either used to animate, fail, revert and toast —
+  // the reorder never stuck for the Core rows, and often not for the Panel
+  // ones either, because the whole request was rejected together.
+  //
+  // The split:
+  //   * order — Panel rows keep the Panel reorder API; Core rows take their
+  //     slot on their Panel-local presentation row (issue 98's table). Both
+  //     sides are numbered by their index in the WHOLE rail, so the merged
+  //     list sorts back into the operator's order on reload. A Core's own
+  //     database could not hold this number: the rail spans Cores.
+  //   * group — Panel rows keep `PATCH /api/projects/:id`; a Core row's group
+  //     is Panel-local presentation, exactly as the Edit-project dialog
+  //     already files it (`save-project-edits`).
   const persistProjectOrder = useCallback(
     async (
       nextOrder: string[],
@@ -278,11 +384,45 @@ export const ProjectBar = memo(function ProjectBar({
       // where nextOrder already covers every pinned project.
       const fullOrder = mergeSubsetOrder(originalOrder, nextOrder);
       if (!groupChange && fullOrder.join("\0") === originalOrder.join("\0")) return;
+      // Every Core-owned row on the rail, with the slot it now holds. All of
+      // them, not just the ones that moved: a reorder shifts the slots either
+      // side of the gap too, and a Core row left on a stale index would sort
+      // itself back out of place on the next reload.
+      const corePinSlots = fullOrder.flatMap((id, index) => {
+        const rowCoreId = coreIdByProject.get(id) ?? null;
+        return rowCoreId ? [{ projectId: id, coreId: rowCoreId, pinnedOrder: index }] : [];
+      });
+      const groupChangeCoreId = groupChange
+        ? coreIdByProject.get(groupChange.projectId) ?? null
+        : null;
+      // The same move, as the fleet engine has to hear it. A Core-owned row is
+      // not in the query cache the optimistic update below reaches, so without
+      // this the tile just dragged to the top re-rendered at the bottom the
+      // instant the drop settled — `pinnedOrder` still null, which the
+      // comparator reads as last — and stayed there for both HTTP legs and the
+      // whole fan-out after them. Shift+Arrow showed it undisguised: the key
+      // went down and the tile did not move (#382 review).
+      const corePinFiling = new Map<string, CorePinFiling>();
+      for (const slot of corePinSlots) {
+        corePinFiling.set(slot.projectId, { pinnedOrder: slot.pinnedOrder });
+      }
+      if (groupChange && groupChangeCoreId) {
+        corePinFiling.set(groupChange.projectId, {
+          ...corePinFiling.get(groupChange.projectId),
+          groupId: groupChange.groupId,
+        });
+      }
       const saveSeq = ++reorderSaveSeqRef.current;
       reorderSavingRef.current = true;
       setReorderSaving(true);
       const nextOrders = new Map(fullOrder.map((id, index) => [id, index]));
       const previous = queryClient.getQueryData<ProjectWithCounts[]>(queryKeys.projects);
+      // The rail's two halves take their optimism from two places, because
+      // that is where the two halves of the rail actually live: the Panel's
+      // rows in this query cache, a Core's pins in the fleet engine's module
+      // snapshot. Both are applied before the first await, so the render that
+      // follows the drop draws the order the operator just made.
+      const filingToken = applyCorePinFiling(corePinFiling);
       queryClient.setQueryData<ProjectWithCounts[]>(
         queryKeys.projects,
         (current) =>
@@ -298,12 +438,39 @@ export const ProjectBar = memo(function ProjectBar({
           }) ?? current,
       );
       try {
-        if (groupChange) {
-          await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
-        }
+        // The validating write goes first, and nothing else is committed
+        // before it answers. `reorderPinnedProjects` is the only call here
+        // that can refuse the move — another tab unpinning a Panel row is
+        // enough — and until this order it could refuse one *after* the group
+        // change had already landed, so the toast said the move failed while
+        // the tile had genuinely changed group (#382 review).
         const { projects: updated } = await api.reorderPinnedProjects(fullOrder);
+        // That answer was taken before the group write below, so it lands
+        // first; letting it land last would put the old group back on screen
+        // until something else refetched.
         if (saveSeq === reorderSaveSeqRef.current) {
           queryClient.setQueryData(queryKeys.projects, updated);
+        }
+        if (corePinSlots.length > 0) await api.reorderCorePinnedProjects(corePinSlots);
+        if (groupChange) {
+          if (groupChangeCoreId) {
+            await api.updateProjectPresentation(groupChange.projectId, groupChangeCoreId, {
+              groupId: groupChange.groupId,
+            });
+          } else {
+            await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
+          }
+          if (saveSeq === reorderSaveSeqRef.current) {
+            queryClient.setQueryData<ProjectWithCounts[]>(
+              queryKeys.projects,
+              (current) =>
+                current?.map((project) =>
+                  project.id === groupChange.projectId
+                    ? { ...project, groupId: groupChange.groupId }
+                    : project,
+                ) ?? current,
+            );
+          }
         }
       } catch (error) {
         if (saveSeq === reorderSaveSeqRef.current) {
@@ -316,9 +483,25 @@ export const ProjectBar = memo(function ProjectBar({
           reorderSavingRef.current = false;
           setReorderSaving(false);
         }
+        // Released the gesture guard first, then take the overlay down behind
+        // a read: the fan-out is several round trips per Core and no operator
+        // should have their next Shift+Arrow swallowed waiting for it. The
+        // read is what confirms the write on the happy path and what corrects
+        // the rail on a failed one, so this runs either way.
+        //
+        // `saveSeq` cannot guard this — it is released above, on purpose — so
+        // the token does instead: a gesture only ever settles the overlay it
+        // put up, and a second Shift+Arrow that has already replaced it keeps
+        // its own until its own write is done. The `catch` is not decoration
+        // either: a rejection here would strand `pendingFiling` and the engine
+        // would ignore the server's filing for those ids for the life of the
+        // tab (#382 review round 2).
+        void settleCorePinFiling([...corePinFiling.keys()], filingToken).catch(
+          () => undefined,
+        );
       }
     },
-    [invalidateProjects, queryClient, sortedPinned],
+    [coreIdByProject, invalidateProjects, queryClient, sortedPinned],
   );
 
   const startProjectPointerDrag = useCallback(
@@ -708,10 +891,10 @@ export const ProjectBar = memo(function ProjectBar({
   // In All mode, real groups remain useful even without pinned projects: their
   // headers are stable project drop targets. The scoped rail still disappears
   // when the selected group has no projects because there is nothing to move
-  // into it from that isolated view.
+  // into it from that isolated view — unless the open project is parked there
+  // as the off-group affordance, which is the whole point of it (#378).
   if (railClusters.length === 0) return null;
 
-  const activeId = router.state.location.pathname.match(/^\/projects\/([^/]+)/)?.[1];
   const activeIndex = visible.findIndex((p) => p.id === activeId);
 
   // Group-number labels only earn their space when a real group exists. With
@@ -767,7 +950,13 @@ export const ProjectBar = memo(function ProjectBar({
     });
   }
   const flatIndexById = new Map(visible.map((project, index) => [project.id, index]));
-  const railLabel = groupScoped ? (railClusters[0]?.label ?? "Group") : "Pinned projects";
+  // Named after the ACTIVE group, never after whatever cluster happens to be
+  // first: with an empty active group the off-group tile is index 0, and
+  // reading the label off it had the `role="navigation"` landmark announcing
+  // "Alpha group projects" while the GroupSwitcher read "Empty group" (#378
+  // review). The rail asserting something false about grouping is the very
+  // thing this PR is fixing; the accessibility surface counts too.
+  const railLabel = rail.label;
 
   const menuProject = menu ? visibleById.get(menu.id) ?? null : null;
 
@@ -796,6 +985,10 @@ export const ProjectBar = memo(function ProjectBar({
       {activeIndex >= 0 && (
         <div
           aria-hidden
+          // The ring is a positioned overlay rather than a border on the tile,
+          // so nothing in the DOM otherwise says which project it sits on.
+          // Naming it makes "the ring is on B" assertable (#376).
+          data-active-project-id={activeProject?.id}
           style={{
             position: "absolute",
             top: PAD_TOP,
@@ -1050,11 +1243,14 @@ export const ProjectBar = memo(function ProjectBar({
           {cluster.projects.map((project, projectIndex) => {
         const idx = flatIndexById.get(project.id)!;
         const isActive = idx === activeIndex;
+        // The open-but-filtered-out project (#378). It shows and it rings; it
+        // does not take a chord, a reorder or a drop.
+        const isOffGroup = cluster.key === OFF_GROUP_CLUSTER_KEY;
         // Project numbers restart per cluster when group chords are visible;
         // the no-groups rail has one flat cluster, so these are direct slots.
         const projectNumber = projectIndex + 1;
         const groupNumber = clusterIndex + 1;
-        const hotkey = projectNumber <= HOTKEY_LIMIT ? projectNumber : null;
+        const hotkey = !isOffGroup && projectNumber <= HOTKEY_LIMIT ? projectNumber : null;
         const chordHint = directProjectShortcuts
           ? pinnedSlotBinding(projectNumber)
           : `${pinnedSlotBinding(groupNumber)} ${projectNumber}`;
@@ -1081,7 +1277,10 @@ export const ProjectBar = memo(function ProjectBar({
             : null;
         const tooltip = [
           hotkey ? `${project.name} (${chordHint})` : project.name,
-          project.pinned ? "Drag or press Shift+Arrow Up/Down to reorder pinned projects" : null,
+          isOffGroup ? "Open now — outside the active group" : null,
+          !isOffGroup && project.pinned
+            ? "Drag or press Shift+Arrow Up/Down to reorder pinned projects"
+            : null,
           needsInputLabel,
           runningLabel,
           finishedLabel,
@@ -1109,16 +1308,19 @@ export const ProjectBar = memo(function ProjectBar({
           <button
             key={project.id}
             type="button"
-            data-pinned-item={project.pinned ? true : undefined}
+            data-pinned-item={!isOffGroup && project.pinned ? true : undefined}
+            data-off-group={isOffGroup ? true : undefined}
             data-cluster-id={cluster.key}
             data-project-id={project.id}
             title={tooltip}
             aria-label={tooltip}
-            aria-keyshortcuts={project.pinned ? "Shift+ArrowUp Shift+ArrowDown" : undefined}
+            aria-keyshortcuts={
+              !isOffGroup && project.pinned ? "Shift+ArrowUp Shift+ArrowDown" : undefined
+            }
             onPointerDown={(e) => {
               // Only pinned tiles reorder — the group workspace's alphabetical
               // unpinned tail has a computed order with nothing to drag.
-              if (project.pinned) startProjectPointerDrag(project.id, e);
+              if (!isOffGroup && project.pinned) startProjectPointerDrag(project.id, e);
             }}
             onDragStart={(e) => e.preventDefault()}
             // Drop a file from the desktop onto a Project's tile and it goes to
@@ -1165,7 +1367,7 @@ export const ProjectBar = memo(function ProjectBar({
               showHoverLabel(project.name, e);
             }}
             onKeyDown={(e) => {
-              if (!project.pinned) return;
+              if (isOffGroup || !project.pinned) return;
               if (!e.shiftKey || (e.key !== "ArrowUp" && e.key !== "ArrowDown")) return;
               e.preventDefault();
               movePinnedProjectByKeyboard(project.id, e.key === "ArrowUp" ? -1 : 1);
@@ -1200,14 +1402,16 @@ export const ProjectBar = memo(function ProjectBar({
               zIndex: isDragging ? 6 : isActive ? 3 : clusterDragging ? 5 : 1,
               cursor: clusterDragging
                 ? "grabbing"
-                : !project.pinned
+                : isOffGroup || !project.pinned
                   ? "pointer"
                   : reorderSaving
                     ? "default"
                     : isDragging
                       ? "grabbing"
                       : "grab",
-              opacity: isDragging ? 0.92 : 1,
+              // Dimmed, but ringed: "you are here, and here is not in this
+              // group" reads at a glance without a second badge (#378).
+              opacity: isDragging ? 0.92 : isOffGroup ? 0.72 : 1,
               transform: `translateY(${tileOffset}px)`,
               boxShadow: isDragging
                 ? "0 0 0 2px color-mix(in srgb, var(--accent) 70%, white), 0 10px 24px -10px rgba(0, 0, 0, 0.6)"
@@ -1371,18 +1575,42 @@ export const ProjectBar = memo(function ProjectBar({
                 // surface. Every Panel connected to that Core sees the same
                 // pin state (Core-owned fact, ADR-0005).
                 //
-                // Use the *target project's* coreId (pin rows carry their
-                // owning Core on `.coreId`), not the ProjectBar's own `coreId`
-                // prop — otherwise unpinning a Core's project from a pin bar
-                // scoped elsewhere would mutate the wrong Core (silent no-op)
-                // and the pin bar would only clear on restart.
-                const targetCoreId = target?.coreId ?? coreId;
+                // Ask the ROW who owns it. `coreIdByProject` is built from
+                // the same list the menu's target came from, so it answers for
+                // every row a menu can open on: a Core's pins carry their Core,
+                // and the Panel's own rows are the untagged remainder, which
+                // answer null and route over the Panel's own HTTP API.
+                //
+                // It used to fall back to this bar's `coreId` prop, and that
+                // fallback is gone rather than merely unused. On a Core-scoped
+                // route — `__root.tsx` passes the route's Core, so any time the
+                // operator is looking at a project or session on one — it made
+                // the operator's OWN project look Core-owned, and the
+                // slot-clearing write below then filed a Panel project id under
+                // a Core that has never heard of it. The next prune of that
+                // Core deletes that row and, with it, the project's card image
+                // off disk (#382 review round 2).
+                const targetCoreId = coreIdByProject.get(id) ?? null;
+                const unpinning = target?.pinned === true;
                 try {
                   await mutateProjectForCore(targetCoreId, {
                     op: "pin",
                     projectId: id,
-                    pinned: target?.pinned !== true,
+                    pinned: !unpinning,
                   });
+                  // A rail slot outlives the pin that earned it unless
+                  // something clears it: `reorderCorePins` is its only other
+                  // writer, and a pin toggle never reaches that. Left behind,
+                  // an unpinned-then-repinned Core project would come back to
+                  // the slot it used to hold, while a re-pinned Panel row goes
+                  // to the end of the rail (#382 review). An unpin somewhere
+                  // this Panel never sees still strands one — that is the
+                  // reconciliation pass filed as its own issue.
+                  if (unpinning && targetCoreId) {
+                    await api
+                      .updateProjectPresentation(id, targetCoreId, { pinnedOrder: null })
+                      .catch(() => undefined);
+                  }
                 } catch (err) {
                   toast.error(
                     err instanceof Error ? err.message : "Could not update project pin",

@@ -65,7 +65,15 @@ type Ctx = {
   activeFor: (projectId: string) => OpenTerminal | null;
   /** The active taskId persisted for `projectId` (null = explicitly closed). */
   activeTaskIdFor: (projectId: string) => string | null;
-  /** Click a card: select if not active, deselect (hide panel) if already active. */
+  /**
+   * Select `task` in `project`'s scope. Navigation, not a toggle: the requested
+   * task always ends up active, so calling this for the already-active task
+   * keeps it selected rather than hiding the panel. See `nextActiveByProject`.
+   *
+   * The name is a misnomer kept on purpose — renaming it would touch
+   * `projects.$id.tsx`, which parallel tickets own. Read it as "select". To
+   * hide the panel, call `deselect`; nothing here will do it for you.
+   */
   toggle: (
     project: ScopedProject,
     task: Task,
@@ -367,14 +375,37 @@ function isRemoteTask(taskId: string): boolean {
   return remoteTaskIds.has(taskId);
 }
 
-export function nextActiveTaskId(
-  currentTaskId: string | null,
-  requestedTaskId: string,
-  hasMaterializedSession: boolean
-): string | null {
-  return currentTaskId === requestedTaskId && hasMaterializedSession
-    ? null
-    : requestedTaskId;
+/**
+ * The scope-to-active-task map after a request to select `requestedTaskId`.
+ *
+ * Selecting a session — a pin in the sidebar, a card in the list — is
+ * navigation, not a toggle: the requested task always ends up active. A repeat
+ * request for the already-active task keeps it selected, and a rapid
+ * A -> B -> A burst lands on A. Returns `activeByProject` unchanged when the
+ * request is a no-op, so callers can hand the result straight to `setState`
+ * without forcing a re-render; the caller's own focus request still fires.
+ *
+ * This replaced `nextActiveTaskId`, which returned `null` — a cleared scope,
+ * which is the panel close — when the requested task was already active and
+ * its session was materialized. Every call site guarded that combination away,
+ * so the branch was not reachable through today's callers (#443 review); it is
+ * removed as a trap, before a sixth caller arrives without the guard. It is
+ * *not* evidence for the operator symptom in #380, which stays open.
+ *
+ * Clearing a scope is a separate gesture with its own writers: `deselect`
+ * (the pane's hide affordance, the `terminal.close` hotkey, and the
+ * delete/archive-with-no-replacement paths), `close` and `closeForProject`.
+ * Nothing on a selection path may clear. `projects.$id.tsx` documents the same
+ * rule for card clicks.
+ */
+export function nextActiveByProject(
+  activeByProject: Record<string, string | null>,
+  scopeKey: string,
+  requestedTaskId: string
+): Record<string, string | null> {
+  return activeByProject[scopeKey] === requestedTaskId
+    ? activeByProject
+    : { ...activeByProject, [scopeKey]: requestedTaskId };
 }
 
 /** Grace period before an un-selected archived session's PTY is reaped. */
@@ -583,9 +614,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
     const session = sessionsRef.current.find((s) => s.taskId === taskId);
     if (!session) return;
     const scopeKey = scopeKeyForProject(session.project);
-    setActiveByProject((prev) =>
-      prev[scopeKey] === taskId ? prev : { ...prev, [scopeKey]: taskId },
-    );
+    setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, taskId));
   }, []);
   const getGridFocusedTaskId = useCallback(() => gridFocusedTaskIdRef.current, []);
   // Pending "New row" request: the grid drops the next new session into a fresh
@@ -666,9 +695,6 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
       opts?: { awaitCreate?: boolean; coreId?: string | null },
     ) => {
       const scopeKey = scopeKeyForProject(project);
-      const hadSession = sessionsRef.current.some(
-        (p) => p.taskId === task.id && scopeKeyForProject(p.project) === scopeKey
-      );
       setSessions((prev) => {
         const existing = prev.find(
           (p) => p.taskId === task.id && scopeKeyForProject(p.project) === scopeKey
@@ -700,11 +726,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
         };
         return [...prev, next];
       });
-      setActiveByProject((prev) => {
-        const curr = prev[scopeKey] ?? null;
-        const next = nextActiveTaskId(curr, task.id, hadSession);
-        return curr === next ? prev : { ...prev, [scopeKey]: next };
-      });
+      setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, task.id));
     },
     []
   );
@@ -755,9 +777,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
           },
         ];
       });
-      setActiveByProject((prev) =>
-        prev[scopeKey] === task.id ? prev : { ...prev, [scopeKey]: task.id }
-      );
+      setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, task.id));
     },
     []
   );
@@ -830,9 +850,7 @@ export function TerminalProvider({ children }: { children: ReactNode }) {
 
   const setActiveSession = useCallback((project: ScopedProject, taskId: string) => {
     const scopeKey = scopeKeyForProject(project);
-    setActiveByProject((prev) =>
-      prev[scopeKey] === taskId ? prev : { ...prev, [scopeKey]: taskId }
-    );
+    setActiveByProject((prev) => nextActiveByProject(prev, scopeKey, taskId));
   }, []);
 
   const adoptTaskId = useCallback((fromTaskId: string, task: Task) => {

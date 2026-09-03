@@ -161,6 +161,52 @@ describe("harness status detection on the Core (issue 84)", () => {
     expect(kinds()).toContain("session:finished");
   });
 
+  it("finishes on a Stop whose session id is not the stored one (issue 390)", async () => {
+    // The operator-visible miss: a resumed harness (or an OpenCode child whose
+    // idle leaked past the plugin's filter) posts its Stop under a session id
+    // this task never captured. It used to be acked as `foreign-session` and
+    // dropped before any status write, so the card stayed on `running` and the
+    // notification consumer never heard a thing.
+    await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+    expect(rowStatus()).toBe("running");
+
+    await postHook({ hook_event_name: "Stop", session_id: "sess-2-after-resume" });
+
+    expect(rowStatus()).toBe("finished");
+    expect(kinds()).toContain("session:finished");
+  });
+
+  it("finishes a fanned-out turn whose resume lost its SessionStart (issue 390)", async () => {
+    // The pre-resume process's subagents can never report in — their harness is
+    // gone, and the resumed session's own subagent events carry the new id, so
+    // they are dropped as foreign. Holding on that stale set was two hours of a
+    // card on `running` with its Stop acked: #390's symptom inside the fix.
+    await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+    await postHook({
+      hook_event_name: "SubagentStart",
+      session_id: "sess-1",
+      agent_id: "sub-1",
+    });
+
+    await postHook({ hook_event_name: "Stop", session_id: "sess-2-after-resume" });
+
+    expect(rowStatus()).toBe("finished");
+    expect(kinds()).toContain("session:finished");
+  });
+
+  it("leaves a Session waiting on a permission prompt alone (issue 390)", async () => {
+    // `needs-input` is not settled by a foreign turn end: unlike the PTY-exit
+    // settle, the process here is alive and may be blocked on that question.
+    await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
+    await postHook({ hook_event_name: "PermissionRequest", session_id: "sess-1" });
+    expect(rowStatus()).toBe("needs-input");
+
+    await postHook({ hook_event_name: "Stop", session_id: "sess-2-child" });
+
+    expect(rowStatus()).toBe("needs-input");
+    expect(kinds()).not.toContain("session:finished");
+  });
+
   it("holds the finish while a background subagent is still working", async () => {
     await postHook({ hook_event_name: "UserPromptSubmit", session_id: "sess-1" });
     await postHook({
@@ -194,6 +240,31 @@ describe("harness status detection on the Core (issue 84)", () => {
     // A second exit patch (a retry, a second tab) must not disturb the row.
     status.sessionExited(TASK_ID, 0);
     expect(rowStatus()).toBe("terminated");
+  });
+
+  it("settles a bare Session left on ready when its PTY dies (issue 387)", async () => {
+    // The zombie found live on pairdemo: spawned, never prompted, so not one
+    // hook ever arrived for it and no Stop was ever coming. The row is created
+    // `ready` in beforeEach and nothing here posts a hook at all.
+    const status = new CoreHarnessStatus({ writer });
+    expect(rowStatus()).toBe("ready");
+
+    status.sessionExited(TASK_ID, 1);
+
+    expect(rowStatus()).toBe("disconnected");
+    // `disconnected` is not a finish: no ding for a Session that never worked.
+    expect(kinds()).not.toContain("session:finished");
+    expect(kinds()).toContain("task:updated");
+  });
+
+  it("raises no completion ding for a bare Session whose PTY exited cleanly", async () => {
+    // A clean exit of a Session that never ran a turn is still only a process
+    // going away. `finished` here would append `session:finished` and ding the
+    // operator for "Waiting for initial prompt…".
+    const status = new CoreHarnessStatus({ writer });
+    status.sessionExited(TASK_ID, 0);
+    expect(rowStatus()).toBe("disconnected");
+    expect(kinds()).not.toContain("session:finished");
   });
 
   it("reports a Session parked on a dialog nobody answered as needs-input", async () => {

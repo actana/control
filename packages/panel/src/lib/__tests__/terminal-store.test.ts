@@ -3,7 +3,7 @@ import type { Task } from "~/db/schema";
 import {
   archivedSessionsEligibleForReap,
   commandForTask,
-  nextActiveTaskId,
+  nextActiveByProject,
   resolveActiveTaskIdForProject,
   type OpenTerminal,
 } from "../terminal-store";
@@ -130,17 +130,53 @@ describe("commandForTask", () => {
   });
 });
 
-describe("nextActiveTaskId", () => {
-  it("keeps a stale persisted active task open when no session is materialized", () => {
-    expect(nextActiveTaskId("task-1", "task-1", false)).toBe("task-1");
-  });
+describe("nextActiveByProject", () => {
+  const scope = "project-1";
 
-  it("hides a task that is already active and materialized", () => {
-    expect(nextActiveTaskId("task-1", "task-1", true)).toBeNull();
+  it("selects a task in a scope that had none", () => {
+    expect(nextActiveByProject({}, scope, "task-1")).toEqual({ [scope]: "task-1" });
   });
 
   it("switches active tasks", () => {
-    expect(nextActiveTaskId("task-1", "task-2", true)).toBe("task-2");
+    expect(nextActiveByProject({ [scope]: "task-1" }, scope, "task-2")).toEqual({
+      [scope]: "task-2",
+    });
+  });
+
+  // Selection is navigation, not a toggle: a repeat request for the
+  // already-active task leaves it selected. The old `nextActiveTaskId` returned
+  // null here whenever a session was materialized, and a null scope is the panel
+  // close. Materialization is no longer an input to the decision at all.
+  it("keeps the task active when it is requested again", () => {
+    expect(nextActiveByProject({ [scope]: "task-1" }, scope, "task-1")).toEqual({
+      [scope]: "task-1",
+    });
+  });
+
+  it("returns the same map object for a repeat request so no re-render is forced", () => {
+    const prev = { [scope]: "task-1" };
+    expect(nextActiveByProject(prev, scope, "task-1")).toBe(prev);
+  });
+
+  // A rapid burst follows the last request and never passes through a null
+  // (panel-closing) selection. Seeded on A and requesting A first, so this is a
+  // repeat-A -> B -> A: a superset of the plain A -> B -> A burst.
+  it("follows the last request across a rapid repeat-A -> B -> A burst", () => {
+    const seen: (string | null)[] = [];
+    let state: Record<string, string | null> = { [scope]: "task-a" };
+    for (const requested of ["task-a", "task-b", "task-a"]) {
+      state = nextActiveByProject(state, scope, requested);
+      seen.push(state[scope] ?? null);
+    }
+    expect(seen).toEqual(["task-a", "task-b", "task-a"]);
+    expect(seen).not.toContain(null);
+    expect(state[scope]).toBe("task-a");
+  });
+
+  it("leaves other scopes untouched", () => {
+    expect(
+      nextActiveByProject({ "project-2": "task-9" }, scope, "task-1"),
+    ).toEqual({ "project-2": "task-9", [scope]: "task-1" });
   });
 });
 

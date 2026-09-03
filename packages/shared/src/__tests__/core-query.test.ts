@@ -5,6 +5,8 @@ import {
   queryActiveTasks,
   queryArchivedTasks,
   queryProjects,
+  queryStrandedReadyTasks,
+  queryTaskProvenNeverWorked,
   queryTasks,
   type CoreQuerySqlite,
 } from "../core-query";
@@ -100,6 +102,48 @@ function insertTask(
     t.archived ? 1 : 0,
     t.icon ?? null,
     t.updatedAt ?? 1,
+  );
+}
+
+/** The Core's event log, as far as the stranded-ready read needs it. */
+function addEventLog(db: Database.Database): void {
+  db.exec(`
+    CREATE TABLE event_log (
+      event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+      ts INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      pty_id TEXT,
+      task_id TEXT,
+      payload TEXT NOT NULL
+    );
+  `);
+}
+
+/**
+ * Record the `pty:spawn` the Core appends when it starts a PTY, in the shape
+ * `recordPtySpawn` actually writes — `shellSession` is in the payload, and it
+ * is `false` for an agent spawn and for a plain `shell: true` spawn alike.
+ */
+function spawnedPty(
+  db: Database.Database,
+  taskId: string | null,
+  shellSession = false,
+): void {
+  db.prepare(
+    "INSERT INTO event_log (ts, kind, pty_id, task_id, payload) VALUES (?, ?, ?, ?, ?)",
+  ).run(1, "pty:spawn", "pty-1", taskId, JSON.stringify({ ptyId: "pty-1", taskId, shellSession }));
+}
+
+/** A `task:updated` the way `CoreTaskWriter` writes it: status only when patched. */
+function taskUpdated(db: Database.Database, taskId: string, status?: string): void {
+  db.prepare(
+    "INSERT INTO event_log (ts, kind, pty_id, task_id, payload) VALUES (?, ?, ?, ?, ?)",
+  ).run(
+    1,
+    "task:updated",
+    null,
+    taskId,
+    JSON.stringify({ taskId, projectId: "p1", ...(status === undefined ? {} : { status }) }),
   );
 }
 
@@ -323,6 +367,185 @@ describe("queryActiveTasks (the Core's boot sweep read, issue 243)", () => {
     const empty = new Database(":memory:");
     expect(queryActiveTasks(asQuery(empty))).toEqual([]);
     empty.close();
+  });
+});
+
+describe("queryStrandedReadyTasks (the ready zombie, issue 387)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+    addEventLog(db);
+  });
+
+  it("finds a ready row a PTY was spawned for, and no other ready row", () => {
+    // The bare Session: a PTY of some previous run, no hook ever fired, still
+    // sitting on "Waiting for initial prompt…" hours after the process died.
+    insertTask(db, { taskId: "t-zombie", projectId: "p1", status: "ready" });
+    spawnedPty(db, "t-zombie");
+    // The Session the operator created and has not started. It has no process
+    // because it never had one — sweeping it would be the regression.
+    insertTask(db, { taskId: "t-unstarted", projectId: "p1", status: "ready" });
+
+    expect(queryStrandedReadyTasks(asQuery(db)).map((t) => t.taskId)).toEqual(["t-zombie"]);
+  });
+
+  it("leaves every other status to the query that owns it", () => {
+    for (const status of ["running", "needs-input", "finished", "disconnected"]) {
+      insertTask(db, { taskId: `t-${status}`, projectId: "p1", status });
+      spawnedPty(db, `t-${status}`);
+    }
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+  });
+
+  it("ignores a spawn recorded against some other Session", () => {
+    insertTask(db, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    spawnedPty(db, "t-other");
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+  });
+
+  it("does not read a VM Shell Session spawn as harness evidence", () => {
+    // `shellSession: true` carries a taskId for routing and is not harness
+    // work — a shell opened against a Session must not settle its card.
+    insertTask(db, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    spawnedPty(db, "t-ready", true);
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+
+    // The agent spawn for the same row still is evidence.
+    spawnedPty(db, "t-ready");
+    expect(queryStrandedReadyTasks(asQuery(db)).map((t) => t.taskId)).toEqual(["t-ready"]);
+  });
+
+  it("does not read a plain shell spawn, whose task id names no row", () => {
+    // A `shell: true` spawn records `shellSession: false`, the same as an
+    // agent — it is separated by its id instead. The CLI addresses those with
+    // a synthetic `cli_shell_<uuid>`, which no `tasks` row carries, so the
+    // join drops it. Pinning the shape here is what keeps that true.
+    insertTask(db, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    spawnedPty(db, "cli_shell_2f1c9a4e-0d3b-4c77-9f21-6b8e5a0d1c34");
+    spawnedPty(db, "user-terminal-1");
+    expect(queryStrandedReadyTasks(asQuery(db))).toEqual([]);
+  });
+
+  it("includes an archived row, and spans every project", () => {
+    insertTask(db, { taskId: "t-arch", projectId: "p1", status: "ready", archived: true });
+    spawnedPty(db, "t-arch");
+    insertTask(db, { taskId: "t-p2", projectId: "p2", status: "ready" });
+    spawnedPty(db, "t-p2");
+    expect(queryStrandedReadyTasks(asQuery(db)).map((t) => t.taskId).sort()).toEqual([
+      "t-arch",
+      "t-p2",
+    ]);
+  });
+
+  it("maps the row the way every other listing here does", () => {
+    insertTask(db, {
+      taskId: "t-zombie",
+      projectId: "p1",
+      status: "ready",
+      title: "Waiting for initial prompt…",
+      agent: "opencode",
+      pinned: true,
+      updatedAt: 42,
+    });
+    spawnedPty(db, "t-zombie");
+    expect(queryStrandedReadyTasks(asQuery(db))[0]).toMatchObject({
+      taskId: "t-zombie",
+      projectId: "p1",
+      title: "Waiting for initial prompt…",
+      agent: "opencode",
+      status: "ready",
+      pinned: true,
+      archived: false,
+      claudeSessionId: null,
+      updatedAt: 42,
+    });
+  });
+
+  it("returns empty when there is no event log to read the evidence from", () => {
+    // A Core whose log never bootstrapped sweeps nothing extra rather than
+    // failing its whole boot read — and rather than sweeping every ready row.
+    const noLog = openDb();
+    insertTask(noLog, { taskId: "t-ready", projectId: "p1", status: "ready" });
+    expect(queryStrandedReadyTasks(asQuery(noLog))).toEqual([]);
+    noLog.close();
+  });
+
+  it("returns empty when the tasks table does not exist", () => {
+    const empty = new Database(":memory:");
+    expect(queryStrandedReadyTasks(asQuery(empty))).toEqual([]);
+    empty.close();
+  });
+});
+
+describe("queryTaskProvenNeverWorked (the relaunch reset's gate, issue 387)", () => {
+  let db: Database.Database;
+  beforeEach(() => {
+    db = openDb();
+    addEventLog(db);
+  });
+
+  it("proves it for a row that only ever moved between ready and disconnected", () => {
+    // The bare Session: born `ready`, settled `disconnected` by the sweep or
+    // the PTY-exit path, and nothing in between. Nothing here is a turn — and
+    // that `disconnected` is the positive evidence that this log can speak.
+    taskUpdated(db, "t-bare", "disconnected");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(true);
+  });
+
+  it("refuses to prove it for a log that predates v0.4.0", () => {
+    // `task:updated` only began carrying `status` in 2dd34a8 (v0.4.0), and
+    // `event_log` is never pruned, so a Core upgraded from 0.3.x still holds
+    // status-less rows for Sessions that worked for hours. Read as "did any
+    // turn happen", their absence looks exactly like a Session that never ran
+    // one — and answering "never worked" there overwrites a real card.
+    taskUpdated(db, "t-legacy");
+    taskUpdated(db, "t-legacy");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-legacy")).toBe(false);
+  });
+
+  it("refuses to prove it for a row with no history at all", () => {
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-unknown")).toBe(false);
+  });
+
+  it("still proves it when a status-less update sits beside the evidence", () => {
+    // A rename or a pin writes no status; on a current Core the settle beside
+    // it does, and that is what makes the log readable.
+    taskUpdated(db, "t-bare");
+    taskUpdated(db, "t-bare", "disconnected");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(true);
+  });
+
+  it("is false for every status that only a turn produces", () => {
+    for (const status of ["running", "needs-input", "interrupted", "finished", "terminated"]) {
+      const taskId = `t-${status}`;
+      taskUpdated(db, taskId, "disconnected");
+      taskUpdated(db, taskId, status);
+      expect(queryTaskProvenNeverWorked(asQuery(db), taskId)).toBe(false);
+    }
+  });
+
+  it("is false for a harness that goes straight from ready to finished", () => {
+    // Some harnesses never report `running`; the finish is the only patch.
+    taskUpdated(db, "t-quiet", "finished");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-quiet")).toBe(false);
+  });
+
+  it("reads only this Session's own history", () => {
+    taskUpdated(db, "t-other", "running");
+    taskUpdated(db, "t-bare", "disconnected");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(true);
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-other")).toBe(false);
+  });
+
+  it("takes no evidence from an event that is not task:updated", () => {
+    // A `pty:spawn` says a process started, not that a turn did — and it is
+    // not proof the log carries statuses either.
+    spawnedPty(db, "t-bare");
+    expect(queryTaskProvenNeverWorked(asQuery(db), "t-bare")).toBe(false);
+  });
+
+  it("is false when there is no event log to read", () => {
+    expect(queryTaskProvenNeverWorked(asQuery(openDb()), "t-bare")).toBe(false);
   });
 });
 

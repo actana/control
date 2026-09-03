@@ -1,6 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  clearAnnouncedFinishes,
   clearSessionFinishNotifications,
+  hasAnnouncedFinish,
+  loadAnnouncedFinishes,
+  recordAnnouncedFinish,
   loadSessionFinishNotifications,
   mergeSessionFinishNotification,
   pruneSessionFinishNotifications,
@@ -296,5 +300,58 @@ describe("legacy record backfill", () => {
     } finally {
       globalThis.window = previousWindow;
     }
+  });
+});
+
+describe("announced finishes", () => {
+  function withFakeStorage(run: () => void) {
+    const store = new Map<string, string>();
+    const previousWindow = globalThis.window;
+    globalThis.window = {
+      localStorage: {
+        getItem: (key: string) => store.get(key) ?? null,
+        setItem: (key: string, value: string) => {
+          store.set(key, value);
+        },
+        removeItem: (key: string) => {
+          store.delete(key);
+        },
+      },
+      dispatchEvent: () => true,
+    } as unknown as Window & typeof globalThis;
+    try {
+      run();
+    } finally {
+      globalThis.window = previousWindow;
+    }
+  }
+
+  it("remembers a finish it announced, and forgets it on a clear", () => {
+    withFakeStorage(() => {
+      expect(hasAnnouncedFinish("core-a::task-1::42")).toBe(false);
+
+      recordAnnouncedFinish("core-a::task-1::42");
+
+      expect(hasAnnouncedFinish("core-a::task-1::42")).toBe(true);
+      // A different finish of the same Session is a different announcement.
+      expect(hasAnnouncedFinish("core-a::task-1::77")).toBe(false);
+
+      clearAnnouncedFinishes();
+
+      expect(hasAnnouncedFinish("core-a::task-1::42")).toBe(false);
+    });
+  });
+
+  it("keeps the newest 500 and drops the oldest, recording each key once", () => {
+    withFakeStorage(() => {
+      for (let i = 1; i <= 520; i++) recordAnnouncedFinish(`core-a::task-${i}::${i}`);
+      recordAnnouncedFinish("core-a::task-520::520");
+
+      const keys = loadAnnouncedFinishes();
+      expect(keys).toHaveLength(500);
+      expect(keys.filter((key) => key === "core-a::task-520::520")).toHaveLength(1);
+      expect(hasAnnouncedFinish("core-a::task-1::1")).toBe(false);
+      expect(hasAnnouncedFinish("core-a::task-21::21")).toBe(true);
+    });
   });
 });

@@ -88,7 +88,36 @@ describe("pinned-project-order", () => {
     expect(() => validatePinnedReorder(["a", "b"], pinned)).not.toThrow();
     expect(() => validatePinnedReorder(["b", "a"], pinned)).not.toThrow();
     expect(() => validatePinnedReorder(["a"], pinned)).toThrow(/exactly once/);
-    expect(() => validatePinnedReorder(["a", "c"], pinned)).toThrow(/not pinned/);
-    expect(() => validatePinnedReorder(["a", "a"], pinned)).toThrow(/duplicate/);
+    expect(() => validatePinnedReorder(["a", "a", "b"], pinned)).toThrow(/duplicate/);
+  });
+
+  // Issue 382. The rail carries the pins of every Core alongside the Panel's
+  // own, and a Core's row has no `projects` row here at all — so an id this
+  // Panel does not know is a passenger holding a slot in the numbering, not a
+  // payload error. The two things the check still owes the caller are that
+  // every row it is about to renumber is named, and that no id is named twice.
+  it("takes ids the Panel does not own as passengers on the rail order", () => {
+    const pinned = [
+      project({ id: "a", pinned: true, pinnedOrder: 0 }),
+      project({ id: "b", pinned: true, pinnedOrder: 2 }),
+    ];
+    // A Core pin sitting between the Panel's two rows: that interleaving is
+    // the whole reason the slot numbers are rail indices.
+    expect(() => validatePinnedReorder(["a", "core-1", "b"], pinned)).not.toThrow();
+    // A passenger does not excuse a missing row of our own.
+    expect(() => validatePinnedReorder(["a", "core-1"], pinned)).toThrow(/exactly once/);
+    expect(() => validatePinnedReorder(["a", "core-1", "core-1", "b"], pinned)).toThrow(
+      /duplicate/,
+    );
+  });
+
+  it("still rejects an unpinned row of the Panel's own when it is told which are ours", () => {
+    const pinned = [project({ id: "a", pinned: true, pinnedOrder: 0 })];
+    const ours = new Set(["a", "c"]);
+    // `c` is this Panel's project and is not pinned — a caller sending it has
+    // a bug, and the passenger rule must not swallow that.
+    expect(() => validatePinnedReorder(["a", "c"], pinned, ours)).toThrow(/not pinned/);
+    // ...while an id from no row here still rides along.
+    expect(() => validatePinnedReorder(["a", "core-1"], pinned, ours)).not.toThrow();
   });
 });

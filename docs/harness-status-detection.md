@@ -22,7 +22,9 @@ about everything else on a Core — as an Event replayed off its cursor.
 | PTY exit settle | `packages/core/src/pty-manager.ts` → `onSessionExit` |
 | Hook delivery misses | `packages/core/src/harness-hook-delivery.ts` |
 | Quiet-Session backstop | `packages/core/src/core-session-backstop.ts` |
+| Redraw vs. real output | `packages/core/src/pty-output-activity.ts` |
 | Boot sweep | `packages/core/src/core-session-sweep.ts` |
+| Relaunch reset | `packages/core/src/core-session-relaunch.ts` |
 
 The Panel keeps a hook endpoint (`POST /api/hooks/<slug>`) for its own remaining
 local task rows, running the same shared pipeline. A Core-owned Session never
@@ -35,11 +37,13 @@ outside the process. The Core installs them per workspace at spawn time, so each
 Session reports its own state.
 
 A new Session starts in `ready` (terminal spawned, prompt waiting). The first
-hook flips it.
+hook flips it — and if no hook ever comes, a dead-process fallback does (see
+below): `ready` is not a resting place for a Session whose process is gone.
 
 | Hook event                         | Mapped status   | Meaning                                  |
 | ---------------------------------- | --------------- | ---------------------------------------- |
 | _(spawn)_                          | `ready`         | Terminal up, operator hasn't typed yet   |
+| _(agent respawn)_                  | `ready`         | Harness up again for a Session that never worked |
 | `UserPromptSubmit`                 | `running`       | Prompt submitted; work began             |
 | `Stop`                             | `finished`\*    | Foreground turn ended (see below)        |
 | `SubagentStart` / `SubagentStop`   | _(bookkeeping)_ | Tracks still-active subagents            |
@@ -58,14 +62,55 @@ maps to a status on its own, but one arriving **moments after** a task finished
 heals it back to `running` (a `Stop` won the race against the turn's own subagent
 lifecycle POST).
 
-That heal is scoped to a 30-second recent-finish window because Claude Code also
-runs **post-turn internal helpers** whose subagent events carry the parent
-session id: refocusing a finished session generates an *away summary*, firing
-`SubagentStart`/`SubagentStop` minutes after the finish, with no `Stop` to
-follow. Healing on those wedges tasks on `running` forever (the original
-stuck-on-running bug). Beyond the window, helper events are ignored for status
-and their starts are not tracked — a lost helper stop would otherwise hold the
-next turn's `Stop` for the whole TTL.
+A finished task is healed on **two conditions only**: a subagent tracked from
+that turn is still in flight, or the finish is younger than
+`FINISH_RACE_WINDOW_MS` (one second, inclusive). Everything else is one of
+Claude Code's **post-turn internal helpers**, whose subagent events carry the
+parent session id: refocusing a finished session, or clicking its just-finished
+pin, generates an *away summary* or a title, firing `SubagentStart`/`SubagentStop`
+with no `Stop` to follow. Those are ignored for status, and their starts are not
+tracked either — a lost helper stop would otherwise hold the next turn's `Stop`
+for the whole TTL.
+
+**Of those two, the clock is what decides the raced-POST case.** Every
+hook-driven finish leaves the tracked set empty by construction — the `finished`
+mapping is downgraded to `running` whenever `hasActiveSubagents` is true, the
+drain's `finishQuietTask` runs only after an idle set, `sessionProcessExited`
+clears the set first, and the Core's session backstop clears before it stamps
+the finish. The active-set condition therefore guards a `finished` written by one
+of the *other* status writers (a core-link task mutation through
+`CoreTaskWriter`, which clears nothing), not the race. Worth keeping — just not
+what protects in-turn work here.
+
+### What the window measures, and what that costs
+
+The window is sized on **emission**: the `Stop` and the turn's own
+`SubagentStart` leave the same harness process microseconds apart. It is
+evaluated on **arrival** — the finish is stamped when the `Stop` POST was
+*handled*, and compared against when the subagent POST is handled. Delivery is
+not microseconds: the hook command is
+`curl -sS -f -m 3 --retry 2 --retry-delay 1` (`packages/core/src/harness-hooks.ts`),
+whose own comment bounds the worst case at *"about eleven seconds"* and names
+the trigger as *"a Core busy serving PTY fan-out and SQLite writes"* — exactly
+what a fan-out turn creates.
+
+So a **retry-delayed in-turn `SubagentStart` is knowingly traded away**. One that
+eats a `-m 3` timeout lands ~4s after a `Stop` that already wrote `finished`,
+finds an empty set and a 4s-old finish, and is dropped *and* never tracked; the
+card reads `finished` through a live fan-out, and no backstop corrects it (every
+backstop below fixes a task stuck on `running`; none fixes one stuck on
+`finished`). That residual is filed as **issue 440**.
+
+The window was 30 seconds until issue 385. That covered the retry tail
+incidentally, at the price of every post-turn helper resurrecting the card for
+half a minute after *every* finish — the operator watched a completed Session
+un-complete itself the moment they clicked it. Widening it back to absorb the
+~11s retry budget puts a pin click at +5s inside it again and re-opens 385. A
+single scalar clock cannot tell a retry-delayed in-turn event from a post-turn
+helper, so one of the two has to lose, and the one visible on every finish is the
+one that was fixed. Telling them apart needs evidence rather than elapsed time —
+a payload discriminator, an emission timestamp, or the W1 status arbiter; issue
+440 sketches those.
 
 Backstops, so a `SubagentStop` that never arrives (lost POST, killed process) —
 or a healed `running` that no `Stop` will ever follow — cannot hold a task on
@@ -74,7 +119,7 @@ fourth is armed by nothing, which is the point (issue 243):
 
 - Tracked entries expire after 2 hours (kept long on purpose — a short TTL would
   prematurely finish sessions whose subagents legitimately run long).
-- A held `Stop` (and a recent-finish heal) arms a once-a-minute recheck. Once the
+- A held `Stop` (and a subagent heal) arms a once-a-minute recheck. Once the
   tracked set is idle — drained by real `SubagentStop`s or by expiry — a 3-minute
   drain grace starts: if the re-invoked main harness's own `Stop` lands the finish
   within it (the normal flow), the backstop's promotion is a no-op (it only fires
@@ -86,9 +131,10 @@ fourth is armed by nothing, which is the point (issue 243):
   background work), and when the PTY process exits.
 - **The quiet-Session backstop** (`core-session-backstop.ts`) sweeps the
   database once a minute and settles any row still claiming `running` that has
-  gone quiet. Nothing arms it, so it covers the case the three above cannot: a
-  turn whose terminal `Stop` was the POST that dropped, where nothing was held,
-  nothing was healed and no subagent was ever tracked.
+  gone quiet — or that is still painting a TUI with nothing new on it. Nothing
+  arms it, so it covers the case the three above cannot: a turn whose terminal
+  `Stop` was the POST that dropped, where nothing was held, nothing was healed
+  and no subagent was ever tracked.
 
 Elapsed time is not what "quiet" means, and it could not be — a turn may run for
 hours. A working harness never stops talking: every tool call fires the
@@ -101,11 +147,150 @@ being told. A live PTY makes that settle a `finished`; no live PTY makes it a
 `disconnected`, because a process that went away did not finish. `needs-input`
 is never swept — a Session waiting on a human may wait silently forever.
 
-The trade is knowingly paid: a harness that works in total silence for longer
-than the window gets a card that reads `finished` while it is still going.
-Nothing is killed, and the next `UserPromptSubmit` puts the row back on
-`running`. Before it, a lost `Stop` wedged the Session until a human edited the
-row by hand — while the Panel said the opposite.
+### Idle redraws are not activity (issue 391)
+
+That rule has a hole in it, and it is the case an operator hits most: the
+harness whose hooks are not arriving is usually the harness whose TUI is still
+on screen. Codex before its hooks have been reviewed with `/hooks`, or any
+harness whose terminal `Stop` was the POST that dropped, keeps painting a
+spinner and a clock for as long as the process lives. Counted as activity,
+those bytes mean fifteen minutes of total silence never arrives and the card
+claims `running` indefinitely.
+
+So the bytes are read rather than counted. `pty-output-activity.ts` takes each
+five-second burst of PTY output and asks three questions in order:
+
+1. **Did the burst erase anything?** A repaint is defined by what it destroys —
+   a carriage return, an erase, a cursor jump. A burst that only appends
+   scrolled the screen, so it is `output` by construction. This is what keeps
+   appended progress (pytest's dots, a log line) from reading as a spinner. The
+   exception is a burst with no controls that follows one that repainted: that
+   is the tail of a frame, not a new line.
+2. **Do the digits belong to a clock?** Every digit is dropped from a line a
+   *spinner* is drawing, because the whole line is a frame — clock, token
+   count, context percentage. On every other line only the **duration token**
+   itself is dropped (`12.3s`, `1m 12s`), never the rest of the line's digits:
+   `Compiled 41 files in 3.2s`, `✔ 43 passed in 12.3s` and
+   `[1,234 / 5,678] Compiling …; 45s` are what a build actually prints, and
+   their counts are their only changing content. Both halves are deliberately
+   narrow: the glyph set is the braille, sparkle and circle frames a spinner
+   cycles (not ✔ ✗ ❯, which are status marks), and a duration needs its unit
+   letter (`\d+:\d{2}` alone is the wall-clock stamp a build prints in front of
+   every line).
+3. **Is any word new?** What survives — escapes, control bytes and spinner
+   glyphs dropped, whitespace collapsed — is the frame's words. The burst is
+   `output` when it carries a word the last two bursts (about ten seconds of
+   screen) do not already contain, and `redraw` when every word in it was
+   already on screen a moment ago. The scan runs from the *end* of the burst,
+   where a TUI puts what is new, and as deep as the memory it is compared
+   against — deep enough to find a line painted above a static footer, and no
+   deeper, since the part that cannot be remembered would otherwise read as
+   new. A number is matched whole (`40` is a substring of `(400)`) while a word
+   is matched loosely, so a burst boundary inside `Think`/`ing` is not read as
+   two new words a second. A burst that erases the display and puts nothing in
+   its place empties the memory: the screen is blank, so the next line is new.
+
+The memory is two bursts and not the whole turn on purpose: a harness that
+reads the same file twice is working, not repainting. A hook is its own kind of
+activity and always counts as progress — nothing a harness bothers to POST is a
+repaint.
+
+The backstop therefore has two rules, and a `running` Session settles on
+whichever fires first:
+
+| Rule | Fires when | Window |
+| --- | --- | --- |
+| Quiet | nothing at all — no hook, no byte of any kind | 15 minutes |
+| Idle | bytes still arriving (heard within the last 2 minutes), nothing new on screen, no hook, **and** nothing printed since the last hook *within the 15-minute deference bound below* | 8 minutes, confirmed by 2 consecutive sweeps |
+
+The idle rule is the finish-class backstop the quiet rule cannot be: it does not
+wait for the redraws to stop, because they never do. Three things narrow it, and
+each is there for a failure that was found rather than imagined:
+
+- **It applies only to a Session this Core has heard bytes from.** A row it has
+  only ever read from the database is judged by the quiet rule alone, since a
+  Core that heard no bytes cannot know whether the ones it missed were redraws.
+- **It defers to hooks, for fifteen minutes.** If a Session has printed
+  anything real since its last hook, it is mid-turn and the rule stands down: a
+  single `Bash` call emits no hook until it completes (Claude Code installs
+  `PreToolUse` with an `AskUserQuestion` matcher), so a six-minute build has
+  nothing but its TUI to say so. The deference is **bounded**, because
+  deferring forever would mean a dropped `Stop` on a harness whose hooks work
+  is never settled at all — the other half of #391. Past the bound the screen
+  is the only evidence left and the rule reads it, so:
+
+  | harness | settles after its last new output |
+  | --- | --- |
+  | never sent a hook (Codex before `/hooks`) | ~9–10 minutes |
+  | hooks arrive, `Stop` dropped | ~16–17 minutes |
+- **It asks twice.** The condition must hold across two consecutive sweeps, one
+  minute apart, before a row moves.
+
+Which rule settled a row is in `session-backstop.settled`'s `rule` field.
+
+### The idle rule takes its own finish back
+
+A `finished` written by the **idle rule** is marked, and the next `output`-class
+burst returns the row to `running` inside half an hour
+(`session-backstop.reopened`). Three things end that claim, and each of them
+ends it for good:
+
+- **Anyone else writing the row.** The settle records the row's `updatedAt` and
+  the reopen requires it unchanged. Asking only whether the row still says
+  `finished` is not enough: a real `Stop` writes `finished` over a `finished`,
+  and the post-turn composer paint that follows would otherwise reopen it.
+  This is also the only thing that reads a hook — a hook the pipeline wrote a
+  status for moved the row; `SubagentStart`, `SubagentStop` and an unmatched
+  `PostToolUse` write nothing, decide nothing, and leave the recovery armed,
+  which matters because `PostToolUse` is installed unmatched and fires on every
+  ordinary tool call.
+- **The PTY exiting**, and the half-hour grace expiring.
+
+No hook of any kind *reopens* a row: only an `output`-class burst does, so a
+post-turn helper cannot heal a finished card, which is the bug #385 closed. An
+operator's finish and the quiet rule's finish are never marked in the first
+place. The marker is spent only once the reopening write has landed, so a
+failed write leaves the next burst able to try again.
+
+An idle-rule finish is reopened by **anything new on that screen**, and the
+classifier cannot tell the harness's own output from the echo of an operator
+typing into the composer — so a correct finish can be taken back by somebody
+starting to type and not pressing Enter. Pressing Enter makes it right again (a
+`UserPromptSubmit` is a real new turn); the exposed window is "typed but not
+submitted", and it is tracked as
+[#475](https://github.com/actana/control/issues/475).
+
+This exists because the obvious recovery does not: `harness-hook-events.ts` maps
+only `UserPromptSubmit`, `CursorBeforeSubmitPrompt` and `PermissionReplied` to
+`running` — `PostToolUse`, `SubagentStart` and `SubagentStop` map to nothing —
+and the PTY output path writes no status at all. Without the marker, a row
+settled early stays `finished` until the operator's next prompt.
+
+What a wrong idle settle still costs, stated rather than argued away: it emits
+`session:finished` (the operator's completion toast, and the signal `actana
+session wait` unblocks on) and clears the tracked subagent set. The reopen puts
+the status back; it cannot un-send a notification or restore that set, which
+expires on its own after two hours.
+
+**A harness parked on a dialog nobody matched is settled too.** Only
+`hasClaudeInterruptPrompt` and `hasCodexHookReviewPrompt` turn a screen into
+`needs-input`; any other permission or approval box repaints statically, which
+is the idle condition exactly, so the Session is settled `finished` at ~9–10
+minutes while it waits for a human — and `needs-input` being out of the sweep's
+scope does not help, because the row never reached `needs-input`. The reopen
+cannot help either until somebody answers. This is the same harness class the
+rule targets (the one whose hooks are not arriving is the one whose
+`needs-input` hook is also not arriving), and it is tracked as
+[#469](https://github.com/actana/control/issues/469) rather than fixed here.
+
+The classifier's own limits, which bound how often that can happen: a turn whose
+tool prints nothing at all is indistinguishable from one that ended; a progress
+line that is both spinner-prefixed and nothing but numbers has its digits
+dropped as a clock; and the rule depends on the spinner phrase being static — a
+harness whose spinner rotates its gerund (`✻ Herding… / Simmering… /
+Pondering…`) puts a new word on screen every rotation, so the idle rule never
+fires for it at all. Before any of this, a lost `Stop` wedged the Session until
+a human edited the row by hand — while the Panel said the opposite.
 
 `Notification` is also intentionally narrowed to `permission_prompt`. Claude Code
 sends idle input reminders through the same hook event, so treating all
@@ -114,6 +299,60 @@ notifications as `needs-input` creates false positives that later flip to
 
 These values were tuned against the failure modes above. Do not change them
 without a failure that says so.
+
+### The session-id guard, and the one event it does not drop
+
+A hook is addressed by **task id**, read out of the PTY's own environment. The
+`session_id` in the payload is a second, weaker fact: the harness's own name for
+the conversation. The pipeline stores the first one it sees on a *capture* event
+(`UserPromptSubmit`, `SessionStart`, and their Cursor spellings) and, from then
+on, drops any non-capture event carrying a different id — a `foreign-session`.
+That is what stops a stranger's question, subagent count or permission prompt
+from claiming a card it does not own, and a capture event is still free to adopt
+a new id, because a new session id means a new harness process.
+
+**A turn end is the exception** (#390). `Stop` — and Cursor's `stop` and
+`afterAgentResponse` — claims nothing; it reports that a turn ended, on a PTY
+that is this task's whatever the harness calls its session. Two shapes produce
+one under an unrecognised id: a **resume**, where the stored id belongs to a
+process that is gone and no further capture event is coming, and an **OpenCode
+child** whose `session.idle` leaked past the plugin's parent/child filter.
+Dropping it was still an *ack* — `{ ok: true, ignored: "foreign-session" }` — so
+the harness saw its hook accepted while the card sat on `running` and no
+`session:finished` ever fired.
+
+So a foreign turn end settles the task instead, on terms narrower than an owned
+one's:
+
+- **The tracked subagents are dropped on entry**, with the recent-finish mark.
+  A turn end under an unrecognised id means a new harness process, so the old
+  session's subagents died with it — and nothing else can clear them. Their
+  `SubagentStop` died with the process, and the new session's own subagent
+  events carry the new id, so they are dropped as foreign *before* the
+  bookkeeping. The only other route out is the 2-hour `ACTIVE_SUBAGENT_TTL_MS`,
+  and waiting on it is how the first cut of this settle reproduced #390 inside
+  the fix for it: a fanned-out turn that resumed with a lost `SessionStart` sat
+  on `running` for two hours with its `Stop` acked.
+- **There is no subagent hold, deliberately.** After the clear the tracked set
+  is empty by construction, and it could not have engaged in either shape that
+  reaches here anyway: a resumed session's subagent events are dropped as
+  foreign before they are ever counted, and opencode — whose child sessions are
+  the other shape — posts no subagent lifecycle events at all, so
+  `hasActiveSubagents` is structurally false for every opencode Session. **The
+  status check below is the only real guard**, and a leaked child *can* finish
+  a working parent's `running` card. That is the residual, stated rather than
+  papered over; the parent's next `session.status: busy` corrects it.
+- **Only `running` is settled** — not `needs-input`. The PTY-exit settle acts on
+  both, and it is not a precedent that transfers: there the process is dead, so
+  an open question is moot, while here it is alive and may be blocked on exactly
+  that question. A leaked child going idle would otherwise write `finished` over
+  a parent waiting on a permission prompt, taking the pending-question overlay
+  with it. `ready` is out for #387's reason: `CoreTaskWriter` appends
+  `session:finished` on that transition, and a Session titled "Waiting for
+  initial prompt…" has no turn to end.
+- **The session id is not captured.** A `Stop` is not a capture event; adopting
+  an OpenCode child's id would hand the rest of that child's lifecycle the
+  Session's card.
 
 ## The hook receiver
 
@@ -264,6 +503,21 @@ Sessions whose process is gone:
   The Panel's own exit patch no longer fires for a Core-owned row: it was
   unconditional, so it would overwrite an `interrupted` Session with `finished`
   and raise a spurious `session:finished` besides.
+
+  **`ready` settles here too** (issue 387), and it is the one status in scope
+  that describes no work. A *bare* Session — spawned with no prompt, sitting on
+  "Waiting for initial prompt…" — never leaves `ready` until its first
+  `UserPromptSubmit`, so not one hook ever fires for it and there is no `Stop`
+  to wait for. Left out, its row went on claiming to be waiting for a prompt
+  for as long as the database existed; one was found alive on a Core hours
+  after its PTY died, and still there after the container was recreated.
+
+  It settles on a scale of its own: **`disconnected`, whatever the exit code**.
+  `terminated` would say a turn was killed, and `finished` would say work
+  completed — `CoreTaskWriter` appends `session:finished` on exactly that
+  transition, so a bare Session the operator closes with `/exit` would ring a
+  completion ding for a turn that never ran. `disconnected` claims only that
+  the process went away, which is the whole of what is known.
 - **Boot sweep** — `core-session-sweep.ts` runs once per Core boot, before the
   PTY core, the hook receiver or the core-link server can produce a Session of
   this run. At that moment no PTY of this process exists, so every row still
@@ -273,11 +527,69 @@ Sessions whose process is gone:
   `task:updated` event a connected Panel re-renders from — a sweep nobody is
   told about leaves the operator looking at the same wrong card.
 
+  **Spawned `ready` rows are orphans too** (issue 387), for the same reason the
+  PTY-exit settle covers them: a bare Session's PTY dies with the Core and no
+  hook was ever going to report it. They cannot be swept on the status alone,
+  because `ready` is also the status of a Session the operator created and has
+  not started — flipping a queue of unstarted work to `disconnected` on every
+  restart would trade one wrong card for many. The discriminator is whether
+  this Core ever spawned a *harness* for the row, read from the `pty:spawn` in
+  the event log (`queryStrandedReadyTasks`). The row cannot answer it: there is
+  no "was started" column, and the harness session id is no help either, since
+  Claude Code's `SessionStart` captures one before any turn. A `ready` row with
+  no agent spawn behind it is left alone. The evidence is permanent — nothing
+  prunes `event_log` — so the first boot after this shipped settled every
+  historical spawned `ready` row in one batch, and every boot since sees only
+  what the run before it stranded. That batch also reorders the operator's
+  lists: a status patch stamps `updated_at`, which Fleet and Archived both
+  order by, so every row it settles floats to the top at the boot time, above
+  recent work, and there is no undoing it.
+
+  The quiet-Session backstop deliberately does **not** see these rows: it reads
+  the narrow `listActiveTasks`, and a bare Session waiting on its first prompt
+  is allowed to sit silent for as long as the operator likes.
+
   `disconnected` rather than `finished` or `terminated`: it is the status the
   Panel already uses for a process that went away without reporting, and it
   claims nothing about how the work ended. The Panel has had this sweep for its
   own rows all along; what it never had was scope over Core-owned ones, which is
   every Session on a remote Core (issue 243).
+- **Relaunch reset** — the mirror of the two above (`core-session-relaunch.ts`).
+  Once `ready` is a status a Session can leave, something has to write it back:
+  the operator reopens a settled bare Session, the Core spawns a healthy
+  harness, it waits at its prompt, and no hook fires until the first prompt —
+  so the card would read `disconnected` over a live harness, on every harness
+  family. On an **agent** spawn (never a `shell` or `shellSession` one), a row
+  sitting on **`disconnected`** that is **proven never to have worked** goes
+  back to `ready`.
+
+  Both halves of that are narrower than they look, and deliberately so, because
+  this write destroys information when it is wrong.
+
+  `disconnected` rather than "any settled status": before `ready` became a
+  status a Session can leave it was one-way, so a Session that never worked
+  could only ever *be* `ready`, and the only status the two fallbacks above
+  write for one is `disconnected`. `finished`, `terminated` and `interrupted`
+  are therefore unreachable for such a Session — every row wearing one worked
+  for it — and excluding them here means a real card cannot be overwritten
+  even if the history read below is wrong.
+
+  "Never worked" is read from the event log, not the row: every status change
+  on a Core-owned row appends a `task:updated` carrying the status that was
+  *patched* (`queryTaskProvenNeverWorked`), and any status other than `ready` /
+  `disconnected` says a turn happened — including on a harness that goes
+  straight from `ready` to `finished` without ever reporting `running`. A
+  `finished` Session being reopened is being resumed, and keeps its card.
+
+  That read sees **only status-bearing `task:updated` events, and those start
+  at v0.4.0** (`2dd34a8`): before it the payload was `{taskId, projectId}` and
+  nothing else. Since `event_log` is never pruned, a Core upgraded from 0.3.x
+  still holds status-less rows for Sessions that ran for hours, and their
+  silence is indistinguishable from a Session that never ran a turn. So the
+  read demands *positive* evidence — a row the fallbacks above settled always
+  carries a `"status":"disconnected"` update, so a row with no status-bearing
+  update at all is a legacy log, and the answer is "cannot tell, do not reset"
+  rather than "never worked".
 
 ## Terminal-input fallback
 
@@ -295,6 +607,12 @@ Session had neither hooks nor a fallback and never left `ready`.
 The narrower question matters: Cursor and Codex both take our hooks file and
 report a turn's *end*, so "hooks were installed" would suppress the fallback and
 leave their Sessions on `ready` for the whole first turn.
+
+Note that neither of those failures parks a Session on `ready` forever any more
+(issue 387). A Session sitting on `ready` whose PTY then dies is settled by the
+PTY-exit path, and one whose Core dies under it is settled by the boot sweep;
+what a missing `running` signal costs is a card that under-reports a live turn,
+not a row that outlives its process.
 
 ### The CLI has no equivalent, and says so
 
@@ -386,13 +704,25 @@ Three details are load-bearing and none of them is guessable from the docs:
 - **`permission.asked` is the event the binary emits.** The `@opencode-ai/sdk`
   type union calls it `permission.updated`, and that string does not appear in
   the 1.18.18 binary at all. The plugin listens for both.
-- **Posts are queued, not fired in parallel.** A `Stop` that overtook the
-  `SessionStart` carrying the session id would be discarded by the Core as
-  belonging to a session it has never heard of — #230 again with a new cause.
-  Nothing awaits the queue, so a hook still never holds up a turn.
+- **Posts are queued, not fired in parallel.** Order is meaning here. A
+  `chat.message` that overtook the `SessionStart` before it would name the
+  Session from a prompt the Core cannot yet attribute, and a `permission.replied`
+  that overtook its `permission.asked` would leave the card on `needs-input`
+  for a question already answered — #230 again with a new cause. (A `Stop` that
+  overtakes the capture event is no longer among the casualties: since #390 it
+  settles rather than being discarded. That is a narrowed blast radius, not a
+  reason to stop queueing.) Nothing awaits the queue, so a hook still never
+  holds up a turn.
 - **A child session is a subagent.** `session.created` carries `parentID`, so
   the plugin knows a child by name rather than guessing from ordering, and a
-  subagent's `idle` never settles the Session's card.
+  subagent's `idle` never settles the Session's card. Filtering it at the
+  source is the whole guard — one that leaks through, a child created before
+  the plugin loaded, reaches the Core as a `Stop` under an unrecognised session
+  id and now settles rather than being dropped (see the session-id guard
+  above). Nothing downstream can catch it: opencode posts no subagent lifecycle
+  events, so the pipeline has no way to see the parent still working. All that
+  narrows it is the `running`-only status check, and the parent's next
+  `session.status: busy` puts the card back.
 
 `permission.replied` is also why opencode needs no unmatched `PostToolUse`
 subscription: Claude Code fires nothing when a permission is *granted* and has

@@ -282,6 +282,11 @@ async function dispatch(
   if (pathname === "/api/project-presentation/prune" && method === "POST") {
     return projectPresentationController.prune(request);
   }
+  // Literal path — matched before PROJECT_PRESENTATION_PATH so "pinned-order"
+  // is never read as a project id.
+  if (pathname === "/api/project-presentation/pinned-order" && method === "PATCH") {
+    return projectPresentationController.reorderPinned(request);
+  }
   m = pathname.match(PROJECT_PRESENTATION_PATH);
   if (m) {
     const id = decode(m[1]);

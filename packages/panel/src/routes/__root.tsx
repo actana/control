@@ -9,7 +9,14 @@ import {
   useRouterState,
 } from "@tanstack/react-router";
 import type { QueryClient } from "@tanstack/react-query";
-import { getRailClusters, usesDirectRailProjectShortcuts } from "~/lib/rail-projects";
+import {
+  getRailClusters,
+  mergeRailProjects,
+  railNavigateSearch,
+  resolveRailChordTarget,
+  usesDirectRailProjectShortcuts,
+  type RailTarget,
+} from "~/lib/rail-projects";
 import { isAuthPath } from "~/lib/auth-paths";
 import { TopBar, type Crumb } from "~/components/ui/TopBar";
 import { Btn } from "~/components/ui/Btn";
@@ -45,6 +52,7 @@ import {
   HeaderActionsSlot,
 } from "~/components/ui/HeaderActionsSlot";
 import { useSettings, useProjects } from "~/queries";
+import { useRemotePinnedProjects } from "~/lib/use-fleet";
 import { ProviderUsageIndicator } from "~/components/views/ProviderUsageIndicator";
 import { UpdateBanner } from "~/components/views/UpdateBanner";
 import { FirstRunGate } from "~/components/views/FirstRunGate";
@@ -251,6 +259,15 @@ function Shell() {
   useWindowIdleController();
   const { data: settings } = useSettings();
   const { data: projects } = useProjects();
+  // The rail draws its badges from the Panel's own rows PLUS every Core's pins
+  // (ProjectBar merges the same two lists). The rail chords below address that
+  // merged list, or a Core pin's badge would open whatever Panel-local project
+  // happened to sit in that slot — or nothing at all (#379).
+  const { projects: remotePinnedProjects } = useRemotePinnedProjects();
+  const railProjects = useMemo(
+    () => mergeRailProjects(projects, remotePinnedProjects),
+    [projects, remotePinnedProjects],
+  );
   const { activeGroup, setActiveGroup, groups } = useActiveGroup();
   // Pure actions (stable identity) + narrow flip-only subscriptions, so a
   // background session-status tick doesn't re-render the whole shell. The active
@@ -477,6 +494,19 @@ function Shell() {
     window.addEventListener("keydown", onKeyDown, true);
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, []);
+  // One place every rail chord navigates through, so a Core-owned pin can never
+  // lose its `?coreId=`: without it the project route falls back to the Panel's
+  // own DB and the page 404s or shows the wrong project (#379).
+  const navigateToRailTarget = useCallback(
+    (target: RailTarget) => {
+      router.navigate({
+        to: "/projects/$id",
+        params: { id: target.id },
+        search: railNavigateSearch(target),
+      });
+    },
+    [router],
+  );
   // Cmd/Ctrl + [ / ] are non-rebindable terminal-focused shortcuts.
   // Capture phase: a focused xterm textarea swallows these on bubble.
   // ⌘T used to be in here too; it is `terminal.newTab` above now, so the
@@ -505,19 +535,19 @@ function Shell() {
         }
         const digit = Number(e.key);
         // Same clusters the rail renders — badges and hotkeys must agree.
-        const clusters = getRailClusters(projects ?? [], groups, activeGroup);
-        const navigateTo = (id: string) => {
+        const clusters = getRailClusters(railProjects, groups, activeGroup);
+        const navigateTo = (target: RailTarget) => {
           e.preventDefault();
           e.stopPropagation();
-          router.navigate({ to: "/projects/$id", params: { id } });
+          navigateToRailTarget(target);
         };
 
         // A single group is active, or no real groups exist: the rail is one
         // flat project list, so the digit addresses a project directly.
         if (usesDirectRailProjectShortcuts(groups, activeGroup)) {
           pendingRailGroupRef.current = null;
-          const target = clusters[0]?.projects[digit - 1];
-          if (target) navigateTo(target.id);
+          const target = resolveRailChordTarget(clusters, null, digit);
+          if (target) navigateTo(target);
           else e.preventDefault();
           return;
         }
@@ -533,10 +563,10 @@ function Shell() {
           if (clusters[digit - 1]) pendingRailGroupRef.current = digit;
           return;
         }
-        const groupIdx = pendingRailGroupRef.current - 1;
+        const groupDigit = pendingRailGroupRef.current;
         pendingRailGroupRef.current = null;
-        const target = clusters[groupIdx]?.projects[digit - 1];
-        if (target) navigateTo(target.id);
+        const target = resolveRailChordTarget(clusters, groupDigit, digit);
+        if (target) navigateTo(target);
         return;
       }
     };
@@ -547,9 +577,9 @@ function Shell() {
       const pending = pendingRailGroupRef.current;
       pendingRailGroupRef.current = null;
       if (pending == null || usesDirectRailProjectShortcuts(groups, activeGroup)) return;
-      const clusters = getRailClusters(projects ?? [], groups, activeGroup);
-      const target = clusters[pending - 1]?.projects[0];
-      if (target) router.navigate({ to: "/projects/$id", params: { id: target.id } });
+      const clusters = getRailClusters(railProjects, groups, activeGroup);
+      const target = resolveRailChordTarget(clusters, pending, 1);
+      if (target) navigateToRailTarget(target);
     };
     // Losing focus mid-chord (e.g. clicking away while Cmd is held) would
     // otherwise leave a group digit pending and misread the next chord.
@@ -564,7 +594,7 @@ function Shell() {
       window.removeEventListener("keyup", onKeyUp, true);
       window.removeEventListener("blur", onBlur);
     };
-  }, [activeGroup, cycleNext, cyclePrev, groups, projects, router]);
+  }, [activeGroup, cycleNext, cyclePrev, groups, navigateToRailTarget, railProjects]);
 
   return (
     <>

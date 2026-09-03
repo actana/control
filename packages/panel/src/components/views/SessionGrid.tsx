@@ -52,9 +52,14 @@ const DRAG_THRESHOLD_PX = 4;
 // below) — the resize math needs them to place divider handles precisely.
 const GRID_GAP = 8;
 const GRID_PADDING = 8;
-// Hit area for a divider handle — exactly the cell gap, so the invisible
-// handles (zIndex above the cells) never overhang the terminal surfaces and
-// steal pointerdowns near a cell's inner edge.
+// Hit area for a divider handle — 8px, the cell gap this grid was first laid
+// out with. It is no longer a gap: the shipped Studio look runs gridGap = 0 and
+// gridPad = 0 (see the layout block below), so each handle is an 8px strip
+// centred on a 0-width seam and *does* overhang the terminal surfaces, 4px into
+// each neighbour. That is deliberate — a grabbable divider on a flush layout
+// has to come from somewhere — but it means the handles sit on top of terminal
+// pixels while belonging to no cell, which anything reasoning about "is this
+// point on a session?" has to account for (#401, `board-drop-arbiter.ts`).
 const HANDLE_HIT = GRID_GAP;
 // Cards glide between grid slots on reorder — same timing/easing as the
 // sidebar's pinned-project slide so the two motions feel related.

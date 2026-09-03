@@ -62,11 +62,31 @@ export const UNSUPPORTED_SESSION_LOCK: PanelSessionLock = {
  * Where this tab stands in the Panel's own arbitration for one Session.
  *
  * `driving` — this tab holds the keyboard. `following` — another tab of this
- * same Panel does. `none` — nobody in this Panel has asked to drive this
- * Session, which is what every tab reads on a Core with no `multiConnection`
- * capability, and is writable: there is no arbitration to lose.
+ * same Panel does. `pending` — this tab has asked and has not been answered
+ * yet. `none` — this tab has not asked at all, which is what a pane with no
+ * Core to address reads, and is writable: there is no arbitration to lose.
+ *
+ * `pending` is the state issue 393 exists for. It used to be spelt `none`, and
+ * `none` is writable — so two tabs on one Session both typed for as long as the
+ * answer took, with nothing on screen saying the write was a guess. Asking and
+ * not-having-asked are different facts and are now spelt differently: the
+ * optimistic window belongs to `pending` alone, it is bounded (see
+ * {@link OPTIMISTIC_DRIVE_WINDOW_MS}), and when it closes unanswered the pane
+ * goes read-only rather than carrying on writing on a guess.
  */
-export type SessionDriveState = "driving" | "following" | "none";
+export type SessionDriveState = "driving" | "following" | "pending" | "none";
+
+/**
+ * How long a pane may type on an unanswered drive, in milliseconds.
+ *
+ * Short, because it is the window in which two tabs on one Session can both
+ * type, and long enough that a pane on a healthy link never sees it: the answer
+ * is pushed by the Panel's own service — no Core is asked and nothing crosses
+ * the wire (see `wantDrive`) — so it lands in a round trip to localhost. A pane
+ * that has waited this long is not waiting on arbitration, it is waiting on a
+ * link that is not answering, and the safe reading of that is read-only.
+ */
+export const OPTIMISTIC_DRIVE_WINDOW_MS = 1_200;
 
 /**
  * May this tab type into this Session, and if not, why not.
@@ -77,8 +97,15 @@ export type SessionDriveState = "driving" | "following" | "none";
  * force takeover over the wire. `driven-in-another-tab` is the drive: this
  * Panel may well hold the lock, and the keyboard is simply in another tab of
  * it, which is a Panel-local handover that no Core hears about.
+ * `awaiting-drive` is neither and is the third thing: this tab asked which of
+ * the Panel's tabs drives the Session and the answer has not come. It is not a
+ * verdict about anybody, it is the absence of one — and it is read-only because
+ * the alternative is what issue 393 is: two tabs typing on a guess.
  */
-export type SessionReadOnlyReason = "held-by-another-client" | "driven-in-another-tab";
+export type SessionReadOnlyReason =
+  | "held-by-another-client"
+  | "driven-in-another-tab"
+  | "awaiting-drive";
 
 export type SessionWriteAccess =
   | { writable: true }
@@ -95,24 +122,52 @@ export type SessionWriteAccess =
 export function sessionWriteAccess(opts: {
   lock: PanelSessionLock;
   drive: SessionDriveState;
+  /**
+   * True only inside the bounded optimistic window (issue 393), which the store
+   * opens when a pane asks and closes on the answer or on
+   * {@link OPTIMISTIC_DRIVE_WINDOW_MS}, whichever comes first. It is passed in
+   * rather than read here because a clock is not a fact about a Session, and
+   * because keeping it an argument leaves the precedence — lock, then drive,
+   * then the guess — in this one function.
+   */
+  optimistic?: boolean;
 }): SessionWriteAccess {
   if (!opts.lock.writable) return { writable: false, reason: "held-by-another-client" };
   if (opts.drive === "following") return { writable: false, reason: "driven-in-another-tab" };
+  // An unanswered ask outlives its window and stops being a guess. The lock is
+  // still answered first above: a pane that may not write at all is told about
+  // the client holding the Session, not about a drive answer that would change
+  // nothing for it.
+  if (opts.drive === "pending" && opts.optimistic !== true) {
+    return { writable: false, reason: "awaiting-drive" };
+  }
   return { writable: true };
 }
 
 /**
  * The label a read-only terminal wears, before anybody types into it.
  *
- * Short enough for a header chip, and it names *which* of the two it is —
- * "held" for the cross-client lock, "driven" for the intra-Panel drive. The
- * words are not interchangeable and are not meant to read as synonyms.
+ * Short enough for a header chip, and it names *which* of the three it is —
+ * "held" for the cross-client lock, "driven" for the intra-Panel drive, and
+ * "waiting" for the ask that has not been answered. The words are not
+ * interchangeable and are not meant to read as synonyms.
  */
 export function readOnlyLabel(reason: SessionReadOnlyReason): string {
-  return reason === "held-by-another-client"
-    ? "Read-only · held by another client"
-    : "Read-only · driven in another tab";
+  if (reason === "held-by-another-client") return "Read-only · held by another client";
+  if (reason === "driven-in-another-tab") return "Read-only · driven in another tab";
+  return "Read-only · waiting for this Panel";
 }
+
+/**
+ * What the pane says while the guess is still good (issue 393).
+ *
+ * The visible half of "short and visible": the window is writable, so the
+ * operator is typing, and the one thing that must not happen is that they find
+ * out afterwards that another tab had the keyboard. It is a notice, not a
+ * verdict — the sentence says what is being waited for, and the pane it sits
+ * above accepts keys the whole time it is up.
+ */
+export const AWAITING_DRIVE_OPTIMISTIC_LABEL = "Checking which tab drives this Session…";
 
 /**
  * The sentence under the label, saying what would change it.
@@ -122,9 +177,13 @@ export function readOnlyLabel(reason: SessionReadOnlyReason): string {
  * this Panel handing its own keyboard from one tab to another.
  */
 export function readOnlyDetail(reason: SessionReadOnlyReason): string {
-  return reason === "held-by-another-client"
-    ? "Another Core client holds this Session's write lock. You are seeing every byte and sending none."
-    : "Another tab of this Panel is driving this Session. Take the keyboard here to type.";
+  if (reason === "held-by-another-client") {
+    return "Another Core client holds this Session's write lock. You are seeing every byte and sending none.";
+  }
+  if (reason === "driven-in-another-tab") {
+    return "Another tab of this Panel is driving this Session. Take the keyboard here to type.";
+  }
+  return "This Panel has not said which of its tabs drives this Session. Ask for the keyboard here to type.";
 }
 
 /**

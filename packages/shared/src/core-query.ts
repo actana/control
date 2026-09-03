@@ -208,6 +208,170 @@ export function queryActiveTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[
 }
 
 /**
+ * Every `ready` task on this Core that a PTY was once spawned for (issue 387).
+ *
+ * `ready` is the status a Session is born in, so it cannot be swept on the
+ * strength of the status alone: a Session the operator created and has not
+ * started yet is `ready`, has no process, and is correctly `ready` — flipping
+ * it to `disconnected` on every Core restart would make a whole queue of
+ * unstarted work look like it had died.
+ *
+ * What separates the two is whether this Core ever spawned a PTY for the row.
+ * A bare Session — one started with no prompt, sitting on "Waiting for initial
+ * prompt…" — spawns its harness immediately and stays `ready` until the first
+ * `UserPromptSubmit`, so no hook ever fires for it and no status writer ever
+ * touches it. Kill the Core under it and nothing comes back: the boot sweep's
+ * `running` / `needs-input` filter never saw it, and the row outlived a
+ * container recreate still claiming to be waiting for a prompt that nothing
+ * was left to read. That is the zombie this query finds.
+ *
+ * The evidence is the `pty:spawn` the Core appended when it started the
+ * harness. It is read from the event log rather than the task row because the
+ * row records no such thing — there is no "was started" column, and the
+ * harness session id stays `null` precisely in the bare case, where no hook
+ * ever arrives to set it.
+ *
+ * Only an agent spawn is evidence. A `pty:spawn` is recorded for the `shell`
+ * and `shellSession` variants too, which carry a `taskId` for routing but are
+ * not harness work. The VM-shell variant is excluded here by the payload's
+ * `shellSession` flag. The plain `shell: true` variant is not distinguishable
+ * in the payload — it records `shellSession: false`, the same as an agent —
+ * and is separated by its task id instead: those spawns are addressed with a
+ * synthetic id (`cli_shell_<uuid>`, or a user-terminal id) that matches no
+ * `tasks` row, so the join drops them. The test pins that shape.
+ *
+ * Archived rows are included and no project filter applies, for the same
+ * reasons as {@link queryActiveTasks}.
+ *
+ * **The evidence is permanent.** Nothing in this repo prunes `event_log` —
+ * there is no `DELETE FROM event_log` anywhere — so a `pty:spawn` recorded a
+ * year ago still answers for its row. The consequence is a one-time batch: on
+ * the first Core boot after this ships, EVERY historical `ready` row that ever
+ * had a harness spawned settles to `disconnected` at once, each appending its
+ * own `task:updated`. That is the backlog of zombies this query exists to
+ * find, arriving in one go because nothing was looking for them before; every
+ * later boot sees only what the run before it stranded. That batch also
+ * REORDERS the operator's lists: a status patch stamps `updated_at`, and this
+ * query, `queryTasks` and `queryArchivedTasks` all order by it, so every row
+ * it settles — archived ones included, since it spans them — floats to the top
+ * of Fleet and Archived at the boot time, above recent work, and there is no
+ * undoing it. If `event_log` ever grows a retention window, a row whose spawn
+ * has aged out stops being swept — it would read as never-started, which is
+ * the safe direction to fail in.
+ *
+ * Returns an empty array when either table is absent.
+ */
+export function queryStrandedReadyTasks(sqlite: CoreQuerySqlite): CoreLinkTaskSnapshot[] {
+  let rows: TaskRow[];
+  try {
+    rows = sqlite
+      .prepare(
+        `SELECT t.id AS id, t.project_id AS project_id, t.title AS title,
+                t.title_manually_set AS title_manually_set,
+                t.claude_session_id AS claude_session_id, t.agent AS agent,
+                t.status AS status, t.pinned AS pinned, t.archived AS archived,
+                t.icon AS icon, t.updated_at AS updated_at
+         FROM tasks t
+         WHERE t.status = 'ready'
+           AND EXISTS (
+             SELECT 1 FROM event_log e
+             WHERE e.task_id = t.id
+               AND e.kind = 'pty:spawn'
+               AND e.payload NOT LIKE '%"shellSession":true%'
+           )
+         ORDER BY t.updated_at DESC`,
+      )
+      .all() as TaskRow[];
+  } catch {
+    return [];
+  }
+  return rows.map(taskRowToSnapshot);
+}
+
+/**
+ * Positive proof that no status change on this Session's row has ever
+ * described a turn (issue 387, review findings 2 and, for the shape of the
+ * answer, round 2).
+ *
+ * The question a relaunch has to answer. Issue 387 moves a stranded `ready`
+ * row to `disconnected`, and nothing writes `ready` back, so a bare Session
+ * the operator reopens would sit at `disconnected` while its harness waits at
+ * the prompt. Resetting the row on spawn is only right for a Session that
+ * never worked: a genuinely finished one is being resumed, and its card must
+ * keep saying so.
+ *
+ * The row cannot answer it. `claude_session_id` is captured on `SessionStart`
+ * for Claude Code — the Core installs that hook — so a bare Session that has
+ * never run a turn can still carry an id. What can answer it, for logs written
+ * by this version, is the event log: every status change on a Core-owned row
+ * is a `task:updated` carrying the status that was PATCHED
+ * (`core-task-writer.ts` records the patch rather than the resulting row, for
+ * exactly this kind of reader). A turn is any patched status other than the
+ * two a Session reaches without working — `ready` (its birth, and this reset)
+ * and `disconnected` (the sweep and the PTY-exit settle). `running`,
+ * `needs-input`, `interrupted`, `finished` and `terminated` each say a turn
+ * happened, including on a harness that goes straight from `ready` to
+ * `finished` without ever reporting `running`.
+ *
+ * **"For logs written by this version" is the whole of the difficulty.**
+ * `task:updated` only began carrying `status` in `2dd34a8` ("feat: await a
+ * session turn"), shipped in v0.4.0; before it the payload was
+ * `{taskId, projectId}` and nothing more. `event_log` is created
+ * `IF NOT EXISTS` and — as {@link queryStrandedReadyTasks} establishes — is
+ * never pruned, so a Core upgraded from 0.3.x still holds every one of those
+ * status-less rows, for Sessions that worked for hours.
+ *
+ * Read as "did any turn happen", their absence is indistinguishable from a
+ * Session that never ran one, and the answer comes out backwards in the
+ * destructive direction: a real `finished` card overwritten with `ready`. So
+ * the read demands **positive evidence** instead. A row this PR settled always
+ * carries a `"status":"disconnected"` `task:updated`, so a row with no
+ * status-bearing `task:updated` at all is a legacy log, not a bare Session,
+ * and answers `false` — "cannot tell, do not reset". `false` here therefore
+ * means "worked, OR unknowable", and the caller wants the same thing of both.
+ *
+ * Matched with `LIKE` against the payload because the status rides in the JSON
+ * body rather than a column; `status` is the last key the writer emits, and the
+ * `"status":"…"` shape is fully quoted, so the patterns cannot straddle fields.
+ * Both reads are bounded by `event_log_task_idx`. Answers `false` when the log
+ * is unreadable, which is the same conservative direction.
+ */
+export function queryTaskProvenNeverWorked(
+  sqlite: CoreQuerySqlite,
+  taskId: string,
+): boolean {
+  try {
+    // Positive evidence first: at least one status-bearing `task:updated`, or
+    // this log predates v0.4.0 and cannot be read as proof of anything.
+    const statusBearing = sqlite
+      .prepare(
+        `SELECT 1 AS hit FROM event_log
+         WHERE task_id = ?
+           AND kind = 'task:updated'
+           AND payload LIKE '%"status":"%'
+         LIMIT 1`,
+      )
+      .all(taskId);
+    if (statusBearing.length === 0) return false;
+
+    const worked = sqlite
+      .prepare(
+        `SELECT 1 AS hit FROM event_log
+         WHERE task_id = ?
+           AND kind = 'task:updated'
+           AND payload LIKE '%"status":"%'
+           AND payload NOT LIKE '%"status":"ready"%'
+           AND payload NOT LIKE '%"status":"disconnected"%'
+         LIMIT 1`,
+      )
+      .all(taskId);
+    return worked.length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * How many archived tasks this Core holds, optionally scoped to one project.
  *
  * The Panel needs this number continuously — it gates the Archived tab, labels

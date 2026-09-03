@@ -254,6 +254,157 @@ describe("actana events tail, across a Core restart", () => {
     expect(idsOf(result.out)).toEqual([1501]);
   }, 60_000);
 
+  it("reads a history longer than one tail exactly once, in order, and then exits", async () => {
+    // The printing side of the capped-tail walk (#402 review, non-blocking
+    // note), against the Core that produces it. This is the mirror of the test
+    // above and the one shape #205's review blocked on, now reachable on a path
+    // that did not exist then: a `--limit` read re-subscribes **while printing**,
+    // so a cursor moved wrong shows up here as a duplicated line or a hole,
+    // neither of which throws or logs anywhere.
+    //
+    // 1500 events past the cursor against a cap of 1000: the first marker is a
+    // receipt for a tail the Core cut short, the walk asks again from it, and
+    // only an empty tail ends the read. The dedup underneath is the durable
+    // client's; this is what proves it holds on this path rather than assuming
+    // it does.
+    const log = arrayEventLog();
+    fillPastTheCap(log);
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    // A ceiling well past the log: what ends this run is the end of the
+    // history, not the count.
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--since", "start", "--limit", "2000"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    const ids = idsOf(result.out);
+    expect(ids).toHaveLength(1_500);
+    // Each exactly once, in order. A replay storm is a repeat here; a moved
+    // cursor is a gap.
+    expect(ids).toEqual(Array.from({ length: 1_500 }, (_, i) => i + 1));
+    // More than one read, so the cap was really hit and this exercised the walk
+    // rather than a single tail that happened to fit.
+    expect(log.tailReads).toBeGreaterThan(1);
+  }, 60_000);
+
+  it("prints the finish already in the log on a first --kind run, and exits", async () => {
+    // #403's first criterion, against the Core that produces it and the cursor
+    // file a real run writes. This is the command an operator types after a
+    // session has finished, on a machine that has never followed this Core: no
+    // stored cursor, no --since, and the answer already in the log. It used to
+    // print nothing and never exit.
+    const log = arrayEventLog();
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    log.push("session:started");
+    log.push("task:created");
+    log.push("session:finished");
+    log.push("task:updated");
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    // One event, and the one that was asked for. The three around it are the
+    // history nobody asked for and are still not printed.
+    expect(idsOf(result.out)).toEqual([3]);
+  }, 60_000);
+
+  it("answers a bounded first --kind run with the newest match, not the oldest", async () => {
+    // Round-1 review, blocking finding 1, with the reviewer's own log. A first
+    // run has no cursor, so it subscribes from #0 and its walk covers the whole
+    // retained log — nothing prunes the store. A run that printed matches as
+    // they went past therefore answered with the *earliest* finish the Core
+    // still held: `#3`, possibly weeks old and carrying a different taskId,
+    // returned with exit 0 for a question about the session that just finished
+    // at `#22`. A visible hang is a better failure than a confident wrong
+    // answer, which is why this is the finding that blocked the round.
+    const log = arrayEventLog();
+    for (let i = 0; i < 2; i += 1) log.push("task:updated"); // #1 – #2
+    log.push("session:finished", '{"taskId":"t-old"}'); // #3, weeks ago
+    for (let i = 0; i < 18; i += 1) log.push("task:updated"); // #4 – #21
+    log.push("session:finished", '{"taskId":"t-now"}'); // #22, just watched
+    for (let i = 0; i < 8; i += 1) log.push("task:updated"); // #23 – #30
+
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "1"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    // One line, and the finish the operator actually watched happen.
+    expect(idsOf(result.out)).toEqual([22]);
+    expect(JSON.parse(result.out[0]!).payload).toContain("t-now");
+  }, 60_000);
+
+  it("delivers --kind matches exactly once and in order across a capped replay", async () => {
+    // The case the round-1 review asked for by name, and its own numbers. The
+    // Core streams at most `EVENT_TAIL_LIMIT` (1000) events per tail and closes
+    // with a marker reporting the last id it *sent*, so a 1500-event log takes
+    // three rounds to walk — and the ring holding the newest matches has to
+    // survive every re-ask. A repeat here is a replay storm through the filter;
+    // a gap is a match dropped at a round boundary.
+    const log = arrayEventLog();
+    for (let i = 1; i <= 1_500; i += 1) {
+      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "task:updated");
+    }
+
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "3"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    expect(idsOf(result.out)).toEqual([500, 1_200, 1_450]);
+    // More than one tail read, so this really did cross the cap rather than fit
+    // inside a single replay that happened to be big enough.
+    expect(log.tailReads).toBeGreaterThan(1);
+  }, 60_000);
+
+  it("keeps only the newest --limit matches when the walk crosses the cap", async () => {
+    // The same shape, asked a narrower question. `--limit 2` against three
+    // finishes spread across three rounds is where a ring that resets per tail,
+    // or one that keeps the first n it meets, gives a different and wrong
+    // answer — `[500, 1200]` instead of the two most recent.
+    const log = arrayEventLog();
+    for (let i = 1; i <= 1_500; i += 1) {
+      log.push(i === 500 || i === 1_200 || i === 1_450 ? "session:finished" : "task:updated");
+    }
+
+    const port = await freePort();
+    const core = await coreOn(port, log);
+    fixture = makeCliFixture();
+    registerCore(fixture.paths, "inproc", core.blobText);
+
+    const result = await fixture.run(
+      ["events", "tail", "--json", "--kind", "session:finished", "--limit", "2"],
+      { connect: connectCore },
+    );
+
+    expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
+    expect(idsOf(result.out)).toEqual([1_200, 1_450]);
+  }, 60_000);
+
   it("leaves the stored cursor alone when --since asks for a one-off rewind", async () => {
     const log = arrayEventLog();
     const port = await freePort();

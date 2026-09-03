@@ -20,6 +20,8 @@ import {
   countArchivedTasks,
   queryActiveTasks,
   queryArchivedTasks,
+  queryStrandedReadyTasks,
+  queryTaskProvenNeverWorked,
   queryProjects,
   queryTask,
   queryTasks,
@@ -172,6 +174,59 @@ export function listActiveTasks(): CoreLinkTaskSnapshot[] {
   } catch (err) {
     log.warn("core-query.list-active-tasks-failed", { error: String(err) });
     return [];
+  }
+}
+
+/**
+ * Every `ready` task this Core once spawned a PTY for (issue 387).
+ *
+ * The companion to {@link listActiveTasks}, kept as its own read for the same
+ * reason the SQL is its own query: `ready` needs the event-log evidence that a
+ * process ever existed, and a Core whose event log is unreadable must still
+ * sweep the rows that need no such evidence. Degrades to `[]` on its own.
+ */
+export function listStrandedReadyTasks(): CoreLinkTaskSnapshot[] {
+  const conn = ensureConnection();
+  if (!conn) return [];
+  try {
+    return queryStrandedReadyTasks(conn as unknown as CoreQuerySqlite);
+  } catch (err) {
+    log.warn("core-query.list-stranded-ready-tasks-failed", { error: String(err) });
+    return [];
+  }
+}
+
+/**
+ * Everything the boot sweep settles: the rows that claim a live process, plus
+ * the `ready` rows a dead PTY left behind (issue 387).
+ *
+ * The union lives here, next to the two reads, rather than in the sweep — the
+ * sweep's job is to settle what it is handed, and the backstop, which shares
+ * {@link listActiveTasks}, must NOT see the `ready` rows: a bare Session
+ * waiting on its first prompt is allowed to sit silent for as long as the
+ * operator likes, and settling it for being quiet would be a bug.
+ */
+export function listBootSweepTasks(): CoreLinkTaskSnapshot[] {
+  return [...listActiveTasks(), ...listStrandedReadyTasks()];
+}
+
+/**
+ * Positive proof that this Session never worked (issue 387, review finding 2).
+ * The read behind the relaunch reset in `core-session-relaunch.ts`.
+ *
+ * Answers `false` on an unavailable DB, like every read here — and `false` is
+ * the conservative answer for this one: it forbids the reset. A Core that
+ * cannot read its own event log has no business overwriting a card on the
+ * strength of what that log does not say.
+ */
+export function taskProvenNeverWorked(taskId: string): boolean {
+  const conn = ensureConnection();
+  if (!conn) return false;
+  try {
+    return queryTaskProvenNeverWorked(conn as unknown as CoreQuerySqlite, taskId);
+  } catch (err) {
+    log.warn("core-query.task-proven-never-worked-failed", { taskId, error: String(err) });
+    return false;
   }
 }
 

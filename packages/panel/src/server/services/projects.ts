@@ -20,11 +20,27 @@ import {
   updateProjectRow,
 } from "../repositories/projects.repo";
 import { findTasksByProjectId } from "../repositories/tasks.repo";
+import { findMaxProjectPresentationPinnedOrder } from "../repositories/project-presentation.repo";
 import { deleteAllProjectImagesFor } from "./project-images";
 import { newId } from "./_ids";
 import { getPinnedProjects, nextPinnedOrder, validatePinnedReorder } from "~/lib/pinned-project-order";
 
 export type { ProjectWithCounts } from "~/shared/projects";
+
+/**
+ * The slot at the end of the rail — where a project being pinned now belongs.
+ *
+ * `nextPinnedOrder` alone answers for the Panel's own rows, and since #382 that
+ * is only half the rail: a Core-owned pin's slot lives on its presentation row,
+ * in the same numbering space. Maxing over the Panel's rows alone handed a
+ * newly pinned project a slot at or below a Core pin's, so it appeared in the
+ * middle of the rail instead of at the end.
+ */
+function nextRailSlot(): number {
+  const corePins = findMaxProjectPresentationPinnedOrder();
+  const panelPins = nextPinnedOrder(findAllProjects());
+  return corePins == null ? panelPins : Math.max(panelPins, corePins + 1);
+}
 
 function validateWorkingDirectory(dir: string): string {
   const trimmed = dir.trim();
@@ -277,7 +293,7 @@ export function createProject(input: {
     imagePath: null,
     groupId: input.groupId ?? null,
     pinned: !!input.pinned,
-    pinnedOrder: input.pinned ? nextPinnedOrder(findAllProjects()) : null,
+    pinnedOrder: input.pinned ? nextRailSlot() : null,
     launchUrl: null,
     rememberHarnessSettings,
     savedHarness,
@@ -326,9 +342,7 @@ export function updateProject(
       ? {
           pinned: rest.pinned,
           pinnedOrder: rest.pinned
-            ? rest.pinnedOrder ??
-              existing.pinnedOrder ??
-              nextPinnedOrder(findAllProjects())
+            ? rest.pinnedOrder ?? existing.pinnedOrder ?? nextRailSlot()
             : null,
         }
       : {}),
@@ -346,7 +360,7 @@ export function togglePin(id: string): Project | null {
     if (!existing) return null;
     const pinning = !existing.pinned;
     const now = Date.now();
-    const pinnedOrder = pinning ? nextPinnedOrder(findAllProjects()) : null;
+    const pinnedOrder = pinning ? nextRailSlot() : null;
     const next = { ...existing, pinned: pinning, pinnedOrder, updatedAt: now };
     updateProjectRow(id, { pinned: pinning, pinnedOrder, updatedAt: now });
     return next;
@@ -356,21 +370,41 @@ export function togglePin(id: string): Project | null {
   return next;
 }
 
+/**
+ * Write the rail slot of every pinned project this Panel owns.
+ *
+ * `order` is the whole rail, not this Panel's share of it. Since issue 382 a
+ * rail mixes the Panel's own pins with the pins each Core owns, and a Core's
+ * row has no `projects` row here — it reaches the rail as a core-link snapshot
+ * and its slot is written to its presentation row instead (see
+ * `reorderCorePins`). Sending only the Panel's own ids would have been the
+ * easier shape and the wrong one: `pinnedOrder` would then be dense over the
+ * Panel's rows alone, with no integer left to place a Core's row *between* two
+ * of them, and the merged rail would sort back into an order nobody chose.
+ *
+ * So the index written here is the row's index in the rail, and ids belonging
+ * to nobody in this database hold their slot and are skipped.
+ */
 export function reorderPinnedProjects(order: string[]): ProjectWithCounts[] {
+  let written: string[] = [];
   const updatePinnedOrder = getSqlite().transaction(() => {
-    const pinned = getPinnedProjects(findAllProjects());
+    const all = findAllProjects();
+    const pinned = getPinnedProjects(all);
     try {
-      validatePinnedReorder(order, pinned);
+      validatePinnedReorder(order, pinned, new Set(all.map((project) => project.id)));
     } catch (error) {
       throw new ValidationError(error instanceof Error ? error.message : "invalid pinned order");
     }
+    const ours = new Set(pinned.map((project) => project.id));
     const now = Date.now();
+    written = order.filter((id) => ours.has(id));
     for (let index = 0; index < order.length; index++) {
-      updateProjectRow(order[index]!, { pinnedOrder: index, updatedAt: now });
+      const id = order[index]!;
+      if (ours.has(id)) updateProjectRow(id, { pinnedOrder: index, updatedAt: now });
     }
   });
   updatePinnedOrder.immediate();
-  for (const id of order) events.emit("project:updated", { id });
+  for (const id of written) events.emit("project:updated", { id });
   return listProjects();
 }
 

@@ -21,21 +21,47 @@
 // status. Passing a number is not scheduling; that is why the sweep below looks
 // for the scheduling primitives themselves.
 //
-// **One file is allowed to hold a timer, and it is named here rather than
-// waved through** (#161, merged into #160's rule). `harness install` waits for
-// a verdict a vendor installer takes minutes to produce, so it carries a
-// deadline and a progress tick of its own. That is the same trade
-// `--wait-timeout` already makes and it fails the same way: it re-sends
-// nothing, it cannot make a Harness look installed sooner, and its expiry is
-// reported as *this side* giving up ("the Core reported no outcome within 15
-// minutes. The install may still be running there."), never as an outcome. The
-// difference from `--wait-timeout` is only which package the timer object sits
-// in, which is not the thing ADR 0026 moved.
+// **Two files are allowed to hold a timer, and both are named here rather than
+// waved through** (#161, merged into #160's rule; #402 added the second). Each
+// buys the same thing and is admitted on the same three properties — the ones
+// `--wait-timeout` already has. A listed timer **re-sends nothing**, it
+// **cannot make the thing it waits for happen any sooner**, and its expiry is
+// **reported as this side giving up** rather than as an outcome. A timer with
+// all three is a limit on patience. A timer missing any of them is the 450 ms
+// nudge wearing a table row as cover, and no reason admits it.
+//
+//   • `harness-command.ts` waits for a verdict a vendor installer takes minutes
+//     to produce, so it carries a deadline and a progress tick of its own. It
+//     re-sends no install, it cannot make a Harness look installed sooner, and
+//     it expires saying "the Core reported no outcome within 15 minutes. The
+//     install may still be running there." — this side giving up, never an
+//     outcome. The difference from `--wait-timeout` is only which package the
+//     timer object sits in, which is not the thing ADR 0026 moved.
+//
+//   • `events-command.ts` waits for a Core to answer `subscribe` at all (#402).
+//     A contended Core that never replays sends no `event` and no
+//     `eventsReplayed`, so an `events tail --limit` has neither its ceiling nor
+//     the end of the log left to end on and waits for ever — which is what an
+//     operator reported against a live Core, with the event they were waiting
+//     for already in its database. The deadline re-sends no `subscribe`, it
+//     cannot make an event arrive sooner, and it expires **non-zero**, saying
+//     the Core stopped answering and that the read did not finish. It is
+//     disarmed the moment the Core says where its log ends, and it is cleared
+//     while the link is down, so it can only ever fire at a Core that is
+//     connected and silent.
+//
+//     And note what it is not: this rule is about the path from an operator's
+//     text to a Harness's stdin, and `events tail` is a read of a log with
+//     nothing on that path at all. Being listed here does not exempt it from
+//     `TOUCHES_A_SESSION` below, which is what would catch it if that ever
+//     changed.
 //
 // The allowance is a table with a reason per row, so it stays a rule: a new
 // timer in any other file still fails, a timer in a file that writes to a
 // Session fails even if it is listed, and a row for a file that no longer
-// exists fails rather than quietly widening.
+// exists fails rather than quietly widening. Growing the table is meant to cost
+// a paragraph up here, argued the way the two above are — that cost is the rule
+// working, not friction to route around.
 //
 // **Scoped to the client half since #288**, for the same reason and by the same
 // table as the shell-out ban one file over (`module-halves.ts`). This package
@@ -66,13 +92,15 @@ const SCHEDULERS = [
 /**
  * The files allowed to schedule, and the reason each is.
  *
- * One row, and it buys a wait on a Core's own verdict rather than a nudge at a
- * harness. Anything that writes to a Session is barred from this table by the
+ * Two rows, and each buys a wait on a Core's own answer rather than a nudge at
+ * a harness. Anything that writes to a Session is barred from this table by the
  * test below it — that is the boundary the rule is actually about.
  */
 const SCHEDULING_ALLOWED: Record<string, string> = {
   "harness-command.ts":
     "waits for the Core's install verdict: a deadline on this side's patience and a progress tick, neither of which re-sends anything (#161)",
+  "events-command.ts":
+    "a deadline on a subscribe the Core never answers, so `--limit` cannot be wedged by a contended Core (#402). It re-sends nothing, it cannot make an event arrive sooner, and its expiry is reported as this side giving up",
 };
 
 /** Modules that put text or keystrokes into a Session. Never allowed a timer. */
@@ -142,10 +170,12 @@ describe("the CLI schedules nothing (#129 D3, ADR 0026)", () => {
   });
 
   it("never appends a carriage return to text on its way to a Session", () => {
-    // `session send --enter` writes one, as a **separate** write, because the
-    // operator asked for it in that invocation. What must not exist is a return
-    // glued onto somebody's text — that is the CLI deciding when a prompt is
-    // submitted, which is the decision ADR 0026 moved to the Core.
+    // `session send` writes one, as a **separate** write, because the operator
+    // asked for a message to be sent — by default since #404, and under
+    // `--enter` before it. What must not exist is a return glued onto somebody's
+    // text: a harness that treats a paste as one unit swallows it, and gluing it
+    // is also how a CLI starts deciding *when* a prompt is submitted rather than
+    // *that* this one is — the decision ADR 0026 moved to the Core.
     for (const file of shippedSources()) {
       const source = withoutComments(readFileSync(file, "utf8"));
       expect(source, `${path.relative(SRC, file)} appends a carriage return to text`).not.toMatch(

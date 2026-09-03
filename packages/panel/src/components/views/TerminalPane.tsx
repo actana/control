@@ -60,9 +60,11 @@ import {
 } from "~/lib/harness-command";
 import { getDefaultModelForHarness } from "~/lib/default-model-store";
 import {
-  terminalInputStartsTurn,
+  advanceTerminalRunningFallback,
   harnessUsesTerminalPromptFallback,
-  shouldResetTerminalRunningFallback,
+  IDLE_TERMINAL_RUNNING_FALLBACK,
+  noteTerminalWrite,
+  type TerminalRunningFallback,
 } from "~/lib/task-status-sync";
 import { accumulateTerminalPrompt } from "~/lib/terminal-prompt-capture";
 import { prefetchTerminalModules } from "~/lib/prefetch-terminal-modules";
@@ -115,6 +117,7 @@ import {
   type SequencedPtyData,
 } from "~/lib/terminal-replay";
 import { getPtyStreamRouter, type PtyStreamHandlers } from "~/lib/pty-stream-router";
+import { createTerminalInputWiring } from "~/lib/terminal-input-wiring";
 import { queryKeys, tasksCacheKey, useSettings, useTask } from "~/queries";
 import {
   DEFAULT_SESSION_HEADER_BUTTON_VISIBILITY,
@@ -129,6 +132,7 @@ import {
   watchSessionDrive,
 } from "~/lib/session-write-store";
 import {
+  AWAITING_DRIVE_OPTIMISTIC_LABEL,
   crossClientLockNotice,
   driveMovedToast,
   forceTakeoverConfirmation,
@@ -451,6 +455,11 @@ export function TerminalPane({
   const mayWriteRef = useRef(true);
   mayWriteRef.current = writeState.access.writable;
   const readOnlyReason = writeState.access.writable ? null : writeState.access.reason;
+  // The visible half of the bounded optimistic window (issue 393). The pane is
+  // writable here — this is a notice, not a verdict — and it says so *before*
+  // the keystroke rather than after it, which is the whole reason the strip
+  // below sits outside every collapsible header tier.
+  const awaitingDriveOptimistic = writeState.optimistic && writeState.drive === "pending";
   const [takeoverOpen, setTakeoverOpen] = useState(false);
   const [lockBusy, setLockBusy] = useState(false);
   // Latest onHide (the header's close button) read from a ref so the once-per-
@@ -515,7 +524,12 @@ export function TerminalPane({
 
   // Per-row subscription: with N panes mounted, a whole-array subscription
   // re-rendered every pane's header on any task change.
-  const { data: selectedLiveTask } = useTask(project.id, task.id);
+  // Core-tagged, like `tasksKey` below: a Core-owned Session's row lives in
+  // that bucket, and asking the untagged one left this header subscribed to a
+  // list nothing fills.
+  const { data: selectedLiveTask } = useTask(project.id, task.id, {
+    coreId: descriptor.coreId,
+  });
   const liveTask = selectedLiveTask ?? task;
   liveTaskStatusRef.current = liveTask.status;
   // The Session's name as the operator last saw it, for copy written from
@@ -944,6 +958,13 @@ export function TerminalPane({
 
       const host = el;
       const subscriptions: Array<() => void> = [];
+      // The pane's one input subscription, across every attach this surface
+      // makes (issue 393). `ensurePty` can wire more than once for a single
+      // surface — a reattach that comes back empty falls through to
+      // `findByTask` and then to a spawn — and an undisposed handler from the
+      // failed attempt writes every later keystroke to the PTY a second time.
+      const inputWiring = createTerminalInputWiring();
+      subscriptions.push(() => inputWiring.dispose());
       let rafHandle = 0;
       let activePtyId: string | null = null;
       // One shared listener per transport, routed by ptyId (see
@@ -976,7 +997,12 @@ export function TerminalPane({
       let duringReplayData: SequencedPtyData[] = [];
       let duringReplayExit: { ptyId: string; exitCode: number; signal?: number } | null =
         null;
-      let fallbackRunningPosted = false;
+      // The Enter→running fallback for a Session whose hooks never announce a
+      // turn's start: the one-shot latch AND the turn the operator is composing
+      // in this pane (issue 386). Declared with the surface but reset per pty
+      // in `wireTerminalInput` — a half-typed line, or a `pasting` latch, must
+      // not survive into the next harness process.
+      let runningFallback: TerminalRunningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
       let promptCaptureBuffer = "";
       let promptTitlePosted = false;
       const stopWatchingColorScheme = watchTerminalColorScheme((colorScheme) => {
@@ -998,6 +1024,13 @@ export function TerminalPane({
       const writeToPty = async (data: string) => {
         const ptyId = activePtyId;
         if (!ptyId || !ptyApi || !mayWriteRef.current) return false;
+        // Every byte on this path skips xterm's keyboard, so `onData` never
+        // sees it: the dropped project path, the key map's Cmd+Backspace. Fold
+        // it into the same turn the fallback watches, or a dropped path
+        // followed by Enter starts a real turn against a card still reading
+        // `finished` (issue 386). It composes only — the Enter that submits it
+        // comes back through `onData`, which is where the PATCH is decided.
+        runningFallback = noteTerminalWrite(runningFallback, data);
         return ptyApi.write(ptyId, data);
       };
 
@@ -1210,81 +1243,111 @@ export function TerminalPane({
       };
 
       const wireTerminalInput = (ptyId: string) => {
-        term.onData((data) => {
-          // A Reader sends nothing and reports nothing (issue 147). The return
-          // is before the status and prompt-capture side effects deliberately:
-          // they are writes of their own — a `running` patch and a title the
-          // Core's generator would act on — and a pane that may not type into a
-          // Session may not rename it either. In practice `disableStdin` means
-          // typed keys never reach here at all; this covers the paths that do
-          // not come from the keyboard, and the instant between the lock moving
-          // and React re-rendering the option onto the terminal.
-          if (!mayWriteRef.current) return;
-          // Typing while a question is pending moves the TUI highlight under
-          // the overlay's feet — flag it so the overlay stops injecting.
-          // onData also carries terminal-generated replies (focus reports,
-          // query responses) which must NOT count as typing; injected answers
-          // bypass onData entirely. No-op when no question is pending.
-          if (!isTerminalAutoReply(data)) markQuestionDesynced(descriptor.taskId);
-          const usesPromptFallback = harnessUsesTerminalPromptFallback(task.agent);
-          let submittedPrompt: string | null = null;
-          if (usesPromptFallback && !promptTitlePosted) {
-            const captured = accumulateTerminalPrompt(promptCaptureBuffer, data);
-            promptCaptureBuffer = captured.buffer;
-            submittedPrompt = captured.submitted;
-          }
+        // A new pty is a new harness process at a fresh prompt. Anything half
+        // entered against the last one is gone from the screen and must go from
+        // the pane's mirror of it too: a surviving composition makes the first
+        // stray Enter post `running`, and a surviving `pasting` latch swallows
+        // every `\r` for the life of the pane.
+        runningFallback = IDLE_TERMINAL_RUNNING_FALLBACK;
+        promptCaptureBuffer = "";
+        // Disposes whatever the last attach wired before wiring this one, so a
+        // keystroke reaches the PTY exactly once however many times this pane
+        // has tried to attach (issue 393).
+        inputWiring.wire(() => [
+          term.onData((data) => {
+            // A Reader sends nothing and reports nothing (issue 147). The return
+            // is before the status and prompt-capture side effects deliberately:
+            // they are writes of their own — a `running` patch and a title the
+            // Core's generator would act on — and a pane that may not type into a
+            // Session may not rename it either. In practice `disableStdin` means
+            // typed keys never reach here at all; this covers the paths that do
+            // not come from the keyboard, and the instant between the lock moving
+            // and React re-rendering the option onto the terminal.
+            if (!mayWriteRef.current) return;
+            // Typing while a question is pending moves the TUI highlight under
+            // the overlay's feet — flag it so the overlay stops injecting.
+            // onData also carries terminal-generated replies (focus reports,
+            // query responses) which must NOT count as typing; injected answers
+            // bypass onData entirely. No-op when no question is pending.
+            if (!isTerminalAutoReply(data)) markQuestionDesynced(descriptor.taskId);
+            const usesPromptFallback = harnessUsesTerminalPromptFallback(task.agent);
+            let submittedPrompt: string | null = null;
+            if (usesPromptFallback && !promptTitlePosted) {
+              const captured = accumulateTerminalPrompt(promptCaptureBuffer, data);
+              promptCaptureBuffer = captured.buffer;
+              submittedPrompt = captured.submitted;
+            }
 
-          // Cursor CLI still does not fire beforeSubmitPrompt, so Enter is the
-          // per-turn running signal. Re-arm after the task leaves "running"
-          // (stop → finished, needs-input, etc.) so a second prompt in the same
-          // session updates the card again.
-          if (shouldResetTerminalRunningFallback(liveTaskStatusRef.current)) {
-            fallbackRunningPosted = false;
-          }
-          if (!fallbackRunningPosted && terminalInputStartsTurn(task.agent, data, hooksReportTurnStart)) {
-            fallbackRunningPosted = true;
-            void (async () => {
-              try {
-                // Same routing as the exit patch above: a turn-start status is
-                // Core-owned state like any other column on the row.
-                await mutateTaskForCore(descriptor.coreId, {
-                  op: "update",
-                  taskId: descriptor.taskId,
-                  status: "running",
-                });
-                // The prompt patches no column of its own: it only asks a
-                // title generator to name the session. Which generator depends
-                // on who owns the row — the Core's, for a Core-owned Session
-                // (issue 84), reached by the frame that exists because Cursor
-                // never fires `beforeSubmitPrompt` for the Core's own hook
-                // receiver to catch.
-                if (submittedPrompt) {
-                  if (descriptor.coreId && corePtyBridge) {
-                    await corePtyBridge.submitPrompt(descriptor.taskId, submittedPrompt);
-                  } else if (!descriptor.coreId) {
-                    await api.updateTaskStatus(descriptor.taskId, {
-                      prompt: submittedPrompt,
-                    });
-                  }
-                  promptTitlePosted = true;
+            // Cursor CLI still does not fire beforeSubmitPrompt, so a submitted
+            // prompt is the per-turn running signal. "Submitted" is the whole
+            // point of issue 386: the latch re-arms once the task leaves
+            // "running" (stop → finished, needs-input, …) so a second prompt in
+            // the same session updates the card again — but on its own that made
+            // every newline after settlement a new turn, so a stray Enter or a
+            // pasted path resurrected `running`. The fallback now waits for the
+            // operator to actually enter something and submit it.
+            const fallbackStep = advanceTerminalRunningFallback(runningFallback, {
+              data,
+              currentStatus: liveTaskStatusRef.current,
+              hooksReportTurnStart,
+            });
+            runningFallback = fallbackStep.state;
+            if (fallbackStep.postRunning) {
+              void (async () => {
+                try {
+                  // Same routing as the exit patch above: a turn-start status is
+                  // Core-owned state like any other column on the row.
+                  await mutateTaskForCore(descriptor.coreId, {
+                    op: "update",
+                    taskId: descriptor.taskId,
+                    status: "running",
+                  });
+                } catch {
+                  // Only the status mutation un-latches, and only its own catch
+                  // may do it. Sharing one `try` with the title and the cache
+                  // invalidations below meant a title-generator hiccup AFTER a
+                  // successful PATCH cleared the latch anyway — and, because this
+                  // handler re-reads the live value, a late failure from turn N
+                  // could clear a latch turn N+1 had just set.
+                  runningFallback = { ...runningFallback, posted: false };
+                  return;
                 }
-                await Promise.all([
-                  queryClient.invalidateQueries({
-                    queryKey: tasksCacheKey(project.id, descriptor.coreId),
-                  }),
-                  queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
-                  queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
-                ]);
-              } catch {
-                fallbackRunningPosted = false;
-              }
-            })();
-          }
-          if (ptyApi) {
-            ptyApi.write(ptyId, data);
-          }
-        });
-        term.onResize((size) => settledPtyResize.schedule(size));
+                try {
+                  // The prompt patches no column of its own: it only asks a
+                  // title generator to name the session. Which generator depends
+                  // on who owns the row — the Core's, for a Core-owned Session
+                  // (issue 84), reached by the frame that exists because Cursor
+                  // never fires `beforeSubmitPrompt` for the Core's own hook
+                  // receiver to catch.
+                  if (submittedPrompt) {
+                    if (descriptor.coreId && corePtyBridge) {
+                      await corePtyBridge.submitPrompt(descriptor.taskId, submittedPrompt);
+                    } else if (!descriptor.coreId) {
+                      await api.updateTaskStatus(descriptor.taskId, {
+                        prompt: submittedPrompt,
+                      });
+                    }
+                    promptTitlePosted = true;
+                  }
+                  await Promise.all([
+                    queryClient.invalidateQueries({
+                      queryKey: tasksCacheKey(project.id, descriptor.coreId),
+                    }),
+                    queryClient.invalidateQueries({ queryKey: queryKeys.project(project.id) }),
+                    queryClient.invalidateQueries({ queryKey: queryKeys.projects }),
+                  ]);
+                } catch {
+                  // The row is already `running`; a missed title or a stale cache
+                  // is not worth un-latching a turn that did start.
+                }
+              })();
+            }
+            if (ptyApi) {
+              ptyApi.write(ptyId, data);
+            }
+          }),
+          term.onResize((size) => settledPtyResize.schedule(size)),
+        ]);
       };
 
       const wireNewPty = (ptyId: string): boolean => {
@@ -1525,14 +1588,20 @@ export function TerminalPane({
           header tier, and never behind the "…" menu: read-only has to be
           visible *before* a keystroke, and a grid cell narrow enough to fold
           its title away is exactly the cell where a hidden one would be
-          discovered by typing. Rendered only for a Core that announces
-          `multiConnection` — against one that does not there is no lock and no
-          arbitration, so there is nothing here to say. */}
-      {writeState.lock.supported &&
-        (readOnlyReason || writeState.lock.state === "held-by-you") && (
+          discovered by typing. "You hold this Session" is rendered only for a
+          Core that announces `multiConnection` — against one that does not
+          there is no lock to hold. Read-only, and the unanswered-drive notice
+          it replaces (issue 393), are rendered whoever the Core is: a pane that
+          may not type has to say so, and the reason it may not is never that a
+          Core lacks a capability. */}
+      {(readOnlyReason ||
+        awaitingDriveOptimistic ||
+        (writeState.lock.supported && writeState.lock.state === "held-by-you")) && (
           <div
-            data-session-write-access={readOnlyReason ?? "held-by-you"}
-            role={readOnlyReason ? "status" : undefined}
+            data-session-write-access={
+              readOnlyReason ?? (awaitingDriveOptimistic ? "awaiting-drive-optimistic" : "held-by-you")
+            }
+            role={readOnlyReason || awaitingDriveOptimistic ? "status" : undefined}
             style={{
               display: "flex",
               alignItems: "center",
@@ -1553,7 +1622,11 @@ export function TerminalPane({
               style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
               title={readOnlyReason ? readOnlyDetail(readOnlyReason) : undefined}
             >
-              {readOnlyReason ? readOnlyLabel(readOnlyReason) : "You hold this Session"}
+              {readOnlyReason
+                ? readOnlyLabel(readOnlyReason)
+                : awaitingDriveOptimistic
+                  ? AWAITING_DRIVE_OPTIMISTIC_LABEL
+                  : "You hold this Session"}
             </span>
             {/* One affordance per state, and they are not the same gesture. The
                 cross-client one is a force takeover behind a confirmation that
@@ -1569,7 +1642,12 @@ export function TerminalPane({
                 Take over…
               </Btn>
             )}
-            {readOnlyReason === "driven-in-another-tab" && (
+            {/* The same gesture for both Panel-local states, because it is the
+                same gesture: ask this Panel for the keyboard here. One is a
+                keyboard that is somewhere known, the other a keyboard nothing
+                has answered for, and neither costs another client anything. */}
+            {(readOnlyReason === "driven-in-another-tab" ||
+              readOnlyReason === "awaiting-drive") && (
               <Btn
                 variant="ghost"
                 size="sm"
@@ -1581,7 +1659,7 @@ export function TerminalPane({
                 Drive here
               </Btn>
             )}
-            {!readOnlyReason && (
+            {!readOnlyReason && !awaitingDriveOptimistic && (
               <Btn
                 variant="ghost"
                 size="sm"

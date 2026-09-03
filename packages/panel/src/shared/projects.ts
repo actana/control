@@ -1,5 +1,8 @@
-import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
-import { TASK_STATUSES, type Harness } from "@actana/shared/domain";
+import type {
+  CoreLinkProjectSnapshot,
+  CoreLinkTaskSnapshot,
+} from "@actana/sdk/core-link-frames";
+import { TASK_STATUSES, isActiveStatus, isTaskStatus, type Harness } from "@actana/shared/domain";
 import type { Project, ProjectPresentation, TaskStatus } from "~/db/schema";
 
 export type ProjectWithCounts = Project & {
@@ -50,6 +53,72 @@ export function projectSettingsFromSnapshot(
   };
 }
 
+/** The task-count block every project row carries. */
+export type ProjectTaskCounts = ProjectWithCounts["taskCounts"];
+
+/** Every status at zero — a project with no tasks the caller knows of. */
+export function emptyTaskCounts(): ProjectTaskCounts {
+  return {
+    ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
+    total: 0,
+    activeNonDone: 0,
+  };
+}
+
+/**
+ * One project's task counts, derived from the Core's own task snapshots.
+ *
+ * The Core stays the single authority for task status (ADR 0005): this counts
+ * the very rows `tasksList` answers with — the same frame, and so the same
+ * facts, the grid renders from — rather than keeping a second opinion about
+ * what is running. Archived rows travel in their own list (ADR 0019) and are
+ * filtered here too, so the block matches the Panel server's own aggregation
+ * for its own projects (`server/services/projects.ts`): count by status over
+ * the non-archived rows, `total` across all of them, and `activeNonDone` for
+ * the active statuses that are not `finished`.
+ *
+ * A status string a Core names but this Panel does not know still counts
+ * toward `total` — the row exists — but lands in no status bucket, which is
+ * the same degradation the server makes for an unrecognised status.
+ */
+export function taskCountsFromCoreTasks(
+  tasks: readonly CoreLinkTaskSnapshot[],
+): ProjectTaskCounts {
+  const counts = emptyTaskCounts();
+  for (const task of tasks) {
+    if (task.archived) continue;
+    counts.total += 1;
+    if (!isTaskStatus(task.status)) continue;
+    counts[task.status] += 1;
+    if (isActiveStatus(task.status) && task.status !== "finished") counts.activeNonDone += 1;
+  }
+  return counts;
+}
+
+/**
+ * A Core's tasks bucketed into per-project count blocks, keyed by project id.
+ *
+ * One `tasksList(coreId)` answers for every project on that Core, so a surface
+ * showing many of a Core's projects at once — the rail's pinned strip, the
+ * project switcher — reads this once instead of asking per project. Projects
+ * with no tasks are absent from the map; callers fall back to
+ * {@link emptyTaskCounts}, which is what "this project has nothing running"
+ * looks like.
+ */
+export function coreTaskCountsByProject(
+  tasks: readonly CoreLinkTaskSnapshot[],
+): Map<string, ProjectTaskCounts> {
+  const byProject = new Map<string, CoreLinkTaskSnapshot[]>();
+  for (const task of tasks) {
+    const bucket = byProject.get(task.projectId);
+    if (bucket) bucket.push(task);
+    else byProject.set(task.projectId, [task]);
+  }
+  return new Map(
+    [...byProject].map(([projectId, rows]) => [projectId, taskCountsFromCoreTasks(rows)]),
+  );
+}
+
 /**
  * A Core's project snapshot as the row every project surface renders.
  *
@@ -60,15 +129,22 @@ export function projectSettingsFromSnapshot(
  * it those three read as empty, which is exactly right for a project the
  * operator has never filed.
  *
- * The rest — task counts, preview, git remote — the Panel decorates from its
- * own database and a Core snapshot has no answer for, so they take safe
- * defaults rather than inventing Core state. One mapper for every caller: the
- * project page, the rail's pinned strip and Fleet must agree on what a remote
- * project looks like.
+ * Preview and git remote the Panel decorates from its own database and a Core
+ * snapshot has no answer for, so they take safe defaults rather than inventing
+ * Core state. One mapper for every caller: the project page, the rail's pinned
+ * strip and Fleet must agree on what a remote project looks like.
+ *
+ * Task counts are the same kind of fact, and the project frame carries none of
+ * them — but a Core-owned row that always reported zero is why activity dots
+ * never moved for a Core's projects (issue 377). A caller that has already
+ * read the Core's tasks passes the block from {@link coreTaskCountsByProject};
+ * one that has not still gets zeros, so nothing here invents a status the
+ * Core did not report.
  */
 export function projectRowFromSnapshot(
   snapshot: CoreLinkProjectSnapshot,
   presentation?: ProjectPresentation | null,
+  taskCounts?: ProjectTaskCounts | null,
 ): ProjectWithCounts {
   return {
     id: snapshot.projectId,
@@ -86,11 +162,7 @@ export function projectRowFromSnapshot(
     ...projectSettingsFromSnapshot(snapshot),
     createdAt: snapshot.updatedAt,
     updatedAt: snapshot.updatedAt,
-    taskCounts: {
-      ...(Object.fromEntries(TASK_STATUSES.map((s) => [s, 0])) as Record<TaskStatus, number>),
-      total: 0,
-      activeNonDone: 0,
-    },
+    taskCounts: taskCounts ?? emptyTaskCounts(),
     preview: null,
     githubUrl: null,
     repoKey: null,
