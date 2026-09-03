@@ -298,3 +298,91 @@ amendment deliberately leaves the start return path alone, so #395 still has to
 decide what a `start` promises about readiness. What it gains is a Core that no
 longer claims a prompt was delivered when it was not, which is the fact any
 client-side answer has to be built on.
+
+## Amendment — issue 395 (2026-09-03)
+
+**A Session that is *running* is not yet a Session that can take a `send`, and
+`session start` now has a way to say which one it is returning.** The two facts
+were never distinguished. `start` returns when the Core has spawned the harness
+(#129 D6), which is before the composer is painted, often before the trust
+dialog is drawn, and always before the Core has begun typing. The operator's
+next line is the one that pays:
+
+    SID=$(actana session start web "fix it")
+    actana session send $SID continue --enter
+
+The keystrokes land on a dialog or in a terminal that is not reading yet, and
+the harness discards them — together with the starting prompt sitting in the
+same buffer, which is how one command loses two messages and reports success
+for both.
+
+**What changes.** Nothing about when a bare `start` returns: hanging up before
+delivery is right, because delivery runs on the harness's clock and the
+amendment above gives opencode ninety seconds of it. What changes is that the
+silence stops reading as readiness.
+
+- The Core appends **`session:promptDelivered`** — Task, PTY, character count
+  and how long it waited, never the prompt — from inside
+  `HarnessPromptDelivery.submit`. It is the positive twin of
+  `session:promptAbandoned`, and it had to exist for the reason issue 483 did
+  not need it to: 483 read a *loss* off a row, and could treat the absence of
+  one as delivery because it had already waited for a turn to end. A start has
+  not. There, "no abandon row" and "the composer is still not up" are the same
+  silence, so a command that read the first as delivery would be claiming a
+  readiness nobody established.
+- **`session start --await-prompt`** and `session resume --await-prompt` block
+  until the Core says which of the two it was, print the Session id as usual,
+  and exit zero on `delivered` and non-zero on `abandoned`. That is the
+  "documented wait" the issue asks for, and after it a `send` is safe: a
+  delivered prompt is a composer that was seen on screen, written into, and —
+  where the harness confirms echo — seen to hold the text.
+- Without the flag, `start` **says so** rather than implying otherwise: a line
+  on stderr naming the gap and the flag, and `promptDelivered: null` on the
+  `--json` object. `null` and not `false` — the prompt is not lost, it is
+  unadjudicated, and a `false` would be a verdict nobody reached.
+
+**Delivery is the readiness signal, and there is no second one.** #191 deleted
+the last client-side timer that guessed at a harness being ready, and D3 above
+is why: only the Core sees the screen, and a client inferring readiness from
+quietness or from bytes is the 450 ms nudge with a new name. So the gate is the
+Core's own verdict on a prompt it actually typed, not a Core-side "composer
+ready" broadcast — a marker-less harness has no such moment to broadcast, and
+inventing one for it would be a claim rather than a report. It follows that a
+start with **no** prompt cannot use the flag, and it is refused rather than
+answered with an instant, meaningless success.
+
+**No clock is added on the client, and none is needed.** `packages/cli` ships
+no scheduler on any path that reaches a harness's stdin
+(`no-prompt-timing.test.ts`), and this wait does not want one: it ends on one of
+the Core's three answers — delivered, abandoned at that harness's own
+`composerWaitMs` ceiling, or the row `pty-manager` appends when the PTY dies
+mid-delivery — or on the connection carrying them going down, which the latch
+hears from `onDisconnected`. `--wait-timeout` is therefore refused with
+`--await-prompt`: a second deadline could only end the wait early, with nothing
+to report except that it had.
+
+**The event-ordering discipline the 483 amendment recorded applies unchanged,
+and one clause of it is new.** The latch is still opened before the session
+exists and still takes a floor, because the delivered row is as durable and as
+replayable as the abandoned one — a resume of a Session that once lost its
+prompt must not read that old row as this start's verdict. What the positive row
+adds is a *third* ordering: it is appended in the same synchronous tick as the
+carriage return that submits the prompt, so it is in the log before the event
+loop can carry a byte of the harness's reply, and therefore strictly before any
+status the turn it starts eventually produces. A delivery row behind the status
+would be as unreadable as the reason row behind it was.
+
+**A latch with no floor now says so instead of answering.** The observation left
+by the review of PR #487 — that `openPromptDeliveryLatch` depends on having
+caused the `subscribe`, and would hold every row for ever on a client that
+arrived already subscribed — was survivable while the answer was a silent
+`null`. It is not survivable for a wait, which would simply never end. The latch
+records that it cannot judge and reports `unavailable`; `openSessionGateway`,
+which builds one fresh client per gateway, is where the invariant is kept.
+
+**`session send` is not gated, and the contract is still the same on both
+sides.** The issue offers the choice — gate the start, or gate the send — and
+gating the start is the one that can be honest: a send is a raw write by design
+(#404), the Core adds no delivery machinery to it, and there is nothing there to
+report. A caller that wants to know its send will be read waits on the start
+that precedes it.
