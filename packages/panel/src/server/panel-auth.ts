@@ -1,5 +1,5 @@
 import { jsonError } from "./http-responses";
-import { LOGIN_PATH, SETUP_PATH } from "~/lib/auth-paths";
+import { LOGIN_PATH, SETUP_PATH, withCarriedQuery } from "~/lib/auth-paths";
 import { HTTP_UNAUTHORIZED } from "~/shared/http-status";
 import { operatorExists } from "./services/operator";
 import {
@@ -75,10 +75,19 @@ export function readPanelAuthState(request: Request): PanelAuthState {
   return { needsSetup: false, session: resolvePanelSession(readSessionCookie(request)) };
 }
 
-function redirectTo(pathname: string): Response {
+/**
+ * A 303 to `pathname`, carrying `search` — the query the browser asked with —
+ * onto it.
+ *
+ * Every redirect in this gate passes through here with the incoming query,
+ * because a gate that answers `/?step=redeem` with a bare `/login` has thrown
+ * away the only thing the request said (#406). `withCarriedQuery` re-encodes
+ * the value, so nothing an attacker puts in a query can break the header.
+ */
+function redirectTo(pathname: string, search: string): Response {
   return new Response(null, {
     status: 303,
-    headers: { location: pathname, "cache-control": "no-store" },
+    headers: { location: withCarriedQuery(pathname, search), "cache-control": "no-store" },
   });
 }
 
@@ -94,8 +103,14 @@ function redirectTo(pathname: string): Response {
 export function documentAuthRedirect(request: Request): Response | null {
   if (!request.headers.get("accept")?.includes("text/html")) return null;
   let pathname: string;
+  let search: string;
   try {
-    pathname = new URL(request.url).pathname;
+    const url = new URL(request.url);
+    pathname = url.pathname;
+    // The pairing query travels with the browser through the whole round trip
+    // — out to setup or login and back again — rather than being dropped here
+    // and reconstructed from somewhere else later.
+    search = url.search;
   } catch {
     return null;
   }
@@ -104,14 +119,14 @@ export function documentAuthRedirect(request: Request): Response | null {
   const { needsSetup, session } = readPanelAuthState(request);
   if (pathname === SETUP_PATH) {
     if (needsSetup) return null;
-    return redirectTo(session ? "/" : LOGIN_PATH);
+    return redirectTo(session ? "/" : LOGIN_PATH, search);
   }
   if (pathname === LOGIN_PATH) {
-    if (needsSetup) return redirectTo(SETUP_PATH);
-    return session ? redirectTo("/") : null;
+    if (needsSetup) return redirectTo(SETUP_PATH, search);
+    return session ? redirectTo("/", search) : null;
   }
   if (session) return null;
-  return redirectTo(needsSetup ? SETUP_PATH : LOGIN_PATH);
+  return redirectTo(needsSetup ? SETUP_PATH : LOGIN_PATH, search);
 }
 
 /** The gate every authenticated surface goes through. */

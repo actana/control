@@ -298,6 +298,86 @@ describe("the served UI", () => {
     // The login page has to be able to load its own JavaScript.
     expect(documentAuthRedirect(request("/assets/index.js"))).toBeNull();
   });
+
+  /**
+   * The gate is the first thing the documented Compose link meets, and for a
+   * long time it was where the link died: `?step=redeem` went in and a bare
+   * `/setup` came out, so the wizard opened on step 1 having been asked for
+   * step 3 (#406). Every hop is checked, because a browser on a fresh Panel
+   * makes two of them before a page renders.
+   */
+  describe("the pairing query", () => {
+    const REDEEM = "?step=redeem";
+
+    it("rides out to setup on first boot", () => {
+      expect(documentAuthRedirect(navigate(`/${REDEEM}`))?.headers.get("location")).toBe(
+        `/setup${REDEEM}`,
+      );
+    });
+
+    it("rides out to login once an Operator exists", async () => {
+      await setup();
+      expect(documentAuthRedirect(navigate(`/${REDEEM}`))?.headers.get("location")).toBe(
+        `/login${REDEEM}`,
+      );
+      // And on the hop that closes setup behind the first Operator.
+      expect(documentAuthRedirect(navigate(`/setup${REDEEM}`))?.headers.get("location")).toBe(
+        `/login${REDEEM}`,
+      );
+    });
+
+    it("rides home again for a browser that is already signed in", async () => {
+      const cookie = sessionCookieFrom(await setup());
+      expect(
+        documentAuthRedirect(navigate(`/login${REDEEM}`, cookie))?.headers.get("location"),
+      ).toBe(`/${REDEEM}`);
+      expect(
+        documentAuthRedirect(navigate(`/setup${REDEEM}`, cookie))?.headers.get("location"),
+      ).toBe(`/${REDEEM}`);
+    });
+
+    it("keeps the rest of the query with it", async () => {
+      await setup();
+      expect(
+        documentAuthRedirect(navigate("/?step=redeem&label=my-panel"))?.headers.get("location"),
+      ).toBe("/login?step=redeem&label=my-panel");
+    });
+
+    /**
+     * The gate drops the path and keeps the query, so a deep route's parameters
+     * would otherwise arrive on a shallower one (#490 review B1). `coreId`
+     * belongs to `/projects/$id` alone, and `__root.tsx` reads it off every
+     * route — on `/` it scopes the whole shell to a Core the operator did not
+     * navigate to. A plain reload of an expired session is the path in, so the
+     * gate has to be the place it is stopped, not only the two pages.
+     */
+    it("leaves a deep route's own parameters behind", async () => {
+      await setup();
+      expect(
+        documentAuthRedirect(navigate("/projects/p1?coreId=core-b"))?.headers.get("location"),
+      ).toBe("/login");
+      // …and the pairing query still rides, from the same URL.
+      expect(
+        documentAuthRedirect(navigate("/projects/p1?coreId=core-b&step=redeem"))?.headers.get(
+          "location",
+        ),
+      ).toBe("/login?step=redeem");
+    });
+
+    /**
+     * The carried value reaches a response header, so it is re-encoded rather
+     * than pasted through: a CR or LF in the query must not be able to end the
+     * `Location` line and start one of its own.
+     */
+    it("cannot smuggle a second header out of the query", async () => {
+      await setup();
+      const location = documentAuthRedirect(
+        navigate("/?step=redeem%0d%0aSet-Cookie:%20stolen=1"),
+      )?.headers.get("location");
+      expect(location).not.toMatch(/[\r\n]/);
+      expect(location).toBe("/login?step=redeem%0D%0ASet-Cookie%3A+stolen%3D1");
+    });
+  });
 });
 
 describe("restart", () => {
