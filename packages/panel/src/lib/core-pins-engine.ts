@@ -66,8 +66,24 @@ let lastCountsByCore = new Map<string, Map<string, ProjectTaskCounts>>();
  * (issue 382). See {@link applyCorePinFiling}: it is an overlay on top of the
  * presentation the server answers with, held only for the length of the write
  * plus the read that confirms it.
+ *
+ * Each entry carries the token of the write that put it there, so a settle can
+ * only ever take down its own gesture's overlay. Two quick Shift+Arrows overlap
+ * — the guard is released before the settle deliberately, so the second key is
+ * not swallowed — and without the token the first gesture's settle would delete
+ * the second gesture's overlay while its write was still in flight (#382 review
+ * round 2).
  */
-let pendingFiling = new Map<string, CorePinFiling>();
+let pendingFiling = new Map<string, PendingFiling>();
+let filingToken = 0;
+/**
+ * The presentation the last pass actually read.
+ *
+ * Two callers need it. A failed read is not an answer of "no filing" — see the
+ * pass below — and {@link settleCorePinFiling} needs something confirmed to put
+ * on screen when it takes an overlay down over a write that failed.
+ */
+let lastPresentation: ReadonlyMap<string, ProjectPresentation> = new Map();
 let teardown: (() => void) | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -88,6 +104,9 @@ function publish(next: ProjectWithCounts[]): void {
  * Panel's to answer for and neither waits on a Core.
  */
 export type CorePinFiling = { pinnedOrder?: number; groupId?: string | null };
+
+/** {@link CorePinFiling} plus the write that owns it. See `pendingFiling`. */
+type PendingFiling = CorePinFiling & { token: number };
 
 /**
  * Join the Panel's own filing onto a row the Core answered for.
@@ -187,12 +206,17 @@ const run = createCoalescingRunner(async () => {
     // Panel-local presentation for a Core-owned project (issue 98) — read once
     // for the whole fan-out rather than per Core. A failed read only costs the
     // filing, so the pins still render.
-    const presentation = projectPresentationById(
-      await api
-        .listProjectPresentation()
-        .then((r) => r.presentation)
-        .catch(() => []),
-    );
+    const rows = await api
+      .listProjectPresentation()
+      .then((r) => r.presentation)
+      .catch(() => null);
+    // A failed read is not "there is no filing". Degrading it to an empty
+    // answer files every row as null, which since #382 includes the rail slot —
+    // so one API blip sent the whole Core half of the rail to the end of it,
+    // remembered rows for a disconnected Core included, with no toast. Hold the
+    // last answer instead and let the next pass correct it (#478 item 3).
+    const presentation = rows === null ? lastPresentation : projectPresentationById(rows);
+    lastPresentation = presentation;
     const perCore = await Promise.all(current.map((core) => readCore(core, presentation)));
     publish(perCore.flat());
     return true;
@@ -272,14 +296,16 @@ export function refreshCorePins(): void {
  * the key went down and the tile did not move.
  *
  * The overlay outranks the server's answer for as long as it is held, so a poll
- * landing mid-write repaints nothing. Hand the same ids to
- * {@link settleCorePinFiling} when the write is done, whether it succeeded or
- * failed — that is what takes the overlay back off.
+ * landing mid-write repaints nothing. Hand the returned token and the same ids
+ * to {@link settleCorePinFiling} when the write is done, whether it succeeded
+ * or failed — that is what takes the overlay back off, and the token is what
+ * stops it taking down a later gesture's overlay instead.
  */
-export function applyCorePinFiling(filing: ReadonlyMap<string, CorePinFiling>): void {
-  if (filing.size === 0) return;
+export function applyCorePinFiling(filing: ReadonlyMap<string, CorePinFiling>): number {
+  const token = ++filingToken;
+  if (filing.size === 0) return token;
   for (const [projectId, patch] of filing) {
-    pendingFiling.set(projectId, { ...pendingFiling.get(projectId), ...patch });
+    pendingFiling.set(projectId, { ...pendingFiling.get(projectId), ...patch, token });
   }
   publish(
     snapshot.map((row) => {
@@ -292,20 +318,50 @@ export function applyCorePinFiling(filing: ReadonlyMap<string, CorePinFiling>): 
       };
     }),
   );
+  return token;
 }
 
 /**
- * Drop an overlay {@link applyCorePinFiling} put up, once a read has been given
- * the chance to replace it.
+ * Drop an overlay {@link applyCorePinFiling} put up, behind a read that has
+ * actually happened, and put the read's answer on screen in its place.
  *
- * The read runs first and publishes rows that already carry the confirmed
- * filing, so removing the overlay afterwards changes nothing on screen on the
- * happy path. On a failed write the same read is what puts the truth back.
+ * `run.fresh()` rather than `run()`, and the difference is the whole of this.
+ * The plain runner coalesces: with a pass already in flight — the 15s poll, a
+ * reconnect, or any task, session, PTY or project-list event, so continuously
+ * on a live fleet — it records the request and resolves having read nothing.
+ * The overlay then came down while a pass that had read the table *before* the
+ * write was still fanning out, and that pass repainted the tile back where the
+ * gesture found it for the rest of the fan-out (#382 review round 2).
+ *
+ * Then republish. The read alone is not enough on the failure path: the pass
+ * runs with the overlay still up, so it publishes the optimistic slots, and
+ * deleting the entries afterwards changes no row. The Panel half of the rail
+ * reverts with the query cache and the Core half kept the order nobody chose
+ * until the next pass. Re-filing the settled rows from the presentation that
+ * pass read is what makes both halves agree again — and on the happy path it is
+ * the same values, so `sameSnapshot` makes it a no-op.
+ *
+ * `token` is the one {@link applyCorePinFiling} returned. An entry a later
+ * gesture has taken over is left alone: that write is still in flight.
  */
-export async function settleCorePinFiling(projectIds: readonly string[]): Promise<void> {
+export async function settleCorePinFiling(
+  projectIds: readonly string[],
+  token: number,
+): Promise<void> {
   if (projectIds.length === 0) return;
-  await run();
-  for (const projectId of projectIds) pendingFiling.delete(projectId);
+  await run.fresh();
+  const settled = new Set<string>();
+  for (const projectId of projectIds) {
+    if (pendingFiling.get(projectId)?.token !== token) continue;
+    pendingFiling.delete(projectId);
+    settled.add(projectId);
+  }
+  if (settled.size === 0) return;
+  publish(
+    snapshot.map((row) =>
+      settled.has(row.id) ? withFiling(row, lastPresentation.get(row.id)) : row,
+    ),
+  );
 }
 
 export function getCorePinsSnapshot(): ProjectWithCounts[] {

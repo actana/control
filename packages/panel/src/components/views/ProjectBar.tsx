@@ -422,7 +422,7 @@ export const ProjectBar = memo(function ProjectBar({
       // rows in this query cache, a Core's pins in the fleet engine's module
       // snapshot. Both are applied before the first await, so the render that
       // follows the drop draws the order the operator just made.
-      applyCorePinFiling(corePinFiling);
+      const filingToken = applyCorePinFiling(corePinFiling);
       queryClient.setQueryData<ProjectWithCounts[]>(
         queryKeys.projects,
         (current) =>
@@ -488,7 +488,17 @@ export const ProjectBar = memo(function ProjectBar({
         // should have their next Shift+Arrow swallowed waiting for it. The
         // read is what confirms the write on the happy path and what corrects
         // the rail on a failed one, so this runs either way.
-        void settleCorePinFiling([...corePinFiling.keys()]);
+        //
+        // `saveSeq` cannot guard this — it is released above, on purpose — so
+        // the token does instead: a gesture only ever settles the overlay it
+        // put up, and a second Shift+Arrow that has already replaced it keeps
+        // its own until its own write is done. The `catch` is not decoration
+        // either: a rejection here would strand `pendingFiling` and the engine
+        // would ignore the server's filing for those ids for the life of the
+        // tab (#382 review round 2).
+        void settleCorePinFiling([...corePinFiling.keys()], filingToken).catch(
+          () => undefined,
+        );
       }
     },
     [coreIdByProject, invalidateProjects, queryClient, sortedPinned],

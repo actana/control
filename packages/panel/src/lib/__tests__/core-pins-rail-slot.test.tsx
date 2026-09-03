@@ -41,6 +41,15 @@ const h = vi.hoisted(() => ({
   presentation: [] as ProjectPresentation[],
   projects: [] as CoreLinkProjectSnapshot[],
   dialState: "connected" as string,
+  /**
+   * Holds the NEXT presentation read open, so a test can have a pass genuinely
+   * in flight while it does something else. The rows are snapshotted before the
+   * wait, which is the point: the held pass answers with the table as it stood
+   * when it read, not as it stands when it is let go.
+   */
+  readGate: null as Promise<void> | null,
+  releaseRead: null as (() => void) | null,
+  failRead: false,
 }));
 
 function project(projectId: string, pinned = true): CoreLinkProjectSnapshot {
@@ -89,7 +98,12 @@ vi.mock("~/lib/api", () => ({
     }),
     listProjectPresentation: async () => {
       h.presentationReads++;
-      return { presentation: h.presentation.map((row) => ({ ...row })) };
+      if (h.failRead) throw new Error("presentation read failed");
+      const rows = h.presentation.map((row) => ({ ...row }));
+      const gate = h.readGate;
+      h.readGate = null;
+      if (gate) await gate;
+      return { presentation: rows };
     },
   },
 }));
@@ -128,10 +142,30 @@ function slotOf(projects: readonly ProjectWithCounts[], projectId: string): numb
   return projects.find((p) => p.id === projectId)?.pinnedOrder ?? null;
 }
 
+/** Arm `h.readGate`; the returned function lets the held read answer. */
+function holdNextRead(): () => void {
+  let release = () => {};
+  h.readGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  h.releaseRead = release;
+  return release;
+}
+
+/** Let every queued microtask drain, without asserting anything about them. */
+async function drain(): Promise<void> {
+  await act(async () => {
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+  });
+}
+
 beforeEach(() => {
   h.dialHandlers.clear();
   h.presentationReads = 0;
   h.dialState = "connected";
+  h.readGate = null;
+  h.releaseRead = null;
+  h.failRead = false;
   h.projects = [project("p-one"), project("p-two")];
   h.presentation = [
     filed({ projectId: "p-one", pinnedOrder: 0 }),
@@ -140,6 +174,12 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // A read left held would leave the engine's coalescing loop running forever,
+  // and it is module state — every later test in this file would then wait on
+  // a pass that never ends. Let go of it whatever the test did.
+  h.releaseRead?.();
+  h.releaseRead = null;
+  h.readGate = null;
   // The engine is module state refcounted by its subscribers, so every test
   // has to hand its mounts back — the last one leaving is what resets it.
   cleanup();
@@ -202,8 +242,9 @@ describe("a Core-owned pin's rail slot", () => {
     const { result } = renderHook(() => useRemotePinnedProjects());
     await waitFor(() => expect(result.current.projects).toHaveLength(2));
 
+    let token = 0;
     await act(async () => {
-      applyCorePinFiling(new Map([["p-two", { pinnedOrder: 0 }]]));
+      token = applyCorePinFiling(new Map([["p-two", { pinnedOrder: 0 }]]));
     });
     // The write lands.
     h.presentation = [
@@ -211,7 +252,7 @@ describe("a Core-owned pin's rail slot", () => {
       filed({ projectId: "p-two", pinnedOrder: 0 }),
     ];
     await act(async () => {
-      await settleCorePinFiling(["p-two"]);
+      await settleCorePinFiling(["p-two"], token);
     });
 
     expect(slotOf(result.current.projects, "p-two")).toBe(0);
@@ -274,5 +315,165 @@ describe("a Core-owned pin's rail slot", () => {
     // Core facts are still the remembered ones — nothing here invented a read
     // of a Core that is not there.
     expect(result.current.projects.find((p) => p.id === "p-two")?.name).toBe("p-two");
+  });
+
+  it("does not take the overlay down until a read that started after the settle has landed", async () => {
+    const { result } = renderHook(() => useRemotePinnedProjects());
+    await waitFor(() => expect(result.current.projects).toHaveLength(2));
+
+    let token = 0;
+    await act(async () => {
+      token = applyCorePinFiling(
+        new Map([
+          ["p-two", { pinnedOrder: 0 }],
+          ["p-one", { pinnedOrder: 1 }],
+        ]),
+      );
+    });
+    expect(slotOf(result.current.projects, "p-two")).toBe(0);
+
+    // A pass is ALREADY in flight when the writes come back — started by the
+    // poll, by a reconnect, or by any task, session, PTY or project-list event,
+    // which on a fleet with a live session is continuous. Its read was taken
+    // before the write landed, so it is carrying the old slots.
+    const release = holdNextRead();
+    await act(async () => {
+      result.current.refresh();
+      await Promise.resolve();
+    });
+
+    // The write lands on the server while that pass is still fanning out.
+    h.presentation = [
+      filed({ projectId: "p-one", pinnedOrder: 1 }),
+      filed({ projectId: "p-two", pinnedOrder: 0 }),
+    ];
+
+    let settled = false;
+    const settle = settleCorePinFiling(["p-two", "p-one"], token).then(() => {
+      settled = true;
+    });
+    await drain();
+    // The finding: `await run()` resolved here on the next microtask, having
+    // read nothing, because the coalescing runner records a request it cannot
+    // serve rather than serving it. The overlay came down under a pass that had
+    // read the table before the write.
+    expect(settled).toBe(false);
+    expect(slotOf(result.current.projects, "p-two")).toBe(0);
+
+    await act(async () => {
+      release();
+      await settle;
+    });
+
+    // The stale pass landed, the fresh one behind it corrected the rail, and
+    // the tile the operator moved never went back to where they found it.
+    expect(settled).toBe(true);
+    expect(slotOf(result.current.projects, "p-two")).toBe(0);
+    expect(slotOf(result.current.projects, "p-one")).toBe(1);
+  });
+
+  it("puts the server's order back when the write it was optimistic about failed", async () => {
+    const { result } = renderHook(() => useRemotePinnedProjects());
+    await waitFor(() => expect(result.current.projects).toHaveLength(2));
+
+    let token = 0;
+    await act(async () => {
+      token = applyCorePinFiling(
+        new Map([
+          ["p-two", { pinnedOrder: 0 }],
+          ["p-one", { pinnedOrder: 1 }],
+        ]),
+      );
+    });
+    expect(slotOf(result.current.projects, "p-two")).toBe(0);
+
+    // `reorderPinnedProjects` refused the move — another tab unpinning a Panel
+    // row is enough. Nothing was written: the table still reads the way it did.
+    await act(async () => {
+      await settleCorePinFiling(["p-two", "p-one"], token);
+    });
+
+    // The Panel half of the rail reverts with the query cache and the toast
+    // says the move failed, so the Core half has to revert too. It did not: the
+    // settle read with the overlay still up, published the optimistic slots,
+    // then deleted the entries and published nothing — leaving the operator an
+    // order nobody chose until the next pass, up to a poll tick away.
+    expect(slotOf(result.current.projects, "p-two")).toBe(1);
+    expect(slotOf(result.current.projects, "p-one")).toBe(0);
+  });
+
+  it("lets an earlier gesture's settle alone with a later gesture's overlay", async () => {
+    const { result } = renderHook(() => useRemotePinnedProjects());
+    await waitFor(() => expect(result.current.projects).toHaveLength(2));
+
+    // Two Shift+Arrows in quick succession. The gesture guard is released
+    // before the settle on purpose — the second key must not be swallowed — so
+    // the first gesture's settle can resolve after the second has overlaid its
+    // own slot, with that second write still in flight.
+    let first = 0;
+    let second = 0;
+    await act(async () => {
+      first = applyCorePinFiling(new Map([["p-two", { pinnedOrder: 0 }]]));
+      second = applyCorePinFiling(new Map([["p-two", { pinnedOrder: 5 }]]));
+    });
+    expect(slotOf(result.current.projects, "p-two")).toBe(5);
+
+    await act(async () => {
+      await settleCorePinFiling(["p-two"], first);
+    });
+    expect(slotOf(result.current.projects, "p-two")).toBe(5);
+
+    // And it is a live overlay that was left, not a leftover value: a read
+    // landing now still does not get to repaint the tile.
+    h.presentation = [
+      filed({ projectId: "p-one", pinnedOrder: 0 }),
+      filed({ projectId: "p-two", pinnedOrder: 9 }),
+    ];
+    await act(async () => {
+      result.current.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(slotOf(result.current.projects, "p-two")).toBe(5);
+
+    // The second gesture's own settle is what takes it down.
+    await act(async () => {
+      await settleCorePinFiling(["p-two"], second);
+    });
+    await waitFor(() => expect(slotOf(result.current.projects, "p-two")).toBe(9));
+  });
+
+  it("holds the rail still when the presentation read fails", async () => {
+    const { result } = renderHook(() => useRemotePinnedProjects());
+    await waitFor(() => expect(result.current.projects).toHaveLength(2));
+    expect(slotOf(result.current.projects, "p-two")).toBe(1);
+
+    h.failRead = true;
+    const readsBefore = h.presentationReads;
+    await act(async () => {
+      result.current.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    await waitFor(() => expect(h.presentationReads).toBeGreaterThan(readsBefore));
+
+    // Degrading a failed read to an empty answer files every row null, and null
+    // is last to the comparator — so one API blip sent the whole Core half of
+    // the rail to the end of it, with no toast (#478 item 3).
+    expect(slotOf(result.current.projects, "p-one")).toBe(0);
+    expect(slotOf(result.current.projects, "p-two")).toBe(1);
+
+    // Same again for a Core that is off the link, which is the case #382's own
+    // fix newly exposed: its rows are remembered, and their filing is now
+    // re-read every pass rather than baked in.
+    await dial("unreachable");
+    await act(async () => {
+      result.current.refresh();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(result.current.projects).toHaveLength(2);
+    expect(slotOf(result.current.projects, "p-one")).toBe(0);
+    expect(slotOf(result.current.projects, "p-two")).toBe(1);
   });
 });

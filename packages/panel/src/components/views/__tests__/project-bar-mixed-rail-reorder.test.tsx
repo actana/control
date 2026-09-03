@@ -76,11 +76,20 @@ const updateProjectPresentation = vi.fn(
     return { presentation: {} };
   },
 );
+/**
+ * The real setter hands back a token naming the write that put the overlay up,
+ * and the real settle refuses to take down an overlay a later gesture has taken
+ * over. The mock counts the same way, so the rail's half of that contract — it
+ * must settle with the token its OWN `applyCorePinFiling` returned — is
+ * observable here (#382 review round 2).
+ */
+let filingTokens = 0;
 const applyCorePinFiling = vi.fn((filing: ReadonlyMap<string, CorePinFiling>) => {
   writeLog.push("applyCorePinFiling");
   corePinsStore.applyFiling(filing);
+  return ++filingTokens;
 });
-const settleCorePinFiling = vi.fn(async (_projectIds: readonly string[]) => {
+const settleCorePinFiling = vi.fn(async (_projectIds: readonly string[], _token: number) => {
   writeLog.push("settleCorePinFiling");
 });
 const refreshRemotePinned = vi.fn();
@@ -166,7 +175,7 @@ vi.mock("~/lib/use-fleet", () => ({
 }));
 vi.mock("~/lib/core-pins-engine", () => ({
   applyCorePinFiling: (filing: ReadonlyMap<string, CorePinFiling>) => applyCorePinFiling(filing),
-  settleCorePinFiling: (ids: readonly string[]) => settleCorePinFiling(ids),
+  settleCorePinFiling: (ids: readonly string[], token: number) => settleCorePinFiling(ids, token),
 }));
 vi.mock("~/lib/mutate-project-for-core", () => ({
   mutateProjectForCore: (coreId: string | null | undefined, mutation: Record<string, unknown>) =>
@@ -523,6 +532,11 @@ describe("ProjectBar reorder on a mixed rail", () => {
     expect(settleCorePinFiling).toHaveBeenCalledTimes(1);
     expect(settleCorePinFiling.mock.calls[0]![0]).toEqual([CORE_ONE.id, CORE_TWO.id]);
     expect(writeLog[writeLog.length - 1]).toBe("settleCorePinFiling");
+    // With the token this gesture's own setter returned, not a bare id list:
+    // the gesture guard is released before the settle, so a second Shift+Arrow
+    // can have replaced the overlay by the time this runs and only the token
+    // keeps this settle off it.
+    expect(settleCorePinFiling.mock.calls[0]![1]).toBe(applyCorePinFiling.mock.results[0]!.value);
   });
 
   it("never sends a Core id to the Panel-only project PATCH", async () => {
@@ -566,6 +580,7 @@ describe("ProjectBar reorder on a mixed rail", () => {
     expect(reorderCorePinnedProjects).not.toHaveBeenCalled();
     expect(applyCorePinFiling.mock.calls[0]![0].size).toBe(0);
     expect(settleCorePinFiling.mock.calls[0]![0]).toEqual([]);
+    expect(settleCorePinFiling.mock.calls[0]![1]).toBe(applyCorePinFiling.mock.results[0]!.value);
     expect(toastError).not.toHaveBeenCalled();
   });
 
