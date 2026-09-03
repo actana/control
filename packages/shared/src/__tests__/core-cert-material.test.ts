@@ -6,6 +6,7 @@ import {
   generateCertMaterial,
   issueServerCert,
   generateClientCsr,
+  randomSerial,
   signClientCsr,
 } from "../core-cert-material";
 
@@ -318,6 +319,26 @@ describe("signing a client CSR against the Core's CA", () => {
     expect(a.serial).not.toBe(b.serial);
     // Positive, per RFC 5280 §4.1.2.2 — the top bit of the first byte is clear.
     expect(parseInt(a.serial.slice(0, 2), 16)).toBeLessThan(0x80);
+    // And the whole 16 bytes came back. A serial minted with a leading zero
+    // byte returns a byte shorter than it went in, because DER writes an
+    // INTEGER minimally and the reader strips the pad — see `randomSerial`.
+    for (const serial of [a.serial, b.serial]) expect(serial).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it("never mints a serial the certificate would hand back shortened", () => {
+    // The property, drawn often enough to bite. Signing a certificate per draw
+    // would take minutes; the issuances above already pin that the serial the
+    // certificate reports is the serial `randomSerial` produced, and this pins
+    // that every draw is a serial that survives that round trip: 16 bytes, top
+    // bit of the first clear so the INTEGER is positive, and the first byte
+    // never 0x00 so nothing is stripped off the front of it.
+    for (let i = 0; i < 5000; i++) {
+      const serial = randomSerial();
+      expect(serial).toMatch(/^[0-9a-f]{32}$/);
+      const first = parseInt(serial.slice(0, 2), 16);
+      expect(first).toBeGreaterThan(0x00);
+      expect(first).toBeLessThan(0x80);
+    }
   });
 
   it("mints a client CSR whose private key it hands back and never embeds", async () => {
