@@ -46,3 +46,46 @@ Project's files are not presentation.** `project_presentation` holds the Panel
 operator's own filing of somebody else's Project — group, card image, launch URL
 — and a Project's disk is the opposite kind of thing. Nothing about the file
 view is stored on the Panel at all.
+
+## Amended by #382 — the rail slot is a fourth presentation field
+
+This ADR names exactly three presentation fields: group, card image, launch URL.
+A fourth joins them, on the same reasoning and with one addition of its own:
+**where a Core-owned pin sits on the Panel's rail.**
+
+The rail is one strip of tiles holding this Panel's own pins and the pins of
+every Core it is connected to. Reordering it wrote through `PATCH
+/api/projects/pinned-order`, which validates the order it is given against the
+Panel's `projects` table — so a rail with any Core pin on it was rejected
+whole, and the drag sprang back with a toast. Dragging a Core pin into another
+group failed the same way and for the reason this ADR already gives: `PATCH
+/api/projects/:id` has no row to write.
+
+The group half needed no decision — it is presentation, filed exactly as
+`saveProjectEdits` already files it. The position needed one, because pin state
+itself *is* a Core fact (ADR 0005, and **Pinned Task / Pinned Project** in
+`CONTEXT.md`), so the obvious symmetric answer was a new core-link op writing
+`projects.pinned_order` on the Core. That was rejected: **the rail spans
+Cores.** A slot number in a sequence that interleaves three machines' pins with
+the Panel's own is not a fact any one of those machines can hold — two Cores
+would each believe they owned slot 2, and the merged list would sort by
+whichever row happened to be created first. Whether a Project is pinned stays
+Core-owned and unchanged; only its position among the pins is Panel-local, and
+that is the operator's filing of somebody else's Project in exactly the sense
+this ADR already means.
+
+One consequence is worth stating because it constrains both write paths: the
+two halves share **one numbering space**. A reorder sends the whole rail to
+`PATCH /api/projects/pinned-order`, which now numbers its own rows by their
+index in that rail and skips ids belonging to no row here, and sends the same
+indices for the Core-owned rows to `PATCH
+/api/project-presentation/pinned-order`. Numbering each owner densely over its
+own rows would have left no integer free to place a Core's pin *between* two of
+the Panel's, which is the ordinary shape of a mixed rail.
+
+The read side keeps the shape this ADR set: one presentation list, joined
+client-side. `projectRowFromSnapshot` still reports `pinnedOrder: null` — the
+core-link snapshot has no such field and should not grow one — and the rail's
+own fan-out (`lib/core-pins-engine.ts`) overlays the slot from the presentation
+row it has already read for the group. Folding that overlay into the mapper is
+the tidier home for it and is left to whoever next owns that file.
