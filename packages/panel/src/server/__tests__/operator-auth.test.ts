@@ -344,6 +344,27 @@ describe("the served UI", () => {
     });
 
     /**
+     * The gate drops the path and keeps the query, so a deep route's parameters
+     * would otherwise arrive on a shallower one (#490 review B1). `coreId`
+     * belongs to `/projects/$id` alone, and `__root.tsx` reads it off every
+     * route — on `/` it scopes the whole shell to a Core the operator did not
+     * navigate to. A plain reload of an expired session is the path in, so the
+     * gate has to be the place it is stopped, not only the two pages.
+     */
+    it("leaves a deep route's own parameters behind", async () => {
+      await setup();
+      expect(
+        documentAuthRedirect(navigate("/projects/p1?coreId=core-b"))?.headers.get("location"),
+      ).toBe("/login");
+      // …and the pairing query still rides, from the same URL.
+      expect(
+        documentAuthRedirect(navigate("/projects/p1?coreId=core-b&step=redeem"))?.headers.get(
+          "location",
+        ),
+      ).toBe("/login?step=redeem");
+    });
+
+    /**
      * The carried value reaches a response header, so it is re-encoded rather
      * than pasted through: a CR or LF in the query must not be able to end the
      * `Location` line and start one of its own.

@@ -187,6 +187,57 @@ describe("creating the Operator", () => {
   });
 });
 
+/**
+ * The carry keeps the query and drops the path, so an unfiltered version lands
+ * a deep route's parameters on a shallower one (#490 review B1).
+ *
+ * `coreId` is the live case. `routes/projects.$id.tsx` is the only route that
+ * declares it, and `__root.tsx` reads it off every route — its selector's own
+ * comment being "Only the /projects/$id route sets `coreId`; every other route
+ * implicitly means the Panel's own rows". Replayed onto `/` after a re-login it
+ * scopes the root route to a remote Core and arms `UserTerminalPanel`'s New
+ * Terminal button, which is disabled on a clean `/` for exactly the reason that
+ * there is no Core to open a shell on.
+ */
+describe("a deep route's parameters", () => {
+  it("do not follow a sign-in home to the root route", async () => {
+    browserAt("/login?coreId=core-b");
+    await signIn();
+    expect(assigned).toBe("/");
+  });
+
+  it("do not follow an Operator create home either", async () => {
+    browserAt("/setup?coreId=core-b");
+    await createOperator();
+    expect(assigned).toBe("/");
+  });
+
+  it("are dropped without taking the pairing query with them", async () => {
+    browserAt("/login?step=redeem&coreId=core-b&label=my-panel");
+    await signIn();
+    const url = new URL(assigned!, "http://x");
+    expect(url.searchParams.get("coreId")).toBeNull();
+    expect(url.searchParams.get("step")).toBe("redeem");
+    expect(url.searchParams.get("label")).toBe("my-panel");
+    expect(firstRunStepFromSearch(url.search)).toBe(REDEEM_STEP);
+  });
+
+  it("survive on the route that owns them", () => {
+    // Not a path this module redirects to today — pinned so the rule reads as
+    // "carried where it means something", not "always deleted".
+    expect(withCarriedQuery("/projects/p1", "?coreId=core-b")).toBe("/projects/p1?coreId=core-b");
+  });
+
+  it("are dropped on every destination the auth round trip uses", () => {
+    for (const destination of ["/", "/login", "/setup"]) {
+      expect(withCarriedQuery(destination, "?coreId=core-b")).toBe(destination);
+      expect(withCarriedQuery(destination, "?step=redeem&coreId=core-b")).toBe(
+        `${destination}?step=redeem`,
+      );
+    }
+  });
+});
+
 describe("withCarriedQuery", () => {
   it("leaves a destination with no query alone", () => {
     expect(withCarriedQuery("/", "")).toBe("/");
