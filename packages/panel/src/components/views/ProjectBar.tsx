@@ -1565,12 +1565,22 @@ export const ProjectBar = memo(function ProjectBar({
                 // surface. Every Panel connected to that Core sees the same
                 // pin state (Core-owned fact, ADR-0005).
                 //
-                // Use the *target project's* coreId (pin rows carry their
-                // owning Core on `.coreId`), not the ProjectBar's own `coreId`
-                // prop — otherwise unpinning a Core's project from a pin bar
-                // scoped elsewhere would mutate the wrong Core (silent no-op)
-                // and the pin bar would only clear on restart.
-                const targetCoreId = target?.coreId ?? coreId;
+                // Ask the ROW who owns it. `coreIdByProject` is built from
+                // the same list the menu's target came from, so it answers for
+                // every row a menu can open on: a Core's pins carry their Core,
+                // and the Panel's own rows are the untagged remainder, which
+                // answer null and route over the Panel's own HTTP API.
+                //
+                // It used to fall back to this bar's `coreId` prop, and that
+                // fallback is gone rather than merely unused. On a Core-scoped
+                // route — `__root.tsx` passes the route's Core, so any time the
+                // operator is looking at a project or session on one — it made
+                // the operator's OWN project look Core-owned, and the
+                // slot-clearing write below then filed a Panel project id under
+                // a Core that has never heard of it. The next prune of that
+                // Core deletes that row and, with it, the project's card image
+                // off disk (#382 review round 2).
+                const targetCoreId = coreIdByProject.get(id) ?? null;
                 const unpinning = target?.pinned === true;
                 try {
                   await mutateProjectForCore(targetCoreId, {

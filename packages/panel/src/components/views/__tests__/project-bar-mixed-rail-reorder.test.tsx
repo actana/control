@@ -84,6 +84,12 @@ const settleCorePinFiling = vi.fn(async (_projectIds: readonly string[]) => {
   writeLog.push("settleCorePinFiling");
 });
 const refreshRemotePinned = vi.fn();
+const mutateProjectForCore = vi.fn(
+  async (_coreId: string | null | undefined, _mutation: Record<string, unknown>) => {
+    writeLog.push("mutateProjectForCore");
+    return null;
+  },
+);
 const toastError = vi.fn();
 
 const GROUP_A: Group = { id: "g_alpha", name: "Alpha group", color: "#ff8800" } as Group;
@@ -161,6 +167,10 @@ vi.mock("~/lib/use-fleet", () => ({
 vi.mock("~/lib/core-pins-engine", () => ({
   applyCorePinFiling: (filing: ReadonlyMap<string, CorePinFiling>) => applyCorePinFiling(filing),
   settleCorePinFiling: (ids: readonly string[]) => settleCorePinFiling(ids),
+}));
+vi.mock("~/lib/mutate-project-for-core", () => ({
+  mutateProjectForCore: (coreId: string | null | undefined, mutation: Record<string, unknown>) =>
+    mutateProjectForCore(coreId, mutation),
 }));
 vi.mock("~/lib/use-events", () => ({ useServerEvents: () => {} }));
 vi.mock("~/lib/keybindings/store", () => ({ useBinding: () => ({ mods: [], key: "" }) }));
@@ -270,11 +280,11 @@ const CORE_TWO = makeProject({
 let panelProjects: ProjectWithCounts[] = [];
 let groups: Group[] = [];
 
-function buildRouter(at = "/") {
+function buildRouter(at = "/", barCoreId: string | null = null) {
   const rootRoute = createRootRoute({
     component: () => (
       <>
-        <ProjectBar />
+        <ProjectBar coreId={barCoreId} />
         <Outlet />
       </>
     ),
@@ -306,11 +316,34 @@ async function settle() {
   });
 }
 
-async function mountRail(at = "/") {
-  const router = buildRouter(at);
+async function mountRail(at = "/", barCoreId: string | null = null) {
+  const router = buildRouter(at, barCoreId);
   const view = render(<RouterProvider router={router as never} />);
   await settle();
   return { router, view };
+}
+
+/**
+ * Right-click a tile and pick an item from the menu that opens. The menu is
+ * portalled to `document.body`, so it is found there rather than in the
+ * container.
+ */
+async function railMenuAction(
+  container: HTMLElement,
+  id: string,
+  label: string,
+): Promise<void> {
+  await act(async () => {
+    fireEvent.contextMenu(tile(container, id), { clientX: 10, clientY: 10 });
+  });
+  const item = [...document.body.querySelectorAll<HTMLElement>('[role="menu"] button')].find(
+    (el) => el.textContent?.trim() === label,
+  );
+  if (!item) throw new Error(`no "${label}" item in the rail menu for ${id}`);
+  await act(async () => {
+    fireEvent.click(item);
+  });
+  await settle();
 }
 
 function tile(container: HTMLElement, id: string): HTMLElement {
@@ -673,6 +706,42 @@ describe("ProjectBar regroup of a Core-owned pin", () => {
       PANEL_TWO.id,
       CORE_TWO.id,
       CORE_ONE.id,
+    ]);
+  });
+});
+
+// The rail's own unpin, which since #382 clears the slot the pin held so a
+// re-pin goes to the end of the rail rather than back to where it used to sit.
+// That write is addressed to a Core, and the review of PR #476 found it being
+// addressed to the wrong one: the menu took the owner from the bar's own
+// `coreId` prop when the row did not carry one, and a Panel-owned row never
+// does. On a Core-scoped route — which is every project and session route on a
+// Core — the operator's own project was therefore filed under that Core, and
+// the next prune of it deleted the row and the project's card image off disk.
+describe("unpinning from a Core-scoped rail", () => {
+  it("does not file a Panel-owned project under the route's Core", async () => {
+    const { view } = await mountRail("/", "core_alpha");
+    await railMenuAction(view.container, PANEL_ONE.id, "Unpin project");
+
+    // The pin itself goes over the Panel's own API, as a Panel row's must.
+    expect(mutateProjectForCore).toHaveBeenCalledTimes(1);
+    expect(mutateProjectForCore.mock.calls[0]![0]).toBeNull();
+    // And nothing writes a presentation row pairing this Panel project id with
+    // a Core that has never heard of it.
+    expect(updateProjectPresentation).not.toHaveBeenCalled();
+  });
+
+  it("clears the slot of a Core-owned pin, under the Core that owns it", async () => {
+    const { view } = await mountRail("/", "core_alpha");
+    await railMenuAction(view.container, CORE_TWO.id, "Unpin project");
+
+    // `core_beta`, the row's own Core — not `core_alpha`, the rail's.
+    expect(mutateProjectForCore.mock.calls[0]![0]).toBe("core_beta");
+    expect(updateProjectPresentation).toHaveBeenCalledTimes(1);
+    expect(updateProjectPresentation.mock.calls[0]).toEqual([
+      CORE_TWO.id,
+      "core_beta",
+      { pinnedOrder: null },
     ]);
   });
 });
