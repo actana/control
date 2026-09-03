@@ -204,8 +204,7 @@ const run = createCoalescingRunner(async () => {
   try {
     // The rail clusters by group and draws card images, and both are
     // Panel-local presentation for a Core-owned project (issue 98) — read once
-    // for the whole fan-out rather than per Core. A failed read only costs the
-    // filing, so the pins still render.
+    // for the whole fan-out rather than per Core.
     const rows = await api
       .listProjectPresentation()
       .then((r) => r.presentation)
@@ -388,6 +387,7 @@ export function subscribeCorePins(listener: () => void): () => void {
     coreSignature = "";
     lastRowsByCore = new Map();
     lastCountsByCore = new Map();
+    lastPresentation = new Map();
     pendingFiling = new Map();
   };
 }

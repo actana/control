@@ -130,8 +130,11 @@ export function createCoalescingRunner(pass: () => Promise<boolean>): Coalescing
     });
     // Either this starts the loop — which claims the waiter on its first
     // iteration — or a pass is in flight and the `waiting.length > 0` arm of
-    // the loop condition brings it round again for us.
-    void run();
+    // the loop condition brings it round again for us. A pass that throws
+    // rather than answering false still releases the waiter, in the loop's own
+    // `finally`, so the rejection is the caller's to ignore rather than one
+    // nobody is left holding.
+    void run().catch(() => undefined);
     await settled;
   };
   return run;
