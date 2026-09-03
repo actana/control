@@ -524,7 +524,12 @@ export function TerminalPane({
 
   // Per-row subscription: with N panes mounted, a whole-array subscription
   // re-rendered every pane's header on any task change.
-  const { data: selectedLiveTask } = useTask(project.id, task.id);
+  // Core-tagged, like `tasksKey` below: a Core-owned Session's row lives in
+  // that bucket, and asking the untagged one left this header subscribed to a
+  // list nothing fills.
+  const { data: selectedLiveTask } = useTask(project.id, task.id, {
+    coreId: descriptor.coreId,
+  });
   const liveTask = selectedLiveTask ?? task;
   liveTaskStatusRef.current = liveTask.status;
   // The Session's name as the operator last saw it, for copy written from

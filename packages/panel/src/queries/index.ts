@@ -155,8 +155,11 @@ export const tasksQueryOptions = (
     queryKey: tasksCacheKey(projectId, coreId),
     queryFn: async ({ client }) => {
       // Stamped before the read, asked after it: an uncached pin can answer
-      // long after the operator clicked away from it (issue 381).
-      const operatorLeft = watchProjectScope(projectId, coreId);
+      // long after the operator clicked away from it (issue 381). A visit
+      // stamp, not a visibility check — during A → B → A → B this read may be
+      // the one that was cancelled on the way out, landing while B is on
+      // screen again and looking current.
+      const readIsStale = watchProjectScope(projectId, coreId);
       if (coreId) {
         // Core task loading over the panel link (ADR-0005): the
         // Core on `coreId` owns the rows, so the query goes down that
@@ -171,11 +174,14 @@ export const tasksQueryOptions = (
         // active view is showing. Park it in its own bucket rather than
         // widening this list's shape for every reader of it.
         //
-        // Not parked once the operator has left this project+core: the list
-        // this number rode in on is reverted by `useTasks`' cancellation, and a
-        // count that outlives its own list would label the Archived tab from a
-        // read that was thrown away.
-        if (!operatorLeft()) {
+        // Not parked by a read whose visit is over. The list itself is safe
+        // without this — react-query drops a cancelled fetch's result — but
+        // this write is the fetcher's own, so nothing else stops it, and the
+        // bucket it writes to has no fetcher to correct it
+        // (`useCoreArchivedTaskCount` is `enabled: false`). Left ungated, an
+        // abandoned read landing after the read that replaced it would leave
+        // the Archived tab labelled from rows the list no longer holds.
+        if (!readIsStale()) {
           client.setQueryData(queryKeys.coreArchivedTaskCount(projectId, coreId), archivedCount);
         }
         return tasks.map(remoteTaskFromSnapshot);
@@ -353,6 +359,11 @@ export const updateCheckQueryOptions = () =>
  *
  * Only a fetch in flight is cancelled. A settled query keeps its data, so
  * leaving a project never throws away rows the operator would see on return.
+ *
+ * Cancelling is not the whole guard, because a cancelled fetch's promise still
+ * resolves — the panel link has nothing to abort — and its fetcher runs to the
+ * end. Anything a fetcher writes for itself is guarded by
+ * {@link watchProjectScope} instead; see `tasksQueryOptions`.
  */
 function useScopedToVisibleProject(
   queryKey: readonly unknown[],
@@ -366,13 +377,19 @@ function useScopedToVisibleProject(
     // `useTasks("")` is how the grid's hidden-session bar asks before it has a
     // scope at all — no project, nothing to keep on screen.
     if (!projectId) return;
-    return retainProjectScope(projectId, coreId, () => {
-      // Nothing in flight is nothing to abandon: a settled query keeps its
-      // rows, so leaving never costs the operator the cache they come back to.
-      if (queryClient.isFetching({ queryKey, exact: true }) === 0) return;
-      // `revert: true` (the default) puts the query back the way it was before
-      // this fetch, and the answer is dropped when it eventually turns up.
-      void queryClient.cancelQueries({ queryKey, exact: true });
+    return retainProjectScope(projectId, coreId, {
+      // Two readers of one key (the board's list and a pane's row) are one
+      // thing to cancel, and a pane remounting through a visit must not leave
+      // another copy of this closure behind.
+      readerKey: keyHash,
+      onLeft: () => {
+        // Nothing in flight is nothing to abandon: a settled query keeps its
+        // rows, so leaving never costs the operator the cache they come back to.
+        if (queryClient.isFetching({ queryKey, exact: true }) === 0) return;
+        // `revert: true` (the default) puts the query back the way it was before
+        // this fetch, and the answer is dropped when it eventually turns up.
+        void queryClient.cancelQueries({ queryKey, exact: true });
+      },
     });
     // `keyHash` stands in for `queryKey` in the deps: the key is rebuilt every
     // render, its hash only changes when the key really does.
@@ -434,13 +451,22 @@ export const useCoreArchivedTaskCount = (projectId: string, coreId: string | nul
  * Per-row task subscription. Structural sharing keeps an unchanged row's
  * identity stable across list refetches, so a consumer (e.g. a terminal pane
  * header) re-renders only when ITS task changes — not on every task:* event.
+ *
+ * `coreId` names the bucket, exactly as it does for {@link useTasks}: a Core's
+ * rows live in the tagged bucket and the Panel's own in the untagged one, and
+ * a pane that asked the wrong one read a list that was never going to arrive.
  */
-export const useTask = (projectId: string, taskId: string) => {
-  const options = tasksQueryOptions(projectId);
+export const useTask = (
+  projectId: string,
+  taskId: string,
+  opts?: { coreId?: string | null },
+) => {
+  const coreId = opts?.coreId ?? null;
+  const options = tasksQueryOptions(projectId, { coreId });
   // A pane reading one row is a live reader of the same bucket the board
   // reads, so it holds the scope open too — otherwise the board unmounting
   // would cancel a fetch this pane is still waiting on.
-  useScopedToVisibleProject(options.queryKey, projectId, null);
+  useScopedToVisibleProject(options.queryKey, projectId, coreId);
   return useQuery({
     ...options,
     select: (tasks) => tasks.find((t) => t.id === taskId),

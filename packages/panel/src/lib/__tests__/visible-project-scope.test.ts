@@ -1,16 +1,24 @@
 // The registry the query layer uses to tell "the pin the operator is on" from
 // "the pin the operator has left" (issue 381). Plain counting, no react: what
 // is proven here is that a scope stays visible while anything is still showing
-// it, and that a read nobody was watching is never mistaken for a late one.
+// it, that a read nobody was watching is never mistaken for a late one, and —
+// the part a visibility snapshot could not do — that a read belonging to a
+// visit the operator has left stays stale even once they come back.
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
   __resetProjectScopesForTests,
   isProjectScopeVisible,
+  projectScopeGeneration,
   projectScopeToken,
   retainProjectScope,
   watchProjectScope,
 } from "~/lib/visible-project-scope";
+
+/** A reader of one query key, as `useScopedToVisibleProject` registers one. */
+function reader(readerKey: string, onLeft: () => void) {
+  return { readerKey, onLeft };
+}
 
 describe("the visible project scope", () => {
   beforeEach(() => {
@@ -56,8 +64,12 @@ describe("the visible project scope", () => {
     // unmounts in its own cleanup. The first one to go must not conclude the
     // operator has left while the other is still on screen (#381).
     const seen: string[] = [];
-    const releaseRow = retainProjectScope("p-a", "core_1", () => seen.push("row"));
-    const releaseTasks = retainProjectScope("p-a", "core_1", () => seen.push("tasks"));
+    const releaseRow = retainProjectScope("p-a", "core_1", reader("row", () => seen.push("row")));
+    const releaseTasks = retainProjectScope(
+      "p-a",
+      "core_1",
+      reader("tasks", () => seen.push("tasks")),
+    );
 
     releaseRow();
     expect(seen).toEqual([]);
@@ -65,23 +77,62 @@ describe("the visible project scope", () => {
     expect(seen.sort()).toEqual(["row", "tasks"]);
   });
 
-  it("reports a scope the operator has left since the read started", () => {
-    const release = retainProjectScope("p-b", "core_1");
-    const operatorLeft = watchProjectScope("p-b", "core_1");
+  it("holds one callback per key however often a reader remounts", () => {
+    // A pane mounting and unmounting through a single visit used to leave a
+    // fresh closure behind every time, and every one of them ran on the way
+    // out — the same cancel, over and over, against the same key.
+    let cancels = 0;
+    const board = retainProjectScope("p-a", "core_1", reader("tasks", () => (cancels += 1)));
+    for (let mount = 0; mount < 5; mount += 1) {
+      const pane = retainProjectScope("p-a", "core_1", reader("tasks", () => (cancels += 1)));
+      pane();
+    }
 
-    expect(operatorLeft()).toBe(false);
-    release();
-    expect(operatorLeft()).toBe(true);
+    board();
+    expect(cancels).toBe(1);
   });
 
-  it("never calls a read nobody was watching a late one", () => {
-    // An imperative prefetch or a `fetchQuery` in a test has no view behind it,
-    // so there is no screen to have left — its side effects still count.
-    const operatorLeft = watchProjectScope("p-c", "core_1");
+  it("reports a read whose visit the operator has left", () => {
+    const release = retainProjectScope("p-b", "core_1");
+    const readIsStale = watchProjectScope("p-b", "core_1");
 
-    expect(operatorLeft()).toBe(false);
-    const release = retainProjectScope("p-c", "core_1");
+    expect(readIsStale()).toBe(false);
     release();
-    expect(operatorLeft()).toBe(false);
+    expect(readIsStale()).toBe(true);
+  });
+
+  it("keeps a left read stale after the operator comes back", () => {
+    // A → B → A → B. B's first read is cancelled on the way out; its promise
+    // still resolves, and by then B is on screen again. "Is B visible?" says
+    // yes and lets the abandoned answer overwrite the live one — the visit
+    // generation is what says no.
+    const firstVisit = retainProjectScope("p-b", "core_1");
+    const readOne = watchProjectScope("p-b", "core_1");
+    firstVisit();
+
+    const secondVisit = retainProjectScope("p-b", "core_1");
+    const readTwo = watchProjectScope("p-b", "core_1");
+
+    expect(isProjectScopeVisible("p-b", "core_1")).toBe(true);
+    expect(readOne()).toBe(true);
+    expect(readTwo()).toBe(false);
+    expect(projectScopeGeneration("p-b", "core_1")).toBe(1);
+    secondVisit();
+  });
+
+  it("leaves a read nobody is watching alone until a visit actually ends", () => {
+    // An imperative prefetch or a `fetchQuery` in a test has no view behind it.
+    // Nothing has been left while it is in flight, so it keeps its side
+    // effects — which is what the archived read-path suite relies on.
+    const readIsStale = watchProjectScope("p-c", "core_1");
+
+    expect(readIsStale()).toBe(false);
+    const release = retainProjectScope("p-c", "core_1");
+    expect(readIsStale()).toBe(false);
+    release();
+    // A read still outstanding when a visit closes is stale like any other —
+    // the safe direction, and it costs a prefetch nothing, because a prefetch
+    // that outlives a whole visit is one whose answer nobody wanted.
+    expect(readIsStale()).toBe(true);
   });
 });
