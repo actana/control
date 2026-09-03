@@ -1,5 +1,9 @@
 import type { Harness } from "./domain";
-import { HARNESS_AUTO_MODE_FLAGS, HARNESS_CLI_CONFIG } from "./harness-cli-config";
+import {
+  HARNESS_AUTO_MODE_FLAGS,
+  HARNESS_CLI_CONFIG,
+  HARNESS_HOOK_TRUST_FLAGS,
+} from "./harness-cli-config";
 
 export type HarnessRegistryEntry = {
   label: string;
@@ -43,10 +47,21 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
     uiVisible: true,
     supportsSkipPermissions: true,
     skipPermissionsFlag: HARNESS_AUTO_MODE_FLAGS["codex"] ?? undefined,
+    // `--enable hooks` asks Codex for the lifecycle surface; the hook-trust
+    // flag is what makes the hooks this Core installed into the workspace
+    // actually run on the first turn instead of waiting on an operator's
+    // `/hooks` review (issue 290). Both are read from the registry rather than
+    // typed out, so the spawn allow-list and this builder cannot disagree.
     startCommand: (opts) =>
-      opts?.skipPermissions
-        ? "codex --enable hooks --yolo"
-        : "codex --enable hooks",
+      [
+        "codex",
+        "--enable",
+        "hooks",
+        HARNESS_HOOK_TRUST_FLAGS.codex,
+        opts?.skipPermissions ? HARNESS_AUTO_MODE_FLAGS.codex : null,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(" "),
     titleInvocation: (input) => ({ cmd: "codex", args: ["exec", input] }),
   },
   "cursor-cli": {
@@ -115,3 +130,33 @@ export const harnessSkipPermissionsFlag = (agent: Harness): string | null =>
  */
 export const harnessLaunchesWithSkipPermissions = (harness: Harness) =>
   harnessSupportsSkipPermissions(harness);
+
+/**
+ * The flag `harness` needs before it will run hooks this Core installed, or
+ * null where it needs none.
+ *
+ * The registry's re-export of {@link HARNESS_HOOK_TRUST_FLAGS}, for the same
+ * reason {@link harnessSkipPermissionsFlag} re-exports the auto-mode one: a
+ * caller building a launch command and the policy validating it must be
+ * reading the same cell of the same table.
+ */
+export const harnessHookTrustFlag = (harness: Harness): string | null =>
+  HARNESS_HOOK_TRUST_FLAGS[harness];
+
+/**
+ * Throw when a launch command for `harness` is missing its hook-trust flag.
+ *
+ * This flag fails in the same silent direction issue 177 finding 2 did, which
+ * is why it gets an assertion rather than a comment. A command built without
+ * it spawns cleanly and shows a working harness that reports no lifecycle at
+ * all: the Core believes it installed hooks, the operator watches a live TUI,
+ * and the only thing that ends a `--wait` is the caller's own timeout. A
+ * builder that drops it should fail a test here rather than a Session there.
+ */
+export function assertHookTrustFlagInCommand(harness: Harness, command: string): void {
+  const flag = HARNESS_HOOK_TRUST_FLAGS[harness];
+  if (flag === null) return;
+  if (!command.split(/\s+/).includes(flag)) {
+    throw new Error(`Launch command for ${harness} is missing ${flag}: ${command}`);
+  }
+}

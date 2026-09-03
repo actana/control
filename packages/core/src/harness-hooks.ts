@@ -210,6 +210,37 @@ function installClaudeHooks(cwd: string, slug: string): boolean {
 
 const CODEX_HOOK_EVENTS = ["UserPromptSubmit", "Stop", "PermissionRequest"] as const;
 
+/**
+ * A Codex matcher group — the same shape as {@link claudeGroup}, and the fix
+ * for the first half of issue 290.
+ *
+ * Codex's hooks file is a table of **matcher groups**, not of handlers:
+ * `{"hooks": {"Stop": [{"hooks": [{"type": "command", ...}]}]}}`. Until this
+ * issue we wrote the handler where the group belongs — one level too shallow —
+ * and the difference is not cosmetic and not partial. Codex parses the file,
+ * finds nothing it recognises, and reports no error: the workspace has a hooks
+ * file, the Core believes it installed hooks, and Codex has zero of them. It
+ * never even reaches the startup review the second half of this issue is
+ * about; verified against codex-cli 0.153.0, where the flat file produces no
+ * hook on any turn under every combination of workspace trust and
+ * `--dangerously-bypass-hook-trust`, and the group file produces "2 hooks are
+ * new or changed" on the same workspace.
+ *
+ * The `_acManaged` tag moves out to the group with everything else, which is
+ * where {@link isManaged} already looks — so the next spawn replaces the group
+ * this one wrote, and a flat entry left behind by a Core from before this
+ * issue is swept out by the same rule rather than left in a file Codex is
+ * ignoring anyway.
+ *
+ * No `matcher` key. Codex applies a group with none to every occurrence of the
+ * event, which is what all three of our events want: there is nothing to
+ * narrow `Stop` or `UserPromptSubmit` to, and `PermissionRequest` is wanted
+ * whatever raised it.
+ */
+function codexGroup(slug: string, event: string): Record<string, unknown> {
+  return { [MANAGED_FLAG]: true, hooks: [managedEntry(slug, event)] };
+}
+
 function installCodexHooks(cwd: string, slug: string): boolean {
   const file = path.join(cwd, ".codex", "hooks.json");
   const config = readJsonSettingsFile<{ hooks?: Record<string, unknown>; [k: string]: unknown }>(
@@ -218,7 +249,7 @@ function installCodexHooks(cwd: string, slug: string): boolean {
   if (config === null) return false;
   const hooks: Record<string, unknown> = { ...(config.hooks as object) };
   for (const event of CODEX_HOOK_EVENTS) {
-    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug, event)]);
+    hooks[event] = mergeMatchers(hooks[event], [codexGroup(slug, event)]);
   }
   config.hooks = hooks;
   return writeJsonSettingsFile(file, config);
@@ -266,9 +297,23 @@ type HookFamily = {
  */
 const HOOK_FAMILIES: Record<string, HookFamily> = {
   "claude-code": { install: installClaudeHooks, reportsTurnStart: true },
-  // Codex refuses to run newly-installed project hooks until the operator
-  // reviews them with `/hooks`, so its first turn — the one that matters most
-  // for the card — may report nothing at all.
+  // Codex held newly-installed project hooks behind an operator's `/hooks`
+  // review, so its first turn — the one that matters most for the card, and
+  // the only one an orchestrator is ever waiting on — reported nothing at all.
+  // Issue 290 fixed that in two places, and NEITHER of them is here: the
+  // writer above now produces the matcher groups Codex actually parses, and
+  // every Codex launch carries `hookTrustFlag` so the hooks this Core wrote
+  // run without being held for review. Both halves were needed; either alone
+  // still reports nothing.
+  //
+  // `reportsTurnStart` stays `false` deliberately. `UserPromptSubmit` does now
+  // fire — verified on codex-cli 0.153.0 in a workspace Codex had never seen —
+  // so `true` would today be honest rather than hopeful. But this field is
+  // what stands the Panel's terminal-input fallback DOWN, and flipping it is a
+  // change to what the Panel does rather than to whether a hook arrives. It
+  // belongs with the codex readiness row (#277), not smuggled in behind a
+  // hooks fix: `false` costs a card that under-reports a live turn, and `true`
+  // asserted a turn early costs a Session with no `running` signal at all.
   codex: { install: installCodexHooks, reportsTurnStart: false },
   // Cursor takes the hooks file and fires `stop` / `sessionStart` from it, but
   // `beforeSubmitPrompt` still does not fire in cursor-agent. The turn's end is

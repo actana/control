@@ -1,6 +1,10 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { HARNESS_AUTO_MODE_FLAGS, HARNESS_SPAWN_COMMANDS } from "./harness-cli-config";
+import {
+  HARNESS_AUTO_MODE_FLAGS,
+  HARNESS_HOOK_TRUST_FLAGS,
+  HARNESS_SPAWN_COMMANDS,
+} from "./harness-cli-config";
 import { isAiModelId } from "./ai-runtime-defaults";
 import type { Harness } from "./domain";
 import { buildCmdScriptCommand, isWindowsCommandScript } from "./windows-cmd";
@@ -242,7 +246,33 @@ function withAutoModeFlags(
   ) as Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>;
 }
 
-const HARNESS_ARG_RULES = withAutoModeFlags(HARNESS_ARG_RULES_BASE);
+/**
+ * Splice in each harness's hook-trust flag, for {@link withAutoModeFlags}'s
+ * reason and with one difference that matters.
+ *
+ * The auto-mode flag is checked in both directions because it travels with a
+ * spawn *option* the caller sets. This one has no option behind it: it is a
+ * consequence of the Core having written a hooks file into that workspace,
+ * which the Core does for every harness whose family it knows, so there is no
+ * second half to disagree with. It is allow-listed and nothing more —
+ * permitted on every launch of a harness that needs it, required by no rule
+ * here. What requires it is {@link assertHookTrustFlagInCommand} on the
+ * builders' side, where a missing flag is still a fact about a command rather
+ * than about a spawn request.
+ */
+function withHookTrustFlags(
+  base: Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>,
+): Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>> {
+  return Object.fromEntries(
+    Object.entries(base).map(([agent, rules]) => {
+      const flag = HARNESS_HOOK_TRUST_FLAGS[agent as HarnessSpawn];
+      if (flag === null) return [agent, rules];
+      return [agent, { ...rules, [flag]: { value: false } }];
+    }),
+  ) as Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>;
+}
+
+const HARNESS_ARG_RULES = withHookTrustFlags(withAutoModeFlags(HARNESS_ARG_RULES_BASE));
 
 /**
  * The flag that puts `agent` into auto mode, or null where the vendor ships
@@ -253,6 +283,17 @@ const HARNESS_ARG_RULES = withAutoModeFlags(HARNESS_ARG_RULES_BASE);
  */
 export function autoModeFlagForSpawn(agent: HarnessSpawn): string | null {
   return HARNESS_AUTO_MODE_FLAGS[agent];
+}
+
+/**
+ * The flag `agent` needs before it will run hooks this Core installed, or null
+ * where it needs none.
+ *
+ * Re-exported here for {@link autoModeFlagForSpawn}'s reason: the caller
+ * building the command and the policy accepting it read one table.
+ */
+export function hookTrustFlagForSpawn(agent: HarnessSpawn): string | null {
+  return HARNESS_HOOK_TRUST_FLAGS[agent];
 }
 
 function windowsCmdExe(deps: SpawnPolicyDeps): string {

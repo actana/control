@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { buildUserPath, resolveCommandOnPath } from "@actana/shared/shell-env";
 import { resolveHarnessCommandOnPath } from "@actana/shared/harness-cli-resolution";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
   resolveSpawnPlan,
   SpawnPolicyError,
@@ -93,6 +94,47 @@ describe("resolveSpawnPlan — agent allow-list", () => {
     expect(plan.argv).toEqual(["--enable", "hooks"]);
     expect(plan.spawnTarget).toBe("/usr/local/bin/codex");
     expect(plan.spawnArgs).toEqual(["--enable", "hooks"]);
+  });
+
+  it("accepts the Codex hook-trust flag the registry's own launch carries (issue 290)", () => {
+    // The command under test is the registry's, not a string typed here: the
+    // point of the assertion is that what a fresh Session is actually launched
+    // with survives the allow-list. Before #290 it would not have — the flag
+    // was on no list — and a Core that started rejecting its own default
+    // command is a product that will not spawn Codex at all.
+    const command = HARNESS_REGISTRY.codex.startCommand();
+    expect(command).toContain("--dangerously-bypass-hook-trust");
+    const plan = resolveSpawnPlan(spawnReq({ agent: "codex", command }), depsFor());
+    if (plan.mode !== "agent") throw new Error("wrong mode");
+    expect(plan.argv).toEqual(["--enable", "hooks", "--dangerously-bypass-hook-trust"]);
+  });
+
+  it("accepts the hook-trust flag on a resumed Codex too", () => {
+    // A resumed Session gets the same freshly written hooks file as a new one,
+    // so it needs the same flag; the resume command puts it after the
+    // subcommand and its id, which is a different code path in the validator.
+    const plan = resolveSpawnPlan(
+      spawnReq({
+        agent: "codex",
+        command:
+          "codex resume 019d7a0f-432a-7fa1-a821-b7841f983967 --enable hooks " +
+          "--dangerously-bypass-hook-trust",
+      }),
+      depsFor(),
+    );
+    if (plan.mode !== "agent") throw new Error("wrong mode");
+    expect(plan.argv).toContain("--dangerously-bypass-hook-trust");
+  });
+
+  it("does not hand the hook-trust flag to a harness that needs none", () => {
+    // Allow-listing is per harness, from one table. Claude Code runs the file
+    // this Core wrote without being asked twice, so the flag there is an
+    // argument nobody meant to send.
+    expectRejected(
+      spawnReq({ agent: "claude-code", command: "claude --dangerously-bypass-hook-trust" }),
+      depsFor(),
+      "agent-arg-not-allowed",
+    );
   });
 
   it("wraps Windows command shims through cmd.exe after argv validation", () => {

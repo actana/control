@@ -87,11 +87,79 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     expect(hooks.PostToolUse[0].matcher).toBeUndefined();
   });
 
+  it("writes Codex the matcher groups its parser recognises (issue 290)", () => {
+    // Every assertion below is made from the state the defect lives in: a
+    // workspace directory created moments ago, which no Codex has opened and
+    // whose hooks file no operator has reviewed. That is the only state the
+    // bug is visible in — a workspace somebody has already run `/hooks` in
+    // hides it — so the fixture is a fresh `mkdtemp` and nothing seeds a
+    // review into it.
+    expect(installHarnessHooks("codex", cwd)).toEqual({
+      installed: true,
+      reportsTurnStart: false,
+    });
+
+    const hooks = readJson(".codex/hooks.json").hooks;
+    // Codex's file is a table of matcher GROUPS, and the group is what carries
+    // the handler list. We used to write the handler itself here — one level
+    // too shallow — and Codex answered by parsing the file, recognising
+    // nothing in it, and reporting no error at all. `Stop` above all: it is
+    // the signal every `--wait` in the product resolves on.
+    for (const event of ["UserPromptSubmit", "Stop", "PermissionRequest"]) {
+      expect(hooks[event]).toHaveLength(1);
+      const group = hooks[event][0];
+      expect(Array.isArray(group.hooks)).toBe(true);
+      expect(group.hooks).toHaveLength(1);
+      // The old shape put these on the group. A group carrying `command`
+      // directly is the bug, spelled exactly.
+      expect(group.command).toBeUndefined();
+      expect(group.type).toBeUndefined();
+      expect(group.hooks[0].type).toBe("command");
+      expect(group.hooks[0].command).toContain("/api/hooks/codex");
+      expect(group.hooks[0].command).toContain(`hookEvent=${event}`);
+    }
+    // No matcher: there is nothing to narrow a turn's end to, and a group with
+    // one would fire on less than every turn.
+    expect(hooks.Stop[0].matcher).toBeUndefined();
+  });
+
+  it("sweeps out the flat entries a Core from before issue 290 wrote", () => {
+    const file = path.join(cwd, ".codex", "hooks.json");
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(
+      file,
+      JSON.stringify({
+        hooks: {
+          Stop: [
+            // What this Core wrote until #290: a handler where a group goes.
+            { _acManaged: true, type: "command", command: "curl old" },
+            // The operator's own, in the shape Codex actually reads.
+            { hooks: [{ type: "command", command: "my-own-thing" }] },
+          ],
+        },
+      }),
+    );
+
+    installHarnessHooks("codex", cwd);
+
+    const groups = readJson(".codex/hooks.json").hooks.Stop as any[];
+    // Ours is replaced rather than appended, and the flat one goes with it —
+    // it is tagged `_acManaged` like any other entry this Core wrote, so the
+    // existing rule sweeps it without needing to know it was ever broken.
+    expect(groups.filter((g) => g._acManaged)).toHaveLength(1);
+    expect(groups.filter((g) => g._acManaged)[0].hooks[0].command).toContain("/api/hooks/codex");
+    expect(groups.filter((g) => !g._acManaged)).toHaveLength(1);
+    expect(groups.filter((g) => !g._acManaged)[0].hooks[0].command).toBe("my-own-thing");
+  });
+
   it("says a turn's START is unreported for families that only report its end", () => {
     // Installing is not reporting. Cursor takes the file but never fires
-    // `beforeSubmitPrompt`; Codex will not run new hooks until the operator
-    // reviews them with `/hooks`. Claiming otherwise suppresses the Panel's
-    // fallback and leaves the Session on `ready` for its whole first turn.
+    // `beforeSubmitPrompt`. Codex's `UserPromptSubmit` does now fire since
+    // #290, but this field stands the Panel's terminal-input fallback DOWN,
+    // and flipping it is a change to the Panel rather than to whether a hook
+    // arrives — it belongs with the codex readiness row (#277). Claiming a
+    // turn start we do not act on suppresses the fallback and leaves the
+    // Session on `ready` for its whole first turn.
     expect(installHarnessHooks("cursor-cli", cwd)).toEqual({
       installed: true,
       reportsTurnStart: false,
