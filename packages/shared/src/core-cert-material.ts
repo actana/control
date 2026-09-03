@@ -538,10 +538,28 @@ async function importCaKey(pem: string): Promise<X509SigningKey> {
   }
 }
 
-/** A positive 16-byte serial, hex-encoded — RFC 5280 §4.1.2.2 wants positive. */
-function randomSerial(): string {
+/**
+ * A positive 16-byte serial, hex-encoded — RFC 5280 §4.1.2.2 wants positive.
+ *
+ * The leading byte is forced into 0x01..0x7f, and the floor matters as much as
+ * the ceiling. The top bit clear is what makes the DER INTEGER positive. The
+ * non-zero is what keeps the serial we minted and the serial the certificate
+ * reports back the same string: DER writes an INTEGER minimally, and
+ * `@peculiar/x509` hands `serialNumber` back with a leading zero byte stripped,
+ * so a serial that began 0x00 came back a byte shorter — and reading as
+ * negative-looking hex if the byte behind it had its own top bit set. That is a
+ * 1-in-256 draw, and the serial is the certificate's name in every later
+ * revocation list and `pair ls` row, so it has to be the same name on both
+ * sides of the issuance every time.
+ *
+ * Exported for the tests, which draw it many times: a single issuance only
+ * meets the bad byte once in 256, which is too rare for a test to rely on and
+ * exactly often enough to redden someone else's pull request.
+ */
+export function randomSerial(): string {
   const bytes = randomBytes(16);
-  bytes[0] = bytes[0]! & 0x7f;
+  const first = bytes[0]! & 0x7f;
+  bytes[0] = first === 0 ? 0x01 : first;
   return bytes.toString("hex");
 }
 
