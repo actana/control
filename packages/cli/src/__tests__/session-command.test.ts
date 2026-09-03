@@ -632,7 +632,7 @@ describe("actana session send", () => {
     return fakeSessionGateway({
       send: async (_taskId, text, opts) => {
         calls.push({ text, enter: opts?.enter });
-        return true;
+        return { ok: true };
       },
     });
   }
@@ -697,7 +697,7 @@ describe("actana session send", () => {
   it("reports the missing submission in --json as well, on both streams", async () => {
     await withRegisteredCore();
     const run = await cli().run(["session", "send", "task_1", "2", "--no-enter", "--json"], {
-      sessions: fakeSessionGateway({ send: async () => true }),
+      sessions: fakeSessionGateway({ send: async () => ({ ok: true }) }),
     });
     expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
     // The document keeps the `--json` rule — only JSON on stdout — and carries
@@ -787,6 +787,21 @@ describe("actana session send", () => {
     expect(text).toContain("**not** on the `--wait` document");
   });
 
+  it("does not contradict itself 37 lines later (#462 review round 2)", async () => {
+    const help = await cli().run(["session", "--help"]);
+    const text = help.out.join("\n");
+    // `SESSION_HELP` is printed whole, so its closing summary is read in the
+    // same breath as the section above it. It used to end "`send` writes exactly
+    // what it is given", which stopped being true the moment the return became
+    // the default — the same class of defect as round 1's four.
+    expect(text).not.toContain("writes exactly what it is given");
+    // What survives is the distinction the rest of the diff keeps: no *timing*
+    // from this side, and a return that goes because the flags asked for one.
+    expect(text).toContain("This CLI adds no timing of its own");
+    expect(text).toContain("adds nothing but the carriage return the flags above asked for");
+    expect(text).toContain("A lost prompt\n  is a Core bug.");
+  });
+
   it("refuses empty stdin rather than reporting a delivery it never made", async () => {
     await withRegisteredCore();
     // The Core is never reached, so the fixture's gateway would throw if it
@@ -806,7 +821,7 @@ describe("actana session send", () => {
       sessions: fakeSessionGateway({
         send: async (_taskId, text, opts) => {
           calls.push({ text, enter: opts?.enter });
-          return true;
+          return { ok: true };
         },
       }),
       stdin: "",
@@ -815,13 +830,95 @@ describe("actana session send", () => {
     expect(calls).toEqual([{ text: "", enter: true }]);
   });
 
-  it("fails when the Core declined the write", async () => {
+  it("fails when the Core declined the text, and says a resend is safe", async () => {
     await withRegisteredCore();
     const run = await cli().run(["session", "send", "task_1", "hello"], {
-      sessions: fakeSessionGateway({ send: async () => false }),
+      sessions: fakeSessionGateway({ send: async () => ({ ok: false, failed: "text" }) }),
     });
     expect(run.code).toBe(EXIT_FAILURE);
-    expect(run.err.join("\n")).toContain("did not accept the write");
+    const err = run.err.join("\n");
+    expect(err).toContain("did not accept the write");
+    expect(err).toContain("Nothing was written, so sending it again is safe");
+  });
+
+  it("tells a half-delivered send NOT to resend the text (#462 review round 2)", async () => {
+    await withRegisteredCore();
+    // Two writes have three outcomes. The one a boolean could not express is
+    // this one: the text is on the PTY and the return is not. Reporting it as
+    // "the write was refused" sends the operator to the single worst next move,
+    // because a resend now carries a return of its own and submits the text
+    // twice. The `--wait` path has drawn this line since #289; #404 put the
+    // second write on the default path, so this path draws it too.
+    const run = await cli().run(["session", "send", "task_1", "hello"], {
+      sessions: fakeSessionGateway({
+        send: async () => ({ ok: false, failed: "carriage-return" }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("took the text");
+    expect(err).toContain("no turn was started");
+    expect(err).toContain("do not send it again");
+    // And it names the command that finishes the job without repeating the text.
+    expect(err).toContain("actana session send task_1 --enter");
+    // The message the *other* failure gets must not appear here: "nothing was
+    // written" is exactly what is untrue in this case.
+    expect(err).not.toContain("Nothing was written");
+  });
+
+  it("does not tell a bare --enter not to resend text it never sent", async () => {
+    await withRegisteredCore();
+    // `send $SID --enter` with no text is a carriage return and nothing else, so
+    // a refused return leaves nothing on the PTY. The "do not send it again"
+    // advice would be about text that does not exist, and a resend here is the
+    // right move rather than the doubling one.
+    const run = await cli().run(["session", "send", "task_1", "--enter"], {
+      sessions: fakeSessionGateway({
+        send: async () => ({ ok: false, failed: "carriage-return" }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("did not accept the carriage return");
+    expect(err).toContain("Nothing was written, so sending it again is safe");
+    expect(err).not.toContain("took the text");
+    expect(err).not.toContain("do not send it again");
+  });
+
+  it("keeps the request and the outcome apart in --json", async () => {
+    await withRegisteredCore();
+    // `enter` is what was asked for and keeps its old meaning; `submitted` is
+    // what happened. They agree on every path but this one, which is the path
+    // worth telling apart — and `failed` says which half went missing, so a
+    // script can tell a safe resend from a doubling one.
+    const half = await cli().run(["session", "send", "task_1", "hello", "--json"], {
+      sessions: fakeSessionGateway({
+        send: async () => ({ ok: false, failed: "carriage-return" }),
+      }),
+    });
+    expect(JSON.parse(half.out.join("\n"))).toMatchObject({
+      enter: true,
+      submitted: false,
+      delivered: false,
+      failed: "carriage-return",
+    });
+
+    const refused = await cli().run(["session", "send", "task_1", "hello", "--json"], {
+      sessions: fakeSessionGateway({ send: async () => ({ ok: false, failed: "text" }) }),
+    });
+    expect(JSON.parse(refused.out.join("\n"))).toMatchObject({
+      submitted: false,
+      delivered: false,
+      failed: "text",
+    });
+
+    // And a success carries no `failed` key at all, so its absence is the signal.
+    const fine = await cli().run(["session", "send", "task_1", "hello", "--json"], {
+      sessions: fakeSessionGateway({ send: async () => ({ ok: true }) }),
+    });
+    const document = JSON.parse(fine.out.join("\n"));
+    expect(document).toMatchObject({ enter: true, submitted: true, delivered: true });
+    expect(document.failed).toBeUndefined();
   });
 
   it("needs something to send", async () => {

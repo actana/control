@@ -224,6 +224,36 @@ export type SessionLogs = {
   raw: string;
 };
 
+/**
+ * What one `send` got onto the PTY.
+ *
+ * A boolean was enough while there was only ever one write. Since #404 a send is
+ * two — the text, then the carriage return that submits it — and two writes have
+ * **three** outcomes, not two. The one that a boolean cannot express is the one
+ * that matters: the text landed and the return did not.
+ *
+ * That case is not "the write was refused", and reporting it as such tells the
+ * operator to do the single worst thing available — send again, which now
+ * carries a return of its own and submits the text twice. `failed` is what lets
+ * the caller say which half went missing, and therefore whether a resend is safe.
+ */
+export type SendResult =
+  /** Everything the caller asked for is on the PTY. */
+  | { ok: true }
+  /**
+   * Nothing was written. The text was refused, so the Session has not seen it
+   * and sending it again is safe.
+   */
+  | { ok: false; failed: "text" }
+  /**
+   * **Whatever text there was is on the PTY and the carriage return is not**, so
+   * no turn was started. Text that landed must not be sent again; the return
+   * alone finishes it. On a send that carried no text — a bare `--enter` — there
+   * is nothing to have half-landed, and the caller is the one that knows which
+   * of the two it is holding.
+   */
+  | { ok: false; failed: "carriage-return" };
+
 /** Everything the `session` noun asks of a Core, and nothing else. */
 export type SessionGateway = {
   /** `null` lists every Project's Sessions; a string filters by Project name or id. */
@@ -232,17 +262,20 @@ export type SessionGateway = {
   resume(request: SessionResumeRequest): Promise<StartedSession>;
   logs(taskId: string): Promise<SessionLogs>;
   /**
-   * Write text to a running Session, verbatim. Resolves false if the Core
-   * declined. `enter` adds a carriage return as a **separate write to the same
-   * PTY**, resolved once for both, so there is no window between them in which
-   * the text lands and the return is sent somewhere else — or nowhere.
+   * Write text to a running Session, verbatim. `enter` adds a carriage return as
+   * a **separate write to the same PTY**, resolved once for both, so there is no
+   * window between them in which the text lands and the return is sent somewhere
+   * else — or nowhere.
    *
    * Still an option and still off when it is not passed: this is the mechanism,
    * and *whether a send submits* is the command's decision, made once in
    * `sessionSend` (#404). The gateway writing a return nobody asked for would
    * put that decision in two places.
+   *
+   * Answers with {@link SendResult} rather than a boolean, because two writes
+   * have three outcomes and only one of them is "nothing happened".
    */
-  send(taskId: string, text: string, opts?: { enter?: boolean }): Promise<boolean>;
+  send(taskId: string, text: string, opts?: { enter?: boolean }): Promise<SendResult>;
   /**
    * Attach to a running Session and hand back something to wait on — the
    * primitive `actana session wait` is (#289 B).
@@ -411,21 +444,33 @@ class CoreLinkSessionGateway implements SessionGateway {
     return { taskId, ptyId, screen: terminal.text(), raw: replay.data };
   }
 
-  async send(taskId: string, text: string, opts: { enter?: boolean } = {}): Promise<boolean> {
+  async send(taskId: string, text: string, opts: { enter?: boolean } = {}): Promise<SendResult> {
     // One resolution for the whole verb. Resolving again for the return would
     // open a window — the harness exits between the two round trips, the text
     // has landed, and the command reports a failure after a partial delivery.
     const ptyId = await this.livePty(taskId);
 
-    // Verbatim, and that is the whole verb. See rule 1: nothing is appended,
-    // nothing is timed, nothing is retried. The return, when it was asked for,
-    // is its own write of its own byte — never glued to the text.
-    if (text.length > 0 && !(await this.client.write(ptyId, text))) return false;
-    if (!opts.enter) return true;
+    // Verbatim, and that is the whole verb. See rule 1: nothing is added on a
+    // timer, nothing is retried. The return is its own write of its own byte —
+    // never glued to the text — and it goes only because the caller asked.
+    if (text.length > 0 && !(await this.client.write(ptyId, text))) {
+      return { ok: false, failed: "text" };
+    }
+    if (!opts.enter) return { ok: true };
     // Its own write, never `text + "\r"`. A harness that treats a paste as one
     // unit would otherwise swallow the return with the characters and start no
     // turn — the failure #404 is about, arriving by the other door.
-    return this.client.write(ptyId, "\r");
+    //
+    // **And its own failure.** The text is already on the PTY at this point, so
+    // reporting this as "the write was refused" would tell an operator to do the
+    // one thing that makes it worse: send again, which now carries a return and
+    // submits the text twice. The `--wait` path has said this since #289
+    // (`attached`, below); since #404 put the return on the default path, the
+    // plain path needs it too.
+    if (!(await this.client.write(ptyId, "\r"))) {
+      return { ok: false, failed: "carriage-return" };
+    }
+    return { ok: true };
   }
 
   async wait(taskId: string): Promise<StartedSession> {

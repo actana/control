@@ -22,7 +22,9 @@
 // the SDK, which hands it to the Core, which waits for the harness's TUI to
 // settle, answers whatever dialog it opened, and writes the prompt and the
 // carriage return. Nothing in this package waits, retries, or presses Enter on
-// a timer — `send` writes exactly the bytes it was given and appends nothing.
+// a timer: `send` writes the bytes it was given, and — since #404 — the carriage
+// return that submits them, as its own write, because the flags the operator
+// typed asked for one. What this package never appends is *timing*.
 // A prompt that goes missing is a Core bug and must be fixed there, where every
 // client benefits; a client that compensated would hide it and would behave
 // differently from the Panel doing the same thing.
@@ -169,10 +171,13 @@ Sending text, and what submits it
   mid-turn it resolves on *that* turn's end and reports it as this send's, for a
   turn this send did not start. Both are #405's and neither is fixed here.
 
-  \`--json\` on a plain send carries the same fact as a \`submitted\` field. It is
-  **not** on the \`--wait\` document, which prints \`start --wait --json\`'s keys
-  and no others so one parser reads every verb (#289) — there the line on stderr
-  is the only signal.
+  \`--json\` on a plain send says all of this in fields: \`enter\` is the return
+  that was **asked** for, \`submitted\` is the return that was **accepted**, and
+  they differ in exactly one case — the text landed and the return did not, where
+  \`failed\` then names the half that went missing so a script knows a resend
+  would submit the text twice. Those keys are **not** on the \`--wait\` document,
+  which prints \`start --wait --json\`'s keys and no others so one parser reads
+  every verb (#289) — there the line on stderr is the only signal.
 
   \`--enter\` is still accepted and does nothing on a send that carries text, so
   a script written against the old default keeps working. On a send with no text
@@ -182,8 +187,10 @@ Sending text, and what submits it
 
 Who delivers the prompt
   The Core does (ADR 0026). It waits for the harness to settle, answers the
-  dialog it opened, and writes the prompt. This CLI adds no timing of its own,
-  and \`send\` writes exactly what it is given — a lost prompt is a Core bug.`;
+  dialog it opened, and writes the prompt. This CLI adds no timing of its own —
+  no pause, no waiting for the harness to look ready, no retry — and \`send\`
+  adds nothing but the carriage return the flags above asked for. A lost prompt
+  is a Core bug.`;
 
 /** Dispatch a `session` verb. `args.positionals` still has the noun on the front. */
 export async function runSessionCommand(
@@ -714,18 +721,32 @@ async function sessionSend(
     // One call, one PTY resolution, both writes (#204 review). The command has
     // decided whether there is a return; the gateway decides nothing and only
     // writes what it was handed.
-    const delivered = await gateway.send(taskId, text, { enter: submit });
+    const sent = await gateway.send(taskId, text, { enter: submit });
 
     if (args.json) {
-      // `enter` keeps its old name and its old meaning — a carriage return was
-      // written — so a parser built on it keeps reading the same fact. `submitted`
-      // is the same fact under the name that says what it is *for*, which is the
-      // question #404 was about. Both are on **this** document only; the `--wait`
-      // path's shape is #289's and is not extended here.
+      // Two keys for the request and two for the outcome, kept apart on purpose.
+      //
+      // `enter` is the **request**, which is what it has always been — the flag
+      // as the command resolved it — so a parser built on it keeps reading the
+      // same fact. `submitted` is the **outcome**: a carriage return that was
+      // asked for *and accepted*. They differ in exactly one case, and it is the
+      // case worth knowing about — the text landed and the return did not.
+      //
+      // `failed` appears only on a failure and says which half went missing, so
+      // a script can tell a safe resend from one that would submit the text
+      // twice. All three are on **this** document only; the `--wait` path's
+      // shape is #289's and is not extended here.
       deps.out(
-        formatJson({ taskId, characters: text.length, enter: submit, submitted: submit, delivered }),
+        formatJson({
+          taskId,
+          characters: text.length,
+          enter: submit,
+          submitted: submit && sent.ok,
+          delivered: sent.ok,
+          ...(sent.ok ? {} : { failed: sent.failed }),
+        }),
       );
-    } else if (delivered) {
+    } else if (sent.ok) {
       const andReturn = submit ? " and a carriage return" : "";
       deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
     }
@@ -733,9 +754,33 @@ async function sessionSend(
     // instead of it: a send that started no turn is the failure this ticket
     // exists to stop being quiet about, and a script that only reads stdout
     // still gets the fact in the `submitted` field.
-    if (delivered && !submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
-    if (!delivered) {
-      deps.err(`actana session send: the Core did not accept the write to session ${taskId}.`);
+    if (sent.ok && !submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
+    if (!sent.ok) {
+      // Two failures, two messages, because the operator's next move differs.
+      // The `--wait` path has drawn this line since #289 and gives its own
+      // reason for it; #404 put the second write on the default path, so the
+      // plain path draws it too rather than flattening both into "refused".
+      if (sent.failed === "text") {
+        deps.err(
+          `actana session send: the Core did not accept the write to session ${taskId}. ` +
+            `Nothing was written, so sending it again is safe.`,
+        );
+      } else if (text.length === 0) {
+        // A bare `--enter`, whose whole message was the return. Nothing landed,
+        // so this is the simple failure and the "do not resend" below would be
+        // advice about text that does not exist.
+        deps.err(
+          `actana session send: the Core did not accept the carriage return for session ` +
+            `${taskId}. Nothing was written, so sending it again is safe.`,
+        );
+      } else {
+        deps.err(
+          `actana session send: session ${taskId} took the text, but the Core did not accept ` +
+            `the carriage return — so no turn was started. The text was delivered: do not send ` +
+            `it again, or the harness gets it twice. \`actana session send ${taskId} --enter\` ` +
+            `sends the return on its own.`,
+        );
+      }
       return EXIT_FAILURE;
     }
     return EXIT_OK;
