@@ -358,6 +358,10 @@ jobs:
     outputs:
       train: ${{ steps.facts.outputs.train }}
       version: ${{ steps.facts.outputs.version }}
+      # The line, with any sub-beta suffix off it (ADR 0023 D46). `version` is
+      # the branch's own name and reaches exactly one surface — the train's
+      # moving image tag; everything published is named for the line.
+      line: ${{ steps.facts.outputs.line }}
       beta_version: ${{ steps.facts.outputs.beta_version }}
       tag: ${{ steps.facts.outputs.tag }}
       sha: ${{ steps.facts.outputs.sha }}
@@ -393,14 +397,29 @@ jobs:
           set -euo pipefail
           train="$INPUT_TRAIN"
 
-          # Validated the way `promote.yml`'s pause validates it: a train's name
-          # is its version (ADR 0023 D3), and the version is what this cut
-          # publishes.
-          if [[ ! "$train" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error title=Not a train branch::'$train' is not \`beta/x.y.z\`. A train's name is its version (ADR 0023 D3), and this cut publishes that version with \`-beta\` appended."
+          # Validated the way `promote.yml`'s pause validates it, with the one
+          # difference D46 makes: a train's name is its version (ADR 0023 D3),
+          # and a sub-beta `beta/x.y.z-fN` is a train of the same line under
+          # another branch name. A cut from one is a cut of that line — the
+          # thing being cut is a beta of `x.y.z`, and there is no `-fN` release.
+          if [[ ! "$train" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+(-f[0-9]+)?$ ]]; then
+            echo "::error title=Not a train branch::'$train' is not \`beta/x.y.z\` or \`beta/x.y.z-fN\`. A train's name is its version (ADR 0023 D3, D46), and this cut publishes that line with \`-beta\` appended."
             exit 1
           fi
           version="${train#beta/}"
+          # The line, with any sub-beta suffix taken off (D46). Everything this
+          # cut *publishes* is named for the line and never for the branch: the
+          # tag, the Release, the CLI pack and every asset filename. The suffix
+          # survives in exactly one place below — `beta-$version`, the train's
+          # own moving image tag, which is per branch by D12 and is what the
+          # retag at the end of this file reads.
+          #
+          # This is also what keeps ADR 0036 C1 untouched by D46. The beta
+          # version string is still `x.y.z-beta`, built by one concatenation
+          # from a bare line, and the assertion under it still refuses
+          # everything else — rather than being widened to admit a shape it
+          # exists to ban.
+          line="${version%-f*}"
 
           # ── C1, asserted rather than assumed ────────────────────────────────
           #
@@ -409,7 +428,7 @@ jobs:
           # `.1` appended anywhere is a defect (ADR 0036 C1), and it would reach
           # the tag, the Release, three asset filenames and #319's image tags at
           # once — so it is refused here, before anything is built.
-          beta_version="$version-beta"
+          beta_version="$line-beta"
           if [[ ! "$beta_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-beta$ ]]; then
             echo "::error title=Not a bare beta version::'$beta_version' is not \`x.y.z-beta\`. The beta version string is fixed, with no counter, no dotted suffix, no run number and no short sha after the word beta (ADR 0036 C1). It is the tag, the Release, every asset filename and #319's image tag."
             exit 1
@@ -451,6 +470,7 @@ jobs:
           {
             echo "train=$train"
             echo "version=$version"
+            echo "line=$line"
             echo "beta_version=$beta_version"
             echo "tag=$tag"
             echo "sha=$sha"
@@ -993,7 +1013,7 @@ jobs:
           # `-beta`, which is why there is no parameter a counter could arrive
           # through, and it holds this value against the line
           # `packages/cli/package.json` carries before it packs anything.
-          BETA_LINE: ${{ needs.resolve.outputs.version }}
+          BETA_LINE: ${{ needs.resolve.outputs.line }}
         run: |
           set -euo pipefail
           node scripts/rehearse-npm-publish.mjs \
@@ -1145,7 +1165,7 @@ jobs:
           TAG: ${{ needs.resolve.outputs.tag }}
           SHA: ${{ needs.resolve.outputs.sha }}
           TRAIN: ${{ needs.resolve.outputs.train }}
-          VERSION: ${{ needs.resolve.outputs.version }}
+          LINE: ${{ needs.resolve.outputs.line }}
           BETA_VERSION: ${{ needs.resolve.outputs.beta_version }}
           PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
@@ -1187,7 +1207,7 @@ jobs:
           # one place a moving tag could still carry a mix of two cuts, and the
           # comment below promises it does not.
           printf '%s\n' \
-            "Beta of the \`$VERSION\` line, cut from \`$TRAIN\` at \`$SHA\`." \
+            "Beta of the \`$LINE\` line, cut from \`$TRAIN\` at \`$SHA\`." \
             "" \
             "**This is a prerelease.** \`/releases/latest\` excludes it, so \`install.sh\` and" \
             "the in-product update checker do not offer it by default (ADR 0023 D9)." \

@@ -158,14 +158,21 @@ jobs:
             exit 0
           fi
 
-          # The train (ADR 0023 D1, D3). A promotion pull request's head *is*
-          # `beta/x.y.z`, which is a branch class the convention above does not
-          # know about — without this every promotion fails a required check
+          # The train (ADR 0023 D1, D3, D46). A promotion pull request's head
+          # *is* `beta/x.y.z`, which is a branch class the convention above does
+          # not know about — without this every promotion fails a required check
           # and the train can never reach `main`. The shape is asserted rather
-          # than waved through: `beta/` plus a bare `x.y.z`, which is what the
-          # cut writes into every manifest.
-          if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1)."
+          # than waved through: `beta/` plus a bare `x.y.z`, optionally followed
+          # by a `-fN` sub-beta suffix (D46) — and nothing else.
+          #
+          # `-fN` and not `.N`: a fourth dot is not semver, and `0.4.5.1` would
+          # be refused by npm, by the version-agreement checker and by the
+          # publish rehearsal alike. `0.4.5-f1` is a legal prerelease of the
+          # same line, which is the whole reason the suffix has that shape.
+          # This widening is exactly `-f` plus digits — no other prerelease
+          # identifier is a train name.
+          if echo "$BRANCH" | grep -qE '^beta/[0-9]+\.[0-9]+\.[0-9]+(-f[0-9]+)?$'; then
+            echo "✅ Branch name '$BRANCH' is a release train (ADR 0023 D1, D46)."
             exit 0
           fi
 
@@ -376,7 +383,18 @@ jobs:
                 fail "Only a train may target main" "This pull request is based on \`main\` with head \`$HEAD\`. Work reaches \`main\` only by promoting a train (ADR 0023 D1) — retarget it at the open \`beta/x.y.z\` branch. A hotfix is an expedited train (D22), not an exception."
               else
                 version="${HEAD#beta/}"
-                if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                # D46. A sub-beta is refused here by name rather than by
+                # falling through to "not a train branch", because it *is* a
+                # train branch and the author of this pull request believes —
+                # correctly — that it carries the fixes that should ship. What
+                # is wrong is the ref: `main` publishes `vx.y.z` with no
+                # suffix, so the branch that promotes is the plain train, and
+                # a `-fN` reaches `main` by merging back into it first.
+                # `promote.yml`'s pause refuses the same dispatch for the same
+                # reason, so the two refusals cannot disagree.
+                if [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+-f[0-9]+$ ]]; then
+                  fail "A sub-beta train does not promote" "\`$HEAD\` is a sub-beta of the train \`beta/${version%-f*}\` (ADR 0023 D46). Only the plain train promotes: the release is \`v${version%-f*}\` with no suffix, and \`beta-$version\` is this sub-beta's own moving image tag rather than the one the digest assertion verifies (D16). Merge \`$HEAD\` into \`beta/${version%-f*}\` and open the promotion pull request from there."
+                elif ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
                   fail "Not a train branch" "\`$HEAD\` is not \`beta/x.y.z\`. The promotion's head is the train, and the train's name is its version (ADR 0023 D3)."
                 else
                   echo "Promotion pull request for $version."
@@ -388,8 +406,16 @@ jobs:
 
             beta/*)
               version="${BASE#beta/}"
-              if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-                fail "Not a train branch" "\`$BASE\` is not \`beta/x.y.z\` (ADR 0023 D3)."
+              # D46. A sub-beta is a train, so a pull request may target it.
+              # `line` is the version the *tree* carries: the suffix names a
+              # variation of the train and never a version, so the six
+              # manifests and `install.sh`'s stamp still say `x.y.z` on a
+              # `-fN` branch exactly as they do on the plain one. That is what
+              # makes a merge back into the plain train a diff of the fixes
+              # and nothing else, and what keeps the release `vx.y.z`.
+              line="${version%-f*}"
+              if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-f[0-9]+)?$ ]]; then
+                fail "Not a train branch" "\`$BASE\` is not \`beta/x.y.z\` or \`beta/x.y.z-fN\` (ADR 0023 D3, D46)."
               else
                 # "The open train" is not a list to keep in sync — it is a
                 # property of the branch: a train promotes by fast-forward
@@ -417,19 +443,27 @@ jobs:
                     fail "This train is dead" "\`main\` is not an ancestor of \`$BASE\` (compare says '$status'), so it can never fast-forward and can never be promoted (ADR 0023 D2, D5). Another train was promoted past it. Retarget this pull request at the open train, or wait for the post-hotfix rebase (D24)." ;;
                 esac
 
-                # The head is an ordinary branch. A train targeting a train is
-                # not a thing the model has, and the `beta/*` allowlist in
-                # `Conventions` above would otherwise wave it through.
+                # The head is an ordinary branch, with exactly one exception:
+                # a sub-beta merging back into the train it is a sub-beta of
+                # (D46). That merge-back is how a `-fN` reaches `main` at all,
+                # since only the plain train promotes — so it is the one
+                # train-headed pull request the model has, and it is matched
+                # against *this* base rather than against `beta/*`: a sub-beta
+                # of another line targeting this train is still nonsense.
+                # Everything else stays refused, because the `beta/*` allowlist
+                # in `Conventions` above would otherwise wave it through.
                 PATTERN='^(feat|feature|fix|bugfix|hotfix|release|chore|docs|refactor|perf|test|ci|revert)\/[a-z0-9]+([._-][a-z0-9]+)*$'
                 if echo "$HEAD" | grep -qE '^(dependabot|renovate)/'; then
                   echo "  ✅ $HEAD is bot-generated"
+                elif [[ "$version" == "$line" && "$HEAD" =~ ^beta/${line//./\\.}-f[0-9]+$ ]]; then
+                  echo "  ✅ $HEAD is a sub-beta of $BASE merging back into it (ADR 0023 D46)"
                 elif ! echo "$HEAD" | grep -qE "$PATTERN"; then
-                  fail "Head branch does not follow the convention" "\`$HEAD\` is not \`<type>/<kebab-case-description>\`. A train's own name (\`beta/x.y.z\`) is allowed only as the *head* of a promotion pull request into \`main\`."
+                  fail "Head branch does not follow the convention" "\`$HEAD\` is not \`<type>/<kebab-case-description>\`. A train's own name is allowed as a *head* in exactly two places: a promotion pull request from the plain train into \`main\`, and a sub-beta \`beta/x.y.z-fN\` merging back into its own \`beta/x.y.z\` (ADR 0023 D46)."
                 else
                   echo "  ✅ $HEAD follows the branch convention"
                 fi
 
-                assert_versions "$version"
+                assert_versions "$line"
               fi
               ;;
 
@@ -1293,17 +1327,28 @@ jobs:
         run: |
           set -euo pipefail
           version="${BRANCH#beta/}"
-          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error title=Not a train branch::'$BRANCH' is not beta/x.y.z, so there is no version to publish under. A train's name is its version (ADR 0023 D3)."
+          if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-f[0-9]+)?$ ]]; then
+            echo "::error title=Not a train branch::'$BRANCH' is not beta/x.y.z or beta/x.y.z-fN, so there is no version to publish under. A train's name is its version (ADR 0023 D3, D46)."
             exit 1
           fi
+          # The **branch** name, suffix included, and deliberately not the line
+          # (D46). `version` here names the moving image tag rather than the
+          # tree: a sub-beta and its plain train are two branches building two
+          # different commits, and `beta-x.y.z` on both would mean the digest
+          # `promote.yml` verifies (D16) could be whichever pushed last. So a
+          # sub-beta publishes `beta-x.y.z-fN` — its own moving tag, staged
+          # under its own name — and the plain train's tag keeps meaning the
+          # plain train. `train-versions` above asserted this string against
+          # the tree through `lineOf`, so the manifests still say `x.y.z` and
+          # the image's version label still reports the line.
           {
             echo "version=$version"
             echo "tags=beta-$version"
             echo "dev_tags=sha-${SHA:0:7}"
             # Per train, not a bare `beta`: two trains exist while a hotfix is
-            # in flight (D22), and a shared stage would let them overwrite each
-            # other's per-arch tags (D12).
+            # in flight (D22), a sub-beta makes that two of one line (D46), and
+            # a shared stage would let them overwrite each other's per-arch
+            # tags (D12).
             echo "stage=beta-$version"
           } >> "$GITHUB_OUTPUT"
 

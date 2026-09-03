@@ -168,6 +168,31 @@ jobs:
           ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
+          # A sub-beta is refused, and is refused *by name* (ADR 0023 D46).
+          #
+          # It is not enough to widen the shape here, and widening it is the
+          # edit that looks right: everything below derives the published
+          # version from the branch name, so `beta/0.4.5-f1` would fast-forward
+          # `main` and push `v0.4.5-f1` — a release nobody asked for, under a
+          # version the line is not on. Stripping the suffix instead is worse
+          # than wrong, it is incoherent: the digest clause the whole design
+          # reduces to (D16) verifies `beta-$version`, and a sub-beta publishes
+          # its own moving tag `beta-x.y.z-fN` (ci.yml `train-tags`), so a
+          # stripped promotion would verify the *plain* train's image against
+          # the *sub-beta's* head SHA and either fail confusingly or, if the
+          # plain train happened to be at that commit, promote bytes built from
+          # another branch.
+          #
+          # So the sub-beta merges back into its plain train first, and the
+          # plain train promotes. `ci.yml`'s `Train rules` refuses the same
+          # thing at the pull request, one step earlier and for the same
+          # reason; this is the refusal at the dispatch, because a person may
+          # reach the dispatch without ever opening that pull request.
+          if [[ "$TRAIN" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+-f[0-9]+$ ]]; then
+            plain="${TRAIN%-f*}"
+            echo "::error title=A sub-beta train does not promote::'$TRAIN' is a sub-beta of \`$plain\` (ADR 0023 D46). Promotion publishes the line with no suffix, so the branch that promotes is the plain train: merge \`$TRAIN\` into \`$plain\`, open the promotion pull request from \`$plain\` into \`main\`, and dispatch \`gh workflow run promote.yml -f train=$plain\`. The suffix is not stripped here on purpose — \`beta-${TRAIN#beta/}\` is this sub-beta's own moving image tag, and the digest assertion (D16) verifies the tag named by the train it was handed."
+            exit 1
+          fi
           if [[ ! "$TRAIN" =~ ^beta/[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
             echo "::error title=Not a train branch::'$TRAIN' is not \`beta/x.y.z\`. A train's name is its version (ADR 0023 D3), and the version is what this promotion publishes."
             exit 1
@@ -296,7 +321,19 @@ jobs:
           # named `beta/0x1x0` would be filtered out of `survivors` and the
           # hotfix state would go undetected — the surviving train never
           # rebased (D24) and a second train cut beside it (D25).
-          survivors="$(grep -Fvx "$TRAIN" <<<"$all_trains" || true)"
+          #
+          # A sub-beta of *this* train is dropped with it (D46). It is a
+          # variation of the train being promoted, not another train: it was
+          # cut from it, its fixes reached `main` by the merge-back that is the
+          # only way a sub-beta ships, and it carries the same line. Counted as
+          # a survivor it would make every ordinary promotion look like a
+          # hotfix (D23) — force-pushing a rebase over a branch whose work is
+          # already on `main` (D24), and, with a real surviving train beside
+          # it, tripping the "more than one surviving train" refusal on a state
+          # the model does have an answer for. Sub-betas of *another* line are
+          # not filtered: those are a different train and D2 still applies.
+          survivors="$(grep -Fvx "$TRAIN" <<<"$all_trains" \
+                        | grep -Ev "^$(sed 's/[.]/[.]/g' <<<"$TRAIN")-f[0-9]+\$" || true)"
           survivor_count="$(grep -c . <<<"$survivors" || true)"
           hotfix=false
           survivor=""
