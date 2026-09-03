@@ -215,7 +215,7 @@ export function formatActanaStatus(report: ActanaStatusReport): string {
   lines.push(...updateRows(report));
   lines.push(row("Protocol version", report.protocolVersion ?? "unknown"));
   if (report.target) lines.push(row("Target", report.target));
-  lines.push(row("Endpoint", report.endpoint ?? "unknown"));
+  lines.push(row("Address", report.endpoint ?? "unknown"));
 
   if (report.container) {
     // Naming `docker inspect` rather than a policy value is the honest answer:

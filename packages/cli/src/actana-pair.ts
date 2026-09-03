@@ -338,6 +338,12 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     // byte of this may move** — it is what every script that has ever wrapped
     // `pair new` reads, and the frame above exists precisely so that this does
     // not have to change to give an operator something better to look at.
+    //
+    // The one exception ever made to that rule is #414: `Endpoint host` became
+    // `Address host`, because the Panel's form asks for an *address* and the
+    // whole point of these labels is that an operator copies the right word
+    // across. Column widths, order and the conditional are untouched, and the
+    // rename is deliberate rather than drift — nothing else here may follow it.
     deps.out(`Pairing code   ${code}`);
     deps.out(`CA fingerprint ${fingerprint}`);
     deps.out(`Expires        ${absoluteTime(session.expiresAt)} (${relativeTime(session.expiresAt, now)})`);
@@ -345,7 +351,7 @@ function pairNew(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext): 
     // Only when it was chosen. A Core with one configured address has nothing to
     // say here, and a line that appeared on every `pair new` would be noise on
     // the terminal an operator is reading a credential off.
-    if (endpointHost) deps.out(`Endpoint host  ${endpointHost}`);
+    if (endpointHost) deps.out(`Address host   ${endpointHost}`);
     deps.out(`Session        ${sessionId}`);
   }
   deps.err(`Cancel it before it is used with \`actana pair revoke ${sessionId}\`.`);
@@ -549,7 +555,7 @@ export function pairingHandout(handout: PairingHandout): string[] {
    *
    * `PANEL_INSTRUCTION` sends the operator to a form whose first field is this
    * Core's address, and until this row the frame was the one surface that never
-   * said what to put in it: `Endpoint host` prints only down a pipe and only
+   * said what to put in it: `Address host` prints only down a pipe and only
    * for `--public-host`, so an operator at a terminal — the audience this
    * whole block exists for — read four values off a screen and then had to
    * work the fifth out for themselves. It sits above the fingerprint for the
@@ -565,7 +571,7 @@ export function pairingHandout(handout: PairingHandout): string[] {
    * the others; this row does not compete with them.
    */
   const credentialEndpoint = endpointAddress(handout.credentialHost, handout.port);
-  const endpointLabel = "Endpoint       ";
+  const endpointLabel = "Address        ";
   const endpointRoom = FRAME_CONTENT_WIDTH - displayWidth(endpointLabel);
   if (displayWidth(credentialEndpoint) <= endpointRoom) {
     lines.push(
@@ -575,7 +581,7 @@ export function pairingHandout(handout: PairingHandout): string[] {
     // **Wrapped, never clipped**, on the same rule the fingerprint follows: an
     // address with an ellipsis in it is an address that fails to dial, and
     // `wrapText` breaks on the `:` and `.` a long hostname is built out of.
-    lines.push(frameRow([{ text: "Endpoint", style: ANSI.dim }], color));
+    lines.push(frameRow([{ text: "Address", style: ANSI.dim }], color));
     for (const chunk of wrapText(credentialEndpoint, FRAME_CONTENT_WIDTH - 3)) {
       lines.push(frameRow([{ text: `   ${chunk}` }], color));
     }
@@ -623,7 +629,7 @@ export function pairingHandout(handout: PairingHandout): string[] {
   // {@link PairingHandout.credentialHost}. Saying only "reachable at X" would
   // hand an operator a command that pairs and then leaves their client pointed
   // somewhere it cannot reach, with nothing on the screen explaining why.
-  // The same value the `Endpoint` row above prints — computed once, so the box
+  // The same value the `Address` row above prints — computed once, so the box
   // and the notes can never disagree about which address the credential names.
   for (const [index, host] of handout.hosts.entries()) {
     const endpoint = endpointAddress(host, handout.port);

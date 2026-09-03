@@ -93,7 +93,7 @@ const PLACEHOLDER_COMMAND = `actana pair new --label ${cliNamePlaceholder()}`;
 
 /**
  * The order `actana-pair.ts` writes those lines in, read off the `deps.out`
- * calls themselves. `Endpoint host` is dropped: it is printed only for
+ * calls themselves. `Address host` is dropped: it is printed only for
  * `--public-host`, which this wizard does not teach.
  */
 function printerOrder(pinned: string[]): string[] {

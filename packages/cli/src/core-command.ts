@@ -323,7 +323,7 @@ async function coreStatus(
   const rows: string[][] = [
     ["Core", name ?? "(unnamed)"],
     ["Credential", sourceLabel(source)],
-    ["Endpoint", blob.endpoint],
+    ["Address", blob.endpoint],
     ["Core id", probe.coreId ?? "(none reported)"],
     [
       "Protocol",

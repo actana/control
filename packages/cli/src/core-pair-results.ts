@@ -177,7 +177,7 @@ export function corePairSuccessBlock(result: CorePairSuccess): string[] {
     ),
   );
   lines.push(frameRow([], color));
-  lines.push(...field("Endpoint", result.endpoint, color));
+  lines.push(...field("Address", result.endpoint, color));
   // "Sent as", not "Label", because there are two LABEL columns in this
   // program already — `core ls`'s, which means the *Core's* own alias, and
   // `pair ls`'s on the Core, which means the *session's*. This is neither. It
