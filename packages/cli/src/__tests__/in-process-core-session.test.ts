@@ -30,7 +30,10 @@ import type {
   CoreLinkSessionSnapshot,
   CoreLinkTaskSnapshot,
 } from "@actana/sdk/core-link-frames.ts";
-import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core-link-frames.ts";
+import {
+  SESSION_DELIVERED_EVENT_KIND,
+  SESSION_PROMPT_ABANDONED_EVENT_KIND,
+} from "@actana/sdk/core-link-frames.ts";
 
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
@@ -409,6 +412,38 @@ describe("actana session, against a Core in this process", () => {
     const stopped = await fixture!.run(["session", "wait", "task_done", "--json"], withCore());
     expect(stopped.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(stopped.out.join("\n")).error).toContain("no harness running");
+  }, 60_000);
+
+  it("tells the caller the Core abandoned the starting prompt, off the event log (#483)", async () => {
+    // The whole path, on a real socket: the Core appends the row, the client
+    // reads it on the connection it already has, and the command turns it into
+    // a sentence and a non-zero exit. `needs-input` on its own is a zero exit
+    // by design — a harness that stopped to ask a question did not fail — and
+    // that is exactly why the row has to exist: a prompt that never reached
+    // the harness produces the same status and the opposite meaning.
+    const { eventLog, endTurn } = await coreWithSessions();
+
+    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    await waitFor(() => eventLog.tailReads > 0, "the wait subscribed to the event log");
+    eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_live",
+        ptyId: "pty_live",
+        reason: "opencode composer never appeared within 90000 ms",
+      }),
+      { taskId: "task_live" },
+    );
+    endTurn("task_live", "needs-input");
+
+    const settled = await waiting;
+    expect(settled.code).toBe(EXIT_FAILURE);
+    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
+      taskId: "task_live",
+      status: "needs-input",
+      promptDelivered: false,
+      promptAbandonedReason: "opencode composer never appeared within 90000 ms",
+    });
   }, 60_000);
 
   it("refuses to wait after a delivery the Core did not stamp, rather than answering with the turn before", async () => {

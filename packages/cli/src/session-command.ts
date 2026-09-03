@@ -190,7 +190,16 @@ Who delivers the prompt
   dialog it opened, and writes the prompt. This CLI adds no timing of its own —
   no pause, no waiting for the harness to look ready, no retry — and \`send\`
   adds nothing but the carriage return the flags above asked for. A lost prompt
-  is a Core bug.`;
+  is a Core bug.
+
+  When the Core cannot deliver it, it says so rather than typing into a harness
+  that is not listening and calling it done (#483). \`--wait\` then prints a line
+  naming what stopped it, exits non-zero, and sets \`promptDelivered: false\` on
+  the \`--json\` object. That is not \`needs-input\` in the ordinary sense: the
+  harness is running and has never seen the text, no turn was started, and the
+  fix is to \`send\` the prompt once the harness is up — not to answer a question
+  it never asked. Without \`--wait\` this process has already exited by the time
+  the Core decides, so the Session's status is where the answer is.`;
 
 /** Dispatch a `session` verb. `args.positionals` still has the noun on the front. */
 export async function runSessionCommand(
@@ -410,6 +419,12 @@ async function awaitTurn(
   // buffer when it quits, and the main buffer is where nothing was printed.
   const screen = session.screen();
 
+  // The Core gave up delivering the starting prompt (#483). This outranks the
+  // status, and it has to: the status it produces is `needs-input`, which is a
+  // settled status and a zero exit, and a Session that never received its
+  // prompt reported as a clean settle is the false success the issue is about.
+  const abandoned = session.promptAbandoned();
+
   if (args.json) {
     deps.out(
       formatJson({
@@ -418,6 +433,13 @@ async function awaitTurn(
         status: outcome.status,
         exited: outcome.exited,
         ...(outcome.exitCode === undefined ? {} : { exitCode: outcome.exitCode }),
+        // A field and not only a sentence, for the same reason
+        // `reportsTurnStart` is one: a script deciding whether to re-send has
+        // to read this rather than parse English off stderr.
+        promptDelivered: abandoned === null,
+        ...(abandoned === null || abandoned.reason === ""
+          ? {}
+          : { promptAbandonedReason: abandoned.reason }),
         // The transcript rides along because a `--json` caller has no second
         // chance at it: the Core's replay ring lives with the PTY, so a
         // harness that exited takes its output with it and a later
@@ -427,10 +449,31 @@ async function awaitTurn(
     );
   } else {
     deps.out(session.taskId);
+    if (abandoned) deps.err(promptAbandonedLine(session.taskId, abandoned.reason));
     deps.err(settledLine(outcome));
     deps.err(`\`actana session logs ${session.taskId}\` prints the transcript while the harness is running.`);
   }
+  if (abandoned) return EXIT_FAILURE;
   return settledWell(outcome) ? EXIT_OK : EXIT_FAILURE;
+}
+
+/**
+ * What a caller is told when the prompt never reached the harness (#483).
+ *
+ * It names the one thing the status cannot. `needs-input` is the Core's honest
+ * report of a harness waiting on a human, and it is the *same* status a harness
+ * that stopped to ask a permission question produces — but the two call for
+ * opposite next steps. There, the answer is `session send`. Here there is no
+ * question and no turn: the prompt is not in the composer, so the text has to
+ * go again, and a script that read the zero exit as success would never know.
+ */
+function promptAbandonedLine(taskId: string, reason: string): string {
+  const because = reason === "" ? "" : ` (${reason})`;
+  return (
+    `The Core did not deliver the starting prompt to session ${taskId}${because}. ` +
+    `The harness is running and has not seen it — no turn was started. ` +
+    `Send the text with \`actana session send ${taskId} …\` once the harness is ready.`
+  );
 }
 
 /** {@link awaitTurn}, releasing the attachment's listeners on the way out. */

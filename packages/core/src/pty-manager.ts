@@ -157,6 +157,19 @@ function reportOutputSignal(
   }
 }
 
+/** Report an abandoned starting prompt without letting the sink break delivery. */
+function reportPromptAbandoned(
+  deps: PtyCoreDeps,
+  info: { taskId: string; ptyId: string; reason: string },
+): void {
+  if (!info.taskId) return;
+  try {
+    deps.onSessionPromptAbandoned?.(info);
+  } catch (err) {
+    log.warn("pty.prompt-abandoned.failed", { error: String(err) });
+  }
+}
+
 const ptys = new Map<string, Pty>();
 const RING_LIMIT_BYTES = 1_000_000;
 
@@ -200,6 +213,25 @@ export type PtyCoreDeps = {
   onSessionOutputSignal?: (info: {
     taskId: string;
     signal: "interrupted" | "hooks-need-review" | "dialog-unanswered";
+  }) => void;
+  /**
+   * The Core gave up delivering this Session's starting prompt (issue 483).
+   *
+   * The status change above is the half every client already renders; this is
+   * the half that says *why*, and it exists because the two readings of
+   * `needs-input` call for opposite actions. A harness that stopped to ask a
+   * question is answered with `session send`. A harness that never received the
+   * prompt has no question and no turn, and sending into it answers nothing —
+   * the prompt has to go again. Only the Core knows which of the two it is, and
+   * before this the answer was a line in its own process log.
+   *
+   * Optional like its neighbours: a host that wires nothing loses the event and
+   * keeps the status, which is exactly the behaviour that shipped before.
+   */
+  onSessionPromptAbandoned?: (info: {
+    taskId: string;
+    ptyId: string;
+    reason: string;
   }) => void;
   /**
    * This Session's harness is still talking (issue 243). Not a status and not
@@ -686,6 +718,17 @@ export class PtyCore {
               // `waitForIdle` stops waiting instead of waiting forever.
               if (phase === "abandoned" && p.taskId) {
                 reportOutputSignal(this.deps, p.taskId, "dialog-unanswered");
+                // …and say what was abandoned, not only that something was
+                // (issue 483). `reason` is the delivery module's own words —
+                // a dialog id it knows or a composer that never arrived — and
+                // it goes through the same cleaner as the log line below,
+                // because a payload on the wire deserves at least what a log
+                // line gets.
+                reportPromptAbandoned(this.deps, {
+                  taskId: p.taskId,
+                  ptyId: id,
+                  reason: String(safeLogValue((detail as { reason?: unknown }).reason ?? "")),
+                });
               }
               // A dialog's label is harness output, so it goes through the same
               // cleaner every other borrowed string in this file does.

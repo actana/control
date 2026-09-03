@@ -320,6 +320,61 @@ describe("actana session start", () => {
     expect(asked.err.join("\n")).toContain("needs-input");
   });
 
+  it("says the prompt did not land, and exits non-zero, when the Core abandoned it", async () => {
+    // Issue 483. The status a lost prompt produces is `needs-input`, which the
+    // test above proves is a zero exit on purpose — a harness that stopped to
+    // ask a question did not fail. A harness that never received the prompt
+    // did, and reporting it the same way is the false success the issue is
+    // about: after #387 settles a stranded `ready` Session, this presents as a
+    // settled Session that produced no report and nothing else.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--wait"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            wait: async () => ({ status: "needs-input", exited: false }),
+            promptAbandoned: () => ({
+              reason: "opencode composer never appeared within 90000 ms",
+            }),
+          }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("did not deliver the starting prompt");
+    expect(err).toContain("opencode composer never appeared within 90000 ms");
+    // And it says what to do about it, which is not what `needs-input` implies.
+    expect(err).toContain("session send");
+  });
+
+  it("puts the delivery on the --json object as a field, not only in prose", async () => {
+    await withRegisteredCore();
+    const lost = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            wait: async () => ({ status: "needs-input", exited: false }),
+            promptAbandoned: () => ({ reason: "blocked by folder-trust" }),
+          }),
+      }),
+    });
+    expect(lost.code).toBe(EXIT_FAILURE);
+    expect(JSON.parse(lost.out.join("\n"))).toMatchObject({
+      status: "needs-input",
+      promptDelivered: false,
+      promptAbandonedReason: "blocked by folder-trust",
+    });
+
+    // The ordinary case says so too, so a script reads one field either way
+    // rather than testing for a key's absence.
+    const landed = await cli().run(["session", "start", "web", "go", "--wait", "--json"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    const payload = JSON.parse(landed.out.join("\n"));
+    expect(payload.promptDelivered).toBe(true);
+    expect(payload.promptAbandonedReason).toBeUndefined();
+  });
+
   it("passes --wait-timeout through as the SDK's deadline, and refuses it alone", async () => {
     await withRegisteredCore();
     let timeoutMs: number | undefined;

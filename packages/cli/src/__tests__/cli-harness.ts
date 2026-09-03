@@ -155,6 +155,9 @@ export function fakeStartedSession(overrides: Partial<StartedSession> = {}): Sta
     project: "web",
     wait: async () => ({ status: "finished", exited: false }),
     screen: () => "the transcript",
+    // The default is a prompt that landed. A test about #483's outcome says
+    // `promptAbandoned: () => ({ reason: "…" })` and means it.
+    promptAbandoned: () => null,
     dispose: () => {},
     ...overrides,
   };

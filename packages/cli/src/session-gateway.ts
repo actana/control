@@ -41,11 +41,13 @@ import {
 } from "@actana/sdk/core-session.ts";
 import { TerminalScreen, DEFAULT_COLS, DEFAULT_ROWS } from "@actana/sdk/terminal-screen.ts";
 import { harnessResumeCommand } from "./harness-resume.ts";
-import type {
-  CoreLinkProjectSnapshot,
-  CoreLinkPtySpawnHarness,
-  CoreLinkSessionLockState,
-  CoreLinkTaskSnapshot,
+import {
+  SESSION_PROMPT_ABANDONED_EVENT_KIND,
+  type CoreLinkProjectSnapshot,
+  type CoreLinkPtySpawnHarness,
+  type CoreLinkSessionLockState,
+  type CoreLinkSessionPromptAbandonedPayload,
+  type CoreLinkTaskSnapshot,
 } from "@actana/sdk/core-link-frames.ts";
 import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
 
@@ -210,6 +212,21 @@ export type StartedSession = {
   wait(opts: { timeoutMs?: number }): Promise<SessionOutcome>;
   /** The rendered transcript, read while the Session is alive. */
   screen(): string;
+  /**
+   * Did the Core give up on delivering this Session's starting prompt (#483)?
+   *
+   * `null` while nothing says otherwise, which is the ordinary case and also
+   * the honest answer on a connection that hung up before the Core decided —
+   * delivery runs on the Core's clock and a `start` without `--wait` is gone
+   * long before it (#129 D6).
+   *
+   * A reason means the prompt **is not in the harness**. That is a different
+   * thing from the `needs-input` it produces, which on its own reads as "the
+   * harness stopped to ask something" — the reading that invites a `session
+   * send` in reply. There is no question here and no turn to answer: the text
+   * has to go again.
+   */
+  promptAbandoned(): { reason: string } | null;
   /** Release the listeners this Session holds. The harness keeps running. */
   dispose(): void;
 };
@@ -374,6 +391,7 @@ class CoreLinkSessionGateway implements SessionGateway {
       dangerouslySkipPermissions: request.dangerouslySkipPermissions,
     });
     return wrap(session, {
+      client: this.client,
       projectId: project.projectId,
       project: project.name,
       harness,
@@ -424,6 +442,7 @@ class CoreLinkSessionGateway implements SessionGateway {
       dangerouslySkipPermissions: request.dangerouslySkipPermissions,
     });
     return wrap(session, {
+      client: this.client,
       projectId: project.projectId,
       project: project.name,
       harness: task.agent,
@@ -602,6 +621,7 @@ class CoreLinkSessionGateway implements SessionGateway {
     }
 
     return wrap(session, {
+      client: this.client,
       projectId: task?.projectId ?? "",
       project: project?.name ?? null,
       harness: task?.agent ?? null,
@@ -737,10 +757,18 @@ class CoreLinkSessionGateway implements SessionGateway {
  *
  * `afterEventId` is the delivery stamp the wait counts from, and 0 — no cursor —
  * is the spawn path and the bare `session wait`.
+ *
+ * `client` is here for one event and not as a widening of what this function
+ * knows: `session:promptAbandoned` (#483) is the Core saying the starting
+ * prompt never reached the harness, and a caller that waited on this Session
+ * has to be told that rather than be handed a settled status with nothing
+ * behind it. Read off the event log for this Task and nothing else; still no
+ * frame, no `CoreSession` and no client escapes to the command module.
  */
 function wrap(
   session: CoreSession,
   opts: {
+    client: CoreClient;
     projectId: string;
     project: string | null;
     harness: string | null;
@@ -748,6 +776,22 @@ function wrap(
   },
 ): StartedSession {
   const afterEventId = opts.afterEventId ?? 0;
+  // Latched rather than counted: a delivery abandons once, and the first
+  // reason is the Core's answer for this Session.
+  let abandoned: { reason: string } | null = null;
+  const stopEvents = opts.client.onEvent(({ event }) => {
+    if (event.kind !== SESSION_PROMPT_ABANDONED_EVENT_KIND) return;
+    if (event.taskId !== session.taskId) return;
+    if (abandoned) return;
+    try {
+      const payload = JSON.parse(event.payload) as CoreLinkSessionPromptAbandonedPayload;
+      abandoned = { reason: typeof payload.reason === "string" ? payload.reason : "" };
+    } catch {
+      // A payload this build cannot parse is still the Core saying it gave up,
+      // and the fact is worth more than the sentence.
+      abandoned = { reason: "" };
+    }
+  });
   return {
     taskId: session.taskId,
     ptyId: session.ptyId,
@@ -768,7 +812,11 @@ function wrap(
       };
     },
     screen: () => session.screen(),
-    dispose: () => session.dispose(),
+    promptAbandoned: () => abandoned,
+    dispose: () => {
+      stopEvents();
+      session.dispose();
+    },
   };
 }
 
