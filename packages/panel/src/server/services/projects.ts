@@ -20,11 +20,27 @@ import {
   updateProjectRow,
 } from "../repositories/projects.repo";
 import { findTasksByProjectId } from "../repositories/tasks.repo";
+import { findMaxProjectPresentationPinnedOrder } from "../repositories/project-presentation.repo";
 import { deleteAllProjectImagesFor } from "./project-images";
 import { newId } from "./_ids";
 import { getPinnedProjects, nextPinnedOrder, validatePinnedReorder } from "~/lib/pinned-project-order";
 
 export type { ProjectWithCounts } from "~/shared/projects";
+
+/**
+ * The slot at the end of the rail — where a project being pinned now belongs.
+ *
+ * `nextPinnedOrder` alone answers for the Panel's own rows, and since #382 that
+ * is only half the rail: a Core-owned pin's slot lives on its presentation row,
+ * in the same numbering space. Maxing over the Panel's rows alone handed a
+ * newly pinned project a slot at or below a Core pin's, so it appeared in the
+ * middle of the rail instead of at the end.
+ */
+function nextRailSlot(): number {
+  const corePins = findMaxProjectPresentationPinnedOrder();
+  const panelPins = nextPinnedOrder(findAllProjects());
+  return corePins == null ? panelPins : Math.max(panelPins, corePins + 1);
+}
 
 function validateWorkingDirectory(dir: string): string {
   const trimmed = dir.trim();
@@ -277,7 +293,7 @@ export function createProject(input: {
     imagePath: null,
     groupId: input.groupId ?? null,
     pinned: !!input.pinned,
-    pinnedOrder: input.pinned ? nextPinnedOrder(findAllProjects()) : null,
+    pinnedOrder: input.pinned ? nextRailSlot() : null,
     launchUrl: null,
     rememberHarnessSettings,
     savedHarness,
@@ -326,9 +342,7 @@ export function updateProject(
       ? {
           pinned: rest.pinned,
           pinnedOrder: rest.pinned
-            ? rest.pinnedOrder ??
-              existing.pinnedOrder ??
-              nextPinnedOrder(findAllProjects())
+            ? rest.pinnedOrder ?? existing.pinnedOrder ?? nextRailSlot()
             : null,
         }
       : {}),
@@ -346,7 +360,7 @@ export function togglePin(id: string): Project | null {
     if (!existing) return null;
     const pinning = !existing.pinned;
     const now = Date.now();
-    const pinnedOrder = pinning ? nextPinnedOrder(findAllProjects()) : null;
+    const pinnedOrder = pinning ? nextRailSlot() : null;
     const next = { ...existing, pinned: pinning, pinnedOrder, updatedAt: now };
     updateProjectRow(id, { pinned: pinning, pinnedOrder, updatedAt: now });
     return next;

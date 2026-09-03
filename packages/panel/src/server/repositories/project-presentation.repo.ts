@@ -1,4 +1,4 @@
-import { eq, and, notInArray } from "drizzle-orm";
+import { eq, and, max, notInArray } from "drizzle-orm";
 import { getDb } from "~/db/client";
 import { projectPresentation } from "~/db/schema";
 import type { ProjectPresentation } from "~/db/schema";
@@ -30,6 +30,20 @@ export function updateProjectPresentationRow(
     .set(patch)
     .where(eq(projectPresentation.projectId, projectId))
     .run();
+}
+
+/**
+ * The highest rail slot any Core-owned pin holds, or null when none does.
+ * `projects.pinned_order` and this column index the same rail (#382), so the
+ * Panel cannot decide where the end of that rail is by looking at its own rows
+ * alone.
+ */
+export function findMaxProjectPresentationPinnedOrder(): number | null {
+  const row = getDb()
+    .select({ value: max(projectPresentation.pinnedOrder) })
+    .from(projectPresentation)
+    .get();
+  return row?.value ?? null;
 }
 
 export function deleteProjectPresentationRow(projectId: string): number {

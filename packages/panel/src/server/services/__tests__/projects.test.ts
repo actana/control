@@ -17,13 +17,15 @@ const {
   detectGithubUrl,
   _resetGithubUrlCache,
 } = await import("../projects");
+const { upsertProjectPresentation } = await import("../project-presentation");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
+const { projects, tasks, groups, appSettings, projectPresentation } = await import("~/db/schema");
 
 describe("projects service", () => {
   beforeEach(() => {
     const db = getDb();
     db.delete(tasks).run();
+    db.delete(projectPresentation).run();
     db.delete(projects).run();
     db.delete(groups).run();
     db.delete(appSettings).run();
@@ -133,6 +135,36 @@ describe("projects service", () => {
     // ...and an unpinned row of its own is still a caller bug, not a passenger.
     const c = createProject({ name: "gamma", path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-c-")) });
     expect(() => reorderPinnedProjects([a.id, b.id, c.id])).toThrow(/not pinned/);
+  });
+
+  // Issue 382 review. `projects.pinned_order` indexes a rail it now shares with
+  // every Core's pins, whose slots live on presentation rows in this same
+  // database. Maxing over the Panel's own rows alone handed a newly pinned
+  // project a slot at or below one a Core pin already held, so it appeared in
+  // the middle of the rail rather than at its end.
+  it("pins a new project at the end of the whole rail, not the end of its own rows", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-railend-"));
+    const a = createProject({ name: "alpha", path: dir });
+    togglePin(a.id);
+    expect(getProject(a.id)?.pinnedOrder).toBe(0);
+
+    // A Core's pins take slots 1..4 on the same rail.
+    upsertProjectPresentation("p-core-1", "core-a", { pinnedOrder: 4 });
+
+    const b = createProject({
+      name: "beta",
+      path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-railend-b-")),
+    });
+    togglePin(b.id);
+    expect(getProject(b.id)?.pinnedOrder).toBe(5);
+
+    // Same rule on the create-pinned path.
+    const c = createProject({
+      name: "gamma",
+      path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-railend-c-")),
+      pinned: true,
+    });
+    expect(getProject(c.id)?.pinnedOrder).toBe(6);
   });
 
   it("rejects updating a project to a nonexistent path", () => {
