@@ -43,6 +43,13 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
     uiVisible: true,
     supportsSkipPermissions: true,
     skipPermissionsFlag: HARNESS_AUTO_MODE_FLAGS["codex"] ?? undefined,
+    // `--enable hooks` asks Codex for the lifecycle surface. The hook-trust
+    // flag that makes those hooks actually RUN is deliberately not here: the
+    // Core appends it at spawn, and only when it wrote the hooks file itself
+    // and nothing else is in it (issue 290). A launch command cannot know
+    // that — it is composed before any file lands — and a client that put the
+    // flag here unconditionally would be vouching for hooks that came with
+    // somebody's repository.
     startCommand: (opts) =>
       opts?.skipPermissions
         ? "codex --enable hooks --yolo"
@@ -115,3 +122,4 @@ export const harnessSkipPermissionsFlag = (agent: Harness): string | null =>
  */
 export const harnessLaunchesWithSkipPermissions = (harness: Harness) =>
   harnessSupportsSkipPermissions(harness);
+

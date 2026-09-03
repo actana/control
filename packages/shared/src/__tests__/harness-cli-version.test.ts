@@ -98,10 +98,27 @@ describe("Harness version helpers", () => {
   });
 
   it("compares semantic versions against configured minimums", () => {
-    expect(compareCliVersions("0.131.9", HARNESS_CLI_CONFIG.codex.minimumVersion, "semver")).toBeLessThan(0);
-    expect(compareCliVersions("0.132.0", HARNESS_CLI_CONFIG.codex.minimumVersion, "semver")).toBe(0);
+    expect(compareCliVersions("0.134.9", HARNESS_CLI_CONFIG.codex.minimumVersion, "semver")).toBeLessThan(0);
+    expect(compareCliVersions("0.135.0", HARNESS_CLI_CONFIG.codex.minimumVersion, "semver")).toBe(0);
     expect(compareCliVersions("2.1.145", HARNESS_CLI_CONFIG["claude-code"].minimumVersion, "semver")).toBeLessThan(0);
     expect(compareCliVersions("2.1.146", HARNESS_CLI_CONFIG["claude-code"].minimumVersion, "semver")).toBe(0);
+  });
+
+  it("refuses the three Codex releases where the hook-trust flag parsed but did nothing", () => {
+    // 0.132.0, 0.133.0 and 0.134.0 accept `--dangerously-bypass-hook-trust`
+    // and ignore it in TUI mode (openai/codex#24093, fixed by #24317 —
+    // unreachable from `rust-v0.134.0`, reachable from `rust-v0.135.0`). This
+    // Core launches Codex as a TUI, so on those three the flag is a silent
+    // no-op and issue 290 stands unfixed. The floor is what makes that loud.
+    for (const version of ["0.132.0", "0.133.0", "0.134.0"]) {
+      expect(
+        compareCliVersions(version, HARNESS_CLI_CONFIG.codex.minimumVersion, "semver"),
+        `${version} must not satisfy the codex floor`,
+      ).toBeLessThan(0);
+    }
+    expect(
+      compareCliVersions("0.135.0", HARNESS_CLI_CONFIG.codex.minimumVersion, "semver"),
+    ).toBeGreaterThanOrEqual(0);
   });
 
   it("compares Cursor calendar versions by date because the build hash is not orderable", () => {
