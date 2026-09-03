@@ -25,6 +25,7 @@ import { GridLayoutButton } from "~/components/views/GridLayoutButton";
 import { ProjectFilesPanel } from "~/components/views/ProjectFilesPanel";
 import { SessionGrid } from "~/components/views/SessionGrid";
 import { filesFromDrop, type DroppedFile } from "~/lib/core-files";
+import { dragTargetIsSessionPane } from "~/lib/board-drop-arbiter";
 import { dragCarriesFiles, useProjectFilesAvailability } from "~/lib/use-project-files";
 import { takeProjectFileDrop } from "~/lib/pending-file-drop";
 import { archiveOpenSession, invalidateSessionQueries } from "~/lib/archive-session";
@@ -1842,11 +1843,25 @@ function ProjectPage() {
         // Project on its Core. `dragCarriesFiles` is what keeps this off the
         // Panel's own drags — a project path dragged from the rail into a
         // terminal still belongs to the handler that already understands it.
+        //
+        // And `dragTargetIsSessionPane` is what keeps it off the sessions
+        // (#401). In grid view the grid renders inside this div, so a drag
+        // aimed at a session's terminal bubbles here too; the board answering
+        // it would upload to the Project root, which is not where the operator
+        // was pointing. It still has to `preventDefault` over a cell — leaving
+        // the browser's default alone makes the drop navigate the Panel to the
+        // dropped file — but it says `none`, so the cursor reads no-drop and
+        // the board never paints itself hot for a gesture it will refuse.
         onDragOver={
           filesAvailable
             ? (e) => {
                 if (!dragCarriesFiles(e)) return;
                 e.preventDefault();
+                if (dragTargetIsSessionPane(e)) {
+                  e.dataTransfer.dropEffect = "none";
+                  setFileDropHot(false);
+                  return;
+                }
                 e.dataTransfer.dropEffect = "copy";
                 setFileDropHot(true);
               }
@@ -1857,8 +1872,15 @@ function ProjectPage() {
           filesAvailable
             ? (e) => {
                 if (!dragCarriesFiles(e)) return;
+                // Swallowed before the arbiter runs: whoever the drop belonged
+                // to, the browser's default for a file dropped on a page is to
+                // navigate to it, and that must not happen on either path.
                 e.preventDefault();
                 setFileDropHot(false);
+                // Aimed at a session, so it was never the board's to take
+                // (#401). No upload, no drawer, no toast — refusing quietly is
+                // what the no-drop cursor above already told the operator.
+                if (dragTargetIsSessionPane(e)) return;
                 // Opened first: the upload is about to run, and a progress list
                 // nobody can see is the same as no progress at all.
                 setShowFiles(true);
