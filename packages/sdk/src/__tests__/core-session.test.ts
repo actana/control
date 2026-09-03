@@ -1006,14 +1006,18 @@ describe("attaching to a Session that is already running (#289)", () => {
     expect((err as Error).message).toMatch(/still running/);
   });
 
-  it("names a deadline that heard nothing at all as a turn that never started", async () => {
+  it("names a deadline with no reported turn end as the open question it is", async () => {
     // **The seeded-status landmine, made loud** (#405). A status seeded from the
     // Task row carries event id 0, so it can never satisfy a delivery cursor —
     // which is correct, and which is why a Session parked at a dialog that ate
     // the carriage return has nothing that will ever end this wait. The
-    // comparison that cannot be satisfied is reported rather than sat on: the
-    // error says the Core reported nothing since the write, names the dialog,
-    // and says the text was delivered so it is not sent twice.
+    // comparison that cannot be satisfied is reported rather than sat on.
+    //
+    // What the message may **not** do is diagnose (#486 review): `codex` and
+    // `cursor-cli` report nothing between a turn's start and its end, so this
+    // same silence is what a working harness looks like on half the families in
+    // the table. It names both readings, sends the reader to the screen, and
+    // says the text was delivered so it is not sent twice.
     rig = startRig();
     const taskId = await runningSession("needs-input");
 
@@ -1035,8 +1039,11 @@ describe("attaching to a Session that is already running (#289)", () => {
     // Never "still needs-input": that reads as a harness the Core is reporting
     // on, and the whole point is that it has reported nothing.
     expect(timeout.message).not.toMatch(/still needs-input/);
-    expect(timeout.message).toMatch(/reported nothing about it/);
+    expect(timeout.message).toMatch(/no turn end was reported/);
+    // Both readings, neither chosen.
     expect(timeout.message).toMatch(/dialog rather than a composer/);
+    expect(timeout.message).toMatch(/reports nothing until it ends/);
+    expect(timeout.message).toMatch(/cannot tell those apart/);
     expect(timeout.message).toContain("The text was delivered");
   });
 });

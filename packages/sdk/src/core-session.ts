@@ -343,7 +343,8 @@ export class CoreSessionTurnTimeoutError extends Error {
   /** The last status the Core reported, or null when it has reported none. */
   readonly lastStatus: string | null;
   /**
-   * Did the Core report **anything** about this Session after `afterEventId`?
+   * Did the Core report a status for this Session **at an event id above**
+   * `afterEventId`?
    *
    * False is the loud half of the seeded-status invariant: a status seeded from
    * the Task row carries event id 0 and can never satisfy a real cursor, so a
@@ -351,6 +352,17 @@ export class CoreSessionTurnTimeoutError extends Error {
    * sit on that comparison forever. It is a fact off the event log — the id the
    * last status was learned at, against the id the delivery was stamped with —
    * and not an inference from the screen.
+   *
+   * **Read the name literally: it is about event ids, not about the Core having
+   * been silent** (#486 review). Only a status carried *by* an event moves
+   * `lastStatusEventId` — a `session:finished`, or a `task:updated` that names
+   * the status it patched. A status this Session learned by *asking*
+   * (`readStatus`, after an event that named none) is recorded with event id 0
+   * on purpose, because a read answers "what is it now" and a wait is asking
+   * "what happened after event N". So `false` means no turn end was *reported
+   * in the log* after the cursor. That is exactly the right thing to gate a wait
+   * on, and it is weaker than "the Core said nothing" for a caller branching on
+   * it.
    */
   readonly reportedSinceDelivery: boolean;
 
@@ -377,9 +389,18 @@ export class CoreSessionTurnTimeoutError extends Error {
  * A wait that heard a status after its cursor and gave up anyway was waiting on
  * a harness that is *working*, and "still finished" is the honest report — the
  * wording every deadline has used since #289. A wait that heard nothing was
- * waiting on a turn that never started, and telling that operator the Session is
- * "still finished" points them at a slow harness when the actual answer is that
- * their carriage return was eaten.
+ * waiting on a turn whose end was never reported, and telling that operator the
+ * Session is "still finished" points them at a slow harness when the answer may
+ * be that their carriage return was eaten.
+ *
+ * **It names both readings and picks neither** (#486 review). `codex` and
+ * `cursor-cli` report nothing between a turn's start and its end, so an ordinary
+ * turn that outruns the caller's deadline produces this same silence on a
+ * harness that is working perfectly. Choosing between the two would mean either
+ * consulting `reportsTurnStart` — which no wait may do (ADR 0033 D2) — or
+ * reading the byte stream, which #191 deleted. The sentence says what is true of
+ * both and sends the reader to the screen, which is the only place the
+ * difference is visible.
  *
  * What is **not** here is what to type next. This is a library: the caller knows
  * whether its user has an `actana` on their path, and the CLI adds that line
@@ -394,10 +415,12 @@ function turnTimeoutMessage(opts: {
 }): string {
   if (opts.afterEventId > 0 && !opts.reportedSinceDelivery) {
     return (
-      `session ${opts.taskId} took the text, but the Core reported nothing about it in the ` +
-      `${opts.timeoutMs}ms after the delivery stamped at event ${opts.afterEventId} — no turn ` +
-      `ended, and none was seen to start. A carriage return that lands on a dialog rather than a ` +
-      `composer submits nothing. The text was delivered either way, so it must not be sent again`
+      `session ${opts.taskId} took the text, but no turn end was reported for it in the ` +
+      `${opts.timeoutMs}ms after the delivery stamped at event ${opts.afterEventId}. Either the ` +
+      `text started no turn — a carriage return that lands on a dialog rather than a composer ` +
+      `submits nothing — or a turn is still running on a harness that reports nothing until it ` +
+      `ends, and this side cannot tell those apart. Read the screen to see which. The text was ` +
+      `delivered either way, so it must not be sent again`
     );
   }
   return `session ${opts.taskId} was still ${opts.lastStatus ?? "unreported"} after ${opts.timeoutMs}ms`;

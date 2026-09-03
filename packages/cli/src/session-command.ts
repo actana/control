@@ -90,18 +90,27 @@ const UNHAPPY_STATUSES: ReadonlySet<string> = new Set(["terminated", "disconnect
  * cursor, and the wait is correct, silent and permanent. A deadline is what
  * turns that into an answer.
  *
- * 900 seconds because that is the bound the orchestration payload already tells
- * callers to pass (`orchestration-skill-payload.ts`), so the default agrees with
- * the documented habit rather than competing with it. It is generous on purpose:
- * a turn takes as long as the work takes, and this side cannot tell a slow
- * harness from a swallowed return — a harness that reports no turn start (half
- * the families in `HOOK_FAMILIES`) looks identical either way, and guessing from
- * the byte stream is what #191 deleted.
+ * **Seventeen minutes, and the number is chosen against the Core rather than
+ * from taste.** The Core's own backstop settles a `running` Session it has heard
+ * nothing from after fifteen minutes of silence (`QUIET_SETTLE_MS` in
+ * `core-session-backstop.ts`), and its sweep runs once a minute, so that settle
+ * can land as late as sixteen. A deadline at fifteen would tie with it and
+ * scheduling would decide which of the two answered; at seventeen the Core's
+ * mechanism wins, and a caller waiting on a wedged harness gets a **status**
+ * rather than this side giving up. It is also comfortably above the 900 seconds
+ * the orchestration skill tells callers to pass, so the default never cuts short
+ * a wait the skill's own budget expects to finish.
+ *
+ * None of that helps #405's own case — the backstop skips a Session that is not
+ * `running`, and a dialog leaves one parked at `needs-input` or `finished` — so
+ * there the deadline is still the only thing that ends the wait. That is what it
+ * is for; the tie-break above is about not stealing the answer in the case where
+ * the Core does have one.
  *
  * `--wait-timeout <s>` replaces it and `--wait-timeout 0` removes it, for a
  * caller that wants the old unbounded wait back.
  */
-const SEND_WAIT_DEFAULT_TIMEOUT_S = 900;
+const SEND_WAIT_DEFAULT_TIMEOUT_S = 1020;
 
 export const SESSION_HELP = `actana session — the Sessions running on a Core
 
@@ -180,10 +189,17 @@ Awaiting a turn
   ${SEND_WAIT_DEFAULT_TIMEOUT_S} seconds.** It is the one wait for a turn that has
   not started yet, and a carriage return that lands on a dialog rather than a
   composer starts none at all — so the Core has nothing to report and the wait
-  would never end (#405). When it runs out having heard nothing about the Session
-  since the text went in, it says exactly that, and it says the text was
+  would never end (#405). When it runs out with no turn end reported since the
+  text went in, it says so, names both readings — a return that submitted nothing,
+  or a harness that reports nothing until a turn ends — and says the text was
   delivered so you do not send it twice. \`--wait-timeout 0\` waits with no
   deadline.
+
+  **\`wait\` is not how you resume that wait.** It is uncursored: it answers from
+  the status the Session is parked at, so on a Session whose turn never started it
+  returns at once with the status from *before* your text and exits zero. To carry
+  on waiting for the turn a send started, follow the log from the delivery instead
+  — \`actana events tail --since <event id>\`, the id the timeout message names.
 
 Sending text, and what submits it
   \`send <session> <text>\` **presses Enter** — that is, the text goes out and a
@@ -443,14 +459,42 @@ async function awaitTurn(
     deps.err(`actana session: ${message}`);
     // What to type next, added here rather than in the SDK: the library states
     // the fact, and the command that has an `actana` on the path says what to do
-    // with it (#405). Only on the wait that heard **nothing** since the write —
-    // the shape of a return that started no turn — because the other kind ran
-    // out on a harness that is working, where "keep waiting" is the obvious move
-    // and "read the screen" is the advice for a different problem.
-    if (err instanceof CoreSessionTurnTimeoutError && !err.reportedSinceDelivery) {
+    // with it (#405).
+    //
+    // **Gated on the same two facts the message itself is** — a delivery cursor,
+    // and nothing heard since it. `start --wait`, `resume --wait` and `session
+    // wait` all wait uncursored, so their expiry gets the generic "was still
+    // <status>" wording, and advice about a write that never happened would sit
+    // under it contradicting it.
+    //
+    // **And it must not offer `session wait`** (#486 review). That verb is
+    // uncursored by design: it answers from the status the Session is already
+    // parked at (`sessionWait` below; `settledSince(0)` in the SDK). In *this*
+    // state — nothing reported since the write, the Session still on the
+    // `needs-input` or `finished` it carried before it — `session wait` returns
+    // immediately, prints that status and exits **zero**. An operator would read
+    // that as the turn completing, and an orchestrating agent reading the exit
+    // code would record it as a finished turn. That is the false completion
+    // #405 exists to remove, and recommending it here would have reintroduced
+    // the bug one layer up.
+    //
+    // What is offered instead is cursored and cannot lie: `events tail --since`
+    // the delivery's own event id follows the log from the write, so it prints
+    // what the Core reports next and nothing that came before. The error carries
+    // that id, which is why the line can name it.
+    if (
+      err instanceof CoreSessionTurnTimeoutError &&
+      err.afterEventId > 0 &&
+      !err.reportedSinceDelivery
+    ) {
       deps.err(
-        `\`actana session logs ${session.taskId}\` shows what is on screen, and ` +
-          `\`actana session wait ${session.taskId}\` keeps waiting for the turn.`,
+        `actana session send: no turn end was reported after the text went in. ` +
+          `\`actana session logs ${session.taskId}\` shows what is on screen — a dialog waiting ` +
+          `for an answer looks like one there, and so does a harness still working. To keep ` +
+          `waiting, follow the log from the delivery: ` +
+          `\`actana events tail --since ${err.afterEventId}\`. Not \`session wait\`: that verb ` +
+          `answers at once with the status this Session was already parked at and exits zero, ` +
+          `which is last turn's answer, not this one's.`,
       );
     }
     return EXIT_FAILURE;
@@ -997,8 +1041,20 @@ function misusedFlag(args: ParsedArgs, accepted: readonly string[]): string | nu
  * **`0` is no deadline, spelled out** (#405). It is the opt-out from the default
  * `send --wait` carries, and it is accepted on every verb that takes the flag so
  * that one spelling means one thing: a caller that writes `--wait-timeout 0` is
- * asking to wait as long as the work takes. Anything else non-numeric or
- * negative is still a refusal rather than a silently ignored instruction.
+ * asking to wait as long as the work takes. Anything non-numeric or negative is
+ * still a refusal rather than a silently ignored instruction.
+ *
+ * **This is a behaviour change on every verb, and worth knowing before you
+ * compute one** (#486 review). `0` used to be `EXIT_USAGE`, so a script writing
+ * `--wait-timeout $(( deadline - $(date +%s) ))` was told its budget had run out
+ * and now waits instead. `-1` is still a refusal, so the discontinuity is at
+ * exactly one value; a script that computes a budget should clamp it to a
+ * positive number itself, because "no time left" and "no deadline" are opposite
+ * instructions and only the caller knows which it meant.
+ *
+ * Only an exact `0` opts out. A positive number that rounds below a millisecond
+ * is a deadline the caller asked for, and it clamps to 1 ms rather than becoming
+ * an unbounded wait — the one direction a rounding error must never take.
  */
 function waitTimeoutMs(
   args: ParsedArgs,
@@ -1012,10 +1068,11 @@ function waitTimeoutMs(
   if (!Number.isFinite(seconds) || seconds < 0) {
     return { ms: null, error: `--wait-timeout wants a number of seconds, not "${args.waitTimeout}"` };
   }
-  // Zero, and anything that rounds to no milliseconds at all, is the opt-out
-  // rather than a deadline that expires before the write lands.
-  const ms = Math.round(seconds * 1000);
-  return { ms: ms > 0 ? ms : null };
+  // Exactly zero is the opt-out. Anything above it is a deadline that was asked
+  // for, floored at a millisecond so a small number cannot round its way into an
+  // unbounded wait — that is the one direction this must never round.
+  if (seconds === 0) return { ms: null };
+  return { ms: Math.max(1, Math.round(seconds * 1000)) };
 }
 
 /**

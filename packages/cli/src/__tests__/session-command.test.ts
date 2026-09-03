@@ -742,8 +742,11 @@ describe("actana session send", () => {
     expect(calls).toEqual([{ text: "carry on", enter: true }]);
     // And it carries a deadline the operator did not have to know to ask for
     // (#405): the return can land on a dialog rather than a composer, in which
-    // case no turn starts and nothing will ever end this wait.
-    expect(deadlines).toEqual([900_000]);
+    // case no turn starts and nothing will ever end this wait. Seventeen
+    // minutes, which is past the Core's own fifteen-minute quiet backstop and
+    // the minute its sweep can add — where the Core has an answer it gets to
+    // give it, and this only fires where it has none.
+    expect(deadlines).toEqual([1_020_000]);
   });
 
   it("refuses --no-enter with --wait rather than waiting for a turn it did not start", async () => {
@@ -792,6 +795,58 @@ describe("actana session send", () => {
     expect(deadlines).toEqual([30_000, undefined]);
   });
 
+  it("takes --wait-timeout 0 as no deadline on the other verbs that accept it", async () => {
+    await withRegisteredCore();
+    // The "one spelling, one meaning" claim rested on the shared parser alone
+    // (#486 review, coverage). Asserted here on the two other verbs a `0` can
+    // reach: they had no default to opt out of, so `0` must be accepted and
+    // must mean the same thing rather than being refused as it once was.
+    const deadlines: Array<number | undefined> = [];
+    const settle = () =>
+      fakeStartedSession({
+        wait: async (waitOpts) => {
+          deadlines.push(waitOpts.timeoutMs);
+          return { status: "finished", exited: false };
+        },
+      });
+
+    const started = await cli().run(["session", "start", "web", "go", "--wait", "--wait-timeout", "0"], {
+      sessions: fakeSessionGateway({ start: async () => settle() }),
+    });
+    expect(started.code, started.err.join("\n")).toBe(EXIT_OK);
+
+    const waited = await cli().run(["session", "wait", "task_1", "--wait-timeout", "0"], {
+      sessions: fakeSessionGateway({ wait: async () => settle() }),
+    });
+    expect(waited.code, waited.err.join("\n")).toBe(EXIT_OK);
+
+    expect(deadlines).toEqual([undefined, undefined]);
+
+    // And the discontinuity stops at zero: a negative is still a refusal, and a
+    // positive that rounds below a millisecond is still a deadline rather than
+    // an unbounded wait.
+    const negative = await cli().run(["session", "wait", "task_1", "--wait-timeout", "-1"], {
+      sessions: fakeSessionGateway(),
+    });
+    expect(negative.code).toBe(EXIT_USAGE);
+    expect(negative.err.join("\n")).toContain("wants a number of seconds");
+
+    const tiny: Array<number | undefined> = [];
+    const rounded = await cli().run(["session", "wait", "task_1", "--wait-timeout", "0.0001"], {
+      sessions: fakeSessionGateway({
+        wait: async () =>
+          fakeStartedSession({
+            wait: async (waitOpts) => {
+              tiny.push(waitOpts.timeoutMs);
+              return { status: "finished", exited: false };
+            },
+          }),
+      }),
+    });
+    expect(rounded.code, rounded.err.join("\n")).toBe(EXIT_OK);
+    expect(tiny).toEqual([1]);
+  });
+
   it("reports a send wait that heard nothing as this side giving up", async () => {
     await withRegisteredCore();
     // The dialog case, end to end: the SDK's deadline expires having heard no
@@ -818,11 +873,59 @@ describe("actana session send", () => {
     const payload = JSON.parse(run.out.join("\n"));
     expect(payload.waited).toBe(true);
     expect(payload.status).toBeUndefined();
+    // The message names both readings rather than diagnosing one: a return that
+    // submitted nothing, or a harness that reports nothing until a turn ends.
     expect(payload.error).toContain("lands on a dialog rather than a composer");
-    expect(run.err.join("\n")).toContain("the Core reported nothing about it");
+    expect(payload.error).toContain("still running on a harness that reports nothing");
+    expect(run.err.join("\n")).toContain("no turn end was reported");
     // The next step is the CLI's to name, and it is named only on this shape of
-    // timeout: read the screen, or keep waiting — never "send it again".
+    // timeout: read the screen, or follow the log **from the delivery**.
     expect(run.err.join("\n")).toContain("`actana session logs task_1` shows what is on screen");
+    expect(run.err.join("\n")).toContain("`actana events tail --since 42`");
+    // **And it warns off `session wait`.** That verb is uncursored: in this
+    // exact state it answers at once with the status from before the send and
+    // exits zero, which reads as a completed turn. Recommending it would put
+    // #405's false completion back one layer up.
+    expect(run.err.join("\n")).toContain("Not `session wait`");
+    expect(run.err.join("\n")).toContain("exits zero");
+  });
+
+  it("does not offer the uncursored wait as the next step after any timeout", async () => {
+    await withRegisteredCore();
+    // #486 review, the blocking finding. `start --wait` waits uncursored, so its
+    // timeout carries `afterEventId: 0` and the generic wording — the
+    // write-specific advice must not be appended under it, and the `session
+    // wait` warning has nothing to warn about there.
+    const started = await cli().run(["session", "start", "web", "go", "--wait", "--wait-timeout", "1"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            wait: async () => {
+              throw new CoreSessionTurnTimeoutError({
+                taskId: "task_1",
+                timeoutMs: 1000,
+                afterEventId: 0,
+                lastStatus: "running",
+                reportedSinceDelivery: false,
+              });
+            },
+          }),
+      }),
+    });
+    expect(started.code).toBe(EXIT_FAILURE);
+    expect(started.err.join("\n")).toContain("was still running after 1000ms");
+    expect(started.err.join("\n")).not.toContain("events tail --since");
+    expect(started.err.join("\n")).not.toContain("no turn end was reported");
+  });
+
+  it("keeps the help's next step off `session wait` too", async () => {
+    const help = await cli().run(["session", "--help"]);
+    const text = help.out.join("\n");
+    // The prose and the runtime message have to agree, because an operator
+    // reads whichever they reach first.
+    expect(text).toContain("`wait` is not how you resume that wait");
+    expect(text).toContain("returns at once with the status from *before* your text and exits zero");
+    expect(text).toContain("actana events tail --since <event id>");
   });
 
   it("says in its help what submits, what does not, and what each is not", async () => {

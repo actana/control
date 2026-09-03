@@ -173,10 +173,15 @@ A Session is a conversation, not a single question. The whole loop:
 
 \`\`\`bash
 ID=$(actana session start <project> "<first prompt>")   # prints the id, exits
-actana session wait "$ID" --json --wait-timeout 900     # block until it settles
-actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 900
-actana session send "$ID" "<next>" --wait --json
+actana session wait "$ID" --json --wait-timeout 1800    # block until it settles
+actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
+actana session send "$ID" "<next>" --wait --json --wait-timeout 1800
 \`\`\`
+
+Every line carries the same budget on purpose: 1800 seconds is what \`await.sh\`
+gives a round, and a loop whose steps disagree about how long a turn may take
+gives up in the middle of one. Pass it explicitly rather than leaning on a
+default — \`send --wait\` has one (1020 seconds) and the other two do not.
 
 **\`actana session wait <id>\` blocks until the Core reports the Session settled**
 — \`finished\`, \`needs-input\`, \`interrupted\`, \`terminated\` or \`disconnected\`,
@@ -192,7 +197,7 @@ object** \`start --wait --json\` prints — same keys, same \`screen\` — so on
 reads all three verbs. Two of those keys are \`null\` on a Session you attached to
 rather than started: \`command\` and \`reportsTurnStart\` are answers to a spawn.
 
-Three things to know before you build on it:
+Four things to know before you build on it:
 
 1. **Sending into a turn that is already running resolves on *that* turn's
    end.** A keystroke into a busy Harness is not a new turn. If the Session was
@@ -211,15 +216,22 @@ Three things to know before you build on it:
 3. **A timeout is this side giving up, not a status.** \`--wait-timeout
    <seconds>\` bounds the wait. \`session wait\` has no deadline unless you set
    one, because a turn takes as long as the work takes; **\`send --wait\` defaults
-   to 900 seconds**, because it is the one wait for a turn that has not started
+   to 1020 seconds**, because it is the one wait for a turn that has not started
    yet and a carriage return that lands on a dialog rather than a composer
    starts none at all. \`--wait-timeout 0\` waits with no deadline. On expiry you
    get a message saying the wait gave up and a non-zero exit — the Session is
-   still running on the Core, and \`session logs\`, another \`session wait\` and
-   \`session kill\` all still work. When the wait gave up having heard nothing at
-   all about the Session since your text went in, the message says so: no turn
-   ended and none was seen to start, and the text was delivered — read the
-   screen with \`session logs\` rather than sending it again.
+   still running on the Core, and \`session logs\` and \`session kill\` still work.
+   When no turn end was reported since your text went in, the message says so
+   and names both readings: the text may have started no turn, or a turn may
+   still be running on a Harness that reports nothing until it ends. The text
+   was delivered either way — read the screen with \`session logs\` rather than
+   sending it again.
+4. **Do not answer that timeout with \`session wait\`.** It is uncursored: it
+   answers from the status the Session is parked at, so on a turn that never
+   started it returns **at once, with the status from before your text, and
+   exits zero** — which reads as a completed turn and is not one. To carry on
+   waiting, follow the log from the delivery instead:
+   \`actana events tail --since <event id>\`, the id the timeout message names.
 
 **Every turn of that loop gets its own report file**, and the turn number in the
 filename is what keeps them apart. See below.
