@@ -262,11 +262,23 @@ async function startCore(): Promise<void> {
   let hookReceiver: HarnessHookReceiver | null = null;
   try {
     hookReceiver = await startHarnessHookReceiver((taskId, payload, eventNameFallback) => {
+      const result = harnessStatus.receiveHook(taskId, payload, eventNameFallback);
       // A hook that landed is this Session talking, whatever it said — that is
       // what keeps the quiet-Session backstop off a turn that is really
-      // running (issue 243).
-      sessionBackstop?.noteActivity(taskId);
-      return harnessStatus.receiveHook(taskId, payload, eventNameFallback);
+      // running (issue 243) — and it is also the end of the idle rule's claim
+      // on the row, because the pipeline has just decided the status (issue
+      // 391).
+      //
+      // Reported *after* the pipeline, and only for a hook the pipeline
+      // accepted: `reconcileSessionId` drops a POST carrying another session's
+      // id (base `2bdcb56`), and a hook from a harness process this Session no
+      // longer owns is not evidence that this Session is alive. `ok` is the
+      // positive test — it is already false for a row this Core does not have
+      // — and `foreign-session` is the one rejection that answers `ok`.
+      if (result.ok && result.body?.ignored !== "foreign-session") {
+        sessionBackstop?.noteActivity(taskId, "hook");
+      }
+      return result;
     });
   } catch (err) {
     console.error(`[core-entry] hook-receiver.start-failed: ${err}`);
@@ -302,8 +314,11 @@ async function startCore(): Promise<void> {
     onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
     // A harness that is working redraws its spinner into the PTY about once a
     // second. Silence there, and no hooks either, is what the backstop below
-    // reads as "this turn ended and nobody said so" (issue 243).
-    onSessionOutputActivity: ({ taskId }) => sessionBackstop?.noteActivity(taskId),
+    // reads as "this turn ended and nobody said so" (issue 243) — and a
+    // spinner that is all that is left, with nothing new on screen behind it,
+    // is what it reads as an idle TUI nobody will ever hear a `Stop` from
+    // (issue 391). The PTY core says which of the two arrived.
+    onSessionOutputActivity: ({ taskId, kind }) => sessionBackstop?.noteActivity(taskId, kind),
   };
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals

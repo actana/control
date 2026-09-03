@@ -22,6 +22,7 @@
 import { useSyncExternalStore } from "react";
 import { getPanelBridge } from "./panel-bridge";
 import {
+  OPTIMISTIC_DRIVE_WINDOW_MS,
   UNSUPPORTED_SESSION_LOCK,
   sessionWriteAccess,
   type PanelSessionLock,
@@ -32,6 +33,14 @@ import {
 export type SessionWriteState = {
   lock: PanelSessionLock;
   drive: SessionDriveState;
+  /**
+   * True while `access.writable` is a guess rather than an answer (issue 393):
+   * this tab has asked which of the Panel's tabs drives the Session and the
+   * window it may type in while waiting has not closed. The pane renders a
+   * notice off this — the "visible" half of a short, visible window — and it
+   * goes false on the answer, on the window closing, or on both.
+   */
+  optimistic: boolean;
   access: SessionWriteAccess;
 };
 
@@ -43,10 +52,16 @@ export type SessionWriteState = {
  * unlocked Session is writable by anybody (D11), and a Panel that opened
  * read-only and waited for permission would be a Panel that renders every
  * Session on a single-connection Core as locked forever.
+ *
+ * This is `none` — *nobody asked* — and not the `pending` a pane's own ask
+ * produces. The two used to be one state and that was issue 393: a pane that
+ * had asked and a pane with nothing to ask both read writable, forever, so two
+ * tabs on one Session typed into it until the service happened to answer.
  */
 const UNKNOWN: SessionWriteState = {
   lock: UNSUPPORTED_SESSION_LOCK,
   drive: "none",
+  optimistic: false,
   access: { writable: true },
 };
 
@@ -56,6 +71,14 @@ const entries = new Map<string, Entry>();
 const listeners = new Set<() => void>();
 /** Handover notices this tab has not shown yet, keyed like the entries. */
 const handoverListeners = new Set<(msg: { coreId: string; taskId: string }) => void>();
+/**
+ * The open optimistic windows, one per Session this tab has asked about.
+ *
+ * Held so the answer can close the window it belongs to rather than leaving a
+ * timer to fire over a settled entry, and so a pane that comes and goes does
+ * not leave one behind. Keyed exactly like {@link entries}.
+ */
+const optimismTimers = new Map<string, ReturnType<typeof setTimeout>>();
 let wired = false;
 
 function key(coreId: string | null | undefined, taskId: string): string {
@@ -66,12 +89,46 @@ function emit(): void {
   for (const cb of listeners) cb();
 }
 
-function put(k: string, next: Omit<Entry, "access">): void {
+/** Close an open window without deciding anything about the entry. */
+function clearOptimism(k: string): void {
+  const timer = optimismTimers.get(k);
+  if (timer === undefined) return;
+  clearTimeout(timer);
+  optimismTimers.delete(k);
+}
+
+/**
+ * Open the bounded window a pane may type in while its ask is unanswered.
+ *
+ * The timer is the whole bound: when it fires, the entry is re-derived with the
+ * guess withdrawn, and `pending` stops reading as writable. It never *answers*
+ * the question — a late `drive` frame is still believed — it only stops this
+ * tab acting on an answer it does not have.
+ */
+function openOptimisticWindow(k: string): void {
+  clearOptimism(k);
+  optimismTimers.set(
+    k,
+    setTimeout(() => {
+      optimismTimers.delete(k);
+      const current = entries.get(k);
+      if (!current || current.drive !== "pending") return;
+      put(k, { lock: current.lock, drive: "pending" }, { optimistic: false });
+    }, OPTIMISTIC_DRIVE_WINDOW_MS),
+  );
+}
+
+function put(
+  k: string,
+  next: Omit<Entry, "access" | "optimistic">,
+  opts: { optimistic?: boolean } = {},
+): void {
+  const optimistic = opts.optimistic === true && next.drive === "pending";
   const before = entries.get(k);
-  if (before && before.lock.state === next.lock.state && before.lock.supported === next.lock.supported && before.lock.writable === next.lock.writable && before.drive === next.drive) {
+  if (before && before.lock.state === next.lock.state && before.lock.supported === next.lock.supported && before.lock.writable === next.lock.writable && before.drive === next.drive && before.optimistic === optimistic) {
     return;
   }
-  entries.set(k, { ...next, access: sessionWriteAccess(next) });
+  entries.set(k, { ...next, optimistic, access: sessionWriteAccess({ ...next, optimistic }) });
   emit();
 }
 
@@ -88,11 +145,18 @@ function ensureWired(): void {
   bridge.onSessionLock(({ coreId, taskId, lock }) => {
     const k = key(coreId, taskId);
     const current = entries.get(k) ?? UNKNOWN;
-    put(k, { lock, drive: current.drive });
+    // A lock answer says nothing about the drive, so it neither opens nor
+    // closes the window: an ask still outstanding is still outstanding, and a
+    // pane inside its window keeps the guess it was already typing on.
+    put(k, { lock, drive: current.drive }, { optimistic: current.optimistic });
   });
   bridge.onSessionDrive(({ coreId, taskId, driving, reason }) => {
     const k = key(coreId, taskId);
     const current = entries.get(k) ?? UNKNOWN;
+    // The answer. Whatever this tab was guessing, it now knows — and exactly
+    // one tab of this Panel is told `driving: true` for a Session, so from here
+    // at most one of them is writable.
+    clearOptimism(k);
     put(k, { lock: current.lock, drive: driving ? "driving" : "following" });
     // The loser of an intra-Panel handover. A different event from losing the
     // Session to another Core client, and it is announced on its own channel so
@@ -130,14 +194,41 @@ export function readSessionWriteState(
 export function watchSessionDrive(coreId: string | null | undefined, taskId: string): void {
   if (!coreId) return;
   ensureWired();
-  getPanelBridge()?.driveSession(coreId, taskId);
+  const bridge = getPanelBridge();
+  if (!bridge) return;
+  bridge.driveSession(coreId, taskId);
+  const k = key(coreId, taskId);
+  const current = entries.get(k) ?? UNKNOWN;
+  // A second pane of this tab on a Session this tab already has an answer for
+  // asked nothing (the link client counts panes and announces only the first),
+  // so there is nothing to wait for and nothing to guess at. Only an ask with
+  // no answer behind it opens a window.
+  if (current.drive !== "none") return;
+  put(k, { lock: current.lock, drive: "pending" }, { optimistic: true });
+  openOptimisticWindow(k);
 }
 
-/** The operator asked for the keyboard in this tab. Instant, and Panel-local. */
+/**
+ * The operator asked for the keyboard in this tab. Instant, and Panel-local.
+ *
+ * Instant in the gesture, not in the answer: the pane does **not** go writable
+ * on the ask. A take is made from a tab that is following or waiting — the two
+ * states that offer the affordance — and the tab it is taking from still
+ * believes it is driving until the service tells it otherwise. Typing here
+ * before that lands is the dual write this store exists to prevent, so this
+ * moves the entry to `pending` with no window open and waits for the frame.
+ */
 export function takeSessionDrive(coreId: string | null | undefined, taskId: string): void {
   if (!coreId) return;
   ensureWired();
-  getPanelBridge()?.driveSession(coreId, taskId, { take: true });
+  const bridge = getPanelBridge();
+  if (!bridge) return;
+  bridge.driveSession(coreId, taskId, { take: true });
+  const k = key(coreId, taskId);
+  const current = entries.get(k) ?? UNKNOWN;
+  if (current.drive === "driving") return;
+  clearOptimism(k);
+  put(k, { lock: current.lock, drive: "pending" });
 }
 
 /**
@@ -159,6 +250,9 @@ export function releaseSessionDrive(coreId: string | null | undefined, taskId: s
   const k = key(coreId, taskId);
   const current = entries.get(k);
   if (!current) return;
+  // Nothing is waiting on an answer once the last pane is gone; a window left
+  // open would fire over an entry that has stopped asking.
+  clearOptimism(k);
   put(k, { lock: current.lock, drive: "none" });
 }
 
@@ -190,19 +284,21 @@ export function useSessionWriteState(
 export function __setSessionWriteStateForTests(
   coreId: string | null,
   taskId: string,
-  next: { lock: PanelSessionLock; drive: SessionDriveState } | null,
+  next: { lock: PanelSessionLock; drive: SessionDriveState; optimistic?: boolean } | null,
 ): void {
   const k = key(coreId, taskId);
   if (!next) {
+    clearOptimism(k);
     entries.delete(k);
     emit();
     return;
   }
-  put(k, next);
+  put(k, { lock: next.lock, drive: next.drive }, { optimistic: next.optimistic });
 }
 
 /** @internal — tests start from an empty store. */
 export function __resetSessionWriteStoreForTests(): void {
+  for (const k of [...optimismTimers.keys()]) clearOptimism(k);
   entries.clear();
   handoverListeners.clear();
   wired = false;
