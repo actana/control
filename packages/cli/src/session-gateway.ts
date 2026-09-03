@@ -43,6 +43,7 @@ import { TerminalScreen, DEFAULT_COLS, DEFAULT_ROWS } from "@actana/sdk/terminal
 import { harnessResumeCommand } from "./harness-resume.ts";
 import {
   SESSION_PROMPT_ABANDONED_EVENT_KIND,
+  type CoreLinkEvent,
   type CoreLinkProjectSnapshot,
   type CoreLinkPtySpawnHarness,
   type CoreLinkSessionLockState,
@@ -382,7 +383,7 @@ class CoreLinkSessionGateway implements SessionGateway {
     const project = this.resolveProject(projects, request.project);
     const harness = request.harness ?? rememberedHarness(project) ?? DEFAULT_HARNESS;
 
-    const session = await this.begin({
+    const { session, latch } = await this.begin({
       projectId: project.projectId,
       cwd: request.cwd ?? project.path,
       harness,
@@ -391,7 +392,7 @@ class CoreLinkSessionGateway implements SessionGateway {
       dangerouslySkipPermissions: request.dangerouslySkipPermissions,
     });
     return wrap(session, {
-      client: this.client,
+      latch,
       projectId: project.projectId,
       project: project.name,
       harness,
@@ -431,7 +432,7 @@ class CoreLinkSessionGateway implements SessionGateway {
     }
 
     const project = await this.projectFor(task.projectId);
-    const session = await this.begin({
+    const { session, latch } = await this.begin({
       taskId: task.taskId,
       cwd: project.path,
       harness: task.agent,
@@ -442,7 +443,7 @@ class CoreLinkSessionGateway implements SessionGateway {
       dangerouslySkipPermissions: request.dangerouslySkipPermissions,
     });
     return wrap(session, {
-      client: this.client,
+      latch,
       projectId: project.projectId,
       project: project.name,
       harness: task.agent,
@@ -543,19 +544,33 @@ class CoreLinkSessionGateway implements SessionGateway {
     taskId: string,
     deliver: { text: string; enter: boolean } | null,
   ): Promise<StartedSession> {
+    // First of all, and before any question has been asked of the Core: the
+    // #483 latch listens from here, because `CoreSession.attach` subscribes and
+    // then spends four round trips before its own listeners exist. See
+    // {@link openPromptAbandonLatch}. Every `throw` below has to close it, or
+    // this command leaves a listener on a client it is done with.
+    const latch = openPromptAbandonLatch(this.client);
+
     // The archived list as a fallback, because a Session can be archived while
     // its harness is still running — and `tasksList` is active rows only by
     // design (ADR 0019). Every other verb that names a live PTY works on such a
     // Session; refusing it here would make `wait` the odd one out over a row
     // this only reads two display fields off.
-    const task = await this.findAnyTask(taskId);
-    const project =
-      task === null ? null : await this.projectFor(task.projectId).catch(() => null);
+    let task: CoreLinkTaskSnapshot | null;
+    let project: CoreLinkProjectSnapshot | null;
+    try {
+      task = await this.findAnyTask(taskId);
+      project = task === null ? null : await this.projectFor(task.projectId).catch(() => null);
+    } catch (err) {
+      latch.close();
+      throw err;
+    }
 
     let session: CoreSession;
     try {
       session = await CoreSession.attach(this.client, { taskId });
     } catch (err) {
+      latch.close();
       // A Session with no live PTY is the one failure this path has that the
       // others do not, and it is `not-running` here for the same reason it is
       // there: it is a harness that has exited, and the next step is `logs` or
@@ -615,13 +630,14 @@ class CoreLinkSessionGateway implements SessionGateway {
           );
         }
       } catch (err) {
+        latch.close();
         session.dispose();
         throw err;
       }
     }
 
     return wrap(session, {
-      client: this.client,
+      latch,
       projectId: task?.projectId ?? "",
       project: project?.name ?? null,
       harness: task?.agent ?? null,
@@ -629,7 +645,15 @@ class CoreLinkSessionGateway implements SessionGateway {
     });
   }
 
-  /** Start a Session, translating the SDK's refusal into a gateway error. */
+  /**
+   * Start a Session, translating the SDK's refusal into a gateway error.
+   *
+   * The #483 latch is opened here rather than by the caller because *here* is
+   * before `CoreSession.start` — before the subscribe, before `createTask`, and
+   * before the spawn. A latch opened after that resolves has already missed the
+   * window a fast abandon lands in. It is handed back unarmed; `wrap` arms it
+   * once there is a Task id to bind it to.
+   */
   private async begin(opts: {
     projectId?: string;
     taskId?: string;
@@ -639,9 +663,10 @@ class CoreLinkSessionGateway implements SessionGateway {
     command?: string;
     prompt?: string;
     dangerouslySkipPermissions: boolean;
-  }): Promise<CoreSession> {
+  }): Promise<{ session: CoreSession; latch: PromptAbandonLatch }> {
+    const latch = openPromptAbandonLatch(this.client);
     try {
-      return await CoreSession.start(this.client, {
+      const session = await CoreSession.start(this.client, {
         ...(opts.projectId ? { projectId: opts.projectId } : {}),
         ...(opts.taskId ? { taskId: opts.taskId } : {}),
         ...(opts.title ? { title: opts.title } : {}),
@@ -654,7 +679,9 @@ class CoreLinkSessionGateway implements SessionGateway {
         cwd: opts.cwd,
         harness: opts.harness,
       });
+      return { session, latch };
     } catch (err) {
+      latch.close();
       throw new SessionGatewayError("refused", messageOf(err), { cause: err });
     }
   }
@@ -747,6 +774,129 @@ class CoreLinkSessionGateway implements SessionGateway {
 }
 
 /**
+ * Watches one Core connection for "the starting prompt was never delivered".
+ *
+ * Three things have to be true for that report to be trustworthy, and the first
+ * version of this got two of them wrong (review of PR #487).
+ *
+ * **1. It has to be listening before anything asks the Core a question.** The
+ * event stream opens with `subscribeEvents`, and both `CoreSession.start` and
+ * `CoreSession.attach` send one at the top and then spend several round trips —
+ * `createTask`/`spawn`, or `findByTask`/`ptySubscribe`/`replay`/`seedStatus` —
+ * before their own listeners exist. A latch registered after those resolve is
+ * deaf for the whole window, and the window is exactly where a fast abandon
+ * lands. So this opens *first* and holds what it hears until it knows which
+ * Task and which cursor it is holding it for — the same shape as
+ * `CoreSession.start`'s `heldEvents`, and for the same reason.
+ *
+ * It also sends the `subscribe` itself when nobody has, which is what makes the
+ * replay marker below dependable: the marker belongs to a subscribe, and a
+ * subscribe this function did not cause is a subscribe whose marker may already
+ * be in the past.
+ *
+ * **2. A row from a previous life is not a report about this command.** The
+ * event log is durable and `subscribe` replays it from the beginning, so a
+ * Session whose *first* start was abandoned carries that row forever. Latching
+ * it would fail a `session send … --wait` that landed perfectly — and `send` is
+ * the recovery this feature's own error message recommends, so misreading it is
+ * the same false report as the one #483 exists to kill, pointed the other way.
+ * Hence the floor: a stamped delivery counts from its own stamp, and everything
+ * else counts from `eventsReplayed`, which is the Core saying "everything up to
+ * here was already history when you asked".
+ *
+ * **3. Silence is not a report.** Until the floor is known, nothing is
+ * accepted — events are held, not dropped, and re-judged once it is.
+ */
+type PromptAbandonLatch = {
+  /** Bind the latch to a Task and, for a stamped delivery, to its cursor. */
+  arm(opts: { taskId: string; afterEventId: number }): void;
+  /** The Core's reason, or `null` while it has not said the prompt was lost. */
+  reason(): { reason: string } | null;
+  /** Release the listeners. The subscription on the Core is the client's. */
+  close(): void;
+};
+
+function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
+  let taskId: string | null = null;
+  /** The stamp a delivery was recorded at, when this command made one. */
+  let cursor = 0;
+  let armed = false;
+  /** The high-water mark of the replay tail; `null` until the marker lands. */
+  let replayedThrough: number | null = null;
+  let abandoned: { reason: string } | null = null;
+  const held: CoreLinkEvent[] = [];
+
+  /**
+   * The exclusive floor an event has to clear, or `null` while it is unknown.
+   *
+   * A stamped delivery knows its own floor the moment it is armed and does not
+   * have to wait for the marker; it still takes the larger of the two, because
+   * a cursor that predates the replay would let history back in.
+   */
+  const floor = (): number | null => {
+    if (cursor > 0) return Math.max(cursor, replayedThrough ?? 0);
+    return replayedThrough;
+  };
+
+  const consider = (event: CoreLinkEvent): void => {
+    if (abandoned) return;
+    if (event.taskId !== taskId) return;
+    const bar = floor();
+    if (bar === null || event.eventId <= bar) return;
+    try {
+      const payload = JSON.parse(event.payload) as CoreLinkSessionPromptAbandonedPayload;
+      abandoned = { reason: typeof payload.reason === "string" ? payload.reason : "" };
+    } catch {
+      // A payload this build cannot parse is still the Core saying it gave up,
+      // and the fact is worth more than the sentence.
+      abandoned = { reason: "" };
+    }
+  };
+
+  const drain = (): void => {
+    if (!armed || floor() === null) return;
+    while (held.length > 0) consider(held.shift()!);
+  };
+
+  // Registered before the subscribe below, so the replay this asks for cannot
+  // outrun the listener that is meant to judge it.
+  const stopEvents = client.onEvent(({ event }) => {
+    if (event.kind !== SESSION_PROMPT_ABANDONED_EVENT_KIND) return;
+    if (!armed || floor() === null) {
+      held.push(event);
+      return;
+    }
+    consider(event);
+  });
+  const stopReplayed = client.onEventsReplayed(({ lastEventId }) => {
+    // The first marker only. It answers "what was already in the log when this
+    // command started", and a later one — a reconnect's replay — would move the
+    // floor forward over live events this command is entitled to.
+    if (replayedThrough === null) replayedThrough = lastEventId;
+    drain();
+  });
+  // The subscribe this latch depends on. `CoreSession.start`/`attach` would
+  // send one a moment later on the same test, so this is the same single
+  // subscribe moved earlier, not a second one.
+  if (!client.isSubscribedToEvents()) client.subscribeEvents();
+
+  return {
+    arm: (opts) => {
+      taskId = opts.taskId;
+      cursor = opts.afterEventId;
+      armed = true;
+      drain();
+    },
+    reason: () => abandoned,
+    close: () => {
+      stopEvents();
+      stopReplayed();
+      held.length = 0;
+    },
+  };
+}
+
+/**
  * Present one `CoreSession` as a {@link StartedSession}.
  *
  * `harness` is passed in rather than read off the Session: a spawn knows it
@@ -758,17 +908,17 @@ class CoreLinkSessionGateway implements SessionGateway {
  * `afterEventId` is the delivery stamp the wait counts from, and 0 — no cursor —
  * is the spawn path and the bare `session wait`.
  *
- * `client` is here for one event and not as a widening of what this function
- * knows: `session:promptAbandoned` (#483) is the Core saying the starting
- * prompt never reached the harness, and a caller that waited on this Session
- * has to be told that rather than be handed a settled status with nothing
- * behind it. Read off the event log for this Task and nothing else; still no
- * frame, no `CoreSession` and no client escapes to the command module.
+ * `latch` is the #483 report — `session:promptAbandoned`, the Core saying the
+ * starting prompt never reached the harness. It is **opened by the caller,
+ * before the Session exists**, and only armed here: see
+ * {@link openPromptAbandonLatch} for why the ordering is the whole of it. This
+ * function still lets no frame, no `CoreSession` and no client escape to the
+ * command module.
  */
 function wrap(
   session: CoreSession,
   opts: {
-    client: CoreClient;
+    latch: PromptAbandonLatch;
     projectId: string;
     project: string | null;
     harness: string | null;
@@ -776,22 +926,10 @@ function wrap(
   },
 ): StartedSession {
   const afterEventId = opts.afterEventId ?? 0;
-  // Latched rather than counted: a delivery abandons once, and the first
-  // reason is the Core's answer for this Session.
-  let abandoned: { reason: string } | null = null;
-  const stopEvents = opts.client.onEvent(({ event }) => {
-    if (event.kind !== SESSION_PROMPT_ABANDONED_EVENT_KIND) return;
-    if (event.taskId !== session.taskId) return;
-    if (abandoned) return;
-    try {
-      const payload = JSON.parse(event.payload) as CoreLinkSessionPromptAbandonedPayload;
-      abandoned = { reason: typeof payload.reason === "string" ? payload.reason : "" };
-    } catch {
-      // A payload this build cannot parse is still the Core saying it gave up,
-      // and the fact is worth more than the sentence.
-      abandoned = { reason: "" };
-    }
-  });
+  // Now — and not before — both halves of the filter are known: which Task the
+  // report has to be about, and which events are this command's rather than a
+  // previous start's.
+  opts.latch.arm({ taskId: session.taskId, afterEventId });
   return {
     taskId: session.taskId,
     ptyId: session.ptyId,
@@ -812,9 +950,9 @@ function wrap(
       };
     },
     screen: () => session.screen(),
-    promptAbandoned: () => abandoned,
+    promptAbandoned: () => opts.latch.reason(),
     dispose: () => {
-      stopEvents();
+      opts.latch.close();
       session.dispose();
     },
   };

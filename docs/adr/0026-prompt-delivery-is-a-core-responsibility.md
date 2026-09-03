@@ -250,6 +250,40 @@ delivery, exit non-zero, and set `promptDelivered: false` on the `--json` object
 A `session send` never goes through this path at all: a send is a raw write by
 design (#404), so no delivery of one can be abandoned.
 
+**Two orderings make that report trustworthy, and neither is optional** (review
+of PR #487). First, on the Core: the reason row is appended *before* the status
+signal, because the status is what ends a client's wait. `dialog-unanswered`
+writes the row through `CoreHarnessStatus` to `needs-input`, whose `task:updated`
+event resolves `waitForTurnEnd` synchronously on the client — so a reason
+appended after it is a reason nobody reads, and the caller sees a clean settle
+for a prompt that never landed. That is this issue's own defect moved one layer
+out. Second, on the client: the latch that reads the row is opened *before* the
+session exists — before `subscribeEvents`, before `createTask`/`spawn`, before
+`findByTask`/`ptySubscribe`/`replay`/`seedStatus` — and holds what it hears until
+it knows which Task it is holding it for, the same shape as `CoreSession.start`'s
+`heldEvents`. A latch installed after those round trips is deaf for exactly the
+window a fast abandon lands in.
+
+**And a row from a previous life is not a report about this command.** The event
+log is durable and `subscribe` replays it from the beginning, so a Session whose
+first start was abandoned carries that row for as long as the log does. Read
+without a floor it would fail a later `session send … --wait` that landed
+perfectly — on the very command this feature's own error message recommends as
+the recovery, which makes it the same false report pointed the other way. So the
+latch takes a floor: a stamped delivery counts from its own stamp, everything
+else counts from the `eventsReplayed` marker, and until a floor is known nothing
+is accepted. Regression tests cover both the stale-and-cursored and the
+stale-and-uncursored case.
+
+**A PTY that dies mid-delivery says so too.** `HarnessPromptDelivery.dispose()`
+sets `abandoned` without emitting — it is also the ordinary teardown of a
+delivery that finished — so the fact is read off the phase in `pty-manager`'s
+exit handler instead, and only the *reason* row is appended there: the status
+that Session settles on belongs to the exit, and a `needs-input` raised against a
+harness that is already gone would fight it for the row. This window used to be
+15 s and is now up to 90 s on opencode, which is why leaving it silent stopped
+being good enough.
+
 **Why this could not wait for the next train.**
 [#387](https://github.com/actana/control/issues/387), merged in 0.4.5, settles a
 stranded `ready` Session. Before it, a lost prompt presented as a Session
