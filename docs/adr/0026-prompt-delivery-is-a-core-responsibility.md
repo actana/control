@@ -188,3 +188,79 @@ layer too far out: only the Core sees the harness's screen, which is this
 record's founding argument. With `confirmEcho` on both harnesses, a write that
 left no echo returns to `settling` and is typed again inside the same delivery,
 and the client has nothing to poll for.
+
+## Amendment — issue 483 (2026-09-03)
+
+**D8's backstop no longer authorises a blind type into a harness that has a
+composer marker, and a marker that never arrives ends the delivery as
+`abandoned`.** D3a made the marker the condition for typing and D8 made the
+clock an override of it, and the override is the bug. Read together, the two
+said: wait for evidence that the harness is listening, and if that evidence has
+not come in fifteen seconds, type anyway and report `delivered`. The second half
+undoes the first exactly on the runs the first exists for — the absent marker is
+not the Core failing to notice a ready harness, it is the Core correctly
+noticing an unready one.
+
+Measured on a developer Core on beta/0.4.5, five opencode Sessions started on
+one project inside half an hour: **three** sat at `ready` with an empty composer,
+the prompt typed before opencode was listening and discarded by the terminal;
+**two** reached `finished` with the prompt visibly retyped two or three times in
+the transcript before one submission took. Same inputs, minutes apart, opposite
+outcomes — a race against opencode's boot, which lands on either side of the
+backstop rather than reliably inside it. Every one of the three losses was
+reported to the caller as a successful delivery.
+
+**What changes.** For a harness with a row in `HARNESS_READINESS`, `maxWaitMs` is
+no longer a licence to type. The wait stays keyed on the marker up to a
+per-harness ceiling, `PromptDeliveryProfile.composerWaitMs`, and a marker that
+never appears within it abandons the delivery — which by the issue 177 amendment
+above already puts the Session in `needs-input`. A marker that appears *after*
+the generic backstop but inside the ceiling delivers normally: the quiet gap, the
+composer gate, `confirmEcho` and the retype budget all apply exactly as they do
+at one second. The three paths — marker before the deadline, marker after it and
+inside the ceiling, marker never — are each covered by a unit test.
+
+**What does not change.** A harness with **no** marker keeps D8 whole:
+`composerOnScreen` is `true` for it from the first byte, the ceiling is never
+consulted, and the prompt still goes out at `maxWaitMs` and is submitted. This
+is not a longer global timeout, and it must not become one — a bigger number
+makes every other harness slower and still types blind at the end of it. D5's
+rule also keeps its precedence: a dialog on screen at the deadline abandons as
+`blocked by <dialog>`, because the dialog is the thing an operator can act on.
+
+**The ceiling lives in `HARNESS_PROMPT_DELIVERY_PROFILES`, which D7 described as
+"deliberately empty".** It is no longer empty, and the reason is the reason D7
+gave for having the table at all: a harness that genuinely needs a different
+number now exists. `opencode: { composerWaitMs: 90_000 }` is the operator's own
+stopgap value, and it is a ceiling on waiting rather than a schedule — a boot
+that paints its composer at six seconds is delivered at six seconds. `cursor-cli`
+and `claude-code` name no number, so their ceiling defaults to `maxWaitMs`: the
+timing they already had, with an honest outcome at the end of it instead of a
+blind keystroke.
+
+**The failure is now legible to a client, and not only as a status.** Abandoning
+already produces `needs-input`, but `needs-input` is also what a harness that
+stopped to ask a permission question produces, and the two call for opposite next
+steps: one is answered with `session send`, and the other has no question, no
+turn, and a prompt that has to go again. So the Core also appends
+`session:promptAbandoned` to its event log — Task, PTY and the Core's own words
+for why, never the prompt text — and `session start --wait` / `session wait`
+read it off the connection they already have. They print what stopped the
+delivery, exit non-zero, and set `promptDelivered: false` on the `--json` object.
+A `session send` never goes through this path at all: a send is a raw write by
+design (#404), so no delivery of one can be abandoned.
+
+**Why this could not wait for the next train.**
+[#387](https://github.com/actana/control/issues/387), merged in 0.4.5, settles a
+stranded `ready` Session. Before it, a lost prompt presented as a Session
+visibly parked at `ready` — wrong, but findable. After it, the same loss presents
+as a **settled Session that produced no report**, which is the shape of a
+Session that ran and had nothing to say.
+
+**Related, and not fixed here.**
+[#395](https://github.com/actana/control/issues/395) is the same race from the
+client end: `session start` returns before the harness can take a `send`. This
+amendment deliberately leaves the start return path alone, so #395 still has to
+decide what a `start` promises about readiness. What it gains is a Core that no
+longer claims a prompt was delivered when it was not, which is the fact any
+client-side answer has to be built on.
