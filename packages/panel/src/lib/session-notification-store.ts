@@ -41,6 +41,10 @@ const NOTIFICATIONS_KEY = "mc:sessionFinishNotifications";
 // recent and drops the oldest, bounding localStorage growth. Behavior-preserving
 // for anyone under the cap.
 const MAX_NOTIFICATIONS = 200;
+const ANNOUNCED_KEY = "mc:sessionFinishAnnounced";
+// How many finish identities this browser remembers having announced. Bounded
+// like the list above and for the same reason; oldest drops first.
+const MAX_ANNOUNCED_FINISHES = 500;
 const PENDING_OPEN_KEY = "mc:pendingSessionOpen";
 const PENDING_OPEN_MAX_AGE_MS = 5 * 60_000;
 
@@ -147,6 +151,70 @@ export function saveAppNotifications(notifications: AppNotification[]) {
 export function publishAppNotifications(notifications: AppNotification[]) {
   saveAppNotifications(notifications);
   dispatchSessionNotificationsChanged(notifications);
+}
+
+/**
+ * Which finishes this browser has already announced — the toast, the ding, the
+ * OS notification — as `(coreId, sessionId, eventId)` keys (issue 388).
+ *
+ * Separate from the notification list on purpose. That list is what the bell
+ * shows and the operator may clear it; this is the record of what was *said*,
+ * and clearing the bell does not un-say it. It exists because a tab opening
+ * after a Session finished is now replayed that finish, and a second tab
+ * opening a minute later must not announce it all over again — the tabs share
+ * nothing but this storage.
+ *
+ * Keys only, so it says nothing about a Session beyond that one was announced.
+ */
+export function loadAnnouncedFinishes(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(ANNOUNCED_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.filter((key): key is string => typeof key === "string" && !!key);
+  } catch {
+    return [];
+  }
+}
+
+/** Whether this browser has already announced that finish. */
+export function hasAnnouncedFinish(key: string): boolean {
+  return loadAnnouncedFinishes().includes(key);
+}
+
+/** Remember that it has. Newest last; the oldest fall off the cap. */
+export function recordAnnouncedFinish(key: string) {
+  if (typeof window === "undefined" || !key) return;
+  const current = loadAnnouncedFinishes().filter((existing) => existing !== key);
+  current.push(key);
+  try {
+    window.localStorage.setItem(
+      ANNOUNCED_KEY,
+      JSON.stringify(current.slice(-MAX_ANNOUNCED_FINISHES)),
+    );
+  } catch {
+    /* quota or privacy-mode storage */
+  }
+}
+
+/**
+ * Forget every announcement.
+ *
+ * Nothing in the app calls this, and that is the decision, not an omission:
+ * clearing the bell empties a *list the operator has read*, while this is the
+ * record of what was already said out loud. Wiring the two together would make
+ * "clear notifications" the gesture that lets an old finish announce itself
+ * again in the next tab. Tests use it to build a browser that has said nothing.
+ */
+export function clearAnnouncedFinishes() {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.removeItem(ANNOUNCED_KEY);
+  } catch {
+    /* quota or privacy-mode storage */
+  }
 }
 
 export function subscribeAppNotifications(onStoreChange: () => void) {

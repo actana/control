@@ -25,6 +25,18 @@ const PROJECT_EVENT_KINDS = new Set([
 ]);
 
 /**
+ * Does this event kind change what a `projectsList` would return?
+ *
+ * Exported for the callers that already hold their own `onEvent` subscription
+ * and cannot afford a second one — the rail's pinned-projects engine watches
+ * project and task kinds through one handler — so the answer to "which kinds
+ * move a project row" stays in this file rather than being re-listed there.
+ */
+export function isProjectListEventKind(kind: string): boolean {
+  return PROJECT_EVENT_KINDS.has(kind);
+}
+
+/**
  * Invoke `onChanged` whenever the named Core reports a project-list-affecting
  * event on the tab's panel link.
  *
@@ -44,7 +56,7 @@ export function subscribeCoreProjectEvents(
   if (!bridge || !coreId) return () => {};
   return bridge.onEvent((msg) => {
     if (msg.coreId !== coreId) return;
-    if (PROJECT_EVENT_KINDS.has(msg.event.kind)) onChanged();
+    if (isProjectListEventKind(msg.event.kind)) onChanged();
   });
 }
 

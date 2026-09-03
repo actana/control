@@ -104,8 +104,14 @@ class FakeCoreLink implements CoreLinkClientLike {
   }
 }
 
-function event(eventId: number, kind = "task:statusChanged"): CoreLinkEvent {
-  return { eventId, ts: eventId * 10, kind, ptyId: null, taskId: "t1", payload: "{}" };
+/**
+ * `ts` defaults to now, not to a number derived from the id: the finish replay
+ * is bounded by age as well as by count (issue 388), so an event dated 1970
+ * would be a fixture that quietly opts out of the path under test. A test that
+ * cares about age passes its own.
+ */
+function event(eventId: number, kind = "task:statusChanged", ts = Date.now()): CoreLinkEvent {
+  return { eventId, ts, kind, ptyId: null, taskId: "t1", payload: "{}" };
 }
 
 function frameReqId(frame: CoreLinkRequestFrame): string {
@@ -383,6 +389,76 @@ describe("panel-link router · replay from a tab's cursor", () => {
 
     expect(fresh.tab.eventIds("core_a")).toEqual([]);
     expect(fresh.tab.coreFrames("core_a")).toEqual([{ type: "eventsReplayed", lastEventId: 2 }]);
+  });
+
+  it("still hands a brand-new tab the finishes it was not open for", () => {
+    const link = source.bring("core_a");
+    subscribe(openTab().session, "core_a", 0);
+    link.pushEvent(event(1));
+    link.pushEvent(event(2, "session:finished"));
+    link.pushEvent(event(3));
+
+    // The tab the operator opens after the Session ended (issue 388).
+    const fresh = openTab();
+    subscribe(fresh.session, "core_a", 0);
+
+    // The finish, and only the finish: the rest of the log is what its queries
+    // are already fetching, but nothing re-derives the *notice* of a finish.
+    expect(fresh.tab.eventIds("core_a")).toEqual([2]);
+    expect(fresh.tab.coreFrames("core_a").at(-1)).toEqual({
+      type: "eventsReplayed",
+      lastEventId: 3,
+    });
+  });
+
+  it("bounds the finish replay to the recent tail rather than the whole log", () => {
+    const link = source.bring("core_a");
+    subscribe(openTab().session, "core_a", 0);
+    for (let id = 1; id <= 12; id++) link.pushEvent(event(id, "session:finished"));
+
+    const fresh = openTab();
+    subscribe(fresh.session, "core_a", 0);
+
+    // "You missed a finish", not a history: the newest eight, oldest first.
+    expect(fresh.tab.eventIds("core_a")).toEqual([5, 6, 7, 8, 9, 10, 11, 12]);
+  });
+
+  it("leaves a finish older than the replay window to the grid, not to a toast", () => {
+    const link = source.bring("core_a");
+    const hoursAgo = Date.now() - 6 * 60 * 60_000;
+    const minutesAgo = Date.now() - 5 * 60_000;
+    link.pushEvent(event(1, "session:finished", hoursAgo));
+    link.pushEvent(event(2, "session:finished", minutesAgo));
+
+    const fresh = openTab();
+    subscribe(fresh.session, "core_a", 0);
+
+    // 30 minutes is "the operator stepped away"; an overnight backlog is not a
+    // notice, it is a list, and `tasksList` is where a list belongs.
+    expect(fresh.tab.eventIds("core_a")).toEqual([2]);
+  });
+
+  it("does not drop a finish whose Core sent no usable timestamp", () => {
+    const link = source.bring("core_a");
+    link.pushEvent(event(1, "session:finished", 0));
+
+    const fresh = openTab();
+    subscribe(fresh.session, "core_a", 0);
+
+    // Unknown age is not old age: the whole fix is failing toward the notice.
+    expect(fresh.tab.eventIds("core_a")).toEqual([1]);
+  });
+
+  it("does not replay a finish to a tab that already has a cursor past it", () => {
+    const link = source.bring("core_a");
+    const { tab, session } = openTab();
+    subscribe(session, "core_a", 0);
+    link.pushEvent(event(1, "session:finished"));
+
+    // A reconnect, from the cursor the tab reached: it saw that finish live.
+    subscribe(session, "core_a", 1);
+
+    expect(tab.eventIds("core_a")).toEqual([1]);
   });
 
   it("keeps live events flowing after the replay, in order and without repeats", () => {

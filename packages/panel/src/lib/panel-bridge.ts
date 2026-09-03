@@ -1,10 +1,9 @@
-import { PanelLinkClient } from "./panel-link-client";
+import { PanelLinkClient, type PanelLinkEventMessage } from "./panel-link-client";
 import { corePtyBridgeFor, type CorePtyBridge } from "./core-pty-bridge";
 import type {
   CoreLinkHarnessAvailabilityMap,
   CoreLinkHarnessInstallAck,
   CoreLinkDirListing,
-  CoreLinkEvent,
   CoreLinkProjectMutation,
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
@@ -96,8 +95,12 @@ export type PanelBridge = {
    * looking at one Core does not pay for the rest of the fleet.
    */
   watchCore(coreId: string): () => void;
-  /** Domain events from every watched Core, tagged with their owner. */
-  onEvent(cb: (msg: { coreId: string; event: CoreLinkEvent }) => void): () => void;
+  /**
+   * Domain events from every watched Core, tagged with their owner — and with
+   * whether they answered a subscribe this tab sent having seen nothing
+   * (issue 388).
+   */
+  onEvent(cb: (msg: PanelLinkEventMessage) => void): () => void;
   /** Dial-status changes, pushed by the service as it finds them. */
   onDialStatus(cb: (status: CoreDialStatus) => void): () => void;
   // ─── Session write access (issue 147, ADR 0024 D3/D8) ───
