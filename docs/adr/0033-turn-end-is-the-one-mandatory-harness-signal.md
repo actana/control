@@ -92,6 +92,43 @@ A send that submits nothing at all (`--no-enter`) is refused with `--wait`
 rather than bounded: it has no turn to await, so there is nothing for a deadline
 to be about.
 
+**D6 — A lost link ends a wait as *unknown*, and never as an outcome**
+(extends D4, #396). Everything that can end a wait well arrives down the core
+link: the status change a harness's hooks produce, and the process exit behind
+it. A link that drops therefore takes every one of them with it, and the wait
+does not end — it goes quiet. With no `--wait-timeout` there is nothing left in
+the world that can settle it, which is `actana session start … --wait` sitting
+for ever after a Core blip; with one, the operator learns about the drop as a
+deadline, which points them at a slow harness rather than at a dead socket.
+
+So a drop is an ending in its own right, and the class of ending is the whole
+decision. **The wait fails.** Resolving it with the status the Session was last
+seen at is the cheap fix and the forbidden one: it reports a turn as ended on
+the evidence that this side stopped listening, which is a false completion — the
+failure D4 and #405 exist to remove, arriving through the transport instead of
+through the harness. The wait rejects with `CoreSessionLinkLostError`, distinct
+by class from both a resolution (the Core reported a turn ended) and
+`CoreSessionTurnTimeoutError` (this side gave up on its own clock), and its
+message says the outcome is unknown and names both readings — the turn may have
+ended in the silence, and it may still be running.
+
+The wait is not failed on the first blip. A client that reconnects usually
+recovers a drop without the wait noticing: the link returns, the client
+re-subscribes from its cursor, and the Core streams the tail it missed —
+including the status change the wait was waiting for. So a drop starts a
+**grace**, not a deadline: thirty seconds (`CORE_LINK_LOST_GRACE_MS`), which is
+six or more of `DurableCoreClient`'s backoff attempts, cancelled the moment a
+connection comes back, and running only while the link is down. A client that
+does **not** reconnect gets a grace of zero, because a grace is time given to a
+reconnect and a one-shot client — the `actana` CLI's — has none coming; waiting
+it out would be thirty more seconds of the hang.
+
+Nothing here weakens D2 or D4. No screen is read, `reportsTurnStart` is
+consulted nowhere, and the only facts the error carries are that the link went
+and two event ids. The Session itself is untouched by any of it: it is running
+on the Core, which is where its status lives and where the question this error
+leaves open is answered.
+
 ## Consequences
 
 Adding a family is still adding a row, and now the row has a bar to clear. A

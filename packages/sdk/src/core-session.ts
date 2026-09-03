@@ -172,6 +172,34 @@ const STATUS_BEARING_EVENT_KINDS: ReadonlySet<string> = new Set([
 export const STATUS_READ_RETRIES = 3;
 export const STATUS_READ_RETRY_MS = 250;
 
+/**
+ * How long a wait goes on waiting after the link to the Core drops, before it
+ * gives up and says the turn's outcome is unknown (#396).
+ *
+ * A drop is not a verdict, and the reason there is a grace at all is that on a
+ * client that reconnects it is usually not even an interruption: the link comes
+ * back, the client re-subscribes from its cursor, and the Core streams the tail
+ * it missed — including the status change that ends this wait. Failing on the
+ * first blip would report a turn as unobservable while it was being observed
+ * again.
+ *
+ * Thirty seconds because that is several of `DurableCoreClient`'s
+ * reconnects: its backoff runs 500 ms, 1 s, 2 s, 4 s and then every 5 s, so a
+ * link that is coming back has had six or more attempts by the time this fires.
+ * A link that has not come back by then is not a blip, and the wait behind it
+ * has nothing left to hear.
+ *
+ * **It is a grace, not a deadline.** It only ever runs while the link is down,
+ * it is cancelled the moment the link returns, and it is not what
+ * {@link CoreSessionWaitOptions.timeoutMs} is — a caller that passed no deadline
+ * still has none while the Core is reachable.
+ *
+ * Zero, which {@link CoreSession.start} and {@link CoreSession.attach} use for a
+ * client that does not reconnect, means the wait fails the instant the link
+ * drops: there is no coming back to wait for.
+ */
+export const CORE_LINK_LOST_GRACE_MS = 30_000;
+
 export type CoreSessionStartOptions = {
   /**
    * The Project to start this Session in. Either this or {@link taskId}: with a
@@ -231,6 +259,15 @@ export type CoreSessionStartOptions = {
    * caller is doing something the check cannot see.
    */
   subscribeToEvents?: boolean;
+  /**
+   * How long a wait on this Session keeps waiting after the link to the Core
+   * drops, before it fails with {@link CoreSessionLinkLostError} (#396).
+   *
+   * Defaults to {@link CORE_LINK_LOST_GRACE_MS} on a client that reconnects and
+   * to **0** on one that does not, because on the second kind there is nothing
+   * to wait for. 0 fails the wait the instant the link goes down.
+   */
+  linkLostGraceMs?: number;
 };
 
 export type CoreSessionAttachOptions = {
@@ -258,6 +295,8 @@ export type CoreSessionAttachOptions = {
    * whose wait outlives the process it is about.
    */
   replay?: boolean;
+  /** As {@link CoreSessionStartOptions.linkLostGraceMs}. */
+  linkLostGraceMs?: number;
 };
 
 /** What a Session settled on. */
@@ -427,6 +466,118 @@ function turnTimeoutMessage(opts: {
 }
 
 /**
+ * The link to the Core went down while a wait was running, and did not come
+ * back (#396).
+ *
+ * **Its whole reason for existing is that it is not a status.** A wait had three
+ * ways to end before this: a settled status, which is the Core reporting a turn
+ * ended; a deadline ({@link CoreSessionTurnTimeoutError}), which is this side
+ * giving up on a clock it set itself; and — for a link that dropped — nothing at
+ * all, which is the bug. The obvious cheap fix is the forbidden one: resolving
+ * the wait with whatever status the Session was last seen at would report a turn
+ * as ended on the evidence that this side stopped listening. That is a false
+ * completion, which is the exact failure ADR 0033 exists to remove, so a lost
+ * link rejects and says what it actually knows — **the outcome is unknown**.
+ *
+ * Distinguishable from both of the other two endings by class, so a caller
+ * branches without parsing prose: a resolution is a turn that ended, a
+ * {@link CoreSessionTurnTimeoutError} is a deadline the caller set, and this is
+ * the link.
+ *
+ * Nothing here reads the byte stream and nothing here consults
+ * `reportsTurnStart` (ADR 0026 D3, ADR 0033 D2). The only facts it carries are
+ * the link going down and two event ids.
+ *
+ * The Session is untouched by any of this. It is running on the Core, which is
+ * where its status lives; reconnecting and asking is what answers the question
+ * this error leaves open.
+ */
+export class CoreSessionLinkLostError extends Error {
+  /** The Session the wait was about. */
+  readonly taskId: string;
+  /** The delivery stamp this wait counted from, or 0 for an uncursored wait. */
+  readonly afterEventId: number;
+  /**
+   * The last status the Core reported before the link went, or null when it had
+   * reported none.
+   *
+   * **Context, never the answer.** It is what was true before the drop, and a
+   * caller that presents it as the turn's outcome has written the false
+   * completion this class exists to prevent.
+   */
+  readonly lastStatus: string | null;
+  /**
+   * Did the Core report a status for this Session at an event id above
+   * {@link afterEventId} before the link went?
+   *
+   * Read exactly as its twin on {@link CoreSessionTurnTimeoutError} is read: two
+   * event ids compared, and only a status carried *by* an event moves the id it
+   * is compared against. `true` here is informative rather than settling — a
+   * settling status would have ended the wait, so what it reports is a turn that
+   * was seen to be *under way* when the link died. `false` means the log said
+   * nothing about this Session after the cursor.
+   */
+  readonly reportedSinceDelivery: boolean;
+  /** How long the wait went on for after the drop before giving up, in ms. */
+  readonly graceMs: number;
+  /** What the transport said about the drop, when it said anything. */
+  readonly reason: string | null;
+
+  constructor(opts: {
+    taskId: string;
+    afterEventId: number;
+    lastStatus: string | null;
+    reportedSinceDelivery: boolean;
+    graceMs: number;
+    reason: string | null;
+  }) {
+    super(linkLostMessage(opts));
+    this.name = "CoreSessionLinkLostError";
+    this.taskId = opts.taskId;
+    this.afterEventId = opts.afterEventId;
+    this.lastStatus = opts.lastStatus;
+    this.reportedSinceDelivery = opts.reportedSinceDelivery;
+    this.graceMs = opts.graceMs;
+    this.reason = opts.reason;
+  }
+}
+
+/**
+ * What {@link CoreSessionLinkLostError} says.
+ *
+ * One sentence for the fact — the link dropped and stayed down — and one for the
+ * consequence, which is the part that has to be unambiguous: the turn's outcome
+ * is **unknown**. It deliberately names both readings and settles neither, for
+ * the same reason the timeout's message does: the turn may have ended in the
+ * silence and it may still be running, and the only place that is known is the
+ * Core this side can no longer hear.
+ *
+ * What is **not** here is what to type next. This is a library; the CLI knows
+ * whether its user has an `actana` on their path and adds that line itself.
+ */
+function linkLostMessage(opts: {
+  taskId: string;
+  lastStatus: string | null;
+  graceMs: number;
+  reason: string | null;
+}): string {
+  const stayedDown =
+    opts.graceMs > 0
+      ? `and was still down ${opts.graceMs}ms later`
+      : "and this client does not reconnect";
+  const because = opts.reason ? ` (${opts.reason})` : "";
+  return (
+    `the link to the Core dropped while waiting for session ${opts.taskId} to end a turn${because}, ` +
+    `${stayedDown}. The turn's outcome is unknown: it may have ended while this side was deaf, and ` +
+    `it may still be running — the Core is where that is known, and nothing here can stand in for ` +
+    `it. This is not a report that the turn finished` +
+    (opts.lastStatus
+      ? `; ${opts.lastStatus} is only what the Core last said before the link went`
+      : "")
+  );
+}
+
+/**
  * One Session on one Core, driven programmatically.
  *
  * Built by {@link start}. Holds a screen fed from the Session's PTY, the Core's
@@ -500,6 +651,11 @@ export class CoreSession {
   private readonly idleWaiters = new Set<{
     afterEventId: number;
     notify: (idle: CoreSessionIdle) => void;
+    /**
+     * End this wait with a failure rather than an outcome — the route a lost
+     * link takes (#396), and the only one that can say "unknown".
+     */
+    fail: (err: Error) => void;
   }>();
 
   /**
@@ -532,6 +688,18 @@ export class CoreSession {
    * greater than nothing, so it can never satisfy a real cursor.
    */
   private lastStatusEventId = 0;
+  /**
+   * How long a wait on this Session survives a dropped link before it fails —
+   * {@link CORE_LINK_LOST_GRACE_MS}, 0 on a client that will not reconnect, or
+   * whatever the caller asked for.
+   */
+  private readonly linkLostGraceMs: number;
+  /** True between the link going down and it coming back. */
+  private linkDown = false;
+  /** What the transport said about the current drop, when it said anything. */
+  private linkLostReason: string | null = null;
+  /** The grace running against the current drop, armed only while one is. */
+  private linkLostTimer: ReturnType<typeof setTimeout> | null = null;
   private exit: { exitCode: number; signal?: number } | null = null;
   private disposed = false;
   /** A status read is in flight; another event arrived while it was. */
@@ -549,6 +717,7 @@ export class CoreSession {
     command: string | null;
     reportsTurnStart: boolean | null;
     terminal: TerminalScreen;
+    linkLostGraceMs: number;
   }) {
     this.client = opts.client;
     this.taskId = opts.taskId;
@@ -557,6 +726,7 @@ export class CoreSession {
     this.command = opts.command;
     this.reportsTurnStart = opts.reportsTurnStart;
     this.terminal = opts.terminal;
+    this.linkLostGraceMs = Math.max(0, opts.linkLostGraceMs);
   }
 
   /**
@@ -644,6 +814,11 @@ export class CoreSession {
       }
       session.onCoreEvent(event);
     });
+    // The link itself, because a wait that cannot hear the Core is a wait
+    // nothing will ever end (#396). Not held like the three above: a drop before
+    // the spawn is answered fails the spawn, which is the `catch` below.
+    const stopDown = client.onDisconnected(({ error }) => session?.onLinkLost(error));
+    const stopUp = client.onReady(() => session?.onLinkBack());
 
     let spawned: { ptyId: string; hooksReportTurnStart: boolean };
     try {
@@ -665,6 +840,8 @@ export class CoreSession {
       stopData();
       stopExit();
       stopEvents();
+      stopDown();
+      stopUp();
       throw new CoreSessionStartError(
         `the Core refused to start a ${opts.harness} Session in ${opts.cwd}: ${
           err instanceof Error ? err.message : String(err)
@@ -682,8 +859,9 @@ export class CoreSession {
       command,
       reportsTurnStart: spawned.hooksReportTurnStart,
       terminal,
+      linkLostGraceMs: linkLostGraceFor(client, opts.linkLostGraceMs),
     });
-    session.unsubscribes.push(stopData, stopExit, stopEvents);
+    session.unsubscribes.push(stopData, stopExit, stopEvents, stopDown, stopUp);
 
     for (const event of heldEvents) session.onCoreEvent(event);
     for (const frame of held) {
@@ -758,6 +936,7 @@ export class CoreSession {
       command: null,
       reportsTurnStart: null,
       terminal,
+      linkLostGraceMs: linkLostGraceFor(client, opts.linkLostGraceMs),
     });
 
     session.unsubscribes.push(
@@ -768,6 +947,12 @@ export class CoreSession {
         if (frame.ptyId === ptyId) session.ingestExit(frame);
       }),
       client.onEvent(({ event }) => session.onCoreEvent(event)),
+      // The link, for the same reason `start` wires it: an attached wait is the
+      // one `session wait` and `send --wait` are built on, and a dropped link
+      // used to leave it pending with nothing left that could ever end it
+      // (#396).
+      client.onDisconnected(({ error }) => session.onLinkLost(error)),
+      client.onReady(() => session.onLinkBack()),
     );
 
     const replay = opts.replay !== false;
@@ -993,6 +1178,23 @@ export class CoreSession {
    * `reportedSinceDelivery` says whether the Core reported anything at all after
    * the write. Bounding the wait is still the caller's — `timeoutMs` is theirs,
    * and with none this waits as long as the work takes.
+   *
+   * **A wait cannot outlive the link it is listening on** (#396). Everything
+   * that ends a wait well — a status change, an exit — reaches this side down
+   * the core link, so a link that drops takes every one of them with it and the
+   * wait goes quiet rather than ending: on a caller with no `timeoutMs`, or on
+   * the `--wait-timeout 0` that removes one, quiet is forever. A drop is
+   * therefore an ending in its own right: the wait keeps going for
+   * {@link CORE_LINK_LOST_GRACE_MS} in case the link comes back — on a client
+   * that reconnects it usually does, and the replay past its cursor carries the
+   * status this wait was missing — and then rejects with
+   * {@link CoreSessionLinkLostError}.
+   *
+   * **It rejects rather than resolving**, and that is the whole of the design:
+   * this side stopped hearing from the Core, which is evidence about the link
+   * and none at all about the turn. Resolving with the last status seen would
+   * report a turn as ended because the network failed, and a false completion is
+   * worse than either a hang or an error (ADR 0033 D6).
    */
   waitForTurnEnd(opts: CoreSessionTurnWaitOptions = {}): Promise<CoreSessionIdle> {
     const afterEventId = opts.afterEventId ?? 0;
@@ -1005,10 +1207,21 @@ export class CoreSession {
         notify: (idle: CoreSessionIdle): void => {
           this.idleWaiters.delete(waiter);
           if (timer) clearTimeout(timer);
+          this.releaseLinkLostGrace();
           resolve(idle);
+        },
+        fail: (err: Error): void => {
+          this.idleWaiters.delete(waiter);
+          if (timer) clearTimeout(timer);
+          this.releaseLinkLostGrace();
+          reject(err);
         },
       };
       this.idleWaiters.add(waiter);
+      // A wait started while the link is already down is the same wait as one
+      // that was running when it went (#396) — it has just as little chance of
+      // hearing anything — so the grace is armed for it too, from here.
+      if (this.linkDown) this.armLinkLostGrace();
       if (opts.timeoutMs && opts.timeoutMs > 0) {
         const timeoutMs = opts.timeoutMs;
         timer = setTimeout(() => {
@@ -1076,6 +1289,10 @@ export class CoreSession {
       clearTimeout(this.statusRetryTimer);
       this.statusRetryTimer = null;
     }
+    if (this.linkLostTimer) {
+      clearTimeout(this.linkLostTimer);
+      this.linkLostTimer = null;
+    }
     // Anyone still waiting is waiting on a report this Session will no longer
     // hear, so they are settled on the way out rather than left pending
     // forever. `kill()` disposes, and `await session.kill()` after starting a
@@ -1104,6 +1321,99 @@ export class CoreSession {
       } catch {
         /* a listener's failure is not this Session's failure */
       }
+    }
+  }
+
+  /**
+   * @internal — the client's link to the Core went down (#396).
+   *
+   * Nothing is decided here. The link being down is a fact about this side, and
+   * the wait it endangers is given {@link linkLostGraceMs} to see whether it
+   * comes back: on a client that reconnects it usually does, and the replay past
+   * its cursor delivers whatever the Core reported in the gap, so the wait ends
+   * on the Core's own report exactly as it would have.
+   */
+  private onLinkLost(reason?: string): void {
+    if (this.disposed || this.linkDown) return;
+    this.linkDown = true;
+    this.linkLostReason = reason ?? null;
+    this.armLinkLostGrace();
+  }
+
+  /**
+   * @internal — a connection came up. Whatever the grace was about is over.
+   *
+   * The wait carries on from here with nothing changed: this restores the state
+   * a wait is supposed to be in, and does not resolve, fail or advance anything.
+   * A turn that ended while the link was down is reported by the replay the
+   * client asks for on its new connection, through the ordinary event path.
+   */
+  private onLinkBack(): void {
+    this.linkDown = false;
+    this.linkLostReason = null;
+    if (this.linkLostTimer) {
+      clearTimeout(this.linkLostTimer);
+      this.linkLostTimer = null;
+    }
+  }
+
+  /**
+   * Start the clock on the current drop, or fail the waiters now if this client
+   * has no reconnect for the clock to be about.
+   *
+   * One timer for the Session rather than one per waiter: the link is a property
+   * of the client, so every wait on this Session went deaf at the same instant
+   * and there is nothing for two clocks to disagree about.
+   *
+   * **Not `unref`ed**, unlike the status-read retry. That retry is a nice-to-have
+   * a finished script may exit through; this one is the only thing left that will
+   * ever settle a pending wait, and a process that exited around it would leave
+   * that promise unsettled — which is the hang this exists to remove, wearing an
+   * exit code of 0.
+   */
+  private armLinkLostGrace(): void {
+    if (this.disposed || !this.linkDown) return;
+    if (this.idleWaiters.size === 0) return;
+    if (this.linkLostGraceMs === 0) {
+      this.failWaitersLinkLost();
+      return;
+    }
+    if (this.linkLostTimer) return;
+    this.linkLostTimer = setTimeout(() => {
+      this.linkLostTimer = null;
+      if (this.disposed || !this.linkDown) return;
+      this.failWaitersLinkLost();
+    }, this.linkLostGraceMs);
+  }
+
+  /** The grace is only ever about a wait; with none left there is nothing to time. */
+  private releaseLinkLostGrace(): void {
+    if (this.idleWaiters.size > 0) return;
+    if (this.linkLostTimer) {
+      clearTimeout(this.linkLostTimer);
+      this.linkLostTimer = null;
+    }
+  }
+
+  /**
+   * End every pending wait as *unknown* — the link went and did not come back.
+   *
+   * `fail`, never `notify`. The waiters are holding cursors and last-known
+   * statuses that would make a plausible-looking resolution, and every one of
+   * them would be a turn reported as ended on the strength of a network failure.
+   */
+  private failWaitersLinkLost(): void {
+    for (const waiter of [...this.idleWaiters]) {
+      waiter.fail(
+        new CoreSessionLinkLostError({
+          taskId: this.taskId,
+          afterEventId: waiter.afterEventId,
+          lastStatus: this.lastStatus,
+          reportedSinceDelivery: this.lastStatusEventId > waiter.afterEventId,
+          graceMs: this.linkLostGraceMs,
+          reason: this.linkLostReason,
+        }),
+      );
     }
   }
 
@@ -1283,6 +1593,22 @@ export class CoreSession {
       if (settled) waiter.notify(settled);
     }
   }
+}
+
+/**
+ * How long a Session's waits survive a dropped link, given what the caller asked
+ * for and what kind of client it handed over (#396).
+ *
+ * The caller's number wins outright, 0 included. With none, the answer comes off
+ * the client: one that dials again gets {@link CORE_LINK_LOST_GRACE_MS} to do
+ * it in, and one that does not gets **0**, because a grace is time given to a
+ * reconnect and a one-shot client has none coming. That is the `actana` CLI's
+ * case — its drop is permanent, and a wait that sat out thirty seconds before
+ * saying so would be thirty seconds of the hang this fixes.
+ */
+function linkLostGraceFor(client: CoreClient, asked: number | undefined): number {
+  if (asked !== undefined) return asked;
+  return client.willReconnect() ? CORE_LINK_LOST_GRACE_MS : 0;
 }
 
 /**

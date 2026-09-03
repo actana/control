@@ -197,7 +197,7 @@ object** \`start --wait --json\` prints — same keys, same \`screen\` — so on
 reads all three verbs. Two of those keys are \`null\` on a Session you attached to
 rather than started: \`command\` and \`reportsTurnStart\` are answers to a spawn.
 
-Four things to know before you build on it:
+Five things to know before you build on it:
 
 1. **Sending into a turn that is already running resolves on *that* turn's
    end.** A keystroke into a busy Harness is not a new turn. If the Session was
@@ -232,6 +232,17 @@ Four things to know before you build on it:
    exits zero** — which reads as a completed turn and is not one. To carry on
    waiting, follow the log from the delivery instead:
    \`actana events tail --since <event id>\`, the id the timeout message names.
+5. **A wait whose link to the Core drops ends as *unknown*.** Every wait listens
+   over that link, so a Core that restarts or a connection that is reaped takes
+   the report the wait was waiting for with it. Rather than hang — which is what
+   it used to do, with no deadline of any kind to end it — the command exits
+   non-zero saying **the turn's outcome is unknown**: it may have ended while
+   this side was deaf, and it may still be running. That is not a failed turn
+   and not a finished one, and it is the one case where the Session's status has
+   to be re-read from the Core rather than taken from the wait. Do that once the
+   Core is reachable again — \`actana session ls\` says whether it is still live,
+   \`actana events tail --since <event id>\` follows the log from your delivery —
+   and **do not** answer it with \`session wait\`, for the reason in 4.
 
 **Every turn of that loop gets its own report file**, and the turn number in the
 filename is what keeps them apart. See below.

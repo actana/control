@@ -619,6 +619,22 @@ export class CoreClient {
   }
 
   /**
+   * Will this client dial again on its own after a link it just lost?
+   *
+   * **False here, and that is the whole of a one-shot client's story**: it has no
+   * supervisor, so a dropped socket is the end of it and nothing above it should
+   * be written to wait one out. {@link DurableCoreClient} overrides it.
+   *
+   * Asked by anything that has to decide how long to keep waiting after a drop —
+   * `CoreSession`'s waits are the first (#396). The alternative was a fixed
+   * grace everywhere, which is either too short to cover a reconnect or long
+   * enough to be a hang on a client that will never have one.
+   */
+  willReconnect(): boolean {
+    return false;
+  }
+
+  /**
    * May this Core be sent frames only a multi-connection Core understands — the
    * Session lock's `claim`, the per-connection PTY subscription, and whatever
    * else lands under ADR 0024?
@@ -1008,8 +1024,16 @@ export class CoreClient {
    */
   subscribeEvents(lastEventId = 0): boolean {
     if (this.closed) return false;
-    this.eventsSubscribed = true;
-    return this.sendNow({ type: "subscribe", reqId: "", lastEventId }, "sub");
+    // Recorded only if the frame actually went out (#396). Setting it first made
+    // `isSubscribedToEvents()` answer true for a subscribe that was never sent —
+    // `sendNow` returns false when there is no writable connection to put it on
+    // — and the caller that consults it, `CoreSession`, reads it to decide
+    // whether it still owes the Core a subscribe. A lie there is a Session
+    // wired to an event stream that was never asked for: no status ever
+    // arrives, and every wait on it is one nothing will end.
+    const sent = this.sendNow({ type: "subscribe", reqId: "", lastEventId }, "sub");
+    if (sent) this.eventsSubscribed = true;
+    return sent;
   }
 
   /**

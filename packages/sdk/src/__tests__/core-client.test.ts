@@ -492,6 +492,46 @@ describe("CoreClient", () => {
     expect(ordered).toEqual(["reclaim", "replay"]);
   });
 
+  it("records a subscribe only when one actually went out (#396)", async () => {
+    // `isSubscribedToEvents()` is read by `CoreSession` to decide whether it
+    // still owes the Core a `subscribe`. It used to be set before the frame was
+    // written, so a subscribe that never made it onto a link answered `true`
+    // anyway — a Session wired to an event stream nobody asked for, hearing no
+    // status ever, with every wait on it one that nothing could end.
+    const core = authenticatingRig();
+    const dial = core.dialer();
+    client = new CoreClient({
+      url: "wss://core.test:9444",
+      bearer: bearerFor(),
+      createSocket: dial.createSocket,
+    });
+
+    // Before the dial there is no writable connection to put a frame on, so the
+    // send fails — and the client must say so rather than remember a subscribe
+    // it never sent.
+    expect(client.subscribeEvents()).toBe(false);
+    expect(client.isSubscribedToEvents()).toBe(false);
+
+    await client.connect();
+
+    expect(client.subscribeEvents()).toBe(true);
+    expect(client.isSubscribedToEvents()).toBe(true);
+    expect(dial.last().client.framesOfType("subscribe")).toHaveLength(1);
+  });
+
+  it("says it will not reconnect, because it will not (#396)", async () => {
+    // The predicate anything deciding how long to wait out a drop reads. A
+    // one-shot client has no supervisor: the socket dying is the end of it, and
+    // a caller that waited for a reconnect here would wait for ever.
+    const core = authenticatingRig();
+    const { client: c, dial } = await connected(core);
+
+    expect(c.willReconnect()).toBe(false);
+    dial.last().server.close();
+    expect(c.isConnected()).toBe(false);
+    expect(c.willReconnect()).toBe(false);
+  });
+
   it("authenticates nothing and is writable at once against a loopback Core", async () => {
     // No `authVerifier` on the Core, no bearer on the client: the trusted
     // loopback shape, where `auth` is a no-op and there is no `authOk` coming.
