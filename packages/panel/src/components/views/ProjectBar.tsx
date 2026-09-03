@@ -137,6 +137,15 @@ export const ProjectBar = memo(function ProjectBar({
     [cores],
   );
   const sortedPinned = useMemo(() => getPinnedProjects(projects ?? []), [projects]);
+  // Who owns each row on the rail. A Core's pins carry their Core on `.coreId`
+  // (see `useRemotePinnedProjects`); the Panel's own rows are the untagged
+  // remainder. Every write the rail makes has to ask this per ROW, not per
+  // rail: a mixed rail is the ordinary case, and the Panel's own reorder and
+  // PATCH endpoints can only write the rows in the Panel's database (#382).
+  const coreIdByProject = useMemo(
+    () => new Map((projects ?? []).map((project) => [project.id, project.coreId ?? null])),
+    [projects],
+  );
   const { activeGroup } = useActiveGroup();
   // With a group active the rail becomes that group's workspace: every project
   // in the group (pinned first), not just pinned ones. With "all" active it
@@ -339,6 +348,25 @@ export const ProjectBar = memo(function ProjectBar({
   // or one group's pinned subset in group-workspace mode), plus the group
   // reassignment when the tile was dropped into a different cluster. The
   // optimistic update applies both, so the rail re-clusters instantly.
+  //
+  // Both halves go to the owner of each ROW (#382). The rail mixes this
+  // Panel's pins with every Core's, and neither of the Panel's own write paths
+  // can touch a Core-owned row: `reorderPinnedProjects` validates the order
+  // against the Panel's `projects` table and rejects an id that is not in it,
+  // and `PATCH /api/projects/:id` 404s for a project the Panel holds no row
+  // for. A mixed rail sent to either used to animate, fail, revert and toast —
+  // the reorder never stuck for the Core rows, and often not for the Panel
+  // ones either, because the whole request was rejected together.
+  //
+  // The split:
+  //   * order — Panel rows keep the Panel reorder API; Core rows take their
+  //     slot on their Panel-local presentation row (issue 98's table). Both
+  //     sides are numbered by their index in the WHOLE rail, so the merged
+  //     list sorts back into the operator's order on reload. A Core's own
+  //     database could not hold this number: the rail spans Cores.
+  //   * group — Panel rows keep `PATCH /api/projects/:id`; a Core row's group
+  //     is Panel-local presentation, exactly as the Edit-project dialog
+  //     already files it (`save-project-edits`).
   const persistProjectOrder = useCallback(
     async (
       nextOrder: string[],
@@ -351,11 +379,25 @@ export const ProjectBar = memo(function ProjectBar({
       // where nextOrder already covers every pinned project.
       const fullOrder = mergeSubsetOrder(originalOrder, nextOrder);
       if (!groupChange && fullOrder.join("\0") === originalOrder.join("\0")) return;
+      // Every Core-owned row on the rail, with the slot it now holds. All of
+      // them, not just the ones that moved: a reorder shifts the slots either
+      // side of the gap too, and a Core row left on a stale index would sort
+      // itself back out of place on the next reload.
+      const corePinSlots = fullOrder.flatMap((id, index) => {
+        const rowCoreId = coreIdByProject.get(id) ?? null;
+        return rowCoreId ? [{ projectId: id, coreId: rowCoreId, pinnedOrder: index }] : [];
+      });
+      const groupChangeCoreId = groupChange
+        ? coreIdByProject.get(groupChange.projectId) ?? null
+        : null;
       const saveSeq = ++reorderSaveSeqRef.current;
       reorderSavingRef.current = true;
       setReorderSaving(true);
       const nextOrders = new Map(fullOrder.map((id, index) => [id, index]));
       const previous = queryClient.getQueryData<ProjectWithCounts[]>(queryKeys.projects);
+      // Optimism reaches the Panel's own rows only: a Core's pins are not in
+      // this cache at all (they come off the fleet engine's snapshot), so they
+      // catch up on the refresh below rather than here.
       queryClient.setQueryData<ProjectWithCounts[]>(
         queryKeys.projects,
         (current) =>
@@ -372,16 +414,29 @@ export const ProjectBar = memo(function ProjectBar({
       );
       try {
         if (groupChange) {
-          await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
+          if (groupChangeCoreId) {
+            await api.updateProjectPresentation(groupChange.projectId, groupChangeCoreId, {
+              groupId: groupChange.groupId,
+            });
+          } else {
+            await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
+          }
         }
+        // The Panel's write first: it is the one that validates the order, so
+        // a rejected rail is rejected before any slot has been written.
         const { projects: updated } = await api.reorderPinnedProjects(fullOrder);
+        if (corePinSlots.length > 0) await api.reorderCorePinnedProjects(corePinSlots);
         if (saveSeq === reorderSaveSeqRef.current) {
           queryClient.setQueryData(queryKeys.projects, updated);
         }
+        // Re-read the fleet's pins so the Core-owned tiles land on the slots
+        // and the group just written for them, rather than waiting for a poll.
+        if (corePinSlots.length > 0 || groupChangeCoreId) refreshRemotePinned();
       } catch (error) {
         if (saveSeq === reorderSaveSeqRef.current) {
           queryClient.setQueryData(queryKeys.projects, previous);
           await invalidateProjects();
+          if (corePinSlots.length > 0 || groupChangeCoreId) refreshRemotePinned();
           toast.error(error instanceof Error ? error.message : "Could not move project");
         }
       } finally {
@@ -391,7 +446,7 @@ export const ProjectBar = memo(function ProjectBar({
         }
       }
     },
-    [invalidateProjects, queryClient, sortedPinned],
+    [coreIdByProject, invalidateProjects, queryClient, refreshRemotePinned, sortedPinned],
   );
 
   const startProjectPointerDrag = useCallback(

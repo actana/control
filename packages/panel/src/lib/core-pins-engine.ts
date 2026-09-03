@@ -109,6 +109,14 @@ async function readCore(
   const rows = pinned.map((p) => ({
     ...projectRowFromSnapshot(p, presentation.get(p.projectId), counts.get(p.projectId)),
     coreId: core.id,
+    // Where this pin sits on the rail (issue 382). The core-link snapshot has
+    // no answer for it — the rail spans every Core and this Panel's own rows,
+    // so the slot belongs to none of them individually — and the mapper reads
+    // it as null. It is Panel-local presentation, filed on the same row as the
+    // group, and the rail's comparator sorts it against `projects.pinnedOrder`
+    // in one numbering space. Without this the reorder wrote a slot nothing
+    // read back, and the rail returned to the Core's own list order on reload.
+    pinnedOrder: presentation.get(p.projectId)?.pinnedOrder ?? null,
   }));
   lastRowsByCore.set(core.id, rows);
   return rows;
