@@ -1848,10 +1848,20 @@ function ProjectPage() {
         // (#401). In grid view the grid renders inside this div, so a drag
         // aimed at a session's terminal bubbles here too; the board answering
         // it would upload to the Project root, which is not where the operator
-        // was pointing. It still has to `preventDefault` over a cell — leaving
-        // the browser's default alone makes the drop navigate the Panel to the
-        // dropped file — but it says `none`, so the cursor reads no-drop and
-        // the board never paints itself hot for a gesture it will refuse.
+        // was pointing. It still has to `preventDefault` over the grid —
+        // leaving the browser's default alone makes the drop navigate the Panel
+        // to the dropped file — but it says `none`, so the cursor reads no-drop
+        // and the board never paints itself hot for a gesture it will refuse.
+        //
+        // Writing `dropEffect` unconditionally is safe only while nothing
+        // inside the grid handles a file drag. This handler runs last, on the
+        // bubble, so it stomps whatever a nested one set: if a per-session drop
+        // is ever added — an image attached into a grid cell — it will
+        // `preventDefault` and set `copy`, and the `none` below would overwrite
+        // it and suppress that pane's `drop` entirely. The repo's convention
+        // for nested drop targets is the inner one claiming the gesture with
+        // `stopPropagation` (`ProjectFilesPanel.tsx`, #400/#227); a per-session
+        // drop should do the same, and then this branch never runs for it.
         onDragOver={
           filesAvailable
             ? (e) => {
