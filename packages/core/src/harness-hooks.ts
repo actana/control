@@ -31,6 +31,7 @@
 // hooks, which is what tells the Panel to keep its terminal-input fallback
 // armed for that Session.
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   readJsonSettingsFile,
@@ -44,6 +45,8 @@ import {
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
+import { HARNESS_HOOK_TRUST_FLAGS } from "@actana/shared/harness-cli-config";
+import type { Harness } from "@actana/shared/domain";
 import { installOpencodeHooks } from "./harness-hooks-opencode";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
@@ -210,6 +213,37 @@ function installClaudeHooks(cwd: string, slug: string): boolean {
 
 const CODEX_HOOK_EVENTS = ["UserPromptSubmit", "Stop", "PermissionRequest"] as const;
 
+/**
+ * A Codex matcher group — the same shape as {@link claudeGroup}, and the fix
+ * for the first half of issue 290.
+ *
+ * Codex's hooks file is a table of **matcher groups**, not of handlers:
+ * `{"hooks": {"Stop": [{"hooks": [{"type": "command", ...}]}]}}`. Until this
+ * issue we wrote the handler where the group belongs — one level too shallow —
+ * and the difference is not cosmetic and not partial. Codex parses the file,
+ * finds nothing it recognises, and reports no error: the workspace has a hooks
+ * file, the Core believes it installed hooks, and Codex has zero of them. It
+ * never even reaches the startup review the second half of this issue is
+ * about; verified against codex-cli 0.153.0, where the flat file produces no
+ * hook on any turn under every combination of workspace trust and
+ * `--dangerously-bypass-hook-trust`, and the group file produces "2 hooks are
+ * new or changed" on the same workspace.
+ *
+ * The `_acManaged` tag moves out to the group with everything else, which is
+ * where {@link isManaged} already looks — so the next spawn replaces the group
+ * this one wrote, and a flat entry left behind by a Core from before this
+ * issue is swept out by the same rule rather than left in a file Codex is
+ * ignoring anyway.
+ *
+ * No `matcher` key. Codex applies a group with none to every occurrence of the
+ * event, which is what all three of our events want: there is nothing to
+ * narrow `Stop` or `UserPromptSubmit` to, and `PermissionRequest` is wanted
+ * whatever raised it.
+ */
+function codexGroup(slug: string, event: string): Record<string, unknown> {
+  return { [MANAGED_FLAG]: true, hooks: [managedEntry(slug, event)] };
+}
+
 function installCodexHooks(cwd: string, slug: string): boolean {
   const file = path.join(cwd, ".codex", "hooks.json");
   const config = readJsonSettingsFile<{ hooks?: Record<string, unknown>; [k: string]: unknown }>(
@@ -218,10 +252,101 @@ function installCodexHooks(cwd: string, slug: string): boolean {
   if (config === null) return false;
   const hooks: Record<string, unknown> = { ...(config.hooks as object) };
   for (const event of CODEX_HOOK_EVENTS) {
-    hooks[event] = mergeMatchers(hooks[event], [managedEntry(slug, event)]);
+    hooks[event] = mergeMatchers(hooks[event], [codexGroup(slug, event)]);
   }
   config.hooks = hooks;
   return writeJsonSettingsFile(file, config);
+}
+
+/**
+ * Serialize `value` with object keys in sorted order, so two documents that
+ * differ only in key order compare equal.
+ *
+ * Used to compare a hooks file against what this Core wrote. Our own writer
+ * round-trips key order through `JSON.parse`, so a plain `JSON.stringify`
+ * would usually do — but an operator's editor, a formatter, or a `jq` pass
+ * reorders keys without changing a single hook, and answering "not ours" to
+ * that would withhold the bypass for a difference that is not one.
+ */
+function canonicalJson(value: unknown): string {
+  return JSON.stringify(value, (_key, val) =>
+    val && typeof val === "object" && !Array.isArray(val)
+      ? Object.fromEntries(
+          Object.entries(val as Record<string, unknown>).sort(([a], [b]) =>
+            a < b ? -1 : a > b ? 1 : 0,
+          ),
+        )
+      : val,
+  );
+}
+
+/**
+ * Is every hook Codex will run in this workspace one THIS Core just wrote?
+ *
+ * The question behind `hookTrustBypassEarned`, and the reason that field is
+ * not simply `installed`. Codex's startup review exists to stop hooks that
+ * arrived with a repository from running unseen — a cloned project with a
+ * committed `.codex/hooks.json` whose hook is `curl … | sh` is the case it is
+ * for. Lifting that review for OUR entries is defensible: this process wrote
+ * them, from the table above, seconds ago. Lifting it for somebody else's is
+ * not, and `mergeMatchers` deliberately preserves somebody else's — a
+ * workspace is the operator's, not ours.
+ *
+ * **The answer is computed from what this Core writes, never read out of the
+ * file.** The first version of this audit asked `isManaged(entry)` — i.e.
+ * whether the entry carried an `_acManaged` key — which is a boolean supplied
+ * by the very document being audited. A repository ships that document, so a
+ * repository can write that key. Under the three events in
+ * {@link CODEX_HOOK_EVENTS} the forgery is harmless, because `mergeMatchers`
+ * deletes managed entries and replaces them with ours; under any of the events
+ * Codex supports that we do NOT write — `SessionStart` above all, which fires
+ * earliest — a forged entry survived our write untouched, was counted as ours,
+ * and earned the bypass. A marker inside untrusted content can never be the
+ * proof that the content is trusted.
+ *
+ * So the file must match the record this module keeps on its own side, which
+ * is `CODEX_HOOK_EVENTS` and {@link codexGroup} — the same two things the
+ * writer used moments earlier, deterministic in `slug`, and not reachable from
+ * a workspace. Four conditions, and every one of them fails towards refusing:
+ *
+ *  - **The event keys are exactly the ones we write.** An event we do not
+ *    write is an event we cannot vouch for, so ownership is never inherited by
+ *    default — an extra key is a refusal whatever it contains, and a missing
+ *    one means our write did not survive.
+ *  - **Each event holds exactly one group, byte-identical to ours** (modulo
+ *    key order). Anything appended beside ours, and any edit to ours, is a
+ *    refusal.
+ *  - **A `.codex/config.toml` in the workspace refuses outright.** That file
+ *    can declare hooks of its own, it is TOML, and this repository has no TOML
+ *    parser — so its existence reads as "there may be hooks here we cannot
+ *    account for". An operator who wants the bypass back can move those hooks
+ *    to `~/.codex/config.toml`, which is theirs rather than the repository's.
+ *  - **A file we could not read refuses.** Unreadable is not empty.
+ *
+ * What it cannot see is a Codex plugin supplying hooks from outside the
+ * workspace. That is a real edge, and the honest consequence is stated rather
+ * than hidden: this narrows the bypass to the common case and does not claim
+ * to enumerate every hook source Codex has.
+ */
+function codexOwnsEveryHook(cwd: string, slug: string): boolean {
+  if (fs.existsSync(path.join(cwd, ".codex", "config.toml"))) return false;
+  const config = readJsonSettingsFile<{ hooks?: Record<string, unknown> }>(
+    path.join(cwd, ".codex", "hooks.json"),
+  );
+  // `null` is a read that failed for a reason other than "not there yet".
+  if (config === null) return false;
+  const hooks = config.hooks;
+  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return false;
+
+  const onDisk = hooks as Record<string, unknown>;
+  // Our side of the comparison, rebuilt rather than remembered: `codexGroup`
+  // is a pure function of `slug` and the event, so recomputing it here is the
+  // same record the writer used and cannot be influenced by the workspace.
+  const ours = CODEX_HOOK_EVENTS.map(
+    (event) => [event, canonicalJson([codexGroup(slug, event)])] as const,
+  );
+  if (Object.keys(onDisk).length !== ours.length) return false;
+  return ours.every(([event, expected]) => canonicalJson(onDisk[event]) === expected);
 }
 
 const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "stop", "afterAgentResponse"] as const;
@@ -256,6 +381,19 @@ type HookFamily = {
    * turn with nothing to move them.
    */
   reportsTurnStart: boolean;
+  /**
+   * For a family whose CLI holds new hooks at a trust review
+   * (`HARNESS_CLI_CONFIG[...].hookTrustFlag`): is every hook that harness will
+   * run in `cwd` one this Core just wrote?
+   *
+   * Takes the same `slug` the writer took, because the answer is computed by
+   * rebuilding what the writer produced and comparing — never by reading a
+   * marker out of the file, which the workspace can forge. Present only where
+   * the question can be asked, which is the same set as `hookTrustFlag`: a
+   * family with no review has nothing to lift. Missing here and a flag over
+   * there is a family that gets NO bypass, which is the safe direction.
+   */
+  ownsEveryHook?: (cwd: string, slug: string) => boolean;
 };
 
 /**
@@ -266,10 +404,28 @@ type HookFamily = {
  */
 const HOOK_FAMILIES: Record<string, HookFamily> = {
   "claude-code": { install: installClaudeHooks, reportsTurnStart: true },
-  // Codex refuses to run newly-installed project hooks until the operator
-  // reviews them with `/hooks`, so its first turn — the one that matters most
-  // for the card — may report nothing at all.
-  codex: { install: installCodexHooks, reportsTurnStart: false },
+  // Codex held newly-installed project hooks behind an operator's `/hooks`
+  // review, so its first turn — the one that matters most for the card, and
+  // the only one an orchestrator is ever waiting on — reported nothing at all.
+  // Issue 290 fixed that in two places, and NEITHER of them is here: the
+  // writer above now produces the matcher groups Codex actually parses, and
+  // every Codex launch carries `hookTrustFlag` so the hooks this Core wrote
+  // run without being held for review. Both halves were needed; either alone
+  // still reports nothing.
+  //
+  // `reportsTurnStart` stays `false` deliberately. `UserPromptSubmit` does now
+  // fire — verified on codex-cli 0.153.0 in a workspace Codex had never seen —
+  // so `true` would today be honest rather than hopeful. But this field is
+  // what stands the Panel's terminal-input fallback DOWN, and flipping it is a
+  // change to what the Panel does rather than to whether a hook arrives. It
+  // belongs with the codex readiness row (#277), not smuggled in behind a
+  // hooks fix: `false` costs a card that under-reports a live turn, and `true`
+  // asserted a turn early costs a Session with no `running` signal at all.
+  codex: {
+    install: installCodexHooks,
+    reportsTurnStart: false,
+    ownsEveryHook: codexOwnsEveryHook,
+  },
   // Cursor takes the hooks file and fires `stop` / `sessionStart` from it, but
   // `beforeSubmitPrompt` still does not fire in cursor-agent. The turn's end is
   // reported; its start is not.
@@ -282,6 +438,17 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
   // the right to stand the Panel's fallback down.
   opencode: { install: installOpencodeHooks, reportsTurnStart: true },
 };
+
+/**
+ * Does `harness`'s CLI hold newly-installed hooks at a trust review?
+ *
+ * Read off `HARNESS_CLI_CONFIG`, never restated: `harness` arrives here as a
+ * plain string from the spawn path, so an id that is not a Harness at all
+ * answers `false` rather than indexing out of the table.
+ */
+function hasHookTrustReview(harness: string): boolean {
+  return (HARNESS_HOOK_TRUST_FLAGS[harness as Harness] ?? null) !== null;
+}
 
 /** Does this Core know how to install hooks for `harness`? */
 export function harnessSupportsHooks(harness: string | undefined): boolean {
@@ -298,9 +465,29 @@ export type HookInstallResult = {
    * and either one alone is a Session with no `running` signal.
    */
   reportsTurnStart: boolean;
+  /**
+   * May this spawn carry the harness's hook-trust bypass flag?
+   *
+   * The third state issue 290 asked for, in the shape the evidence turned out
+   * to need: not "written but not yet live", which the file-shape fix removed,
+   * but **"written, and nothing else was"**. `installed` answers "did a file
+   * land"; this answers "is every hook Codex will run one this Core wrote".
+   * Only the second earns lifting the vendor's review, and the two come apart
+   * on the case that matters — a cloned repository shipping its own
+   * `.codex/hooks.json`, which `mergeMatchers` preserves on purpose.
+   *
+   * `false` for every family with no hook-trust flag, because there is nothing
+   * to lift; `false` whenever no file landed, because a Core that wrote
+   * nothing has vetted nothing.
+   */
+  hookTrustBypassEarned: boolean;
 };
 
-const NO_HOOKS: HookInstallResult = { installed: false, reportsTurnStart: false };
+const NO_HOOKS: HookInstallResult = {
+  installed: false,
+  reportsTurnStart: false,
+  hookTrustBypassEarned: false,
+};
 
 /**
  * Install this Core's lifecycle hooks into `cwd` for `harness`.
@@ -315,14 +502,38 @@ export function installHarnessHooks(
 ): HookInstallResult {
   const family = harness ? HOOK_FAMILIES[harness] : undefined;
   if (!family || !cwd) return NO_HOOKS;
+  // Hoisted so the audit below is handed the same value the writer used: the
+  // record this Core compares the file against is rebuilt from `slug`, and a
+  // different one would compare our own hooks against something we never
+  // wrote.
+  const slug = hookEndpointSlug(harness);
   let installed = false;
   try {
-    installed = family.install(cwd, hookEndpointSlug(harness));
+    installed = family.install(cwd, slug);
   } catch {
     return NO_HOOKS;
+  }
+  // Audited AFTER the write, over the file as Codex will read it: our groups
+  // are in it by now, and so is anything the repository shipped that
+  // `mergeMatchers` preserved — including under events this writer never
+  // touches, which is where a forged ownership marker used to get through.
+  let hookTrustBypassEarned = false;
+  // Two tables have to agree for a bypass to be earned: the vendor fact that
+  // this CLI holds new hooks at a review at all, and a writer here that can
+  // say whether anything foreign is in the file. Either one missing answers
+  // `false`, so a family that grows one half without the other gets no
+  // bypass rather than an unaudited one.
+  if (installed && hasHookTrustReview(harness ?? "") && family.ownsEveryHook) {
+    try {
+      hookTrustBypassEarned = family.ownsEveryHook(cwd, slug);
+    } catch {
+      // An audit that threw answers "cannot vouch", never "nothing found".
+      hookTrustBypassEarned = false;
+    }
   }
   return {
     installed,
     reportsTurnStart: installed && family.reportsTurnStart,
+    hookTrustBypassEarned,
   };
 }
