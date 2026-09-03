@@ -306,14 +306,14 @@ client-side answer has to be built on.
 suspected of.** [Issue 277](https://github.com/actana/control/issues/277) asked
 for two things before a row: codex's boot and idle composer captured off a live
 PTY, and the gap between them timed rather than guessed. Both were done on
-codex-cli 0.153.0, twenty-one live boots on one Core at the Core's own 100×30
+codex-cli 0.153.0, twenty-four live boots on one Core at the Core's own 100×30
 and `TERM=xterm-256color`, and the measurement decided the shape of the row.
 
 **There is no boot race on this build.** `› Ask Codex to do anything` — the
 composer's own placeholder — is in the *first* frame codex paints, 160–198 ms
 after spawn on 8 of 8 timed cold boots (five `codex --enable hooks`, three
-plain). D3's 350 ms quiet gap does not expire until 602–1810 ms in those same
-runs, so the marker leads the settle by 419–1636 ms every time. Nor is the
+plain). D3's 350 ms quiet gap does not expire until 564–955 ms in those same
+runs, so the marker leads the settle by 366–782 ms every time. Nor is the
 marker merely early: a prompt written at 0, 60, 120, 170, 200, 400, 700 and
 1200 ms — eight further boots — echoed into the composer on every attempt,
 including the writes that went in before codex had painted anything at all. If
@@ -322,26 +322,58 @@ would say codex needs no row.
 
 **The hole is the directory-trust dialog, and it is a D3a hole rather than a D5
 one.** In a directory codex does not trust, it paints that same composer
-placeholder at ~200 ms, clears the screen at ~633 ms, and replaces it with `Do
-you trust the contents of this directory?`. The quiet gap expires at ~988 ms
-with the dialog up and no composer anywhere on screen — and codex has **no
-`BLOCKING_DIALOGS` entry**, so D5 is not watching for that screen either.
-Measured on a further boot: a 22-character prompt written at 990 ms produced no
-echo and no change to the screen at all. The dialog swallows it, and the `\r`
-D8 sends after the submit pause lands on a menu whose highlighted row is `1.
-Yes, continue` — the directory is trusted, a session starts, and the prompt is
-gone with the Session parked in `ready`. That is issue 277's stated signature,
-reached by a different route than #229's.
+placeholder at 198 ms, clears the screen at 633 ms, and replaces it with `Do you
+trust the contents of this directory?` at 638 ms. The quiet gap expires at
+634 ms — **one millisecond after that clear** — so what D3 hands D3a is the
+dialog and not the composer that was on screen a moment before. And codex has
+**no `BLOCKING_DIALOGS` entry**, so D5 is not watching for that screen either.
+Measured on a further boot: a 22-character prompt written at 990 ms, with the
+dialog up, produced no echo and no change to the screen at all. The dialog
+swallows it, and the `\r` D8 sends after the submit pause lands on a menu whose
+highlighted row is `1. Yes, continue` — the directory is trusted, a session
+starts, and the prompt is gone with the Session parked in `ready`. That is issue
+277's stated signature, reached by a different route than #229's.
+
+**One millisecond is a measurement, not a safety margin, and the record should
+say which.** It is one millisecond because D3 restarts the quiet window only on
+a *novel* `redrawSignature` — the last one in that boot is at 284 ms — and the
+figure comes from replaying the capture's own chunks at the capture's own
+offsets rather than from concatenating them, which merges signatures and moves
+the settle. (The same correction applies to the numbers above: an earlier
+revision of this amendment said 602–1810 ms for the same eight boots, from a
+coarser rule that counted every changed frame as a paint; the two disagree by
+38 ms on one boot and by 855 ms on another.) The other untrusted boot in the sample cleared
+at 555 ms against a gap at 908 ms, so 1 ms is the tight end of the range. And
+the other ordering costs nothing silent: had the gap opened first, delivery
+would have typed into a composer the dialog was about to wipe, D6a's
+`confirmEcho` would have seen no echo, and the `\r` would have been withheld
+rather than pressed into the menu. Both orderings are replayed in the suite.
 
 **So the marker earns the row on the dialog, not on the boot**, and the row is
 the ordinary D3a/D6a pair: the placeholder as the composer marker, `confirmEcho`
 on, `maxPromptWrites: 3`. What it buys is that the module holds instead of
-typing into a screen that is provably not a composer, and the operator is left
-with a dialog to answer rather than a prompt that evaporated. Teaching D5 to
-*answer* that dialog is a different decision and is not taken here — the menu is
-laid out so that stripping its escapes yields `1. Yes, continue2.No,quit`, which
-`readDialogOptions` cannot read, and that is
-[issue 469](https://github.com/actana/control/issues/469)'s.
+typing into a screen that is provably not a composer, and the prompt is still in
+hand when a human answers the dialog.
+
+**What the caller is actually told, stated exactly.** Delivery ends `abandoned`
+with `codex composer never appeared within 15000 ms` — the marker, not the
+dialog. D5's rule that "the reason a client is given is the dialog and not the
+marker" cannot apply here, because that branch is reachable only for a harness
+with a `BLOCKING_DIALOGS` entry and codex has none. So the Session is
+`needs-input` and the prompt is intact, which is the win, but the words name the
+marker and it is still the screen that tells an operator what is in the way.
+
+**Teaching D5 to answer that dialog is not taken here, and this capture sharpened
+what it will cost.** The obstacle is not only that `readDialogOptions` needs a
+digit followed by `.` or `)` while the menu strips to `1. Yes, continue2.No,quit`.
+It is that codex lays the dialog out with absolute `ESC[row;colH` moves, which
+`stripAnsi` deletes outright rather than spacing the way it spaces `ESC[nG` and
+`ESC[nC` — so the screen collapses to
+`…apiDoyoutrustthecontentsofthisdirectory?Working…` and not even the word `trust`
+survives on it. Adding codex to the existing `folder-trust` row would match
+nothing at all; the *reading* has to change before the answering can. That is
+[issue 469](https://github.com/actana/control/issues/469)'s, and it should
+inherit this finding rather than only the menu-key half.
 
 **Two candidate markers on the same frame were timed and rejected**, which is
 the discipline the issue 232 amendment recorded and this one keeps. `? for
@@ -353,9 +385,35 @@ gate on: a painted box is exactly what D3a exists to stop reading as readiness,
 and it lands in the same frame as the placeholder on every boot measured, so it
 buys nothing even where it is right.
 
-Five screens are committed under `packages/core/src/__tests__/fixtures/` as
-`codex-0.153.0-{boot,composer,idle,untrusted-boot,directory-trust}.txt`, and the
-marker is asserted against those files rather than against a literal beside it.
+The screens are committed under `packages/core/src/__tests__/fixtures/` as
+`codex-0.153.0-{boot,composer,boot-settling,idle,untrusted-boot,directory-trust}.txt`,
+with `codex-0.153.0-frames.txt` carrying each PTY chunk's offset so the suite can
+replay a capture the way it arrived. The marker is asserted against those files
+rather than against a literal beside it.
+
+**D6a's `confirmEcho` is the one field in the row that can lose a delivery that
+works today, so it carries its own evidence.** The other two cannot: a marker
+that stops matching makes a prompt late, and a write budget only bounds retyping.
+An unsatisfiable `confirmEcho` is different — no echo means `retypePrompt`, which
+clears the screen and re-imposes D3a's gate, so a harness that *had* taken the
+prompt gets typed at again and then abandoned. The shape that would do it is a
+long prompt rendered as a collapsed paste chip, because `PASTE_PLACEHOLDER`
+transcribes Claude Code's `[Pasted text #1 …]` and would not match codex's
+wording. Issue 277's own field comment records exactly that workload — Studio
+codex Sessions started with a multi-line sub-agent contract — so `"say hello"`
+was not evidence for it.
+
+Measured, on the two shapes such a prompt can arrive in. `sanitizeInitialInput`
+collapses every run of C0 whitespace to one space before delivery sees the text,
+so an 800-character contract reaches `writePrompt` as one 796-character line; one
+write of it comes back echoed verbatim and wrapped, with no chip. The same text
+delivered as a real bracketed paste — `ESC[200~ … ESC[201~`, which codex
+advertises with `ESC[?2004h` in its first bytes — also echoes in full, its line
+breaks preserved as composer lines. Both composers are committed beside the
+prompt as `codex-0.153.0-{long-prompt,long-prompt-echo,pasted-prompt-echo}.txt`
+and the suite runs `promptEchoed` against them. The field is earned; had either
+collapsed to a chip, the honest answer would have been to ship the row without
+it.
 
 **codex needs no `HARNESS_PROMPT_DELIVERY_PROFILES` entry**, so its
 `composerWaitMs` is the default and equals D8's 15 s backstop. A marker that
