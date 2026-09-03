@@ -22,7 +22,9 @@
 // the SDK, which hands it to the Core, which waits for the harness's TUI to
 // settle, answers whatever dialog it opened, and writes the prompt and the
 // carriage return. Nothing in this package waits, retries, or presses Enter on
-// a timer — `send` writes exactly the bytes it was given and appends nothing.
+// a timer: `send` writes the bytes it was given, and — since #404 — the carriage
+// return that submits them, as its own write, because the flags the operator
+// typed asked for one. What this package never appends is *timing*.
 // A prompt that goes missing is a Core bug and must be fixed there, where every
 // client benefits; a client that compensated would hide it and would behave
 // differently from the Panel doing the same thing.
@@ -95,7 +97,8 @@ Flags
   --cwd <path>        start: a directory on the Core, inside the Project
   --title <text>      start: what the Session is called in \`ls\`
   --raw               logs: the bytes, escape codes and all, unrendered
-  --enter             send: follow the text with a carriage return
+  --enter             send: only meaningful with no text — a bare carriage return
+  --no-enter          send: type the text and send no return. This starts no turn
   --read-only         attach: watch without claiming the Session's write lock
   --dangerously-skip-permissions
                       start/resume: run the harness without permission prompts
@@ -144,10 +147,50 @@ Awaiting a turn
   message says this side gave up — never a status the Core did not send. Without
   \`--wait-timeout\` there is no deadline: a turn takes as long as the work takes.
 
+Sending text, and what submits it
+  \`send <session> <text>\` **presses Enter** — that is, the text goes out and a
+  carriage return follows it as its own separate write, never glued onto the
+  text, and what the harness does with that return is the harness's. That is the
+  default because it is what the words mean: a send that left the characters in
+  the composer with no turn started looked delivered and was not (#404).
+
+  Separate is necessary and not sufficient. ADR 0026's second observed failure
+  is a return that was already its own write, 150 ms later, absorbed anyway by a
+  harness rendering the text as a paste; what answers that is the length-scaled
+  pause and the quiet gate on the **Core's** delivery path (ADR 0026 D6), which
+  a \`send\` does not have and does not grow one here. A long enough \`send\` can
+  still be pasted with its return eaten. A *starting* prompt, which does go
+  through that gate, is \`session start\`.
+
+  \`--no-enter\` is the opt-out, for typing without submitting: filling a
+  composer, or answering a numbered dialog before the return that confirms it.
+  It says so on the way out, every time, because a send that started no turn is
+  the failure this default exists to end. **A \`--wait\` after it is not waiting
+  for your text.** On an idle Session no turn ends, so the wait runs out the
+  \`--wait-timeout\` — or, with none given, does not return. On a Session already
+  mid-turn it resolves on *that* turn's end and reports it as this send's, for a
+  turn this send did not start. Both are #405's and neither is fixed here.
+
+  \`--json\` on a plain send says all of this in fields: \`enter\` is the return
+  that was **asked** for, \`submitted\` is the return that was **accepted**, and
+  they differ in exactly one case — the text landed and the return did not, where
+  \`failed\` then names the half that went missing so a script knows a resend
+  would submit the text twice. Those keys are **not** on the \`--wait\` document,
+  which prints \`start --wait --json\`'s keys and no others so one parser reads
+  every verb (#289) — there the line on stderr is the only signal.
+
+  \`--enter\` is still accepted and does nothing on a send that carries text, so
+  a script written against the old default keeps working. On a send with no text
+  it is not a no-op: it is still the way to say a bare carriage return is the
+  whole message, which is what this verb's \`--no-enter\` warning and its
+  refusals of an empty send both point you at.
+
 Who delivers the prompt
   The Core does (ADR 0026). It waits for the harness to settle, answers the
-  dialog it opened, and writes the prompt. This CLI adds no timing of its own,
-  and \`send\` writes exactly what it is given — a lost prompt is a Core bug.`;
+  dialog it opened, and writes the prompt. This CLI adds no timing of its own —
+  no pause, no waiting for the harness to look ready, no retry — and \`send\`
+  adds nothing but the carriage return the flags above asked for. A lost prompt
+  is a Core bug.`;
 
 /** Dispatch a `session` verb. `args.positionals` still has the noun on the front. */
 export async function runSessionCommand(
@@ -545,20 +588,64 @@ async function sessionLogs(
 }
 
 /**
+ * What `--no-enter` says on the way out, on every path that takes it.
+ *
+ * The second half of #404's acceptance: a send that submits nothing is allowed,
+ * and it is never quiet. It names the flag that caused it, says what was left
+ * out, and gives the command that sends it — because the operator this was
+ * written for is the one staring at a Session that looks sent to and has not
+ * moved.
+ *
+ * It claims nothing it cannot see. Where the text ended up is the harness's
+ * business and this side never observes it, and whether a carriage return
+ * submits anything is the harness's too — so this says what *this process did*:
+ * no return went out, and no turn was started by this send.
+ */
+const NOT_SUBMITTED_WARNING = (taskId: string): string =>
+  `actana session send: --no-enter, so no carriage return followed the text — this send ` +
+  `started no turn. \`actana session send ${taskId} --enter\` sends the carriage return.`;
+
+/**
  * `actana session send <session> <text>` — the equivalent of typing.
  *
- * Verbatim, and nothing appended (ADR 0026, and the module header). `--enter`
- * adds a second write of a carriage return **because the operator asked for
- * one** — no pause between them, no waiting for the harness to look ready, and
- * nothing that decides on its own that Enter is due. Both writes go to one PTY
- * resolved once, so the harness cannot move between them. A *starting* prompt
- * goes through `session start`, where the Core owns the schedule.
+ * **A send submits the turn** (#404). The text goes first, verbatim, and a
+ * carriage return follows it as a **second write to the same PTY** — never
+ * glued onto the text, because a glued return is one a harness rendering the
+ * write as a paste absorbs along with the characters.
+ *
+ * Separate is necessary and **not sufficient**: ADR 0026's second observed
+ * failure is a return that was already its own write, sent 150 ms later,
+ * absorbed anyway. What answers that is D6's
+ * length-scaled pause and quiet gate on the *Core's* delivery path, which this
+ * one has not got and must not grow — a client that timed its own submit would
+ * be doing prompt delivery. A long enough `send` can therefore still land as a
+ * paste with its return eaten; the prompt that does go through the gate is
+ * `session start`'s. What changed in #404 is only which of the two spellings
+ * needs a flag: sending text and starting no turn was the surprising default,
+ * and an operator who typed `session send $SID "continue"` watched the
+ * characters sit in a composer with nothing to await.
+ *
+ * `--no-enter` is the opt-out for typing without submitting, and the exit path
+ * says so out loud every time, because a delivery that started no turn is
+ * exactly the thing this stopped being silent about.
+ *
+ * `--enter` survives as a no-op on a send that carries text: orchestration
+ * scripts pass it, they are asking for what now happens anyway, and rejecting
+ * them would break working callers to make a point. On a send with **no** text
+ * it is not a no-op — it is still the way to say "a bare carriage return is the
+ * whole message".
+ *
+ * What did *not* change is the timing (ADR 0026, and the module header): no
+ * pause between the writes, no waiting for the harness to look ready, no timer
+ * anywhere. Both writes go to one PTY resolved once, so the harness cannot move
+ * between them. A *starting* prompt still goes through `session start`, where
+ * the Core owns the schedule.
  *
  * `--wait` adds no timing either (#289): it asks the Core to stamp the delivery
  * in its event log and then waits for the first settling status *after* that
- * stamp. The text is the same text, written at the same moment, with the same
- * nothing appended — what `--wait` changes is when this process hangs up, not
- * what the harness receives.
+ * stamp. The text is the same text, written at the same moment, followed by the
+ * same return under the same rules — what `--wait` changes is when this process
+ * hangs up, not what the harness receives.
  */
 async function sessionSend(
   deps: ActanaCliDeps,
@@ -566,8 +653,15 @@ async function sessionSend(
   paths: RegistryPaths,
   rest: string[],
 ): Promise<number> {
-  const misused = misusedFlag(args, ["--enter", "--wait", "--wait-timeout"]);
+  const misused = misusedFlag(args, ["--enter", "--no-enter", "--wait", "--wait-timeout"]);
   if (misused) return usage(deps, "send", misused);
+
+  // Both spellings at once is not a preference this command can guess at: one
+  // asks for the return and the other refuses it, and picking a winner would
+  // carry out half of what was typed without saying which half.
+  if (args.enter && args.noEnter) {
+    return usage(deps, "send", "--enter and --no-enter contradict each other — pass one");
+  }
 
   const [taskId, ...words] = rest;
   if (taskId === undefined) {
@@ -595,6 +689,13 @@ async function sessionSend(
     );
   }
 
+  // The one decision this verb makes about the return, made once and named, so
+  // the wait path and the plain path cannot answer it differently: Enter unless
+  // it was refused (#404). `--enter` is not consulted — a send that carries
+  // text submits either way, and a send with no text got past the checks above
+  // only because `--enter` asked for the bare return.
+  const submit = !args.noEnter;
+
   return withGateway(deps, args, paths, "send", async (gateway) => {
     const text = read.text ?? "";
 
@@ -604,25 +705,82 @@ async function sessionSend(
       // write with. The alternative — send, then attach, then wait — is the
       // design the issue's landmine is about: the attach would find a Session
       // sitting at a settled status and answer with last turn's outcome.
-      const andReturn = args.enter ? " and a carriage return" : "";
+      const andReturn = submit ? " and a carriage return" : "";
       deps.verbose(`sending ${text.length} characters to session ${taskId}${andReturn}, then waiting`);
-      const session = await gateway.sendAndWait(taskId, text, { enter: args.enter });
+      const session = await gateway.sendAndWait(taskId, text, { enter: submit });
       deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
+      // Stderr is the *only* signal on this path, and deliberately: the wait's
+      // document is `start --wait --json`'s key set and nothing else, because
+      // #289 requires one parser to read all three verbs. A `submitted` field
+      // here would buy this warning a machine-readable form at the price of
+      // that, so the help text names the exception instead.
+      if (!submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
       return awaitAttachedTurn(deps, args, session, timeout.ms);
     }
 
-    // One call, one PTY resolution, both writes (#204 review). The command no
-    // longer decides anything about the return beyond passing on the flag.
-    const delivered = await gateway.send(taskId, text, { enter: args.enter });
+    // One call, one PTY resolution, both writes (#204 review). The command has
+    // decided whether there is a return; the gateway decides nothing and only
+    // writes what it was handed.
+    const sent = await gateway.send(taskId, text, { enter: submit });
 
     if (args.json) {
-      deps.out(formatJson({ taskId, characters: text.length, enter: args.enter, delivered }));
-    } else if (delivered) {
-      const andReturn = args.enter ? " and a carriage return" : "";
+      // Two keys for the request and two for the outcome, kept apart on purpose.
+      //
+      // `enter` is the **request**, which is what it has always been — the flag
+      // as the command resolved it — so a parser built on it keeps reading the
+      // same fact. `submitted` is the **outcome**: a carriage return that was
+      // asked for *and accepted*. They differ in exactly one case, and it is the
+      // case worth knowing about — the text landed and the return did not.
+      //
+      // `failed` appears only on a failure and says which half went missing, so
+      // a script can tell a safe resend from one that would submit the text
+      // twice. All three are on **this** document only; the `--wait` path's
+      // shape is #289's and is not extended here.
+      deps.out(
+        formatJson({
+          taskId,
+          characters: text.length,
+          enter: submit,
+          submitted: submit && sent.ok,
+          delivered: sent.ok,
+          ...(sent.ok ? {} : { failed: sent.failed }),
+        }),
+      );
+    } else if (sent.ok) {
+      const andReturn = submit ? " and a carriage return" : "";
       deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
     }
-    if (!delivered) {
-      deps.err(`actana session send: the Core did not accept the write to session ${taskId}.`);
+    // **On stderr even under `--json`**, and after the document rather than
+    // instead of it: a send that started no turn is the failure this ticket
+    // exists to stop being quiet about, and a script that only reads stdout
+    // still gets the fact in the `submitted` field.
+    if (sent.ok && !submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
+    if (!sent.ok) {
+      // Two failures, two messages, because the operator's next move differs.
+      // The `--wait` path has drawn this line since #289 and gives its own
+      // reason for it; #404 put the second write on the default path, so the
+      // plain path draws it too rather than flattening both into "refused".
+      if (sent.failed === "text") {
+        deps.err(
+          `actana session send: the Core did not accept the write to session ${taskId}. ` +
+            `Nothing was written, so sending it again is safe.`,
+        );
+      } else if (text.length === 0) {
+        // A bare `--enter`, whose whole message was the return. Nothing landed,
+        // so this is the simple failure and the "do not resend" below would be
+        // advice about text that does not exist.
+        deps.err(
+          `actana session send: the Core did not accept the carriage return for session ` +
+            `${taskId}. Nothing was written, so sending it again is safe.`,
+        );
+      } else {
+        deps.err(
+          `actana session send: session ${taskId} took the text, but the Core did not accept ` +
+            `the carriage return — so no turn was started. The text was delivered: do not send ` +
+            `it again, or the harness gets it twice. \`actana session send ${taskId} --enter\` ` +
+            `sends the return on its own.`,
+        );
+      }
       return EXIT_FAILURE;
     }
     return EXIT_OK;
@@ -732,6 +890,7 @@ const SESSION_FLAGS: ReadonlyArray<{ name: string; used: (args: ParsedArgs) => b
   { name: "--title", used: (args) => args.title !== null },
   { name: "--raw", used: (args) => args.raw },
   { name: "--enter", used: (args) => args.enter },
+  { name: "--no-enter", used: (args) => args.noEnter },
   { name: "--dangerously-skip-permissions", used: (args) => args.skipPermissions },
   { name: "--read-only", used: (args) => args.readOnly },
 ];

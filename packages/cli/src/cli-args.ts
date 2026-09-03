@@ -63,8 +63,29 @@ export type ParsedArgs = {
   title: string | null;
   /** `--raw`: hand over bytes rather than a rendered screen. */
   raw: boolean;
-  /** `--enter`: follow sent text with a carriage return, because the operator asked. */
+  /**
+   * `--enter`: kept, accepted, and no longer the thing that submits (#404).
+   *
+   * A `send` presses Enter by default now, so on a send that carries text this
+   * flag asks for what was going to happen anyway — a no-op preserved because
+   * orchestration scripts written against the old default pass it, and a CLI
+   * that started rejecting it would break every one of them for no gain.
+   *
+   * **Not a no-op on a send with no text**, which is why the flag is not merely
+   * tolerated: there it still means what it always meant — a bare carriage
+   * return is the whole message — and it is what `sessionSend`'s empty-text
+   * refusals and its `--no-enter` warning both point the operator at.
+   */
   enter: boolean;
+  /**
+   * `--no-enter`: type the text and send no carriage return after it (#404).
+   *
+   * The opt-out from the new default, for the one case that genuinely wants
+   * keystrokes without a turn — filling a composer, answering the numbered
+   * option of a dialog before the return that confirms it, driving a harness
+   * that reads a key at a time.
+   */
+  noEnter: boolean;
   /** `--dangerously-skip-permissions`: start the harness without permission prompts. */
   skipPermissions: boolean;
   // ─── `core pair`'s flags (#285) ───
@@ -143,6 +164,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
     label: null,
     raw: false,
     enter: false,
+    noEnter: false,
     skipPermissions: false,
     readOnly: false,
     unknown: [],
@@ -211,6 +233,9 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--enter":
         parsed.enter = true;
+        break;
+      case "--no-enter":
+        parsed.noEnter = true;
         break;
       case "--dangerously-skip-permissions":
         parsed.skipPermissions = true;

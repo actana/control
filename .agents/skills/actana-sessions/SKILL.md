@@ -108,7 +108,7 @@ also look at it directly:
 
 ```bash
 actana session logs <id>          # the transcript, rendered, while the harness is running
-actana session send <id> "text"   # write into it; --enter follows with a carriage return
+actana session send <id> "text"   # write into it; the carriage return that submits goes too
 actana session wait <id>          # block until the Core reports it settled
 actana session kill <id>          # stop the harness running for it
 ```
@@ -126,8 +126,8 @@ A Session is a conversation, not a single question. The whole loop:
 ```bash
 ID=$(actana session start <project> "<first prompt>")   # prints the id, exits
 actana session wait "$ID" --json --wait-timeout 900     # block until it settles
-actana session send "$ID" "<follow-up>" --enter --wait --json --wait-timeout 900
-actana session send "$ID" "<next>" --enter --wait --json
+actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 900
+actana session send "$ID" "<next>" --wait --json
 ```
 
 **`actana session wait <id>` blocks until the Core reports the Session settled**
@@ -151,9 +151,14 @@ Three things to know before you build on it:
    mid-turn when your text landed, the wait ends when the current turn ends —
    possibly before the Harness has read a character of what you sent. Wait for
    the Session to settle *first*, then send.
-2. **`--enter` is what submits the text.** `send` writes exactly the bytes it
-   was given and appends nothing, so text with no return sits in the Harness's
-   composer and no turn starts — and the wait then runs to your timeout.
+2. **A `send` presses Enter for you, and `--no-enter` is how you stop it.** The
+   text goes first and the carriage return follows as its own separate write.
+   `--no-enter` sends no return, so that send starts no turn — and a `--wait`
+   after it is not waiting for your text: on an idle Session nothing ends, and
+   on a busy one it resolves on the turn that was *already* running. Both are
+   #405's. `--enter` is still accepted and does nothing on a send that carries
+   text, so an older script that passes it keeps working; on a send with no text
+   it still means a bare carriage return and nothing else.
 3. **A timeout is this side giving up, not a status.** `--wait-timeout
    <seconds>` bounds the wait; without it there is no deadline, because a turn
    takes as long as the work takes. On expiry you get a message saying the wait
