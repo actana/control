@@ -356,21 +356,41 @@ export function togglePin(id: string): Project | null {
   return next;
 }
 
+/**
+ * Write the rail slot of every pinned project this Panel owns.
+ *
+ * `order` is the whole rail, not this Panel's share of it. Since issue 382 a
+ * rail mixes the Panel's own pins with the pins each Core owns, and a Core's
+ * row has no `projects` row here — it reaches the rail as a core-link snapshot
+ * and its slot is written to its presentation row instead (see
+ * `reorderCorePins`). Sending only the Panel's own ids would have been the
+ * easier shape and the wrong one: `pinnedOrder` would then be dense over the
+ * Panel's rows alone, with no integer left to place a Core's row *between* two
+ * of them, and the merged rail would sort back into an order nobody chose.
+ *
+ * So the index written here is the row's index in the rail, and ids belonging
+ * to nobody in this database hold their slot and are skipped.
+ */
 export function reorderPinnedProjects(order: string[]): ProjectWithCounts[] {
+  let written: string[] = [];
   const updatePinnedOrder = getSqlite().transaction(() => {
-    const pinned = getPinnedProjects(findAllProjects());
+    const all = findAllProjects();
+    const pinned = getPinnedProjects(all);
     try {
-      validatePinnedReorder(order, pinned);
+      validatePinnedReorder(order, pinned, new Set(all.map((project) => project.id)));
     } catch (error) {
       throw new ValidationError(error instanceof Error ? error.message : "invalid pinned order");
     }
+    const ours = new Set(pinned.map((project) => project.id));
     const now = Date.now();
+    written = order.filter((id) => ours.has(id));
     for (let index = 0; index < order.length; index++) {
-      updateProjectRow(order[index]!, { pinnedOrder: index, updatedAt: now });
+      const id = order[index]!;
+      if (ours.has(id)) updateProjectRow(id, { pinnedOrder: index, updatedAt: now });
     }
   });
   updatePinnedOrder.immediate();
-  for (const id of order) events.emit("project:updated", { id });
+  for (const id of written) events.emit("project:updated", { id });
   return listProjects();
 }
 

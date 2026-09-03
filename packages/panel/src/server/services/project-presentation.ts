@@ -1,4 +1,5 @@
 import type { ProjectPresentation } from "~/db/schema";
+import { getSqlite } from "~/db/client";
 import { deleteAllProjectImagesFor } from "./project-image-files";
 import {
   findProjectPresentationOrphans,
@@ -28,6 +29,14 @@ export type ProjectPresentationPatch = {
   groupId?: string | null;
   imagePath?: string | null;
   launchUrl?: string | null;
+  pinnedOrder?: number | null;
+};
+
+/** One Core-owned pin's slot on the rail — what {@link reorderCorePins} writes. */
+export type CorePinSlot = {
+  projectId: string;
+  coreId: string;
+  pinnedOrder: number;
 };
 
 export function listProjectPresentation(): ProjectPresentation[] {
@@ -59,6 +68,7 @@ export function upsertProjectPresentation(
       imagePath: null,
       groupId: null,
       launchUrl: null,
+      pinnedOrder: null,
       ...fields,
       updatedAt: now,
     };
@@ -68,6 +78,30 @@ export function upsertProjectPresentation(
   const next: ProjectPresentation = { ...existing, ...fields, coreId, updatedAt: now };
   updateProjectPresentationRow(projectId, { ...fields, coreId, updatedAt: now });
   return next;
+}
+
+/**
+ * Write the rail slot of every Core-owned pin on the rail, in one transaction
+ * (issue 382).
+ *
+ * The rail is a single sequence of slots holding this Panel's own pins and
+ * every Core's, so a reorder moves rows on both sides of that line at once.
+ * The Panel's own rows take their slot on their `projects` row through
+ * `reorderPinnedProjects`; a Core-owned row has no `projects` row here, so its
+ * slot lands on its presentation row instead — the same integer, from the same
+ * numbering space, which is what lets the merged list sort back into the
+ * operator's order after a reload.
+ *
+ * All of it or none of it: a reorder that lands half its slots is the
+ * silently-wrong order this issue is about, not a smaller version of it.
+ */
+export function reorderCorePins(slots: readonly CorePinSlot[]): ProjectPresentation[] {
+  const write = getSqlite().transaction(() =>
+    slots.map((slot) =>
+      upsertProjectPresentation(slot.projectId, slot.coreId, { pinnedOrder: slot.pinnedOrder }),
+    ),
+  );
+  return write.immediate();
 }
 
 /**

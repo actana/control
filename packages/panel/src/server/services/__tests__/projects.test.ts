@@ -97,6 +97,44 @@ describe("projects service", () => {
     ).toEqual([b.id, a.id]);
   });
 
+  // Issue 382. The rail mixes this Panel's pins with the pins each Core owns,
+  // and a Core's row is not in this database at all. So the order handed here
+  // is the whole rail: ids from no row here hold their slot in the numbering
+  // and are skipped, and the index written for each of our own rows is its
+  // slot on the RAIL — the only numbering in which a Core's pin can sit
+  // between two of ours and still be there after a reload.
+  it("numbers its own rows by their slot on a mixed rail", () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-mixed-a-"));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-mixed-b-"));
+    const a = createProject({ name: "alpha", path: dirA });
+    const b = createProject({ name: "beta", path: dirB });
+    togglePin(a.id);
+    togglePin(b.id);
+
+    // Rail order: a, <a Core's pin>, b.
+    reorderPinnedProjects([a.id, "p-owned-by-a-core", b.id]);
+
+    const byId = new Map(listProjects().map((project) => [project.id, project]));
+    expect(byId.get(a.id)?.pinnedOrder).toBe(0);
+    expect(byId.get(b.id)?.pinnedOrder).toBe(2);
+    // Nothing was invented for the passenger.
+    expect(byId.has("p-owned-by-a-core")).toBe(false);
+  });
+
+  it("rejects a rail order that leaves out one of its own pinned rows", () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-a-"));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-b-"));
+    const a = createProject({ name: "alpha", path: dirA });
+    const b = createProject({ name: "beta", path: dirB });
+    togglePin(a.id);
+    togglePin(b.id);
+
+    expect(() => reorderPinnedProjects([a.id, "p-owned-by-a-core"])).toThrow(/exactly once/);
+    // ...and an unpinned row of its own is still a caller bug, not a passenger.
+    const c = createProject({ name: "gamma", path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-c-")) });
+    expect(() => reorderPinnedProjects([a.id, b.id, c.id])).toThrow(/not pinned/);
+  });
+
   it("rejects updating a project to a nonexistent path", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-update-"));
     const c = createProject({ name: "beta", path: dir });
