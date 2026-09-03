@@ -318,6 +318,115 @@ export class CoreSessionAttachError extends Error {
 }
 
 /**
+ * A wait gave up on the deadline its caller set (#405).
+ *
+ * Its own kind because the two ways a wait can run out are two different next
+ * steps for the operator, and a bare `Error` flattens them. The fields say
+ * which one this is without parsing the message: `reportedSinceDelivery` is
+ * `false` when the Core said **nothing at all** about this Session after the
+ * delivery this wait counts from — no turn ended, and no turn was seen to
+ * start. That is what a carriage return landing on a dialog rather than a
+ * composer looks like from here.
+ *
+ * It is still *this side giving up*, never a status (ADR 0033 D4, D5). Nothing here
+ * infers a turn from the byte stream, and a Session that ran the deadline out is
+ * still running on the Core: `session logs`, another `session wait` and
+ * `session kill` all still work.
+ */
+export class CoreSessionTurnTimeoutError extends Error {
+  /** The Session the wait was about. */
+  readonly taskId: string;
+  /** The deadline that expired, in ms — the caller's own, never a default here. */
+  readonly timeoutMs: number;
+  /** The delivery stamp this wait counted from, or 0 for an uncursored wait. */
+  readonly afterEventId: number;
+  /** The last status the Core reported, or null when it has reported none. */
+  readonly lastStatus: string | null;
+  /**
+   * Did the Core report a status for this Session **at an event id above**
+   * `afterEventId`?
+   *
+   * False is the loud half of the seeded-status invariant: a status seeded from
+   * the Task row carries event id 0 and can never satisfy a real cursor, so a
+   * wait against a Session that is parked and reports nothing would otherwise
+   * sit on that comparison forever. It is a fact off the event log — the id the
+   * last status was learned at, against the id the delivery was stamped with —
+   * and not an inference from the screen.
+   *
+   * **Read the name literally: it is about event ids, not about the Core having
+   * been silent** (#486 review). Only a status carried *by* an event moves
+   * `lastStatusEventId` — a `session:finished`, or a `task:updated` that names
+   * the status it patched. A status this Session learned by *asking*
+   * (`readStatus`, after an event that named none) is recorded with event id 0
+   * on purpose, because a read answers "what is it now" and a wait is asking
+   * "what happened after event N". So `false` means no turn end was *reported
+   * in the log* after the cursor. That is exactly the right thing to gate a wait
+   * on, and it is weaker than "the Core said nothing" for a caller branching on
+   * it.
+   */
+  readonly reportedSinceDelivery: boolean;
+
+  constructor(opts: {
+    taskId: string;
+    timeoutMs: number;
+    afterEventId: number;
+    lastStatus: string | null;
+    reportedSinceDelivery: boolean;
+  }) {
+    super(turnTimeoutMessage(opts));
+    this.name = "CoreSessionTurnTimeoutError";
+    this.taskId = opts.taskId;
+    this.timeoutMs = opts.timeoutMs;
+    this.afterEventId = opts.afterEventId;
+    this.lastStatus = opts.lastStatus;
+    this.reportedSinceDelivery = opts.reportedSinceDelivery;
+  }
+}
+
+/**
+ * What {@link CoreSessionTurnTimeoutError} says, and why there are two of them.
+ *
+ * A wait that heard a status after its cursor and gave up anyway was waiting on
+ * a harness that is *working*, and "still finished" is the honest report — the
+ * wording every deadline has used since #289. A wait that heard nothing was
+ * waiting on a turn whose end was never reported, and telling that operator the
+ * Session is "still finished" points them at a slow harness when the answer may
+ * be that their carriage return was eaten.
+ *
+ * **It names both readings and picks neither** (#486 review). `codex` and
+ * `cursor-cli` report nothing between a turn's start and its end, so an ordinary
+ * turn that outruns the caller's deadline produces this same silence on a
+ * harness that is working perfectly. Choosing between the two would mean either
+ * consulting `reportsTurnStart` — which no wait may do (ADR 0033 D2) — or
+ * reading the byte stream, which #191 deleted. The sentence says what is true of
+ * both and sends the reader to the screen, which is the only place the
+ * difference is visible.
+ *
+ * What is **not** here is what to type next. This is a library: the caller knows
+ * whether its user has an `actana` on their path, and the CLI adds that line
+ * itself from the fields above.
+ */
+function turnTimeoutMessage(opts: {
+  taskId: string;
+  timeoutMs: number;
+  afterEventId: number;
+  lastStatus: string | null;
+  reportedSinceDelivery: boolean;
+}): string {
+  if (opts.afterEventId > 0 && !opts.reportedSinceDelivery) {
+    return (
+      `session ${opts.taskId} took the text, but no turn end was reported for it in the ` +
+      `${opts.timeoutMs}ms after the delivery stamped at event ${opts.afterEventId}. Either the ` +
+      `text started no turn — a carriage return that lands on a dialog rather than a composer ` +
+      `submits nothing — or a turn is still running on a harness that reports nothing until it ` +
+      `ends, and this side cannot tell those apart. Read the screen to see which. The text was ` +
+      `delivered either way, so it must not be sent again`
+    );
+  }
+  return `session ${opts.taskId} was still ${opts.lastStatus ?? "unreported"} after ${opts.timeoutMs}ms`;
+}
+
+/**
  * One Session on one Core, driven programmatically.
  *
  * Built by {@link start}. Holds a screen fed from the Session's PTY, the Core's
@@ -873,6 +982,17 @@ export class CoreSession {
    * Nothing here reads the byte stream, and nothing here consults
    * {@link reportsTurnStart}. Turn end is reported by every harness family; turn
    * *start* is not, which is why no wait is keyed on it.
+   *
+   * **A cursored wait can be waiting for a turn that never started** (#405): a
+   * carriage return that lands on a dialog rather than a composer submits
+   * nothing, so the Core has nothing to report and the seeded status the Session
+   * is parked at carries event id 0, which no real cursor can be satisfied by.
+   * That is correct and it is silent, which is the whole complaint. It is
+   * answered here by making the deadline **loud** rather than by guessing at a
+   * turn: expiry rejects with {@link CoreSessionTurnTimeoutError}, whose
+   * `reportedSinceDelivery` says whether the Core reported anything at all after
+   * the write. Bounding the wait is still the caller's — `timeoutMs` is theirs,
+   * and with none this waits as long as the work takes.
    */
   waitForTurnEnd(opts: CoreSessionTurnWaitOptions = {}): Promise<CoreSessionIdle> {
     const afterEventId = opts.afterEventId ?? 0;
@@ -890,12 +1010,24 @@ export class CoreSession {
       };
       this.idleWaiters.add(waiter);
       if (opts.timeoutMs && opts.timeoutMs > 0) {
+        const timeoutMs = opts.timeoutMs;
         timer = setTimeout(() => {
           this.idleWaiters.delete(waiter);
+          // **Named rather than bare** (#405). The one thing this deadline knows
+          // that its caller does not is whether the Core reported *anything*
+          // after the delivery: `lastStatusEventId` still at or below the cursor
+          // means no status has been learned since the write, which is the shape
+          // of a return that started no turn. It is a comparison of two event
+          // ids and nothing else — no screen is read, and no turn is inferred
+          // from the bytes (ADR 0033 D4).
           reject(
-            new Error(
-              `session ${this.taskId} was still ${this.lastStatus ?? "unreported"} after ${opts.timeoutMs}ms`,
-            ),
+            new CoreSessionTurnTimeoutError({
+              taskId: this.taskId,
+              timeoutMs,
+              afterEventId,
+              lastStatus: this.lastStatus,
+              reportedSinceDelivery: this.lastStatusEventId > afterEventId,
+            }),
           );
         }, opts.timeoutMs);
       }
