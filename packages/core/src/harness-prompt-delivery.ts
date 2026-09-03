@@ -59,6 +59,19 @@
 //      than submitting into a composer the text never reached. Both are
 //      per-harness and off by default: see `HARNESS_READINESS`.
 //
+//      And the clock does not get to overrule that marker. Issue 483: for a
+//      harness with a known composer the backstop used to type anyway and
+//      report `delivered`, which on opencode — whose boot lands on either
+//      side of it — lost the prompt outright while telling the caller it had
+//      succeeded. Five Sessions on one Core inside half an hour: three at
+//      `ready` with an empty composer, two with the prompt visibly retyped
+//      before one submission took. So the wait for a *known* marker is keyed
+//      on the marker up to a per-harness ceiling (`composerWaitMs`, 90 s for
+//      opencode), and a marker that never comes ends the delivery
+//      `abandoned` — a Session in `needs-input` that says the prompt did not
+//      land, rather than a false `delivered`. A harness with no marker keeps
+//      the generic backstop exactly as it was; this is not a global timeout.
+//
 //      Issue 232 found the same failure on two more harnesses, at the same
 //      rate — roughly one start in three — and neither of them was quiet in
 //      the hole for anything like opencode's four seconds. cursor-cli lost the
@@ -478,8 +491,8 @@ export type HarnessReadiness = {
   /**
    * How many times the prompt may be written. `1` is "type it once, whatever
    * happens" — the pre-229 behaviour. Anything higher only matters when
-   * `confirmEcho` is set, and the real bound on retyping is `maxWaitMs`: at
-   * the backstop the prompt is written and submitted regardless.
+   * `confirmEcho` is set, and the real bound on retyping is the clock: at the
+   * backstop a prompt already in the composer is submitted regardless.
    */
   maxPromptWrites: number;
 };
@@ -562,9 +575,15 @@ const NO_READINESS: HarnessReadiness = {
  * timing that would settle it either way.
  *
  * If a future build of any of these reworded its placeholder the marker stops
- * matching and delivery degrades to the backstop — the prompt goes out at
- * `maxWaitMs`, late but not lost — which is the direction this module is
- * always wrong in.
+ * matching and the delivery ends `abandoned` at that harness's
+ * {@link PromptDeliveryProfile.composerWaitMs} ceiling — the Session goes to
+ * `needs-input` and the caller is told the prompt did not land. Until issue
+ * 483 the answer here was the opposite: type at the backstop anyway, "late but
+ * not lost". It was neither. The write went into a harness that was provably
+ * not listening — that is what the absent marker *means* — and the delivery
+ * reported success, so the loss was silent. A row here is therefore a promise
+ * that this module knows when the harness is listening, and the honest thing
+ * to do when that promise cannot be kept is to say so.
  */
 export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   opencode: {
@@ -655,11 +674,37 @@ export type PromptDeliveryProfile = {
   quietGapMs: number;
   /**
    * The backstop. A harness that never stops repainting still gets its prompt,
-   * because losing it is worse than delivering it a beat early — with one
-   * exception, which is that a dialog on screen at the deadline abandons
-   * delivery instead (see {@link HarnessPromptDelivery}).
+   * because losing it is worse than delivering it a beat early — with two
+   * exceptions, both of which abandon delivery instead: a dialog on screen at
+   * the deadline, and a harness whose composer marker has not arrived (see
+   * {@link HarnessPromptDelivery} and {@link composerWaitMs}).
    */
   maxWaitMs: number;
+  /**
+   * The ceiling on waiting for a **known** composer marker, measured from the
+   * same instant `maxWaitMs` is.
+   *
+   * It only ever applies to a harness with a row in {@link HARNESS_READINESS}.
+   * For every other harness `composerOnScreen` is `true` from the first byte,
+   * this number is never consulted, and `maxWaitMs` is the whole story — which
+   * is what keeps issue 483's fix off the harnesses it is not about.
+   *
+   * For a harness that *has* a marker it replaces the old answer at the
+   * backstop. That answer was to type anyway and report `delivered`, and on
+   * opencode it lost the prompt outright: the write went into a terminal that
+   * was not listening yet, the composer stayed empty, and the caller was told
+   * the delivery succeeded. So the wait is keyed on the marker instead — the
+   * backstop no longer authorises a blind type — and when the marker never
+   * comes the delivery ends `abandoned` and the Session becomes `needs-input`.
+   *
+   * The default is `maxWaitMs`, so a harness that does not name a number here
+   * keeps the timing it has: the ceiling expires the moment the backstop does
+   * and only the *outcome* at that moment changes, from a blind type to an
+   * honest failure. Anything longer is per-harness and belongs in
+   * {@link HARNESS_PROMPT_DELIVERY_PROFILES}, which is where opencode's 90 s
+   * lives.
+   */
+  composerWaitMs: number;
   /** The floor on the gap between the prompt and its carriage return. */
   submitBaseMs: number;
   /** Added per character of prompt: the longer the paste, the longer the wait. */
@@ -673,6 +718,10 @@ export type PromptDeliveryProfile = {
 export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
   quietGapMs: 350,
   maxWaitMs: 15_000,
+  // Equal to the backstop on purpose: see `composerWaitMs`. A harness with a
+  // composer marker and no override waits exactly as long as it always has and
+  // then fails honestly instead of typing blind.
+  composerWaitMs: 15_000,
   submitBaseMs: 150,
   submitPerCharMs: 2,
   submitMaxMs: 3_000,
@@ -682,16 +731,35 @@ export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
 /**
  * Per-harness timing overrides.
  *
- * Empty on purpose: every harness observed so far settles under the same
- * rules, and the profile is the *shape* of the knowledge, not a place to park
- * guesses. What differs between harnesses today is which dialogs they open,
- * and that lives in {@link BLOCKING_DIALOGS}. This table is where a harness
- * that genuinely needs different timing goes, so that finding one does not
- * mean redesigning anything.
+ * It was empty until issue 483, on the reading that every harness observed so
+ * far settled under the same rules — and the profile is the *shape* of the
+ * knowledge, not a place to park guesses. What differs between harnesses is
+ * still mostly which dialogs they open, and that lives in
+ * {@link BLOCKING_DIALOGS}. This table is for a harness that genuinely needs a
+ * different number, and there is now one.
+ *
+ * **opencode: 90 s to show its composer.** Five Sessions started on one Core
+ * inside half an hour, same project and same harness: three sat at `ready`
+ * with an empty composer, and two reached `finished` with the prompt visibly
+ * retyped two or three times before one submission took. Same inputs, minutes
+ * apart, different outcomes — a race against opencode's boot, which lands on
+ * either side of the 15 s backstop rather than reliably inside it. 90 s is the
+ * operator's stopgap value, and it is a *ceiling on waiting*, not a schedule:
+ * a boot that paints its composer at 6 s is delivered at 6 s exactly as
+ * before, and the only run that spends 90 s is the run that was going to lose
+ * its prompt anyway. What the 90 s buys is that such a run now abandons and
+ * says `needs-input` instead of typing into nothing and reporting success.
+ *
+ * Nothing here lengthens the generic backstop, and nothing here is a global
+ * timeout: `maxWaitMs` is untouched, `cursor-cli` and `claude-code` keep the
+ * 15 s they have, and a harness with no composer marker never reaches this
+ * number at all.
  */
 export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
-> = {};
+> = {
+  opencode: { composerWaitMs: 90_000 },
+};
 
 export function deliveryProfileFor(harness: string): PromptDeliveryProfile {
   const override = HARNESS_PROMPT_DELIVERY_PROFILES[harness as Harness];
@@ -800,6 +868,8 @@ export class HarnessPromptDelivery {
   /** The dialog whose unmoved highlight has already been reported. */
   private unconfirmedDialogId: string | null = null;
   private deadlinePassed = false;
+  /** Whether the composer ceiling has been armed, so it is armed once. */
+  private composerCeilingArmed = false;
   /** How many times the prompt has been written into the composer. */
   private promptWrites = 0;
   /** Whether this settling round has already said it is waiting for a composer. */
@@ -807,6 +877,8 @@ export class HarnessPromptDelivery {
 
   private cancelIdle: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
+  /** The marker ceiling (issue 483). Only ever armed for a markered harness. */
+  private cancelComposerCeiling: (() => void) | null = null;
 
   constructor(private readonly opts: PromptDeliveryOptions) {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
@@ -872,6 +944,8 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
+    this.cancelComposerCeiling?.();
+    this.cancelComposerCeiling = null;
     if (!this.finished) this.phase = "abandoned";
   }
 
@@ -1013,8 +1087,9 @@ export class HarnessPromptDelivery {
 
   /**
    * The harness is quiet and its composer is not up yet. Type nothing, say so
-   * once, and wait — either a later paint brings the composer, or the backstop
-   * delivers anyway rather than losing the prompt.
+   * once, and wait — either a later paint brings the composer, or the ceiling
+   * in `composerWaitMs` ends the delivery as `abandoned` (issue 483). What it
+   * never does is type into a composer nobody has seen.
    */
   private holdForComposer(): void {
     if (this.waitingForComposerReported) return;
@@ -1128,6 +1203,8 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
+    this.cancelComposerCeiling?.();
+    this.cancelComposerCeiling = null;
     this.emit({
       phase: "delivered",
       waitedMs: now - this.startedAt,
@@ -1139,27 +1216,113 @@ export class HarnessPromptDelivery {
   private onDeadline(): void {
     this.cancelDeadline = null;
     if (this.finished) return;
-    this.deadlinePassed = true;
 
     // The prompt is already in the composer; the carriage return has to land
     // whatever the screen is doing, or the operator is left with typed-but-
     // unsent text.
     if (this.phase === "typing") {
+      this.deadlinePassed = true;
       this.schedule();
       return;
     }
 
     // A dialog at the deadline is the one case where delivering is worse than
     // not: the prompt would be typed into a menu whose highlighted default
-    // exits the harness. Leave it for a human.
+    // exits the harness. Leave it for a human. Checked before the composer
+    // gate below so the reason a client is given is the dialog and not the
+    // marker — the dialog is the thing an operator can act on.
+    const dialog = matchBlockingDialog(this.screen, this.specs);
+    if (dialog) {
+      this.deadlinePassed = true;
+      this.abandon(`blocked by ${dialog.spec.id}`);
+      return;
+    }
+
+    // Issue 483. The backstop used to authorise a blind type here, and for a
+    // harness whose composer this module has been shown that is the defect:
+    // the marker not being on screen is direct evidence that nothing is
+    // listening, and typing into it produced a lost prompt reported as
+    // `delivered`. So the clock does not override the marker. Keep waiting on
+    // the marker up to this harness's own ceiling, and if it never comes,
+    // abandon — which is what puts the Session in `needs-input` and tells the
+    // caller the prompt did not land.
+    //
+    // A harness with no marker is untouched: `composerOnScreen` is `true` for
+    // it, so this branch is not taken and the generic backstop below still
+    // types and submits exactly as before.
+    if (!composerOnScreen(this.screen, this.readiness)) {
+      this.awaitComposer();
+      return;
+    }
+
+    this.deadlinePassed = true;
+    this.sawOutput = true;
+    this.schedule();
+  }
+
+  /**
+   * Past the generic backstop with a known composer still not on screen.
+   *
+   * Nothing is typed and nothing is given up on yet: `deadlinePassed` stays
+   * false, so the ordinary path keeps running — a later paint that carries the
+   * marker goes through `onQuiet`, `settled` and `writePrompt` on the same
+   * terms it would have at one second, echo confirmation included. All this
+   * adds is the far edge of the wait.
+   */
+  private awaitComposer(): void {
+    if (this.composerCeilingArmed) return;
+    this.composerCeilingArmed = true;
+    const remaining = this.profile.composerWaitMs - (this.timers.now() - this.startedAt);
+    if (remaining <= 0) {
+      this.abandonForComposer();
+      return;
+    }
+    // Said once, in the Core's log, so the extended wait is visible as a
+    // decision rather than as a Session that has gone quiet.
+    this.waitingForComposerReported = false;
+    this.holdForComposer();
+    this.cancelComposerCeiling = this.timers.setTimer(
+      () => this.onComposerCeiling(),
+      remaining,
+    );
+  }
+
+  /** The far edge of the marker wait. Type nothing that is not justified. */
+  private onComposerCeiling(): void {
+    this.cancelComposerCeiling = null;
+    if (this.finished) return;
+
+    // The marker arrived after all and the prompt is already going out. The
+    // carriage return still has to land — D8's rule, unchanged.
+    if (this.phase === "typing") {
+      this.deadlinePassed = true;
+      this.schedule();
+      return;
+    }
+
     const dialog = matchBlockingDialog(this.screen, this.specs);
     if (dialog) {
       this.abandon(`blocked by ${dialog.spec.id}`);
       return;
     }
 
-    this.sawOutput = true;
-    this.schedule();
+    // The marker is up and the ordinary path has not spent it yet — a harness
+    // still painting at the ceiling. Hand over to the backstop it would have
+    // met at `maxWaitMs` had the marker been there then.
+    if (composerOnScreen(this.screen, this.readiness)) {
+      this.deadlinePassed = true;
+      this.sawOutput = true;
+      this.schedule();
+      return;
+    }
+
+    this.abandonForComposer();
+  }
+
+  private abandonForComposer(): void {
+    this.abandon(
+      `${this.opts.harness} composer never appeared within ${this.profile.composerWaitMs} ms`,
+    );
   }
 
   private abandon(reason: string): void {
@@ -1168,6 +1331,8 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
+    this.cancelComposerCeiling?.();
+    this.cancelComposerCeiling = null;
     this.emit({ phase: "abandoned", reason });
   }
 
