@@ -21,6 +21,7 @@ import { loadProjectRoots } from "./project-roots";
 import { MAX_TCP_PORT } from "@actana/shared/tcp-port";
 import { shortId } from "@actana/shared/short-id";
 import {
+  reconcileHookTrustFlag,
   resolveSpawnPlan,
   SpawnPolicyError,
   type SpawnRequest,
@@ -618,9 +619,15 @@ export class PtyCore {
       // survives a restart that mints a new one; without a hook env there is
       // no receiver to report to, so the install is skipped entirely.
       const hookEnv = getHookEnv();
+      // Reconciled below whether or not hooks were installed: a plan that
+      // arrived carrying the bypass flag must lose it when this spawn did not
+      // earn it, and "no hook receiver, so no file was written" is the
+      // clearest case of not earning it (issue 290).
+      let hookTrustBypassEarned = false;
       if (hookEnv) {
         const hooks = installHarnessHooks(plan.agent, plan.cwd);
         hooksReportTurnStart = hooks.reportsTurnStart;
+        hookTrustBypassEarned = hooks.hookTrustBypassEarned;
         // The env goes in whenever a file landed, even for a family whose
         // hooks do not announce a turn's start: those still report its end,
         // and a `Stop` with no token to present is a Session that never
@@ -634,6 +641,24 @@ export class PtyCore {
           // is as fail-soft as it always was — just as invisible when it drops.
           if (hookEnv.missLogPath) env[HOOK_MISS_LOG_ENV] = hookEnv.missLogPath;
         }
+      }
+
+      // The harness's own hook-trust review is lifted here, by the process
+      // that wrote the hooks, and only for a workspace whose hooks are all
+      // ours. No launch command carries this flag — a command is composed
+      // before any file lands, by a client that has not seen the workspace —
+      // and one that arrives with it anyway is stripped. See
+      // `reconcileHookTrustFlag`.
+      const reconciled = reconcileHookTrustFlag(plan, hookTrustBypassEarned);
+      if (reconciled !== plan) {
+        log.info("pty.spawn.hookTrust", {
+          agent: safeLogValue(plan.agent),
+          taskId: safeLogValue(opts.taskId),
+          // `false` here is not a failure: it is the vendor's review left
+          // standing over hooks this Core cannot vouch for.
+          bypassed: hookTrustBypassEarned,
+        });
+        plan = reconciled;
       }
     }
 

@@ -132,6 +132,37 @@ export type HarnessCliConfig = {
    * four chances to disagree about it.
    */
   autoModeFlag?: string;
+  /**
+   * The flag that lifts this CLI's own hook-trust review, or absent where it
+   * has none (issue 290).
+   *
+   * Absent for three of the four families, and that absence is the normal
+   * case: Claude Code, Cursor CLI and OpenCode run the file (or plugin) the
+   * Core wrote without asking twice. Codex does not. It treats a hooks file it
+   * has not seen before as untrusted and holds it at a startup review — "Hooks
+   * need review / N hooks are new or changed" — until the operator picks
+   * "Trust all and continue". On a fresh workspace nobody has, so the first
+   * turn reports neither its start nor its end.
+   *
+   * **This flag is a fact about the vendor, not a member of any launch
+   * command.** Nothing in this repository puts it in a command string. The
+   * Core appends it at spawn, and only after `installHarnessHooks` reports
+   * that it wrote the file itself and that nothing it did not write is in it —
+   * see `harness-hooks.ts` and `reconcileHookTrustFlag` in
+   * `pty-spawn-policy.ts`. The flag's own help text is what scopes it that
+   * narrowly: "Intended only for automation that already vets hook sources."
+   * A Core that wrote no hooks file has vetted nothing, and a workspace
+   * carrying a committed `.codex/hooks.json` of somebody else's is exactly
+   * what Codex's review exists to catch. Neither earns it.
+   *
+   * Verified against codex-cli 0.153.0: a fresh `CODEX_HOME`, a workspace
+   * Codex had never reviewed, and the hooks file this Core writes — with the
+   * flag the startup review never appears and both `UserPromptSubmit` and
+   * `Stop` fire on the first turn; without it neither does. See
+   * {@link minimumVersion} below for why 0.135.0 is the floor: the flag has
+   * parsed since 0.131.0, but it did nothing in a TUI until then.
+   */
+  hookTrustFlag?: string;
 };
 
 export const MANAGED_HARNESSES = HARNESSES;
@@ -174,7 +205,22 @@ export const HARNESS_CLI_CONFIG = {
     command: "codex",
     label: "Codex",
     versionScheme: "semver",
-    minimumVersion: "0.132.0",
+    // 0.135.0, raised from 0.132.0 by issue 290, and the reason is a flag that
+    // parsed without working. `--dangerously-bypass-hook-trust` landed in
+    // 0.131.0, but openai/codex#24093 records it being accepted and then
+    // IGNORED in TUI mode — the "Hooks need review" prompt still blocked
+    // startup — until openai/codex#24317 (`5fb5e47`, merged 2026-05-25). That
+    // commit is unreachable from `rust-v0.133.0` and `rust-v0.134.0` and
+    // reachable from `rust-v0.135.0`, checked against the vendor's own tags
+    // rather than read off the issue title, which predates 0.134.0.
+    //
+    // This Core launches Codex as an interactive TUI in a PTY, which is
+    // precisely the mode the flag did nothing in. Leaving the floor at 0.132.0
+    // would have shipped a `--dangerously-*` flag that silently no-ops on
+    // three admitted versions and left #290 unfixed on them — the class of
+    // quiet failure this whole train exists to remove. An operator below the
+    // floor is told to update, which is loud and true.
+    minimumVersion: "0.135.0",
     packageUrl: "https://www.npmjs.com/package/@openai/codex",
     npmPackage: "@openai/codex",
     updateCommands: {
@@ -183,6 +229,9 @@ export const HARNESS_CLI_CONFIG = {
     },
     installCommand: "npm install -g @openai/codex@latest",
     autoModeFlag: "--yolo",
+    // See `hookTrustFlag` above. Not put in any launch command: the Core adds
+    // it at spawn, and only for hooks it wrote itself (issue 290).
+    hookTrustFlag: "--dangerously-bypass-hook-trust",
     // Codex's USER scope is `$HOME/.agents/skills` and nothing else — it is
     // the one harness of the four whose global skills root is NOT under its own
     // dot-directory, so `~/.codex` is the presence marker and `~/.agents/skills`
@@ -412,6 +461,32 @@ export const HARNESS_SPAWN_COMMANDS = Object.fromEntries(
 export const HARNESS_AUTO_MODE_FLAGS = Object.fromEntries(
   MANAGED_HARNESSES.map((agent) => [agent, HARNESS_CLI_CONFIG[agent].autoModeFlag ?? null]),
 ) as Readonly<Record<Harness, string | null>>;
+
+/**
+ * Each harness's hook-trust flag, or `null` where it needs none.
+ *
+ * Derived rather than re-typed for {@link HARNESS_AUTO_MODE_FLAGS}'s reason,
+ * and read by everything that has an opinion about a launch command: the
+ * registry that builds one, the resume builder that builds another, and the
+ * Core's spawn allow-list that has to accept both. `null` means "this CLI runs
+ * the hooks we install without being asked twice", which is a fact about the
+ * vendor rather than a row nobody has filled in.
+ */
+export const HARNESS_HOOK_TRUST_FLAGS = Object.fromEntries(
+  MANAGED_HARNESSES.map((agent) => [agent, HARNESS_CLI_CONFIG[agent].hookTrustFlag ?? null]),
+) as Readonly<Record<Harness, string | null>>;
+
+/**
+ * The flag that lifts `agent`'s hook-trust review, or null where it has none.
+ *
+ * The one accessor for this cell. `hookTrustFlagForSpawn` in
+ * `pty-spawn-policy.ts` re-exports it for callers already holding a spawn
+ * plan, exactly as `autoModeFlagForSpawn` re-exports the auto-mode one; there
+ * is no third.
+ */
+export function hookTrustFlagForHarness(agent: Harness): string | null {
+  return HARNESS_HOOK_TRUST_FLAGS[agent];
+}
 
 /**
  * Every Harness's skill target, in `HARNESSES` order, flattened for a writer.
