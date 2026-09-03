@@ -37,6 +37,7 @@ import {
   CoreSession,
   CoreSessionAttachError,
   CoreSessionStartError,
+  CoreSessionTurnTimeoutError,
   HARNESS_LAUNCH_COMMANDS,
   STATUS_READ_RETRIES,
   STATUS_READ_RETRY_MS,
@@ -961,19 +962,82 @@ describe("attaching to a Session that is already running (#289)", () => {
     await expect(idle).resolves.toMatchObject({ exited: true, exitCode: 3 });
   });
 
+  it("unblocks on the turn a delivered carriage return started", async () => {
+    // #405's second acceptance criterion, at the layer that implements it:
+    // `send --enter --wait` is a text write, a return write, and a wait counting
+    // from the **later** stamp — the turn starts at the return, not at the text.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const text = await session.deliver("run the tests");
+    const submit = await session.deliver("\r");
+    expect(submit.deliveryEventId).toBeGreaterThan(text.deliveryEventId);
+
+    const idle = session.waitForTurnEnd({ afterEventId: submit.deliveryEventId });
+    r.tasks.setStatus(taskId, "finished");
+
+    await expect(idle).resolves.toEqual({ status: "finished", exited: false });
+  });
+
   it("gives up on the caller's deadline and says what it was still doing", async () => {
     // The honest degradation (#289 D): a harness that reports nothing runs the
     // deadline out, and what is reported is that this side gave up — never a
     // status the Core did not send, and never a turn inferred from the bytes.
+    //
+    // This is the *working* half: the Core reported something after the
+    // delivery, so the wait was waiting on a harness that is doing something,
+    // and the wording that has said so since #289 is kept.
     rig = startRig();
     const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const { deliveryEventId } = await session.deliver("carry on");
+    r.tasks.setStatus(taskId, "running");
+    await vi.waitFor(() => expect(session!.status()).toBe("running"));
+
+    const err = await session
+      .waitForTurnEnd({ afterEventId: deliveryEventId, timeoutMs: 30 })
+      .catch((thrown: unknown) => thrown);
+    expect(err).toBeInstanceOf(CoreSessionTurnTimeoutError);
+    expect((err as CoreSessionTurnTimeoutError).reportedSinceDelivery).toBe(true);
+    expect((err as Error).message).toMatch(/still running/);
+  });
+
+  it("names a deadline that heard nothing at all as a turn that never started", async () => {
+    // **The seeded-status landmine, made loud** (#405). A status seeded from the
+    // Task row carries event id 0, so it can never satisfy a delivery cursor —
+    // which is correct, and which is why a Session parked at a dialog that ate
+    // the carriage return has nothing that will ever end this wait. The
+    // comparison that cannot be satisfied is reported rather than sat on: the
+    // error says the Core reported nothing since the write, names the dialog,
+    // and says the text was delivered so it is not sent twice.
+    rig = startRig();
+    const taskId = await runningSession("needs-input");
 
     session = await CoreSession.attach(rig.client, { taskId });
-    const { deliveryEventId } = await session.deliver("carry on");
+    // Seeded, not learned: this is the state the cursor can never be answered by.
+    expect(session.status()).toBe("needs-input");
+    const { deliveryEventId } = await session.deliver("2\r");
+    expect(deliveryEventId).toBeGreaterThan(0);
 
-    await expect(
-      session.waitForTurnEnd({ afterEventId: deliveryEventId, timeoutMs: 30 }),
-    ).rejects.toThrow(/still finished/);
+    const err = await session
+      .waitForTurnEnd({ afterEventId: deliveryEventId, timeoutMs: 30 })
+      .catch((thrown: unknown) => thrown);
+
+    expect(err).toBeInstanceOf(CoreSessionTurnTimeoutError);
+    const timeout = err as CoreSessionTurnTimeoutError;
+    expect(timeout.reportedSinceDelivery).toBe(false);
+    expect(timeout.afterEventId).toBe(deliveryEventId);
+    expect(timeout.lastStatus).toBe("needs-input");
+    // Never "still needs-input": that reads as a harness the Core is reporting
+    // on, and the whole point is that it has reported nothing.
+    expect(timeout.message).not.toMatch(/still needs-input/);
+    expect(timeout.message).toMatch(/reported nothing about it/);
+    expect(timeout.message).toMatch(/dialog rather than a composer/);
+    expect(timeout.message).toContain("The text was delivered");
   });
 });
 

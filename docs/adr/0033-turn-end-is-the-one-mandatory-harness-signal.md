@@ -53,6 +53,29 @@ stream**. #191 deleted a flat quiet-output timer that did exactly that and
 wait with no `--wait-timeout` has no deadline; one with a deadline reports, on
 expiry, that *this side gave up* — never a status the Core did not send.
 
+**D5 — `send --wait` carries a default deadline; the other waits do not**
+(amends D4, #405). `session wait` and `session start --wait` wait for a turn
+that is already under way, and the only thing a default deadline could cut short
+there is honest work — so they keep D4's "no deadline unless the caller sets
+one" exactly. `send --wait` is the one wait for a turn *it* has to start, and a
+carriage return that lands on a dialog rather than a composer starts none: the
+Core then has nothing to report, the status the Session is parked at was seeded
+from the Task row and carries event id 0, and a delivery cursor can never be
+satisfied by it. The wait is correct, silent and permanent. **900 seconds** is
+the default, matching the bound the orchestration skill already tells callers to
+pass, and `--wait-timeout 0` removes it.
+
+This does not weaken D4 or reintroduce what #191 deleted. Nothing new is
+inferred: the deadline is the caller's own clock, and what it reports on expiry
+is still that this side gave up. What it adds is a **fact off the event log** in
+the message — whether the Core reported anything at all about the Session after
+the delivery event — so an operator can tell a slow harness from a return that
+was swallowed. That comparison is two event ids, not a reading of the screen.
+
+A send that submits nothing at all (`--no-enter`) is refused with `--wait`
+rather than bounded: it has no turn to await, so there is nothing for a deadline
+to be about.
+
 ## Consequences
 
 Adding a family is still adding a row, and now the row has a bar to clear. A
