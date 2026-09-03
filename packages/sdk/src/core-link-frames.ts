@@ -656,6 +656,53 @@ export type CoreLinkSessionPromptAbandonedPayload = {
 };
 
 /**
+ * The kind of the event the Core appends when it **has** delivered a Session's
+ * starting prompt (#395).
+ *
+ * The positive twin of {@link SESSION_PROMPT_ABANDONED_EVENT_KIND}, and it
+ * exists because the absence of a row is not a report. #483 gave a client a way
+ * to hear that the prompt was lost; until this kind there was no way to hear
+ * that it landed, so `session start` returned as soon as the Core had the
+ * Session running and a caller that sent immediately typed into a composer that
+ * was not listening yet. This row is the Core saying the harness took the text:
+ * the composer marker was on screen, the prompt was written, its echo was
+ * confirmed where the harness confirms echo, and the carriage return has gone.
+ *
+ * **It is readiness reported, never readiness inferred.** Only the Core sees
+ * the harness's screen (ADR 0026), and #191 deleted the last client-side timer
+ * that guessed at this from quietness. A client waits for this row or it does
+ * not know.
+ *
+ * Payload is {@link CoreLinkSessionPromptDeliveredPayload}. Appended once per
+ * delivery, only for a *starting* prompt — a `session send` is a raw write
+ * (#404) and is stamped with {@link SESSION_DELIVERED_EVENT_KIND} instead — and
+ * only when the Core can name the Task behind the PTY.
+ */
+export const SESSION_PROMPT_DELIVERED_EVENT_KIND = "session:promptDelivered";
+
+/**
+ * Payload of a {@link SESSION_PROMPT_DELIVERED_EVENT_KIND} event.
+ *
+ * The Task, the PTY, how long the Core waited for the harness and how many
+ * characters went in — never the prompt, for the reason
+ * {@link CoreLinkSessionDeliveredPayload} gives: what was typed into a Session
+ * is the Session's, and this row goes into a log every connection replays.
+ *
+ * `waitedMs` is the interesting number to an operator reading `actana events
+ * tail`, because it is the size of the race #395 is about: a harness that took
+ * its prompt at 800 ms and one that took it at 40 s produce the same Session
+ * and a very different answer to "was it safe to send yet".
+ */
+export type CoreLinkSessionPromptDeliveredPayload = {
+  taskId: string;
+  ptyId: string;
+  /** Characters accepted, not bytes on the wire. */
+  characters: number;
+  /** How long the Core waited for the harness before the prompt went in. */
+  waitedMs: number;
+};
+
+/**
  * What happened to a Session's lock, in the vocabulary of the lock rather than
  * of the frame that caused it.
  *
