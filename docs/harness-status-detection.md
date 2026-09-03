@@ -465,8 +465,9 @@ and nothing it did not write is in it**:
 
 | workspace | earned |
 | --- | --- |
-| our hooks only | **yes** |
-| our hooks beside a committed `.codex/hooks.json` entry | no |
+| exactly our three groups, and nothing else | **yes** |
+| our groups beside a committed `.codex/hooks.json` entry | no |
+| any event key we do not write — `SessionStart`, `PreToolUse`, … | no |
 | a `.codex/config.toml` in the workspace (may declare hooks; we cannot parse TOML) | no |
 | no hook receiver, so the Core wrote nothing at all | no |
 | a hooks file that could not be read | no |
@@ -477,6 +478,26 @@ committed `.codex/hooks.json` survives our write and would run under our bypass.
 That is precisely what Codex's review exists to stop, so the bypass is withheld
 and the review stands. The foreign entries are **not** deleted; withholding is
 the remedy, and editing somebody else's hooks would not be.
+
+**Ownership is decided against what the Core wrote, never against a marker in
+the file.** The first version of this audit asked whether each entry carried
+`_acManaged`. That key is plain JSON in a file a repository ships, so a
+repository can write it. Under the three events in `CODEX_HOOK_EVENTS` the
+forgery is harmless — `mergeMatchers` deletes managed entries and replaces them
+with ours — but Codex supports `SessionStart`, `PreToolUse`, `PostToolUse`,
+`PreCompact`, `PostCompact`, `SubagentStart` and `SubagentStop` too, and this
+installer writes none of them. A forged `_acManaged` under `SessionStart` — the
+event that fires earliest — survived our write untouched, counted as ours, and
+earned the bypass.
+
+So `codexOwnsEveryHook` rebuilds what the writer produced, from
+`CODEX_HOOK_EVENTS` and `codexGroup(slug, event)` — deterministic, in this
+module, unreachable from a workspace — and requires the file to match it: the
+event keys are exactly ours, each holds exactly one group, and each group is
+identical to the one we wrote (compared key-order-insensitively, so a formatter
+is not mistaken for an edit). An event we do not write is an event we cannot
+speak for, so ownership is never inherited by default. A marker inside untrusted
+content is not proof that the content is trusted.
 
 The stripping direction matters as much as the adding one: a command that
 arrives carrying the flag from anywhere — an operator typing it, a client of
