@@ -86,6 +86,14 @@ export const projectPresentation = sqliteTable(
     imagePath: text("image_path"),
     groupId: text("group_id").references(() => groups.id, { onDelete: "set null" }),
     launchUrl: text("launch_url"),
+    /**
+     * Where this pin sits on the rail (issue 382). The rail is one sequence of
+     * slots shared by the Panel's own pins and every Core's, so the slot number
+     * cannot be a fact of any one Core — it is Panel-local presentation, kept
+     * in the same numbering space as `projects.pinnedOrder` so the merged list
+     * sorts back into the operator's order.
+     */
+    pinnedOrder: integer("pinned_order"),
     updatedAt: integer("updated_at").notNull(),
   },
   (t) => ({

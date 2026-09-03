@@ -17,13 +17,15 @@ const {
   detectGithubUrl,
   _resetGithubUrlCache,
 } = await import("../projects");
+const { upsertProjectPresentation } = await import("../project-presentation");
 const { getDb } = await import("~/db/client");
-const { projects, tasks, groups, appSettings } = await import("~/db/schema");
+const { projects, tasks, groups, appSettings, projectPresentation } = await import("~/db/schema");
 
 describe("projects service", () => {
   beforeEach(() => {
     const db = getDb();
     db.delete(tasks).run();
+    db.delete(projectPresentation).run();
     db.delete(projects).run();
     db.delete(groups).run();
     db.delete(appSettings).run();
@@ -95,6 +97,74 @@ describe("projects service", () => {
         .sort((left, right) => (left.pinnedOrder ?? 0) - (right.pinnedOrder ?? 0))
         .map((project) => project.id),
     ).toEqual([b.id, a.id]);
+  });
+
+  // Issue 382. The rail mixes this Panel's pins with the pins each Core owns,
+  // and a Core's row is not in this database at all. So the order handed here
+  // is the whole rail: ids from no row here hold their slot in the numbering
+  // and are skipped, and the index written for each of our own rows is its
+  // slot on the RAIL — the only numbering in which a Core's pin can sit
+  // between two of ours and still be there after a reload.
+  it("numbers its own rows by their slot on a mixed rail", () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-mixed-a-"));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-mixed-b-"));
+    const a = createProject({ name: "alpha", path: dirA });
+    const b = createProject({ name: "beta", path: dirB });
+    togglePin(a.id);
+    togglePin(b.id);
+
+    // Rail order: a, <a Core's pin>, b.
+    reorderPinnedProjects([a.id, "p-owned-by-a-core", b.id]);
+
+    const byId = new Map(listProjects().map((project) => [project.id, project]));
+    expect(byId.get(a.id)?.pinnedOrder).toBe(0);
+    expect(byId.get(b.id)?.pinnedOrder).toBe(2);
+    // Nothing was invented for the passenger.
+    expect(byId.has("p-owned-by-a-core")).toBe(false);
+  });
+
+  it("rejects a rail order that leaves out one of its own pinned rows", () => {
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-a-"));
+    const dirB = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-b-"));
+    const a = createProject({ name: "alpha", path: dirA });
+    const b = createProject({ name: "beta", path: dirB });
+    togglePin(a.id);
+    togglePin(b.id);
+
+    expect(() => reorderPinnedProjects([a.id, "p-owned-by-a-core"])).toThrow(/exactly once/);
+    // ...and an unpinned row of its own is still a caller bug, not a passenger.
+    const c = createProject({ name: "gamma", path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-partial-c-")) });
+    expect(() => reorderPinnedProjects([a.id, b.id, c.id])).toThrow(/not pinned/);
+  });
+
+  // Issue 382 review. `projects.pinned_order` indexes a rail it now shares with
+  // every Core's pins, whose slots live on presentation rows in this same
+  // database. Maxing over the Panel's own rows alone handed a newly pinned
+  // project a slot at or below one a Core pin already held, so it appeared in
+  // the middle of the rail rather than at its end.
+  it("pins a new project at the end of the whole rail, not the end of its own rows", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-railend-"));
+    const a = createProject({ name: "alpha", path: dir });
+    togglePin(a.id);
+    expect(getProject(a.id)?.pinnedOrder).toBe(0);
+
+    // A Core's pins take slots 1..4 on the same rail.
+    upsertProjectPresentation("p-core-1", "core-a", { pinnedOrder: 4 });
+
+    const b = createProject({
+      name: "beta",
+      path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-railend-b-")),
+    });
+    togglePin(b.id);
+    expect(getProject(b.id)?.pinnedOrder).toBe(5);
+
+    // Same rule on the create-pinned path.
+    const c = createProject({
+      name: "gamma",
+      path: fs.mkdtempSync(path.join(os.tmpdir(), "mc-proj-railend-c-")),
+      pinned: true,
+    });
+    expect(getProject(c.id)?.pinnedOrder).toBe(6);
   });
 
   it("rejects updating a project to a nonexistent path", () => {

@@ -3,6 +3,7 @@ import {
   deleteProjectPresentation,
   listProjectPresentation,
   pruneProjectPresentation,
+  reorderCorePins,
   upsertProjectPresentation,
 } from "../services/project-presentation";
 import { idParam, json, noContent, notFound, parseJsonBody } from "./_helpers";
@@ -13,7 +14,22 @@ const upsertBody = z
     groupId: z.string().nullable().optional(),
     imagePath: z.string().nullable().optional(),
     launchUrl: z.string().nullable().optional(),
+    pinnedOrder: z.number().int().nullable().optional(),
   });
+
+// The rail slots of every Core-owned pin on the rail (issue 382). Slots are
+// indices into the whole rail, the same sequence `PATCH /api/projects/
+// pinned-order` numbers the Panel's own rows from — not a second numbering
+// that would have to be reconciled on read.
+const corePinOrderBody = z.object({
+  order: z.array(
+    z.object({
+      projectId: z.string().min(1),
+      coreId: z.string().min(1),
+      pinnedOrder: z.number().int().min(0),
+    }),
+  ),
+});
 
 const pruneBody = z.object({
   coreId: z.string().min(1),
@@ -31,6 +47,17 @@ export async function upsert(rawId: string, request: Request): Promise<Response>
   if (!parsed.ok) return parsed.response;
   const { coreId, ...patch } = parsed.data;
   return json({ presentation: upsertProjectPresentation(idParsed.data, coreId, patch) });
+}
+
+/**
+ * Persist where every Core-owned pin sits on the rail. One request for the
+ * whole set: the slots only mean anything together, and a reorder that landed
+ * some of them would leave the rail in an order the operator never chose.
+ */
+export async function reorderPinned(request: Request): Promise<Response> {
+  const parsed = await parseJsonBody(request, corePinOrderBody);
+  if (!parsed.ok) return parsed.response;
+  return json({ presentation: reorderCorePins(parsed.data.order) });
 }
 
 export async function remove(rawId: string): Promise<Response> {

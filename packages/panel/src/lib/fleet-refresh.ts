@@ -44,6 +44,33 @@ export function sameSnapshot(a: unknown, b: unknown): boolean {
 }
 
 /**
+ * A refresh pass wrapped in the coalescing loop, with two ways to ask for one.
+ *
+ * Calling it is the ordinary "something changed, re-read when you can" — it
+ * coalesces, so a burst costs one trailing pass. {@link CoalescingRunner.fresh}
+ * is the stricter question: it resolves only once a pass that *started after
+ * the call* has settled, which is what a caller needs when it is about to act
+ * on what the read said.
+ */
+export type CoalescingRunner = {
+  (): Promise<void>;
+  /**
+   * Resolve once a pass that started after this call has finished.
+   *
+   * The plain runner cannot promise that: when a pass is already in flight it
+   * records the request and resolves on the next microtask, having read
+   * nothing. That is right for an event — the trailing pass will cover it — and
+   * wrong for anyone awaiting the read itself, who would then act on an answer
+   * taken before their own write (#382 review round 2).
+   *
+   * A pass that fails still settles this: the loop stops on a failure by
+   * design, and holding the caller until the error clears would be a worse
+   * bargain than telling it the read has been tried.
+   */
+  fresh(): Promise<void>;
+};
+
+/**
  * Wrap a refresh pass in the coalescing loop from #389.
  *
  * The naive guard — return early while a pass is in flight — drops whatever the
@@ -60,10 +87,14 @@ export function sameSnapshot(a: unknown, b: unknown): boolean {
  * The flags live in the closure, not in the caller, so a caller that rebuilds
  * its pass function does not reset them mid-burst.
  */
-export function createCoalescingRunner(pass: () => Promise<boolean>): () => Promise<void> {
+export function createCoalescingRunner(pass: () => Promise<boolean>): CoalescingRunner {
   let running = false;
   let pending = false;
-  return async () => {
+  // Callers awaiting a pass that starts after they asked. Claimed at the top of
+  // an iteration and resolved when that iteration's pass settles, so a waiter
+  // is only ever answered by a read taken after it joined.
+  let waiting: Array<() => void> = [];
+  const run = (async () => {
     if (running) {
       pending = true;
       return;
@@ -74,10 +105,37 @@ export function createCoalescingRunner(pass: () => Promise<boolean>): () => Prom
         // Cleared before the read, not after: anything that arrives while this
         // very pass is in flight has to survive into the next one.
         pending = false;
-        if (!(await pass())) break;
-      } while (pending);
+        const claimed = waiting;
+        waiting = [];
+        let ok = false;
+        try {
+          ok = await pass();
+        } finally {
+          for (const resolve of claimed) resolve();
+        }
+        if (!ok) break;
+      } while (pending || waiting.length > 0);
     } finally {
       running = false;
+      // The loop broke on a failure with waiters still queued. Nothing is going
+      // to read for them, so say so rather than hanging.
+      const stranded = waiting;
+      waiting = [];
+      for (const resolve of stranded) resolve();
     }
+  }) as CoalescingRunner;
+  run.fresh = async () => {
+    const settled = new Promise<void>((resolve) => {
+      waiting.push(resolve);
+    });
+    // Either this starts the loop — which claims the waiter on its first
+    // iteration — or a pass is in flight and the `waiting.length > 0` arm of
+    // the loop condition brings it round again for us. A pass that throws
+    // rather than answering false still releases the waiter, in the loop's own
+    // `finally`, so the rejection is the caller's to ignore rather than one
+    // nobody is left holding.
+    void run().catch(() => undefined);
+    await settled;
   };
+  return run;
 }

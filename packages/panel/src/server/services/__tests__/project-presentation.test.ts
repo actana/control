@@ -11,6 +11,7 @@ const {
   getProjectPresentation,
   listProjectPresentation,
   pruneProjectPresentation,
+  reorderCorePins,
   upsertProjectPresentation,
 } = await import("../project-presentation");
 const { projectImagesDir } = await import("../project-image-files");
@@ -102,6 +103,57 @@ describe("project-presentation service", () => {
 
     expect(pruneProjectPresentation("core-a", [])).toBe(1);
     expect(listProjectPresentation().map((r) => r.projectId)).toEqual(["p2"]);
+  });
+
+  // Issue 382. The rail is one strip of pins with two owners on it: a Core's
+  // pin has no `projects` row here, so the slot it holds on the rail is filed
+  // beside its group instead — and it is numbered in the SAME space as
+  // `projects.pinned_order`, because the two lists are merged and sorted
+  // together before the rail is drawn.
+  describe("rail slots for Core-owned pins", () => {
+    it("writes each pin's slot, creating the row where the operator never filed one", () => {
+      const rows = reorderCorePins([
+        { projectId: "p1", coreId: "core-a", pinnedOrder: 1 },
+        { projectId: "p2", coreId: "core-b", pinnedOrder: 3 },
+      ]);
+
+      expect(rows.map((r) => [r.projectId, r.pinnedOrder])).toEqual([
+        ["p1", 1],
+        ["p2", 3],
+      ]);
+      expect(getProjectPresentation("p1")?.pinnedOrder).toBe(1);
+      expect(getProjectPresentation("p2")?.pinnedOrder).toBe(3);
+    });
+
+    it("does not disturb the filing already on the row", () => {
+      upsertProjectPresentation("p1", "core-a", { groupId, launchUrl: "http://x" });
+
+      reorderCorePins([{ projectId: "p1", coreId: "core-a", pinnedOrder: 2 }]);
+
+      expect(getProjectPresentation("p1")).toMatchObject({
+        groupId,
+        launchUrl: "http://x",
+        pinnedOrder: 2,
+      });
+    });
+
+    it("renumbers on every reorder rather than accumulating", () => {
+      reorderCorePins([
+        { projectId: "p1", coreId: "core-a", pinnedOrder: 0 },
+        { projectId: "p2", coreId: "core-a", pinnedOrder: 1 },
+      ]);
+      reorderCorePins([
+        { projectId: "p2", coreId: "core-a", pinnedOrder: 0 },
+        { projectId: "p1", coreId: "core-a", pinnedOrder: 1 },
+      ]);
+
+      expect(getProjectPresentation("p1")?.pinnedOrder).toBe(1);
+      expect(getProjectPresentation("p2")?.pinnedOrder).toBe(0);
+    });
+
+    it("writing no slots is not an error", () => {
+      expect(reorderCorePins([])).toEqual([]);
+    });
   });
 
   it("sweeps the image file of a pruned orphan too", () => {

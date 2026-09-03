@@ -290,6 +290,11 @@ export function ensureSchema(sqlite: Database.Database): void {
       image_path TEXT,
       group_id TEXT REFERENCES groups(id) ON DELETE SET NULL,
       launch_url TEXT,
+      -- Where this pin sits on the Panel's rail (issue 382). The rail is one
+      -- sequence of slots holding the Panel's own pins and every Core's, so
+      -- no single Core can hold the number: it is Panel-local presentation,
+      -- in the same numbering space as projects.pinned_order.
+      pinned_order INTEGER,
       updated_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS project_presentation_core_idx ON project_presentation(core_id);
@@ -443,6 +448,9 @@ export function ensureSchema(sqlite: Database.Database): void {
 
   // Columns added after their table first shipped; tolerate pre-existing
   // tables created without them.
+  // The rail slot of a Core-owned pin (issue 382); NULL until the operator
+  // first reorders a rail that has one on it.
+  ensureColumn(sqlite, "project_presentation", "pinned_order", "INTEGER");
   ensureColumn(sqlite, "tasks", "title_manually_set", "INTEGER NOT NULL DEFAULT 0");
   ensureColumn(sqlite, "tasks", "pinned", "INTEGER NOT NULL DEFAULT 0");
   sqlite.exec("CREATE INDEX IF NOT EXISTS tasks_pinned_idx ON tasks(pinned);");

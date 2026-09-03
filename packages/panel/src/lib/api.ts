@@ -260,20 +260,44 @@ export const api = {
 
   /**
    * Panel-local presentation for Core-owned projects (issue 98) — the group,
-   * card image and launch URL the Panel keeps for a project whose row lives on
-   * its Core. Read as one list and joined onto Core snapshots client-side; the
-   * Panel server has no transport of its own to a Core to join them for us.
+   * card image, launch URL and rail slot (#382) the Panel keeps for a project
+   * whose row lives on its Core. Read as one list and joined onto Core
+   * snapshots client-side; the Panel server has no transport of its own to a
+   * Core to join them for us.
    */
   listProjectPresentation: () =>
     req<{ presentation: ProjectPresentation[] }>("/api/project-presentation"),
   updateProjectPresentation: (
     id: string,
     coreId: string,
-    patch: { groupId?: string | null; imagePath?: string | null; launchUrl?: string | null },
+    patch: {
+      groupId?: string | null;
+      imagePath?: string | null;
+      launchUrl?: string | null;
+      pinnedOrder?: number | null;
+    },
   ) =>
     req<{ presentation: ProjectPresentation }>(`/api/project-presentation/${id}`, {
       method: "PATCH",
       body: JSON.stringify({ coreId, ...patch }),
+    }),
+  /**
+   * Where every Core-owned pin sits on the rail (issue 382). `pinnedOrder` is
+   * the row's index in the WHOLE rail — the same sequence
+   * {@link api.reorderPinnedProjects} numbers the Panel's own rows from — so
+   * the merged list sorts back into the operator's order after a reload.
+   *
+   * A Core's pin has no `projects` row on this Panel, so its slot cannot go to
+   * the Panel-only reorder API; and the rail spans Cores, so no single Core
+   * could hold the number either. It is Panel-local presentation, like the
+   * group the same row is filed under (issue 98).
+   */
+  reorderCorePinnedProjects: (
+    order: readonly { projectId: string; coreId: string; pinnedOrder: number }[],
+  ) =>
+    req<{ presentation: ProjectPresentation[] }>("/api/project-presentation/pinned-order", {
+      method: "PATCH",
+      body: JSON.stringify({ order }),
     }),
   deleteProjectPresentation: (id: string) =>
     req<void>(`/api/project-presentation/${id}`, { method: "DELETE" }),

@@ -34,6 +34,10 @@ function presentation(over: Partial<ProjectPresentation> = {}): ProjectPresentat
     imagePath: "p1.png",
     groupId: "g1",
     launchUrl: "http://localhost:3000",
+    // The rail slot a Core-owned pin holds (issue 382). The mapper here does
+    // not read it — the rail's own engine overlays it onto the row it builds —
+    // but the column is part of the filing, so the fixture carries it.
+    pinnedOrder: null,
     updatedAt: 99,
     ...over,
   };

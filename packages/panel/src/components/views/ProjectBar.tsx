@@ -28,6 +28,11 @@ import { api } from "~/lib/api";
 import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
 import { saveProjectEdits } from "~/lib/save-project-edits";
 import { getPinnedProjects, mergeSubsetOrder, reorderPinnedIds } from "~/lib/pinned-project-order";
+import {
+  applyCorePinFiling,
+  settleCorePinFiling,
+  type CorePinFiling,
+} from "~/lib/core-pins-engine";
 import { ACTIVE_GROUP_ALL, useActiveGroup } from "~/lib/active-group";
 import {
   clusterPinnedByGroup,
@@ -137,6 +142,15 @@ export const ProjectBar = memo(function ProjectBar({
     [cores],
   );
   const sortedPinned = useMemo(() => getPinnedProjects(projects ?? []), [projects]);
+  // Who owns each row on the rail. A Core's pins carry their Core on `.coreId`
+  // (see `useRemotePinnedProjects`); the Panel's own rows are the untagged
+  // remainder. Every write the rail makes has to ask this per ROW, not per
+  // rail: a mixed rail is the ordinary case, and the Panel's own reorder and
+  // PATCH endpoints can only write the rows in the Panel's database (#382).
+  const coreIdByProject = useMemo(
+    () => new Map((projects ?? []).map((project) => [project.id, project.coreId ?? null])),
+    [projects],
+  );
   const { activeGroup } = useActiveGroup();
   // With a group active the rail becomes that group's workspace: every project
   // in the group (pinned first), not just pinned ones. With "all" active it
@@ -339,6 +353,25 @@ export const ProjectBar = memo(function ProjectBar({
   // or one group's pinned subset in group-workspace mode), plus the group
   // reassignment when the tile was dropped into a different cluster. The
   // optimistic update applies both, so the rail re-clusters instantly.
+  //
+  // Both halves go to the owner of each ROW (#382). The rail mixes this
+  // Panel's pins with every Core's, and neither of the Panel's own write paths
+  // can touch a Core-owned row: `reorderPinnedProjects` validates the order
+  // against the Panel's `projects` table and rejects an id that is not in it,
+  // and `PATCH /api/projects/:id` 404s for a project the Panel holds no row
+  // for. A mixed rail sent to either used to animate, fail, revert and toast —
+  // the reorder never stuck for the Core rows, and often not for the Panel
+  // ones either, because the whole request was rejected together.
+  //
+  // The split:
+  //   * order — Panel rows keep the Panel reorder API; Core rows take their
+  //     slot on their Panel-local presentation row (issue 98's table). Both
+  //     sides are numbered by their index in the WHOLE rail, so the merged
+  //     list sorts back into the operator's order on reload. A Core's own
+  //     database could not hold this number: the rail spans Cores.
+  //   * group — Panel rows keep `PATCH /api/projects/:id`; a Core row's group
+  //     is Panel-local presentation, exactly as the Edit-project dialog
+  //     already files it (`save-project-edits`).
   const persistProjectOrder = useCallback(
     async (
       nextOrder: string[],
@@ -351,11 +384,45 @@ export const ProjectBar = memo(function ProjectBar({
       // where nextOrder already covers every pinned project.
       const fullOrder = mergeSubsetOrder(originalOrder, nextOrder);
       if (!groupChange && fullOrder.join("\0") === originalOrder.join("\0")) return;
+      // Every Core-owned row on the rail, with the slot it now holds. All of
+      // them, not just the ones that moved: a reorder shifts the slots either
+      // side of the gap too, and a Core row left on a stale index would sort
+      // itself back out of place on the next reload.
+      const corePinSlots = fullOrder.flatMap((id, index) => {
+        const rowCoreId = coreIdByProject.get(id) ?? null;
+        return rowCoreId ? [{ projectId: id, coreId: rowCoreId, pinnedOrder: index }] : [];
+      });
+      const groupChangeCoreId = groupChange
+        ? coreIdByProject.get(groupChange.projectId) ?? null
+        : null;
+      // The same move, as the fleet engine has to hear it. A Core-owned row is
+      // not in the query cache the optimistic update below reaches, so without
+      // this the tile just dragged to the top re-rendered at the bottom the
+      // instant the drop settled — `pinnedOrder` still null, which the
+      // comparator reads as last — and stayed there for both HTTP legs and the
+      // whole fan-out after them. Shift+Arrow showed it undisguised: the key
+      // went down and the tile did not move (#382 review).
+      const corePinFiling = new Map<string, CorePinFiling>();
+      for (const slot of corePinSlots) {
+        corePinFiling.set(slot.projectId, { pinnedOrder: slot.pinnedOrder });
+      }
+      if (groupChange && groupChangeCoreId) {
+        corePinFiling.set(groupChange.projectId, {
+          ...corePinFiling.get(groupChange.projectId),
+          groupId: groupChange.groupId,
+        });
+      }
       const saveSeq = ++reorderSaveSeqRef.current;
       reorderSavingRef.current = true;
       setReorderSaving(true);
       const nextOrders = new Map(fullOrder.map((id, index) => [id, index]));
       const previous = queryClient.getQueryData<ProjectWithCounts[]>(queryKeys.projects);
+      // The rail's two halves take their optimism from two places, because
+      // that is where the two halves of the rail actually live: the Panel's
+      // rows in this query cache, a Core's pins in the fleet engine's module
+      // snapshot. Both are applied before the first await, so the render that
+      // follows the drop draws the order the operator just made.
+      const filingToken = applyCorePinFiling(corePinFiling);
       queryClient.setQueryData<ProjectWithCounts[]>(
         queryKeys.projects,
         (current) =>
@@ -371,12 +438,39 @@ export const ProjectBar = memo(function ProjectBar({
           }) ?? current,
       );
       try {
-        if (groupChange) {
-          await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
-        }
+        // The validating write goes first, and nothing else is committed
+        // before it answers. `reorderPinnedProjects` is the only call here
+        // that can refuse the move — another tab unpinning a Panel row is
+        // enough — and until this order it could refuse one *after* the group
+        // change had already landed, so the toast said the move failed while
+        // the tile had genuinely changed group (#382 review).
         const { projects: updated } = await api.reorderPinnedProjects(fullOrder);
+        // That answer was taken before the group write below, so it lands
+        // first; letting it land last would put the old group back on screen
+        // until something else refetched.
         if (saveSeq === reorderSaveSeqRef.current) {
           queryClient.setQueryData(queryKeys.projects, updated);
+        }
+        if (corePinSlots.length > 0) await api.reorderCorePinnedProjects(corePinSlots);
+        if (groupChange) {
+          if (groupChangeCoreId) {
+            await api.updateProjectPresentation(groupChange.projectId, groupChangeCoreId, {
+              groupId: groupChange.groupId,
+            });
+          } else {
+            await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
+          }
+          if (saveSeq === reorderSaveSeqRef.current) {
+            queryClient.setQueryData<ProjectWithCounts[]>(
+              queryKeys.projects,
+              (current) =>
+                current?.map((project) =>
+                  project.id === groupChange.projectId
+                    ? { ...project, groupId: groupChange.groupId }
+                    : project,
+                ) ?? current,
+            );
+          }
         }
       } catch (error) {
         if (saveSeq === reorderSaveSeqRef.current) {
@@ -389,9 +483,25 @@ export const ProjectBar = memo(function ProjectBar({
           reorderSavingRef.current = false;
           setReorderSaving(false);
         }
+        // Released the gesture guard first, then take the overlay down behind
+        // a read: the fan-out is several round trips per Core and no operator
+        // should have their next Shift+Arrow swallowed waiting for it. The
+        // read is what confirms the write on the happy path and what corrects
+        // the rail on a failed one, so this runs either way.
+        //
+        // `saveSeq` cannot guard this — it is released above, on purpose — so
+        // the token does instead: a gesture only ever settles the overlay it
+        // put up, and a second Shift+Arrow that has already replaced it keeps
+        // its own until its own write is done. The `catch` is not decoration
+        // either: a rejection here would strand `pendingFiling` and the engine
+        // would ignore the server's filing for those ids for the life of the
+        // tab (#382 review round 2).
+        void settleCorePinFiling([...corePinFiling.keys()], filingToken).catch(
+          () => undefined,
+        );
       }
     },
-    [invalidateProjects, queryClient, sortedPinned],
+    [coreIdByProject, invalidateProjects, queryClient, sortedPinned],
   );
 
   const startProjectPointerDrag = useCallback(
@@ -1465,18 +1575,42 @@ export const ProjectBar = memo(function ProjectBar({
                 // surface. Every Panel connected to that Core sees the same
                 // pin state (Core-owned fact, ADR-0005).
                 //
-                // Use the *target project's* coreId (pin rows carry their
-                // owning Core on `.coreId`), not the ProjectBar's own `coreId`
-                // prop — otherwise unpinning a Core's project from a pin bar
-                // scoped elsewhere would mutate the wrong Core (silent no-op)
-                // and the pin bar would only clear on restart.
-                const targetCoreId = target?.coreId ?? coreId;
+                // Ask the ROW who owns it. `coreIdByProject` is built from
+                // the same list the menu's target came from, so it answers for
+                // every row a menu can open on: a Core's pins carry their Core,
+                // and the Panel's own rows are the untagged remainder, which
+                // answer null and route over the Panel's own HTTP API.
+                //
+                // It used to fall back to this bar's `coreId` prop, and that
+                // fallback is gone rather than merely unused. On a Core-scoped
+                // route — `__root.tsx` passes the route's Core, so any time the
+                // operator is looking at a project or session on one — it made
+                // the operator's OWN project look Core-owned, and the
+                // slot-clearing write below then filed a Panel project id under
+                // a Core that has never heard of it. The next prune of that
+                // Core deletes that row and, with it, the project's card image
+                // off disk (#382 review round 2).
+                const targetCoreId = coreIdByProject.get(id) ?? null;
+                const unpinning = target?.pinned === true;
                 try {
                   await mutateProjectForCore(targetCoreId, {
                     op: "pin",
                     projectId: id,
-                    pinned: target?.pinned !== true,
+                    pinned: !unpinning,
                   });
+                  // A rail slot outlives the pin that earned it unless
+                  // something clears it: `reorderCorePins` is its only other
+                  // writer, and a pin toggle never reaches that. Left behind,
+                  // an unpinned-then-repinned Core project would come back to
+                  // the slot it used to hold, while a re-pinned Panel row goes
+                  // to the end of the rail (#382 review). An unpin somewhere
+                  // this Panel never sees still strands one — that is the
+                  // reconciliation pass filed as its own issue.
+                  if (unpinning && targetCoreId) {
+                    await api
+                      .updateProjectPresentation(id, targetCoreId, { pinnedOrder: null })
+                      .catch(() => undefined);
+                  }
                 } catch (err) {
                   toast.error(
                     err instanceof Error ? err.message : "Could not update project pin",

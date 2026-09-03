@@ -53,18 +53,41 @@ export function mergeSubsetOrder(
   return fullOrder.map((id) => (subsetIds.has(id) ? subset[next++]! : id));
 }
 
+/**
+ * Check a rail order before it is written.
+ *
+ * The rail is one sequence of slots, and since issue 382 the ids in it can
+ * belong to two owners: this Panel's own pinned rows, and the pins a Core owns
+ * (which have no `projects` row here at all). So the rule is not "these ids and
+ * no others" — it is:
+ *
+ * - every pinned project this Panel owns is named exactly once, because its
+ *   slot is about to be rewritten and an absent row would keep a stale one;
+ * - no id appears twice, whoever owns it;
+ * - an id this Panel has no row for is a passenger. It holds a slot in the
+ *   numbering so the Core-owned rows land between the right neighbours, and
+ *   the write skips it.
+ *
+ * `panelProjectIds` — every project id in this Panel's database, pinned or not
+ * — keeps the old guard against a caller sending an unpinned row of its own,
+ * which the passenger rule would otherwise swallow. Omit it and unknown ids are
+ * simply passengers.
+ */
 export function validatePinnedReorder(
   order: readonly string[],
   pinnedProjects: readonly PinnedOrderable[],
+  panelProjectIds?: ReadonlySet<string>,
 ): void {
   const pinnedIds = new Set(pinnedProjects.map((project) => project.id));
-  if (order.length !== pinnedIds.size) {
-    throw new Error("order must include every pinned project exactly once");
-  }
   const seen = new Set<string>();
   for (const id of order) {
-    if (!pinnedIds.has(id)) throw new Error(`project ${id} is not pinned`);
     if (seen.has(id)) throw new Error("duplicate project id in order");
     seen.add(id);
+    if (!pinnedIds.has(id) && panelProjectIds?.has(id)) {
+      throw new Error(`project ${id} is not pinned`);
+    }
+  }
+  for (const id of pinnedIds) {
+    if (!seen.has(id)) throw new Error("order must include every pinned project exactly once");
   }
 }
