@@ -151,7 +151,7 @@ is never swept — a Session waiting on a human may wait silently forever.
 
 That rule has a hole in it, and it is the case an operator hits most: the
 harness whose hooks are not arriving is usually the harness whose TUI is still
-on screen. Codex before its hooks have been reviewed with `/hooks`, or any
+on screen. A Codex whose hooks are held for review (issue 290, fixed), or any
 harness whose terminal `Stop` was the POST that dropped, keeps painting a
 spinner and a clock for as long as the process lives. Counted as activity,
 those bytes mean fifteen minutes of total silence never arrives and the card
@@ -221,7 +221,7 @@ each is there for a failure that was found rather than imagined:
 
   | harness | settles after its last new output |
   | --- | --- |
-  | never sent a hook (Codex before `/hooks`) | ~9–10 minutes |
+  | never sent a hook (a harness whose hooks never ran) | ~9–10 minutes |
   | hooks arrive, `Stop` dropped | ~16–17 minutes |
 - **It asks twice.** The condition must hold across two consecutive sweeps, one
   minute apart, before a row moves.
@@ -394,7 +394,7 @@ file each family reads:
 | Harness | File |
 | --- | --- |
 | `claude-code` | `<cwd>/.claude/settings.local.json` |
-| `codex` | `<cwd>/.codex/hooks.json` |
+| `codex` | `<cwd>/.codex/hooks.json` (matcher groups, and the launch needs `--dangerously-bypass-hook-trust`) |
 | `cursor-cli` | `<cwd>/.cursor/hooks.json` (needs `"version": 1`, or the CLI ignores it) |
 
 An operator's own hooks are preserved; ours are tagged `_acManaged: true` so the
@@ -410,11 +410,67 @@ which is a narrower question than whether they were installed:
 | Harness | Hooks installed | Reports turn start | Why |
 | --- | --- | --- | --- |
 | `claude-code` | yes | yes | `UserPromptSubmit` fires |
-| `codex` | yes | no | won't run new hooks until `/hooks` review |
+| `codex` | yes | no | fires since #290, but flipping this stands the Panel's fallback down — #277 |
 | `cursor-cli` | yes | no | `beforeSubmitPrompt` doesn't fire in cursor-agent |
 | `opencode` | yes | yes | plugin; `chat.message` and `session.status` fire |
 
 Only the third column exempts the terminal-input fallback below.
+
+### Codex: a file landing is not a hook running (issue 290)
+
+Codex was the one family where both of those columns lied, and it lied at the
+worst moment: a **fresh workspace, on the first turn**, which is where an
+orchestrator starts every piece of work. Two independent things were wrong, and
+each one alone is enough to report nothing.
+
+**The file was the wrong shape.** Codex's hooks file is a table of matcher
+*groups*, the same shape Claude Code's is:
+
+```json
+{ "hooks": { "Stop": [ { "hooks": [ { "type": "command", "command": "…" } ] } ] } }
+```
+
+We wrote the handler where the group belongs — one level too shallow. Codex
+parses such a file, recognises nothing in it, and says nothing about it: the
+workspace has a hooks file, the Core believes it installed hooks, and Codex has
+zero. It never even reaches the review below.
+
+**A hooks file Codex has not seen before is held for review.** With the right
+shape, Codex counts the entries at startup and stops on "Hooks need review — N
+hooks are new or changed / Hooks can run outside the sandbox after you trust
+them", offering *Review hooks*, *Trust all and continue*, and *Continue without
+trusting (hooks won't run)*. Nobody has answered that on a fresh workspace, so
+neither `UserPromptSubmit` nor `Stop` reaches the Core, the card sits on
+whatever it last said, and the only thing that ends a `--wait` is the caller's
+timeout.
+
+The launch now carries `--dangerously-bypass-hook-trust`, whose own help text
+names this caller: *"Intended only for automation that already vets hook
+sources."* The Core wrote the file microseconds earlier out of
+`harness-hooks.ts`; there is no third party it could be vouching for. The flag
+is scoped to the invocation — it persists no trust into the operator's Codex
+config, and a Codex the operator starts themselves still reviews hooks exactly
+as before. It lives in `HARNESS_CLI_CONFIG.codex.hookTrustFlag`, so the
+registry's launch builder, the CLI's resume builder, the SDK's default command
+and the Core's spawn allow-list all read one cell.
+
+Verified against codex-cli 0.153.0 with a `CODEX_HOME` created for the test and
+a workspace Codex had never opened: with the group shape and the flag, the
+review screen never appears and both `UserPromptSubmit` and `Stop` fire on the
+first turn; drop either one and neither fires. The flag has been in Codex since
+0.131.0, below the `minimumVersion` of 0.132.0 this repository already requires.
+
+Two things this does **not** fix, both out of scope here:
+
+- **Workspace trust.** Codex asks "Do you trust the contents of this
+  directory?" the first time it opens one, and *project-local config, hooks and
+  exec policies only load once that is answered*. The bypass flag does not
+  answer it, and neither should the Core — it is the operator's gesture, and a
+  Session in an untrusted directory is blocked on that prompt whether or not it
+  has hooks.
+- **The Panel's launch builder** (`packages/panel/src/lib/harness-command.ts`)
+  composes its own Codex command and still needs the flag added; that file is
+  owned by #484.
 
 Three of the four families take a table of shell commands. OpenCode takes a
 JavaScript plugin instead, and its writer is `harness-hooks-opencode.ts` — see
@@ -606,7 +662,9 @@ Session had neither hooks nor a fallback and never left `ready`.
 
 The narrower question matters: Cursor and Codex both take our hooks file and
 report a turn's *end*, so "hooks were installed" would suppress the fallback and
-leave their Sessions on `ready` for the whole first turn.
+leave their Sessions on `ready` for the whole first turn. Codex's turn *start*
+does arrive since #290, but the column is still `no` there — see
+[Codex: a file landing is not a hook running](#codex-a-file-landing-is-not-a-hook-running-issue-290).
 
 Note that neither of those failures parks a Session on `ready` forever any more
 (issue 387). A Session sitting on `ready` whose PTY then dies is settled by the
