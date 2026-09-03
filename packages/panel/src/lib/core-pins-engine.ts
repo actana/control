@@ -61,6 +61,13 @@ let coreSignature = "";
 let lastRowsByCore = new Map<string, ProjectWithCounts[]>();
 /** The last counts each Core answered with, by project id. See `corePinTaskCounts`. */
 let lastCountsByCore = new Map<string, Map<string, ProjectTaskCounts>>();
+/**
+ * Filing this tab has written for a Core-owned pin but has not yet read back
+ * (issue 382). See {@link applyCorePinFiling}: it is an overlay on top of the
+ * presentation the server answers with, held only for the length of the write
+ * plus the read that confirms it.
+ */
+let pendingFiling = new Map<string, CorePinFiling>();
 let teardown: (() => void) | null = null;
 let pollTimer: ReturnType<typeof setInterval> | null = null;
 
@@ -72,6 +79,44 @@ function publish(next: ProjectWithCounts[]): void {
   if (sameSnapshot(snapshot, next)) return;
   snapshot = next;
   for (const listener of [...listeners]) listener();
+}
+
+/**
+ * The Panel-local filing a caller has just written for a Core-owned pin: where
+ * it now sits on the rail, and which group it was dropped into. Both are
+ * presentation (issue 98, ADR 0022 as amended by #382), so both are this
+ * Panel's to answer for and neither waits on a Core.
+ */
+export type CorePinFiling = { pinnedOrder?: number; groupId?: string | null };
+
+/**
+ * Join the Panel's own filing onto a row the Core answered for.
+ *
+ * Core facts come off the snapshot; everything here is the operator's filing
+ * over somebody else's Project, so it is never *remembered* — it is re-read
+ * every pass and applied afresh. That distinction is the whole of the second
+ * bug #382's review found: a Core that goes offline keeps its pins (its rows
+ * are remembered, deliberately), and those remembered rows carried the slot
+ * baked in at the last successful read. A reorder would then write the right
+ * slot to the database and the very next pass would put the old one back on
+ * screen, with no toast and no way out until the Core returned.
+ *
+ * `pendingFiling` sits on top of the server's answer for the length of a write
+ * this tab has issued but not yet read back, so a poll landing in that window
+ * cannot repaint the rail with filing the operator has already replaced.
+ */
+function withFiling<T extends ProjectWithCounts>(
+  row: T,
+  filed: ProjectPresentation | undefined,
+): T {
+  const pending = pendingFiling.get(row.id);
+  return {
+    ...row,
+    imagePath: filed?.imagePath ?? null,
+    launchUrl: filed?.launchUrl ?? null,
+    groupId: pending && "groupId" in pending ? pending.groupId ?? null : filed?.groupId ?? null,
+    pinnedOrder: pending?.pinnedOrder ?? filed?.pinnedOrder ?? null,
+  };
 }
 
 /**
@@ -87,13 +132,18 @@ async function readCore(
   presentation: ReadonlyMap<string, ProjectPresentation>,
 ): Promise<ProjectWithCounts[]> {
   const bridge = getPanelBridge();
-  const remembered = lastRowsByCore.get(core.id) ?? [];
-  if (!bridge || core.dial.state !== "connected") return remembered;
+  // Core facts survive the Core going away; the Panel's own filing over them
+  // does not get to. Re-file whatever is remembered against the presentation
+  // this pass just read, so a slot or a group written while a Core was off the
+  // link is on screen now rather than when it comes back (#382 review).
+  const remembered = () =>
+    (lastRowsByCore.get(core.id) ?? []).map((row) => withFiling(row, presentation.get(row.id)));
+  if (!bridge || core.dial.state !== "connected") return remembered();
   let projects;
   try {
     projects = await bridge.listProjects(core.id);
   } catch {
-    return remembered;
+    return remembered();
   }
   const tasks = await bridge
     .listTasks(core.id)
@@ -106,18 +156,20 @@ async function readCore(
     lastCountsByCore.get(core.id) ?? new Map(),
   );
   if (tasks !== null) lastCountsByCore.set(core.id, counts);
-  const rows = pinned.map((p) => ({
-    ...projectRowFromSnapshot(p, presentation.get(p.projectId), counts.get(p.projectId)),
-    coreId: core.id,
-    // Where this pin sits on the rail (issue 382). The core-link snapshot has
-    // no answer for it — the rail spans every Core and this Panel's own rows,
-    // so the slot belongs to none of them individually — and the mapper reads
-    // it as null. It is Panel-local presentation, filed on the same row as the
-    // group, and the rail's comparator sorts it against `projects.pinnedOrder`
-    // in one numbering space. Without this the reorder wrote a slot nothing
-    // read back, and the rail returned to the Core's own list order on reload.
-    pinnedOrder: presentation.get(p.projectId)?.pinnedOrder ?? null,
-  }));
+  // Where a pin sits on the rail (issue 382) is the field `projectRowFromSnapshot`
+  // cannot supply: the core-link snapshot has no answer for it, because the rail
+  // spans every Core and this Panel's own rows and the slot belongs to none of
+  // them individually. `withFiling` is where that — and the rest of the
+  // operator's filing — is joined on.
+  const rows = pinned.map((p) =>
+    withFiling(
+      {
+        ...projectRowFromSnapshot(p, presentation.get(p.projectId), counts.get(p.projectId)),
+        coreId: core.id,
+      },
+      presentation.get(p.projectId),
+    ),
+  );
   lastRowsByCore.set(core.id, rows);
   return rows;
 }
@@ -205,6 +257,57 @@ export function refreshCorePins(): void {
   void run();
 }
 
+/**
+ * Show the rail what was just written for a Core's pins, before the read that
+ * confirms it (#382 review, blocking 1).
+ *
+ * A Panel-owned row's optimism has somewhere to go — `queryClient.setQueryData`
+ * on the `projects` cache. A Core-owned row is not in that cache at all: it
+ * lives here, in module state, and until this existed the only way it moved was
+ * a whole fan-out. So the tile the operator had just dragged to the top was
+ * re-rendered at the bottom the moment the drop settled — `pinnedOrder` still
+ * `null`, which `comparePinnedProjects` reads as `MAX_SAFE_INTEGER` — and it
+ * stayed there for two HTTP round trips plus a `listProjects` and a `listTasks`
+ * per Core. With Shift+Arrow there was not even a settle animation to hide it:
+ * the key went down and the tile did not move.
+ *
+ * The overlay outranks the server's answer for as long as it is held, so a poll
+ * landing mid-write repaints nothing. Hand the same ids to
+ * {@link settleCorePinFiling} when the write is done, whether it succeeded or
+ * failed — that is what takes the overlay back off.
+ */
+export function applyCorePinFiling(filing: ReadonlyMap<string, CorePinFiling>): void {
+  if (filing.size === 0) return;
+  for (const [projectId, patch] of filing) {
+    pendingFiling.set(projectId, { ...pendingFiling.get(projectId), ...patch });
+  }
+  publish(
+    snapshot.map((row) => {
+      const patch = filing.get(row.id);
+      if (!patch) return row;
+      return {
+        ...row,
+        ...("pinnedOrder" in patch ? { pinnedOrder: patch.pinnedOrder ?? null } : {}),
+        ...("groupId" in patch ? { groupId: patch.groupId ?? null } : {}),
+      };
+    }),
+  );
+}
+
+/**
+ * Drop an overlay {@link applyCorePinFiling} put up, once a read has been given
+ * the chance to replace it.
+ *
+ * The read runs first and publishes rows that already carry the confirmed
+ * filing, so removing the overlay afterwards changes nothing on screen on the
+ * happy path. On a failed write the same read is what puts the truth back.
+ */
+export async function settleCorePinFiling(projectIds: readonly string[]): Promise<void> {
+  if (projectIds.length === 0) return;
+  await run();
+  for (const projectId of projectIds) pendingFiling.delete(projectId);
+}
+
 export function getCorePinsSnapshot(): ProjectWithCounts[] {
   return snapshot;
 }
@@ -229,5 +332,6 @@ export function subscribeCorePins(listener: () => void): () => void {
     coreSignature = "";
     lastRowsByCore = new Map();
     lastCountsByCore = new Map();
+    pendingFiling = new Map();
   };
 }
