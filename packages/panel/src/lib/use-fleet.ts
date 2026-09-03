@@ -1,7 +1,19 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { api } from "./api";
 import { getPanelBridge } from "./panel-bridge";
 import { mergeFleetTasks, type CoreFanOutResult, type FleetMergeResult } from "~/shared/fleet-merge";
+import {
+  FLEET_POLL_MS,
+  TASK_EVENT_KINDS,
+  createCoalescingRunner,
+  sameSnapshot,
+} from "~/lib/fleet-refresh";
+import {
+  getCorePinsSnapshot,
+  refreshCorePins,
+  setCorePinsCores,
+  subscribeCorePins,
+} from "~/lib/core-pins-engine";
 import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
 import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
@@ -24,7 +36,6 @@ import type { ProjectPresentation } from "~/db/schema";
 // pushes dial-status changes and these hooks act on them. The poll that remains
 // is for Core-side content the event stream doesn't cover.
 
-const FLEET_POLL_MS = 15_000;
 /**
  * How often the registry is re-read, absent something saying it changed.
  *
@@ -34,35 +45,8 @@ const FLEET_POLL_MS = 15_000;
  */
 export const CORES_POLL_MS = 15_000;
 
-/** Event kinds that change what a `tasksList` would return. */
-const TASK_EVENT_KINDS = /^(task:|session:|pty:)/;
-
 function emptyFleet(): FleetMergeResult {
   return { rows: [], offlineCores: [], singleCore: false };
-}
-
-/**
- * Structural equality for the plain, JSON-shaped values a fan-out settles on.
- *
- * Task and project snapshots are flat records of scalars, one optional nested
- * `lock` deep, held in arrays — so a recursive own-key walk is the whole of it,
- * and it is bounded by the same row count `mergeFleetTasks` just paid for.
- * Nothing here needs to handle a Date, a Map or a cycle, and it must not
- * pretend to: it is used only to answer "did this read change anything".
- */
-function sameSnapshot(a: unknown, b: unknown): boolean {
-  if (Object.is(a, b)) return true;
-  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
-  if (Array.isArray(a) !== Array.isArray(b)) return false;
-  const left = a as Record<string, unknown>;
-  const right = b as Record<string, unknown>;
-  const keys = Object.keys(left);
-  if (keys.length !== Object.keys(right).length) return false;
-  for (const key of keys) {
-    if (!Object.hasOwn(right, key)) return false;
-    if (!sameSnapshot(left[key], right[key])) return false;
-  }
-  return true;
 }
 
 /**
@@ -139,11 +123,6 @@ export function useFleetTasks(): {
   const [fleet, setFleet] = useState<FleetMergeResult>(emptyFleet);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const refreshing = useRef(false);
-  // An event arrived while a fan-out was in flight and its finish is not in
-  // that fan-out's answers. Set by the dropped call, read by the loop that
-  // owns the refresh — see `run` below.
-  const pending = useRef(false);
   const coresRef = useRef<CoreWithDial[]>(cores);
   coresRef.current = cores;
   // Which Cores exist, and whether each is reachable — the two things a change
@@ -201,34 +180,20 @@ export function useFleetTasks(): {
     }
   }, [bridge]);
 
+  // The coalescing loop is `createCoalescingRunner` (see `lib/fleet-refresh`):
+  // one trailing pass per burst, so a `session:finished` that lands while a
+  // fan-out is in flight is not dropped (#389). It is built once and reads the
+  // current pass through a ref, so rebuilding `fanOut` cannot reset the loop's
+  // flags mid-burst — and `run` stays stable, so an event subscription is not
+  // torn down and re-armed on every rebuild.
+  const fanOutRef = useRef(fanOut);
+  fanOutRef.current = fanOut;
+  const runnerRef = useRef<(() => Promise<void>) | null>(null);
+  runnerRef.current ??= createCoalescingRunner(() => fanOutRef.current());
   const run = useCallback(async () => {
     if (!bridge) return;
-    if (refreshing.current) {
-      // The fan-out in flight was launched *before* this event, so its answers
-      // cannot contain what the event announced — a `session:finished` that
-      // lands here used to be dropped outright, leaving the row running until
-      // the 15s poll or the next event (#389). Remember it instead.
-      pending.current = true;
-      return;
-    }
-    refreshing.current = true;
-    try {
-      do {
-        // Cleared before the read, not after: anything that arrives while this
-        // very pass is in flight has to survive into the next one.
-        pending.current = false;
-        // One trailing pass per burst, not one per event: every event landing
-        // during a pass sets the same flag, and the loop reads it once.
-        // A failed pass stops the loop rather than spinning on the error, and
-        // leaves `pending` exactly as the burst left it — clearing it here
-        // would drop the backlog on the error path, which is #389 again in
-        // miniature. The next event or the poll picks it up.
-        if (!(await fanOut())) break;
-      } while (pending.current);
-    } finally {
-      refreshing.current = false;
-    }
-  }, [bridge, fanOut]);
+    await runnerRef.current?.();
+  }, [bridge]);
 
   // Watch every Core so its task events reach this tab, and refetch when one
   // lands. This is what "without refresh" means: an agent finishing on a VM
@@ -414,84 +379,44 @@ export function useCoreTasks(
 }
 
 /**
- * The pinned projects across the fleet, for the project rail. Pin state is a
- * Core fact, so this is a live read per Core rather than anything the Panel
- * remembers — and it re-reads when a Core says a pin changed, so two Panels on
- * one Core agree.
+ * The pinned projects across the fleet, for the project rail.
  *
- * The rail's activity dot is `taskCounts`, and a Core-owned pin has no Panel
- * row to count, so every dot here is dark. That is issue #377's, and PR #457
- * derives them from Core task snapshots on top of the coalescing loop below —
- * at which point they settle correctly mid-refresh for free (#389 acceptance 2).
+ * Pin state is a Core fact, so this is a live read per Core rather than
+ * anything the Panel remembers — and it re-reads when a Core says a pin
+ * changed, so two Panels on one Core agree. The rail's activity dots are the
+ * same kind of fact and come from the same read: each row's `taskCounts` is
+ * derived from that Core's own `tasksList` snapshots, the rows the grid renders
+ * from, so a running Session lights its pin's dot and a finish clears it on the
+ * event rather than on a reload (#377).
+ *
+ * The reads themselves live in `lib/core-pins-engine` — one fan-out for the
+ * whole tab, shared by every mount of this hook, because there are two or three
+ * of them on screen at once and an event must not cost one fan-out each. This
+ * hook is the subscription to it; see that module for what the sharing costs
+ * and saves.
  */
 export function useRemotePinnedProjects(): {
   projects: ProjectWithCounts[];
   refresh: () => void;
 } {
-  const bridge = getPanelBridge();
   const { cores } = useCores();
-  const [pinned, setPinned] = useState<ProjectWithCounts[]>([]);
-  const [refreshNonce, setRefreshNonce] = useState(0);
-  const refresh = useCallback(() => setRefreshNonce((n) => n + 1), []);
-  const coreIds = useMemo(() => cores.map((c) => c.id).join(","), [cores]);
+  const projects = useSyncExternalStore(
+    subscribeCorePins,
+    getCorePinsSnapshot,
+    // The engine only ever runs in a browser; on the server there are no Cores
+    // to ask and the rail renders the Panel's own rows alone.
+    getCorePinsSnapshot,
+  );
 
+  // Every mount pushes the registry it read; the engine acts only when the
+  // Cores or their link states actually differ, so N mounts pushing the same
+  // answer is N comparisons, not N fan-outs.
   useEffect(() => {
-    if (!bridge || cores.length === 0) {
-      setPinned([]);
-      return;
-    }
-    let cancelled = false;
-    void (async () => {
-      // The rail clusters by group and draws card images, and both are
-      // Panel-local presentation for a Core-owned project (issue 98) — read
-      // once for the whole fan-out rather than per Core. A failed read only
-      // costs the filing, so the pins still render.
-      const presentation = projectPresentationById(
-        await api
-          .listProjectPresentation()
-          .then((r) => r.presentation)
-          .catch(() => []),
-      );
-      const perCore = await Promise.all(
-        cores.map(async (core) => {
-          try {
-            const projects = await bridge.listProjects(core.id);
-            return projects
-              .filter((p) => p.pinned)
-              .map((p) => ({
-                ...projectRowFromSnapshot(p, presentation.get(p.projectId)),
-                coreId: core.id,
-              }));
-          } catch {
-            return [] as ProjectWithCounts[];
-          }
-        }),
-      );
-      if (!cancelled) setPinned(perCore.flat());
-    })();
-    return () => {
-      cancelled = true;
-    };
-    // `coreIds` rather than `cores`: a dial-status push replaces the array
-    // without changing which Cores exist, and re-running the fan-out on every
-    // status blink would put the rail into a fetch loop.
-  }, [bridge, coreIds, refreshNonce]);
+    setCorePinsCores(cores);
+  }, [cores]);
 
-  useEffect(() => {
-    if (!bridge || cores.length === 0) return;
-    const unsubs = cores.map((core) => {
-      const release = bridge.watchCore(core.id);
-      const off = subscribeCoreProjectEvents(bridge, core.id, () => setRefreshNonce((n) => n + 1));
-      return () => {
-        off();
-        release();
-      };
-    });
-    return () => {
-      for (const u of unsubs) u();
-    };
-  }, [bridge, coreIds]);
-
-  return { projects: pinned, refresh };
+  // A pin toggle has to move the dots as well as the tiles: the same pass
+  // re-reads both, so the toggled tile does not land with the counts of the
+  // Core's previous answer.
+  return { projects, refresh: refreshCorePins };
 }
-
