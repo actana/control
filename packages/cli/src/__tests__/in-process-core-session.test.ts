@@ -30,7 +30,10 @@ import type {
   CoreLinkSessionSnapshot,
   CoreLinkTaskSnapshot,
 } from "@actana/sdk/core-link-frames.ts";
-import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core-link-frames.ts";
+import {
+  SESSION_DELIVERED_EVENT_KIND,
+  SESSION_PROMPT_ABANDONED_EVENT_KIND,
+} from "@actana/sdk/core-link-frames.ts";
 
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";
@@ -149,8 +152,23 @@ function livePtyCore(): {
 
 /** Task and project reads, answered from memory. */
 function ports(tasks: CoreLinkTaskSnapshot[], live: (taskId: string) => string | null) {
-  const sessions = (): CoreLinkSessionSnapshot[] =>
-    tasks
+  /**
+   * How many `sessionsList` frames this Core has answered.
+   *
+   * The suite's synchronisation point for "an attachment is established", and
+   * it is that rather than `tailReads` because the two mean different things.
+   * `tailReads` says a client subscribed — which now happens before the attach
+   * has resolved a PTY, let alone read a status. `CoreSession.attach` ends with
+   * `seedStatus()`, which is a `sessionsList`, so this counter moving is the
+   * Core saying the attach got all the way to its last step. A test that
+   * appends an event before that point is racing `settledNow()`: the seed would
+   * read the status the test had already patched and resolve the wait from it,
+   * with no event ever consumed.
+   */
+  let sessionListReads = 0;
+  const sessions = (): CoreLinkSessionSnapshot[] => {
+    sessionListReads += 1;
+    return tasks
       .filter((row) => !row.archived)
       .map((row) => ({
         taskId: row.taskId,
@@ -158,7 +176,9 @@ function ports(tasks: CoreLinkTaskSnapshot[], live: (taskId: string) => string |
         status: row.status,
         updatedAt: row.updatedAt,
       }));
+  };
   return {
+    sessionListReads: () => sessionListReads,
     queryPort: {
       listProjects: () => [PROJECT],
       listTasks: () => tasks.filter((row) => !row.archived),
@@ -202,6 +222,8 @@ async function coreWithSessions(
   killed: string[];
   resolutions: string[];
   eventLog: ArrayEventLog;
+  /** How many `sessionsList` frames the Core has answered — see {@link ports}. */
+  sessionListReads: () => number;
   /** What the harness's own Stop hook does on the Core: patch the row, say so. */
   endTurn: (taskId: string, status: string) => void;
 }> {
@@ -213,7 +235,7 @@ async function coreWithSessions(
   // The uncounted lookup: `listSessions` resolves every row's PTY, and counting
   // those would drown the one thing `resolutions` is watching for — a *verb*
   // that resolves the same Session twice.
-  const { queryPort, mutationPort } = ports(tasks, pty.ptyFor);
+  const { queryPort, mutationPort, sessionListReads } = ports(tasks, pty.ptyFor);
   // The Core's event log, wired because #289's wait is a cursor into it: the
   // Core stamps a delivery there and the client counts settling statuses from
   // that id. Without one every write comes back unstamped, which is the
@@ -244,7 +266,14 @@ async function coreWithSessions(
       { taskId },
     );
   };
-  return { writes: pty.writes, killed: pty.killed, resolutions: pty.resolutions, eventLog, endTurn };
+  return {
+    writes: pty.writes,
+    killed: pty.killed,
+    resolutions: pty.resolutions,
+    eventLog,
+    sessionListReads,
+    endTurn,
+  };
 }
 
 /** Every session verb dials the Core for real in this suite. */
@@ -409,6 +438,136 @@ describe("actana session, against a Core in this process", () => {
     const stopped = await fixture!.run(["session", "wait", "task_done", "--json"], withCore());
     expect(stopped.code).toBe(EXIT_FAILURE);
     expect(JSON.parse(stopped.out.join("\n")).error).toContain("no harness running");
+  }, 60_000);
+
+  it("tells the caller the Core abandoned the starting prompt, off the event log (#483)", async () => {
+    // The whole path, on a real socket: the Core appends the row, the client
+    // reads it on the connection it already has, and the command turns it into
+    // a sentence and a non-zero exit. `needs-input` on its own is a zero exit
+    // by design — a harness that stopped to ask a question did not fail — and
+    // that is exactly why the row has to exist: a prompt that never reached
+    // the harness produces the same status and the opposite meaning.
+    //
+    // **Deterministic by ordering, not by luck.** The first version of this
+    // test raced and failed four runs in five, for two reasons that are worth
+    // keeping written down. The latch was installed after `CoreSession.attach`
+    // had already round-tripped, so a fast abandon landed in a deaf window; and
+    // it synchronised on `tailReads`, which says a client subscribed and *not*
+    // that it is attached — append before `seedStatus()` runs and the seed reads
+    // the status this test just patched, `settledNow()` short-circuits, and the
+    // wait resolves having consumed no event at all.
+    //
+    // Both are fixed. The latch listens before the command asks the Core
+    // anything, and this waits on the `sessionsList` that is `seedStatus`'s own
+    // last step — so the rows below are appended after the attachment exists,
+    // are live rather than replay, and arrive in the order they were written on
+    // one ordered connection.
+    const { eventLog, endTurn, sessionListReads } = await coreWithSessions();
+
+    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    await waitFor(() => sessionListReads() > 0, "the wait attached and seeded its status");
+    const abandonedAt = eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_live",
+        ptyId: "pty_live",
+        reason: "opencode composer never appeared within 90000 ms",
+      }),
+      { taskId: "task_live" },
+    );
+    // The status the wait ends on is strictly behind the reason, which is the
+    // discipline `pty-manager` now keeps on the Core: a client that hears the
+    // status has already heard why.
+    endTurn("task_live", "needs-input");
+    expect(eventLog.getLastEventId()).toBeGreaterThan(abandonedAt);
+
+    const settled = await waiting;
+    expect(settled.code).toBe(EXIT_FAILURE);
+    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
+      taskId: "task_live",
+      status: "needs-input",
+      promptDelivered: false,
+      promptAbandonedReason: "opencode composer never appeared within 90000 ms",
+    });
+  }, 60_000);
+
+  it("does not fail a healthy send on an abandon row from a previous start (#483)", async () => {
+    // The inversion this feature could otherwise cause, on the very command its
+    // own error message recommends. `session:promptAbandoned` is durable and
+    // `subscribe` replays the log from the beginning, so a Session whose first
+    // start lost its prompt carries that row forever. Reading it as a report
+    // about *this* send would tell an operator the text did not land when it
+    // landed perfectly — the same false report #483 exists to kill, pointed the
+    // other way.
+    //
+    // The row is appended before the command runs, so it arrives in the replay
+    // tail: below `eventsReplayed`, and below the delivery stamp this send is
+    // cursored from. Either floor alone rejects it.
+    const { eventLog, endTurn, writes } = await coreWithSessions();
+    eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_live",
+        ptyId: "pty_live",
+        reason: "opencode composer never appeared within 90000 ms",
+      }),
+      { taskId: "task_live" },
+    );
+
+    const sending = fixture!.run(
+      ["session", "send", "task_live", "carry", "on", "--wait", "--json"],
+      withCore(),
+    );
+    // **Both** stamps, not the first. A send is two writes since #404 and the
+    // wait counts from the *later* id; ending the turn between them would put
+    // the status event below the cursor, where no wait can ever see it. That is
+    // a 60 s hang rather than a wrong answer, and it is not what this test is
+    // about — so it is closed out here rather than left to be rare.
+    await waitFor(
+      () => eventLog.events.filter((e) => e.kind === SESSION_DELIVERED_EVENT_KIND).length >= 2,
+      "both halves of the send were stamped",
+    );
+    endTurn("task_live", "finished");
+
+    const settled = await sending;
+    expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
+      taskId: "task_live",
+      status: "finished",
+      promptDelivered: true,
+    });
+    expect(settled.err.join("\n")).not.toContain("did not deliver the starting prompt");
+    expect(writes).toContain("carry on");
+  }, 60_000);
+
+  it("does not fail a bare wait on an abandon row that is already history (#483)", async () => {
+    // The same staleness with no cursor to lean on: `session wait` delivers no
+    // text, so there is no stamp, and the only thing separating "already in the
+    // log" from "just happened" is the `eventsReplayed` marker. A Session that
+    // was abandoned once and has since been answered by hand is a working
+    // Session, and waiting on it must say so.
+    const { eventLog, endTurn, sessionListReads } = await coreWithSessions();
+    eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_live",
+        ptyId: "pty_live",
+        reason: "opencode composer never appeared within 90000 ms",
+      }),
+      { taskId: "task_live" },
+    );
+
+    const waiting = fixture!.run(["session", "wait", "task_live", "--json"], withCore());
+    await waitFor(() => sessionListReads() > 0, "the wait attached and seeded its status");
+    endTurn("task_live", "finished");
+
+    const settled = await waiting;
+    expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
+      taskId: "task_live",
+      status: "finished",
+      promptDelivered: true,
+    });
   }, 60_000);
 
   it("refuses to wait after a delivery the Core did not stamp, rather than answering with the turn before", async () => {

@@ -8,6 +8,7 @@ import {
   HarnessPromptDelivery,
   chooseDialogOption,
   composerOnScreen,
+  deliveryProfileFor,
   dialogsForHarness,
   highlightIsOn,
   lastScreenClearIndex,
@@ -568,16 +569,20 @@ describe("the harness as it really paints", () => {
     expect(h.writes).toEqual(["1", "ship it"]);
   });
 
-  it("still delivers at the backstop if the harness draws nothing after the digit", () => {
+  it("gives up rather than typing blind if the harness draws nothing after the digit", () => {
     // The other side of that rule: waiting for a paint must not become a wait
-    // that never ends. D8's ceiling still applies.
+    // that never ends. It ends — and since issue 483 it ends without a
+    // keystroke, because claude-code has a composer marker and the marker
+    // never arrived. The digit went out and nothing else did.
     const h = startDelivery("ship it");
     h.delivery.onOutput(REAL_TRUST_DIALOG);
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["1"]);
 
     h.clock.advance(PROFILE.maxWaitMs + 1);
-    expect(h.writes).toContain("ship it");
+    expect(h.writes).toEqual(["1"]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
   });
 
   it("opens the quiet window on the harness's first byte, not on the spawn", () => {
@@ -1041,8 +1046,11 @@ describe("HarnessPromptDelivery", () => {
     expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
   });
 
-  it("delivers at the backstop when the harness never settles", () => {
-    const h = startDelivery("ship it");
+  it("delivers at the backstop when a harness with no marker never settles", () => {
+    // D8, and issue 483 leaves it exactly where it was for a harness this
+    // module has never been shown a composer for. The generic backstop is not
+    // what changed; what changed is that a *known* marker outranks it.
+    const h = startDelivery("ship it", { harness: "some-harness-invented-tomorrow" });
     for (let i = 0; i < 200; i += 1) {
       // A genuinely new paint every 100 ms, forever: quiet never arrives.
       h.delivery.onOutput(`${ESC}[2J${ESC}[Hstreaming ${BOOT_LINES[i % BOOT_LINES.length]}`);
@@ -1051,6 +1059,19 @@ describe("HarnessPromptDelivery", () => {
     expect(h.writes).toContain("ship it");
     h.clock.advance(submitPauseMs("ship it", PROFILE) + 1);
     expect(h.writes).toEqual(["ship it", "\r"]);
+  });
+
+  it("types nothing at the backstop when a harness WITH a marker never settles", () => {
+    // The same 20 s of ceaseless repainting against claude-code, which has a
+    // marker. Nothing on any of those frames is a composer, so nothing is
+    // listening, so nothing is typed — and the delivery says so.
+    const h = startDelivery("ship it");
+    for (let i = 0; i < 200; i += 1) {
+      h.delivery.onOutput(`${ESC}[2J${ESC}[Hstreaming ${BOOT_LINES[i % BOOT_LINES.length]}`);
+      h.clock.advance(100);
+    }
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
   });
 
   it("writes nothing after the PTY is gone", () => {
@@ -1284,18 +1305,65 @@ describe("delivering to opencode (issue 229)", () => {
     expect(h.writes).toEqual(["say hello", "say hello", "\r"]);
   });
 
-  it("delivers at the backstop when the composer never appears", () => {
-    // The marker is a transcription of one version's screen. If opencode
-    // rewords it — or an operator runs it in another language — delivery must
-    // degrade to late, never to lost.
+  it("does not type at the generic backstop — the marker outranks the clock", () => {
+    // Issue 483, and the whole of it. This test used to assert the opposite:
+    // that the 15 s backstop typed anyway, "late but not lost". It was lost.
+    // A missing marker is evidence that opencode's input reader has not
+    // attached, and the write at 15 s went into the same hole the write at
+    // 1.85 s did — with a `delivered` in the log behind it.
     const h = bootOpencode("say hello");
-    // Up to the backstop and one millisecond past it — the boot replay has
-    // already spent 1 426 ms of the ceiling.
+    // Past the generic backstop, and well past it. Not one byte.
     h.clock.advance(PROFILE.maxWaitMs - 1_426 + 1);
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("settling");
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+  });
+
+  it("delivers when the composer arrives after the deadline, inside the ceiling", () => {
+    // The run that the old code turned into a lost prompt and this one turns
+    // into a working Session: opencode boots slowly, crosses the 15 s
+    // backstop with nothing on screen, and paints its composer at 40 s. The
+    // prompt is typed then — not at 15 s into nothing, and not never.
+    const h = bootOpencode("say hello");
+    h.clock.advance(40_000 - 1_426);
+    expect(h.writes).toEqual([]);
+
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["say hello"]);
-    h.clock.advance(submitPauseMs("say hello", PROFILE) + 1);
+
+    // And the carriage return is still earned the same way it always was.
+    h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes).toEqual(["say hello", "\r"]);
     expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("abandons at the 90 s ceiling when the composer never appears at all", () => {
+    // The honest failure. `abandoned` is what the Core turns into a
+    // `needs-input` Session, which is what tells the caller the prompt did not
+    // land — the outcome issue 483 asks for in place of a false `delivered`.
+    const h = bootOpencode("say hello");
+    h.clock.advance(90_000);
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: "opencode composer never appeared within 90000 ms",
+    });
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+  });
+
+  it("gives opencode 90 s and no other harness a millisecond more", () => {
+    // The ceiling is in the override table, per harness, and it is not a
+    // global timeout: claude-code and cursor-cli keep the 15 s they had, and a
+    // harness with no marker never consults the number at all.
+    expect(deliveryProfileFor("opencode").composerWaitMs).toBe(90_000);
+    expect(deliveryProfileFor("opencode").maxWaitMs).toBe(PROFILE.maxWaitMs);
+    for (const harness of ["claude-code", "cursor-cli", "codex", "invented-tomorrow"]) {
+      expect(deliveryProfileFor(harness).composerWaitMs).toBe(PROFILE.maxWaitMs);
+      expect(deliveryProfileFor(harness).maxWaitMs).toBe(PROFILE.maxWaitMs);
+    }
   });
 
   it("stops re-typing rather than filling the composer with copies", () => {
@@ -1382,14 +1450,24 @@ describe("delivering to claude-code (issue 232)", () => {
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
-  it("delivers late rather than never if the placeholder is ever reworded", () => {
-    // The failure this fix is allowed to have. A build whose composer says
-    // something else stops matching, and the backstop — not the marker — is
-    // what guarantees the prompt still goes out.
+  it("fails honestly rather than typing blind if the placeholder is reworded", () => {
+    // The failure this fix is allowed to have, and issue 483 changed which
+    // failure that is. A build whose composer says something else stops
+    // matching; the old answer was to type at the backstop anyway and log
+    // `delivered`, which is a lost prompt reported as a delivered one. The
+    // answer now is `abandoned`, which the Core turns into `needs-input`.
+    //
+    // claude-code names no ceiling of its own, so its ceiling is the backstop:
+    // the timing it had, with an honest outcome at the end of it instead of a
+    // blind keystroke.
     const h = bootClaudeCode("say hello");
     h.clock.advance(PROFILE.maxWaitMs);
-    expect(h.writes).toEqual(["say hello", "\r"]);
-    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: "claude-code composer never appeared within 15000 ms",
+    });
   });
 });
 
@@ -1546,5 +1624,30 @@ describe("delivering to codex (issue 277)", () => {
     h.delivery.onOutput(CODEX_IDLE);
     h.clock.advance(PROFILE.quietGapMs + 1);
     expect(h.writes).toEqual(["say hello"]);
+  });
+
+  it("abandons rather than typing blind when nobody answers the dialog (issue 483)", () => {
+    // How the row composes with #483. codex names no `composerWaitMs`, so its
+    // ceiling is the default 15 s — the same clock it has always had. What
+    // changed is the outcome at it: a marker that never arrives now ends the
+    // delivery `abandoned`, which is a `needs-input` Session that says the
+    // prompt did not land, instead of a prompt typed into a trust dialog and
+    // reported `delivered`. A longer ceiling would only postpone that report,
+    // which is why codex is not in the timing table.
+    expect(deliveryProfileFor("codex").composerWaitMs).toBe(PROFILE.maxWaitMs);
+
+    const h = startDelivery("say hello", { harness: "codex" });
+    h.clock.advance(589);
+    h.delivery.onOutput(CODEX_UNTRUSTED_BOOT);
+    h.clock.advance(49);
+    h.delivery.onOutput(CODEX_DIRECTORY_TRUST);
+    h.clock.advance(PROFILE.maxWaitMs);
+
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: "codex composer never appeared within 15000 ms",
+    });
   });
 });
