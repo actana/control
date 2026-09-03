@@ -50,6 +50,7 @@ import { resolveCore } from "./core-resolution.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { isKnownHarness, KNOWN_HARNESSES } from "./session-gateway.ts";
 import { runSessionAttach } from "./session-attach.ts";
+import { CoreSessionTurnTimeoutError } from "@actana/sdk/core-session.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -75,6 +76,42 @@ const SESSION_TIMEOUT_MS = 30_000;
  */
 const UNHAPPY_STATUSES: ReadonlySet<string> = new Set(["terminated", "disconnected"]);
 
+/**
+ * The deadline `actana session send --wait` carries when the operator named none
+ * (#405).
+ *
+ * **Only this verb.** `session wait` and `start --wait` have no default and are
+ * not given one: both wait for a turn that is already under way, so the only
+ * thing a default could cut short there is honest work (ADR 0033 D4, D5). A `send`
+ * is different in the one way that matters — it is waiting for a turn *it* has
+ * to start, and a carriage return that lands on a dialog rather than a composer
+ * starts none. The Core then has nothing to report, the seeded status the
+ * Session is parked at carries event id 0 and can never satisfy the delivery
+ * cursor, and the wait is correct, silent and permanent. A deadline is what
+ * turns that into an answer.
+ *
+ * **Seventeen minutes, and the number is chosen against the Core rather than
+ * from taste.** The Core's own backstop settles a `running` Session it has heard
+ * nothing from after fifteen minutes of silence (`QUIET_SETTLE_MS` in
+ * `core-session-backstop.ts`), and its sweep runs once a minute, so that settle
+ * can land as late as sixteen. A deadline at fifteen would tie with it and
+ * scheduling would decide which of the two answered; at seventeen the Core's
+ * mechanism wins, and a caller waiting on a wedged harness gets a **status**
+ * rather than this side giving up. It is also comfortably above the 900 seconds
+ * the orchestration skill tells callers to pass, so the default never cuts short
+ * a wait the skill's own budget expects to finish.
+ *
+ * None of that helps #405's own case — the backstop skips a Session that is not
+ * `running`, and a dialog leaves one parked at `needs-input` or `finished` — so
+ * there the deadline is still the only thing that ends the wait. That is what it
+ * is for; the tie-break above is about not stealing the answer in the case where
+ * the Core does have one.
+ *
+ * `--wait-timeout <s>` replaces it and `--wait-timeout 0` removes it, for a
+ * caller that wants the old unbounded wait back.
+ */
+const SEND_WAIT_DEFAULT_TIMEOUT_S = 1020;
+
 export const SESSION_HELP = `actana session — the Sessions running on a Core
 
 Usage
@@ -92,7 +129,8 @@ Flags
   --json              machine-readable output. Only JSON reaches stdout.
   --wait              start/resume: block until the Core reports it settled
                       send: block until the turn that text starts has ended
-  --wait-timeout <s>  give up waiting after this many seconds, and say so
+  --wait-timeout <s>  give up waiting after this many seconds, and say so.
+                      0 means no deadline. send --wait defaults to ${SEND_WAIT_DEFAULT_TIMEOUT_S}
   --harness <name>    start: ${KNOWN_HARNESSES.join(", ")}
   --cwd <path>        start: a directory on the Core, inside the Project
   --title <text>      start: what the Session is called in \`ls\`
@@ -144,8 +182,24 @@ Awaiting a turn
   can tell those apart, and nothing here guesses.
 
   A harness that reports nothing at all runs out the \`--wait-timeout\` and the
-  message says this side gave up — never a status the Core did not send. Without
-  \`--wait-timeout\` there is no deadline: a turn takes as long as the work takes.
+  message says this side gave up — never a status the Core did not send. \`wait\`
+  has no deadline unless you set one: a turn takes as long as the work takes.
+
+  **\`send --wait\` is the exception, and it defaults to
+  ${SEND_WAIT_DEFAULT_TIMEOUT_S} seconds.** It is the one wait for a turn that has
+  not started yet, and a carriage return that lands on a dialog rather than a
+  composer starts none at all — so the Core has nothing to report and the wait
+  would never end (#405). When it runs out with no turn end reported since the
+  text went in, it says so, names both readings — a return that submitted nothing,
+  or a harness that reports nothing until a turn ends — and says the text was
+  delivered so you do not send it twice. \`--wait-timeout 0\` waits with no
+  deadline.
+
+  **\`wait\` is not how you resume that wait.** It is uncursored: it answers from
+  the status the Session is parked at, so on a Session whose turn never started it
+  returns at once with the status from *before* your text and exits zero. To carry
+  on waiting for the turn a send started, follow the log from the delivery instead
+  — \`actana events tail --since <event id>\`, the id the timeout message names.
 
 Sending text, and what submits it
   \`send <session> <text>\` **presses Enter** — that is, the text goes out and a
@@ -165,11 +219,11 @@ Sending text, and what submits it
   \`--no-enter\` is the opt-out, for typing without submitting: filling a
   composer, or answering a numbered dialog before the return that confirms it.
   It says so on the way out, every time, because a send that started no turn is
-  the failure this default exists to end. **A \`--wait\` after it is not waiting
-  for your text.** On an idle Session no turn ends, so the wait runs out the
-  \`--wait-timeout\` — or, with none given, does not return. On a Session already
-  mid-turn it resolves on *that* turn's end and reports it as this send's, for a
-  turn this send did not start. Both are #405's and neither is fixed here.
+  the failure this default exists to end. **It cannot be combined with
+  \`--wait\`**, which is refused before anything is written (#405): a send that
+  submits nothing has no turn to await, so the wait would either never end or
+  end on a turn some earlier send started and report it as this one's. Type with
+  \`--no-enter\`, then \`actana session wait\` when a turn is actually running.
 
   \`--json\` on a plain send says all of this in fields: \`enter\` is the return
   that was **asked** for, \`submitted\` is the return that was **accepted**, and
@@ -412,6 +466,46 @@ async function awaitTurn(
     const message = messageOf(err);
     if (args.json) deps.out(formatJson({ ...startedFields(session), waited: true, error: message }));
     deps.err(`actana session: ${message}`);
+    // What to type next, added here rather than in the SDK: the library states
+    // the fact, and the command that has an `actana` on the path says what to do
+    // with it (#405).
+    //
+    // **Gated on the same two facts the message itself is** — a delivery cursor,
+    // and nothing heard since it. `start --wait`, `resume --wait` and `session
+    // wait` all wait uncursored, so their expiry gets the generic "was still
+    // <status>" wording, and advice about a write that never happened would sit
+    // under it contradicting it.
+    //
+    // **And it must not offer `session wait`** (#486 review). That verb is
+    // uncursored by design: it answers from the status the Session is already
+    // parked at (`sessionWait` below; `settledSince(0)` in the SDK). In *this*
+    // state — nothing reported since the write, the Session still on the
+    // `needs-input` or `finished` it carried before it — `session wait` returns
+    // immediately, prints that status and exits **zero**. An operator would read
+    // that as the turn completing, and an orchestrating agent reading the exit
+    // code would record it as a finished turn. That is the false completion
+    // #405 exists to remove, and recommending it here would have reintroduced
+    // the bug one layer up.
+    //
+    // What is offered instead is cursored and cannot lie: `events tail --since`
+    // the delivery's own event id follows the log from the write, so it prints
+    // what the Core reports next and nothing that came before. The error carries
+    // that id, which is why the line can name it.
+    if (
+      err instanceof CoreSessionTurnTimeoutError &&
+      err.afterEventId > 0 &&
+      !err.reportedSinceDelivery
+    ) {
+      deps.err(
+        `actana session send: no turn end was reported after the text went in. ` +
+          `\`actana session logs ${session.taskId}\` shows what is on screen — a dialog waiting ` +
+          `for an answer looks like one there, and so does a harness still working. To keep ` +
+          `waiting, follow the log from the delivery: ` +
+          `\`actana events tail --since ${err.afterEventId}\`. Not \`session wait\`: that verb ` +
+          `answers at once with the status this Session was already parked at and exits zero, ` +
+          `which is last turn's answer, not this one's.`,
+      );
+    }
     return EXIT_FAILURE;
   }
 
@@ -706,6 +800,22 @@ async function sessionSend(
     return usage(deps, "send", "--enter and --no-enter contradict each other — pass one");
   }
 
+  // **A send that submits nothing has nothing to wait for** (#405). `--no-enter`
+  // sends no carriage return, so no turn starts, and the wait paired with it is
+  // not waiting for this send: on an idle Session nothing ever ends it, and on a
+  // Session that was already mid-turn it ends on *that* turn and reports it as
+  // this send's. One hangs and one lies, and neither is a reading this command
+  // can pick between — so the pair is refused here, before a byte is written,
+  // rather than carried out and warned about afterwards.
+  if (args.noEnter && args.wait) {
+    return usage(
+      deps,
+      "send",
+      "--no-enter starts no turn, so --wait would have nothing to wait for — drop --no-enter to " +
+        "submit and wait, or drop --wait and run `actana session wait` when the turn is under way",
+    );
+  }
+
   const [taskId, ...words] = rest;
   if (taskId === undefined) {
     return usage(deps, "send", "a session id is required — `actana session send <session> <text>`");
@@ -748,17 +858,26 @@ async function sessionSend(
       // write with. The alternative — send, then attach, then wait — is the
       // design the issue's landmine is about: the attach would find a Session
       // sitting at a settled status and answer with last turn's outcome.
+      // Always with the return: `--no-enter --wait` was refused above, so a
+      // wait on this path is always a wait for a turn this send actually asked
+      // for. `submit` is read anyway rather than assumed, so the two halves of
+      // that decision cannot drift apart.
       const andReturn = submit ? " and a carriage return" : "";
-      deps.verbose(`sending ${text.length} characters to session ${taskId}${andReturn}, then waiting`);
+      // The deadline this verb carries when the operator named none (#405). The
+      // wait itself is the SDK's and counts nothing here; this only decides how
+      // long the CLI is willing to sit on it.
+      const deadlineMs =
+        args.waitTimeout === null ? SEND_WAIT_DEFAULT_TIMEOUT_S * 1000 : timeout.ms;
+      deps.verbose(
+        `sending ${text.length} characters to session ${taskId}${andReturn}, then waiting` +
+          (deadlineMs === null ? " with no deadline" : ` up to ${Math.round(deadlineMs / 1000)}s`),
+      );
       const session = await gateway.sendAndWait(taskId, text, { enter: submit });
       deps.err(`Sent ${text.length} characters to session ${taskId}${andReturn}.`);
       // Stderr is the *only* signal on this path, and deliberately: the wait's
       // document is `start --wait --json`'s key set and nothing else, because
-      // #289 requires one parser to read all three verbs. A `submitted` field
-      // here would buy this warning a machine-readable form at the price of
-      // that, so the help text names the exception instead.
-      if (!submit) deps.err(NOT_SUBMITTED_WARNING(taskId));
-      return awaitAttachedTurn(deps, args, session, timeout.ms);
+      // #289 requires one parser to read all three verbs (#289 B).
+      return awaitAttachedTurn(deps, args, session, deadlineMs);
     }
 
     // One call, one PTY resolution, both writes (#204 review). The command has
@@ -956,11 +1075,29 @@ function misusedFlag(args: ParsedArgs, accepted: readonly string[]): string | nu
 }
 
 /**
- * `--wait-timeout <seconds>`, in milliseconds.
+ * `--wait-timeout <seconds>`, in milliseconds. `null` is "no deadline".
  *
  * Only with `--wait`, because on its own it is an instruction that cannot be
  * carried out — and a deadline somebody believes they set is worse than no
  * deadline at all. The wait it bounds is the SDK's; nothing here counts time.
+ *
+ * **`0` is no deadline, spelled out** (#405). It is the opt-out from the default
+ * `send --wait` carries, and it is accepted on every verb that takes the flag so
+ * that one spelling means one thing: a caller that writes `--wait-timeout 0` is
+ * asking to wait as long as the work takes. Anything non-numeric or negative is
+ * still a refusal rather than a silently ignored instruction.
+ *
+ * **This is a behaviour change on every verb, and worth knowing before you
+ * compute one** (#486 review). `0` used to be `EXIT_USAGE`, so a script writing
+ * `--wait-timeout $(( deadline - $(date +%s) ))` was told its budget had run out
+ * and now waits instead. `-1` is still a refusal, so the discontinuity is at
+ * exactly one value; a script that computes a budget should clamp it to a
+ * positive number itself, because "no time left" and "no deadline" are opposite
+ * instructions and only the caller knows which it meant.
+ *
+ * Only an exact `0` opts out. A positive number that rounds below a millisecond
+ * is a deadline the caller asked for, and it clamps to 1 ms rather than becoming
+ * an unbounded wait — the one direction a rounding error must never take.
  */
 function waitTimeoutMs(
   args: ParsedArgs,
@@ -970,11 +1107,15 @@ function waitTimeoutMs(
   // `waiting` is for the one verb that *is* a wait: `session wait` takes no
   // `--wait` (the verb says it), so its deadline cannot be gated on the flag.
   if (!waiting) return { ms: null, error: "--wait-timeout only means something with --wait" };
-  const seconds = Number(args.waitTimeout);
-  if (!Number.isFinite(seconds) || seconds <= 0) {
+  const seconds = args.waitTimeout.trim() === "" ? Number.NaN : Number(args.waitTimeout);
+  if (!Number.isFinite(seconds) || seconds < 0) {
     return { ms: null, error: `--wait-timeout wants a number of seconds, not "${args.waitTimeout}"` };
   }
-  return { ms: Math.round(seconds * 1000) };
+  // Exactly zero is the opt-out. Anything above it is a deadline that was asked
+  // for, floored at a millisecond so a small number cannot round its way into an
+  // unbounded wait — that is the one direction this must never round.
+  if (seconds === 0) return { ms: null };
+  return { ms: Math.max(1, Math.round(seconds * 1000)) };
 }
 
 /**

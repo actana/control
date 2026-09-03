@@ -53,6 +53,45 @@ stream**. #191 deleted a flat quiet-output timer that did exactly that and
 wait with no `--wait-timeout` has no deadline; one with a deadline reports, on
 expiry, that *this side gave up* — never a status the Core did not send.
 
+**D5 — `send --wait` carries a default deadline; the other waits do not**
+(amends D4, #405). `session wait` and `session start --wait` wait for a turn
+that is already under way, and the only thing a default deadline could cut short
+there is honest work — so they keep D4's "no deadline unless the caller sets
+one" exactly. `send --wait` is the one wait for a turn *it* has to start, and a
+carriage return that lands on a dialog rather than a composer starts none: the
+Core then has nothing to report, the status the Session is parked at was seeded
+from the Task row and carries event id 0, and a delivery cursor can never be
+satisfied by it. The wait is correct, silent and permanent. **1020 seconds** is
+the default and `--wait-timeout 0` removes it. Seventeen minutes rather than
+fifteen so that it cannot tie with the Core's own quiet backstop
+(`QUIET_SETTLE_MS`, fifteen minutes, swept once a minute): where the Core has an
+answer it should be the one to give it, and this deadline should only ever fire
+where the Core has none — which is #405's case exactly, because the backstop
+skips a Session that is not `running`.
+
+This does not weaken D4 or reintroduce what #191 deleted. Nothing new is
+inferred: the deadline is the caller's own clock, and what it reports on expiry
+is still that this side gave up. What it adds is a **fact off the event log** in
+the message — whether a status was reported for the Session at an event id above
+the delivery's — so the operator is told which question is still open. It does
+**not** claim to have told a swallowed return apart from a harness that reports
+nothing mid-turn: half the families in `HOOK_FAMILIES` look identical in that
+silence, and separating them would mean consulting `reportsTurnStart` (D2 forbids
+it) or reading the byte stream (D4 forbids it). The message names both readings
+and sends the reader to the screen. That comparison is two event ids, not a
+reading of the screen.
+
+The remedy the message offers is cursored for the same reason. `session wait` is
+**not** it: that verb answers from the status a Session is parked at, so on a
+turn that never started it returns at once with the status from before the write
+and exits zero — a false completion, which is the failure #405 exists to remove.
+`events tail --since <delivery id>` follows the log from the write and can only
+report what came after it.
+
+A send that submits nothing at all (`--no-enter`) is refused with `--wait`
+rather than bounded: it has no turn to await, so there is nothing for a deadline
+to be about.
+
 ## Consequences
 
 Adding a family is still adding a row, and now the row has a bar to clear. A
