@@ -26,16 +26,9 @@ import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
  *
  *   - `claude --resume <id>`         a flag with a value
  *   - `codex resume <id>`            a **subcommand**, so it comes first, and
- *                                    `--enable hooks` and
- *                                    `--dangerously-bypass-hook-trust` still
- *                                    have to be there or the Session never
- *                                    reports its lifecycle and every wait on
- *                                    it hangs. The second is issue 290: a
- *                                    resumed Session gets the same freshly
- *                                    written hooks file as a new one, and
- *                                    Codex holds a hooks file it has not
- *                                    reviewed whether the thread is new or
- *                                    picked back up
+ *                                    `--enable hooks` still has to be there or
+ *                                    the Session never reports its lifecycle
+ *                                    and every wait on it hangs
  *   - `cursor-agent --resume <id>`   a flag again, different binary
  *   - `opencode --session <id>`      a different flag entirely, and the Core
  *                                    additionally requires the value to start
@@ -70,10 +63,7 @@ export function harnessResumeCommand(
     case "claude-code":
       return join(["claude", "--resume", sessionId], autoMode);
     case "codex":
-      return join(
-        ["codex", "resume", sessionId, "--enable", "hooks", "--dangerously-bypass-hook-trust"],
-        autoMode,
-      );
+      return join(["codex", "resume", sessionId, "--enable", "hooks"], autoMode);
     case "cursor-cli":
       return join(["cursor-agent", "--resume", sessionId], autoMode);
     case "opencode":

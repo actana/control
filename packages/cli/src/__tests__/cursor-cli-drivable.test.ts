@@ -25,7 +25,6 @@
 
 import { describe, it, expect, afterEach } from "vitest";
 import {
-  hookTrustFlagForSpawn,
   resolveSpawnPlan,
   SpawnPolicyError,
   type SpawnPolicyDeps,
@@ -76,25 +75,6 @@ describe("finding 1 — argv[0] is the canonical binary, never the harness id", 
     // from the issue. The command starting with the id is what produced it.
     expect(HARNESS_LAUNCH_COMMANDS["cursor-cli"].split(" ")[0]).toBe("cursor-agent");
     expect(harnessLaunchCommand("cursor-cli", false).startsWith("cursor-cli")).toBe(false);
-  });
-
-  it("carries each harness's hook-trust flag into the SDK's own launch (issue 290)", () => {
-    // The SDK deliberately does not import `@actana/shared` — it is a
-    // published package and re-declares what it needs — so its copy of a
-    // vendor fact can drift from the registry's silently. This is the only
-    // place holding both, and the drift it guards is the invisible kind: a
-    // Codex launched without the flag spawns cleanly, paints a working TUI,
-    // and reports no lifecycle at all, so the first symptom is a `waitForIdle`
-    // that timed out on a Session that finished ten minutes ago.
-    for (const harness of KNOWN_HARNESSES) {
-      const flag = hookTrustFlagForSpawn(harness);
-      if (flag === null) continue;
-      expect(
-        HARNESS_LAUNCH_COMMANDS[harness].split(" "),
-        `${harness}'s SDK launch command is missing ${flag}`,
-      ).toContain(flag);
-      expect(harnessLaunchCommand(harness, true).split(" ")).toContain(flag);
-    }
   });
 
   it("resolves a plan for every harness, so nothing rides on id === binary", () => {

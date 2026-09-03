@@ -7,6 +7,7 @@ import { buildUserPath, resolveCommandOnPath } from "@actana/shared/shell-env";
 import { resolveHarnessCommandOnPath } from "@actana/shared/harness-cli-resolution";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
+  reconcileHookTrustFlag,
   resolveSpawnPlan,
   SpawnPolicyError,
   type SpawnRequest,
@@ -96,45 +97,81 @@ describe("resolveSpawnPlan — agent allow-list", () => {
     expect(plan.spawnArgs).toEqual(["--enable", "hooks"]);
   });
 
-  it("accepts the Codex hook-trust flag the registry's own launch carries (issue 290)", () => {
-    // The command under test is the registry's, not a string typed here: the
-    // point of the assertion is that what a fresh Session is actually launched
-    // with survives the allow-list. Before #290 it would not have — the flag
-    // was on no list — and a Core that started rejecting its own default
-    // command is a product that will not spawn Codex at all.
-    const command = HARNESS_REGISTRY.codex.startCommand();
-    expect(command).toContain("--dangerously-bypass-hook-trust");
-    const plan = resolveSpawnPlan(spawnReq({ agent: "codex", command }), depsFor());
+  it("accepts the Codex hook-trust flag without any builder sending it (issue 290)", () => {
+    // The registry's own launch does NOT carry the flag: a command is composed
+    // before any hooks file lands, so it cannot know whose hooks are about to
+    // run. The allow-list still has to accept it, because the Core appends it
+    // after this plan is built, for hooks it wrote itself.
+    expect(HARNESS_REGISTRY.codex.startCommand()).not.toContain(
+      "--dangerously-bypass-hook-trust",
+    );
+    const plan = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks --dangerously-bypass-hook-trust" }),
+      depsFor(),
+    );
     if (plan.mode !== "agent") throw new Error("wrong mode");
     expect(plan.argv).toEqual(["--enable", "hooks", "--dangerously-bypass-hook-trust"]);
   });
 
-  it("accepts the hook-trust flag on a resumed Codex too", () => {
-    // A resumed Session gets the same freshly written hooks file as a new one,
-    // so it needs the same flag; the resume command puts it after the
-    // subcommand and its id, which is a different code path in the validator.
-    const plan = resolveSpawnPlan(
-      spawnReq({
-        agent: "codex",
-        command:
-          "codex resume 019d7a0f-432a-7fa1-a821-b7841f983967 --enable hooks " +
-          "--dangerously-bypass-hook-trust",
-      }),
+  it("adds the bypass only for a spawn that earned it, and strips it otherwise", () => {
+    // The whole of finding 3: the flag lifts Codex's review of hooks it has
+    // not seen, so it may travel only with a spawn whose hooks this Core
+    // wrote and audited. `earned` comes from `installHarnessHooks`, which
+    // answers `false` for a workspace carrying anyone else's hooks and for a
+    // Core that wrote no file at all.
+    const base = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks" }),
       depsFor(),
     );
-    if (plan.mode !== "agent") throw new Error("wrong mode");
-    expect(plan.argv).toContain("--dangerously-bypass-hook-trust");
+    const earned = reconcileHookTrustFlag(base, true);
+    if (earned.mode !== "agent") throw new Error("wrong mode");
+    expect(earned.argv).toEqual(["--enable", "hooks", "--dangerously-bypass-hook-trust"]);
+    expect(earned.spawnArgs).toEqual(earned.argv);
+
+    const unearned = reconcileHookTrustFlag(base, false);
+    if (unearned.mode !== "agent") throw new Error("wrong mode");
+    expect(unearned.argv).toEqual(["--enable", "hooks"]);
   });
 
-  it("does not hand the hook-trust flag to a harness that needs none", () => {
-    // Allow-listing is per harness, from one table. Claude Code runs the file
-    // this Core wrote without being asked twice, so the flag there is an
-    // argument nobody meant to send.
-    expectRejected(
-      spawnReq({ agent: "claude-code", command: "claude --dangerously-bypass-hook-trust" }),
+  it("strips a bypass that arrived in the command from somewhere else", () => {
+    // A command carrying the flag can reach the Core from an operator typing
+    // it, a client of another version, or a saved command replayed against a
+    // different workspace. None of those has audited this workspace, so the
+    // Core takes the flag back off unless this spawn earned it.
+    const carrying = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks --dangerously-bypass-hook-trust" }),
       depsFor(),
-      "agent-arg-not-allowed",
     );
+    const reconciled = reconcileHookTrustFlag(carrying, false);
+    if (reconciled.mode !== "agent") throw new Error("wrong mode");
+    expect(reconciled.argv).toEqual(["--enable", "hooks"]);
+    expect(reconciled.spawnArgs).toEqual(["--enable", "hooks"]);
+  });
+
+  it("keeps argv and the Windows command line agreeing when it rewrites them", () => {
+    // On Windows `spawnArgs` is one command line built from argv, so editing
+    // argv alone would leave the two describing different runs.
+    const plan = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks" }),
+      depsFor({
+        platform: "win32",
+        resolveCommand: () => "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
+        windowsSystemRoot: () => "C:\\Windows",
+      }),
+    );
+    const earned = reconcileHookTrustFlag(plan, true, {
+      platform: "win32",
+      windowsSystemRoot: () => "C:\\Windows",
+    });
+    if (earned.mode !== "agent") throw new Error("wrong mode");
+    expect(earned.argv).toContain("--dangerously-bypass-hook-trust");
+    expect(earned.spawnArgs).toContain('"--dangerously-bypass-hook-trust"');
+    expect(earned.spawnTarget).toBe("C:\\Windows\\System32\\cmd.exe");
+  });
+
+  it("leaves a harness with no hook-trust review untouched", () => {
+    const plan = resolveSpawnPlan(spawnReq({ agent: "claude-code", command: "claude" }), depsFor());
+    expect(reconcileHookTrustFlag(plan, true)).toBe(plan);
   });
 
   it("wraps Windows command shims through cmd.exe after argv validation", () => {

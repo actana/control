@@ -62,9 +62,7 @@ describe("harnessResumeCommand", () => {
     expect(harnessResumeCommand("claude-code", "abc")).toBe("claude --resume abc");
     // A subcommand, so it comes first — and the hooks flag stays on, or the
     // resumed Session never reports its lifecycle and every wait on it hangs.
-    expect(harnessResumeCommand("codex", "abc")).toBe(
-      "codex resume abc --enable hooks --dangerously-bypass-hook-trust",
-    );
+    expect(harnessResumeCommand("codex", "abc")).toBe("codex resume abc --enable hooks");
     expect(harnessResumeCommand("cursor-cli", "abc")).toBe("cursor-agent --resume abc");
     expect(harnessResumeCommand("opencode", "ses_abc")).toBe("opencode --session ses_abc");
   });

@@ -65,14 +65,9 @@ type Unsubscribe = () => void;
  *
  * The first token has to be that harness's canonical binary or the Core refuses
  * the spawn — that is the allow-list, and it is enforced there, not here. What
- * this table adds beyond the binary is the flags a harness needs for the
- * Core to hear about it at all. `codex` needs two, and the second one is issue
- * 290: `--enable hooks` asks for the lifecycle surface, and
- * `--dangerously-bypass-hook-trust` is what makes the hooks the Core installed
- * into the workspace actually run. Without it Codex holds a hooks file it has
- * not seen before at a startup review until the operator picks "Trust all and
- * continue" — which on a fresh workspace nobody has — and the first turn
- * reports neither its start nor its end. A Session that never reports is a
+ * this table adds beyond the binary is the one flag a harness needs for the
+ * Core to hear about it at all: `codex` reports its lifecycle through hooks only
+ * when started with `--enable hooks`, and a Session that never reports is a
  * Session {@link CoreSession.waitForIdle} waits on forever.
  *
  * A caller wanting anything else — a model, a resumed session id — passes
@@ -80,7 +75,7 @@ type Unsubscribe = () => void;
  */
 export const HARNESS_LAUNCH_COMMANDS: Readonly<Record<CoreLinkPtySpawnHarness, string>> = {
   "claude-code": "claude",
-  codex: "codex --enable hooks --dangerously-bypass-hook-trust",
+  codex: "codex --enable hooks",
   "cursor-cli": "cursor-agent",
   opencode: "opencode",
 };

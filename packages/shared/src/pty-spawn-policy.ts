@@ -248,17 +248,23 @@ function withAutoModeFlags(
 
 /**
  * Splice in each harness's hook-trust flag, for {@link withAutoModeFlags}'s
- * reason and with one difference that matters.
+ * reason and with two differences that matter.
  *
  * The auto-mode flag is checked in both directions because it travels with a
- * spawn *option* the caller sets. This one has no option behind it: it is a
- * consequence of the Core having written a hooks file into that workspace,
- * which the Core does for every harness whose family it knows, so there is no
- * second half to disagree with. It is allow-listed and nothing more —
- * permitted on every launch of a harness that needs it, required by no rule
- * here. What requires it is {@link assertHookTrustFlagInCommand} on the
- * builders' side, where a missing flag is still a fact about a command rather
- * than about a spawn request.
+ * spawn *option* the caller sets. This one is not required of any command and
+ * is not requested by any option: no builder in this repository puts it in a
+ * launch string. It is allow-listed only so that the Core's own
+ * {@link reconcileHookTrustFlag} — which appends it after the plan is built,
+ * for hooks it wrote itself — is describing an argument this policy would
+ * have accepted, and so an operator who types it by hand is not refused. What
+ * decides whether it actually reaches the harness is that function, not this
+ * table.
+ *
+ * The collision guard is the second difference. If a vendor ever spelled both
+ * flags the same, the spread below would replace the auto-mode rule and drop
+ * `requiresDangerouslySkipPermissions` with it, silently reopening the
+ * both-directions hole issue 177 closed. That is a table mistake, so it fails
+ * at module load where a human can see it, not at a spawn.
  */
 function withHookTrustFlags(
   base: Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>,
@@ -267,6 +273,12 @@ function withHookTrustFlags(
     Object.entries(base).map(([agent, rules]) => {
       const flag = HARNESS_HOOK_TRUST_FLAGS[agent as HarnessSpawn];
       if (flag === null) return [agent, rules];
+      if (flag === HARNESS_AUTO_MODE_FLAGS[agent as HarnessSpawn]) {
+        throw new Error(
+          `${agent}: hookTrustFlag and autoModeFlag are both ${flag}; ` +
+            `splicing one over the other would drop the auto-mode check`,
+        );
+      }
       return [agent, { ...rules, [flag]: { value: false } }];
     }),
   ) as Readonly<Record<HarnessSpawn, Readonly<Record<string, HarnessArgRule>>>>;
@@ -294,6 +306,51 @@ export function autoModeFlagForSpawn(agent: HarnessSpawn): string | null {
  */
 export function hookTrustFlagForSpawn(agent: HarnessSpawn): string | null {
   return HARNESS_HOOK_TRUST_FLAGS[agent];
+}
+
+/**
+ * Bring an agent plan's argv into line with what the Core actually installed:
+ * carry the harness's hook-trust bypass when — and only when — this Core wrote
+ * every hook the harness will run, and strip it otherwise.
+ *
+ * This exists because the decision cannot be made where launch commands are
+ * built (issue 290). A command is composed before any file lands, by a client
+ * that has not looked at the workspace and in the Panel's case is not even on
+ * the same machine; the fact that earns the bypass — "the hooks file in this
+ * cwd is ours and holds nothing else" — is known only to the process that
+ * wrote it, at the moment it wrote it. So no builder puts the flag in, and the
+ * Core puts it in here.
+ *
+ * Both directions are enforced, and the stripping half is the important one:
+ * a command that arrives carrying the flag from anywhere at all — an operator
+ * typing it, a client of a future version, a saved command replayed against a
+ * different workspace — has it removed unless this spawn earned it. Codex's
+ * review then stands, which is the outcome the vendor intended and the safe
+ * side to fail to.
+ *
+ * `spawnTarget` and `spawnArgs` are recomputed rather than patched: on Windows
+ * they are a single command line built from argv, so editing argv alone would
+ * leave the two disagreeing about what is being run.
+ */
+export function reconcileHookTrustFlag(
+  plan: SpawnPlan,
+  earned: boolean,
+  deps: Pick<SpawnPolicyDeps, "platform" | "windowsSystemRoot"> = {},
+): SpawnPlan {
+  if (plan.mode !== "agent") return plan;
+  const flag = HARNESS_HOOK_TRUST_FLAGS[plan.agent];
+  if (flag === null) return plan;
+
+  const without = plan.argv.filter((arg) => arg !== flag);
+  const argv = earned ? [...without, flag] : without;
+  if (argv.length === plan.argv.length && argv.every((a, i) => a === plan.argv[i])) {
+    return plan;
+  }
+  return {
+    ...plan,
+    argv,
+    ...nodePtySpawnTarget(plan.binary, argv, deps as SpawnPolicyDeps),
+  };
 }
 
 function windowsCmdExe(deps: SpawnPolicyDeps): string {

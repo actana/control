@@ -31,6 +31,7 @@
 // hooks, which is what tells the Panel to keep its terminal-input fallback
 // armed for that Session.
 
+import * as fs from "node:fs";
 import * as path from "node:path";
 import {
   readJsonSettingsFile,
@@ -44,6 +45,8 @@ import {
   HOOK_TOKEN_ENV,
   HOOK_URL_ENV,
 } from "./harness-hook-env";
+import { HARNESS_HOOK_TRUST_FLAGS } from "@actana/shared/harness-cli-config";
+import type { Harness } from "@actana/shared/domain";
 import { installOpencodeHooks } from "./harness-hooks-opencode";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
@@ -255,6 +258,55 @@ function installCodexHooks(cwd: string, slug: string): boolean {
   return writeJsonSettingsFile(file, config);
 }
 
+/**
+ * Does this workspace carry a Codex hook source THIS Core did not write?
+ *
+ * The question behind `hookTrustBypassEarned`, and the reason that field is
+ * not simply `installed`. Codex's startup review exists to stop hooks that
+ * arrived with a repository from running unseen — a cloned project with a
+ * committed `.codex/hooks.json` whose `UserPromptSubmit` is `curl … | sh` is
+ * the case it is for. Lifting that review for OUR entries is defensible: this
+ * process wrote them, from a table in this repository, seconds ago. Lifting it
+ * for somebody else's is not, and `mergeMatchers` deliberately preserves
+ * somebody else's — a workspace is the operator's, not ours.
+ *
+ * So the audit is over the file as it stands AFTER our write, and it is
+ * deliberately conservative in every direction it can be:
+ *
+ *  - Any hook entry not tagged `_acManaged` / `_mcManaged`, under any event,
+ *    is foreign. One is enough.
+ *  - A `.codex/config.toml` in the workspace disqualifies it outright. That
+ *    file can declare hooks of its own, it is TOML, and this repository has no
+ *    TOML parser — so its mere existence is read as "there may be hooks here
+ *    we cannot account for". An operator who wants the bypass back can move
+ *    those hooks into `~/.codex/config.toml`, which is theirs rather than the
+ *    repository's.
+ *  - A file we could not read at all is foreign. Unreadable is not empty.
+ *
+ * What it cannot see is a Codex plugin supplying hooks from outside the
+ * workspace. That is a real edge, and the honest consequence is stated rather
+ * than hidden: this narrows the bypass to the common case and does not claim
+ * to enumerate every hook source Codex has.
+ */
+function codexHasForeignHookSources(cwd: string): boolean {
+  if (fs.existsSync(path.join(cwd, ".codex", "config.toml"))) return true;
+  const config = readJsonSettingsFile<{ hooks?: Record<string, unknown> }>(
+    path.join(cwd, ".codex", "hooks.json"),
+  );
+  // `null` is a read that failed for a reason other than "not there yet".
+  if (config === null) return true;
+  const hooks = config.hooks;
+  if (!hooks || typeof hooks !== "object") return false;
+  for (const entries of Object.values(hooks)) {
+    if (!Array.isArray(entries)) {
+      // A shape we do not understand is a shape we cannot vouch for.
+      return true;
+    }
+    if (entries.some((entry) => !isManaged(entry))) return true;
+  }
+  return false;
+}
+
 const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "stop", "afterAgentResponse"] as const;
 
 function installCursorHooks(cwd: string, slug: string): boolean {
@@ -287,6 +339,17 @@ type HookFamily = {
    * turn with nothing to move them.
    */
   reportsTurnStart: boolean;
+  /**
+   * For a family whose CLI holds new hooks at a trust review
+   * (`HARNESS_CLI_CONFIG[...].hookTrustFlag`): does this workspace carry a
+   * hook source this Core did not write?
+   *
+   * Present only where the question can be asked, which is the same set as
+   * `hookTrustFlag` — a family with no review has nothing to lift and no
+   * reason to audit. Missing here and a flag over there is a family that gets
+   * NO bypass, which is the safe direction to fall.
+   */
+  foreignHookSources?: (cwd: string) => boolean;
 };
 
 /**
@@ -314,7 +377,11 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
   // belongs with the codex readiness row (#277), not smuggled in behind a
   // hooks fix: `false` costs a card that under-reports a live turn, and `true`
   // asserted a turn early costs a Session with no `running` signal at all.
-  codex: { install: installCodexHooks, reportsTurnStart: false },
+  codex: {
+    install: installCodexHooks,
+    reportsTurnStart: false,
+    foreignHookSources: codexHasForeignHookSources,
+  },
   // Cursor takes the hooks file and fires `stop` / `sessionStart` from it, but
   // `beforeSubmitPrompt` still does not fire in cursor-agent. The turn's end is
   // reported; its start is not.
@@ -327,6 +394,17 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
   // the right to stand the Panel's fallback down.
   opencode: { install: installOpencodeHooks, reportsTurnStart: true },
 };
+
+/**
+ * Does `harness`'s CLI hold newly-installed hooks at a trust review?
+ *
+ * Read off `HARNESS_CLI_CONFIG`, never restated: `harness` arrives here as a
+ * plain string from the spawn path, so an id that is not a Harness at all
+ * answers `false` rather than indexing out of the table.
+ */
+function hasHookTrustReview(harness: string): boolean {
+  return (HARNESS_HOOK_TRUST_FLAGS[harness as Harness] ?? null) !== null;
+}
 
 /** Does this Core know how to install hooks for `harness`? */
 export function harnessSupportsHooks(harness: string | undefined): boolean {
@@ -343,9 +421,29 @@ export type HookInstallResult = {
    * and either one alone is a Session with no `running` signal.
    */
   reportsTurnStart: boolean;
+  /**
+   * May this spawn carry the harness's hook-trust bypass flag?
+   *
+   * The third state issue 290 asked for, in the shape the evidence turned out
+   * to need: not "written but not yet live", which the file-shape fix removed,
+   * but **"written, and nothing else was"**. `installed` answers "did a file
+   * land"; this answers "is every hook Codex will run one this Core wrote".
+   * Only the second earns lifting the vendor's review, and the two come apart
+   * on the case that matters — a cloned repository shipping its own
+   * `.codex/hooks.json`, which `mergeMatchers` preserves on purpose.
+   *
+   * `false` for every family with no hook-trust flag, because there is nothing
+   * to lift; `false` whenever no file landed, because a Core that wrote
+   * nothing has vetted nothing.
+   */
+  hookTrustBypassEarned: boolean;
 };
 
-const NO_HOOKS: HookInstallResult = { installed: false, reportsTurnStart: false };
+const NO_HOOKS: HookInstallResult = {
+  installed: false,
+  reportsTurnStart: false,
+  hookTrustBypassEarned: false,
+};
 
 /**
  * Install this Core's lifecycle hooks into `cwd` for `harness`.
@@ -366,8 +464,26 @@ export function installHarnessHooks(
   } catch {
     return NO_HOOKS;
   }
+  // Audited AFTER the write, over the file as Codex will read it: our entries
+  // are in it by now, and so is anything the repository shipped that
+  // `mergeMatchers` preserved.
+  let hookTrustBypassEarned = false;
+  // Two tables have to agree for a bypass to be earned: the vendor fact that
+  // this CLI holds new hooks at a review at all, and a writer here that can
+  // say whether anything foreign is in the file. Either one missing answers
+  // `false`, so a family that grows one half without the other gets no
+  // bypass rather than an unaudited one.
+  if (installed && hasHookTrustReview(harness ?? "") && family.foreignHookSources) {
+    try {
+      hookTrustBypassEarned = !family.foreignHookSources(cwd);
+    } catch {
+      // An audit that threw answers "cannot vouch", never "nothing found".
+      hookTrustBypassEarned = false;
+    }
+  }
   return {
     installed,
     reportsTurnStart: installed && family.reportsTurnStart,
+    hookTrustBypassEarned,
   };
 }

@@ -394,7 +394,7 @@ file each family reads:
 | Harness | File |
 | --- | --- |
 | `claude-code` | `<cwd>/.claude/settings.local.json` |
-| `codex` | `<cwd>/.codex/hooks.json` (matcher groups, and the launch needs `--dangerously-bypass-hook-trust`) |
+| `codex` | `<cwd>/.codex/hooks.json` (matcher groups; the Core adds `--dangerously-bypass-hook-trust` at spawn, for its own hooks only) |
 | `cursor-cli` | `<cwd>/.cursor/hooks.json` (needs `"version": 1`, or the CLI ignores it) |
 
 An operator's own hooks are preserved; ours are tagged `_acManaged: true` so the
@@ -418,10 +418,8 @@ Only the third column exempts the terminal-input fallback below.
 
 ### Codex: a file landing is not a hook running (issue 290)
 
-Codex was the one family where both of those columns lied, and it lied at the
-worst moment: a **fresh workspace, on the first turn**, which is where an
-orchestrator starts every piece of work. Two independent things were wrong, and
-each one alone is enough to report nothing.
+Codex was the one family where both of those columns lied. Two independent
+things were wrong, and each one alone is enough to report nothing.
 
 **The file was the wrong shape.** Codex's hooks file is a table of matcher
 *groups*, the same shape Claude Code's is:
@@ -439,40 +437,114 @@ zero. It never even reaches the review below.
 shape, Codex counts the entries at startup and stops on "Hooks need review — N
 hooks are new or changed / Hooks can run outside the sandbox after you trust
 them", offering *Review hooks*, *Trust all and continue*, and *Continue without
-trusting (hooks won't run)*. Nobody has answered that on a fresh workspace, so
-neither `UserPromptSubmit` nor `Stop` reaches the Core, the card sits on
-whatever it last said, and the only thing that ends a `--wait` is the caller's
-timeout.
+trusting (hooks won't run)*. Until an operator answers that, neither
+`UserPromptSubmit` nor `Stop` reaches the Core, the card sits on whatever it
+last said, and the only thing that ends a `--wait` is the caller's timeout.
 
-The launch now carries `--dangerously-bypass-hook-trust`, whose own help text
+`--dangerously-bypass-hook-trust` is the vendor's answer, and its own help text
 names this caller: *"Intended only for automation that already vets hook
-sources."* The Core wrote the file microseconds earlier out of
-`harness-hooks.ts`; there is no third party it could be vouching for. The flag
-is scoped to the invocation — it persists no trust into the operator's Codex
-config, and a Codex the operator starts themselves still reviews hooks exactly
-as before. It lives in `HARNESS_CLI_CONFIG.codex.hookTrustFlag`, so the
-registry's launch builder, the CLI's resume builder, the SDK's default command
-and the Core's spawn allow-list all read one cell.
+sources."* It is scoped to the invocation — it persists no trust into the
+operator's Codex config, and a Codex the operator starts themselves reviews
+hooks exactly as before.
 
-Verified against codex-cli 0.153.0 with a `CODEX_HOME` created for the test and
-a workspace Codex had never opened: with the group shape and the flag, the
-review screen never appears and both `UserPromptSubmit` and `Stop` fire on the
-first turn; drop either one and neither fires. The flag has been in Codex since
-0.131.0, below the `minimumVersion` of 0.132.0 this repository already requires.
+#### The Core adds that flag; no launch command carries it
 
-Two things this does **not** fix, both out of scope here:
+`HARNESS_REGISTRY.codex.startCommand()` is still `codex --enable hooks`, and
+the resume builder, the SDK's default command and the Panel's builder are all
+unchanged. That is deliberate. A launch command is composed *before* any hooks
+file lands, by a client that has not looked at the workspace and — for the
+Panel — is not on the same machine. It cannot know whose hooks are about to
+run, and a command that carried the bypass unconditionally would be vouching
+for hooks nobody vetted.
 
-- **Workspace trust.** Codex asks "Do you trust the contents of this
-  directory?" the first time it opens one, and *project-local config, hooks and
-  exec policies only load once that is answered*. The bypass flag does not
-  answer it, and neither should the Core — it is the operator's gesture, and a
-  Session in an untrusted directory is blocked on that prompt whether or not it
-  has hooks.
-- **The Panel's launch builder** (`packages/panel/src/lib/harness-command.ts`)
-  composes its own Codex command and still needs the flag added; that file is
-  owned by #484.
+So the decision is made by the one process that knows: `pty-manager.ts` installs
+the hooks, and `reconcileHookTrustFlag` (`pty-spawn-policy.ts`) then adds the
+flag to the plan's argv — or takes it back off. `installHarnessHooks` returns
+`hookTrustBypassEarned`, which is `true` only when **this Core wrote the file
+and nothing it did not write is in it**:
 
-Three of the four families take a table of shell commands. OpenCode takes a
+| workspace | earned |
+| --- | --- |
+| our hooks only | **yes** |
+| our hooks beside a committed `.codex/hooks.json` entry | no |
+| a `.codex/config.toml` in the workspace (may declare hooks; we cannot parse TOML) | no |
+| no hook receiver, so the Core wrote nothing at all | no |
+| a hooks file that could not be read | no |
+
+The middle rows are the point. `mergeMatchers` preserves an operator's own
+entries on purpose — a workspace is theirs, not ours — so a cloned repository's
+committed `.codex/hooks.json` survives our write and would run under our bypass.
+That is precisely what Codex's review exists to stop, so the bypass is withheld
+and the review stands. The foreign entries are **not** deleted; withholding is
+the remedy, and editing somebody else's hooks would not be.
+
+The stripping direction matters as much as the adding one: a command that
+arrives carrying the flag from anywhere — an operator typing it, a client of
+another version, a saved command replayed against a different workspace — has it
+removed unless *this* spawn earned it.
+
+What this cannot see is a Codex plugin supplying hooks from outside the
+workspace. That is a real edge, stated rather than hidden: the audit narrows the
+bypass to the common case and does not claim to enumerate every hook source
+Codex has.
+
+#### Version floor
+
+`minimumVersion` for codex is **0.135.0**, raised from 0.132.0 by this work.
+`--dangerously-bypass-hook-trust` has parsed since 0.131.0, but
+openai/codex#24093 records it being accepted and then *ignored in TUI mode* —
+the "Hooks need review" prompt still blocked startup — until openai/codex#24317
+(`5fb5e47`). That commit is unreachable from `rust-v0.133.0` and
+`rust-v0.134.0` and reachable from `rust-v0.135.0`. This Core launches Codex as
+an interactive TUI in a PTY, so on 0.132–0.134 the flag is a silent no-op. A
+floor that admitted them would have shipped a `--dangerously-*` flag that does
+nothing.
+
+#### What still needs a human on a first-ever workspace
+
+**A workspace Codex has never opened still does not report its first turn, and
+this section is the honest statement of that.** The hook-trust review is only
+the second of two gates. The first is *project-layer trust*: Codex asks
+
+> You are in `<path>` — Do you trust the contents of this directory? Working
+> with untrusted contents comes with higher risk of prompt injection. Trusting
+> the directory allows project-local config, **hooks**, and exec policies to
+> load.
+
+Until that is answered, `<cwd>/.codex/hooks.json` is not loaded at all, so there
+is nothing for the hook-trust bypass to lift. `--dangerously-bypass-hook-trust`
+lifts hook trust only; it does not answer this prompt, and the Core does not
+answer it either — `BLOCKING_DIALOGS` in `harness-prompt-delivery.ts` scopes
+`folder-trust` to `claude-code` and `cursor-cli` (ADR 0026 D7), and codex is not
+in that list.
+
+So on a first-ever workspace a Codex Session stops on the trust prompt and stays
+there until a human picks "Yes, continue" — with or without this fix, and
+whether or not it has hooks. What this work changes is everything *after* that
+answer: from the operator's first "Yes, continue" onward, including that very
+first turn, `UserPromptSubmit` and `Stop` reach the Core with no `/hooks` review
+in the way. On every subsequent Session in that workspace — the overwhelmingly
+common case, since project-layer trust persists per directory in
+`~/.codex/config.toml` — nothing is in the way at all.
+
+Answering the trust prompt for codex is a separate change in a file this work
+does not own; it is not fixed here and is not claimed to be.
+
+#### Verified
+
+Against codex-cli 0.153.0, driven through a PTY with a `CODEX_HOME` created for
+the run and a workspace Codex had never reviewed, using the file
+`installHarnessHooks("codex", cwd)` writes and a loopback receiver standing in
+for the Core:
+
+| hooks file | bypass flag | project layer trusted | `Stop` reaches the Core |
+| --- | --- | --- | --- |
+| flat (the old writer) | either | yes | no — Codex sees no hooks at all |
+| matcher groups | no | yes | no — held at "Hooks need review" |
+| matcher groups | yes | no | no — the hooks file is never loaded |
+| matcher groups | yes | yes | **yes, on the first turn** |
+
+Three of the four families take a table of shell commands. OpenCode takes aThree of the four families take a table of shell commands. OpenCode takes a
 JavaScript plugin instead, and its writer is `harness-hooks-opencode.ts` — see
 [OpenCode](#opencode) below.
 

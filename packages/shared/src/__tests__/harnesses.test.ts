@@ -1,57 +1,43 @@
 import { describe, expect, it } from "vitest";
-import {
-  HARNESS_REGISTRY,
-  UI_HARNESSES,
-  assertHookTrustFlagInCommand,
-  harnessHookTrustFlag,
-} from "../harnesses";
+import { HARNESS_REGISTRY, UI_HARNESSES } from "../harnesses";
+import { HARNESS_HOOK_TRUST_FLAGS, hookTrustFlagForHarness } from "../harness-cli-config";
 import { HARNESSES } from "../domain";
 
 describe("agent registry", () => {
   it("launches Codex with current hook support enabled", () => {
-    expect(HARNESS_REGISTRY.codex.startCommand()).toBe(
-      "codex --enable hooks --dangerously-bypass-hook-trust"
-    );
+    expect(HARNESS_REGISTRY.codex.startCommand()).toBe("codex --enable hooks");
     expect(HARNESS_REGISTRY.codex.startCommand({ skipPermissions: true })).toBe(
-      "codex --enable hooks --dangerously-bypass-hook-trust --yolo"
+      "codex --enable hooks --yolo"
     );
   });
 
-  it("puts the hook-trust flag on every launch that needs one (issue 290)", () => {
-    // The state this asserts against is the one the bug lives in: a workspace
-    // Codex has never seen, whose hooks file it has therefore never reviewed.
-    // Nothing here consults a review — there is nothing to consult on a fresh
-    // machine — so the flag has to be unconditional in the command, and the
-    // assertion is written over every harness rather than over Codex so the
-    // next family with the same vendor behaviour cannot arrive half-wired.
+  it("puts no hook-trust bypass in any launch command (issue 290)", () => {
+    // The flag lifts Codex's review of hooks it has not seen. A command is
+    // composed before any hooks file lands — by a client that has not looked
+    // at the workspace, and in the Panel's case is not on the same machine —
+    // so it cannot know whether the hooks about to run are this Core's or a
+    // cloned repository's. The Core decides at spawn, in
+    // `reconcileHookTrustFlag`; a command string that carried the flag would
+    // be vouching for hooks nobody has vetted.
     for (const harness of HARNESSES) {
+      const flag = hookTrustFlagForHarness(harness);
+      if (flag === null) continue;
       const entry = HARNESS_REGISTRY[harness];
-      expect(() => assertHookTrustFlagInCommand(harness, entry.startCommand())).not.toThrow();
-      expect(() =>
-        assertHookTrustFlagInCommand(harness, entry.startCommand({ skipPermissions: true })),
-      ).not.toThrow();
+      expect(entry.startCommand().split(" ")).not.toContain(flag);
+      expect(entry.startCommand({ skipPermissions: true }).split(" ")).not.toContain(flag);
     }
   });
 
-  it("is the only harness of the four that needs one", () => {
+  it("records the hook-trust flag as a vendor fact for Codex alone", () => {
     // Not a restatement of the table: it is the claim that the other three
-    // vendors run the file this Core wrote without being asked twice, which is
-    // why `null` there means "verified as needing none" rather than "not
-    // filled in yet".
-    expect(harnessHookTrustFlag("codex")).toBe("--dangerously-bypass-hook-trust");
-    expect(harnessHookTrustFlag("claude-code")).toBeNull();
-    expect(harnessHookTrustFlag("cursor-cli")).toBeNull();
-    expect(harnessHookTrustFlag("opencode")).toBeNull();
-  });
-
-  it("fails a launch command that dropped the flag, rather than a Session that did", () => {
-    // The failure mode this guards is silent by construction: a Codex without
-    // the flag spawns cleanly, paints a working TUI, and reports no lifecycle
-    // at all, so the first thing anybody learns is a `--wait` that timed out.
-    expect(() => assertHookTrustFlagInCommand("codex", "codex --enable hooks")).toThrow(
-      /--dangerously-bypass-hook-trust/,
-    );
-    expect(() => assertHookTrustFlagInCommand("claude-code", "claude")).not.toThrow();
+    // vendors run the file this Core wrote without holding it for review, so
+    // `null` there means "verified as needing none" rather than "not filled
+    // in yet".
+    expect(hookTrustFlagForHarness("codex")).toBe("--dangerously-bypass-hook-trust");
+    expect(hookTrustFlagForHarness("claude-code")).toBeNull();
+    expect(hookTrustFlagForHarness("cursor-cli")).toBeNull();
+    expect(hookTrustFlagForHarness("opencode")).toBeNull();
+    expect(Object.keys(HARNESS_HOOK_TRUST_FLAGS).sort()).toEqual([...HARNESSES].sort());
   });
 
   it("exposes Cursor CLI as a selectable agent", () => {
