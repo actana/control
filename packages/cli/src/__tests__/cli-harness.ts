@@ -158,6 +158,9 @@ export function fakeStartedSession(overrides: Partial<StartedSession> = {}): Sta
     // The default is a prompt that landed. A test about #483's outcome says
     // `promptAbandoned: () => ({ reason: "…" })` and means it.
     promptAbandoned: () => null,
+    // And the default start is one whose prompt the Core reported delivered. A
+    // test about #395's wait says otherwise and means it.
+    awaitPromptDelivery: async () => ({ outcome: "delivered" }),
     dispose: () => {},
     ...overrides,
   };

@@ -19,6 +19,16 @@
 // `packages/sdk`'s `live-session.test.ts` — an opt-in suite against an
 // operator's own Core. What is provable without one is proved here.
 //
+// **With one exception, added by #395 and narrow on purpose.** That ticket is
+// about what a `start`/`resume` *returns*, and its report is read off a row the
+// Core appends **during the spawn round trip** — the window #483's review
+// called the deaf one. No fake gateway can stage that: the whole question is
+// whether a real frame arriving before the client has a Task id to bind it to
+// is held and then judged. So `livePtyCore` grows an opt-in `spawn` that
+// registers a PTY id and nothing else — no binary, no process, no bytes — and
+// the two tests at the bottom use `resume`, which spawns against a Task the
+// Core already holds. Everything a real harness would do is still out of scope.
+//
 // The Core comes from `in-process-core.ts`, which #160 and #161 each extracted
 // a version of and the review of #205 merged into one. `ptyCore` is this
 // suite's contribution to it: the manager below is the live PTY that `logs`,
@@ -33,6 +43,7 @@ import type {
 import {
   SESSION_DELIVERED_EVENT_KIND,
   SESSION_PROMPT_ABANDONED_EVENT_KIND,
+  SESSION_PROMPT_DELIVERED_EVENT_KIND,
 } from "@actana/sdk/core-link-frames.ts";
 
 import { openSessionGateway } from "../session-gateway.ts";
@@ -95,7 +106,21 @@ const REPAINTED =
   "\u001B[2J\u001B[H\u001B[1GScanning…\u001B[1GScanning… 2 files\u001B[1Gdone: 3 files changed\r\n";
 
 /** A PTY manager holding one live PTY, and a record of what was done to it. */
-function livePtyCore(): {
+function livePtyCore(
+  opts: {
+    /**
+     * What this Core does the moment a spawn lands, before it answers (#395).
+     *
+     * Opt-in, and the shape is the point: the real Core appends its
+     * `session:promptDelivered` row from inside the delivery it runs on the
+     * PTY, which is after the client asked to spawn and before — often long
+     * before — the client has done anything with the answer. A hook here
+     * reproduces that ordering exactly, on a real socket, which is the only way
+     * to prove the latch holds a row it cannot yet judge.
+     */
+    onSpawn?: (info: { taskId: string; ptyId: string; initialInput: string | undefined }) => void;
+  } = {},
+): {
   core: unknown;
   writes: string[];
   killed: string[];
@@ -134,8 +159,12 @@ function livePtyCore(): {
       return true;
     },
     resize: () => true,
-    spawn: () => {
-      throw new Error("this suite does not spawn — see the header");
+    spawn: (spawnOpts: { taskId: string; initialInput?: string }) => {
+      if (!opts.onSpawn) throw new Error("this suite does not spawn — see the header");
+      const ptyId = `pty_${spawnOpts.taskId}`;
+      ptys.set(spawnOpts.taskId, ptyId);
+      opts.onSpawn({ taskId: spawnOpts.taskId, ptyId, initialInput: spawnOpts.initialInput });
+      return { ptyId, hooksReportTurnStart: true };
     },
     killAll: () => {},
     killLaunchProcesses: () => ({ ptyCount: 0, ports: [] }),
@@ -216,6 +245,12 @@ async function coreWithSessions(
     eventLog?: false;
     /** Archive a row while its harness keeps running. */
     archived?: string[];
+    /**
+     * Let this Core spawn, and say what it reports about the starting prompt
+     * the moment it does (#395). `null` is a Core that spawns and reports
+     * nothing, which is every Core before this change.
+     */
+    onPromptDelivery?: "delivered" | "abandoned" | null;
   } = {},
 ): Promise<{
   writes: string[];
@@ -227,7 +262,17 @@ async function coreWithSessions(
   /** What the harness's own Stop hook does on the Core: patch the row, say so. */
   endTurn: (taskId: string, status: string) => void;
 }> {
-  const pty = livePtyCore();
+  // Forward-declared because the hook below runs inside the Core and the log is
+  // built after it — the same knot the real Core ties by wiring `core-entry`'s
+  // `appendEvent` into `PtyCoreDeps`.
+  let appendPromptRow: ((taskId: string, ptyId: string) => void) | null = null;
+  const pty = livePtyCore(
+    opts.onPromptDelivery === undefined
+      ? {}
+      : {
+          onSpawn: ({ taskId, ptyId }) => appendPromptRow?.(taskId, ptyId),
+        },
+  );
   const tasks = [
     task({ archived: opts.archived?.includes("task_live") ?? false }),
     task({ taskId: "task_done", title: "ship the changelog", status: "finished" }),
@@ -241,6 +286,28 @@ async function coreWithSessions(
   // that id. Without one every write comes back unstamped, which is the
   // older-Core case and not the one these tests are about.
   const eventLog = arrayEventLog();
+  if (opts.onPromptDelivery) {
+    const outcome = opts.onPromptDelivery;
+    appendPromptRow = (taskId, ptyId) => {
+      if (outcome === "delivered") {
+        eventLog.appendEvent(
+          SESSION_PROMPT_DELIVERED_EVENT_KIND,
+          JSON.stringify({ taskId, ptyId, characters: 2, waitedMs: 812 }),
+          { taskId, ptyId },
+        );
+        return;
+      }
+      eventLog.appendEvent(
+        SESSION_PROMPT_ABANDONED_EVENT_KIND,
+        JSON.stringify({
+          taskId,
+          ptyId,
+          reason: "opencode composer never appeared within 90000 ms",
+        }),
+        { taskId, ptyId },
+      );
+    };
+  }
   core = await startInProcessCore({
     ptyCore: pty.core,
     queryPort,
@@ -568,6 +635,81 @@ describe("actana session, against a Core in this process", () => {
       status: "finished",
       promptDelivered: true,
     });
+  }, 60_000);
+
+  it("waits for the delivery row the Core appends inside the spawn round trip (#395)", async () => {
+    // The whole of #395 on a real socket. `session resume … --await-prompt`
+    // spawns, and the Core appends `session:promptDelivered` *while the spawn
+    // frame is being handled* — before the answer goes back, and long before
+    // `wrap()` has a Task id to bind the latch to. The row is therefore held,
+    // judged against the `eventsReplayed` floor once the latch is armed, and
+    // reported. Nothing here polls, sleeps or measures: the command ends
+    // because the Core said something.
+    //
+    // A `resume` rather than a `start` only because the Core in this suite
+    // holds Tasks and does not create them; the return path under test is the
+    // same one, `reportStartedSession`, and both verbs reach it.
+    await coreWithSessions({ onPromptDelivery: "delivered" });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({
+      taskId: "task_done",
+      awaitedPrompt: true,
+      promptDelivered: true,
+      // Not a turn wait, and the object says so rather than leaving a caller to
+      // infer it from a missing `status`.
+      waited: false,
+    });
+  }, 60_000);
+
+  it("exits non-zero on a start whose prompt the Core gave up on (#395)", async () => {
+    // The failure this gate exists for, end to end. Without `--await-prompt`
+    // this command exits zero and says nothing, and the operator's next line —
+    // a `session send` — types into a harness that never got the first message.
+    // With it, the loss is the command's own exit code.
+    await coreWithSessions({ onPromptDelivery: "abandoned" });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt"],
+      withCore(),
+    );
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("did not deliver the starting prompt");
+    expect(err).toContain("opencode composer never appeared within 90000 ms");
+    // And it names the recovery, which is the one thing `needs-input` alone
+    // would have sent an operator the wrong way on.
+    expect(err).toContain("session send task_done");
+  }, 60_000);
+
+  it("does not read a previous start's abandon row as this start's verdict (#395)", async () => {
+    // #483's floor, now load-bearing for a *wait* rather than for a report read
+    // after one. A Session resumed after a start that lost its prompt carries
+    // that row for as long as the log does; latching it here would fail a
+    // resume whose prompt landed perfectly, and — worse than #483's version of
+    // this — would do it while a correct answer was sitting one event later.
+    const { eventLog } = await coreWithSessions({ onPromptDelivery: "delivered" });
+    eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_done",
+        ptyId: "pty_task_done",
+        reason: "a composer that never appeared, two starts ago",
+      }),
+      { taskId: "task_done" },
+    );
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({ promptDelivered: true });
+    expect(run.err.join("\n")).not.toContain("two starts ago");
   }, 60_000);
 
   it("refuses to wait after a delivery the Core did not stamp, rather than answering with the turn before", async () => {

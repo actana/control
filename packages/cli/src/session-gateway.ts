@@ -43,6 +43,7 @@ import { TerminalScreen, DEFAULT_COLS, DEFAULT_ROWS } from "@actana/sdk/terminal
 import { harnessResumeCommand } from "./harness-resume.ts";
 import {
   SESSION_PROMPT_ABANDONED_EVENT_KIND,
+  SESSION_PROMPT_DELIVERED_EVENT_KIND,
   type CoreLinkEvent,
   type CoreLinkProjectSnapshot,
   type CoreLinkPtySpawnHarness,
@@ -228,9 +229,46 @@ export type StartedSession = {
    * has to go again.
    */
   promptAbandoned(): { reason: string } | null;
+  /**
+   * Block until the Core says what became of this Session's starting prompt
+   * (#395).
+   *
+   * The readiness gate `session start` never had. A start returns as soon as
+   * the Core has the Session running (#129 D6), which is well before the
+   * harness can take a keystroke: the composer is not up, the trust dialog may
+   * not even have been drawn yet, and a `session send` at that moment lands in
+   * a buffer that discards it — taking the starting prompt with it. This waits
+   * for the Core's own verdict on the prompt, and the verdict is the readiness:
+   * a harness that took the text is a harness that is listening.
+   *
+   * **It waits on the Core, and adds no timing of its own.** Nothing here
+   * polls, nudges, retries or measures how quiet the output went — #191 deleted
+   * the last thing that did, and only the Core sees the screen (ADR 0026). The
+   * wait ends when the Core says `delivered`, when it says `abandoned` at its
+   * own per-harness ceiling (#483), or when the connection carrying those
+   * answers goes down.
+   */
+  awaitPromptDelivery(): Promise<PromptDeliveryReport>;
   /** Release the listeners this Session holds. The harness keeps running. */
   dispose(): void;
 };
+
+/**
+ * What the Core said about a starting prompt, or why it did not get to say.
+ *
+ * Four outcomes and not two, because the two that are not the Core's verdict
+ * have to stay distinguishable from it. `unavailable` is **not** a failed
+ * delivery: the prompt may well have landed a second later, and reporting it as
+ * a loss would be the same false report #483 removed, pointed the other way. It
+ * is this side saying it stopped being able to hear.
+ */
+export type PromptDeliveryReport =
+  /** The Core typed the prompt into the composer and submitted it. */
+  | { outcome: "delivered" }
+  /** The Core gave up. The harness is running and has never seen the text. */
+  | { outcome: "abandoned"; reason: string }
+  /** No verdict was heard, and this side says which of its own limits stopped it. */
+  | { outcome: "unavailable"; reason: string };
 
 /** What `actana session logs` reads back. */
 export type SessionLogs = {
@@ -331,6 +369,15 @@ export type OpenSessionGateway = (
  * Connecting here rather than per verb is deliberate — every `session` verb
  * needs a live socket, and a command that dialled twice would double the
  * latency of the fast path (`ls`) for no gain.
+ *
+ * **The client must arrive unsubscribed, and this is where that stays true.**
+ * A fresh, non-durable `CoreClient` per gateway is what lets
+ * {@link openPromptDeliveryLatch} own the `subscribe` and therefore trust the
+ * `eventsReplayed` marker it floors on; a shared or already-subscribed client
+ * would leave that latch with no floor and no way to tell a replayed row from a
+ * live one. It says so itself rather than answering wrongly, but the answer it
+ * gives is "I cannot tell", and nobody wants that answer (#487 review,
+ * observation a).
  */
 export const openSessionGateway: OpenSessionGateway = async (blob, opts) => {
   const client = CoreClient.fromRegistrationBlob(blob, {
@@ -547,9 +594,9 @@ class CoreLinkSessionGateway implements SessionGateway {
     // First of all, and before any question has been asked of the Core: the
     // #483 latch listens from here, because `CoreSession.attach` subscribes and
     // then spends four round trips before its own listeners exist. See
-    // {@link openPromptAbandonLatch}. Every `throw` below has to close it, or
+    // {@link openPromptDeliveryLatch}. Every `throw` below has to close it, or
     // this command leaves a listener on a client it is done with.
-    const latch = openPromptAbandonLatch(this.client);
+    const latch = openPromptDeliveryLatch(this.client);
 
     // The archived list as a fallback, because a Session can be archived while
     // its harness is still running — and `tasksList` is active rows only by
@@ -663,8 +710,8 @@ class CoreLinkSessionGateway implements SessionGateway {
     command?: string;
     prompt?: string;
     dangerouslySkipPermissions: boolean;
-  }): Promise<{ session: CoreSession; latch: PromptAbandonLatch }> {
-    const latch = openPromptAbandonLatch(this.client);
+  }): Promise<{ session: CoreSession; latch: PromptDeliveryLatch }> {
+    const latch = openPromptDeliveryLatch(this.client);
     try {
       const session = await CoreSession.start(this.client, {
         ...(opts.projectId ? { projectId: opts.projectId } : {}),
@@ -774,10 +821,24 @@ class CoreLinkSessionGateway implements SessionGateway {
 }
 
 /**
- * Watches one Core connection for "the starting prompt was never delivered".
+ * Watches one Core connection for what became of a Session's starting prompt.
  *
- * Three things have to be true for that report to be trustworthy, and the first
- * version of this got two of them wrong (review of PR #487).
+ * Both halves of it, since issue 395: the `session:promptAbandoned` row #483
+ * put on the wire, and the `session:promptDelivered` row that is its positive
+ * twin. One latch and not two, because the two rows are the two ends of one
+ * question and a caller asking "did the prompt land" must not be able to hear
+ * one of them and miss the other.
+ *
+ * **Why the positive row had to exist at all.** #483 could report a loss from
+ * the absence of nothing — it waited for a turn to end and read the abandon row
+ * if one had come. #395 cannot: it is the *start* return path, and at the
+ * moment a `start` returns the Core has not attempted delivery yet. "No abandon
+ * row" and "the composer is still not up" are the same silence there, so a
+ * command that read the first as evidence of delivery would be claiming a
+ * readiness nobody established — which is the defect, not the fix.
+ *
+ * Three things have to be true for either report to be trustworthy, and the
+ * first version of this got two of them wrong (review of PR #487).
  *
  * **1. It has to be listening before anything asks the Core a question.** The
  * event stream opens with `subscribeEvents`, and both `CoreSession.start` and
@@ -807,16 +868,18 @@ class CoreLinkSessionGateway implements SessionGateway {
  * **3. Silence is not a report.** Until the floor is known, nothing is
  * accepted — events are held, not dropped, and re-judged once it is.
  */
-type PromptAbandonLatch = {
+type PromptDeliveryLatch = {
   /** Bind the latch to a Task and, for a stamped delivery, to its cursor. */
   arm(opts: { taskId: string; afterEventId: number }): void;
   /** The Core's reason, or `null` while it has not said the prompt was lost. */
   reason(): { reason: string } | null;
+  /** Resolve once the Core has said what became of the starting prompt. */
+  settled(): Promise<PromptDeliveryReport>;
   /** Release the listeners. The subscription on the Core is the client's. */
   close(): void;
 };
 
-function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
+function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
   let taskId: string | null = null;
   /** The stamp a delivery was recorded at, when this command made one. */
   let cursor = 0;
@@ -824,7 +887,17 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
   /** The high-water mark of the replay tail; `null` until the marker lands. */
   let replayedThrough: number | null = null;
   let abandoned: { reason: string } | null = null;
+  /** What the Core has said about this prompt, once it has said anything. */
+  let report: PromptDeliveryReport | null = null;
+  const waiting: Array<(report: PromptDeliveryReport) => void> = [];
   const held: CoreLinkEvent[] = [];
+
+  /** Answer everybody waiting, once, with the first thing the Core said. */
+  const conclude = (next: PromptDeliveryReport): void => {
+    if (report) return;
+    report = next;
+    while (waiting.length > 0) waiting.shift()!(next);
+  };
 
   /**
    * The exclusive floor an event has to clear, or `null` while it is unknown.
@@ -839,10 +912,19 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
   };
 
   const consider = (event: CoreLinkEvent): void => {
-    if (abandoned) return;
+    if (report) return;
     if (event.taskId !== taskId) return;
     const bar = floor();
     if (bar === null || event.eventId <= bar) return;
+    if (event.kind === SESSION_PROMPT_DELIVERED_EVENT_KIND) {
+      // Nothing is read out of the payload beyond the fact. The interesting
+      // numbers in it — `characters`, `waitedMs` — are for an operator reading
+      // `actana events tail`, and a command that decided anything from them
+      // would be deciding from a measurement rather than from the Core's own
+      // verdict, which is the direction this whole path exists to close.
+      conclude({ outcome: "delivered" });
+      return;
+    }
     try {
       const payload = JSON.parse(event.payload) as CoreLinkSessionPromptAbandonedPayload;
       abandoned = { reason: typeof payload.reason === "string" ? payload.reason : "" };
@@ -851,6 +933,7 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
       // and the fact is worth more than the sentence.
       abandoned = { reason: "" };
     }
+    conclude({ outcome: "abandoned", reason: abandoned.reason });
   };
 
   const drain = (): void => {
@@ -861,7 +944,12 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
   // Registered before the subscribe below, so the replay this asks for cannot
   // outrun the listener that is meant to judge it.
   const stopEvents = client.onEvent(({ event }) => {
-    if (event.kind !== SESSION_PROMPT_ABANDONED_EVENT_KIND) return;
+    if (
+      event.kind !== SESSION_PROMPT_ABANDONED_EVENT_KIND &&
+      event.kind !== SESSION_PROMPT_DELIVERED_EVENT_KIND
+    ) {
+      return;
+    }
     if (!armed || floor() === null) {
       held.push(event);
       return;
@@ -875,10 +963,49 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
     if (replayedThrough === null) replayedThrough = lastEventId;
     drain();
   });
+  // The socket went away before the Core said anything. Not a delivery and not
+  // an abandon — the Core may well have delivered the prompt a second later —
+  // so it settles a waiter without ever touching `abandoned`, whose meaning is
+  // "the Core said it gave up" and must stay that.
+  //
+  // This is also the only unbounded wait on this path that a clock could
+  // otherwise be reached for, and reaching for one is barred here for the
+  // reason `no-prompt-timing.test.ts` gives: a module on the path from an
+  // operator's text to a harness's stdin schedules nothing. It does not need
+  // to. The wait ends on one of the Core's three answers — delivered,
+  // abandoned at its own per-harness ceiling (ADR 0026, #483), or the row
+  // `pty-manager` appends when the PTY dies mid-delivery — or on this, the
+  // connection carrying them going down.
+  const stopDisconnected = client.onDisconnected(({ error }) => {
+    conclude({
+      outcome: "unavailable",
+      reason: error
+        ? `the connection to the Core went down (${error})`
+        : "the connection to the Core went down",
+    });
+  });
   // The subscribe this latch depends on. `CoreSession.start`/`attach` would
   // send one a moment later on the same test, so this is the same single
   // subscribe moved earlier, not a second one.
-  if (!client.isSubscribedToEvents()) client.subscribeEvents();
+  //
+  // **A client that arrives already subscribed cannot be judged** (#487 review,
+  // observation a). The floor below is the `eventsReplayed` marker of a
+  // subscribe *this* function caused; without one the marker never comes, the
+  // floor is never known, and every row is held for ever. #483 answered that
+  // with silence, which reads as "the prompt was fine". A wait cannot: it would
+  // hang for as long as the operator let it. So the latch records that it is
+  // deaf and says so instead, and `openSessionGateway` — which builds a fresh
+  // client per gateway — is where the invariant is kept.
+  const floorless = client.isSubscribedToEvents();
+  if (!floorless) client.subscribeEvents();
+  if (floorless) {
+    conclude({
+      outcome: "unavailable",
+      reason:
+        "this Core connection was already subscribed to the event log, so there is no replay " +
+        "marker to tell a live report from a replayed one",
+    });
+  }
 
   return {
     arm: (opts) => {
@@ -888,10 +1015,21 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
       drain();
     },
     reason: () => abandoned,
+    settled: () =>
+      report
+        ? Promise.resolve(report)
+        : new Promise<PromptDeliveryReport>((resolve) => waiting.push(resolve)),
     close: () => {
       stopEvents();
       stopReplayed();
+      stopDisconnected();
       held.length = 0;
+      // Nobody is left waiting on a latch this command has finished with. The
+      // ordinary path awaits before disposing; this is for the paths that throw.
+      conclude({
+        outcome: "unavailable",
+        reason: "this command stopped listening before the Core said what became of the prompt",
+      });
     },
   };
 }
@@ -911,14 +1049,14 @@ function openPromptAbandonLatch(client: CoreClient): PromptAbandonLatch {
  * `latch` is the #483 report — `session:promptAbandoned`, the Core saying the
  * starting prompt never reached the harness. It is **opened by the caller,
  * before the Session exists**, and only armed here: see
- * {@link openPromptAbandonLatch} for why the ordering is the whole of it. This
+ * {@link openPromptDeliveryLatch} for why the ordering is the whole of it. This
  * function still lets no frame, no `CoreSession` and no client escape to the
  * command module.
  */
 function wrap(
   session: CoreSession,
   opts: {
-    latch: PromptAbandonLatch;
+    latch: PromptDeliveryLatch;
     projectId: string;
     project: string | null;
     harness: string | null;
@@ -951,6 +1089,7 @@ function wrap(
     },
     screen: () => session.screen(),
     promptAbandoned: () => opts.latch.reason(),
+    awaitPromptDelivery: () => opts.latch.settled(),
     dispose: () => {
       opts.latch.close();
       session.dispose();
