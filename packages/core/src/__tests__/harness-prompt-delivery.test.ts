@@ -336,6 +336,77 @@ const OPENCODE_COMPOSER = readFileSync(
   "utf8",
 );
 
+/**
+ * codex-cli 0.153.0's boot, its composer, its settled idle screen and the
+ * directory-trust dialog that is the only thing standing between the two —
+ * all four captured byte-for-byte off live PTYs at the Core's own 100x30 and
+ * `TERM=xterm-256color` (issue 277). Only the project path is substituted, and
+ * only in the three taken from a trusted directory.
+ *
+ * The timings below are measured, not reconstructed: each capture recorded the
+ * offset of every chunk from spawn, and the run these three come from is one
+ * of eight timed cold boots (five `codex --enable hooks`, three plain).
+ *
+ *    62 ms  {@link CODEX_BOOT} — capability probes. 72 bytes, no text at all.
+ *   171 ms  {@link CODEX_COMPOSER} — the first painted frame, and the composer
+ *           placeholder is *in* it. Across the eight boots: 160–198 ms.
+ *   602 ms  the 350 ms quiet gap expires. Across the eight boots: 602–1810 ms,
+ *           so the marker leads the gap by 419–1636 ms every time.
+ *  1098 ms  {@link CODEX_IDLE} — the settled screen, model and directory
+ *           resolved, placeholder still there.
+ *
+ * There is no hole on this path, and the probes say so directly rather than by
+ * inference: a prompt written at 0, 60, 120, 170, 200, 400, 700 and 1200 ms —
+ * eight more boots — echoed into the composer every time, including the ones
+ * written before codex had painted anything.
+ */
+const CODEX_BOOT = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-boot.txt"),
+  "utf8",
+);
+
+const CODEX_COMPOSER = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-composer.txt"),
+  "utf8",
+);
+
+const CODEX_IDLE = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-idle.txt"),
+  "utf8",
+);
+
+/**
+ * The same build booted in a directory it does not trust, which is where the
+ * prompt actually goes missing.
+ *
+ *   198 ms  {@link CODEX_UNTRUSTED_BOOT} — the identical first frame, composer
+ *           placeholder and all.
+ *   633 ms  the screen is cleared.
+ *   638 ms  {@link CODEX_DIRECTORY_TRUST} — `Do you trust the contents of this
+ *           directory?`, carrying its own clear at the front.
+ *   988 ms  the quiet gap expires with the dialog up and no composer anywhere.
+ *
+ * codex has no {@link BLOCKING_DIALOGS} entry, so before this row nothing in
+ * the module was watching for that screen. Measured on a ninth boot: a
+ * 22-character prompt written at 990 ms produced no echo and no change to the
+ * screen at all. The dialog eats it, and D8's `\r` then lands on a menu whose
+ * highlighted row is `1. Yes, continue`.
+ *
+ * The two are separate files on purpose. `composerOnScreen` reads whatever it
+ * is given and does not itself cut at a screen clear — the caller does — so a
+ * single fixture spanning both would report a composer that is no longer
+ * displayed, which is the mistake these captures exist to rule out.
+ */
+const CODEX_UNTRUSTED_BOOT = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-untrusted-boot.txt"),
+  "utf8",
+);
+
+const CODEX_DIRECTORY_TRUST = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-directory-trust.txt"),
+  "utf8",
+);
+
 // ─── screen reading ──────────────────────────────────────────────────
 
 describe("stripAnsi", () => {
@@ -1005,21 +1076,21 @@ describe("HarnessPromptDelivery", () => {
 describe("HARNESS_READINESS", () => {
   it("gates only the harnesses whose composer somebody has actually read", () => {
     // The table is still the ONLY thing that turns any of this on, and the
-    // default is still the pre-229 path. What changed in issue 232 is which
-    // harnesses have a row, not the rule for getting one: a screen has to have
-    // been looked at. codex has not been, so it keeps the untouched path — and
-    // that is a gap, not a clearance. See the table's own note.
-    for (const harness of ["codex", "invented-tomorrow"]) {
-      expect(readinessFor(harness)).toEqual({
-        composer: [],
-        confirmEcho: false,
-        maxPromptWrites: 1,
-      });
-      // No markers means no gate: any screen at all counts as ready.
-      expect(composerOnScreen("", readinessFor(harness))).toBe(true);
-    }
+    // default is still the pre-229 path. What changed in issues 232 and 277 is
+    // which harnesses have a row, not the rule for getting one: a screen has to
+    // have been looked at. All four shipped harnesses now have been, so what is
+    // left on the default is a harness nobody has written yet — which is the
+    // case the empty default is actually for.
+    expect(readinessFor("invented-tomorrow")).toEqual({
+      composer: [],
+      confirmEcho: false,
+      maxPromptWrites: 1,
+    });
+    // No markers means no gate: any screen at all counts as ready.
+    expect(composerOnScreen("", readinessFor("invented-tomorrow"))).toBe(true);
     expect(Object.keys(HARNESS_READINESS).sort()).toEqual([
       "claude-code",
+      "codex",
       "cursor-cli",
       "opencode",
     ]);
@@ -1063,6 +1134,46 @@ describe("HARNESS_READINESS", () => {
     // The trust screen is handled a step earlier, by the dialog table; this
     // asserts the two do not overlap into each other.
     expect(composerOnScreen(CURSOR_TRUST_DIALOG, readiness)).toBe(false);
+  });
+
+  it("recognises codex's composer on the frame it lands in and on the idle screen", () => {
+    // Two screens 927 ms apart in one capture: the first frame codex paints,
+    // where the model and directory both still read `loading`, and the settled
+    // screen with both resolved. The placeholder is on each of them, which is
+    // what makes it worth gating on rather than a string one frame happened to
+    // carry.
+    const readiness = readinessFor("codex");
+    expect(composerOnScreen(CODEX_COMPOSER, readiness)).toBe(true);
+    expect(composerOnScreen(CODEX_IDLE, readiness)).toBe(true);
+    // The 72 bytes before it are capability probes with no text in them.
+    expect(composerOnScreen(CODEX_BOOT, readiness)).toBe(false);
+  });
+
+  it("reads no composer on the trust dialog codex swallows prompts into", () => {
+    const readiness = readinessFor("codex");
+    // Before the clear, the placeholder is there and this reads ready — the
+    // same frame as the trusted boot's, because it is the same frame.
+    expect(composerOnScreen(CODEX_UNTRUSTED_BOOT, readiness)).toBe(true);
+    // After it, the dialog is the whole screen and nothing is listening. This
+    // is the gap the row closes: codex has no dialog-table entry, so the
+    // marker is the only thing that notices.
+    expect(composerOnScreen(CODEX_DIRECTORY_TRUST, readiness)).toBe(false);
+    expect(dialogsForHarness("codex")).toEqual([]);
+  });
+
+  it("does not gate codex on the two markers that share the composer's frame", () => {
+    const readiness = readinessFor("codex");
+    // `? for shortcuts` arrives with the composer on 8 of 8 boots and looks
+    // like a fine marker until it is timed past the boot: it is gone from the
+    // settled screen 927 ms later, so it would read "no composer" on every
+    // delivery that starts after boot rather than during it.
+    expect(/\?\s*for\s+shortcuts/i.test(stripAnsi(CODEX_COMPOSER))).toBe(true);
+    expect(/\?\s*for\s+shortcuts/i.test(stripAnsi(CODEX_IDLE))).toBe(false);
+    expect(composerOnScreen("  ? for shortcuts", readiness)).toBe(false);
+    // The wordmark survives to the settled screen and is still the wrong
+    // thing: a painted box is what D3a exists to stop reading as readiness,
+    // and it lands in the same frame as the placeholder anyway.
+    expect(composerOnScreen(">_ OpenAI Codex (v0.153.0)", readiness)).toBe(false);
   });
 });
 
@@ -1356,5 +1467,84 @@ describe("delivering to cursor-cli (issue 232)", () => {
     expect(h.writes).toEqual([]);
     expect(h.delivery.currentPhase).toBe("abandoned");
     expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+  });
+});
+describe("delivering to codex (issue 277)", () => {
+  /**
+   * codex 0.153.0 in a directory it trusts, replayed at the offsets its own
+   * capture recorded. The composer is early enough that the ordinary path
+   * never has to wait for it — which is the finding, and the row is not here
+   * because of this boot.
+   */
+  function bootCodex(prompt: string): Fixture {
+    const h = startDelivery(prompt, { harness: "codex" });
+    h.clock.advance(62);
+    h.delivery.onOutput(CODEX_BOOT);
+    h.clock.advance(109);
+    h.delivery.onOutput(CODEX_COMPOSER);
+    return h;
+  }
+
+  it("delivers on the first painted frame, because that frame has the composer", () => {
+    const h = bootCodex("say hello");
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    // 171 ms + the gap: the marker was never the thing being waited for, and
+    // nothing was typed before it either.
+    expect(h.clock.time).toBe(522);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.events).toContainEqual({ phase: "settled", waitedMs: 521 });
+    expect(h.events.filter((e) => e.phase === "waiting-for-composer")).toHaveLength(0);
+  });
+
+  it("holds the carriage return until codex shows the prompt back", () => {
+    // `confirmEcho` is new for codex with this row. The live probes say codex
+    // does echo — a prompt written at 0 ms came back — so this costs a paint,
+    // not a delivery.
+    const h = bootCodex("say hello");
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+
+    h.delivery.onOutput(echoed("say hello"));
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("types nothing into the trust dialog that was eating the prompt", () => {
+    // The untrusted boot at its captured offsets. Its eleven frames span
+    // 198–589 ms with no gap between them wider than 110 ms, so the quiet gap
+    // cannot open inside them; they go in as one chunk at 589 ms, which is the
+    // offset of the last of them and changes nothing this measures. Then the
+    // clear at 633 ms and the dialog at 638 ms take the composer off screen.
+    const h = startDelivery("say hello", { harness: "codex" });
+    h.clock.advance(589);
+    h.delivery.onOutput(CODEX_UNTRUSTED_BOOT);
+    h.clock.advance(49);
+    h.delivery.onOutput(CODEX_DIRECTORY_TRUST);
+
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.clock.time).toBe(989);
+    // Live, at this moment, a 22-character prompt vanished without an echo and
+    // D8's `\r` went on to a menu highlighting `1. Yes, continue`.
+    expect(h.writes).toEqual([]);
+    expect(h.events).toContainEqual({ phase: "waiting-for-composer", waitedMs: 988 });
+  });
+
+  it("delivers as soon as the dialog is answered and the composer returns", () => {
+    // Nothing here answers the dialog — codex has no entry in the dialog table
+    // and D4a forbids guessing a keystroke for a menu this module has not been
+    // taught. What the row buys is that the prompt is still in hand when a
+    // human does answer it.
+    const h = startDelivery("say hello", { harness: "codex" });
+    h.clock.advance(589);
+    h.delivery.onOutput(CODEX_UNTRUSTED_BOOT);
+    h.clock.advance(49);
+    h.delivery.onOutput(CODEX_DIRECTORY_TRUST);
+    h.clock.advance(4_000);
+    expect(h.writes).toEqual([]);
+
+    h.delivery.onOutput(CODEX_IDLE);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
   });
 });

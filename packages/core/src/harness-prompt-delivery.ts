@@ -457,9 +457,9 @@ export function highlightIsOn(
  * entry is the only thing that changes it. Issue 229 added opencode alone, on
  * the reading that the other three were unaffected; issue 232 measured the
  * same lost prompt on `cursor-cli` and `claude-code` and disproved it for two
- * of them, so both have rows below. `codex` is the only harness left on the
- * default, and it is there unverified rather than cleared — see the table's
- * own note before adding to it.
+ * of them, so both have rows below. Issue 277 read codex's screen and gave it
+ * the fourth row, so every harness this repository ships now has one and the
+ * empty default belongs to harnesses nobody has written yet.
  */
 export type HarnessReadiness = {
   /**
@@ -553,13 +553,55 @@ const NO_READINESS: HarnessReadiness = {
  * cannot be gated on, because the run it is late on is the run that a readiness
  * signal exists to protect, and that is the run it would delay.
  *
- * **codex has no entry and that is not a claim that it is safe.** It is
- * unverified: nothing in issue 232's sample exercised it, and this table is
- * for screens somebody has looked at. Until one is, codex keeps the pre-229
- * behaviour — settle, type, submit — which is exactly the path claude-code and
- * cursor-cli were on when they lost prompts. Treat a codex row as owed, not as
- * unnecessary; it is tracked as issue 277, which lists the capture and the
- * timing that would settle it either way.
+ * **codex** (issue 277). It was the last harness on the pre-229 default, and
+ * it was there unverified rather than cleared. It has been verified now, off
+ * 21 live PTY boots of codex-cli 0.153.0 on one Core, and the answer is in two
+ * halves.
+ *
+ * The boot race it was suspected of does not exist on this build. `› Ask Codex
+ * to do anything` — the composer's own placeholder — lands in the *first*
+ * frame codex paints, 160–198 ms after spawn on 8 of 8 boots (5 with `--enable
+ * hooks`, 3 without), while the 350 ms quiet gap does not expire until
+ * 602–1810 ms. The margin runs the right way by 419–1636 ms, and it is not
+ * only the marker that is early: a prompt written at 0 ms, before codex has
+ * painted anything at all, still echoed into the composer on every attempt at
+ * 0, 60, 120, 170, 200, 400, 700 and 1200 ms. Nothing here is opencode's
+ * four-second hole or claude-code's 222 ms one.
+ *
+ * The hole is the **directory-trust dialog**, and it is the reason for the
+ * row. In a directory codex does not trust it paints that same composer
+ * placeholder at ~200 ms, *clears the screen* at ~630 ms and replaces it with
+ * `Do you trust the contents of this directory?`. The quiet gap expires at
+ * ~990 ms, with the dialog up and no composer anywhere — and codex has no
+ * {@link BLOCKING_DIALOGS} entry, so nothing else in this module is watching
+ * for it. Measured live: a 22-character prompt written at 990 ms into that
+ * screen produced no echo and no visible change at all. The dialog swallows
+ * it, and the `\r` that D8 sends after the submit pause lands on a menu whose
+ * highlighted row is `1. Yes, continue` — the directory is trusted, a session
+ * starts, and the prompt is simply gone. That is issue 277's signature exactly:
+ * a Session parked in `ready` with `--wait` timing out. With the row, the
+ * marker is absent, the module holds instead of typing, and the operator gets
+ * a dialog to answer rather than a prompt that evaporated.
+ *
+ * Two candidate markers on that same first frame were timed and rejected.
+ * `? for shortcuts` arrives with the composer on 8 of 8 boots and then *goes
+ * away*: it is gone from the settled screen at 1098 ms, so it would read as
+ * "no composer" on every delivery that starts after boot. The `>_ OpenAI Codex
+ * (v0.153.0)` banner survives to the settled screen, but it is the wordmark on
+ * a box and not the composer — it says the process drew a frame, which is the
+ * thing D3a exists to stop treating as readiness — and it buys nothing anyway,
+ * landing in the same frame as the placeholder on every boot measured.
+ *
+ * All four screens are committed as
+ * `__tests__/fixtures/codex-0.153.0-{boot,composer,idle,directory-trust}.txt`
+ * and the marker is asserted against those files rather than against a
+ * literal. Only the project path is substituted, and the trust capture's is
+ * not: it was taken in a throwaway directory whose name is already neutral.
+ *
+ * codex needs no {@link HARNESS_PROMPT_DELIVERY_PROFILES} entry to go with the
+ * row. A marker that arrives at 200 ms is two orders of magnitude inside the
+ * backstop, and the one screen where it never arrives is a dialog — which no
+ * amount of extra waiting turns into a composer.
  *
  * If a future build of any of these reworded its placeholder the marker stops
  * matching and delivery degrades to the backstop — the prompt goes out at
@@ -579,6 +621,11 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   },
   "claude-code": {
     composer: [/\btry\s+"/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+  codex: {
+    composer: [/ask\s+codex\s+to\s+do\s+anything/i],
     confirmEcho: true,
     maxPromptWrites: 3,
   },
@@ -926,11 +973,12 @@ export class HarnessPromptDelivery {
   /**
    * Is there enough evidence to justify the carriage return?
    *
-   * `true` for every harness with no `confirmEcho` entry, which today is
-   * `codex` alone — and it is there because nobody has read its screen, not
-   * because it was shown to be unaffected. The other three all set the flag:
-   * opencode from issue 229, `cursor-cli` and `claude-code` from the swallowed
-   * writes issue 232 measured on them. Past the backstop and
+   * `true` for every harness with no `confirmEcho` entry, which since issue
+   * 277 is no shipped harness at all — the flag is set on all four. opencode
+   * set it from issue 229, `cursor-cli` and `claude-code` from the swallowed
+   * writes issue 232 measured on them, and codex from the directory-trust
+   * screen issue 277 measured a whole prompt vanishing into. Past the backstop
+   * and
    * past the retype budget it is also `true`: leaving a prompt typed-but-
    * unsent is its own failure (D8), and an unjustified `\r` into an empty
    * composer costs nothing — unlike the one into a menu that D4a guards.
