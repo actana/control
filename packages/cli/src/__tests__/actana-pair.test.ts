@@ -305,7 +305,7 @@ describe("actana pair new --public-host", () => {
 
     expect(run(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
 
-    expect(field("Endpoint host")).toBe("10.0.0.5");
+    expect(field("Address host")).toBe("10.0.0.5");
     const session = store().getSession(field("Session"))!;
     expect(session.endpointHost).toBe("10.0.0.5");
   });
@@ -320,14 +320,14 @@ describe("actana pair new --public-host", () => {
     // code is redeemed, which is today's behaviour and stays it.
     const session = store().getSession(field("Session"))!;
     expect(session.endpointHost).toBeNull();
-    expect(out.join("\n")).not.toContain("Endpoint host");
+    expect(out.join("\n")).not.toContain("Address host");
   });
 
   it("takes any host on the list, not only the primary", async () => {
     await multiHost();
     for (const host of ["core", "10.0.0.5", "core.example.test"]) {
       expect(run(["new", "--public-host", host])).toBe(0);
-      expect(field("Endpoint host")).toBe(host);
+      expect(field("Address host")).toBe(host);
     }
   });
 
@@ -463,7 +463,7 @@ describe("actana pair new, piped", () => {
       "Expires        2026-08-20T12:05:00Z (in 5 minutes)",
     ];
     if (over.label) lines.push(`Label          ${over.label}`);
-    if (over.endpointHost) lines.push(`Endpoint host  ${over.endpointHost}`);
+    if (over.endpointHost) lines.push(`Address host   ${over.endpointHost}`);
     lines.push(`Session        ${field("Session")}`);
     return lines;
   }
@@ -481,7 +481,7 @@ describe("actana pair new, piped", () => {
     expect(out).toEqual(expectedLines());
   });
 
-  it("keeps `Endpoint host` where it was, between Label and Session", async () => {
+  it("keeps `Address host` where it was, between Label and Session", async () => {
     material = await mintFreshMaterial(["core", "10.0.0.5"]);
     persistMaterialToFile(materialPath, material);
 
@@ -578,7 +578,7 @@ describe("actana pair new, at a terminal", () => {
   });
 
   // The Panel's form asks for the address *first*, and until now the
-  // frame was the one surface that never said what to put in it — `Endpoint
+  // frame was the one surface that never said what to put in it — `Address
   // host` prints only down a pipe and only for `--public-host`. An operator at
   // a terminal read four values off the box and had to derive the fifth.
   describe("the endpoint row", () => {
@@ -591,7 +591,7 @@ describe("actana pair new, at a terminal", () => {
 
     it("names the address inside the frame, not only under it", () => {
       expect(runTty(["new", "--label", "laptop"])).toBe(0);
-      expect(box().some((line) => line.includes("Endpoint"))).toBe(true);
+      expect(box().some((line) => line.includes("Address"))).toBe(true);
       expect(box().some((line) => line.includes("10.0.0.5:8443"))).toBe(true);
     });
 
@@ -601,8 +601,8 @@ describe("actana pair new, at a terminal", () => {
       // will be read out of order into the form.
       runTty(["new", "--label", "laptop"]);
       const at = (needle: string) => box().findIndex((line) => line.includes(needle));
-      expect(at("Endpoint")).toBeGreaterThan(-1);
-      expect(at("CA fingerprint")).toBeGreaterThan(at("Endpoint"));
+      expect(at("Address")).toBeGreaterThan(-1);
+      expect(at("CA fingerprint")).toBeGreaterThan(at("Address"));
       expect(at("Session")).toBeGreaterThan(at("CA fingerprint"));
     });
 
@@ -616,7 +616,7 @@ describe("actana pair new, at a terminal", () => {
 
       expect(runTty(["new", "--label", "laptop"])).toBe(0);
 
-      expect(box().some((line) => line.includes("Endpoint       core:8443"))).toBe(true);
+      expect(box().some((line) => line.includes("Address        core:8443"))).toBe(true);
       // The other two are offered as commands, and only as commands.
       for (const other of ["10.0.0.5:8443", "core.example.test:8443"]) {
         expect(box().some((line) => line.includes(other))).toBe(false);
@@ -630,7 +630,7 @@ describe("actana pair new, at a terminal", () => {
 
       expect(runTty(["new", "--label", "laptop", "--public-host", "10.0.0.5"])).toBe(0);
 
-      expect(box().some((line) => line.includes("Endpoint       10.0.0.5:8443"))).toBe(true);
+      expect(box().some((line) => line.includes("Address        10.0.0.5:8443"))).toBe(true);
     });
 
     it("wraps a long address rather than clipping it, and stays square", async () => {
@@ -647,11 +647,11 @@ describe("actana pair new, at a terminal", () => {
       for (const line of box()) expect(displayWidth(line)).toBe(FRAME_WIDTH);
       for (const elision of ["...", "…"]) expect(screen()).not.toContain(elision);
 
-      // Nothing dropped: the rows under the `Endpoint` heading, in order and
+      // Nothing dropped: the rows under the `Address` heading, in order and
       // with nothing but the border and the gutter taken off, re-join to
       // exactly the address — separators included.
       const content = box().map((line) => line.replace(/^│/, "").replace(/│$/, "").trim());
-      const heading = content.findIndex((line) => line === "Endpoint");
+      const heading = content.findIndex((line) => line === "Address");
       expect(heading).toBeGreaterThan(-1);
       const rest = content.slice(heading + 1);
       const rejoined = rest.slice(0, rest.indexOf("")).join("");
@@ -662,7 +662,7 @@ describe("actana pair new, at a terminal", () => {
       // The frame is where this row lives. The piped shape is what every script
       // wrapping `pair new` reads, and it did not grow a field.
       expect(run(["new", "--label", "laptop"])).toBe(0);
-      expect(out.some((line) => line.startsWith("Endpoint "))).toBe(false);
+      expect(out.some((line) => line.startsWith("Address "))).toBe(false);
     });
   });
 
