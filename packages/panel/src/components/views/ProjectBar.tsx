@@ -28,6 +28,11 @@ import { api } from "~/lib/api";
 import { mutateProjectForCore } from "~/lib/mutate-project-for-core";
 import { saveProjectEdits } from "~/lib/save-project-edits";
 import { getPinnedProjects, mergeSubsetOrder, reorderPinnedIds } from "~/lib/pinned-project-order";
+import {
+  applyCorePinFiling,
+  settleCorePinFiling,
+  type CorePinFiling,
+} from "~/lib/core-pins-engine";
 import { ACTIVE_GROUP_ALL, useActiveGroup } from "~/lib/active-group";
 import {
   clusterPinnedByGroup,
@@ -390,14 +395,34 @@ export const ProjectBar = memo(function ProjectBar({
       const groupChangeCoreId = groupChange
         ? coreIdByProject.get(groupChange.projectId) ?? null
         : null;
+      // The same move, as the fleet engine has to hear it. A Core-owned row is
+      // not in the query cache the optimistic update below reaches, so without
+      // this the tile just dragged to the top re-rendered at the bottom the
+      // instant the drop settled — `pinnedOrder` still null, which the
+      // comparator reads as last — and stayed there for both HTTP legs and the
+      // whole fan-out after them. Shift+Arrow showed it undisguised: the key
+      // went down and the tile did not move (#382 review).
+      const corePinFiling = new Map<string, CorePinFiling>();
+      for (const slot of corePinSlots) {
+        corePinFiling.set(slot.projectId, { pinnedOrder: slot.pinnedOrder });
+      }
+      if (groupChange && groupChangeCoreId) {
+        corePinFiling.set(groupChange.projectId, {
+          ...corePinFiling.get(groupChange.projectId),
+          groupId: groupChange.groupId,
+        });
+      }
       const saveSeq = ++reorderSaveSeqRef.current;
       reorderSavingRef.current = true;
       setReorderSaving(true);
       const nextOrders = new Map(fullOrder.map((id, index) => [id, index]));
       const previous = queryClient.getQueryData<ProjectWithCounts[]>(queryKeys.projects);
-      // Optimism reaches the Panel's own rows only: a Core's pins are not in
-      // this cache at all (they come off the fleet engine's snapshot), so they
-      // catch up on the refresh below rather than here.
+      // The rail's two halves take their optimism from two places, because
+      // that is where the two halves of the rail actually live: the Panel's
+      // rows in this query cache, a Core's pins in the fleet engine's module
+      // snapshot. Both are applied before the first await, so the render that
+      // follows the drop draws the order the operator just made.
+      applyCorePinFiling(corePinFiling);
       queryClient.setQueryData<ProjectWithCounts[]>(
         queryKeys.projects,
         (current) =>
@@ -413,6 +438,20 @@ export const ProjectBar = memo(function ProjectBar({
           }) ?? current,
       );
       try {
+        // The validating write goes first, and nothing else is committed
+        // before it answers. `reorderPinnedProjects` is the only call here
+        // that can refuse the move — another tab unpinning a Panel row is
+        // enough — and until this order it could refuse one *after* the group
+        // change had already landed, so the toast said the move failed while
+        // the tile had genuinely changed group (#382 review).
+        const { projects: updated } = await api.reorderPinnedProjects(fullOrder);
+        // That answer was taken before the group write below, so it lands
+        // first; letting it land last would put the old group back on screen
+        // until something else refetched.
+        if (saveSeq === reorderSaveSeqRef.current) {
+          queryClient.setQueryData(queryKeys.projects, updated);
+        }
+        if (corePinSlots.length > 0) await api.reorderCorePinnedProjects(corePinSlots);
         if (groupChange) {
           if (groupChangeCoreId) {
             await api.updateProjectPresentation(groupChange.projectId, groupChangeCoreId, {
@@ -421,22 +460,22 @@ export const ProjectBar = memo(function ProjectBar({
           } else {
             await api.updateProject(groupChange.projectId, { groupId: groupChange.groupId });
           }
+          if (saveSeq === reorderSaveSeqRef.current) {
+            queryClient.setQueryData<ProjectWithCounts[]>(
+              queryKeys.projects,
+              (current) =>
+                current?.map((project) =>
+                  project.id === groupChange.projectId
+                    ? { ...project, groupId: groupChange.groupId }
+                    : project,
+                ) ?? current,
+            );
+          }
         }
-        // The Panel's write first: it is the one that validates the order, so
-        // a rejected rail is rejected before any slot has been written.
-        const { projects: updated } = await api.reorderPinnedProjects(fullOrder);
-        if (corePinSlots.length > 0) await api.reorderCorePinnedProjects(corePinSlots);
-        if (saveSeq === reorderSaveSeqRef.current) {
-          queryClient.setQueryData(queryKeys.projects, updated);
-        }
-        // Re-read the fleet's pins so the Core-owned tiles land on the slots
-        // and the group just written for them, rather than waiting for a poll.
-        if (corePinSlots.length > 0 || groupChangeCoreId) refreshRemotePinned();
       } catch (error) {
         if (saveSeq === reorderSaveSeqRef.current) {
           queryClient.setQueryData(queryKeys.projects, previous);
           await invalidateProjects();
-          if (corePinSlots.length > 0 || groupChangeCoreId) refreshRemotePinned();
           toast.error(error instanceof Error ? error.message : "Could not move project");
         }
       } finally {
@@ -444,9 +483,15 @@ export const ProjectBar = memo(function ProjectBar({
           reorderSavingRef.current = false;
           setReorderSaving(false);
         }
+        // Released the gesture guard first, then take the overlay down behind
+        // a read: the fan-out is several round trips per Core and no operator
+        // should have their next Shift+Arrow swallowed waiting for it. The
+        // read is what confirms the write on the happy path and what corrects
+        // the rail on a failed one, so this runs either way.
+        void settleCorePinFiling([...corePinFiling.keys()]);
       }
     },
-    [coreIdByProject, invalidateProjects, queryClient, refreshRemotePinned, sortedPinned],
+    [coreIdByProject, invalidateProjects, queryClient, sortedPinned],
   );
 
   const startProjectPointerDrag = useCallback(
@@ -1526,12 +1571,26 @@ export const ProjectBar = memo(function ProjectBar({
                 // scoped elsewhere would mutate the wrong Core (silent no-op)
                 // and the pin bar would only clear on restart.
                 const targetCoreId = target?.coreId ?? coreId;
+                const unpinning = target?.pinned === true;
                 try {
                   await mutateProjectForCore(targetCoreId, {
                     op: "pin",
                     projectId: id,
-                    pinned: target?.pinned !== true,
+                    pinned: !unpinning,
                   });
+                  // A rail slot outlives the pin that earned it unless
+                  // something clears it: `reorderCorePins` is its only other
+                  // writer, and a pin toggle never reaches that. Left behind,
+                  // an unpinned-then-repinned Core project would come back to
+                  // the slot it used to hold, while a re-pinned Panel row goes
+                  // to the end of the rail (#382 review). An unpin somewhere
+                  // this Panel never sees still strands one — that is the
+                  // reconciliation pass filed as its own issue.
+                  if (unpinning && targetCoreId) {
+                    await api
+                      .updateProjectPresentation(id, targetCoreId, { pinnedOrder: null })
+                      .catch(() => undefined);
+                  }
                 } catch (err) {
                   toast.error(
                     err instanceof Error ? err.message : "Could not update project pin",
