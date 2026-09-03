@@ -170,10 +170,12 @@ describe("the CLI schedules nothing (#129 D3, ADR 0026)", () => {
   });
 
   it("never appends a carriage return to text on its way to a Session", () => {
-    // `session send --enter` writes one, as a **separate** write, because the
-    // operator asked for it in that invocation. What must not exist is a return
-    // glued onto somebody's text — that is the CLI deciding when a prompt is
-    // submitted, which is the decision ADR 0026 moved to the Core.
+    // `session send` writes one, as a **separate** write, because the operator
+    // asked for a message to be sent — by default since #404, and under
+    // `--enter` before it. What must not exist is a return glued onto somebody's
+    // text: a harness that treats a paste as one unit swallows it, and gluing it
+    // is also how a CLI starts deciding *when* a prompt is submitted rather than
+    // *that* this one is — the decision ADR 0026 moved to the Core.
     for (const file of shippedSources()) {
       const source = withoutComments(readFileSync(file, "utf8"));
       expect(source, `${path.relative(SRC, file)} appends a carriage return to text`).not.toMatch(
