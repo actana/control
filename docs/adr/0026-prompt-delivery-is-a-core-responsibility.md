@@ -178,7 +178,8 @@ cursor-cli were on while they were losing prompts. The honest reading of this
 amendment is that codex is *unverified*, not that it is safe, and a codex row is
 owed as soon as somebody captures its composer. That is filed as
 [issue 277](https://github.com/actana/control/issues/277), so the gap has an
-address rather than a note in three files.
+address rather than a note in three files. *Superseded by the issue 277
+amendment below: the screen has been read and codex has a row.*
 
 **This is also why the mitigation belongs here and not in a client.** The
 workaround in use while this was open — start the Session, wait ~12 s, ask the
@@ -188,3 +189,67 @@ layer too far out: only the Core sees the harness's screen, which is this
 record's founding argument. With `confirmEcho` on both harnesses, a write that
 left no echo returns to `settling` and is typed again inside the same delivery,
 and the client has nothing to poll for.
+
+## Amendment — issue 277 (2026-09-03)
+
+**`codex` has a readiness row, and the hole it closes is not the one it was
+suspected of.** [Issue 277](https://github.com/actana/control/issues/277) asked
+for two things before a row: codex's boot and idle composer captured off a live
+PTY, and the gap between them timed rather than guessed. Both were done on
+codex-cli 0.153.0, twenty-one live boots on one Core at the Core's own 100×30
+and `TERM=xterm-256color`, and the measurement decided the shape of the row.
+
+**There is no boot race on this build.** `› Ask Codex to do anything` — the
+composer's own placeholder — is in the *first* frame codex paints, 160–198 ms
+after spawn on 8 of 8 timed cold boots (five `codex --enable hooks`, three
+plain). D3's 350 ms quiet gap does not expire until 602–1810 ms in those same
+runs, so the marker leads the settle by 419–1636 ms every time. Nor is the
+marker merely early: a prompt written at 0, 60, 120, 170, 200, 400, 700 and
+1200 ms — eight further boots — echoed into the composer on every attempt,
+including the writes that went in before codex had painted anything at all. If
+the row had to rest on the boot race it would not be justified, and this record
+would say codex needs no row.
+
+**The hole is the directory-trust dialog, and it is a D3a hole rather than a D5
+one.** In a directory codex does not trust, it paints that same composer
+placeholder at ~200 ms, clears the screen at ~633 ms, and replaces it with `Do
+you trust the contents of this directory?`. The quiet gap expires at ~988 ms
+with the dialog up and no composer anywhere on screen — and codex has **no
+`BLOCKING_DIALOGS` entry**, so D5 is not watching for that screen either.
+Measured on a further boot: a 22-character prompt written at 990 ms produced no
+echo and no change to the screen at all. The dialog swallows it, and the `\r`
+D8 sends after the submit pause lands on a menu whose highlighted row is `1.
+Yes, continue` — the directory is trusted, a session starts, and the prompt is
+gone with the Session parked in `ready`. That is issue 277's stated signature,
+reached by a different route than #229's.
+
+**So the marker earns the row on the dialog, not on the boot**, and the row is
+the ordinary D3a/D6a pair: the placeholder as the composer marker, `confirmEcho`
+on, `maxPromptWrites: 3`. What it buys is that the module holds instead of
+typing into a screen that is provably not a composer, and the operator is left
+with a dialog to answer rather than a prompt that evaporated. Teaching D5 to
+*answer* that dialog is a different decision and is not taken here — the menu is
+laid out so that stripping its escapes yields `1. Yes, continue2.No,quit`, which
+`readDialogOptions` cannot read, and that is
+[issue 469](https://github.com/actana/control/issues/469)'s.
+
+**Two candidate markers on the same frame were timed and rejected**, which is
+the discipline the issue 232 amendment recorded and this one keeps. `? for
+shortcuts` arrives with the composer on 8 of 8 boots and is **gone from the
+settled screen** 927 ms later, so it would read "no composer" on every delivery
+that begins after boot rather than during it. The `>_ OpenAI Codex (v0.153.0)`
+wordmark does survive to the settled screen, and it is still the wrong thing to
+gate on: a painted box is exactly what D3a exists to stop reading as readiness,
+and it lands in the same frame as the placeholder on every boot measured, so it
+buys nothing even where it is right.
+
+Five screens are committed under `packages/core/src/__tests__/fixtures/` as
+`codex-0.153.0-{boot,composer,idle,untrusted-boot,directory-trust}.txt`, and the
+marker is asserted against those files rather than against a literal beside it.
+
+**codex needs no `HARNESS_PROMPT_DELIVERY_PROFILES` entry.** A marker that
+arrives at 200 ms is two orders of magnitude inside D8's 15 s backstop, and the
+one screen where it never arrives is a dialog — which no amount of extra waiting
+turns into a composer. The timing table stays a place for a harness that has
+been measured to need a different number, which codex has now been measured not
+to be.
