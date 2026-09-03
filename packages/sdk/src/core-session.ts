@@ -189,10 +189,20 @@ export const STATUS_READ_RETRY_MS = 250;
  * A link that has not come back by then is not a blip, and the wait behind it
  * has nothing left to hear.
  *
- * **It is a grace, not a deadline.** It only ever runs while the link is down,
- * it is cancelled the moment the link returns, and it is not what
+ * **It is a grace, not a deadline.** It runs only while the link is down, it is
+ * paused the moment a usable connection returns, and it is not what
  * {@link CoreSessionWaitOptions.timeoutMs} is — a caller that passed no deadline
  * still has none while the Core is reachable.
+ *
+ * **And it is a budget, spent cumulatively** (#492 review, blocking 1). A link
+ * that drops and comes back does not earn a fresh thirty seconds: the outages a
+ * single wait lives through are added up, and the wait fails once they total
+ * this much. Forgiving each flap in full is how a wait outlives its link the
+ * long way round — a Core in a restart crash-loop, or a `DurableCoreClient` on
+ * its 500 ms–5 s backoff against a flaky link, drops and returns indefinitely
+ * with no single outage long enough to fire anything, and the wait hangs for
+ * ever on exactly the failure #396 exists to remove. Summed, the deaf time a
+ * wait can accumulate is bounded, so it always ends.
  *
  * Zero, which {@link CoreSession.start} and {@link CoreSession.attach} use for a
  * client that does not reconnect, means the wait fails the instant the link
@@ -262,6 +272,9 @@ export type CoreSessionStartOptions = {
   /**
    * How long a wait on this Session keeps waiting after the link to the Core
    * drops, before it fails with {@link CoreSessionLinkLostError} (#396).
+   *
+   * A cumulative budget rather than a per-outage one: the outages a single wait
+   * lives through are summed against it.
    *
    * Defaults to {@link CORE_LINK_LOST_GRACE_MS} on a client that reconnects and
    * to **0** on one that does not, because on the second kind there is nothing
@@ -519,8 +532,25 @@ export class CoreSessionLinkLostError extends Error {
    * nothing about this Session after the cursor.
    */
   readonly reportedSinceDelivery: boolean;
-  /** How long the wait went on for after the drop before giving up, in ms. */
+  /**
+   * The **budget** a dropped link was given to come back in, in ms — the
+   * configured grace, not a measurement.
+   *
+   * 0 on a client that does not reconnect, where the wait fails on the drop
+   * itself because there is nothing coming to wait for.
+   */
   readonly graceMs: number;
+  /**
+   * How long this side was **actually deaf** before the wait gave up, in ms,
+   * summed across every outage the wait lived through.
+   *
+   * The measurement, where {@link graceMs} is the budget (#492 review, should
+   * fix 1). They are not the same number and the difference is the point: a
+   * wait that flapped fails part-way into a later outage, having banked the
+   * earlier ones, so reporting the constant would overstate what this side sat
+   * through. Always at least `graceMs` when `graceMs` is above 0.
+   */
+  readonly downMs: number;
   /** What the transport said about the drop, when it said anything. */
   readonly reason: string | null;
 
@@ -530,6 +560,7 @@ export class CoreSessionLinkLostError extends Error {
     lastStatus: string | null;
     reportedSinceDelivery: boolean;
     graceMs: number;
+    downMs: number;
     reason: string | null;
   }) {
     super(linkLostMessage(opts));
@@ -539,6 +570,7 @@ export class CoreSessionLinkLostError extends Error {
     this.lastStatus = opts.lastStatus;
     this.reportedSinceDelivery = opts.reportedSinceDelivery;
     this.graceMs = opts.graceMs;
+    this.downMs = opts.downMs;
     this.reason = opts.reason;
   }
 }
@@ -560,11 +592,13 @@ function linkLostMessage(opts: {
   taskId: string;
   lastStatus: string | null;
   graceMs: number;
+  downMs: number;
   reason: string | null;
 }): string {
   const stayedDown =
     opts.graceMs > 0
-      ? `and was still down ${opts.graceMs}ms later`
+      ? `and this side has now been deaf for ${opts.downMs}ms, past the ${opts.graceMs}ms a dropped ` +
+        `link is given to come back in`
       : "and this client does not reconnect";
   const because = opts.reason ? ` (${opts.reason})` : "";
   return (
@@ -695,12 +729,22 @@ export class CoreSession {
    * whatever the caller asked for.
    */
   private readonly linkLostGraceMs: number;
-  /** True between the link going down and it coming back. */
+  /** True between the link going down and a usable connection coming back. */
   private linkDown = false;
   /** What the transport said about the current drop, when it said anything. */
   private linkLostReason: string | null = null;
   /** The grace running against the current drop, armed only while one is. */
   private linkLostTimer: ReturnType<typeof setTimeout> | null = null;
+  /** When the outage now running began, or null while the link is usable. */
+  private linkDownSince: number | null = null;
+  /**
+   * Deaf time already banked from earlier outages, for the wait now running.
+   *
+   * The half that makes the grace a **budget** rather than a fresh allowance per
+   * flap (#492 review, blocking 1). Reset when the last waiter goes, because the
+   * budget belongs to a wait and not to the Session.
+   */
+  private linkDownBankedMs = 0;
   private exit: { exitCode: number; signal?: number } | null = null;
   private disposed = false;
   /** A status read is in flight; another event arrived while it was. */
@@ -819,7 +863,7 @@ export class CoreSession {
     // nothing will ever end (#396). Not held like the three above: a drop before
     // the spawn is answered fails the spawn, which is the `catch` below.
     const stopDown = client.onDisconnected(({ error }) => session?.onLinkLost(error));
-    const stopUp = client.onReady(() => session?.onLinkBack());
+    const stopUp = client.onEstablished(() => session?.onLinkBack());
 
     let spawned: { ptyId: string; hooksReportTurnStart: boolean };
     try {
@@ -953,7 +997,7 @@ export class CoreSession {
       // used to leave it pending with nothing left that could ever end it
       // (#396).
       client.onDisconnected(({ error }) => session.onLinkLost(error)),
-      client.onReady(() => session.onLinkBack()),
+      client.onEstablished(() => session.onLinkBack()),
     );
 
     const replay = opts.replay !== false;
@@ -1189,7 +1233,9 @@ export class CoreSession {
    * {@link CORE_LINK_LOST_GRACE_MS} in case the link comes back — on a client
    * that reconnects it usually does, and the replay past its cursor carries the
    * status this wait was missing — and then rejects with
-   * {@link CoreSessionLinkLostError}.
+   * {@link CoreSessionLinkLostError}. That grace is a **cumulative budget**, so
+   * a link that flaps cannot renew it: the deaf time one wait accumulates is
+   * bounded, and the wait therefore always ends.
    *
    * **It rejects rather than resolving**, and that is the whole of the design:
    * this side stopped hearing from the Core, which is evidence about the link
@@ -1219,14 +1265,16 @@ export class CoreSession {
         },
       };
       this.idleWaiters.add(waiter);
-      // A wait started while the link is already down is the same wait as one
-      // that was running when it went (#396) — it has just as little chance of
-      // hearing anything — so the grace is armed for it too, from here.
-      if (this.linkDown) this.armLinkLostGrace();
       if (opts.timeoutMs && opts.timeoutMs > 0) {
         const timeoutMs = opts.timeoutMs;
         timer = setTimeout(() => {
           this.idleWaiters.delete(waiter);
+          // The grace goes back with the waiter (#492 review, should fix 1).
+          // Without this the timer outlives the wait it was about: it is not
+          // `unref`ed, so it holds the event loop for the rest of the grace, and
+          // `armLinkLostGrace`'s "one timer per Session" guard would hand the
+          // next wait on this Session that stale, part-spent one.
+          this.releaseLinkLostGrace();
           // **Named rather than bare** (#405). The one thing this deadline knows
           // that its caller does not is whether the Core reported *anything*
           // after the delivery: `lastStatusEventId` still at or below the cursor
@@ -1245,6 +1293,15 @@ export class CoreSession {
           );
         }, opts.timeoutMs);
       }
+      // **After the deadline is armed, not before** (#492 review, should fix 2).
+      // A wait started while the link is already down is the same wait as one
+      // that was running when it went (#396) — it has just as little chance of
+      // hearing anything — so the grace is armed for it too, from here. On a
+      // grace of 0 that rejects *synchronously*, inside this executor, and a
+      // `fail` that ran with `timer` still null would leave the `setTimeout`
+      // above orphaned: nothing clears it, `dispose()` included, and an SDK
+      // consumer holds the event loop until it fires.
+      if (this.linkDown) this.armLinkLostGrace();
     });
   }
 
@@ -1294,6 +1351,8 @@ export class CoreSession {
       clearTimeout(this.linkLostTimer);
       this.linkLostTimer = null;
     }
+    this.linkDownSince = null;
+    this.linkDownBankedMs = 0;
     // Anyone still waiting is waiting on a report this Session will no longer
     // hear, so they are settled on the way out rather than left pending
     // forever. `kill()` disposes, and `await session.kill()` after starting a
@@ -1329,33 +1388,64 @@ export class CoreSession {
    * @internal — the client's link to the Core went down (#396).
    *
    * Nothing is decided here. The link being down is a fact about this side, and
-   * the wait it endangers is given {@link linkLostGraceMs} to see whether it
-   * comes back: on a client that reconnects it usually does, and the replay past
-   * its cursor delivers whatever the Core reported in the gap, so the wait ends
-   * on the Core's own report exactly as it would have.
+   * the wait it endangers is given what is left of {@link linkLostGraceMs} to
+   * see whether a usable connection comes back: on a client that reconnects one
+   * usually does, and the replay past its cursor delivers whatever the Core
+   * reported in the gap, so the wait ends on the Core's own report exactly as it
+   * would have.
+   *
+   * *What is left of*, because outages already lived through were banked by
+   * {@link onLinkBack} and are spent — see {@link armLinkLostGrace}.
    */
   private onLinkLost(reason?: string): void {
     if (this.disposed || this.linkDown) return;
     this.linkDown = true;
     this.linkLostReason = reason ?? null;
+    this.linkDownSince = Date.now();
     this.armLinkLostGrace();
   }
 
   /**
-   * @internal — a connection came up. Whatever the grace was about is over.
+   * @internal — a connection came up **and is usable**. The outage is over.
    *
-   * The wait carries on from here with nothing changed: this restores the state
-   * a wait is supposed to be in, and does not resolve, fail or advance anything.
-   * A turn that ended while the link was down is reported by the replay the
-   * client asks for on its new connection, through the ordinary event path.
+   * Wired to `onEstablished` rather than to `onReady` (#492 review, blocking 2).
+   * `ready` is the Core's first unsolicited frame and lands before `auth` is
+   * answered, so a connection the Core is about to refuse — an expired or
+   * rotated bearer — produces one. Nothing can be sent on that connection and no
+   * `subscribe` goes out, so counting it as recovery forgives an outage that
+   * never ended; with a supervisor dialing again it is a `ready` → `authError` →
+   * `disconnect` loop that could re-arm and disarm this guard for ever, with no
+   * events flowing at all. `onEstablished` means the Core has said who it is and
+   * the link can be written to, authenticated where a bearer was configured.
+   *
+   * **The outage is banked, not forgiven.** The time this side spent deaf is
+   * added to {@link linkDownBankedMs} and counts against the same budget the
+   * next drop draws on, which is what stops a flapping link renewing its grace
+   * for ever (blocking 1).
+   *
+   * The wait itself carries on with nothing changed: this resolves, fails and
+   * advances nothing. A turn that ended while the link was down is reported by
+   * the replay the client asks for on its new connection, through the ordinary
+   * event path.
    */
   private onLinkBack(): void {
+    if (!this.linkDown) return;
     this.linkDown = false;
     this.linkLostReason = null;
+    if (this.linkDownSince !== null) {
+      this.linkDownBankedMs += Date.now() - this.linkDownSince;
+      this.linkDownSince = null;
+    }
     if (this.linkLostTimer) {
       clearTimeout(this.linkLostTimer);
       this.linkLostTimer = null;
     }
+  }
+
+  /** Deaf time this wait has accumulated: banked outages plus the one running. */
+  private linkDownElapsedMs(): number {
+    const running = this.linkDownSince === null ? 0 : Date.now() - this.linkDownSince;
+    return this.linkDownBankedMs + running;
   }
 
   /**
@@ -1375,7 +1465,11 @@ export class CoreSession {
   private armLinkLostGrace(): void {
     if (this.disposed || !this.linkDown) return;
     if (this.idleWaiters.size === 0) return;
-    if (this.linkLostGraceMs === 0) {
+    // What is left of the budget, not the whole of it: outages this wait has
+    // already lived through were banked by `onLinkBack` and are spent. A budget
+    // that is gone fails now, which is also the grace-of-0 case.
+    const remaining = this.linkLostGraceMs - this.linkDownElapsedMs();
+    if (remaining <= 0) {
       this.failWaitersLinkLost();
       return;
     }
@@ -1383,17 +1477,35 @@ export class CoreSession {
     this.linkLostTimer = setTimeout(() => {
       this.linkLostTimer = null;
       if (this.disposed || !this.linkDown) return;
+      // The budget is the authority, not the timer. A `setTimeout` may arrive a
+      // millisecond ahead of the wall clock it was sized against, and a wait
+      // failed a millisecond early is a wait failed before its link was out of
+      // time — so a short arrival re-arms for the remainder rather than firing.
+      if (this.linkDownElapsedMs() < this.linkLostGraceMs) {
+        this.armLinkLostGrace();
+        return;
+      }
       this.failWaitersLinkLost();
-    }, this.linkLostGraceMs);
+    }, remaining);
   }
 
-  /** The grace is only ever about a wait; with none left there is nothing to time. */
+  /**
+   * The grace is only ever about a wait; with none left there is nothing to time
+   * — and nothing to have banked, either.
+   *
+   * The budget belongs to a wait rather than to the Session, so the accumulator
+   * is zeroed here and the clock restarted if the link happens to be down. A
+   * wait that starts later gets the whole budget; what it does not get is the
+   * previous wait's part-spent timer (#492 review, should fix 1).
+   */
   private releaseLinkLostGrace(): void {
     if (this.idleWaiters.size > 0) return;
     if (this.linkLostTimer) {
       clearTimeout(this.linkLostTimer);
       this.linkLostTimer = null;
     }
+    this.linkDownBankedMs = 0;
+    this.linkDownSince = this.linkDown ? Date.now() : null;
   }
 
   /**
@@ -1404,6 +1516,8 @@ export class CoreSession {
    * them would be a turn reported as ended on the strength of a network failure.
    */
   private failWaitersLinkLost(): void {
+    // Read once, before the first `fail` empties the waiter set and resets it.
+    const downMs = this.linkDownElapsedMs();
     for (const waiter of [...this.idleWaiters]) {
       waiter.fail(
         new CoreSessionLinkLostError({
@@ -1412,6 +1526,7 @@ export class CoreSession {
           lastStatus: this.lastStatus,
           reportedSinceDelivery: this.lastStatusEventId > waiter.afterEventId,
           graceMs: this.linkLostGraceMs,
+          downMs,
           reason: this.linkLostReason,
         }),
       );

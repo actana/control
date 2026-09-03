@@ -519,6 +519,54 @@ describe("CoreClient", () => {
     expect(dial.last().client.framesOfType("subscribe")).toHaveLength(1);
   });
 
+  it("establishes on an authenticated connection, never on `ready` alone (#396)", async () => {
+    // **#492 review, blocking 2.** `ready` is the Core's first unsolicited frame
+    // and lands before `auth` is answered, so it is not "the link is usable".
+    // Anything that waits out a drop has to disarm on the connection being
+    // *established* — open, and authenticated where a bearer was configured —
+    // or a connection the Core is about to refuse counts as recovery.
+    const core = authenticatingRig();
+    const dial = core.dialer();
+    const order: string[] = [];
+    client = new CoreClient({
+      url: "wss://core.test:9444",
+      bearer: signBearer({ coreId: "core_x", exp: Date.now() - 1_000 }, SECRET),
+      createSocket: dial.createSocket,
+      connectTimeoutMs: 2_000,
+    });
+    client.onReady(() => order.push("ready"));
+    client.onEstablished(() => order.push("established"));
+    client.onAuthError(() => order.push("authError"));
+    client.onDisconnected(() => order.push("disconnected"));
+
+    await expect(client.connect()).rejects.toBeInstanceOf(CoreLinkAuthError);
+
+    // The Core said who it is, refused the bearer, and hung up. Nothing was ever
+    // writable, so nothing was ever established.
+    expect(order).toEqual(["ready", "authError", "disconnected"]);
+  });
+
+  it("fires established once a bearer has been accepted (#396)", async () => {
+    // The other half: on a connection that does authenticate, `established`
+    // lands — after `ready`, and behind the frames the connection owes the Core.
+    const core = authenticatingRig();
+    const dial = core.dialer();
+    const order: string[] = [];
+    client = new CoreClient({
+      url: "wss://core.test:9444",
+      bearer: bearerFor(),
+      createSocket: dial.createSocket,
+    });
+    client.onReady(() => order.push("ready"));
+    client.onEstablished(() => order.push("established"));
+
+    await client.connect();
+
+    expect(order).toEqual(["ready", "established"]);
+    expect(client.isAuthenticated()).toBe(true);
+    void dial;
+  });
+
   it("says it will not reconnect, because it will not (#396)", async () => {
     // The predicate anything deciding how long to wait out a drop reads. A
     // one-shot client has no supervisor: the socket dying is the end of it, and

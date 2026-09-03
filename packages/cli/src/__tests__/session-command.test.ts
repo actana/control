@@ -965,6 +965,7 @@ describe("actana session send", () => {
                 lastStatus: "running",
                 reportedSinceDelivery: true,
                 graceMs: 30_000,
+                downMs: 31_200,
                 reason: "socket hang up",
               });
             },
@@ -1004,6 +1005,7 @@ describe("actana session send", () => {
                 lastStatus: null,
                 reportedSinceDelivery: false,
                 graceMs: 0,
+                downMs: 0,
                 reason: null,
               });
             },

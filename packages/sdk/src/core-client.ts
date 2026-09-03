@@ -359,6 +359,7 @@ export class CoreClient {
     (msg: { reason: CoreLinkAuthErrorReason }) => void
   >();
   private readonly disconnectedListeners = new Set<(msg: { error?: string }) => void>();
+  private readonly establishedListeners = new Set<() => void>();
   private readonly reclaimedListeners = new Set<
     (msg: { replaced: boolean; taskIds: string[] }) => void
   >();
@@ -568,6 +569,10 @@ export class CoreClient {
     // tail is delivered ahead of the answers to requests that were waiting.
     this.flushQueue();
     this.settleConnect();
+    // Last, so a listener hears about a connection that has already sent what it
+    // owed the Core — the reclaim, and on a durable client the subscribe that
+    // re-opens the event stream. See {@link onEstablished}.
+    for (const cb of this.establishedListeners) cb();
   }
 
   /** The socket is gone. A one-shot client is done; a durable one reconnects. */
@@ -1071,6 +1076,25 @@ export class CoreClient {
   onAuthError(cb: (msg: { reason: CoreLinkAuthErrorReason }) => void): Unsubscribe {
     this.authErrorListeners.add(cb);
     return () => this.authErrorListeners.delete(cb);
+  }
+
+  /**
+   * Notified when a connection is **established**: the Core has said who it is
+   * and the link can be written to — authenticated, where a bearer was
+   * configured. Fires once per connection, so a reconnect fires it again.
+   *
+   * **This, and not {@link onReady}, is "the link is usable again"** (#396).
+   * `ready` is the Core's first unsolicited frame and lands *before* `auth` is
+   * answered, so a connection the Core is about to refuse for an expired bearer
+   * produces one. A caller that took `ready` as recovery would forgive an outage
+   * that never ended: nothing can be sent on that connection, no `subscribe`
+   * goes out — that rides {@link onConnectionEstablished} — and the next frame
+   * is the `authError` that closes it. Anything waiting on the Core's report
+   * must count the link as down for the whole of that.
+   */
+  onEstablished(cb: () => void): Unsubscribe {
+    this.establishedListeners.add(cb);
+    return () => this.establishedListeners.delete(cb);
   }
 
   /**

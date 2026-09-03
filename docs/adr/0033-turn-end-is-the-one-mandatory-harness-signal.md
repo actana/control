@@ -117,11 +117,36 @@ recovers a drop without the wait noticing: the link returns, the client
 re-subscribes from its cursor, and the Core streams the tail it missed —
 including the status change the wait was waiting for. So a drop starts a
 **grace**, not a deadline: thirty seconds (`CORE_LINK_LOST_GRACE_MS`), which is
-six or more of `DurableCoreClient`'s backoff attempts, cancelled the moment a
-connection comes back, and running only while the link is down. A client that
-does **not** reconnect gets a grace of zero, because a grace is time given to a
-reconnect and a one-shot client — the `actana` CLI's — has none coming; waiting
-it out would be thirty more seconds of the hang.
+six or more of `DurableCoreClient`'s backoff attempts, and running only while
+the link is down. A client that does **not** reconnect gets a grace of zero,
+because a grace is time given to a reconnect and a one-shot client — the
+`actana` CLI's — has none coming; waiting it out would be thirty more seconds of
+the hang.
+
+Two clauses of that grace are load-bearing, and #492's review found the first
+draft wrong on both. Each was a way for a wait to outlive its link after all,
+which would have left this decision stating something untrue.
+
+**The grace is a cumulative budget, not a fresh allowance per outage.** The
+outages a single wait lives through are summed, and the wait fails once they
+total the grace. Forgiving each flap in full bounds nothing: a Core in a restart
+crash-loop, or a `DurableCoreClient` on its 500 ms–5 s backoff against a flaky
+link, drops and returns indefinitely with no single outage long enough to fire
+anything, and the wait hangs for ever — #396's own bug, reached the long way
+round. Summed, the deaf time a wait can accumulate is bounded, so the wait always
+ends. The error reports both numbers, because they differ: `graceMs` is the
+budget and `downMs` is what was actually spent.
+
+**The grace is forgiven by an *established* connection, not by `ready`.** `ready`
+is the Core's first unsolicited frame and lands before `auth` is answered, so a
+connection the Core is about to refuse for an expired or rotated bearer produces
+one. Nothing can be sent on that connection and no `subscribe` goes out — that
+rides the established signal — so treating `ready` as recovery forgives an outage
+that never ended; with a supervisor dialing again it is a `ready` → `authError` →
+`disconnect` loop that arms and disarms the guard for ever with no events flowing
+at all. `CoreClient.onEstablished` — the Core has said who it is and the link can
+be written to, authenticated where a bearer was configured — is the signal, and
+`onReady` is not.
 
 Nothing here weakens D2 or D4. No screen is read, `reportsTurnStart` is
 consulted nowhere, and the only facts the error carries are that the link went
