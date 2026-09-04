@@ -504,6 +504,81 @@ describe("actana session start", () => {
     expect(run.err.join("\n")).not.toContain("has not been delivered yet");
   });
 
+  it("does not call a prompt typed on a quiet screen a delivery", async () => {
+    // #494 review, blocker 3, at the command's own layer: the report says the
+    // Core typed without seeing a composer, and the exit code has to say the
+    // same. `null` and not `false` — nothing was lost, nothing was established.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            harness: "codex",
+            awaitPromptDelivery: async () => ({
+              outcome: "unverified",
+              reason: "it has no composer marker",
+            }),
+          }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.composerObserved).toBe(false);
+    expect(payload.promptAbandonedReason).toBeUndefined();
+
+    // And the sentence, on the run that has room for one.
+    const prose = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            harness: "codex",
+            awaitPromptDelivery: async () => ({
+              outcome: "unverified",
+              reason: "it has no composer marker",
+            }),
+          }),
+      }),
+    });
+    expect(prose.code).toBe(EXIT_FAILURE);
+    const err = prose.err.join("\n");
+    expect(err).toContain("cannot vouch for where it landed");
+    expect(err).toContain("codex");
+  });
+
+  it("says a composer was seen on the delivery it does call one", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(run.code).toBe(EXIT_OK);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({
+      promptDelivered: true,
+      composerObserved: true,
+    });
+  });
+
+  it("refuses --await-prompt on a prompt the Core would drop before the harness", async () => {
+    // #494 review, blocker 2, third case. `""` never leaves this package and
+    // `"   "` is trimmed away by the Core's `sanitizeInitialInput`, so neither
+    // produces a delivery, neither produces a row, and a wait for one runs
+    // until the operator kills it. Refused on the same test the Core applies.
+    await withRegisteredCore();
+    for (const prompt of ["", "   ", "\t\n"]) {
+      const run = await cli().run(["session", "start", "web", prompt, "--await-prompt"], {
+        sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+      });
+      expect(run.code, `"${prompt}" was accepted`).toBe(EXIT_USAGE);
+      expect(run.err.join("\n")).toContain("delivers none");
+    }
+
+    // And a prompt with something in it is still a prompt, spaces and all.
+    const ok = await cli().run(["session", "start", "web", " go ", "--await-prompt"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(ok.code, ok.err.join("\n")).toBe(EXIT_OK);
+  });
+
   it("refuses --await-prompt where there is no report for it to wait for", async () => {
     await withRegisteredCore();
     // No prompt: nothing is delivered, so nothing can be reported delivered.
@@ -511,7 +586,7 @@ describe("actana session start", () => {
       sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
     });
     expect(bare.code).toBe(EXIT_USAGE);
-    expect(bare.err.join("\n")).toContain("this start has none");
+    expect(bare.err.join("\n")).toContain("delivers none");
 
     // With `--wait`, which already reports the delivery and waits longer.
     const both = await cli().run(["session", "start", "web", "go", "--await-prompt", "--wait"], {

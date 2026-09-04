@@ -56,6 +56,7 @@ import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
 import type {
+  PromptDeliveryReport,
   SessionGateway,
   SessionLogs,
   SessionOutcome,
@@ -174,9 +175,15 @@ Running, and ready to be sent to, are different facts (#395)
 
   Without it, \`start\` says so on stderr rather than implying otherwise, and
   \`--json\` carries \`promptDelivered: null\` — not \`false\`, which would be a
-  verdict nobody reached. \`--wait\` subsumes \`--await-prompt\` — it reports the
-  same delivery and then waits for the whole turn — so the two together are
-  refused rather than silently collapsed into the longer one.
+  verdict nobody reached.
+
+  \`--wait\` is the longer wait and the two are refused together. They do not
+  report quite the same fact: \`--wait\` reports a prompt the Core **gave up on**
+  and infers the rest from a turn that ended, while \`--await-prompt\` waits for
+  the Core to say positively that the prompt went into a composer it saw. On a
+  harness whose composer the Core cannot recognise — \`codex\` has no entry yet —
+  \`--await-prompt\` says so and exits non-zero rather than calling a prompt typed
+  on the quiet gap a delivery.
 
 What \`logs\` can show you
   The Core's replay ring, which belongs to the harness's PTY — so a Session that
@@ -381,7 +388,7 @@ async function sessionStart(
   const prompt = await readText(deps, promptWords);
   if (prompt.error) return usage(deps, "start", prompt.error);
 
-  const readiness = awaitPromptTextRefusal(args, prompt.text !== null);
+  const readiness = awaitPromptTextRefusal(args, prompt.text);
   if (readiness) return usage(deps, "start", readiness);
 
   return withGateway(deps, args, paths, "start", async (gateway) => {
@@ -394,7 +401,7 @@ async function sessionStart(
       cwd: args.cwd,
       dangerouslySkipPermissions: args.skipPermissions,
     });
-    return reportStartedSession(deps, args, session, timeout.ms, prompt.text !== null);
+    return reportStartedSession(deps, args, session, timeout.ms, deliversText(prompt.text));
   });
 }
 
@@ -427,7 +434,7 @@ async function sessionResume(
   const prompt = await readText(deps, promptWords);
   if (prompt.error) return usage(deps, "resume", prompt.error);
 
-  const readiness = awaitPromptTextRefusal(args, prompt.text !== null);
+  const readiness = awaitPromptTextRefusal(args, prompt.text);
   if (readiness) return usage(deps, "resume", readiness);
 
   return withGateway(deps, args, paths, "resume", async (gateway) => {
@@ -437,7 +444,7 @@ async function sessionResume(
       ...(prompt.text === null ? {} : { prompt: prompt.text }),
       dangerouslySkipPermissions: args.skipPermissions,
     });
-    return reportStartedSession(deps, args, session, timeout.ms, prompt.text !== null);
+    return reportStartedSession(deps, args, session, timeout.ms, deliversText(prompt.text));
   });
 }
 
@@ -557,9 +564,17 @@ async function awaitPromptDelivered(
         awaitedPrompt: true,
         // The same three-valued field the other two paths print, and `null`
         // means the same thing in all three: nobody established it.
-        promptDelivered: report.outcome === "delivered" ? true : report.outcome === "abandoned" ? false : null,
+        promptDelivered: promptDeliveredField(report),
         ...(report.outcome === "abandoned" ? { promptAbandonedReason: report.reason } : {}),
-        ...(report.outcome === "unavailable" ? { promptUnknownReason: report.reason } : {}),
+        ...(report.outcome === "delivered" || report.outcome === "unverified"
+          ? // The Core typed either way; this is the half a script needs to
+            // tell "into a composer somebody saw" from "into whatever was on
+            // screen when it went quiet" without parsing English.
+            { composerObserved: report.outcome === "delivered" }
+          : {}),
+        ...(report.outcome === "unverified" || report.outcome === "unavailable"
+          ? { promptUnknownReason: report.reason }
+          : {}),
       }),
     );
   } else {
@@ -571,11 +586,50 @@ async function awaitPromptDelivered(
       );
     } else if (report.outcome === "abandoned") {
       deps.err(promptAbandonedLine(session.taskId, report.reason));
+    } else if (report.outcome === "unverified") {
+      deps.err(promptUnverifiedLine(session.taskId, session.harness, report.reason));
     } else {
       deps.err(promptUnknownLine(session.taskId, report.reason));
     }
   }
   return report.outcome === "delivered" ? EXIT_OK : EXIT_FAILURE;
+}
+
+/**
+ * The three-valued `promptDelivered`, from one report (#395).
+ *
+ * `true` only for the one outcome that establishes it. `false` only for the one
+ * the Core adjudicated against. Everything else is `null` — nobody reached a
+ * verdict — and that includes the Core typing without seeing a composer, which
+ * is neither a delivery to a listening harness nor a Core that gave up.
+ */
+function promptDeliveredField(report: PromptDeliveryReport): boolean | null {
+  if (report.outcome === "delivered") return true;
+  if (report.outcome === "abandoned") return false;
+  return null;
+}
+
+/**
+ * What a caller is told when the Core typed and never saw a composer (#395,
+ * and the review of #494 that found this reported as success).
+ *
+ * The prompt went out on the quiet gap, into whatever the harness had on screen
+ * when it stopped repainting. That is #483's generic backstop and it is a
+ * reasonable way to *deliver*; it is not a statement that a harness took the
+ * text, and on `codex` — which has no readiness row yet — the quiet gap
+ * routinely expires with `Do you trust the contents of this directory?` up,
+ * which is the exact failure #395's acceptance criterion names.
+ *
+ * So it exits non-zero and says which of the two happened, rather than letting
+ * a script read the zero exit as "the harness is listening".
+ */
+function promptUnverifiedLine(taskId: string, harness: string | null, reason: string): string {
+  return (
+    `The Core typed the starting prompt into session ${taskId}, but cannot vouch for where it ` +
+    `landed: ${reason}. Until ${harness ?? "this harness"} has a composer the Core can ` +
+    `recognise, a start cannot establish that it is ready for a send — ` +
+    `\`actana session logs ${taskId}\` shows what is on screen.`
+  );
 }
 
 /**
@@ -630,8 +684,9 @@ function awaitPromptFlagRefusal(args: ParsedArgs): string | null {
   if (!args.awaitPrompt) return null;
   if (args.wait) {
     return (
-      "--await-prompt and --wait are two lengths of the same wait — `--wait` already reports " +
-      "the delivery and then waits for the whole turn. Pick one"
+      "--await-prompt and --wait are two lengths of one wait, and --wait is the longer: it " +
+      "blocks until the turn ends, and reports a prompt the Core gave up on. It does not " +
+      "positively confirm one that landed, which is what --await-prompt is for. Pick one"
     );
   }
   if (args.waitTimeout !== null) {
@@ -645,12 +700,47 @@ function awaitPromptFlagRefusal(args: ParsedArgs): string | null {
   return null;
 }
 
-/** {@link awaitPromptFlagRefusal}'s other half, once the prompt is known. */
-function awaitPromptTextRefusal(args: ParsedArgs, hasPrompt: boolean): string | null {
-  if (!args.awaitPrompt || hasPrompt) return null;
+/**
+ * {@link awaitPromptFlagRefusal}'s other half, once the prompt is known.
+ *
+ * **"Has a prompt" is the Core's test, not `!== null`** (#494 review, blocker
+ * 2). `session start web ""` and `session start web "   "` both look like a
+ * prompt here and are not one there: the empty string is dropped by the gateway
+ * before the spawn frame, and a whitespace-or-control string is trimmed away by
+ * `sanitizeInitialInput`, so no `HarnessPromptDelivery` is built, no row is ever
+ * appended, and the PTY-exit reason row is guarded on the delivery existing too.
+ * A wait for that verdict is a wait for nothing, for as long as the operator
+ * lets it run.
+ */
+function awaitPromptTextRefusal(args: ParsedArgs, prompt: string | null): string | null {
+  if (!args.awaitPrompt || deliversText(prompt)) return null;
   return (
     "--await-prompt waits for the Core to report *this* start's prompt delivered, and this " +
-    "start has none. Give a prompt, or drop the flag"
+    "start delivers none — a prompt that is empty, or only spaces and control characters, is " +
+    "dropped before the harness sees it. Give a prompt with something in it, or drop the flag"
+  );
+}
+
+/**
+ * Would this text reach the harness as a prompt at all?
+ *
+ * Mirrors `sanitizeInitialInput` in `packages/core/src/pty-manager.ts`, which is
+ * the function that actually decides: characters below 32 and 127 are dropped,
+ * and what is left is trimmed — an empty result means the Core builds no
+ * delivery. Mirrored rather than imported because `packages/cli` may not reach
+ * into `@actana/core` (`no-local-escape.test.ts`); named here so the next person
+ * to change one finds the other.
+ */
+function deliversText(prompt: string | null): boolean {
+  if (prompt === null) return false;
+  return (
+    Array.from(prompt)
+      .filter((ch) => {
+        const code = ch.charCodeAt(0);
+        return code >= 32 && code !== 127;
+      })
+      .join("")
+      .trim() !== ""
   );
 }
 

@@ -49,6 +49,7 @@ import {
   type CoreLinkPtySpawnHarness,
   type CoreLinkSessionLockState,
   type CoreLinkSessionPromptAbandonedPayload,
+  type CoreLinkSessionPromptDeliveredPayload,
   type CoreLinkTaskSnapshot,
 } from "@actana/sdk/core-link-frames.ts";
 import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
@@ -263,10 +264,22 @@ export type StartedSession = {
  * is this side saying it stopped being able to hear.
  */
 export type PromptDeliveryReport =
-  /** The Core typed the prompt into the composer and submitted it. */
+  /** A composer was seen on screen, the prompt went into it, and it was submitted. */
   | { outcome: "delivered" }
   /** The Core gave up. The harness is running and has never seen the text. */
   | { outcome: "abandoned"; reason: string }
+  /**
+   * The Core typed, and never saw a composer to type into (#494 review).
+   *
+   * A harness with no row in the Core's readiness table has no marker to match,
+   * so `composerOnScreen` is `true` for it from the first byte and the prompt
+   * goes out when the screen stops moving. That is #483's deliberately
+   * preserved generic backstop and it is fine as a *delivery* strategy — but it
+   * is not evidence, and on `codex` today the screen frequently stops moving
+   * with a trust dialog on it. Reported apart from `delivered` because this
+   * flag's contract is that a zero exit means the harness took the text.
+   */
+  | { outcome: "unverified"; reason: string }
   /** No verdict was heard, and this side says which of its own limits stopped it. */
   | { outcome: "unavailable"; reason: string };
 
@@ -869,8 +882,8 @@ class CoreLinkSessionGateway implements SessionGateway {
  * accepted — events are held, not dropped, and re-judged once it is.
  */
 type PromptDeliveryLatch = {
-  /** Bind the latch to a Task and, for a stamped delivery, to its cursor. */
-  arm(opts: { taskId: string; afterEventId: number }): void;
+  /** Bind the latch to a Session and, for a stamped delivery, to its cursor. */
+  arm(opts: { taskId: string; ptyId: string; afterEventId: number }): void;
   /** The Core's reason, or `null` while it has not said the prompt was lost. */
   reason(): { reason: string } | null;
   /** Resolve once the Core has said what became of the starting prompt. */
@@ -881,11 +894,35 @@ type PromptDeliveryLatch = {
 
 function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
   let taskId: string | null = null;
+  /** The PTY this command's Session is running on, once `wrap` knows it. */
+  let ptyId: string | null = null;
+  /** PTYs seen to exit before this latch knew which one was its own. */
+  const exitedPtys = new Set<string>();
   /** The stamp a delivery was recorded at, when this command made one. */
   let cursor = 0;
   let armed = false;
-  /** The high-water mark of the replay tail; `null` until the marker lands. */
-  let replayedThrough: number | null = null;
+  /**
+   * Where the Core's log ended when this command's subscribe was taken up, or
+   * `null` while that is unknown — and it stays unknown on a Core that cannot
+   * say (#395, and the review of #494 that found the hole).
+   *
+   * **This used to be the `eventsReplayed` marker, and that was the bug.** The
+   * marker is the id of the last row the socket was actually *sent*, and
+   * `handleSubscribe` caps the tail it sends at `EVENT_TAIL_LIMIT` — a thousand
+   * rows. Nothing prunes the log. So on any Core past a few days of use the
+   * marker landed around a thousand, the remaining history arrived behind it
+   * through `pushLiveEvents` as ordinary `event` frames, and every historical
+   * `session:promptDelivered` above id 1000 cleared the floor and was judged as
+   * *this* command's verdict — an instant exit 0 on a start whose prompt the
+   * Core had not typed a character of. The mirror case failed a start whose
+   * prompt landed perfectly, off an abandon row from last Tuesday.
+   *
+   * #487's review reasoned that "every replayed row is necessarily below the
+   * marker". That is true exactly when the marker is the tip, and now it is one:
+   * the Core reports `tipEventId` beside it, read before the tail, so every row
+   * that existed when this command asked is at or below it.
+   */
+  let tipAtSubscribe: number | null = null;
   let abandoned: { reason: string } | null = null;
   /** What the Core has said about this prompt, once it has said anything. */
   let report: PromptDeliveryReport | null = null;
@@ -899,6 +936,13 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
     while (waiting.length > 0) waiting.shift()!(next);
   };
 
+  const concludeOnExit = (): void => {
+    conclude({
+      outcome: "unavailable",
+      reason: "the harness exited before the Core reported what became of the prompt",
+    });
+  };
+
   /**
    * The exclusive floor an event has to clear, or `null` while it is unknown.
    *
@@ -907,22 +951,54 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
    * a cursor that predates the replay would let history back in.
    */
   const floor = (): number | null => {
-    if (cursor > 0) return Math.max(cursor, replayedThrough ?? 0);
-    return replayedThrough;
+    if (cursor > 0) return Math.max(cursor, tipAtSubscribe ?? 0);
+    return tipAtSubscribe;
   };
 
   const consider = (event: CoreLinkEvent): void => {
-    if (report) return;
+    // Keyed on the Core's own verdict, never on "some conclusion was reached"
+    // (#494 review, observation b). `report` is also set by a dropped link and
+    // by the harness exiting, and an abandon that arrives after one of those is
+    // still the Core saying the prompt was lost — `promptAbandoned()` is #483's
+    // accessor and must not answer a clean delivery because something else
+    // happened to speak first.
+    if (abandoned) return;
     if (event.taskId !== taskId) return;
     const bar = floor();
     if (bar === null || event.eventId <= bar) return;
     if (event.kind === SESSION_PROMPT_DELIVERED_EVENT_KIND) {
-      // Nothing is read out of the payload beyond the fact. The interesting
-      // numbers in it — `characters`, `waitedMs` — are for an operator reading
-      // `actana events tail`, and a command that decided anything from them
-      // would be deciding from a measurement rather than from the Core's own
-      // verdict, which is the direction this whole path exists to close.
-      conclude({ outcome: "delivered" });
+      // **Two things are read out of this payload and only two: the fact, and
+      // whether a composer was ever seen** (#494 review, blocker 3). The
+      // numbers beside them — `characters`, `waitedMs` — are for an operator
+      // reading `actana events tail`, and a command that decided anything from
+      // a measurement would be back to inferring readiness.
+      //
+      // `composerObserved: false` is the Core saying it typed on the quiet gap
+      // into a harness whose composer it has never been shown — which on codex
+      // today is a trust dialog about a third of the time. Calling that
+      // `delivered` would be this flag reporting success for exactly the
+      // failure #395's acceptance criterion names by hand.
+      let observed: boolean;
+      try {
+        const payload = JSON.parse(event.payload) as CoreLinkSessionPromptDeliveredPayload;
+        observed = payload.composerObserved === true;
+      } catch {
+        // Fail closed. An unparseable payload is not evidence that a composer
+        // was seen, and this flag's whole contract is that a zero exit means it
+        // was.
+        observed = false;
+      }
+      conclude(
+        observed
+          ? { outcome: "delivered" }
+          : {
+              outcome: "unverified",
+              reason:
+                "the Core typed the prompt on its quiet gap without ever seeing this harness's " +
+                "composer — it has no composer marker, so nothing observed that the text went " +
+                "anywhere a harness was reading",
+            },
+      );
       return;
     }
     try {
@@ -956,11 +1032,33 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
     }
     consider(event);
   });
-  const stopReplayed = client.onEventsReplayed(({ lastEventId }) => {
+  const stopReplayed = client.onEventsReplayed(({ tipEventId }) => {
     // The first marker only. It answers "what was already in the log when this
     // command started", and a later one — a reconnect's replay — would move the
     // floor forward over live events this command is entitled to.
-    if (replayedThrough === null) replayedThrough = lastEventId;
+    if (tipAtSubscribe !== null) return;
+    if (tipEventId === undefined) {
+      // **A Core that cannot say where its log ends cannot report this
+      // either** (#494 review, blocker 2). Two Cores answer this way and both
+      // matter: one built before `session:promptDelivered` existed, which will
+      // never append the row a wait here is waiting for; and one running with
+      // no event-log port wired, which cannot append any row at all. Left to
+      // wait, `--await-prompt` would block until the operator killed it.
+      //
+      // So the absence is the answer, and it arrives one frame after the
+      // subscribe rather than never. This is the same shape `send --wait` uses
+      // for the same class of Core — refuse rather than guess — moved to the
+      // one signal available before anything has been typed.
+      conclude({
+        outcome: "unavailable",
+        reason:
+          "this Core does not report where its event log ends, so it cannot report whether the " +
+          "prompt reached the harness — it is either older than that report or running with no " +
+          "event log at all",
+      });
+      return;
+    }
+    tipAtSubscribe = tipEventId;
     drain();
   });
   // The socket went away before the Core said anything. Not a delivery and not
@@ -983,6 +1081,25 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
         ? `the connection to the Core went down (${error})`
         : "the connection to the Core went down",
     });
+  });
+  // And the harness itself going away, which is the bound that survives a Core
+  // whose event log has stopped accepting rows (#494 review, blocker 2). An
+  // `exit` frame is not a log row — it comes off the PTY subscription — so it
+  // arrives even when nothing can be appended, and a harness that is gone will
+  // never take a prompt. `pty-manager` also appends a reason row in this case
+  // and that row is the better answer when it comes; this only speaks when the
+  // exit reaches the client with no verdict behind it.
+  const stopExit = client.onExit((frame) => {
+    // Held before the latch is armed, for the same reason the event rows are:
+    // a PTY that dies inside the spawn round trip does it before this side has
+    // been told which PTY it owns, and an exit dropped in that window is the
+    // deaf-window bug wearing a different frame.
+    if (ptyId === null) {
+      exitedPtys.add(frame.ptyId);
+      return;
+    }
+    if (frame.ptyId !== ptyId) return;
+    concludeOnExit();
   });
   // The subscribe this latch depends on. `CoreSession.start`/`attach` would
   // send one a moment later on the same test, so this is the same single
@@ -1010,9 +1127,12 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
   return {
     arm: (opts) => {
       taskId = opts.taskId;
+      ptyId = opts.ptyId;
       cursor = opts.afterEventId;
       armed = true;
       drain();
+      if (exitedPtys.has(ptyId)) concludeOnExit();
+      exitedPtys.clear();
     },
     reason: () => abandoned,
     settled: () =>
@@ -1023,7 +1143,9 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
       stopEvents();
       stopReplayed();
       stopDisconnected();
+      stopExit();
       held.length = 0;
+      exitedPtys.clear();
       // Nobody is left waiting on a latch this command has finished with. The
       // ordinary path awaits before disposing; this is for the paths that throw.
       conclude({
@@ -1067,7 +1189,7 @@ function wrap(
   // Now — and not before — both halves of the filter are known: which Task the
   // report has to be about, and which events are this command's rather than a
   // previous start's.
-  opts.latch.arm({ taskId: session.taskId, afterEventId });
+  opts.latch.arm({ taskId: session.taskId, ptyId: session.ptyId, afterEventId });
   return {
     taskId: session.taskId,
     ptyId: session.ptyId,
