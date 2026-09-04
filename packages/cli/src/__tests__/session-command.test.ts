@@ -23,7 +23,10 @@ import {
   type SessionRow,
   type StartedSession,
 } from "../session-gateway.ts";
-import { CoreSessionTurnTimeoutError } from "@actana/sdk/core-session.ts";
+import {
+  CoreSessionLinkLostError,
+  CoreSessionTurnTimeoutError,
+} from "@actana/sdk/core-session.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 
 let fixture: CliFixture | null = null;
@@ -943,6 +946,77 @@ describe("actana session send", () => {
     // #405's false completion back one layer up.
     expect(run.err.join("\n")).toContain("Not `session wait`");
     expect(run.err.join("\n")).toContain("exits zero");
+  });
+
+  it("exits non-zero when the link drops mid-wait, and calls the outcome unknown (#396)", async () => {
+    // Issue #396's acceptance criterion, at the layer the operator meets it:
+    // `--wait` against a Core that blips used to leave the command pending for
+    // ever. It now ends — non-zero, with the outcome named as unknown, and
+    // **not** as a status the Core never sent.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "send", "task_1", "carry on", "--wait", "--json"], {
+      sessions: fakeSessionGateway({
+        sendAndWait: async () =>
+          fakeStartedSession({
+            wait: async () => {
+              throw new CoreSessionLinkLostError({
+                taskId: "task_1",
+                afterEventId: 42,
+                lastStatus: "running",
+                reportedSinceDelivery: true,
+                graceMs: 30_000,
+                downMs: 31_200,
+                reason: "socket hang up",
+              });
+            },
+          }),
+      }),
+    });
+
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.waited).toBe(true);
+    // No status key at all: the Core reported none, so the document carries
+    // none. A `--json` caller branching on `status` must not find `running`
+    // here and read it as the turn.
+    expect(payload.status).toBeUndefined();
+    expect(payload.error).toContain("outcome is unknown");
+    expect(payload.error).toContain("not a report that the turn finished");
+    expect(run.err.join("\n")).toContain("the turn's outcome is unknown");
+    // Cursored, so the next step is the log from the delivery — and, as after
+    // #405's timeout, explicitly not `session wait`, which would answer from the
+    // status this Session was parked at before the drop and exit zero.
+    expect(run.err.join("\n")).toContain("`actana events tail --since 42`");
+    expect(run.err.join("\n")).toContain("Not `session wait`");
+  });
+
+  it("points an uncursored wait at the Core rather than at a delivery it never made", async () => {
+    // `start --wait` and `session wait` carry no delivery stamp, so there is no
+    // `--since` to follow and the advice that names one would be a fiction.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--wait"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            wait: async () => {
+              throw new CoreSessionLinkLostError({
+                taskId: "task_1",
+                afterEventId: 0,
+                lastStatus: null,
+                reportedSinceDelivery: false,
+                graceMs: 0,
+                downMs: 0,
+                reason: null,
+              });
+            },
+          }),
+      }),
+    });
+
+    expect(run.code).toBe(EXIT_FAILURE);
+    expect(run.err.join("\n")).toContain("the turn's outcome is unknown");
+    expect(run.err.join("\n")).toContain("`actana session ls`");
+    expect(run.err.join("\n")).not.toContain("events tail --since");
   });
 
   it("does not offer the uncursored wait as the next step after any timeout", async () => {

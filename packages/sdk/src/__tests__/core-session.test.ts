@@ -32,10 +32,14 @@ import type {
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
 } from "../core-link-frames.ts";
+import type { CoreLinkSocket } from "../core-link-socket.ts";
+import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import { CoreClient } from "../core-client.ts";
 import {
+  CORE_LINK_LOST_GRACE_MS,
   CoreSession,
   CoreSessionAttachError,
+  CoreSessionLinkLostError,
   CoreSessionStartError,
   CoreSessionTurnTimeoutError,
   HARNESS_LAUNCH_COMMANDS,
@@ -44,10 +48,12 @@ import {
 } from "../core-session.ts";
 import {
   FakeEventLog,
+  FakeSocket,
   FakeSocketPair,
   FakeSocketServer,
   makeMockPtyCore,
 } from "./fake-core-link.ts";
+import { CORE_LINK_PROTOCOL_VERSION } from "../core-link-frames.ts";
 
 const ESC = "\u001B";
 const CSI = `${ESC}[`;
@@ -165,6 +171,10 @@ type Rig = {
   ptyCore: PtyCore & { emitEvent: (e: PtyCoreEvent) => void };
   tasks: FakeTaskStore;
   eventLog: FakeEventLog;
+  /** Every connection this rig has handed out, in dial order. */
+  pairs: FakeSocketPair[];
+  /** The link dies the way a reaped NAT flow or a restarted Core kills it (#396). */
+  drop: () => void;
   close: () => void;
 };
 
@@ -172,6 +182,23 @@ function startRig(
   opts: {
     announceMultiConnection?: boolean;
     spawn?: PtyCore["spawn"];
+    /**
+     * Arm the Core's auth gate and give the client a bearer, so a connection is
+     * not usable until `authOk` lands. The remote shape rather than the
+     * loopback one — what #492's blocking 2 is about (`ready` arrives first, and
+     * is not the link coming back).
+     */
+    authVerifier?: (bearer: string) =>
+      | { ok: true; coreId: string; exp: number }
+      | { ok: false; reason: "expired" | "bad-signature" | "malformed" };
+    bearer?: string;
+    /**
+     * Take over a dial. Called with the 0-based dial number; return a socket to
+     * hand the client instead of a connection to this rig's Core, or null to
+     * dial the Core as usual. How a test stages a connection the Core never
+     * accepts.
+     */
+    dial?: (n: number) => CoreLinkSocket | null;
     /**
      * Called after the server has written a frame, in the same synchronous
      * turn. Node's `ws` emits several `message` events from one socket read, so
@@ -201,11 +228,18 @@ function startRig(
     ...(opts.announceMultiConnection === undefined
       ? {}
       : { announceMultiConnection: opts.announceMultiConnection }),
+    ...(opts.authVerifier ? { authVerifier: opts.authVerifier } : {}),
   });
+  const pairs: FakeSocketPair[] = [];
+  let dials = 0;
   const client = new CoreClient({
     url: "wss://core.test:9444",
+    ...(opts.bearer ? { bearer: opts.bearer } : {}),
     createSocket: () => {
+      const staged = opts.dial?.(dials++) ?? null;
+      if (staged) return staged;
       const pair = new FakeSocketPair();
+      pairs.push(pair);
       if (opts.afterServerFrame) {
         const send = pair.server.send.bind(pair.server);
         pair.server.send = (data: string) => {
@@ -218,7 +252,15 @@ function startRig(
       return pair.client.asClientSocket();
     },
   });
-  const built: Rig = { client, ptyCore, tasks, eventLog, close: () => server.close() };
+  const built: Rig = {
+    client,
+    ptyCore,
+    tasks,
+    eventLog,
+    pairs,
+    drop: () => pairs[pairs.length - 1]?.server.close(),
+    close: () => server.close(),
+  };
   return built;
 }
 
@@ -1048,6 +1090,378 @@ describe("attaching to a Session that is already running (#289)", () => {
   });
 });
 
+describe("a wait cannot outlive its link (#396)", () => {
+  // The hang this suite is about: every way a wait can end well — a status
+  // change, a process exit — reaches this side down the core link, so a link
+  // that drops takes all of them with it and the wait goes quiet instead of
+  // ending. With no `--wait-timeout` there was nothing left that could ever
+  // settle it, which is the operator's `actana session start … --wait` sitting
+  // for ever after a Core blip.
+  //
+  // What is asserted below is the shape of the fix as much as its presence: the
+  // wait **rejects**. Resolving it with the status the Session was last seen at
+  // would report a turn as ended because a socket died, and a false completion
+  // is the one outcome worse than the hang (ADR 0033 D6).
+
+  async function runningSession(status = "running"): Promise<string> {
+    const r = rig!;
+    await r.client.connect();
+    const created = await r.client.tasksMutate({
+      op: "create",
+      projectId: PROJECT_ID,
+      title: "somebody else's session",
+      agent: "claude-code",
+    });
+    r.tasks.setStatus(created!.taskId, status);
+    return created!.taskId;
+  }
+
+  it("ends a wait that has no deadline at all, rather than hanging on a dead link", async () => {
+    // Issue #396's acceptance criterion, at the layer that implements it. No
+    // `timeoutMs` — which is `session wait` with no `--wait-timeout`, and what
+    // `--wait-timeout 0` opts back into on the one verb that has a default
+    // (#405) — so this rejection is the only thing in the world that will ever
+    // settle this promise.
+    rig = startRig();
+    const taskId = await runningSession("running");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+    const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
+
+    rig.drop();
+
+    const err = await idle;
+    expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+  });
+
+  it("says the outcome is unknown, and never that the turn ended", async () => {
+    // The distinction the whole train exists to protect. The Session is parked
+    // at `running`, the link dies, and what comes back must not read as a turn
+    // that ended — not in the class, not in the fields, and not in the prose.
+    rig = startRig();
+    const taskId = await runningSession("finished");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const { deliveryEventId } = await session.deliver("carry on");
+    r.tasks.setStatus(taskId, "running");
+    await vi.waitFor(() => expect(session!.status()).toBe("running"));
+
+    const idle = session
+      .waitForTurnEnd({ afterEventId: deliveryEventId })
+      .catch((thrown: unknown) => thrown);
+    r.drop();
+
+    const err = (await idle) as CoreSessionLinkLostError;
+    expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+    expect(err.name).toBe("CoreSessionLinkLostError");
+    // **Distinguishable from the deadline #405 added**, which is a different
+    // next step: that one is this side giving up on a clock it set, this one is
+    // this side going deaf. A caller branches on the class, not on the wording.
+    expect(err).not.toBeInstanceOf(CoreSessionTurnTimeoutError);
+    // The cursor and the last-known status are carried as context…
+    expect(err.taskId).toBe(taskId);
+    expect(err.afterEventId).toBe(deliveryEventId);
+    expect(err.lastStatus).toBe("running");
+    // …and `running` was learned after the delivery, so the turn was seen to be
+    // under way when the link went. Informative, never settling: a settling
+    // status would have ended the wait instead.
+    expect(err.reportedSinceDelivery).toBe(true);
+    // The sentence that matters.
+    expect(err.message).toMatch(/outcome is unknown/);
+    expect(err.message).toMatch(/not a report that the turn finished/);
+    expect(err.message).toMatch(/may still be running/);
+  });
+
+  it("fails a wait started after the link had already gone", async () => {
+    // The same hang through the other door: nothing drops mid-wait here, the
+    // wait simply begins against a link that is already down. It has exactly as
+    // little chance of hearing a status, so it gets exactly the same ending.
+    rig = startRig();
+    const taskId = await runningSession("running");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+    rig.drop();
+
+    await expect(session.waitForIdle()).rejects.toBeInstanceOf(CoreSessionLinkLostError);
+  });
+
+  it("fails at once on a client with no reconnect coming, and names the reason", async () => {
+    // A one-shot `CoreClient` — the `actana` CLI's — does not dial again, so
+    // there is no reconnect for a grace to be time for and the wait fails on the
+    // drop itself. Sitting out thirty seconds first would be thirty seconds of
+    // the hang this fixes.
+    rig = startRig();
+    expect(rig.client.willReconnect()).toBe(false);
+    const taskId = await runningSession("running");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+    const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
+    rig.drop();
+
+    const err = (await idle) as CoreSessionLinkLostError;
+    expect(err.graceMs).toBe(0);
+    expect(err.message).toMatch(/this client does not reconnect/);
+  });
+
+  it("gives a link that may come back the grace to do it in", async () => {
+    // The other half, and the reason this is not a bare rejection on the first
+    // blip: on a client that reconnects, a drop is usually not even an
+    // interruption — the link returns, the client re-subscribes from its cursor,
+    // and the Core streams the tail it missed. Failing instantly would report a
+    // turn as unobservable while it was being observed again.
+    //
+    // The grace is asked for explicitly here because the default is thirty
+    // seconds and a unit test may not take thirty seconds. That default is
+    // asserted separately, below.
+    rig = startRig();
+    const taskId = await runningSession("running");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 60 });
+    const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
+
+    r.drop();
+    // Still waiting a tick later: the drop alone decides nothing.
+    let settled = false;
+    void idle.then(() => {
+      settled = true;
+    });
+    await new Promise((r2) => setTimeout(r2, 10));
+    expect(settled).toBe(false);
+
+    const err = (await idle) as CoreSessionLinkLostError;
+    expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+    expect(err.graceMs).toBe(60);
+    expect(err.downMs).toBeGreaterThanOrEqual(60);
+    expect(err.message).toMatch(/been deaf for \d+ms, past the 60ms/);
+  });
+
+  it("keeps waiting when the link comes back inside the grace", async () => {
+    // The recovery this grace exists for, and the property that makes it safe to
+    // have one: a link that returns leaves the wait exactly as it was — still
+    // pending, still owed a status by the Core, never resolved and never failed
+    // by anything that happened to the socket.
+    rig = startRig();
+    const taskId = await runningSession("running");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 40 });
+    let outcome: unknown = null;
+    void session.waitForIdle().then(
+      (idle) => {
+        outcome = idle;
+      },
+      (err: unknown) => {
+        outcome = err;
+      },
+    );
+
+    r.drop();
+    // A second connection, well inside the grace. `onReady` on the new link is
+    // what disarms it.
+    await r.client.connect();
+    await new Promise((r2) => setTimeout(r2, 120));
+
+    expect(outcome).toBeNull();
+  });
+
+  it("takes its default grace from whether the client reconnects at all", async () => {
+    // The default is not a number this layer picked for everyone: it is thirty
+    // seconds for a client that dials again and zero for one that does not, and
+    // the client is the one that knows which it is.
+    expect(CORE_LINK_LOST_GRACE_MS).toBe(30_000);
+    rig = startRig();
+    const taskId = await runningSession("running");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+    const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
+    rig.drop();
+
+    // A one-shot client, so zero — and the wait is over long before any
+    // thirty-second grace could have run.
+    expect(((await idle) as CoreSessionLinkLostError).graceMs).toBe(0);
+  });
+
+  /**
+   * Await `p`, but never for longer than `ms` — a regression here is a **hang**,
+   * and a test that hangs takes the suite down with it rather than failing.
+   */
+  async function settledWithin(p: Promise<unknown>, ms: number): Promise<unknown> {
+    const STILL_PENDING = Symbol("still pending");
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const bound = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(STILL_PENDING), ms);
+    });
+    try {
+      const settled = await Promise.race([p, bound]);
+      if (settled === STILL_PENDING) {
+        throw new Error(`the wait was still pending after ${ms}ms — it is hanging`);
+      }
+      return settled;
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  }
+
+  it("adds a flapping link's outages up rather than forgiving each one", async () => {
+    // **#492 review, blocking 1.** `onLinkBack` used to clear the grace outright,
+    // so the next drop got a full fresh one and nothing anywhere added up how
+    // long this side had actually been deaf. A link that drops and returns
+    // repeatedly — each outage shorter than the grace — therefore never failed
+    // the wait, however much total time was lost. A Core in a restart crash-loop
+    // and a `DurableCoreClient` on its 500 ms–5 s backoff are exactly that
+    // shape, so this is #396's own bug through a slower door.
+    //
+    // Five outages of ~65 ms against a 100 ms budget, and **no `timeoutMs`** —
+    // the deaf time is what has to end this, because nothing else can.
+    rig = startRig();
+    const taskId = await runningSession("running");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 100 });
+    const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
+
+    for (let flap = 0; flap < 5; flap += 1) {
+      r.drop();
+      await new Promise((res) => setTimeout(res, 65));
+      await r.client.connect().catch(() => {});
+      await new Promise((res) => setTimeout(res, 15));
+    }
+
+    const err = (await settledWithin(idle, 4000)) as CoreSessionLinkLostError;
+    expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+    // The budget is the configured constant; `downMs` is what was actually
+    // spent, and it is the sum across outages rather than the last one alone.
+    expect(err.graceMs).toBe(100);
+    expect(err.downMs).toBeGreaterThanOrEqual(100);
+  });
+
+  it("does not take an unauthenticated `ready` for the link coming back", async () => {
+    // **#492 review, blocking 2.** The disarm hung on `onReady`, and `ready` is
+    // the Core's first unsolicited frame — it lands *before* `auth` is answered.
+    // So a connection the Core is about to refuse, or one that simply never
+    // authenticates, counted as recovery: the guard was disarmed, nothing could
+    // be sent on that connection, no `subscribe` went out, and the wait sat
+    // there with the link permanently unusable and nothing left to end it.
+    //
+    // Staged exactly: dial 0 is this rig's Core with a good bearer; dial 1 is a
+    // socket that opens, says `ready`, and never answers the `auth` behind it.
+    const secret = "core-session-suite-secret-32-byte-x";
+    let bogus: FakeSocket | null = null;
+    rig = startRig({
+      authVerifier: (bearer) => verifyBearer(bearer, secret),
+      bearer: signBearer({ coreId: "core_test", exp: Date.now() + 60_000 }, secret),
+      dial: (n) => {
+        if (n === 0) return null;
+        const socket = new FakeSocket();
+        bogus = socket;
+        queueMicrotask(() => {
+          socket.readyState = 1;
+          socket.emit("open");
+          socket.receive({ type: "ready", version: CORE_LINK_PROTOCOL_VERSION });
+        });
+        return socket.asClientSocket();
+      },
+    });
+    const taskId = await runningSession("running");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 120 });
+    const idle = session.waitForIdle().catch((thrown: unknown) => thrown);
+
+    r.drop();
+    void r.client.connect().catch(() => {});
+
+    const err = (await settledWithin(idle, 4000)) as CoreSessionLinkLostError;
+    expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+    expect(err.downMs).toBeGreaterThanOrEqual(120);
+    // The replacement connection really did say `ready` and really did get an
+    // `auth` it never answered — so the case under test is the one described,
+    // not a dial that failed to happen.
+    const staged = bogus as FakeSocket | null;
+    expect(staged?.framesOfType("auth")).toHaveLength(1);
+  });
+
+  it("hands the grace back when the caller's own deadline fires", async () => {
+    // **#492 review, should fix 1.** `notify` and `fail` released the grace; the
+    // `timeoutMs` callback did not. The timer is deliberately not `unref`ed, so
+    // it went on holding the event loop after the wait had settled — and because
+    // `armLinkLostGrace` keeps one timer per Session, the *next* wait inherited
+    // that stale, part-spent one and was failed early against a budget it never
+    // had.
+    rig = startRig();
+    const taskId = await runningSession("running");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId, linkLostGraceMs: 300 });
+    r.drop();
+
+    // Wait A gives up on its own clock well inside the grace.
+    await expect(session.waitForIdle({ timeoutMs: 60 })).rejects.toBeInstanceOf(
+      CoreSessionTurnTimeoutError,
+    );
+
+    // Wait B, started fresh, gets the whole budget rather than what was left of
+    // A's — and reports the deaf time it actually sat through.
+    const startedAt = Date.now();
+    const err = (await settledWithin(
+      session.waitForIdle().catch((thrown: unknown) => thrown),
+      4000,
+    )) as CoreSessionLinkLostError;
+    const elapsed = Date.now() - startedAt;
+
+    expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+    expect(err.downMs).toBeGreaterThanOrEqual(300);
+    // Comfortably above the ~240ms A would have left behind.
+    expect(elapsed).toBeGreaterThan(260);
+  });
+
+  it("orphans no deadline timer when a grace of 0 rejects inside the executor", async () => {
+    // **#492 review, should fix 2.** The `linkDown` check ran *before* the
+    // deadline was armed, so on a grace of 0 — the `actana` CLI's one-shot
+    // client — `fail` ran with `timer` still null and the `setTimeout` armed two
+    // lines later was never cleared by anything, `dispose()` included. Harmless
+    // where the process exits; an SDK consumer holds the event loop for the
+    // whole of a seventeen-minute deadline it has already stopped caring about.
+    rig = startRig();
+    const taskId = await runningSession("running");
+
+    session = await CoreSession.attach(rig.client, { taskId });
+    rig.drop();
+    await new Promise((res) => setTimeout(res, 5));
+
+    vi.useFakeTimers();
+    try {
+      const err = await session
+        .waitForIdle({ timeoutMs: 1_020_000 })
+        .catch((thrown: unknown) => thrown);
+      expect(err).toBeInstanceOf(CoreSessionLinkLostError);
+      // Nothing left armed under the fake clock: the deadline went back with the
+      // wait it belonged to.
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("leaves a turn that really ended ending the wait, drop or no drop", async () => {
+    // The regression guard on the whole of this: nothing above may make a
+    // settled status stop resolving a wait, and a Session whose link never
+    // wobbles must behave exactly as it did before #396.
+    rig = startRig();
+    const taskId = await runningSession("running");
+    const r = rig;
+
+    session = await CoreSession.attach(r.client, { taskId });
+    const { deliveryEventId } = await session.deliver("carry on");
+    const idle = session.waitForTurnEnd({ afterEventId: deliveryEventId });
+    r.tasks.setStatus(taskId, "finished");
+
+    await expect(idle).resolves.toEqual({ status: "finished", exited: false });
+  });
+});
+
 describe("no wait is keyed on a turn's start (#289 A)", () => {
   it("mentions reportsTurnStart nowhere in the waiting half of the session layer", () => {
     // `reportsTurnStart` survives as reported information — the `spawned` frame,
@@ -1066,6 +1480,24 @@ describe("no wait is keyed on a turn's start (#289 A)", () => {
 
     expect(waiting.length).toBeGreaterThan(200);
     expect(waiting).not.toContain("reportsTurnStart");
+  });
+
+  it("mentions it nowhere in the handlers that end a wait on a lost link either", () => {
+    // **#492 review, advisory.** The slice above stops at `// ─── Lifecycle`, and
+    // #396's handlers sit under `// ─── Internals` — so the guard no longer
+    // covered every path that ends a wait, which is the property it exists to
+    // protect. Second slice, same rule.
+    const source = readFileSync(new URL("../core-session.ts", import.meta.url), "utf8");
+    const linkLost = source
+      .slice(source.indexOf("  private onLinkLost("), source.indexOf("  private ingestExit("))
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/\/\/.*$/gm, "");
+
+    expect(linkLost.length).toBeGreaterThan(200);
+    expect(linkLost).not.toContain("reportsTurnStart");
+    // And nothing here reads the screen either (#191, ADR 0026 D3).
+    expect(linkLost).not.toContain("terminal");
+    expect(linkLost).not.toContain("screen");
   });
 });
 
