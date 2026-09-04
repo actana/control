@@ -231,6 +231,22 @@ export type StartedSession = {
    */
   promptAbandoned(): { reason: string } | null;
   /**
+   * What the Core has said about the starting prompt so far — without waiting
+   * (#495 gate review, addendum blocker 6).
+   *
+   * `null` means "nothing yet", which is not the same as "nothing bad", and
+   * that distinction is the whole reason this exists. `--wait` used to derive a
+   * delivery from the *absence* of {@link promptAbandoned}, and a harness that
+   * exits mid-delivery is precisely where absence lies: the Core appends its
+   * reason row and then emits the exit, the exit resolves the wait, and the row
+   * is still in flight. The Core now flushes the rows ahead of the exit so the
+   * row is there to read — and when it genuinely is not there, this answers
+   * `null` and the caller says so rather than claiming a delivery.
+   *
+   * Reads only what has already arrived. It cannot block and it cannot hang.
+   */
+  promptDeliveryReport(): PromptDeliveryReport | null;
+  /**
    * Block until the Core says what became of this Session's starting prompt
    * (#395).
    *
@@ -895,6 +911,15 @@ type PromptDeliveryLatch = {
   arm(opts: { taskId: string; ptyId: string; afterEventId: number }): void;
   /** The Core's reason, or `null` while it has not said the prompt was lost. */
   reason(): { reason: string } | null;
+  /**
+   * What the Core has said so far, or `null` while it has said nothing.
+   *
+   * The non-blocking half of {@link settled}, for a caller that has finished
+   * waiting on something else and needs to know what this latch heard while it
+   * did — without adding a second wait, and therefore without adding a way to
+   * hang (#495 gate review, addendum blocker 6).
+   */
+  current(): PromptDeliveryReport | null;
   /** Resolve once the Core has said what became of the starting prompt. */
   settled(): Promise<PromptDeliveryReport>;
   /** Release the listeners. The subscription on the Core is the client's. */
@@ -1146,6 +1171,7 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
       exitedPtys.clear();
     },
     reason: () => abandoned,
+    current: () => report,
     settled: () =>
       report
         ? Promise.resolve(report)
@@ -1222,6 +1248,7 @@ function wrap(
     },
     screen: () => session.screen(),
     promptAbandoned: () => opts.latch.reason(),
+    promptDeliveryReport: () => opts.latch.current(),
     awaitPromptDelivery: () => opts.latch.settled(),
     dispose: () => {
       opts.latch.close();

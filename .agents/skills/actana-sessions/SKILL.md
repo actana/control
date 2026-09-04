@@ -94,8 +94,11 @@ so rather than reporting success; the message names what stopped it.
 
 `--wait` is the longer wait and cannot be combined with it. The two do not report
 quite the same thing: `--wait` reports a prompt the Core **gave up on**, and
-infers the rest from a turn that ended. Without either, `--json` answers
-`promptDelivered: null`: nobody adjudicated it.
+reports `promptDelivered` as whatever the Core said while it waited — never
+from the absence of a report. Without either, `--json` answers
+`promptDelivered: null`: nobody adjudicated it. `null` is also what `--wait`
+answers on a verb that hands over no prompt (`session wait`, `send --wait`) and
+on a Harness that exits before the Core decides. Treat it as "not known".
 
 **`--harness` is how one round spans several Harnesses.** Nothing else is
 needed for it: each `session start` takes its own `--harness`, so a round of

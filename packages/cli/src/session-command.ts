@@ -186,8 +186,9 @@ Running, and ready to be sent to, are different facts (#395)
   verdict nobody reached.
 
   \`--wait\` is the longer wait and the two are refused together. They do not
-  report quite the same fact: \`--wait\` reports a prompt the Core **gave up on**
-  and infers the rest from a turn that ended, while \`--await-prompt\` waits for
+  report quite the same fact: \`--wait\` reports whatever the Core said about the
+  prompt while it waited for the turn — \`true\`, \`false\`, or \`null\` when the
+  Core said nothing — while \`--await-prompt\` waits for
   the Core to say positively that the prompt went into a composer it saw. On a
   harness whose composer the Core cannot recognise — none of the four this build
   ships, since #277 gave \`codex\` the last readiness row, but the next harness
@@ -605,14 +606,32 @@ async function awaitPromptDelivered(
 }
 
 /**
- * The three-valued `promptDelivered`, from one report (#395).
+ * The three-valued `promptDelivered`, from what the Core actually said (#395,
+ * and #495's gate review for the second argument).
  *
  * `true` only for the one outcome that establishes it. `false` only for the one
  * the Core adjudicated against. Everything else is `null` — nobody reached a
  * verdict — and that includes the Core typing without seeing a composer, which
  * is neither a delivery to a listening harness nor a Core that gave up.
+ *
+ * **`abandoned` is checked first, and it is not redundant.** The latch's report
+ * is whatever spoke *first*, and a dropped link or a harness exit can speak
+ * before the Core's own row arrives; the row is still the Core saying the
+ * prompt was lost, which is why `promptAbandoned()` keeps answering after
+ * something else has concluded (#494 review, observation b). Reading the report
+ * alone would turn that into `null`, which is a weaker claim than the Core made.
+ *
+ * `report` may be `null`: on `--wait` it is read without waiting, so "the Core
+ * has not said anything yet" is a state this has to have an answer for. That
+ * answer is `null` and never `true` — the absence of a verdict is not a
+ * verdict, which is the whole of what this train is for.
  */
-function promptDeliveredField(report: PromptDeliveryReport): boolean | null {
+function promptDeliveredField(
+  report: PromptDeliveryReport | null,
+  abandoned: { reason: string } | null = null,
+): boolean | null {
+  if (abandoned) return false;
+  if (!report) return null;
   if (report.outcome === "delivered") return true;
   if (report.outcome === "abandoned") return false;
   return null;
@@ -862,6 +881,18 @@ async function awaitTurn(
   // settled status and a zero exit, and a Session that never received its
   // prompt reported as a clean settle is the false success the issue is about.
   const abandoned = session.promptAbandoned();
+  // And what the Core said, if it said anything — read *without* waiting, so no
+  // path here can hang that could not before (#495 gate review, addendum
+  // blocker 6). `promptDelivered` used to be `abandoned === null`, which is
+  // "nothing told me otherwise" wearing the clothes of a report. The case that
+  // makes that a lie is a harness exiting mid-delivery: `pty-manager` appends
+  // its reason row and then emits the exit, `wait()` resolves on the exit, and
+  // on the old wire ordering the row was still 500 ms away — so a `start
+  // --wait --json` against a harness that quits before the composer is written
+  // printed `promptDelivered: true` beside `exited: true`, with `EXIT_OK` on a
+  // clean exit code. The Core now puts the rows on the socket ahead of the exit
+  // (`fanOutPtyEvent`), so the ordinary case has a real verdict to read here.
+  const delivery = session.promptDeliveryReport();
 
   if (args.json) {
     deps.out(
@@ -874,7 +905,16 @@ async function awaitTurn(
         // A field and not only a sentence, for the same reason
         // `reportsTurnStart` is one: a script deciding whether to re-send has
         // to read this rather than parse English off stderr.
-        promptDelivered: abandoned === null,
+        //
+        // **Three-valued, and the third value is the point.** `true` only on
+        // the Core's own `session:promptDelivered` row, `false` only on its
+        // `promptAbandoned`, and `null` — "nobody adjudicated this" — for
+        // everything else: a Core that reports neither row, a connection that
+        // went down first, a harness that exited before the Core decided, and a
+        // delivery the Core made without ever seeing a composer. `null` is the
+        // same value a bare `session start` already reports for the same reason
+        // (#129 D6), so no caller meets a shape it has not been told about.
+        promptDelivered: promptDeliveredField(delivery, abandoned),
         ...(abandoned === null || abandoned.reason === ""
           ? {}
           : { promptAbandonedReason: abandoned.reason }),

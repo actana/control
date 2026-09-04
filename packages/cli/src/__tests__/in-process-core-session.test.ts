@@ -55,6 +55,7 @@ import {
 } from "./cli-harness.ts";
 import {
   arrayEventLog,
+  unavailableEventLog,
   startInProcessCore,
   waitFor,
   type ArrayEventLog,
@@ -252,7 +253,7 @@ async function coreWithSessions(
      * `appendEvent` that failed. Both are what the gateway's refusal covers,
      * beyond the version gate that keeps an older Core off the wire entirely.
      */
-    eventLog?: false;
+    eventLog?: false | "unavailable";
     /** Archive a row while its harness keeps running. */
     archived?: string[];
     /**
@@ -276,6 +277,13 @@ async function coreWithSessions(
      * so a Core that has been up for days is always in this state.
      */
     filler?: number;
+    /**
+     * How long the Core waits between live-event pushes. The default of 25 ms
+     * keeps the suite quick; an *ordering* test sets it far out so that nothing
+     * but the Core deliberately putting a row on the socket can get it there
+     * before the frame it has to precede (#495 gate review, addendum blocker 6).
+     */
+    liveEventPollMs?: number;
   } = {},
 ): Promise<{
   writes: string[];
@@ -356,8 +364,10 @@ async function coreWithSessions(
     // reaches the client, and the Core's default poll is 500 ms — which is fine
     // for a person and is most of the wall clock of a suite that waits twice,
     // on a machine already running five other packages' tests.
-    liveEventPollMs: 25,
-    ...(opts.eventLog === false ? {} : { eventLog }),
+    liveEventPollMs: opts.liveEventPollMs ?? 25,
+    ...(opts.eventLog === false
+      ? {}
+      : { eventLog: opts.eventLog === "unavailable" ? unavailableEventLog() : eventLog }),
   });
   fixture = makeCliFixture();
   registerCore(fixture.paths, "inproc", core.blobText);
@@ -640,11 +650,22 @@ describe("actana session, against a Core in this process", () => {
 
     const settled = await sending;
     expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
-    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
-      taskId: "task_live",
-      status: "finished",
-      promptDelivered: true,
-    });
+    const payload = JSON.parse(settled.out.join("\n"));
+    expect(payload).toMatchObject({ taskId: "task_live", status: "finished" });
+    // **What this guards is that the stale row was not latched**, and that is
+    // `not false` — a latched abandon would be `false`, would carry
+    // `promptAbandonedReason`, and would exit non-zero.
+    //
+    // It is `null` rather than `true`, and the change is deliberate (#495 gate
+    // review, addendum blocker 6). A send is a raw write by design (#404), so
+    // no delivery of one goes through the Core's delivery machinery and no
+    // `session:promptDelivered` row is ever appended for it. `true` here used
+    // to come from the *absence* of an abandon row, which against a Core that
+    // emits neither row means "nobody told me otherwise" — the class of claim
+    // this train exists to remove. `null` is what nobody adjudicating actually
+    // looks like.
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptAbandonedReason).toBeUndefined();
     expect(settled.err.join("\n")).not.toContain("did not deliver the starting prompt");
     expect(writes).toContain("carry on");
   }, 60_000);
@@ -672,11 +693,14 @@ describe("actana session, against a Core in this process", () => {
 
     const settled = await waiting;
     expect(settled.code, settled.err.join("\n")).toBe(EXIT_OK);
-    expect(JSON.parse(settled.out.join("\n"))).toMatchObject({
-      taskId: "task_live",
-      status: "finished",
-      promptDelivered: true,
-    });
+    const payload = JSON.parse(settled.out.join("\n"));
+    expect(payload).toMatchObject({ taskId: "task_live", status: "finished" });
+    // Same reading as the send above: `not false` is the guard, and `null` is
+    // the honest value. A bare `session wait` hands over no prompt at all, so
+    // there is nothing for the Core to have delivered and nothing it could
+    // report — `true` was the absence of the stale row being read as a verdict.
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptAbandonedReason).toBeUndefined();
   }, 60_000);
 
   it("waits for the delivery row the Core appends inside the spawn round trip (#395)", async () => {
@@ -836,6 +860,78 @@ describe("actana session, against a Core in this process", () => {
     expect(payload.promptUnknownReason).toContain("exited");
   }, 60_000);
 
+  it("hears why the harness died before it hears that it died (#495 gate review, blocker 6)", async () => {
+    // **The false success this closes.** `pty-manager` appends the
+    // `session:promptAbandoned` reason row and *then* emits the exit. The exit
+    // is fanned out synchronously; an appended row waits for the next live push.
+    // So `wait()` resolved on the exit with the row still in flight, and
+    // `--wait --json` printed `promptDelivered: true` beside `exited: true` —
+    // with `EXIT_OK`, because a clean exit code is a clean settle — for a prompt
+    // the Core had just said it never delivered.
+    //
+    // The poll is two seconds out on purpose. Nothing here can win that race by
+    // being lucky: either the Core puts the row on the socket ahead of the exit
+    // or this command finishes without it. That is what makes this an assertion
+    // about the ordering rather than about the machine it runs on.
+    const { eventLog, exitPty, spawns } = await coreWithSessions({
+      onPromptDelivery: null,
+      liveEventPollMs: 2_000,
+    });
+
+    const running = fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--wait", "--json"],
+      withCore(),
+    );
+    await waitFor(() => spawns() > 0, "the Core spawned the harness");
+
+    // `pty-manager`'s order, exactly: the row, then the death.
+    eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_done",
+        ptyId: "pty_task_done",
+        reason: "the harness exited before the prompt was delivered",
+      }),
+      { taskId: "task_done", ptyId: "pty_task_done" },
+    );
+    exitPty("pty_task_done");
+
+    const run = await running;
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.exited).toBe(true);
+    expect(payload.promptDelivered).toBe(false);
+    expect(payload.promptAbandonedReason).toBe(
+      "the harness exited before the prompt was delivered",
+    );
+    expect(run.code).toBe(EXIT_FAILURE);
+  }, 60_000);
+
+  it("says it does not know rather than that the prompt landed, when no row ever comes", async () => {
+    // The other half of blocker 6, and the reason the client stopped deriving
+    // this field from the absence of an abandon row. Here the Core appends
+    // nothing at all — an `appendEvent` that is failing, a store that cannot
+    // open — so there is no row for the ordering above to carry, and the exit
+    // is the only thing that arrives. `true` would be "nothing told me
+    // otherwise" dressed as a report; `null` is what actually happened.
+    const { exitPty, spawns } = await coreWithSessions({
+      onPromptDelivery: null,
+      liveEventPollMs: 2_000,
+    });
+
+    const running = fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--wait", "--json"],
+      withCore(),
+    );
+    await waitFor(() => spawns() > 0, "the Core spawned the harness");
+    exitPty("pty_task_done");
+
+    const run = await running;
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.exited).toBe(true);
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptAbandonedReason).toBeUndefined();
+  }, 60_000);
+
   it("refuses rather than waits when the Core cannot say where its log ends (#494 review, blocker 2)", async () => {
     // The other half of blocker 2, and the one that covers a Core older than
     // `session:promptDelivered` as well as this one, which has no event-log
@@ -845,6 +941,31 @@ describe("actana session, against a Core in this process", () => {
     // arrives one frame after the subscribe — so the answer comes at once
     // instead of never.
     await coreWithSessions({ eventLog: false, onPromptDelivery: null });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptUnknownReason).toContain("event log");
+  }, 60_000);
+
+  it("refuses on a Core whose event log is wired but cannot be reached (#495 gate review, blocker 7)", async () => {
+    // **The hang.** The test above covers `eventLog: false` — no port at all —
+    // and that path already worked, because `tipEventId` was simply absent. The
+    // Core an operator actually runs never takes it: `core-entry.ts` always
+    // wires the log, so a store that cannot open is a *wired* port answering
+    // every call and recording nothing.
+    //
+    // That Core used to advertise `tipEventId: 0`. Zero is a real floor, so the
+    // latch armed and waited; `appendEvent` returned `0` without throwing, so
+    // no row was ever appended; and `--await-prompt` refuses `--wait-timeout`,
+    // which left the harness exiting or the socket dropping as the only bounds.
+    // Nothing here does either, so on the old code this test does not fail — it
+    // does not finish.
+    await coreWithSessions({ eventLog: "unavailable", onPromptDelivery: null });
 
     const run = await fixture!.run(
       ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],

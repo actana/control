@@ -292,6 +292,75 @@ describe("PTY output fans out per connection, by subscription (issue 142)", () =
     });
   });
 
+  describe("an exit never overtakes the log rows that explain it (#495 gate review, blocker 6)", () => {
+    it("flushes this connection's pending events before it sends the exit", () => {
+      const ws = connect();
+      ws.receive({ type: "subscribe", reqId: "e1", lastEventId: 0 });
+      ws.receive({ type: "ptySubscribe", reqId: "s1", ptyId: "pty-1" });
+
+      // `pty-manager`'s ordering exactly: append the reason row, then let the
+      // process die. `liveEventPollMs` is 100 s in this suite, so nothing can
+      // push that row on a timer inside this body — the only way it reaches the
+      // socket ahead of the exit is the fan-out flushing it on purpose. That is
+      // what turns "the client usually hears the reason first" into "the client
+      // cannot hear the exit first".
+      log.port.appendEvent(
+        "session:promptAbandoned",
+        JSON.stringify({
+          taskId: "t1",
+          ptyId: "pty-1",
+          reason: "the harness exited before the prompt was delivered",
+        }),
+        { taskId: "t1", ptyId: "pty-1" },
+      );
+      core.emitExit("pty-1", 0);
+
+      expect(ws.order("event", "exit")).toEqual(["event", "exit"]);
+      expect(
+        ws.ofType<{ event: { kind: string } }>("event").map((frame) => frame.event.kind),
+      ).toEqual(["session:promptAbandoned"]);
+    });
+
+    it("sends the exit anyway when there is no row to send", () => {
+      // The flush is not a gate. A PTY that dies with nothing appended about it
+      // is the ordinary case, and the exit is still the only thing that ends a
+      // client's wait.
+      const ws = connect();
+      ws.receive({ type: "subscribe", reqId: "e1", lastEventId: 0 });
+      ws.receive({ type: "ptySubscribe", reqId: "s1", ptyId: "pty-1" });
+
+      core.emitExit("pty-1", 0);
+
+      expect(ws.ofType("exit")).toHaveLength(1);
+      expect(ws.ofType("event")).toHaveLength(0);
+    });
+
+    it("puts the rows ahead of an exit a catching-up connection is still holding", () => {
+      // The held path, and it is ahead by more than the flush: a connection
+      // mid-catch-up holds the exit until its replay is served, while the event
+      // stream is a separate track that never held anything. The flush runs
+      // before the hold branch, so the row is out at once and the exit follows
+      // the replay — asserted so a later change to either track cannot quietly
+      // reintroduce the ordering this fixes.
+      const ws = connect();
+      ws.receive({ type: "subscribe", reqId: "e1", lastEventId: 0 });
+      ws.receive({ type: "ptySubscribe", reqId: "s1", ptyId: "pty-1", catchUp: true });
+
+      log.port.appendEvent(
+        "session:promptAbandoned",
+        JSON.stringify({ taskId: "t1", ptyId: "pty-1", reason: "gone" }),
+        { taskId: "t1", ptyId: "pty-1" },
+      );
+      core.emitExit("pty-1", 0);
+
+      // The reason is on the wire; the death is still held behind the replay.
+      expect(ws.order("event", "exit")).toEqual(["event"]);
+
+      ws.receive({ type: "replay", reqId: "r1", ptyId: "pty-1", sinceSeq: 0 });
+      expect(ws.order("event", "exit")).toEqual(["event", "exit"]);
+    });
+  });
+
   describe("catch-up: subscribe, hold, replay, drain — in that order", () => {
     it("serves the replay window before the bytes that arrived behind it", () => {
       const ws = connect();

@@ -99,8 +99,16 @@ export interface EventLogPort {
   ): number;
   /** Read every event with eventId > afterEventId, ascending. */
   readEventTail(afterEventId: number, limit?: number): CoreLinkEvent[];
-  /** The highest eventId in the log, or 0 when empty. */
-  getLastEventId(): number;
+  /**
+   * The highest eventId in the log, `0` when it is open and empty, or `null`
+   * when there is no log to ask (#495 gate review, addendum blocker 7).
+   *
+   * The three answers are three different facts and a client acts differently
+   * on each, so an implementation that cannot reach its store must say `null`
+   * rather than `0`: `0` is a usable floor, and a client that arms on it waits
+   * for a row a dead store will never append.
+   */
+  getLastEventId(): number | null;
 }
 
 /**
@@ -1028,6 +1036,26 @@ export class PtyCoreLinkServer {
    * answering pings keeps `lastInboundAt` fresh, so the heartbeat never reaps
    * it either. Loopback Cores configure no verifier, where `authenticated` is
    * irrelevant and every subscriber is served.
+   *
+   * **An exit never overtakes the log rows that explain it** (#495 gate review,
+   * addendum blocker 6). An exit is fanned out from here *synchronously*, while
+   * an appended row waits for that connection's next `pushLiveEvents` tick — up
+   * to `liveEventPollMs`, 500 ms by default. `pty-manager` appends
+   * `session:promptAbandoned` and then emits the exit, so on the old ordering
+   * the client heard the death of the harness half a second before the reason
+   * for it: `wait()` resolved on the exit, the latch had heard nothing, and
+   * `--wait --json` printed `promptDelivered: true` beside `exited: true` for a
+   * prompt the Core had just said it never delivered. Flushing this
+   * connection's pending events first makes the order a *fact about the wire*
+   * rather than a race between a synchronous call and a poll: the rows and the
+   * exit go out on one socket, and a socket delivers in order. It is not a
+   * delay — nothing waits, the same rows the next tick would have sent are sent
+   * now — and it costs one tail read per exit per subscriber.
+   *
+   * Placed before the `holding` branch on purpose. A connection mid-catch-up
+   * holds the exit and receives it after its replay, so flushing here still
+   * puts the rows ahead of it; the event stream and the PTY replay are separate
+   * tracks and always were.
    */
   private fanOutPtyEvent(event: PtyCoreEvent): void {
     const frame: CoreLinkServerFrame =
@@ -1038,6 +1066,10 @@ export class PtyCoreLinkServer {
       if (this.authVerifier && !conn.authenticated) continue;
       const sub = conn.ptySubscriptions.get(event.ptyId);
       if (!sub) continue;
+      // The rows first, then the death they explain. `pushLiveEvents` shares
+      // this send's `readyState` gate, so a socket that refuses the rows
+      // refuses the exit too — there is no ordering where the exit wins.
+      if (event.type === "exit") this.pushLiveEvents(conn);
       if (sub.holding) {
         sub.hold(event);
         continue;
@@ -1973,7 +2005,11 @@ export class PtyCoreLinkServer {
     // It is not `lastSent` and must never replace it: `lastSent` is the receipt
     // for what this socket actually took, and a cursor advanced to the tip
     // would skip everything between the two.
-    const tipEventId = this.eventLog?.getLastEventId();
+    // `undefined` from a Core with no event-log port at all, `null` from one
+    // whose port is wired but cannot answer. Different causes, same honest
+    // report: omit the field (#495 gate review, addendum blocker 7).
+    const tip = this.eventLog?.getLastEventId();
+    const tipEventId = tip === null ? undefined : tip;
     const tail = this.eventLog
       ? this.eventLog.readEventTail(fromEventId, EVENT_TAIL_LIMIT)
       : [];
@@ -1991,9 +2027,11 @@ export class PtyCoreLinkServer {
     this.send(ws, {
       type: "eventsReplayed",
       lastEventId: lastSent,
-      // Omitted, not zeroed, on a Core with no event-log port: "I have no log"
-      // and "my log is empty" are different answers, and a client that waits on
-      // a row this Core can never append needs to be able to tell them apart.
+      // Omitted, not zeroed, on a Core with no event-log port and on one whose
+      // store cannot be reached: "I have no log", "I cannot read my log" and
+      // "my log is empty" are three different answers, and a client that waits
+      // on a row this Core can never append needs to tell them apart. Zeroing
+      // the first two is what left `--await-prompt` waiting for ever.
       ...(tipEventId === undefined ? {} : { tipEventId }),
     });
   }
