@@ -337,6 +337,188 @@ const OPENCODE_COMPOSER = readFileSync(
   "utf8",
 );
 
+/**
+ * codex-cli 0.153.0's boot, its composer, its settled idle screen and the
+ * directory-trust dialog that is the only thing standing between the two —
+ * all captured byte-for-byte off live PTYs at the Core's own 100x30 and
+ * `TERM=xterm-256color` (issue 277). Substituted: the project path, and the
+ * OSC-0 window title that carries the same directory's name.
+ *
+ * The timings are measured, not reconstructed. Every capture recorded the
+ * offset of each PTY chunk from spawn, `codex-0.153.0-frames.txt` carries those
+ * offsets, and {@link codexFrames} replays them — which matters, because the
+ * moment the quiet gap expires depends on *which* chunks were paints, and that
+ * is a question only the module's own signature ring can answer.
+ *
+ *    62 ms  {@link CODEX_BOOT} — capability probes. 72 chars, no text at all.
+ *   171 ms  {@link CODEX_COMPOSER} — the first painted frame, and the composer
+ *           placeholder is *in* it. Across eight timed cold boots (five
+ *           `codex --enable hooks`, three plain): 160–198 ms.
+ *   171 ms  {@link CODEX_BOOT_SETTLING} — everything painted between the
+ *           composer frame and the settle, 25 chunks out to 597 ms. Almost all
+ *           of them repeat a signature already in the ring, which is why the
+ *           gap opens where it does and why feeding this as one chunk would
+ *           move it.
+ *   564 ms  the 350 ms quiet gap expires — 350 ms after the last *novel*
+ *           signature, at 214 ms. Across the eight boots: 564–955 ms, so the
+ *           marker leads the settle by 366–782 ms every time.
+ *  1098 ms  {@link CODEX_IDLE} — the settled screen, model and directory
+ *           resolved, placeholder still there.
+ *
+ * There is no hole on this path, and the probes say so directly rather than by
+ * inference: a prompt written at 0, 60, 120, 170, 200, 400, 700 and 1200 ms —
+ * eight more boots — echoed into the composer every time, including the ones
+ * written before codex had painted anything.
+ */
+const CODEX_BOOT = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-boot.txt"),
+  "utf8",
+);
+
+const CODEX_COMPOSER = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-composer.txt"),
+  "utf8",
+);
+
+const CODEX_BOOT_SETTLING = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-boot-settling.txt"),
+  "utf8",
+);
+
+const CODEX_IDLE = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-idle.txt"),
+  "utf8",
+);
+
+/**
+ * The capture's own chunk boundaries and offsets, so a replay is a replay.
+ *
+ * `codex-0.153.0-frames.txt` is one row per PTY chunk — `<fixture> <offsetMs>
+ * <chars>` — and this slices the named fixture back into those chunks. Handing
+ * the module a concatenation instead is not a smaller version of the same
+ * thing: `lastPaintAt` moves only on a signature the ring has not seen, so
+ * merging chunks merges signatures and moves the settle. Issue 277 asked for
+ * the ordering between the gap and the screen clear to be *timed*; this is what
+ * lets a test assert it instead of reasoning about it in a comment.
+ */
+type CapturedFrame = { atMs: number; data: string };
+
+const CODEX_FRAME_MANIFEST = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-frames.txt"),
+  "utf8",
+);
+
+function codexFrames(fixture: string, source: string): readonly CapturedFrame[] {
+  const frames: CapturedFrame[] = [];
+  let at = 0;
+  for (const line of CODEX_FRAME_MANIFEST.split("\n")) {
+    if (!line || line.startsWith("#")) continue;
+    const [name, offset, chars] = line.split(/\s+/);
+    if (name !== fixture) continue;
+    const end = at + Number(chars);
+    frames.push({ atMs: Number(offset), data: source.slice(at, end) });
+    at = end;
+  }
+  // A manifest that stopped describing its fixture would silently truncate the
+  // replay, and a truncated replay is a different measurement.
+  expect(at).toBe(source.length);
+  expect(frames.length).toBeGreaterThan(0);
+  return frames;
+}
+
+/**
+ * A realistic start prompt, and what codex renders when it is written.
+ *
+ * `confirmEcho` is the one field in codex's row that can turn a delivery that
+ * works today into one that fails, so it is the one that needs evidence from
+ * the workload it will actually meet. `"say hello"` is not that workload: issue
+ * 277's own field comment records Studio codex Sessions started with a
+ * sub-agent contract — long, sectioned, multi-line — and says the prompt landed
+ * intact. That is what these three capture.
+ *
+ * {@link CODEX_LONG_PROMPT} is the prompt as written, 799 characters over 14
+ * lines. Two things then happen to it, and both are captured:
+ *
+ * - **Sanitised.** `sanitizeInitialInput` (pty-manager.ts) collapses every run
+ *   of C0 whitespace to one space before delivery ever sees the text, so what
+ *   `writePrompt` actually writes is one 796-character line.
+ *   {@link CODEX_LONG_PROMPT_ECHO} is codex's composer after exactly that
+ *   write: the whole prompt, echoed verbatim and wrapped, no paste chip.
+ * - **Bracketed paste.** codex enables `ESC[?2004h` in its first bytes, so the
+ *   other shape this could arrive in is a real paste.
+ *   {@link CODEX_PASTED_PROMPT_ECHO} is the composer after the same text
+ *   wrapped in `ESC[200~ … ESC[201~`: also echoed in full, with its line breaks
+ *   preserved as composer lines.
+ *
+ * Neither renders as `[Pasted text …]`, which is the case that would have made
+ * `confirmEcho` unsafe here — `PASTE_PLACEHOLDER` is a transcription of Claude
+ * Code's wording and would not have matched codex's. Captured with
+ * `--enable hooks -s read-only`; the prompt body is text written for the probe,
+ * so nothing in it is scrubbed.
+ */
+const CODEX_LONG_PROMPT = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-long-prompt.txt"),
+  "utf8",
+);
+
+const CODEX_LONG_PROMPT_ECHO = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-long-prompt-echo.txt"),
+  "utf8",
+);
+
+const CODEX_PASTED_PROMPT_ECHO = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-pasted-prompt-echo.txt"),
+  "utf8",
+);
+
+/** What `sanitizeInitialInput` hands to delivery: one line, no C0 bytes. */
+const CODEX_SANITISED_PROMPT = CODEX_LONG_PROMPT.replace(/[\t\n\v\f\r]+/g, " ").trim();
+
+/**
+ * The same build booted in a directory it does not trust, which is where the
+ * prompt actually goes missing.
+ *
+ *   198 ms  {@link CODEX_UNTRUSTED_BOOT} — the identical first frame, composer
+ *           placeholder and all. Eleven chunks out to 589 ms, of which only
+ *           198, 198, 208 and 284 ms are paints.
+ *   633 ms  the screen is cleared.
+ *   634 ms  the quiet gap expires — 350 ms after that last paint at 284 ms.
+ *   638 ms  {@link CODEX_DIRECTORY_TRUST} — `Do you trust the contents of this
+ *           directory?`, carrying its own clear at the front.
+ *
+ * **The gap and the clear are one millisecond apart, and that ordering is the
+ * whole measurement.** The clear lands first, so the screen the module reads at
+ * 634 ms is the dialog and not the composer that was on it a moment earlier.
+ * One millisecond the other way and delivery would have settled on a composer
+ * the dialog was about to wipe — still not a silent loss, because `confirmEcho`
+ * would then withhold the `\r`, but a different path with different writes.
+ * Nothing about that is arguable from a comment, which is why the replay below
+ * feeds the capture's own chunks at the capture's own offsets and lets the
+ * module decide. The other untrusted boot in the sample cleared at 555 ms
+ * against a gap at 908 ms, a 353 ms margin, so one millisecond is the tight end
+ * of the range and not the usual one.
+ *
+ * codex has no {@link BLOCKING_DIALOGS} entry, so before this row nothing in
+ * the module was watching for that screen. Measured on a ninth boot: a
+ * 22-character prompt written at 990 ms — well after the dialog was up —
+ * produced no echo and no change to the screen at all. The dialog eats it, and
+ * D8's `\r` then lands on a menu whose highlighted row is `1. Yes, continue`.
+ *
+ * The two are separate files on purpose. `composerOnScreen` reads whatever it
+ * is given and does not itself cut at a screen clear — the caller does — so a
+ * single fixture spanning both would report a composer that is no longer
+ * displayed, which is the mistake these captures exist to rule out.
+ */
+const CODEX_UNTRUSTED_BOOT = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-untrusted-boot.txt"),
+  "utf8",
+);
+
+const CODEX_DIRECTORY_TRUST = readFileSync(
+  path.resolve(__dirname, "fixtures/codex-0.153.0-directory-trust.txt"),
+  "utf8",
+);
+
 // ─── screen reading ──────────────────────────────────────────────────
 
 describe("stripAnsi", () => {
@@ -1026,21 +1208,21 @@ describe("HarnessPromptDelivery", () => {
 describe("HARNESS_READINESS", () => {
   it("gates only the harnesses whose composer somebody has actually read", () => {
     // The table is still the ONLY thing that turns any of this on, and the
-    // default is still the pre-229 path. What changed in issue 232 is which
-    // harnesses have a row, not the rule for getting one: a screen has to have
-    // been looked at. codex has not been, so it keeps the untouched path — and
-    // that is a gap, not a clearance. See the table's own note.
-    for (const harness of ["codex", "invented-tomorrow"]) {
-      expect(readinessFor(harness)).toEqual({
-        composer: [],
-        confirmEcho: false,
-        maxPromptWrites: 1,
-      });
-      // No markers means no gate: any screen at all counts as ready.
-      expect(composerOnScreen("", readinessFor(harness))).toBe(true);
-    }
+    // default is still the pre-229 path. What changed in issues 232 and 277 is
+    // which harnesses have a row, not the rule for getting one: a screen has to
+    // have been looked at. All four shipped harnesses now have been, so what is
+    // left on the default is a harness nobody has written yet — which is the
+    // case the empty default is actually for.
+    expect(readinessFor("invented-tomorrow")).toEqual({
+      composer: [],
+      confirmEcho: false,
+      maxPromptWrites: 1,
+    });
+    // No markers means no gate: any screen at all counts as ready.
+    expect(composerOnScreen("", readinessFor("invented-tomorrow"))).toBe(true);
     expect(Object.keys(HARNESS_READINESS).sort()).toEqual([
       "claude-code",
+      "codex",
       "cursor-cli",
       "opencode",
     ]);
@@ -1084,6 +1266,46 @@ describe("HARNESS_READINESS", () => {
     // The trust screen is handled a step earlier, by the dialog table; this
     // asserts the two do not overlap into each other.
     expect(composerOnScreen(CURSOR_TRUST_DIALOG, readiness)).toBe(false);
+  });
+
+  it("recognises codex's composer on the frame it lands in and on the idle screen", () => {
+    // Two screens 927 ms apart in one capture: the first frame codex paints,
+    // where the model and directory both still read `loading`, and the settled
+    // screen with both resolved. The placeholder is on each of them, which is
+    // what makes it worth gating on rather than a string one frame happened to
+    // carry.
+    const readiness = readinessFor("codex");
+    expect(composerOnScreen(CODEX_COMPOSER, readiness)).toBe(true);
+    expect(composerOnScreen(CODEX_IDLE, readiness)).toBe(true);
+    // The 72 bytes before it are capability probes with no text in them.
+    expect(composerOnScreen(CODEX_BOOT, readiness)).toBe(false);
+  });
+
+  it("reads no composer on the trust dialog codex swallows prompts into", () => {
+    const readiness = readinessFor("codex");
+    // Before the clear, the placeholder is there and this reads ready — the
+    // same frame as the trusted boot's, because it is the same frame.
+    expect(composerOnScreen(CODEX_UNTRUSTED_BOOT, readiness)).toBe(true);
+    // After it, the dialog is the whole screen and nothing is listening. This
+    // is the gap the row closes: codex has no dialog-table entry, so the
+    // marker is the only thing that notices.
+    expect(composerOnScreen(CODEX_DIRECTORY_TRUST, readiness)).toBe(false);
+    expect(dialogsForHarness("codex")).toEqual([]);
+  });
+
+  it("does not gate codex on the two markers that share the composer's frame", () => {
+    const readiness = readinessFor("codex");
+    // `? for shortcuts` arrives with the composer on 8 of 8 boots and looks
+    // like a fine marker until it is timed past the boot: it is gone from the
+    // settled screen 927 ms later, so it would read "no composer" on every
+    // delivery that starts after boot rather than during it.
+    expect(/\?\s*for\s+shortcuts/i.test(stripAnsi(CODEX_COMPOSER))).toBe(true);
+    expect(/\?\s*for\s+shortcuts/i.test(stripAnsi(CODEX_IDLE))).toBe(false);
+    expect(composerOnScreen("  ? for shortcuts", readiness)).toBe(false);
+    // The wordmark survives to the settled screen and is still the wrong
+    // thing: a painted box is what D3a exists to stop reading as readiness,
+    // and it lands in the same frame as the placeholder anyway.
+    expect(composerOnScreen(">_ OpenAI Codex (v0.153.0)", readiness)).toBe(false);
   });
 });
 
@@ -1434,5 +1656,212 @@ describe("delivering to cursor-cli (issue 232)", () => {
     expect(h.writes).toEqual([]);
     expect(h.delivery.currentPhase).toBe("abandoned");
     expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+  });
+});
+
+describe("delivering to codex (issue 277)", () => {
+  /**
+   * Feed a capture back the way the PTY produced it: chunk by chunk, each at
+   * the offset it was recorded at.
+   *
+   * The clock is only ever moved forward to the next chunk's offset, so the
+   * module's own timers fire between chunks exactly where they fired live.
+   */
+  function replay(h: Fixture, frames: readonly CapturedFrame[]): void {
+    for (const frame of frames) {
+      if (frame.atMs > h.clock.time) h.clock.advance(frame.atMs - h.clock.time);
+      h.delivery.onOutput(frame.data);
+    }
+  }
+
+  const TRUSTED_BOOT: readonly CapturedFrame[] = [
+    ...codexFrames("boot", CODEX_BOOT),
+    ...codexFrames("composer", CODEX_COMPOSER),
+    ...codexFrames("boot-settling", CODEX_BOOT_SETTLING),
+  ];
+  const UNTRUSTED_BOOT = codexFrames("untrusted-boot", CODEX_UNTRUSTED_BOOT);
+  const TRUST_DIALOG = codexFrames("directory-trust", CODEX_DIRECTORY_TRUST);
+
+  /**
+   * codex 0.153.0 in a directory it trusts, replayed at the offsets its own
+   * capture recorded — 28 chunks from 62 ms to 597 ms. The composer is early
+   * enough that the ordinary path never has to wait for it, which is the
+   * finding; the row is not here because of this boot.
+   */
+  function bootCodex(prompt: string): Fixture {
+    const h = startDelivery(prompt, { harness: "codex" });
+    replay(h, TRUSTED_BOOT);
+    return h;
+  }
+
+  it("settles 350 ms after the last novel frame, not after the last frame", () => {
+    // 214 ms is the last chunk whose signature the ring had not already seen;
+    // everything from 252 ms to 597 ms repeats one. So the gap opens at 564 ms
+    // — in the middle of a harness that is still emitting — and a replay that
+    // collapsed those chunks into one would have put it somewhere else.
+    //
+    // One millisecond short of it, with every frame up to 520 ms delivered,
+    // nothing has been typed.
+    const early = startDelivery("say hello", { harness: "codex" });
+    replay(
+      early,
+      TRUSTED_BOOT.filter((f) => f.atMs < 564),
+    );
+    early.clock.advance(563 - early.clock.time);
+    expect(early.writes).toEqual([]);
+
+    // The whole capture: the prompt goes out at 564 ms, 33 ms before the last
+    // chunk of the boot arrives.
+    const h = bootCodex("say hello");
+    expect(h.clock.time).toBe(597);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.events).toContainEqual({ phase: "settled", waitedMs: 564 });
+    // Never held: the marker was on screen from the first painted frame.
+    expect(h.events.filter((e) => e.phase === "waiting-for-composer")).toHaveLength(0);
+  });
+
+  it("holds the carriage return until codex shows the prompt back", () => {
+    // `confirmEcho` is new for codex with this row. The live probes say codex
+    // does echo — a prompt written at 0 ms came back — so this costs a paint,
+    // not a delivery.
+    const h = bootCodex("say hello");
+    h.clock.advance(1);
+    expect(h.writes).toEqual(["say hello"]);
+
+    h.delivery.onOutput(echoed("say hello"));
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+  });
+
+  it("finds the quiet gap on the dialog's side of the screen clear, by 1 ms", () => {
+    // The measurement issue 277 asked for, exercised rather than asserted
+    // around. Eleven chunks of the untrusted boot go in at 197–589 ms; the
+    // clear lands at 633 ms and the dialog at 638 ms; the gap opens at 634 ms
+    // because the last novel frame was at 284 ms. One millisecond, and it is
+    // the module that says so here, not this comment.
+    const h = startDelivery("say hello", { harness: "codex" });
+    replay(h, UNTRUSTED_BOOT);
+    expect(h.clock.time).toBe(589);
+    // Still the composer at this point, and still nothing typed: the gap has
+    // not opened yet.
+    expect(composerOnScreen(CODEX_UNTRUSTED_BOOT, readinessFor("codex"))).toBe(true);
+    expect(h.writes).toEqual([]);
+
+    // 633 ms: the clear, at the front of the dialog fixture. 634 ms: the gap.
+    replay(h, TRUST_DIALOG);
+    expect(h.clock.time).toBe(638);
+
+    h.clock.advance(1);
+    expect(h.writes).toEqual([]);
+    expect(h.events).toContainEqual({ phase: "waiting-for-composer", waitedMs: 634 });
+    expect(h.delivery.currentPhase).toBe("settling");
+  });
+
+  it("would still not have lost the prompt had the gap fallen first", () => {
+    // The other side of that millisecond, made explicit because a margin that
+    // narrow is not a safety argument. Delivered the clear one millisecond
+    // late, the module settles on the composer and types — and `confirmEcho`
+    // is what stops it there: the dialog wipes the screen, no echo comes back,
+    // and the `\r` is withheld rather than pressed into a menu.
+    const h = startDelivery("say hello", { harness: "codex" });
+    replay(h, UNTRUSTED_BOOT);
+    h.clock.advance(634 - 589);
+    expect(h.writes).toEqual(["say hello"]);
+
+    for (const frame of TRUST_DIALOG) h.delivery.onOutput(frame.data);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+  });
+
+  it("delivers as soon as the dialog is answered and the composer returns", () => {
+    // Nothing here answers the dialog — codex has no entry in the dialog table
+    // and D4a forbids guessing a keystroke for a menu this module has not been
+    // taught. What the row buys is that the prompt is still in hand when a
+    // human does answer it.
+    const h = startDelivery("say hello", { harness: "codex" });
+    replay(h, UNTRUSTED_BOOT);
+    replay(h, TRUST_DIALOG);
+    h.clock.advance(4_000);
+    expect(h.writes).toEqual([]);
+
+    h.delivery.onOutput(CODEX_IDLE);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+  });
+
+  it("abandons rather than typing blind when nobody answers the dialog (issue 483)", () => {
+    // How the row composes with #483. codex names no `composerWaitMs`, so its
+    // ceiling is the default 15 s — the same clock it has always had. What
+    // changed is the outcome at it: a marker that never arrives now ends the
+    // delivery `abandoned`, which is a `needs-input` Session that says the
+    // prompt did not land, instead of a prompt typed into a trust dialog and
+    // reported `delivered`. A longer ceiling would only postpone that report,
+    // which is why codex is not in the timing table.
+    //
+    // The reason the caller gets names the marker, not the dialog:
+    // `onDeadline`'s dialog branch is unreachable for codex because
+    // `dialogsForHarness("codex")` is empty. See the row's own note.
+    expect(deliveryProfileFor("codex").composerWaitMs).toBe(PROFILE.maxWaitMs);
+
+    const h = startDelivery("say hello", { harness: "codex" });
+    replay(h, UNTRUSTED_BOOT);
+    replay(h, TRUST_DIALOG);
+    h.clock.advance(PROFILE.maxWaitMs);
+
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events.at(-1)).toEqual({
+      phase: "abandoned",
+      reason: "codex composer never appeared within 15000 ms",
+    });
+  });
+
+  // ── `confirmEcho` against the prompt it will actually meet ──────────────
+
+  it("sees a real start prompt echoed back, typed and pasted alike", () => {
+    // The field this row adds that can lose a delivery, measured on the
+    // workload it will meet rather than on `"say hello"`. Both captures are
+    // codex's composer after one write of an 800-character sub-agent contract:
+    // one sanitised to a single line the way `sanitizeInitialInput` sanitises
+    // it, one delivered as a bracketed paste.
+    expect(CODEX_SANITISED_PROMPT.length).toBeGreaterThan(700);
+    expect(CODEX_SANITISED_PROMPT).not.toContain("\n");
+    expect(CODEX_LONG_PROMPT.split("\n").length).toBeGreaterThan(10);
+
+    expect(promptEchoed(CODEX_LONG_PROMPT_ECHO, CODEX_SANITISED_PROMPT)).toBe(true);
+    expect(promptEchoed(CODEX_PASTED_PROMPT_ECHO, CODEX_LONG_PROMPT)).toBe(true);
+  });
+
+  it("does not owe its answer to the paste placeholder it does not print", () => {
+    // `PASTE_PLACEHOLDER` is a transcription of Claude Code's `[Pasted text
+    // #1 …]` wording, and if codex collapsed a long write to a chip of its own
+    // phrasing the match would fail and `retypePrompt` would loop the delivery
+    // into `abandoned`. It does not collapse it: the text is on screen, so the
+    // echo probe is what matches and the placeholder never has to.
+    for (const screen of [CODEX_LONG_PROMPT_ECHO, CODEX_PASTED_PROMPT_ECHO]) {
+      expect(stripAnsi(screen)).not.toMatch(/\[\s*pasted\s+text/i);
+      expect(stripAnsi(screen)).toContain("sub-agent of an orchestrating Session");
+    }
+  });
+
+  it("submits a real start prompt rather than re-typing it", () => {
+    // End to end on the long prompt: settle, one write, the captured echo, and
+    // the carriage return. The failure this rules out is the expensive one —
+    // an echo the module cannot see, a second and third write, and a Session
+    // abandoned on a delivery that works today.
+    const prompt = CODEX_SANITISED_PROMPT;
+    const h = bootCodex(prompt);
+    h.clock.advance(1);
+    expect(h.writes).toEqual([prompt]);
+
+    h.delivery.onOutput(CODEX_LONG_PROMPT_ECHO);
+    h.clock.advance(submitPauseMs(prompt, PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes).toEqual([prompt, "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events).not.toContainEqual(
+      expect.objectContaining({ phase: "prompt-swallowed" }),
+    );
   });
 });
