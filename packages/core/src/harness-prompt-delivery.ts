@@ -805,7 +805,26 @@ export type PromptDeliveryEvent =
   | { phase: "dialog-unreadable"; dialog: string }
   /** Its number went out and the harness did not move its highlight. */
   | { phase: "dialog-unconfirmed"; dialog: string }
-  | { phase: "delivered"; waitedMs: number; promptChars: number; submitPauseMs: number }
+  | {
+      phase: "delivered";
+      waitedMs: number;
+      promptChars: number;
+      submitPauseMs: number;
+      /**
+       * Was a composer **seen** before the prompt was written, or is the clock
+       * the only thing vouching for it (issue 395)?
+       *
+       * `true` means `composerOnScreen` matched a real marker from
+       * {@link HARNESS_READINESS} at the moment of the write, which since issue
+       * 483 is the only way a harness with a row gets typed into at all. `false`
+       * is the generic backstop that issue 483 deliberately kept for a harness
+       * with no row: the screen went quiet, so the prompt went out. That is a
+       * fine way to deliver and a bad thing to call evidence — a quiet screen is
+       * as easily a dialog — and a client that reports readiness has to be able
+       * to tell the two apart.
+       */
+      composerObserved: boolean;
+    }
   | { phase: "abandoned"; reason: string };
 
 export type PromptDeliveryTimers = {
@@ -861,6 +880,8 @@ export class HarnessPromptDelivery {
   /** Whether anything with content has been drawn since our last keystroke. */
   private paintedSinceKeystroke = false;
   private submitAt = 0;
+  /** Whether a real composer marker was on screen when the prompt was written. */
+  private composerObserved = false;
   private dialogKeystrokes = 0;
   /** Set when the dialog's own number went out and the confirm may still be due. */
   private pendingConfirm: string | null = null;
@@ -1185,6 +1206,13 @@ export class HarnessPromptDelivery {
   }
 
   private writePrompt(): void {
+    // Recorded here, from the same predicate the gate above uses, rather than
+    // derived later from the harness's name (issue 395). Deriving it would be a
+    // second opinion about when this module types, and the two would drift the
+    // first time the gate changed. `this.screen` is cleared on the next line, so
+    // this has to read it now.
+    this.composerObserved = composerOnScreen(this.screen, this.readiness) &&
+      this.readiness.composer.length > 0;
     this.phase = "typing";
     this.screen = "";
     this.recentSignatures = [];
@@ -1210,6 +1238,7 @@ export class HarnessPromptDelivery {
       waitedMs: now - this.startedAt,
       promptChars: this.opts.prompt.length,
       submitPauseMs: submitPauseMs(this.opts.prompt, this.profile),
+      composerObserved: this.composerObserved,
     });
   }
 

@@ -174,7 +174,13 @@ function reportPromptAbandoned(
 /** Report a delivered starting prompt on the same terms. */
 function reportPromptDelivered(
   deps: PtyCoreDeps,
-  info: { taskId: string; ptyId: string; characters: number; waitedMs: number },
+  info: {
+    taskId: string;
+    ptyId: string;
+    characters: number;
+    waitedMs: number;
+    composerObserved: boolean;
+  },
 ): void {
   if (!info.taskId) return;
   try {
@@ -275,6 +281,8 @@ export type PtyCoreDeps = {
     ptyId: string;
     characters: number;
     waitedMs: number;
+    /** Was a composer seen, or did the quiet gap vouch for it? See issue 395. */
+    composerObserved: boolean;
   }) => void;
   /**
    * This Session's harness is still talking (issue 243). Not a status and not
@@ -831,6 +839,10 @@ export class PtyCore {
                   ptyId: id,
                   characters: event.promptChars,
                   waitedMs: event.waitedMs,
+                  // Carried rather than inferred: this Core knows whether it
+                  // matched a composer marker or typed on the quiet gap, and no
+                  // client can work that out from the outside (issue 395).
+                  composerObserved: event.composerObserved,
                 });
               }
               // A dialog's label is harness output, so it goes through the same

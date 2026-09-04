@@ -700,6 +700,22 @@ export type CoreLinkSessionPromptDeliveredPayload = {
   characters: number;
   /** How long the Core waited for the harness before the prompt went in. */
   waitedMs: number;
+  /**
+   * Was a composer **seen** before the prompt went in, or did the clock vouch
+   * for it?
+   *
+   * The field that keeps this row from over-promising. A harness with a row in
+   * the Core's readiness table is only typed into once its composer marker is
+   * on screen (#483), and that is evidence. A harness with no row is typed into
+   * when the screen stops moving — #483's generic backstop, deliberately
+   * preserved — and a quiet screen is as easily a trust dialog as a composer.
+   * `codex` has no row today, and roughly a third of its boots settle with
+   * `Do you trust the contents of this directory?` up.
+   *
+   * Both are honest deliveries. Only one is a statement about the harness being
+   * ready, so a client that reports readiness reads this rather than the kind.
+   */
+  composerObserved: boolean;
 };
 
 /**
@@ -975,8 +991,37 @@ export type CoreLinkEventFrame = { type: "event"; event: CoreLinkEvent };
  * streamed as `event` frames. `lastEventId` is the highest eventId the Panel
  * has now seen — it persists it as its new cursor. After this frame the
  * Core resumes live `event` push for any events appended after the cursor.
+ *
+ * **`lastEventId` is a receipt for what was sent, and is not the end of the
+ * log.** `handleSubscribe` reads the tail with `readEventTail(from,
+ * EVENT_TAIL_LIMIT)` and reports the last row it actually delivered, so on a log
+ * longer than that cap the marker lands around a thousand rows in and the rest
+ * of the history arrives behind it through `pushLiveEvents`, as ordinary `event`
+ * frames indistinguishable from live ones. `packages/cli/src/event-tip.ts` was
+ * written for that fact and says the rest.
+ *
+ * `tipEventId` is the other number, added by #395: **where the log actually
+ * ended when this subscribe was taken up.** It is read before the tail, so every
+ * row that existed when the client asked is at or below it and every row
+ * appended afterwards is above it — which is what makes it usable as a floor for
+ * "is this report about my command, or about something that happened last
+ * Tuesday". It is deliberately *beside* `lastEventId` and never in place of it:
+ * a cursor advanced to a tip would skip history the client was never sent, which
+ * is the trade `event-tip.ts` refuses. **Nothing may consume it as a cursor.**
+ *
+ * Optional because a Core with no event-log port has no tip to report, and its
+ * absence is a fact a client can act on — #395's `session start --await-prompt`
+ * reads it as "this Core cannot tell me when the prompt landed" and refuses,
+ * rather than waiting for a row that is never coming. That detectable,
+ * clean-refusal absence is why this addition does not move
+ * {@link CORE_LINK_PROTOCOL_VERSION} (ADR 0024 D11).
  */
-export type CoreLinkEventsReplayedFrame = { type: "eventsReplayed"; lastEventId: number };
+export type CoreLinkEventsReplayedFrame = {
+  type: "eventsReplayed";
+  lastEventId: number;
+  /** Where the log ended when the subscribe was taken up. Never a cursor. */
+  tipEventId?: number;
+};
 
 /**
  * The `multiConnection` capability, announced on `ready` (ADR 0024 D11).

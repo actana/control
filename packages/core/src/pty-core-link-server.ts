@@ -1963,6 +1963,17 @@ export class PtyCoreLinkServer {
     conn.subscribed = true;
     const fromEventId = frame.lastEventId;
     let lastSent = fromEventId;
+    // Read **before** the tail, and that is the whole of why it is usable as a
+    // floor (#395). Every row that existed when this subscribe was taken up is
+    // at or below this number, and every row appended from here on is above it
+    // — including rows appended while the tail below is still being written,
+    // which go out live afterwards. Taken after the tail instead, that handful
+    // of rows would sit under the floor and be read as history.
+    //
+    // It is not `lastSent` and must never replace it: `lastSent` is the receipt
+    // for what this socket actually took, and a cursor advanced to the tip
+    // would skip everything between the two.
+    const tipEventId = this.eventLog?.getLastEventId();
     const tail = this.eventLog
       ? this.eventLog.readEventTail(fromEventId, EVENT_TAIL_LIMIT)
       : [];
@@ -1977,7 +1988,14 @@ export class PtyCoreLinkServer {
       lastSent = event.eventId;
     }
     conn.lastSentEventId = lastSent;
-    this.send(ws, { type: "eventsReplayed", lastEventId: lastSent });
+    this.send(ws, {
+      type: "eventsReplayed",
+      lastEventId: lastSent,
+      // Omitted, not zeroed, on a Core with no event-log port: "I have no log"
+      // and "my log is empty" are different answers, and a client that waits on
+      // a row this Core can never append needs to be able to tell them apart.
+      ...(tipEventId === undefined ? {} : { tipEventId }),
+    });
   }
 
   /**

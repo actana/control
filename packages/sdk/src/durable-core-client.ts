@@ -239,13 +239,17 @@ export class DurableCoreClient extends CoreClient {
    * — it advances even when no `event` frame preceded it, which is the empty-tail
    * case and the common one for a client that dropped and came straight back.
    */
-  protected override deliverEventsReplayed(lastEventId: number): void {
+  protected override deliverEventsReplayed(lastEventId: number, tipEventId?: number): void {
     if (lastEventId > this.lastEventId) {
       this.lastEventId = lastEventId;
       this.persistCursor();
     }
     this.caughtUp = true;
-    super.deliverEventsReplayed(this.lastEventId);
+    // The cursor is `lastEventId` and only ever that. `tipEventId` rides
+    // through untouched (#395): it says where the Core's log ended, not what
+    // this client has been sent, and advancing a cursor to it would skip every
+    // row between the two.
+    super.deliverEventsReplayed(this.lastEventId, tipEventId);
   }
 
   /** The highest eventId this client has seen. Mirrors the persisted cursor. */

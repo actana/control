@@ -112,7 +112,11 @@ describe("DurableCoreClient", () => {
     await vi.waitFor(() => expect(c.isCaughtUp()).toBe(true));
 
     expect(seen.map((e) => e.eventId)).toEqual([1, 2]);
-    expect(replayed).toHaveBeenCalledWith({ lastEventId: 2 });
+    // `tipEventId` beside the cursor, and equal to it here because the whole
+    // log fitted in one tail (#395). The two part company on a log past
+    // `EVENT_TAIL_LIMIT`, which is the case the field exists for: the marker is
+    // then a receipt for what was sent and the tip is where the log ends.
+    expect(replayed).toHaveBeenCalledWith({ lastEventId: 2, tipEventId: 2 });
     expect(c.getLastEventId()).toBe(2);
     expect(storage.getItem(coreLinkCursorStorageKey(URL_A))).toBe("2");
   });

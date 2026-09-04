@@ -340,12 +340,13 @@ async function startCore(): Promise<void> {
     // evidence there is that the composer is listening — nobody outside this
     // process sees the screen (ADR 0026), and #191 removed the last client that
     // tried to infer it from quietness.
-    onSessionPromptDelivered: ({ taskId, ptyId, characters, waitedMs }) => {
+    onSessionPromptDelivered: ({ taskId, ptyId, characters, waitedMs, composerObserved }) => {
       const payload: CoreLinkSessionPromptDeliveredPayload = {
         taskId,
         ptyId,
         characters,
         waitedMs,
+        composerObserved,
       };
       try {
         appendEvent(SESSION_PROMPT_DELIVERED_EVENT_KIND, JSON.stringify(payload), {
