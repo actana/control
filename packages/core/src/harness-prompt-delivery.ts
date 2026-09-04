@@ -491,8 +491,15 @@ export type HarnessReadiness = {
   /**
    * How many times the prompt may be written. `1` is "type it once, whatever
    * happens" — the pre-229 behaviour. Anything higher only matters when
-   * `confirmEcho` is set, and the real bound on retyping is the clock: at the
-   * backstop a prompt already in the composer is submitted regardless.
+   * `confirmEcho` is set, and the real bound on retyping is the clock: past
+   * the backstop {@link HarnessPromptDelivery.echoConfirmed} stops asking for
+   * an echo at all, so a prompt still in phase `typing` is submitted
+   * regardless of what the screen shows.
+   *
+   * That is the `typing` phase only. A write whose echo came too late has
+   * already been sent back to `settling` by `retypePrompt`, and there the
+   * backstop submits on the echo rather than on the clock — see
+   * {@link HarnessPromptDelivery.promptIsInComposer}.
    */
   maxPromptWrites: number;
 };
@@ -809,6 +816,10 @@ export type PromptDeliveryProfile = {
    * the delivery succeeded. So the wait is keyed on the marker instead — the
    * backstop no longer authorises a blind type — and when the marker never
    * comes the delivery ends `abandoned` and the Session becomes `needs-input`.
+   * One exception, and it is not a blind type: if the prompt is echoed on the
+   * screen the marker is missing from, the text is in the composer and the
+   * carriage return goes out (see
+   * {@link HarnessPromptDelivery.promptIsInComposer}).
    *
    * The default is `maxWaitMs`, so a harness that does not name a number here
    * keeps the timing it has: the ceiling expires the moment the backstop does
@@ -1355,6 +1366,38 @@ export class HarnessPromptDelivery {
     });
   }
 
+  /**
+   * Is the prompt provably sitting in a composer, marker or no marker?
+   *
+   * Every pattern in {@link HARNESS_READINESS} is a *placeholder* — `Ask
+   * anything`, `Try "`, `Ask Codex to do anything` — and a placeholder is gone
+   * the moment the composer holds text. So one ordering makes
+   * `composerOnScreen` permanently false on a harness that is working
+   * perfectly: the composer paints, `writePrompt` types, the harness echoes
+   * later than `submitPauseMs + quietGapMs` with no paint in between,
+   * `onIdle` finds no echo, `retypePrompt` clears the screen, and the late
+   * echo then paints a composer *holding the prompt* and therefore wearing no
+   * placeholder. The marker can never come back, so the marker wait can only
+   * end at its ceiling, and abandoning there reports "composer never appeared"
+   * for text the harness has visibly taken — then tells the operator to send
+   * it again, which doubles it.
+   *
+   * The echo is the better evidence at that point, and it is evidence of the
+   * same fact: the harness painted our own prompt back, so there is a composer
+   * and the prompt is in it. D8's rule then applies — the carriage return has
+   * to land, or the delivery leaves typed-but-unsent text behind. This is not
+   * a blind type: nothing is written but the `\r`, and it is written only
+   * because {@link promptEchoed} says the text is already there.
+   *
+   * `promptWrites > 0` is what keeps it honest: with no write of ours on the
+   * screen, an echo match would be the harness's own scrollback, not a
+   * delivery. Checked after the dialog gate in both callers, so a menu on
+   * screen still abandons (D4a) rather than taking a `\r` it cannot justify.
+   */
+  private promptIsInComposer(): boolean {
+    return this.promptWrites > 0 && promptEchoed(this.screen, this.opts.prompt);
+  }
+
   private onDeadline(): void {
     this.cancelDeadline = null;
     if (this.finished) return;
@@ -1393,6 +1436,10 @@ export class HarnessPromptDelivery {
     // it, so this branch is not taken and the generic backstop below still
     // types and submits exactly as before.
     if (!composerOnScreen(this.screen, this.readiness)) {
+      if (this.promptIsInComposer()) {
+        this.submit(this.timers.now());
+        return;
+      }
       this.awaitComposer();
       return;
     }
@@ -1455,6 +1502,11 @@ export class HarnessPromptDelivery {
       this.deadlinePassed = true;
       this.sawOutput = true;
       this.schedule();
+      return;
+    }
+
+    if (this.promptIsInComposer()) {
+      this.submit(this.timers.now());
       return;
     }
 

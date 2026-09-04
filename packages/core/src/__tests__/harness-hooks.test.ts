@@ -162,9 +162,10 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     // `beforeSubmitPrompt`. Codex's `UserPromptSubmit` does now fire since
     // #290, but this field stands the Panel's terminal-input fallback DOWN,
     // and flipping it is a change to the Panel rather than to whether a hook
-    // arrives — it belongs with the codex readiness row (#277). Claiming a
-    // turn start we do not act on suppresses the fallback and leaves the
-    // Session on `ready` for its whole first turn.
+    // arrives, and it has no ticket of its own yet (#277 shipped the codex
+    // readiness row without touching it). Claiming a turn start we do not act
+    // on suppresses the fallback and leaves the Session on `ready` for its
+    // whole first turn.
     expect(installHarnessHooks("cursor-cli", cwd)).toEqual({
       installed: true,
       reportsTurnStart: false,

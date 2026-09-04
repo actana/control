@@ -1561,6 +1561,37 @@ describe("delivering to claude-code (issue 232)", () => {
     expect(h.delivery.currentPhase).toBe("delivered");
   });
 
+  it("submits a late echo rather than abandoning a composer holding the prompt", () => {
+    // The regression this train introduced, in the order that produces it.
+    // Every marker in `HARNESS_READINESS` is a *placeholder*, so a composer
+    // with the prompt in it wears none — and after `retypePrompt` has cleared
+    // the screen, a late echo is the only thing that ever paints again.
+    const h = bootClaudeCode("say hello");
+    h.clock.advance(572);
+    h.delivery.onOutput(CC_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["say hello"]);
+
+    // The harness echoes *later* than `submitPauseMs + quietGapMs` with no
+    // paint in between, so `onIdle` sees an empty screen and re-types.
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.events).toContainEqual({ phase: "prompt-swallowed", attempt: 1 });
+    expect(h.delivery.currentPhase).toBe("settling");
+
+    // Now it lands: a composer holding "say hello" and therefore no `Try "`.
+    h.delivery.onOutput(echoed("say hello"));
+    expect(composerOnScreen(echoed("say hello"), readinessFor("claude-code"))).toBe(false);
+
+    // The prompt is provably in the composer, so the backstop submits. Before
+    // this fix `composerOnScreen` could never be true again, the delivery held
+    // to the ceiling and abandoned with "composer never appeared" — leaving
+    // the text typed-but-unsent and telling the operator to send it again.
+    h.clock.advance(PROFILE.maxWaitMs);
+    expect(h.writes).toEqual(["say hello", "\r"]);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.map((e) => e.phase)).not.toContain("abandoned");
+  });
+
   it("fails honestly rather than typing blind if the placeholder is reworded", () => {
     // The failure this fix is allowed to have, and issue 483 changed which
     // failure that is. A build whose composer says something else stops

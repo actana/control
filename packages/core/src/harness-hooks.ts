@@ -417,10 +417,15 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
   // fire — verified on codex-cli 0.153.0 in a workspace Codex had never seen —
   // so `true` would today be honest rather than hopeful. But this field is
   // what stands the Panel's terminal-input fallback DOWN, and flipping it is a
-  // change to what the Panel does rather than to whether a hook arrives. It
-  // belongs with the codex readiness row (#277), not smuggled in behind a
-  // hooks fix: `false` costs a card that under-reports a live turn, and `true`
-  // asserted a turn early costs a Session with no `running` signal at all.
+  // change to what the Panel does rather than to whether a hook arrives — so
+  // it is not smuggled in behind a hooks fix: `false` costs a card that
+  // under-reports a live turn, and `true` asserted a turn early costs a
+  // Session with no `running` signal at all.
+  //
+  // It has no ticket of its own yet. It was pointed at #277 while that was
+  // open, but #277 shipped the codex readiness row without touching this, so
+  // the flip needs an issue that measures the Panel's fallback against a real
+  // codex turn before anyone changes the value.
   codex: {
     install: installCodexHooks,
     reportsTurnStart: false,

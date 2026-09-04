@@ -410,7 +410,7 @@ which is a narrower question than whether they were installed:
 | Harness | Hooks installed | Reports turn start | Why |
 | --- | --- | --- | --- |
 | `claude-code` | yes | yes | `UserPromptSubmit` fires |
-| `codex` | yes | no | fires since #290, but flipping this stands the Panel's fallback down — #277 |
+| `codex` | yes | no | fires since #290, but flipping this stands the Panel's fallback down — no ticket yet |
 | `cursor-cli` | yes | no | `beforeSubmitPrompt` doesn't fire in cursor-agent |
 | `opencode` | yes | yes | plugin; `chat.message` and `session.status` fire |
 
@@ -565,7 +565,7 @@ for the Core:
 | matcher groups | yes | no | no — the hooks file is never loaded |
 | matcher groups | yes | yes | **yes, on the first turn** |
 
-Three of the four families take a table of shell commands. OpenCode takes aThree of the four families take a table of shell commands. OpenCode takes a
+Three of the four families take a table of shell commands. OpenCode takes a
 JavaScript plugin instead, and its writer is `harness-hooks-opencode.ts` — see
 [OpenCode](#opencode) below.
 

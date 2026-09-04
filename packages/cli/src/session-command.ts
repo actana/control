@@ -101,9 +101,14 @@ const UNHAPPY_STATUSES: ReadonlySet<string> = new Set(["terminated", "disconnect
  * can land as late as sixteen. A deadline at fifteen would tie with it and
  * scheduling would decide which of the two answered; at seventeen the Core's
  * mechanism wins, and a caller waiting on a wedged harness gets a **status**
- * rather than this side giving up. It is also comfortably above the 900 seconds
- * the orchestration skill tells callers to pass, so the default never cuts short
- * a wait the skill's own budget expects to finish.
+ * rather than this side giving up.
+ *
+ * It is **not** above every budget the orchestration skill names: that skill now
+ * tells `send --wait` callers to pass 1800 s, so a caller who leans on this
+ * default is cut at seventeen minutes on a turn the skill says may take thirty.
+ * What keeps that defensible is the skill's own instruction to pass the budget
+ * explicitly rather than lean on a default; this number is the floor under a
+ * caller who names none, and the tie-break above is what it is chosen for.
  *
  * None of that helps #405's own case — the backstop skips a Session that is not
  * `running`, and a dialog leaves one parked at `needs-input` or `finished` — so
@@ -882,7 +887,9 @@ async function awaitTurn(
     );
   } else {
     deps.out(session.taskId);
-    if (abandoned) deps.err(promptAbandonedLine(session.taskId, abandoned.reason));
+    if (abandoned) {
+      deps.err(promptAbandonedLine(session.taskId, abandoned.reason, outcome.exited));
+    }
     deps.err(settledLine(outcome));
     deps.err(`\`actana session logs ${session.taskId}\` prints the transcript while the harness is running.`);
   }
@@ -899,14 +906,26 @@ async function awaitTurn(
  * opposite next steps. There, the answer is `session send`. Here there is no
  * question and no turn: the prompt is not in the composer, so the text has to
  * go again, and a script that read the zero exit as success would never know.
+ *
+ * **`exited` decides the second half of it.** One of the reasons that reaches
+ * here is `pty-manager`'s "the harness exited before the prompt was delivered",
+ * and against that the sentence contradicts its own parenthetical and then
+ * recommends a `session send` into a PTY that is gone. So the claim is made
+ * only where it is known: `true` says the harness left, `false` says it is
+ * still there and can take the text, and `undefined` — the `--await-prompt`
+ * path, which is told the verdict and not the process — says neither.
  */
-function promptAbandonedLine(taskId: string, reason: string): string {
+function promptAbandonedLine(taskId: string, reason: string, exited?: boolean): string {
   const because = reason === "" ? "" : ` (${reason})`;
-  return (
-    `The Core did not deliver the starting prompt to session ${taskId}${because}. ` +
-    `The harness is running and has not seen it — no turn was started. ` +
-    `Send the text with \`actana session send ${taskId} …\` once the harness is ready.`
-  );
+  const state = exited === true
+    ? `The harness has since exited — no turn was started. ` +
+      `\`actana session logs ${taskId}\` prints what it did print; the text has to go to a new session.`
+    : exited === false
+      ? `The harness is running and has not seen it — no turn was started. ` +
+        `Send the text with \`actana session send ${taskId} …\` once the harness is ready.`
+      : `The harness has not seen it — no turn was started. ` +
+        `Send the text with \`actana session send ${taskId} …\` once the harness is ready.`;
+  return `The Core did not deliver the starting prompt to session ${taskId}${because}. ${state}`;
 }
 
 /** {@link awaitTurn}, releasing the attachment's listeners on the way out. */

@@ -709,8 +709,14 @@ export type CoreLinkSessionPromptDeliveredPayload = {
    * on screen (#483), and that is evidence. A harness with no row is typed into
    * when the screen stops moving — #483's generic backstop, deliberately
    * preserved — and a quiet screen is as easily a trust dialog as a composer.
-   * `codex` has no row today, and roughly a third of its boots settle with
-   * `Do you trust the contents of this directory?` up.
+   *
+   * No harness this build ships is in that state: #277 gave `codex` the last
+   * outstanding row, so `opencode`, `cursor-cli`, `claude-code` and `codex`
+   * all have markers and all report `true` here. `false` is for the harness
+   * added after them — `HARNESS_READINESS` has a working default for an id it
+   * does not know, so a new harness arrives marker-less and would otherwise
+   * have this field vouching for a readiness nobody established on the day it
+   * shipped. It joins the others the moment it gets a row.
    *
    * Both are honest deliveries. Only one is a statement about the harness being
    * ready, so a client that reports readiness reads this rather than the kind.
