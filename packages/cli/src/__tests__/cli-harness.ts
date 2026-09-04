@@ -155,6 +155,17 @@ export function fakeStartedSession(overrides: Partial<StartedSession> = {}): Sta
     project: "web",
     wait: async () => ({ status: "finished", exited: false }),
     screen: () => "the transcript",
+    // The default is a prompt that landed. A test about #483's outcome says
+    // `promptAbandoned: () => ({ reason: "…" })` and means it.
+    promptAbandoned: () => null,
+    // The same answer without waiting, for `--wait`'s non-blocking read. The
+    // default is a Core that has said `delivered`; a test about the harness
+    // exiting before it said anything returns `null` and means it (#495 gate
+    // review, addendum blocker 6).
+    promptDeliveryReport: () => ({ outcome: "delivered" }),
+    // And the default start is one whose prompt the Core reported delivered. A
+    // test about #395's wait says otherwise and means it.
+    awaitPromptDelivery: async () => ({ outcome: "delivered" }),
     dispose: () => {},
     ...overrides,
   };

@@ -5,7 +5,9 @@ import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { buildUserPath, resolveCommandOnPath } from "@actana/shared/shell-env";
 import { resolveHarnessCommandOnPath } from "@actana/shared/harness-cli-resolution";
+import { HARNESS_REGISTRY } from "@actana/shared/harnesses";
 import {
+  reconcileHookTrustFlag,
   resolveSpawnPlan,
   SpawnPolicyError,
   type SpawnRequest,
@@ -93,6 +95,83 @@ describe("resolveSpawnPlan — agent allow-list", () => {
     expect(plan.argv).toEqual(["--enable", "hooks"]);
     expect(plan.spawnTarget).toBe("/usr/local/bin/codex");
     expect(plan.spawnArgs).toEqual(["--enable", "hooks"]);
+  });
+
+  it("accepts the Codex hook-trust flag without any builder sending it (issue 290)", () => {
+    // The registry's own launch does NOT carry the flag: a command is composed
+    // before any hooks file lands, so it cannot know whose hooks are about to
+    // run. The allow-list still has to accept it, because the Core appends it
+    // after this plan is built, for hooks it wrote itself.
+    expect(HARNESS_REGISTRY.codex.startCommand()).not.toContain(
+      "--dangerously-bypass-hook-trust",
+    );
+    const plan = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks --dangerously-bypass-hook-trust" }),
+      depsFor(),
+    );
+    if (plan.mode !== "agent") throw new Error("wrong mode");
+    expect(plan.argv).toEqual(["--enable", "hooks", "--dangerously-bypass-hook-trust"]);
+  });
+
+  it("adds the bypass only for a spawn that earned it, and strips it otherwise", () => {
+    // The whole of finding 3: the flag lifts Codex's review of hooks it has
+    // not seen, so it may travel only with a spawn whose hooks this Core
+    // wrote and audited. `earned` comes from `installHarnessHooks`, which
+    // answers `false` for a workspace carrying anyone else's hooks and for a
+    // Core that wrote no file at all.
+    const base = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks" }),
+      depsFor(),
+    );
+    const earned = reconcileHookTrustFlag(base, true);
+    if (earned.mode !== "agent") throw new Error("wrong mode");
+    expect(earned.argv).toEqual(["--enable", "hooks", "--dangerously-bypass-hook-trust"]);
+    expect(earned.spawnArgs).toEqual(earned.argv);
+
+    const unearned = reconcileHookTrustFlag(base, false);
+    if (unearned.mode !== "agent") throw new Error("wrong mode");
+    expect(unearned.argv).toEqual(["--enable", "hooks"]);
+  });
+
+  it("strips a bypass that arrived in the command from somewhere else", () => {
+    // A command carrying the flag can reach the Core from an operator typing
+    // it, a client of another version, or a saved command replayed against a
+    // different workspace. None of those has audited this workspace, so the
+    // Core takes the flag back off unless this spawn earned it.
+    const carrying = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks --dangerously-bypass-hook-trust" }),
+      depsFor(),
+    );
+    const reconciled = reconcileHookTrustFlag(carrying, false);
+    if (reconciled.mode !== "agent") throw new Error("wrong mode");
+    expect(reconciled.argv).toEqual(["--enable", "hooks"]);
+    expect(reconciled.spawnArgs).toEqual(["--enable", "hooks"]);
+  });
+
+  it("keeps argv and the Windows command line agreeing when it rewrites them", () => {
+    // On Windows `spawnArgs` is one command line built from argv, so editing
+    // argv alone would leave the two describing different runs.
+    const plan = resolveSpawnPlan(
+      spawnReq({ agent: "codex", command: "codex --enable hooks" }),
+      depsFor({
+        platform: "win32",
+        resolveCommand: () => "C:\\Users\\me\\AppData\\Roaming\\npm\\codex.cmd",
+        windowsSystemRoot: () => "C:\\Windows",
+      }),
+    );
+    const earned = reconcileHookTrustFlag(plan, true, {
+      platform: "win32",
+      windowsSystemRoot: () => "C:\\Windows",
+    });
+    if (earned.mode !== "agent") throw new Error("wrong mode");
+    expect(earned.argv).toContain("--dangerously-bypass-hook-trust");
+    expect(earned.spawnArgs).toContain('"--dangerously-bypass-hook-trust"');
+    expect(earned.spawnTarget).toBe("C:\\Windows\\System32\\cmd.exe");
+  });
+
+  it("leaves a harness with no hook-trust review untouched", () => {
+    const plan = resolveSpawnPlan(spawnReq({ agent: "claude-code", command: "claude" }), depsFor());
+    expect(reconcileHookTrustFlag(plan, true)).toBe(plan);
   });
 
   it("wraps Windows command shims through cmd.exe after argv validation", () => {

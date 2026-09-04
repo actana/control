@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 import { AuthCard } from "~/components/views/AuthCard";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
+import { withCarriedQuery } from "~/lib/auth-paths";
 
 // The Panel's only anonymous page once an Operator exists. Reached by every
 // unauthenticated navigation (server/panel-auth.ts:documentAuthRedirect).
@@ -23,7 +24,12 @@ function LoginPage() {
       await api.login(password);
       // A full load rather than a client navigation: the app shell mounts
       // outside this page's tree, and SSR should render it with the new cookie.
-      window.location.assign("/");
+      //
+      // The query goes home with it. `documentAuthRedirect` sent this browser
+      // here carrying whatever it asked with, and a bare `/` here would throw
+      // that away on the last hop of the round trip — which is how a documented
+      // `?step=redeem` link opened the wizard on step 1 (#406).
+      window.location.assign(withCarriedQuery("/", window.location.search));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "sign-in failed");
       setBusy(false);

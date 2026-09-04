@@ -105,6 +105,12 @@ import {
   setLivePtyProbe,
 } from "./core-mutation-store";
 import type { PtyHookEnv } from "./pty-hook-env";
+import {
+  SESSION_PROMPT_ABANDONED_EVENT_KIND,
+  SESSION_PROMPT_DELIVERED_EVENT_KIND,
+  type CoreLinkSessionPromptAbandonedPayload,
+  type CoreLinkSessionPromptDeliveredPayload,
+} from "@actana/sdk/core-link-frames";
 import { CoreTaskWriter } from "./core-task-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
@@ -312,6 +318,45 @@ async function startCore(): Promise<void> {
       sessionBackstop?.forget(taskId);
     },
     onSessionOutputSignal: ({ taskId, signal }) => harnessStatus.outputSignal(taskId, signal),
+    // Issue 483. The status the signal above writes is what a client renders;
+    // this row is what lets it say *why*. It goes into the same monotonic log
+    // every other Session event does, so a CLI or an SDK automation waiting on
+    // the start reads it on the connection it already has — no new frame, no
+    // poll, and nothing for a client that has never heard of the kind to do.
+    onSessionPromptAbandoned: ({ taskId, ptyId, reason }) => {
+      const payload: CoreLinkSessionPromptAbandonedPayload = { taskId, ptyId, reason };
+      try {
+        appendEvent(SESSION_PROMPT_ABANDONED_EVENT_KIND, JSON.stringify(payload), {
+          taskId,
+          ptyId,
+        });
+      } catch (err) {
+        console.error(`[core-entry] prompt-abandoned.append-failed: ${err}`);
+      }
+    },
+    // Issue 395, and the row that makes `session start` able to stop guessing.
+    // Same log, same connection, one kind further on: a client that waited for
+    // this heard the Core say the harness took the prompt, which is the only
+    // evidence there is that the composer is listening — nobody outside this
+    // process sees the screen (ADR 0026), and #191 removed the last client that
+    // tried to infer it from quietness.
+    onSessionPromptDelivered: ({ taskId, ptyId, characters, waitedMs, composerObserved }) => {
+      const payload: CoreLinkSessionPromptDeliveredPayload = {
+        taskId,
+        ptyId,
+        characters,
+        waitedMs,
+        composerObserved,
+      };
+      try {
+        appendEvent(SESSION_PROMPT_DELIVERED_EVENT_KIND, JSON.stringify(payload), {
+          taskId,
+          ptyId,
+        });
+      } catch (err) {
+        console.error(`[core-entry] prompt-delivered.append-failed: ${err}`);
+      }
+    },
     // A harness that is working redraws its spinner into the PTY about once a
     // second. Silence there, and no hooks either, is what the backstop below
     // reads as "this turn ended and nobody said so" (issue 243) — and a

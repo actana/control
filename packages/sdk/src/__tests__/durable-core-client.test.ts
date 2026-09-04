@@ -112,7 +112,11 @@ describe("DurableCoreClient", () => {
     await vi.waitFor(() => expect(c.isCaughtUp()).toBe(true));
 
     expect(seen.map((e) => e.eventId)).toEqual([1, 2]);
-    expect(replayed).toHaveBeenCalledWith({ lastEventId: 2 });
+    // `tipEventId` beside the cursor, and equal to it here because the whole
+    // log fitted in one tail (#395). The two part company on a log past
+    // `EVENT_TAIL_LIMIT`, which is the case the field exists for: the marker is
+    // then a receipt for what was sent and the tip is where the log ends.
+    expect(replayed).toHaveBeenCalledWith({ lastEventId: 2, tipEventId: 2 });
     expect(c.getLastEventId()).toBe(2);
     expect(storage.getItem(coreLinkCursorStorageKey(URL_A))).toBe("2");
   });
@@ -267,6 +271,25 @@ describe("DurableCoreClient", () => {
 
     expect(dial.pairs).toHaveLength(1);
     expect(c.isConnected()).toBe(false);
+  });
+
+  it("says a reconnect is coming, and stops saying it once hung up on (#396)", async () => {
+    // The predicate a wait reads to decide whether a drop is worth sitting out.
+    // Not the same question as "is a timer armed right now": between the socket
+    // dying and the backoff firing there is no timer, and the answer is still
+    // yes because this client is what it is. What ends it is `close()` — this
+    // client hanging up, after which nothing is coming.
+    const core = remoteRig();
+    const { client: c, dial } = makeClient(core);
+    await c.connect();
+
+    expect(c.willReconnect()).toBe(true);
+    dial.last().server.close();
+    expect(c.isConnected()).toBe(false);
+    expect(c.willReconnect()).toBe(true);
+
+    c.close();
+    expect(c.willReconnect()).toBe(false);
   });
 
   it("resumes a restarted client's timeline from the store it was given", async () => {

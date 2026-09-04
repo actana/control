@@ -59,6 +59,19 @@
 //      than submitting into a composer the text never reached. Both are
 //      per-harness and off by default: see `HARNESS_READINESS`.
 //
+//      And the clock does not get to overrule that marker. Issue 483: for a
+//      harness with a known composer the backstop used to type anyway and
+//      report `delivered`, which on opencode — whose boot lands on either
+//      side of it — lost the prompt outright while telling the caller it had
+//      succeeded. Five Sessions on one Core inside half an hour: three at
+//      `ready` with an empty composer, two with the prompt visibly retyped
+//      before one submission took. So the wait for a *known* marker is keyed
+//      on the marker up to a per-harness ceiling (`composerWaitMs`, 90 s for
+//      opencode), and a marker that never comes ends the delivery
+//      `abandoned` — a Session in `needs-input` that says the prompt did not
+//      land, rather than a false `delivered`. A harness with no marker keeps
+//      the generic backstop exactly as it was; this is not a global timeout.
+//
 //      Issue 232 found the same failure on two more harnesses, at the same
 //      rate — roughly one start in three — and neither of them was quiet in
 //      the hole for anything like opencode's four seconds. cursor-cli lost the
@@ -457,9 +470,9 @@ export function highlightIsOn(
  * entry is the only thing that changes it. Issue 229 added opencode alone, on
  * the reading that the other three were unaffected; issue 232 measured the
  * same lost prompt on `cursor-cli` and `claude-code` and disproved it for two
- * of them, so both have rows below. `codex` is the only harness left on the
- * default, and it is there unverified rather than cleared — see the table's
- * own note before adding to it.
+ * of them, so both have rows below. Issue 277 read codex's screen and gave it
+ * the fourth row, so every harness this repository ships now has one and the
+ * empty default belongs to harnesses nobody has written yet.
  */
 export type HarnessReadiness = {
   /**
@@ -478,8 +491,15 @@ export type HarnessReadiness = {
   /**
    * How many times the prompt may be written. `1` is "type it once, whatever
    * happens" — the pre-229 behaviour. Anything higher only matters when
-   * `confirmEcho` is set, and the real bound on retyping is `maxWaitMs`: at
-   * the backstop the prompt is written and submitted regardless.
+   * `confirmEcho` is set, and the real bound on retyping is the clock: past
+   * the backstop {@link HarnessPromptDelivery.echoConfirmed} stops asking for
+   * an echo at all, so a prompt still in phase `typing` is submitted
+   * regardless of what the screen shows.
+   *
+   * That is the `typing` phase only. A write whose echo came too late has
+   * already been sent back to `settling` by `retypePrompt`, and there the
+   * backstop submits on the echo rather than on the clock — see
+   * {@link HarnessPromptDelivery.promptIsInComposer}.
    */
   maxPromptWrites: number;
 };
@@ -493,9 +513,10 @@ const NO_READINESS: HarnessReadiness = {
 /**
  * Per-harness readiness, keyed the same way the dialog table is.
  *
- * Three entries now, and each one is a transcription of a *named* build's
+ * Four entries now, and each one is a transcription of a *named* build's
  * composer row. Issue 229 put opencode here; issue 232 adds `cursor-cli` and
- * `claude-code`, because the same failure was measured on both.
+ * `claude-code`, because the same failure was measured on both; issue 277 adds
+ * `codex`, the last harness that had been left on the default.
  *
  * **opencode** (issue 229). Its TUI opens the alternate screen and paints its
  * wordmark while the opencode server behind it is still starting; the composer
@@ -553,18 +574,131 @@ const NO_READINESS: HarnessReadiness = {
  * cannot be gated on, because the run it is late on is the run that a readiness
  * signal exists to protect, and that is the run it would delay.
  *
- * **codex has no entry and that is not a claim that it is safe.** It is
- * unverified: nothing in issue 232's sample exercised it, and this table is
- * for screens somebody has looked at. Until one is, codex keeps the pre-229
- * behaviour — settle, type, submit — which is exactly the path claude-code and
- * cursor-cli were on when they lost prompts. Treat a codex row as owed, not as
- * unnecessary; it is tracked as issue 277, which lists the capture and the
- * timing that would settle it either way.
+ * **codex** (issue 277). It was the last harness on the pre-229 default, and
+ * it was there unverified rather than cleared. It has been verified now, off
+ * 24 live PTY boots of codex-cli 0.153.0 on one Core, and the answer is in two
+ * halves.
+ *
+ * The boot race it was suspected of does not exist on this build. `› Ask Codex
+ * to do anything` — the composer's own placeholder — lands in the *first*
+ * frame codex paints, 160–198 ms after spawn on 8 of 8 boots (5 with `--enable
+ * hooks`, 3 without), while the 350 ms quiet gap does not expire until
+ * 564–955 ms. The margin runs the right way by 366–782 ms, and it is not only
+ * the marker that is early: a prompt written at 0 ms, before codex has painted
+ * anything at all, still echoed into the composer on every attempt at 0, 60,
+ * 120, 170, 200, 400, 700 and 1200 ms. Nothing here is opencode's four-second
+ * hole or claude-code's 222 ms one.
+ *
+ * Those settle times are the ones {@link redrawSignature} and the signature
+ * ring actually produce, replayed chunk by chunk at the offsets the captures
+ * recorded. An earlier revision of this note said 602–1810 ms for the same
+ * eight boots, from a coarser rule that treated every changed frame as a paint;
+ * the ring does not, and the two rules disagree by 38 ms on one boot and by
+ * 855 ms on another. The tests replay the frames rather than concatenating
+ * them, because a concatenation merges signatures and moves the settle — which
+ * is the one number this row is about.
+ *
+ * The hole is the **directory-trust dialog**, and it is the reason for the
+ * row. In a directory codex does not trust it paints that same composer
+ * placeholder at 198 ms, *clears the screen* at 633 ms and replaces it with
+ * `Do you trust the contents of this directory?` at 638 ms. The quiet gap
+ * expires at 634 ms — **one millisecond after that clear** — so what the
+ * module reads is the dialog and not the composer that was on screen a moment
+ * before. And codex has no {@link BLOCKING_DIALOGS} entry, so nothing else
+ * here is watching for that screen. Measured live: a 22-character prompt
+ * written at 990 ms, with the dialog up, produced no echo and no visible
+ * change at all. The dialog swallows it, and the `\r` that D8 sends after the
+ * submit pause lands on a menu whose highlighted row is `1. Yes, continue` —
+ * the directory is trusted, a session starts, and the prompt is simply gone.
+ * That is issue 277's signature exactly: a Session parked in `ready` with
+ * `--wait` timing out.
+ *
+ * One millisecond is not a safety argument, so it is worth saying what the
+ * other side of it costs: nothing silent. Had the gap opened first, the module
+ * would have typed into a composer the dialog was about to wipe, `confirmEcho`
+ * would have seen no echo come back, and the `\r` would have been withheld
+ * rather than pressed into the menu. Both orderings are replayed in the tests.
+ * The other untrusted boot in the sample cleared at 555 ms against a gap at
+ * 908 ms, so 1 ms is the tight end of the range rather than the usual one.
+ *
+ * **What the caller is told, precisely.** Delivery ends `abandoned` with
+ * `codex composer never appeared within 15000 ms`, and *not* with a dialog
+ * name: `onDeadline`'s dialog branch exists so the reason is the thing an
+ * operator can act on, and it is unreachable for codex because
+ * {@link dialogsForHarness} returns nothing for it. So the Session is
+ * `needs-input` and the prompt is intact, which is the win — but the words
+ * name the marker, and reading the screen is still what tells an operator a
+ * trust dialog is what they are looking at.
+ *
+ * Teaching {@link BLOCKING_DIALOGS} to answer that dialog is issue 469's, and
+ * this capture sharpened what it will have to solve. The obstacle is not only
+ * that {@link readDialogOptions} needs `1.` or `1)` and the menu strips to
+ * `1. Yes, continue2.No,quit`. It is that codex lays the whole dialog out with
+ * absolute `ESC[row;colH` moves, which {@link stripAnsi} deletes outright
+ * rather than spacing the way it spaces `ESC[nG`/`ESC[nC` — so the screen
+ * collapses to `…apiDoyoutrustthecontentsofthisdirectory?Working…` and even the
+ * word `trust` is not on it. Adding codex to the existing `folder-trust` row
+ * would not match at all; the reading has to change first.
+ *
+ * Two candidate markers on that same first frame were timed and rejected.
+ * `? for shortcuts` arrives with the composer on 8 of 8 boots and then *goes
+ * away*: it is gone from the settled screen at 1098 ms, so it would read as
+ * "no composer" on every delivery that starts after boot. The `>_ OpenAI Codex
+ * (v0.153.0)` banner survives to the settled screen, but it is the wordmark on
+ * a box and not the composer — it says the process drew a frame, which is the
+ * thing D3a exists to stop treating as readiness — and it buys nothing anyway,
+ * landing in the same frame as the placeholder on every boot measured.
+ *
+ * The screens are committed under `__tests__/fixtures/` as
+ * `codex-0.153.0-{boot,composer,boot-settling,idle,untrusted-boot,
+ * directory-trust}.txt`, with `codex-0.153.0-frames.txt` carrying each PTY
+ * chunk's offset so the tests can replay them rather than concatenate them.
+ * The marker is asserted against those files rather than against a literal.
+ * Substituted: the project path and the OSC-0 window title that repeats it;
+ * the untrusted pair needed neither, having been captured in a throwaway
+ * directory whose name is already neutral.
+ *
+ * **`confirmEcho` is the one field here that can lose a delivery that works
+ * today, so it has its own evidence.** The other two cannot: a marker that
+ * stops matching delays a prompt, and a write budget only bounds retyping. A
+ * `confirmEcho` the harness cannot satisfy is different — no echo means
+ * `retypePrompt`, and `retypePrompt` clears the screen and re-imposes the
+ * composer gate, so a harness that had taken the prompt would be re-typed at
+ * and then abandoned. The failing shape would be a long prompt rendered as a
+ * collapsed paste chip, because {@link PASTE_PLACEHOLDER} transcribes Claude
+ * Code's `[Pasted text #1 …]` and would not match codex's wording.
+ *
+ * It does not happen. `sanitizeInitialInput` flattens a multi-line prompt to
+ * one line before delivery sees it, and an 800-character sub-agent contract
+ * written that way — one `write`, the way `writePrompt` writes it — comes back
+ * echoed verbatim and wrapped, with no chip. The same text delivered as a real
+ * bracketed paste (`ESC[200~ … ESC[201~`, which codex advertises with
+ * `ESC[?2004h` in its first bytes) also echoes in full, line breaks and all.
+ * Both composers are committed as
+ * `codex-0.153.0-{long-prompt-echo,pasted-prompt-echo}.txt` beside the prompt
+ * itself, and the tests run {@link promptEchoed} against them.
+ *
+ * codex needs no {@link HARNESS_PROMPT_DELIVERY_PROFILES} entry to go with the
+ * row, so its {@link PromptDeliveryProfile.composerWaitMs} is the default 15 s.
+ * A marker that arrives at 200 ms is two orders of magnitude inside that, and
+ * the one screen where it never arrives is a dialog — which no amount of extra
+ * waiting turns into a composer. What issue 483 changes for codex is the
+ * outcome at that ceiling and not the wait: a trust dialog still up at 15 s
+ * ends the delivery `abandoned` and the Session `needs-input`, which is exactly
+ * the report an operator staring at an unanswered dialog needs. opencode's 90 s
+ * buys time for a boot that lands on either side of the deadline; codex has no
+ * such boot, and a longer ceiling here would only postpone that report.
  *
  * If a future build of any of these reworded its placeholder the marker stops
- * matching and delivery degrades to the backstop — the prompt goes out at
- * `maxWaitMs`, late but not lost — which is the direction this module is
- * always wrong in.
+ * matching and the delivery ends `abandoned` at that harness's
+ * {@link PromptDeliveryProfile.composerWaitMs} ceiling — the Session goes to
+ * `needs-input` and the caller is told the prompt did not land. Until issue
+ * 483 the answer here was the opposite: type at the backstop anyway, "late but
+ * not lost". It was neither. The write went into a harness that was provably
+ * not listening — that is what the absent marker *means* — and the delivery
+ * reported success, so the loss was silent. A row here is therefore a promise
+ * that this module knows when the harness is listening, and the honest thing
+ * to do when that promise cannot be kept is to say so.
  */
 export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   opencode: {
@@ -579,6 +713,11 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   },
   "claude-code": {
     composer: [/\btry\s+"/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+  codex: {
+    composer: [/ask\s+codex\s+to\s+do\s+anything/i],
     confirmEcho: true,
     maxPromptWrites: 3,
   },
@@ -655,11 +794,41 @@ export type PromptDeliveryProfile = {
   quietGapMs: number;
   /**
    * The backstop. A harness that never stops repainting still gets its prompt,
-   * because losing it is worse than delivering it a beat early — with one
-   * exception, which is that a dialog on screen at the deadline abandons
-   * delivery instead (see {@link HarnessPromptDelivery}).
+   * because losing it is worse than delivering it a beat early — with two
+   * exceptions, both of which abandon delivery instead: a dialog on screen at
+   * the deadline, and a harness whose composer marker has not arrived (see
+   * {@link HarnessPromptDelivery} and {@link composerWaitMs}).
    */
   maxWaitMs: number;
+  /**
+   * The ceiling on waiting for a **known** composer marker, measured from the
+   * same instant `maxWaitMs` is.
+   *
+   * It only ever applies to a harness with a row in {@link HARNESS_READINESS}.
+   * For every other harness `composerOnScreen` is `true` from the first byte,
+   * this number is never consulted, and `maxWaitMs` is the whole story — which
+   * is what keeps issue 483's fix off the harnesses it is not about.
+   *
+   * For a harness that *has* a marker it replaces the old answer at the
+   * backstop. That answer was to type anyway and report `delivered`, and on
+   * opencode it lost the prompt outright: the write went into a terminal that
+   * was not listening yet, the composer stayed empty, and the caller was told
+   * the delivery succeeded. So the wait is keyed on the marker instead — the
+   * backstop no longer authorises a blind type — and when the marker never
+   * comes the delivery ends `abandoned` and the Session becomes `needs-input`.
+   * One exception, and it is not a blind type: if the prompt is echoed on the
+   * screen the marker is missing from, the text is in the composer and the
+   * carriage return goes out (see
+   * {@link HarnessPromptDelivery.promptIsInComposer}).
+   *
+   * The default is `maxWaitMs`, so a harness that does not name a number here
+   * keeps the timing it has: the ceiling expires the moment the backstop does
+   * and only the *outcome* at that moment changes, from a blind type to an
+   * honest failure. Anything longer is per-harness and belongs in
+   * {@link HARNESS_PROMPT_DELIVERY_PROFILES}, which is where opencode's 90 s
+   * lives.
+   */
+  composerWaitMs: number;
   /** The floor on the gap between the prompt and its carriage return. */
   submitBaseMs: number;
   /** Added per character of prompt: the longer the paste, the longer the wait. */
@@ -673,6 +842,10 @@ export type PromptDeliveryProfile = {
 export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
   quietGapMs: 350,
   maxWaitMs: 15_000,
+  // Equal to the backstop on purpose: see `composerWaitMs`. A harness with a
+  // composer marker and no override waits exactly as long as it always has and
+  // then fails honestly instead of typing blind.
+  composerWaitMs: 15_000,
   submitBaseMs: 150,
   submitPerCharMs: 2,
   submitMaxMs: 3_000,
@@ -682,16 +855,35 @@ export const DEFAULT_PROMPT_DELIVERY_PROFILE: PromptDeliveryProfile = {
 /**
  * Per-harness timing overrides.
  *
- * Empty on purpose: every harness observed so far settles under the same
- * rules, and the profile is the *shape* of the knowledge, not a place to park
- * guesses. What differs between harnesses today is which dialogs they open,
- * and that lives in {@link BLOCKING_DIALOGS}. This table is where a harness
- * that genuinely needs different timing goes, so that finding one does not
- * mean redesigning anything.
+ * It was empty until issue 483, on the reading that every harness observed so
+ * far settled under the same rules — and the profile is the *shape* of the
+ * knowledge, not a place to park guesses. What differs between harnesses is
+ * still mostly which dialogs they open, and that lives in
+ * {@link BLOCKING_DIALOGS}. This table is for a harness that genuinely needs a
+ * different number, and there is now one.
+ *
+ * **opencode: 90 s to show its composer.** Five Sessions started on one Core
+ * inside half an hour, same project and same harness: three sat at `ready`
+ * with an empty composer, and two reached `finished` with the prompt visibly
+ * retyped two or three times before one submission took. Same inputs, minutes
+ * apart, different outcomes — a race against opencode's boot, which lands on
+ * either side of the 15 s backstop rather than reliably inside it. 90 s is the
+ * operator's stopgap value, and it is a *ceiling on waiting*, not a schedule:
+ * a boot that paints its composer at 6 s is delivered at 6 s exactly as
+ * before, and the only run that spends 90 s is the run that was going to lose
+ * its prompt anyway. What the 90 s buys is that such a run now abandons and
+ * says `needs-input` instead of typing into nothing and reporting success.
+ *
+ * Nothing here lengthens the generic backstop, and nothing here is a global
+ * timeout: `maxWaitMs` is untouched, `cursor-cli` and `claude-code` keep the
+ * 15 s they have, and a harness with no composer marker never reaches this
+ * number at all.
  */
 export const HARNESS_PROMPT_DELIVERY_PROFILES: Partial<
   Record<Harness, Partial<PromptDeliveryProfile>>
-> = {};
+> = {
+  opencode: { composerWaitMs: 90_000 },
+};
 
 export function deliveryProfileFor(harness: string): PromptDeliveryProfile {
   const override = HARNESS_PROMPT_DELIVERY_PROFILES[harness as Harness];
@@ -737,7 +929,26 @@ export type PromptDeliveryEvent =
   | { phase: "dialog-unreadable"; dialog: string }
   /** Its number went out and the harness did not move its highlight. */
   | { phase: "dialog-unconfirmed"; dialog: string }
-  | { phase: "delivered"; waitedMs: number; promptChars: number; submitPauseMs: number }
+  | {
+      phase: "delivered";
+      waitedMs: number;
+      promptChars: number;
+      submitPauseMs: number;
+      /**
+       * Was a composer **seen** before the prompt was written, or is the clock
+       * the only thing vouching for it (issue 395)?
+       *
+       * `true` means `composerOnScreen` matched a real marker from
+       * {@link HARNESS_READINESS} at the moment of the write, which since issue
+       * 483 is the only way a harness with a row gets typed into at all. `false`
+       * is the generic backstop that issue 483 deliberately kept for a harness
+       * with no row: the screen went quiet, so the prompt went out. That is a
+       * fine way to deliver and a bad thing to call evidence — a quiet screen is
+       * as easily a dialog — and a client that reports readiness has to be able
+       * to tell the two apart.
+       */
+      composerObserved: boolean;
+    }
   | { phase: "abandoned"; reason: string };
 
 export type PromptDeliveryTimers = {
@@ -793,6 +1004,8 @@ export class HarnessPromptDelivery {
   /** Whether anything with content has been drawn since our last keystroke. */
   private paintedSinceKeystroke = false;
   private submitAt = 0;
+  /** Whether a real composer marker was on screen when the prompt was written. */
+  private composerObserved = false;
   private dialogKeystrokes = 0;
   /** Set when the dialog's own number went out and the confirm may still be due. */
   private pendingConfirm: string | null = null;
@@ -800,6 +1013,8 @@ export class HarnessPromptDelivery {
   /** The dialog whose unmoved highlight has already been reported. */
   private unconfirmedDialogId: string | null = null;
   private deadlinePassed = false;
+  /** Whether the composer ceiling has been armed, so it is armed once. */
+  private composerCeilingArmed = false;
   /** How many times the prompt has been written into the composer. */
   private promptWrites = 0;
   /** Whether this settling round has already said it is waiting for a composer. */
@@ -807,6 +1022,8 @@ export class HarnessPromptDelivery {
 
   private cancelIdle: (() => void) | null = null;
   private cancelDeadline: (() => void) | null = null;
+  /** The marker ceiling (issue 483). Only ever armed for a markered harness. */
+  private cancelComposerCeiling: (() => void) | null = null;
 
   constructor(private readonly opts: PromptDeliveryOptions) {
     this.profile = opts.profile ?? deliveryProfileFor(opts.harness);
@@ -872,6 +1089,8 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
+    this.cancelComposerCeiling?.();
+    this.cancelComposerCeiling = null;
     if (!this.finished) this.phase = "abandoned";
   }
 
@@ -926,12 +1145,12 @@ export class HarnessPromptDelivery {
   /**
    * Is there enough evidence to justify the carriage return?
    *
-   * `true` for every harness with no `confirmEcho` entry, which today is
-   * `codex` alone — and it is there because nobody has read its screen, not
-   * because it was shown to be unaffected. The other three all set the flag:
-   * opencode from issue 229, `cursor-cli` and `claude-code` from the swallowed
-   * writes issue 232 measured on them. Past the backstop and
-   * past the retype budget it is also `true`: leaving a prompt typed-but-
+   * `true` for every harness with no `confirmEcho` entry, which since issue
+   * 277 is no shipped harness at all — the flag is set on all four. opencode
+   * set it from issue 229, `cursor-cli` and `claude-code` from the swallowed
+   * writes issue 232 measured on them, and codex from the directory-trust
+   * screen issue 277 measured a whole prompt vanishing into. Past the backstop
+   * and past the retype budget it is also `true`: leaving a prompt typed-but-
    * unsent is its own failure (D8), and an unjustified `\r` into an empty
    * composer costs nothing — unlike the one into a menu that D4a guards.
    */
@@ -1013,8 +1232,9 @@ export class HarnessPromptDelivery {
 
   /**
    * The harness is quiet and its composer is not up yet. Type nothing, say so
-   * once, and wait — either a later paint brings the composer, or the backstop
-   * delivers anyway rather than losing the prompt.
+   * once, and wait — either a later paint brings the composer, or the ceiling
+   * in `composerWaitMs` ends the delivery as `abandoned` (issue 483). What it
+   * never does is type into a composer nobody has seen.
    */
   private holdForComposer(): void {
     if (this.waitingForComposerReported) return;
@@ -1110,6 +1330,13 @@ export class HarnessPromptDelivery {
   }
 
   private writePrompt(): void {
+    // Recorded here, from the same predicate the gate above uses, rather than
+    // derived later from the harness's name (issue 395). Deriving it would be a
+    // second opinion about when this module types, and the two would drift the
+    // first time the gate changed. `this.screen` is cleared on the next line, so
+    // this has to read it now.
+    this.composerObserved = composerOnScreen(this.screen, this.readiness) &&
+      this.readiness.composer.length > 0;
     this.phase = "typing";
     this.screen = "";
     this.recentSignatures = [];
@@ -1128,38 +1355,168 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
+    this.cancelComposerCeiling?.();
+    this.cancelComposerCeiling = null;
     this.emit({
       phase: "delivered",
       waitedMs: now - this.startedAt,
       promptChars: this.opts.prompt.length,
       submitPauseMs: submitPauseMs(this.opts.prompt, this.profile),
+      composerObserved: this.composerObserved,
     });
+  }
+
+  /**
+   * Is the prompt provably sitting in a composer, marker or no marker?
+   *
+   * Every pattern in {@link HARNESS_READINESS} is a *placeholder* — `Ask
+   * anything`, `Try "`, `Ask Codex to do anything` — and a placeholder is gone
+   * the moment the composer holds text. So one ordering makes
+   * `composerOnScreen` permanently false on a harness that is working
+   * perfectly: the composer paints, `writePrompt` types, the harness echoes
+   * later than `submitPauseMs + quietGapMs` with no paint in between,
+   * `onIdle` finds no echo, `retypePrompt` clears the screen, and the late
+   * echo then paints a composer *holding the prompt* and therefore wearing no
+   * placeholder. The marker can never come back, so the marker wait can only
+   * end at its ceiling, and abandoning there reports "composer never appeared"
+   * for text the harness has visibly taken — then tells the operator to send
+   * it again, which doubles it.
+   *
+   * The echo is the better evidence at that point, and it is evidence of the
+   * same fact: the harness painted our own prompt back, so there is a composer
+   * and the prompt is in it. D8's rule then applies — the carriage return has
+   * to land, or the delivery leaves typed-but-unsent text behind. This is not
+   * a blind type: nothing is written but the `\r`, and it is written only
+   * because {@link promptEchoed} says the text is already there.
+   *
+   * `promptWrites > 0` is what keeps it honest: with no write of ours on the
+   * screen, an echo match would be the harness's own scrollback, not a
+   * delivery. Checked after the dialog gate in both callers, so a menu on
+   * screen still abandons (D4a) rather than taking a `\r` it cannot justify.
+   */
+  private promptIsInComposer(): boolean {
+    return this.promptWrites > 0 && promptEchoed(this.screen, this.opts.prompt);
   }
 
   private onDeadline(): void {
     this.cancelDeadline = null;
     if (this.finished) return;
-    this.deadlinePassed = true;
 
     // The prompt is already in the composer; the carriage return has to land
     // whatever the screen is doing, or the operator is left with typed-but-
     // unsent text.
     if (this.phase === "typing") {
+      this.deadlinePassed = true;
       this.schedule();
       return;
     }
 
     // A dialog at the deadline is the one case where delivering is worse than
     // not: the prompt would be typed into a menu whose highlighted default
-    // exits the harness. Leave it for a human.
+    // exits the harness. Leave it for a human. Checked before the composer
+    // gate below so the reason a client is given is the dialog and not the
+    // marker — the dialog is the thing an operator can act on.
+    const dialog = matchBlockingDialog(this.screen, this.specs);
+    if (dialog) {
+      this.deadlinePassed = true;
+      this.abandon(`blocked by ${dialog.spec.id}`);
+      return;
+    }
+
+    // Issue 483. The backstop used to authorise a blind type here, and for a
+    // harness whose composer this module has been shown that is the defect:
+    // the marker not being on screen is direct evidence that nothing is
+    // listening, and typing into it produced a lost prompt reported as
+    // `delivered`. So the clock does not override the marker. Keep waiting on
+    // the marker up to this harness's own ceiling, and if it never comes,
+    // abandon — which is what puts the Session in `needs-input` and tells the
+    // caller the prompt did not land.
+    //
+    // A harness with no marker is untouched: `composerOnScreen` is `true` for
+    // it, so this branch is not taken and the generic backstop below still
+    // types and submits exactly as before.
+    if (!composerOnScreen(this.screen, this.readiness)) {
+      if (this.promptIsInComposer()) {
+        this.submit(this.timers.now());
+        return;
+      }
+      this.awaitComposer();
+      return;
+    }
+
+    this.deadlinePassed = true;
+    this.sawOutput = true;
+    this.schedule();
+  }
+
+  /**
+   * Past the generic backstop with a known composer still not on screen.
+   *
+   * Nothing is typed and nothing is given up on yet: `deadlinePassed` stays
+   * false, so the ordinary path keeps running — a later paint that carries the
+   * marker goes through `onQuiet`, `settled` and `writePrompt` on the same
+   * terms it would have at one second, echo confirmation included. All this
+   * adds is the far edge of the wait.
+   */
+  private awaitComposer(): void {
+    if (this.composerCeilingArmed) return;
+    this.composerCeilingArmed = true;
+    const remaining = this.profile.composerWaitMs - (this.timers.now() - this.startedAt);
+    if (remaining <= 0) {
+      this.abandonForComposer();
+      return;
+    }
+    // Said once, in the Core's log, so the extended wait is visible as a
+    // decision rather than as a Session that has gone quiet.
+    this.waitingForComposerReported = false;
+    this.holdForComposer();
+    this.cancelComposerCeiling = this.timers.setTimer(
+      () => this.onComposerCeiling(),
+      remaining,
+    );
+  }
+
+  /** The far edge of the marker wait. Type nothing that is not justified. */
+  private onComposerCeiling(): void {
+    this.cancelComposerCeiling = null;
+    if (this.finished) return;
+
+    // The marker arrived after all and the prompt is already going out. The
+    // carriage return still has to land — D8's rule, unchanged.
+    if (this.phase === "typing") {
+      this.deadlinePassed = true;
+      this.schedule();
+      return;
+    }
+
     const dialog = matchBlockingDialog(this.screen, this.specs);
     if (dialog) {
       this.abandon(`blocked by ${dialog.spec.id}`);
       return;
     }
 
-    this.sawOutput = true;
-    this.schedule();
+    // The marker is up and the ordinary path has not spent it yet — a harness
+    // still painting at the ceiling. Hand over to the backstop it would have
+    // met at `maxWaitMs` had the marker been there then.
+    if (composerOnScreen(this.screen, this.readiness)) {
+      this.deadlinePassed = true;
+      this.sawOutput = true;
+      this.schedule();
+      return;
+    }
+
+    if (this.promptIsInComposer()) {
+      this.submit(this.timers.now());
+      return;
+    }
+
+    this.abandonForComposer();
+  }
+
+  private abandonForComposer(): void {
+    this.abandon(
+      `${this.opts.harness} composer never appeared within ${this.profile.composerWaitMs} ms`,
+    );
   }
 
   private abandon(reason: string): void {
@@ -1168,6 +1525,8 @@ export class HarnessPromptDelivery {
     this.cancelIdle = null;
     this.cancelDeadline?.();
     this.cancelDeadline = null;
+    this.cancelComposerCeiling?.();
+    this.cancelComposerCeiling = null;
     this.emit({ phase: "abandoned", reason });
   }
 

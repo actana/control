@@ -120,6 +120,34 @@ unattended work).
 delivered by the Core, which watches the Harness boot and types when it is
 ready; add no delays, no leading newline and no "press enter" of your own.
 
+**Running is not the same fact as ready to be sent to.** The Harness is spawned
+when \`start\` returns; it takes the prompt seconds later, once its composer is
+up. A \`session send\` in between goes into a terminal that is not reading and is
+discarded — along with the starting prompt queued behind it, so one impatient
+line loses two messages. If the next thing you do is \`send\`, start with
+\`--await-prompt\`:
+
+\`\`\`bash
+ID=$(actana session start <project> "<prompt>" --await-prompt)  # blocks until it landed
+actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
+\`\`\`
+
+It blocks only until the Core reports the prompt delivered — seconds on a warm
+Harness, not the length of a turn — prints the id as usual, and **exits non-zero
+unless the Core positively confirms the prompt went into a composer it saw**.
+That covers the prompt it gave up on, and it also covers a Harness whose composer
+the Core does not yet recognise, where the prompt was typed on a quiet screen
+that may have been a trust dialog. A start that cannot establish readiness says
+so rather than reporting success; the message names what stopped it.
+
+\`--wait\` is the longer wait and cannot be combined with it. The two do not report
+quite the same thing: \`--wait\` reports a prompt the Core **gave up on**, and
+reports \`promptDelivered\` as whatever the Core said while it waited — never
+from the absence of a report. Without either, \`--json\` answers
+\`promptDelivered: null\`: nobody adjudicated it. \`null\` is also what \`--wait\`
+answers on a verb that hands over no prompt (\`session wait\`, \`send --wait\`) and
+on a Harness that exits before the Core decides. Treat it as "not known".
+
 **\`--harness\` is how one round spans several Harnesses.** Nothing else is
 needed for it: each \`session start\` takes its own \`--harness\`, so a round of
 lanes on different Harnesses is a round of ordinary starts. Pick every id out of
@@ -145,10 +173,10 @@ a file**, and the contract below is how you get one.
 
 The object also carries \`taskId\` (the Session's id — this is what every other
 verb takes), \`harness\`, \`project\`, \`status\`, \`exited\`, and \`reportsTurnStart\`.
-\`--wait-timeout <seconds>\` bounds the wait; without it the wait has no deadline
-of its own. A timeout is this side giving up, not a verdict about the Session:
-the Session is still running on the Core and can still be listed, read and
-stopped.
+\`--wait-timeout <seconds>\` bounds the wait; without it \`start --wait\` has no
+deadline of its own (\`send --wait\` does — see the loop below). A timeout is this
+side giving up, not a verdict about the Session: the Session is still running on
+the Core and can still be listed, read and stopped.
 
 While a Session is alive — which is what the \`live\` field on its
 \`actana session ls --json\` row tells you, and the only thing that does — you can
@@ -173,10 +201,15 @@ A Session is a conversation, not a single question. The whole loop:
 
 \`\`\`bash
 ID=$(actana session start <project> "<first prompt>")   # prints the id, exits
-actana session wait "$ID" --json --wait-timeout 900     # block until it settles
-actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 900
-actana session send "$ID" "<next>" --wait --json
+actana session wait "$ID" --json --wait-timeout 1800    # block until it settles
+actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
+actana session send "$ID" "<next>" --wait --json --wait-timeout 1800
 \`\`\`
+
+Every line carries the same budget on purpose: 1800 seconds is what \`await.sh\`
+gives a round, and a loop whose steps disagree about how long a turn may take
+gives up in the middle of one. Pass it explicitly rather than leaning on a
+default — \`send --wait\` has one (1020 seconds) and the other two do not.
 
 **\`actana session wait <id>\` blocks until the Core reports the Session settled**
 — \`finished\`, \`needs-input\`, \`interrupted\`, \`terminated\` or \`disconnected\`,
@@ -192,7 +225,7 @@ object** \`start --wait --json\` prints — same keys, same \`screen\` — so on
 reads all three verbs. Two of those keys are \`null\` on a Session you attached to
 rather than started: \`command\` and \`reportsTurnStart\` are answers to a spawn.
 
-Three things to know before you build on it:
+Five things to know before you build on it:
 
 1. **Sending into a turn that is already running resolves on *that* turn's
    end.** A keystroke into a busy Harness is not a new turn. If the Session was
@@ -201,17 +234,43 @@ Three things to know before you build on it:
    the Session to settle *first*, then send.
 2. **A \`send\` presses Enter for you, and \`--no-enter\` is how you stop it.** The
    text goes first and the carriage return follows as its own separate write.
-   \`--no-enter\` sends no return, so that send starts no turn — and a \`--wait\`
-   after it is not waiting for your text: on an idle Session nothing ends, and
-   on a busy one it resolves on the turn that was *already* running. Both are
-   #405's. \`--enter\` is still accepted and does nothing on a send that carries
-   text, so an older script that passes it keeps working; on a send with no text
-   it still means a bare carriage return and nothing else.
+   \`--no-enter\` sends no return, so that send starts no turn — and it **cannot
+   be combined with \`--wait\`**, which is refused as a usage error: a send that
+   submits nothing has no turn to await. Type with \`--no-enter\`, then
+   \`actana session wait\` once a turn is actually running. \`--enter\` is still
+   accepted and does nothing on a send that carries text, so an older script
+   that passes it keeps working; on a send with no text it still means a bare
+   carriage return and nothing else.
 3. **A timeout is this side giving up, not a status.** \`--wait-timeout
-   <seconds>\` bounds the wait; without it there is no deadline, because a turn
-   takes as long as the work takes. On expiry you get a message saying the wait
-   gave up and a non-zero exit — the Session is still running on the Core, and
-   \`session logs\`, another \`session wait\` and \`session kill\` all still work.
+   <seconds>\` bounds the wait. \`session wait\` has no deadline unless you set
+   one, because a turn takes as long as the work takes; **\`send --wait\` defaults
+   to 1020 seconds**, because it is the one wait for a turn that has not started
+   yet and a carriage return that lands on a dialog rather than a composer
+   starts none at all. \`--wait-timeout 0\` waits with no deadline. On expiry you
+   get a message saying the wait gave up and a non-zero exit — the Session is
+   still running on the Core, and \`session logs\` and \`session kill\` still work.
+   When no turn end was reported since your text went in, the message says so
+   and names both readings: the text may have started no turn, or a turn may
+   still be running on a Harness that reports nothing until it ends. The text
+   was delivered either way — read the screen with \`session logs\` rather than
+   sending it again.
+4. **Do not answer that timeout with \`session wait\`.** It is uncursored: it
+   answers from the status the Session is parked at, so on a turn that never
+   started it returns **at once, with the status from before your text, and
+   exits zero** — which reads as a completed turn and is not one. To carry on
+   waiting, follow the log from the delivery instead:
+   \`actana events tail --since <event id>\`, the id the timeout message names.
+5. **A wait whose link to the Core drops ends as *unknown*.** Every wait listens
+   over that link, so a Core that restarts or a connection that is reaped takes
+   the report the wait was waiting for with it. Rather than hang — which is what
+   it used to do, with no deadline of any kind to end it — the command exits
+   non-zero saying **the turn's outcome is unknown**: it may have ended while
+   this side was deaf, and it may still be running. That is not a failed turn
+   and not a finished one, and it is the one case where the Session's status has
+   to be re-read from the Core rather than taken from the wait. Do that once the
+   Core is reachable again — \`actana session ls\` says whether it is still live,
+   \`actana events tail --since <event id>\` follows the log from your delivery —
+   and **do not** answer it with \`session wait\`, for the reason in 4.
 
 **Every turn of that loop gets its own report file**, and the turn number in the
 filename is what keeps them apart. See below.

@@ -366,6 +366,28 @@ export type ArrayEventLog = EventLogPort & {
   tailReads: number;
 };
 
+/**
+ * A store that is **wired and broken** — the state `eventLog: undefined` cannot
+ * express (#495 gate review, addendum blocker 7).
+ *
+ * `event-log-store.ts` degrades rather than throws: an unconfigured store, a DB
+ * the server process has not bootstrapped, a native binding that will not load,
+ * all leave `ensureConnection()` returning null. `appendEvent` then returns `0`
+ * without throwing and `getLastEventId` used to return `0` as well — a number
+ * indistinguishable from an empty log, and a perfectly usable floor. A client
+ * armed on it and waited for a row that could never be written.
+ *
+ * This is that Core: it answers every call, records nothing, and says `null`
+ * where it has nothing to say.
+ */
+export function unavailableEventLog(): EventLogPort {
+  return {
+    appendEvent: () => 0,
+    readEventTail: () => [],
+    getLastEventId: () => null,
+  };
+}
+
 export function arrayEventLog(): ArrayEventLog {
   const events: CoreLinkEvent[] = [];
   const log: ArrayEventLog = {

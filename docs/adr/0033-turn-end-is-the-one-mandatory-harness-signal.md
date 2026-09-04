@@ -53,6 +53,107 @@ stream**. #191 deleted a flat quiet-output timer that did exactly that and
 wait with no `--wait-timeout` has no deadline; one with a deadline reports, on
 expiry, that *this side gave up* — never a status the Core did not send.
 
+**D5 — `send --wait` carries a default deadline; the other waits do not**
+(amends D4, #405). `session wait` and `session start --wait` wait for a turn
+that is already under way, and the only thing a default deadline could cut short
+there is honest work — so they keep D4's "no deadline unless the caller sets
+one" exactly. `send --wait` is the one wait for a turn *it* has to start, and a
+carriage return that lands on a dialog rather than a composer starts none: the
+Core then has nothing to report, the status the Session is parked at was seeded
+from the Task row and carries event id 0, and a delivery cursor can never be
+satisfied by it. The wait is correct, silent and permanent. **1020 seconds** is
+the default and `--wait-timeout 0` removes it. Seventeen minutes rather than
+fifteen so that it cannot tie with the Core's own quiet backstop
+(`QUIET_SETTLE_MS`, fifteen minutes, swept once a minute): where the Core has an
+answer it should be the one to give it, and this deadline should only ever fire
+where the Core has none — which is #405's case exactly, because the backstop
+skips a Session that is not `running`.
+
+This does not weaken D4 or reintroduce what #191 deleted. Nothing new is
+inferred: the deadline is the caller's own clock, and what it reports on expiry
+is still that this side gave up. What it adds is a **fact off the event log** in
+the message — whether a status was reported for the Session at an event id above
+the delivery's — so the operator is told which question is still open. It does
+**not** claim to have told a swallowed return apart from a harness that reports
+nothing mid-turn: half the families in `HOOK_FAMILIES` look identical in that
+silence, and separating them would mean consulting `reportsTurnStart` (D2 forbids
+it) or reading the byte stream (D4 forbids it). The message names both readings
+and sends the reader to the screen. That comparison is two event ids, not a
+reading of the screen.
+
+The remedy the message offers is cursored for the same reason. `session wait` is
+**not** it: that verb answers from the status a Session is parked at, so on a
+turn that never started it returns at once with the status from before the write
+and exits zero — a false completion, which is the failure #405 exists to remove.
+`events tail --since <delivery id>` follows the log from the write and can only
+report what came after it.
+
+A send that submits nothing at all (`--no-enter`) is refused with `--wait`
+rather than bounded: it has no turn to await, so there is nothing for a deadline
+to be about.
+
+**D6 — A lost link ends a wait as *unknown*, and never as an outcome**
+(extends D4, #396). Everything that can end a wait well arrives down the core
+link: the status change a harness's hooks produce, and the process exit behind
+it. A link that drops therefore takes every one of them with it, and the wait
+does not end — it goes quiet. With no `--wait-timeout` there is nothing left in
+the world that can settle it, which is `actana session start … --wait` sitting
+for ever after a Core blip; with one, the operator learns about the drop as a
+deadline, which points them at a slow harness rather than at a dead socket.
+
+So a drop is an ending in its own right, and the class of ending is the whole
+decision. **The wait fails.** Resolving it with the status the Session was last
+seen at is the cheap fix and the forbidden one: it reports a turn as ended on
+the evidence that this side stopped listening, which is a false completion — the
+failure D4 and #405 exist to remove, arriving through the transport instead of
+through the harness. The wait rejects with `CoreSessionLinkLostError`, distinct
+by class from both a resolution (the Core reported a turn ended) and
+`CoreSessionTurnTimeoutError` (this side gave up on its own clock), and its
+message says the outcome is unknown and names both readings — the turn may have
+ended in the silence, and it may still be running.
+
+The wait is not failed on the first blip. A client that reconnects usually
+recovers a drop without the wait noticing: the link returns, the client
+re-subscribes from its cursor, and the Core streams the tail it missed —
+including the status change the wait was waiting for. So a drop starts a
+**grace**, not a deadline: thirty seconds (`CORE_LINK_LOST_GRACE_MS`), which is
+six or more of `DurableCoreClient`'s backoff attempts, and running only while
+the link is down. A client that does **not** reconnect gets a grace of zero,
+because a grace is time given to a reconnect and a one-shot client — the
+`actana` CLI's — has none coming; waiting it out would be thirty more seconds of
+the hang.
+
+Two clauses of that grace are load-bearing, and #492's review found the first
+draft wrong on both. Each was a way for a wait to outlive its link after all,
+which would have left this decision stating something untrue.
+
+**The grace is a cumulative budget, not a fresh allowance per outage.** The
+outages a single wait lives through are summed, and the wait fails once they
+total the grace. Forgiving each flap in full bounds nothing: a Core in a restart
+crash-loop, or a `DurableCoreClient` on its 500 ms–5 s backoff against a flaky
+link, drops and returns indefinitely with no single outage long enough to fire
+anything, and the wait hangs for ever — #396's own bug, reached the long way
+round. Summed, the deaf time a wait can accumulate is bounded, so the wait always
+ends. The error reports both numbers, because they differ: `graceMs` is the
+budget and `downMs` is what was actually spent.
+
+**The grace is forgiven by an *established* connection, not by `ready`.** `ready`
+is the Core's first unsolicited frame and lands before `auth` is answered, so a
+connection the Core is about to refuse for an expired or rotated bearer produces
+one. Nothing can be sent on that connection and no `subscribe` goes out — that
+rides the established signal — so treating `ready` as recovery forgives an outage
+that never ended; with a supervisor dialing again it is a `ready` → `authError` →
+`disconnect` loop that arms and disarms the guard for ever with no events flowing
+at all. `CoreClient.onEstablished` — the Core has said who it is and the link can
+be written to, authenticated where a bearer was configured — is the signal, and
+`onReady` is not.
+
+Nothing here weakens D2 or D4. No screen is read, `reportsTurnStart` is
+consulted nowhere, and the only facts the error carries are that the link went
+and two event ids. The Session itself is untouched by any of it: it is running
+on the Core, which is where its status lives and where the question this error
+leaves open is answered.
+
 ## Consequences
 
 Adding a family is still adding a row, and now the row has a bar to clear. A

@@ -114,15 +114,33 @@ export function appendEvent(
   }
 }
 
-/** The highest `eventId` in the log, or 0 when empty/unavailable. */
-export function getLastEventId(): number {
+/**
+ * The highest `eventId` in the log, `0` when the log is open and empty, or
+ * `null` when there is no log to ask.
+ *
+ * **`0` used to mean both, and that was a hang** (#495 gate review, addendum
+ * blocker 7). This number is published as `tipEventId`, and a client's
+ * prompt-delivery latch takes it as the floor a verdict row has to clear. A
+ * Core whose store cannot open — unconfigured, DB not bootstrapped yet, a
+ * broken native binding — answered `0`, which is a perfectly good floor, so the
+ * latch armed and waited; but the same dead store makes `appendEvent` return
+ * `0` without throwing, so no row was ever written and nothing ever came.
+ * `--await-prompt` refuses `--wait-timeout`, so the only bounds left were the
+ * harness exiting or the socket dropping.
+ *
+ * `null` is what lets the wire omit `tipEventId` and the client refuse by name
+ * instead. The same distinction the send stamp already draws when it treats `0`
+ * as "not recorded" — made here, where whether a connection exists is known,
+ * rather than guessed at by a reader who only sees the number.
+ */
+export function getLastEventId(): number | null {
   const conn = ensureConnection();
-  if (!conn) return 0;
+  if (!conn) return null;
   try {
     return readLastEventId(conn as unknown as EventLogSqlite);
   } catch (err) {
     log.warn("event-log.get-last-failed", { error: String(err) });
-    return 0;
+    return null;
   }
 }
 
