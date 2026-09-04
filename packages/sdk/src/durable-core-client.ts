@@ -136,6 +136,19 @@ export class DurableCoreClient extends CoreClient {
   }
 
   /**
+   * Yes — surviving a drop is what this class is for (#396).
+   *
+   * Not the same question as {@link reconnectScheduled}, which is about the
+   * timer that happens to be armed right now. This is about the client: a caller
+   * deciding how long to keep waiting after a drop is asking whether a
+   * reconnect is coming at all, and the honest answer stops being yes only once
+   * this client has been hung up on.
+   */
+  override willReconnect(): boolean {
+    return !this.closed;
+  }
+
+  /**
    * What this client owes the Core on every connection, in the one order that
    * works.
    *

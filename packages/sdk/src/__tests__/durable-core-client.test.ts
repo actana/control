@@ -273,6 +273,25 @@ describe("DurableCoreClient", () => {
     expect(c.isConnected()).toBe(false);
   });
 
+  it("says a reconnect is coming, and stops saying it once hung up on (#396)", async () => {
+    // The predicate a wait reads to decide whether a drop is worth sitting out.
+    // Not the same question as "is a timer armed right now": between the socket
+    // dying and the backoff firing there is no timer, and the answer is still
+    // yes because this client is what it is. What ends it is `close()` — this
+    // client hanging up, after which nothing is coming.
+    const core = remoteRig();
+    const { client: c, dial } = makeClient(core);
+    await c.connect();
+
+    expect(c.willReconnect()).toBe(true);
+    dial.last().server.close();
+    expect(c.isConnected()).toBe(false);
+    expect(c.willReconnect()).toBe(true);
+
+    c.close();
+    expect(c.willReconnect()).toBe(false);
+  });
+
   it("resumes a restarted client's timeline from the store it was given", async () => {
     const core = remoteRig();
     core.eventLog.appendEvent("task:created", "{}", { taskId: "t1" });

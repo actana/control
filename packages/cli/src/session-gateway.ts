@@ -275,9 +275,18 @@ export type PromptDeliveryReport =
    * so `composerOnScreen` is `true` for it from the first byte and the prompt
    * goes out when the screen stops moving. That is #483's deliberately
    * preserved generic backstop and it is fine as a *delivery* strategy — but it
-   * is not evidence, and on `codex` today the screen frequently stops moving
-   * with a trust dialog on it. Reported apart from `delivered` because this
-   * flag's contract is that a zero exit means the harness took the text.
+   * is not evidence: a screen that has stopped moving is as easily a dialog.
+   * Reported apart from `delivered` because this flag's contract is that a zero
+   * exit means the harness took the text.
+   *
+   * **No harness this build ships is in that state.** #277 gave `codex` the
+   * last outstanding readiness row, so `opencode`, `cursor-cli`, `claude-code`
+   * and `codex` all have markers and all deliver as `delivered`. This outcome
+   * is for the harness added after them: `HARNESS_READINESS` has a working
+   * default for ids that are not in it, so a new harness arrives marker-less
+   * and would otherwise have this flag reporting a readiness nobody
+   * established on the day it shipped. It joins the others the moment it gets
+   * a row, with nothing to change here.
    */
   | { outcome: "unverified"; reason: string }
   /** No verdict was heard, and this side says which of its own limits stopped it. */
@@ -974,10 +983,12 @@ function openPromptDeliveryLatch(client: CoreClient): PromptDeliveryLatch {
       // a measurement would be back to inferring readiness.
       //
       // `composerObserved: false` is the Core saying it typed on the quiet gap
-      // into a harness whose composer it has never been shown — which on codex
-      // today is a trust dialog about a third of the time. Calling that
-      // `delivered` would be this flag reporting success for exactly the
-      // failure #395's acceptance criterion names by hand.
+      // into a harness whose composer it has never been shown. Calling that
+      // `delivered` would be this flag reporting success for a prompt that may
+      // have gone into a dialog — the failure #395's acceptance criterion names
+      // by hand. Every harness this build ships has a marker since #277, so the
+      // false branch is the guard for the next one added rather than a state
+      // any of them reach.
       let observed: boolean;
       try {
         const payload = JSON.parse(event.payload) as CoreLinkSessionPromptDeliveredPayload;

@@ -178,7 +178,8 @@ cursor-cli were on while they were losing prompts. The honest reading of this
 amendment is that codex is *unverified*, not that it is safe, and a codex row is
 owed as soon as somebody captures its composer. That is filed as
 [issue 277](https://github.com/actana/control/issues/277), so the gap has an
-address rather than a note in three files.
+address rather than a note in three files. *Superseded by the issue 277
+amendment below: the screen has been read and codex has a row.*
 
 **This is also why the mitigation belongs here and not in a client.** The
 workaround in use while this was open — start the Session, wait ~12 s, ask the
@@ -299,6 +300,139 @@ decide what a `start` promises about readiness. What it gains is a Core that no
 longer claims a prompt was delivered when it was not, which is the fact any
 client-side answer has to be built on.
 
+## Amendment — issue 277 (2026-09-03)
+
+**`codex` has a readiness row, and the hole it closes is not the one it was
+suspected of.** [Issue 277](https://github.com/actana/control/issues/277) asked
+for two things before a row: codex's boot and idle composer captured off a live
+PTY, and the gap between them timed rather than guessed. Both were done on
+codex-cli 0.153.0, twenty-four live boots on one Core at the Core's own 100×30
+and `TERM=xterm-256color`, and the measurement decided the shape of the row.
+
+**There is no boot race on this build.** `› Ask Codex to do anything` — the
+composer's own placeholder — is in the *first* frame codex paints, 160–198 ms
+after spawn on 8 of 8 timed cold boots (five `codex --enable hooks`, three
+plain). D3's 350 ms quiet gap does not expire until 564–955 ms in those same
+runs, so the marker leads the settle by 366–782 ms every time. Nor is the
+marker merely early: a prompt written at 0, 60, 120, 170, 200, 400, 700 and
+1200 ms — eight further boots — echoed into the composer on every attempt,
+including the writes that went in before codex had painted anything at all. If
+the row had to rest on the boot race it would not be justified, and this record
+would say codex needs no row.
+
+**The hole is the directory-trust dialog, and it is a D3a hole rather than a D5
+one.** In a directory codex does not trust, it paints that same composer
+placeholder at 198 ms, clears the screen at 633 ms, and replaces it with `Do you
+trust the contents of this directory?` at 638 ms. The quiet gap expires at
+634 ms — **one millisecond after that clear** — so what D3 hands D3a is the
+dialog and not the composer that was on screen a moment before. And codex has
+**no `BLOCKING_DIALOGS` entry**, so D5 is not watching for that screen either.
+Measured on a further boot: a 22-character prompt written at 990 ms, with the
+dialog up, produced no echo and no change to the screen at all. The dialog
+swallows it, and the `\r` D8 sends after the submit pause lands on a menu whose
+highlighted row is `1. Yes, continue` — the directory is trusted, a session
+starts, and the prompt is gone with the Session parked in `ready`. That is issue
+277's stated signature, reached by a different route than #229's.
+
+**One millisecond is a measurement, not a safety margin, and the record should
+say which.** It is one millisecond because D3 restarts the quiet window only on
+a *novel* `redrawSignature` — the last one in that boot is at 284 ms — and the
+figure comes from replaying the capture's own chunks at the capture's own
+offsets rather than from concatenating them, which merges signatures and moves
+the settle. (The same correction applies to the numbers above: an earlier
+revision of this amendment said 602–1810 ms for the same eight boots, from a
+coarser rule that counted every changed frame as a paint; the two disagree by
+38 ms on one boot and by 855 ms on another.) The other untrusted boot in the sample cleared
+at 555 ms against a gap at 908 ms, so 1 ms is the tight end of the range. And
+the other ordering costs nothing silent: had the gap opened first, delivery
+would have typed into a composer the dialog was about to wipe, D6a's
+`confirmEcho` would have seen no echo, and the `\r` would have been withheld
+rather than pressed into the menu. Both orderings are replayed in the suite.
+
+**So the marker earns the row on the dialog, not on the boot**, and the row is
+the ordinary D3a/D6a pair: the placeholder as the composer marker, `confirmEcho`
+on, `maxPromptWrites: 3`. What it buys is that the module holds instead of
+typing into a screen that is provably not a composer, and the prompt is still in
+hand when a human answers the dialog.
+
+**What the caller is actually told, stated exactly.** Delivery ends `abandoned`
+with `codex composer never appeared within 15000 ms` — the marker, not the
+dialog. D5's rule that "the reason a client is given is the dialog and not the
+marker" cannot apply here, because that branch is reachable only for a harness
+with a `BLOCKING_DIALOGS` entry and codex has none. So the Session is
+`needs-input` and the prompt is intact, which is the win, but the words name the
+marker and it is still the screen that tells an operator what is in the way.
+
+**Teaching D5 to answer that dialog is not taken here, and this capture sharpened
+what it will cost.** The obstacle is not only that `readDialogOptions` needs a
+digit followed by `.` or `)` while the menu strips to `1. Yes, continue2.No,quit`.
+It is that codex lays the dialog out with absolute `ESC[row;colH` moves, which
+`stripAnsi` deletes outright rather than spacing the way it spaces `ESC[nG` and
+`ESC[nC` — so the screen collapses to
+`…apiDoyoutrustthecontentsofthisdirectory?Working…` and not even the word `trust`
+survives on it. Adding codex to the existing `folder-trust` row would match
+nothing at all; the *reading* has to change before the answering can. That is
+[issue 469](https://github.com/actana/control/issues/469)'s, and it should
+inherit this finding rather than only the menu-key half.
+
+**Two candidate markers on the same frame were timed and rejected**, which is
+the discipline the issue 232 amendment recorded and this one keeps. `? for
+shortcuts` arrives with the composer on 8 of 8 boots and is **gone from the
+settled screen** 927 ms later, so it would read "no composer" on every delivery
+that begins after boot rather than during it. The `>_ OpenAI Codex (v0.153.0)`
+wordmark does survive to the settled screen, and it is still the wrong thing to
+gate on: a painted box is exactly what D3a exists to stop reading as readiness,
+and it lands in the same frame as the placeholder on every boot measured, so it
+buys nothing even where it is right.
+
+The screens are committed under `packages/core/src/__tests__/fixtures/` as
+`codex-0.153.0-{boot,composer,boot-settling,idle,untrusted-boot,directory-trust}.txt`,
+with `codex-0.153.0-frames.txt` carrying each PTY chunk's offset so the suite can
+replay a capture the way it arrived. The marker is asserted against those files
+rather than against a literal beside it.
+
+**D6a's `confirmEcho` is the one field in the row that can lose a delivery that
+works today, so it carries its own evidence.** The other two cannot: a marker
+that stops matching makes a prompt late, and a write budget only bounds retyping.
+An unsatisfiable `confirmEcho` is different — no echo means `retypePrompt`, which
+clears the screen and re-imposes D3a's gate, so a harness that *had* taken the
+prompt gets typed at again and then abandoned. The shape that would do it is a
+long prompt rendered as a collapsed paste chip, because `PASTE_PLACEHOLDER`
+transcribes Claude Code's `[Pasted text #1 …]` and would not match codex's
+wording. Issue 277's own field comment records exactly that workload — Studio
+codex Sessions started with a multi-line sub-agent contract — so `"say hello"`
+was not evidence for it.
+
+Measured, on the two shapes such a prompt can arrive in. `sanitizeInitialInput`
+collapses every run of C0 whitespace to one space before delivery sees the text,
+so an 800-character contract reaches `writePrompt` as one 796-character line; one
+write of it comes back echoed verbatim and wrapped, with no chip. The same text
+delivered as a real bracketed paste — `ESC[200~ … ESC[201~`, which codex
+advertises with `ESC[?2004h` in its first bytes — also echoes in full, its line
+breaks preserved as composer lines. Both composers are committed beside the
+prompt as `codex-0.153.0-{long-prompt,long-prompt-echo,pasted-prompt-echo}.txt`
+and the suite runs `promptEchoed` against them. The field is earned; had either
+collapsed to a chip, the honest answer would have been to ship the row without
+it.
+
+**codex needs no `HARNESS_PROMPT_DELIVERY_PROFILES` entry**, so its
+`composerWaitMs` is the default and equals D8's 15 s backstop. A marker that
+arrives at 200 ms is two orders of magnitude inside that, and the one screen
+where it never arrives is a dialog — which no amount of extra waiting turns into
+a composer. The timing table stays a place for a harness that has been measured
+to need a different number, which codex has now been measured not to be.
+
+**How this composes with the issue 483 amendment above**, which landed on the
+same day and on the same branch. That amendment removed the backstop's licence to
+type blind at a harness with a marker, so giving codex a marker changes what
+happens to the untrusted-directory case at 15 s: instead of typing the prompt
+into the trust dialog and reporting `delivered`, the delivery ends `abandoned`
+and the Session becomes `needs-input` with a `session:promptAbandoned` row saying
+the prompt did not land. That is the report an operator staring at an unanswered
+dialog actually needs, and it is why the ceiling stays at the default — opencode's
+90 s buys time for a boot that straddles the deadline, and codex has no such
+boot, so a longer ceiling here would only postpone the report by 75 s.
+
 ## Amendment — issue 395 (2026-09-03)
 
 **A Session that is *running* is not yet a Session that can take a `send`, and
@@ -340,15 +474,27 @@ silence stops reading as readiness.
   true of a harness with a row in `HARNESS_READINESS` and false of one without,
   and D3a of this record says as much: a harness with no entry gets D3, D6 and
   D8 — the quiet gap — and `composerOnScreen` returns `true` for it from the
-  first byte without looking at anything. `opencode`, `cursor-cli` and
-  `claude-code` have rows. `codex` does not, and roughly one codex boot in three
-  settles with `Do you trust the contents of this directory?` on screen, which is
-  precisely the failure #395's acceptance criterion names by hand. So the row
-  carries `composerObserved`, the Core sets it from the same predicate that
-  gates the write, and a delivery that cannot claim it is reported as
-  `unverified`: non-zero, `promptDelivered: null`, and a sentence saying the
-  Core typed but saw nothing. It becomes a plain `delivered` for any harness the
-  moment that harness has a readiness row, with no client change.
+  first byte without looking at anything. So the row carries `composerObserved`,
+  the Core sets it from the same predicate that gates the write, and a delivery
+  that cannot claim it is reported as `unverified`: non-zero, `promptDelivered:
+  null`, and a sentence saying the Core typed but saw nothing.
+
+  *And as of the issue 277 amendment above, no shipped harness is in that
+  state.* `opencode`, `cursor-cli`, `claude-code` and now `codex` all have rows,
+  so `composerObserved` is `true` on every delivery this build can make and
+  `unverified` is unreachable for all four. The draft of this paragraph written
+  before #277 landed used codex as the live example of a marker-less harness,
+  and that is no longer what codex is: it has `Ask Codex to do anything`, and
+  the directory-trust screen that used to swallow its prompt now ends the
+  delivery `abandoned` rather than reaching a client as a delivery at all.
+
+  The outcome is kept because the table is open, not because a harness needs it
+  today. `HARNESS_READINESS` has a default for ids that are not in it (D7), so
+  the next harness added arrives marker-less, and without `composerObserved` a
+  `--await-prompt` against it would report a readiness nobody established on the
+  day it shipped. A harness joins the vouched-for set the moment it gets a row,
+  with no client change — which is exactly what happened to codex between this
+  amendment's first draft and its merge.
 - Without the flag, `start` **says so** rather than implying otherwise: a line
   on stderr naming the gap and the flag, and `promptDelivered: null` on the
   `--json` object. `null` and not `false` — the prompt is not lost, it is

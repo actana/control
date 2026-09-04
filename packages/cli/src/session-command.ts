@@ -50,7 +50,10 @@ import { resolveCore } from "./core-resolution.ts";
 import { formatJson, formatTable } from "./cli-output.ts";
 import { isKnownHarness, KNOWN_HARNESSES } from "./session-gateway.ts";
 import { runSessionAttach } from "./session-attach.ts";
-import { CoreSessionTurnTimeoutError } from "@actana/sdk/core-session.ts";
+import {
+  CoreSessionLinkLostError,
+  CoreSessionTurnTimeoutError,
+} from "@actana/sdk/core-session.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
@@ -181,9 +184,10 @@ Running, and ready to be sent to, are different facts (#395)
   report quite the same fact: \`--wait\` reports a prompt the Core **gave up on**
   and infers the rest from a turn that ended, while \`--await-prompt\` waits for
   the Core to say positively that the prompt went into a composer it saw. On a
-  harness whose composer the Core cannot recognise — \`codex\` has no entry yet —
-  \`--await-prompt\` says so and exits non-zero rather than calling a prompt typed
-  on the quiet gap a delivery.
+  harness whose composer the Core cannot recognise — none of the four this build
+  ships, since #277 gave \`codex\` the last readiness row, but the next harness
+  added arrives that way — \`--await-prompt\` says so and exits non-zero rather
+  than calling a prompt typed on the quiet gap a delivery.
 
 What \`logs\` can show you
   The Core's replay ring, which belongs to the harness's PTY — so a Session that
@@ -616,9 +620,12 @@ function promptDeliveredField(report: PromptDeliveryReport): boolean | null {
  * The prompt went out on the quiet gap, into whatever the harness had on screen
  * when it stopped repainting. That is #483's generic backstop and it is a
  * reasonable way to *deliver*; it is not a statement that a harness took the
- * text, and on `codex` — which has no readiness row yet — the quiet gap
- * routinely expires with `Do you trust the contents of this directory?` up,
- * which is the exact failure #395's acceptance criterion names.
+ * text, because a screen that has stopped repainting is as easily a dialog.
+ * That was codex's failure exactly until #277 measured it — the quiet gap
+ * expiring one millisecond after codex cleared the screen for `Do you trust the
+ * contents of this directory?` — and codex has a readiness row now, so all four
+ * shipped harnesses are vouched for and this line is what the next harness
+ * added gets until it has one too.
  *
  * So it exits non-zero and says which of the two happened, rather than letting
  * a script read the zero exit as "the harness is listening".
@@ -764,9 +771,10 @@ async function awaitTurn(
   try {
     outcome = await session.wait(timeoutMs === null ? {} : { timeoutMs });
   } catch (err) {
-    // The only thing that reaches here is the deadline the operator asked for.
-    // It is reported as what it is — this side gave up — rather than as a
-    // status, because the Core never said one.
+    // Two things reach here, and neither is a status: the deadline the operator
+    // asked for (#405), and the link to the Core dropping out from under the
+    // wait (#396). Both are reported as what they are — this side gave up, or
+    // this side went deaf — because the Core never said anything either way.
     const message = messageOf(err);
     if (args.json) deps.out(formatJson({ ...startedFields(session), waited: true, error: message }));
     deps.err(`actana session: ${message}`);
@@ -808,6 +816,33 @@ async function awaitTurn(
           `\`actana events tail --since ${err.afterEventId}\`. Not \`session wait\`: that verb ` +
           `answers at once with the status this Session was already parked at and exits zero, ` +
           `which is last turn's answer, not this one's.`,
+      );
+    }
+    // The lost link's next step (#396), and it is a different one: nothing here
+    // gave up on a clock, so there is no "keep waiting" to offer against a Core
+    // this invocation can no longer reach. What it can say is where the answer
+    // is — the Core, once it is reachable — and, when there is a delivery cursor
+    // to name, the one command that reads the log from the write rather than
+    // from whatever status the row is parked at.
+    //
+    // **`session wait` is warned off here for the same reason it is above.**
+    // After a drop the Session may well be sitting at the status it carried
+    // before this turn, and an uncursored wait would print that and exit zero —
+    // a turn reported as finished on the strength of a network failure, which is
+    // exactly what the SDK refused to do a moment earlier.
+    if (err instanceof CoreSessionLinkLostError) {
+      const followOn =
+        err.afterEventId > 0
+          ? `To pick the wait up where it stopped, follow the log from the delivery: ` +
+            `\`actana events tail --since ${err.afterEventId}\`. Not \`session wait\`: it answers ` +
+            `from the status this Session is parked at and exits zero, which after a drop is as ` +
+            `likely to be last turn's answer as this one's.`
+          : `\`actana session ls\` says whether it is still live, and ` +
+            `\`actana session logs ${session.taskId}\` shows what is on screen.`;
+      deps.err(
+        `actana session: the turn's outcome is unknown — the Core never reported it ending, and ` +
+          `this side stopped listening. The Session is on the Core, not in this process, so it is ` +
+          `still running there. ${followOn}`,
       );
     }
     return EXIT_FAILURE;
