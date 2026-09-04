@@ -86,10 +86,16 @@ actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
 
 It blocks only until the Core reports the prompt delivered — seconds on a warm
 Harness, not the length of a turn — prints the id as usual, and **exits non-zero
-if the Core could not deliver it at all**, which is the one outcome a script
-must not read as a started Session. `--wait` already includes it, so a start
-that waits for the whole turn needs nothing extra. Without either, `--json`
-answers `promptDelivered: null`: nobody adjudicated it.
+unless the Core positively confirms the prompt went into a composer it saw**.
+That covers the prompt it gave up on, and it also covers a Harness whose composer
+the Core does not yet recognise, where the prompt was typed on a quiet screen
+that may have been a trust dialog. A start that cannot establish readiness says
+so rather than reporting success; the message names what stopped it.
+
+`--wait` is the longer wait and cannot be combined with it. The two do not report
+quite the same thing: `--wait` reports a prompt the Core **gave up on**, and
+infers the rest from a turn that ended. Without either, `--json` answers
+`promptDelivered: null`: nobody adjudicated it.
 
 **`--harness` is how one round spans several Harnesses.** Nothing else is
 needed for it: each `session start` takes its own `--harness`, so a round of
