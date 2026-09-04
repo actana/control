@@ -120,6 +120,31 @@ unattended work).
 delivered by the Core, which watches the Harness boot and types when it is
 ready; add no delays, no leading newline and no "press enter" of your own.
 
+**Running is not the same fact as ready to be sent to.** The Harness is spawned
+when \`start\` returns; it takes the prompt seconds later, once its composer is
+up. A \`session send\` in between goes into a terminal that is not reading and is
+discarded — along with the starting prompt queued behind it, so one impatient
+line loses two messages. If the next thing you do is \`send\`, start with
+\`--await-prompt\`:
+
+\`\`\`bash
+ID=$(actana session start <project> "<prompt>" --await-prompt)  # blocks until it landed
+actana session send "$ID" "<follow-up>" --wait --json --wait-timeout 1800
+\`\`\`
+
+It blocks only until the Core reports the prompt delivered — seconds on a warm
+Harness, not the length of a turn — prints the id as usual, and **exits non-zero
+unless the Core positively confirms the prompt went into a composer it saw**.
+That covers the prompt it gave up on, and it also covers a Harness whose composer
+the Core does not yet recognise, where the prompt was typed on a quiet screen
+that may have been a trust dialog. A start that cannot establish readiness says
+so rather than reporting success; the message names what stopped it.
+
+\`--wait\` is the longer wait and cannot be combined with it. The two do not report
+quite the same thing: \`--wait\` reports a prompt the Core **gave up on**, and
+infers the rest from a turn that ended. Without either, \`--json\` answers
+\`promptDelivered: null\`: nobody adjudicated it.
+
 **\`--harness\` is how one round spans several Harnesses.** Nothing else is
 needed for it: each \`session start\` takes its own \`--harness\`, so a round of
 lanes on different Harnesses is a round of ordinary starts. Pick every id out of

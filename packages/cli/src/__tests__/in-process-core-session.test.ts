@@ -19,6 +19,16 @@
 // `packages/sdk`'s `live-session.test.ts` — an opt-in suite against an
 // operator's own Core. What is provable without one is proved here.
 //
+// **With one exception, added by #395 and narrow on purpose.** That ticket is
+// about what a `start`/`resume` *returns*, and its report is read off a row the
+// Core appends **during the spawn round trip** — the window #483's review
+// called the deaf one. No fake gateway can stage that: the whole question is
+// whether a real frame arriving before the client has a Task id to bind it to
+// is held and then judged. So `livePtyCore` grows an opt-in `spawn` that
+// registers a PTY id and nothing else — no binary, no process, no bytes — and
+// the two tests at the bottom use `resume`, which spawns against a Task the
+// Core already holds. Everything a real harness would do is still out of scope.
+//
 // The Core comes from `in-process-core.ts`, which #160 and #161 each extracted
 // a version of and the review of #205 merged into one. `ptyCore` is this
 // suite's contribution to it: the manager below is the live PTY that `logs`,
@@ -33,6 +43,7 @@ import type {
 import {
   SESSION_DELIVERED_EVENT_KIND,
   SESSION_PROMPT_ABANDONED_EVENT_KIND,
+  SESSION_PROMPT_DELIVERED_EVENT_KIND,
 } from "@actana/sdk/core-link-frames.ts";
 
 import { openSessionGateway } from "../session-gateway.ts";
@@ -95,13 +106,29 @@ const REPAINTED =
   "\u001B[2J\u001B[H\u001B[1GScanning…\u001B[1GScanning… 2 files\u001B[1Gdone: 3 files changed\r\n";
 
 /** A PTY manager holding one live PTY, and a record of what was done to it. */
-function livePtyCore(): {
+function livePtyCore(
+  opts: {
+    /**
+     * What this Core does the moment a spawn lands, before it answers (#395).
+     *
+     * Opt-in, and the shape is the point: the real Core appends its
+     * `session:promptDelivered` row from inside the delivery it runs on the
+     * PTY, which is after the client asked to spawn and before — often long
+     * before — the client has done anything with the answer. A hook here
+     * reproduces that ordering exactly, on a real socket, which is the only way
+     * to prove the latch holds a row it cannot yet judge.
+     */
+    onSpawn?: (info: { taskId: string; ptyId: string; initialInput: string | undefined }) => void;
+  } = {},
+): {
   core: unknown;
   writes: string[];
   killed: string[];
   resolutions: string[];
   /** The same lookup, uncounted — for the query ports, which are not a verb. */
   ptyFor: (taskId: string) => string | null;
+  exit: (ptyId: string) => void;
+  spawns: () => number;
 } {
   const writes: string[] = [];
   const killed: string[] = [];
@@ -110,8 +137,12 @@ function livePtyCore(): {
   // arguable (#289: one resolution for the write and the wait).
   const resolutions: string[] = [];
   const ptys = new Map<string, string>([["task_live", "pty_live"]]);
+  let emit: ((event: { type: "exit"; ptyId: string; exitCode: number }) => void) | null = null;
+  let spawns = 0;
   const core = {
-    setEmitTarget: () => {},
+    setEmitTarget: (target: typeof emit) => {
+      emit = target;
+    },
     findByTask: (taskId: string) => {
       resolutions.push(taskId);
       return { ptyId: ptys.get(taskId) ?? null };
@@ -134,8 +165,13 @@ function livePtyCore(): {
       return true;
     },
     resize: () => true,
-    spawn: () => {
-      throw new Error("this suite does not spawn — see the header");
+    spawn: (spawnOpts: { taskId: string; initialInput?: string }) => {
+      if (!opts.onSpawn) throw new Error("this suite does not spawn — see the header");
+      const ptyId = `pty_${spawnOpts.taskId}`;
+      ptys.set(spawnOpts.taskId, ptyId);
+      spawns += 1;
+      opts.onSpawn({ taskId: spawnOpts.taskId, ptyId, initialInput: spawnOpts.initialInput });
+      return { ptyId, hooksReportTurnStart: true };
     },
     killAll: () => {},
     killLaunchProcesses: () => ({ ptyCount: 0, ports: [] }),
@@ -147,6 +183,9 @@ function livePtyCore(): {
     killed,
     resolutions,
     ptyFor: (taskId: string) => ptys.get(taskId) ?? null,
+    /** Push a PTY exit the way a dying process does — a frame, not a log row. */
+    exit: (ptyId: string) => emit?.({ type: "exit", ptyId, exitCode: 0 }),
+    spawns: () => spawns,
   };
 }
 
@@ -216,6 +255,27 @@ async function coreWithSessions(
     eventLog?: false;
     /** Archive a row while its harness keeps running. */
     archived?: string[];
+    /**
+     * Let this Core spawn, and say what it reports about the starting prompt
+     * the moment it does (#395). `null` is a Core that spawns and reports
+     * nothing, which is every Core before this change.
+     *
+     * `"blind"` is the third answer and the one the review of #494 found being
+     * reported as success: a delivery the Core made on its quiet gap without
+     * ever seeing a composer, which is what every harness with no
+     * `HARNESS_READINESS` row gets — `codex` today.
+     */
+    onPromptDelivery?: "delivered" | "blind" | "abandoned" | null;
+    /**
+     * Rows to put in the log before anything else, to push it past the replay
+     * cap (#494 review, blocker 1).
+     *
+     * `handleSubscribe` sends at most `EVENT_TAIL_LIMIT` — a thousand — rows and
+     * marks the tail at the last one it sent, so a longer log is the ordinary
+     * case in which the marker is nowhere near the end. Nothing prunes the log,
+     * so a Core that has been up for days is always in this state.
+     */
+    filler?: number;
   } = {},
 ): Promise<{
   writes: string[];
@@ -226,8 +286,22 @@ async function coreWithSessions(
   sessionListReads: () => number;
   /** What the harness's own Stop hook does on the Core: patch the row, say so. */
   endTurn: (taskId: string, status: string) => void;
+  /** Kill a PTY the way a process death does — an `exit` frame, no log row. */
+  exitPty: (ptyId: string) => void;
+  /** How many spawns this Core has served — the suite's "the harness is up". */
+  spawns: () => number;
 }> {
-  const pty = livePtyCore();
+  // Forward-declared because the hook below runs inside the Core and the log is
+  // built after it — the same knot the real Core ties by wiring `core-entry`'s
+  // `appendEvent` into `PtyCoreDeps`.
+  let appendPromptRow: ((taskId: string, ptyId: string) => void) | null = null;
+  const pty = livePtyCore(
+    opts.onPromptDelivery === undefined
+      ? {}
+      : {
+          onSpawn: ({ taskId, ptyId }) => appendPromptRow?.(taskId, ptyId),
+        },
+  );
   const tasks = [
     task({ archived: opts.archived?.includes("task_live") ?? false }),
     task({ taskId: "task_done", title: "ship the changelog", status: "finished" }),
@@ -241,6 +315,39 @@ async function coreWithSessions(
   // that id. Without one every write comes back unstamped, which is the
   // older-Core case and not the one these tests are about.
   const eventLog = arrayEventLog();
+  for (let i = 0; i < (opts.filler ?? 0); i += 1) {
+    eventLog.appendEvent("task:updated", JSON.stringify({ taskId: "task_filler" }), {
+      taskId: "task_filler",
+    });
+  }
+  if (opts.onPromptDelivery) {
+    const outcome = opts.onPromptDelivery;
+    appendPromptRow = (taskId, ptyId) => {
+      if (outcome === "delivered" || outcome === "blind") {
+        eventLog.appendEvent(
+          SESSION_PROMPT_DELIVERED_EVENT_KIND,
+          JSON.stringify({
+            taskId,
+            ptyId,
+            characters: 2,
+            waitedMs: 812,
+            composerObserved: outcome === "delivered",
+          }),
+          { taskId, ptyId },
+        );
+        return;
+      }
+      eventLog.appendEvent(
+        SESSION_PROMPT_ABANDONED_EVENT_KIND,
+        JSON.stringify({
+          taskId,
+          ptyId,
+          reason: "opencode composer never appeared within 90000 ms",
+        }),
+        { taskId, ptyId },
+      );
+    };
+  }
   core = await startInProcessCore({
     ptyCore: pty.core,
     queryPort,
@@ -273,6 +380,8 @@ async function coreWithSessions(
     eventLog,
     sessionListReads,
     endTurn,
+    exitPty: pty.exit,
+    spawns: pty.spawns,
   };
 }
 
@@ -568,6 +677,209 @@ describe("actana session, against a Core in this process", () => {
       status: "finished",
       promptDelivered: true,
     });
+  }, 60_000);
+
+  it("waits for the delivery row the Core appends inside the spawn round trip (#395)", async () => {
+    // The whole of #395 on a real socket. `session resume … --await-prompt`
+    // spawns, and the Core appends `session:promptDelivered` *while the spawn
+    // frame is being handled* — before the answer goes back, and long before
+    // `wrap()` has a Task id to bind the latch to. The row is therefore held,
+    // judged against the `eventsReplayed` floor once the latch is armed, and
+    // reported. Nothing here polls, sleeps or measures: the command ends
+    // because the Core said something.
+    //
+    // A `resume` rather than a `start` only because the Core in this suite
+    // holds Tasks and does not create them; the return path under test is the
+    // same one, `reportStartedSession`, and both verbs reach it.
+    await coreWithSessions({ onPromptDelivery: "delivered" });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({
+      taskId: "task_done",
+      awaitedPrompt: true,
+      promptDelivered: true,
+      // Not a turn wait, and the object says so rather than leaving a caller to
+      // infer it from a missing `status`.
+      waited: false,
+    });
+  }, 60_000);
+
+  it("exits non-zero on a start whose prompt the Core gave up on (#395)", async () => {
+    // The failure this gate exists for, end to end. Without `--await-prompt`
+    // this command exits zero and says nothing, and the operator's next line —
+    // a `session send` — types into a harness that never got the first message.
+    // With it, the loss is the command's own exit code.
+    await coreWithSessions({ onPromptDelivery: "abandoned" });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt"],
+      withCore(),
+    );
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("did not deliver the starting prompt");
+    expect(err).toContain("opencode composer never appeared within 90000 ms");
+    // And it names the recovery, which is the one thing `needs-input` alone
+    // would have sent an operator the wrong way on.
+    expect(err).toContain("session send task_done");
+  }, 60_000);
+
+  it("does not read a previous start's abandon row as this start's verdict (#395)", async () => {
+    // #483's floor, now load-bearing for a *wait* rather than for a report read
+    // after one. A Session resumed after a start that lost its prompt carries
+    // that row for as long as the log does; latching it here would fail a
+    // resume whose prompt landed perfectly, and — worse than #483's version of
+    // this — would do it while a correct answer was sitting one event later.
+    const { eventLog } = await coreWithSessions({ onPromptDelivery: "delivered" });
+    eventLog.appendEvent(
+      SESSION_PROMPT_ABANDONED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_done",
+        ptyId: "pty_task_done",
+        reason: "a composer that never appeared, two starts ago",
+      }),
+      { taskId: "task_done" },
+    );
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({ promptDelivered: true });
+    expect(run.err.join("\n")).not.toContain("two starts ago");
+  }, 60_000);
+
+  // ─── What the review of #494 found, each turned into a test ────────────
+  //
+  // All three failed on the code that review read, and each fails for a
+  // different reason. They are here rather than beside the injected-gateway
+  // suite because none of them can be staged with a fake gateway: the first is
+  // about what a real `handleSubscribe` sends, the second about a frame that is
+  // not a log row, the third about a payload field crossing a real socket.
+
+  it("does not answer from a previous start's delivery row once the log passes the replay cap (#494 review, blocker 1)", async () => {
+    // **Blocker 1, and it is ordinary use rather than an edge.**
+    // `handleSubscribe` replays at most `EVENT_TAIL_LIMIT` — a thousand — rows
+    // and marks the tail at the last one it *sent*; the rest of the history
+    // then arrives behind that marker through `pushLiveEvents`, as ordinary
+    // `event` frames. Nothing prunes the log. So with 1 200 rows in it, a
+    // `session:promptDelivered` from a start last Tuesday sits above the old
+    // floor and used to be judged as this command's verdict — exit 0 and "this
+    // session can take a send now", before the Core had typed a character.
+    //
+    // The stale row is for this very Task, which is the case that matters: a
+    // Session resumed after a start that delivered once carries that row for as
+    // long as the log does.
+    const { eventLog } = await coreWithSessions({ onPromptDelivery: "abandoned", filler: 1_200 });
+    const staleAt = eventLog.appendEvent(
+      SESSION_PROMPT_DELIVERED_EVENT_KIND,
+      JSON.stringify({
+        taskId: "task_done",
+        ptyId: "pty_task_done",
+        characters: 2,
+        waitedMs: 400,
+        composerObserved: true,
+      }),
+      { taskId: "task_done", ptyId: "pty_task_done" },
+    );
+    // Above the cap, and therefore above the marker the old floor used.
+    expect(staleAt).toBeGreaterThan(1_000);
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    // This start's own verdict, which is the one the Core gave for *this*
+    // prompt — not the delivery from the life before it.
+    expect(run.code).toBe(EXIT_FAILURE);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({
+      taskId: "task_done",
+      promptDelivered: false,
+      promptAbandonedReason: "opencode composer never appeared within 90000 ms",
+    });
+  }, 60_000);
+
+  it("stops waiting when the harness exits, rather than for ever (#494 review, blocker 2)", async () => {
+    // **Blocker 2's log-independent bound.** The Core here spawns and reports
+    // nothing at all — the shape of a Core whose `appendEvent` is failing, and
+    // of any other way the verdict never comes. `--await-prompt` refuses
+    // `--wait-timeout` by design, so without a bound this blocks until the
+    // operator kills it.
+    //
+    // An `exit` frame is the bound, and it is the right one because it is not a
+    // log row: it comes off the PTY subscription, so it arrives from a Core
+    // that cannot append anything, and a harness that is gone will never take
+    // a prompt. Reported as "no verdict", never as a lost prompt — the text may
+    // well have gone in before the process died.
+    const { exitPty, spawns } = await coreWithSessions({ onPromptDelivery: null });
+
+    const running = fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    // After the spawn, so the exit is a live frame about a PTY that exists
+    // rather than a frame nobody is subscribed to yet. The latch holds an exit
+    // that beats `wrap()` all the same; this only keeps the test about the
+    // bound rather than about that.
+    await waitFor(() => spawns() > 0, "the Core spawned the harness");
+    exitPty("pty_task_done");
+
+    const run = await running;
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptUnknownReason).toContain("exited");
+  }, 60_000);
+
+  it("refuses rather than waits when the Core cannot say where its log ends (#494 review, blocker 2)", async () => {
+    // The other half of blocker 2, and the one that covers a Core older than
+    // `session:promptDelivered` as well as this one, which has no event-log
+    // port wired at all. Neither will ever append the row this wait is for.
+    //
+    // The absence of `tipEventId` on the replay marker is the signal, and it
+    // arrives one frame after the subscribe — so the answer comes at once
+    // instead of never.
+    await coreWithSessions({ eventLog: false, onPromptDelivery: null });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptUnknownReason).toContain("event log");
+  }, 60_000);
+
+  it("does not call a prompt typed on the quiet gap a delivery (#494 review, blocker 3)", async () => {
+    // **Blocker 3.** A harness with no `HARNESS_READINESS` row — `codex` today
+    // — is typed into when the screen stops moving, because `composerOnScreen`
+    // is `true` for it without looking at anything. That is #483's generic
+    // backstop, deliberately preserved, and it is a fine way to deliver. It is
+    // not evidence: roughly one codex boot in three settles with a trust dialog
+    // on screen, which is the failure #395's criterion names by hand.
+    //
+    // So the Core carries `composerObserved` on the row and this exits non-zero
+    // rather than printing "this session can take a send now" over a prompt
+    // that may be sitting in a dialog.
+    await coreWithSessions({ onPromptDelivery: "blind" });
+
+    const run = await fixture!.run(
+      ["session", "resume", "task_done", "carry", "on", "--await-prompt", "--json"],
+      withCore(),
+    );
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    // Not `false`: the Core did not give up, and telling an operator the prompt
+    // was lost would send them to re-send text that may well be in the composer.
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.composerObserved).toBe(false);
+    expect(payload.promptAbandonedReason).toBeUndefined();
   }, 60_000);
 
   it("refuses to wait after a delivery the Core did not stamp, rather than answering with the turn before", async () => {

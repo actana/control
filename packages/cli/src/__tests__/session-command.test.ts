@@ -379,6 +379,235 @@ describe("actana session start", () => {
     expect(payload.promptAbandonedReason).toBeUndefined();
   });
 
+  // ─── `--await-prompt`: running is not the same fact as ready (#395) ────
+  //
+  // The defect this closes is a race with no error in it. `start` returns when
+  // the Core has the Session running, which is before the harness can take a
+  // keystroke; a `send` at that moment goes into a terminal that is not reading
+  // and takes the starting prompt down with it. Both halves are tested: the
+  // wait itself, and the fact that a `start` which does *not* wait stops
+  // implying it established anything.
+
+  it("waits for the Core to report the starting prompt delivered", async () => {
+    await withRegisteredCore();
+    let waitedForTurn = false;
+    let askedForDelivery = false;
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            wait: async () => {
+              waitedForTurn = true;
+              return { status: "finished", exited: false };
+            },
+            awaitPromptDelivery: async () => {
+              askedForDelivery = true;
+              return { outcome: "delivered" };
+            },
+          }),
+      }),
+    });
+    expect(run.code, run.err.join("\n")).toBe(EXIT_OK);
+    expect(askedForDelivery).toBe(true);
+    // Emphatically **not** `--wait`. This is the short wait — the Session
+    // becoming sendable — and a turn that runs for an hour is not part of it.
+    expect(waitedForTurn).toBe(false);
+    // `SID=$(actana session start web "fix it" --await-prompt)` still works.
+    expect(run.out).toEqual(["task_1"]);
+    expect(run.err.join("\n")).toContain("session send task_1");
+  });
+
+  it("exits non-zero and says what stopped it when the Core gave the prompt up", async () => {
+    // The whole point of gating on the Core's verdict rather than on a clock:
+    // the answer can be "it did not land", and a zero exit there would be the
+    // false success this train exists to remove.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            awaitPromptDelivery: async () => ({
+              outcome: "abandoned",
+              reason: "opencode composer never appeared within 90000 ms",
+            }),
+          }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const err = run.err.join("\n");
+    expect(err).toContain("did not deliver the starting prompt");
+    expect(err).toContain("opencode composer never appeared within 90000 ms");
+  });
+
+  it("does not call a lost connection a lost prompt", async () => {
+    // `unavailable` is this side saying it stopped being able to hear, and it
+    // must not be reported as the Core's verdict: the prompt may have landed a
+    // second later, and telling an operator to send it again would put the text
+    // in twice. Non-zero all the same — nothing was established.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            awaitPromptDelivery: async () => ({
+              outcome: "unavailable",
+              reason: "the connection to the Core went down",
+            }),
+          }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.promptAbandonedReason).toBeUndefined();
+    expect(payload.promptUnknownReason).toContain("went down");
+  });
+
+  it("puts the delivery on the --await-prompt --json object without a turn's fields", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(run.code).toBe(EXIT_OK);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload).toMatchObject({
+      taskId: "task_1",
+      waited: false,
+      awaitedPrompt: true,
+      promptDelivered: true,
+    });
+    // No turn was awaited, so no turn's fields are invented for one.
+    expect(payload.status).toBeUndefined();
+  });
+
+  it("says the prompt has not landed yet, and answers null rather than true, without the flag", async () => {
+    // The other half of "must not claim readiness it has not established". A
+    // bare start hangs up before the Core decides (#129 D6) — which is fine —
+    // so it reports that it does not know, in prose and as a field.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--json"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(run.code).toBe(EXIT_OK);
+    const payload = JSON.parse(run.out.join("\n"));
+    // `null`, not `false`: nobody reached a verdict, and `false` would be one.
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.waited).toBe(false);
+    const err = run.err.join("\n");
+    expect(err).toContain("has not been delivered yet");
+    expect(err).toContain("--await-prompt");
+  });
+
+  it("says nothing about a prompt on a start that has none", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(run.code).toBe(EXIT_OK);
+    expect(run.err.join("\n")).not.toContain("has not been delivered yet");
+  });
+
+  it("does not call a prompt typed on a quiet screen a delivery", async () => {
+    // #494 review, blocker 3, at the command's own layer: the report says the
+    // Core typed without seeing a composer, and the exit code has to say the
+    // same. `null` and not `false` — nothing was lost, nothing was established.
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            harness: "codex",
+            awaitPromptDelivery: async () => ({
+              outcome: "unverified",
+              reason: "it has no composer marker",
+            }),
+          }),
+      }),
+    });
+    expect(run.code).toBe(EXIT_FAILURE);
+    const payload = JSON.parse(run.out.join("\n"));
+    expect(payload.promptDelivered).toBeNull();
+    expect(payload.composerObserved).toBe(false);
+    expect(payload.promptAbandonedReason).toBeUndefined();
+
+    // And the sentence, on the run that has room for one.
+    const prose = await cli().run(["session", "start", "web", "go", "--await-prompt"], {
+      sessions: fakeSessionGateway({
+        start: async () =>
+          fakeStartedSession({
+            harness: "codex",
+            awaitPromptDelivery: async () => ({
+              outcome: "unverified",
+              reason: "it has no composer marker",
+            }),
+          }),
+      }),
+    });
+    expect(prose.code).toBe(EXIT_FAILURE);
+    const err = prose.err.join("\n");
+    expect(err).toContain("cannot vouch for where it landed");
+    expect(err).toContain("codex");
+  });
+
+  it("says a composer was seen on the delivery it does call one", async () => {
+    await withRegisteredCore();
+    const run = await cli().run(["session", "start", "web", "go", "--await-prompt", "--json"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(run.code).toBe(EXIT_OK);
+    expect(JSON.parse(run.out.join("\n"))).toMatchObject({
+      promptDelivered: true,
+      composerObserved: true,
+    });
+  });
+
+  it("refuses --await-prompt on a prompt the Core would drop before the harness", async () => {
+    // #494 review, blocker 2, third case. `""` never leaves this package and
+    // `"   "` is trimmed away by the Core's `sanitizeInitialInput`, so neither
+    // produces a delivery, neither produces a row, and a wait for one runs
+    // until the operator kills it. Refused on the same test the Core applies.
+    await withRegisteredCore();
+    for (const prompt of ["", "   ", "\t\n"]) {
+      const run = await cli().run(["session", "start", "web", prompt, "--await-prompt"], {
+        sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+      });
+      expect(run.code, `"${prompt}" was accepted`).toBe(EXIT_USAGE);
+      expect(run.err.join("\n")).toContain("delivers none");
+    }
+
+    // And a prompt with something in it is still a prompt, spaces and all.
+    const ok = await cli().run(["session", "start", "web", " go ", "--await-prompt"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(ok.code, ok.err.join("\n")).toBe(EXIT_OK);
+  });
+
+  it("refuses --await-prompt where there is no report for it to wait for", async () => {
+    await withRegisteredCore();
+    // No prompt: nothing is delivered, so nothing can be reported delivered.
+    const bare = await cli().run(["session", "start", "web", "--await-prompt"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(bare.code).toBe(EXIT_USAGE);
+    expect(bare.err.join("\n")).toContain("delivers none");
+
+    // With `--wait`, which already reports the delivery and waits longer.
+    const both = await cli().run(["session", "start", "web", "go", "--await-prompt", "--wait"], {
+      sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }),
+    });
+    expect(both.code).toBe(EXIT_USAGE);
+    expect(both.err.join("\n")).toContain("Pick one");
+
+    // And no deadline of its own: the Core's per-harness ceiling is the bound,
+    // and a second one here could only cut the wait short with nothing to say.
+    const timed = await cli().run(
+      ["session", "start", "web", "go", "--await-prompt", "--wait-timeout", "5"],
+      { sessions: fakeSessionGateway({ start: async () => fakeStartedSession() }) },
+    );
+    expect(timed.code).toBe(EXIT_USAGE);
+    expect(timed.err.join("\n")).toContain("bounds --wait, not --await-prompt");
+  });
+
   it("passes --wait-timeout through as the SDK's deadline, and refuses it alone", async () => {
     await withRegisteredCore();
     let timeoutMs: number | undefined;

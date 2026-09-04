@@ -432,3 +432,156 @@ the prompt did not land. That is the report an operator staring at an unanswered
 dialog actually needs, and it is why the ceiling stays at the default — opencode's
 90 s buys time for a boot that straddles the deadline, and codex has no such
 boot, so a longer ceiling here would only postpone the report by 75 s.
+
+## Amendment — issue 395 (2026-09-03)
+
+**A Session that is *running* is not yet a Session that can take a `send`, and
+`session start` now has a way to say which one it is returning.** The two facts
+were never distinguished. `start` returns when the Core has spawned the harness
+(#129 D6), which is before the composer is painted, often before the trust
+dialog is drawn, and always before the Core has begun typing. The operator's
+next line is the one that pays:
+
+    SID=$(actana session start web "fix it")
+    actana session send $SID continue --enter
+
+The keystrokes land on a dialog or in a terminal that is not reading yet, and
+the harness discards them — together with the starting prompt sitting in the
+same buffer, which is how one command loses two messages and reports success
+for both.
+
+**What changes.** Nothing about when a bare `start` returns: hanging up before
+delivery is right, because delivery runs on the harness's clock and the
+amendment above gives opencode ninety seconds of it. What changes is that the
+silence stops reading as readiness.
+
+- The Core appends **`session:promptDelivered`** — Task, PTY, character count
+  and how long it waited, never the prompt — from inside
+  `HarnessPromptDelivery.submit`. It is the positive twin of
+  `session:promptAbandoned`, and it had to exist for the reason issue 483 did
+  not need it to: 483 read a *loss* off a row, and could treat the absence of
+  one as delivery because it had already waited for a turn to end. A start has
+  not. There, "no abandon row" and "the composer is still not up" are the same
+  silence, so a command that read the first as delivery would be claiming a
+  readiness nobody established.
+- **`session start --await-prompt`** and `session resume --await-prompt` block
+  until the Core says which of the two it was, print the Session id as usual,
+  and exit zero **only** on a delivery the Core can vouch for. That is the
+  "documented wait" the issue asks for.
+
+  *What "vouch for" means, and why the first draft of this paragraph was wrong.*
+  It said a delivered prompt "is a composer that was seen on screen". That is
+  true of a harness with a row in `HARNESS_READINESS` and false of one without,
+  and D3a of this record says as much: a harness with no entry gets D3, D6 and
+  D8 — the quiet gap — and `composerOnScreen` returns `true` for it from the
+  first byte without looking at anything. So the row carries `composerObserved`,
+  the Core sets it from the same predicate that gates the write, and a delivery
+  that cannot claim it is reported as `unverified`: non-zero, `promptDelivered:
+  null`, and a sentence saying the Core typed but saw nothing.
+
+  *And as of the issue 277 amendment above, no shipped harness is in that
+  state.* `opencode`, `cursor-cli`, `claude-code` and now `codex` all have rows,
+  so `composerObserved` is `true` on every delivery this build can make and
+  `unverified` is unreachable for all four. The draft of this paragraph written
+  before #277 landed used codex as the live example of a marker-less harness,
+  and that is no longer what codex is: it has `Ask Codex to do anything`, and
+  the directory-trust screen that used to swallow its prompt now ends the
+  delivery `abandoned` rather than reaching a client as a delivery at all.
+
+  The outcome is kept because the table is open, not because a harness needs it
+  today. `HARNESS_READINESS` has a default for ids that are not in it (D7), so
+  the next harness added arrives marker-less, and without `composerObserved` a
+  `--await-prompt` against it would report a readiness nobody established on the
+  day it shipped. A harness joins the vouched-for set the moment it gets a row,
+  with no client change — which is exactly what happened to codex between this
+  amendment's first draft and its merge.
+- Without the flag, `start` **says so** rather than implying otherwise: a line
+  on stderr naming the gap and the flag, and `promptDelivered: null` on the
+  `--json` object. `null` and not `false` — the prompt is not lost, it is
+  unadjudicated, and a `false` would be a verdict nobody reached.
+
+**Delivery is the readiness signal, and there is no second one.** #191 deleted
+the last client-side timer that guessed at a harness being ready, and D3 above
+is why: only the Core sees the screen, and a client inferring readiness from
+quietness or from bytes is the 450 ms nudge with a new name. So the gate is the
+Core's own verdict on a prompt it actually typed, not a Core-side "composer
+ready" broadcast — a marker-less harness has no such moment to broadcast, and
+inventing one for it would be a claim rather than a report. It follows that a
+start with **no** prompt cannot use the flag, and it is refused rather than
+answered with an instant, meaningless success.
+
+**No clock is added on the client, and none is needed — but the bounds have to
+be facts, and the first draft was short of them.** `packages/cli` ships no
+scheduler on any path that reaches a harness's stdin
+(`no-prompt-timing.test.ts`), and this wait does not want one. It ends on one of
+the Core's answers — delivered, abandoned at that harness's own `composerWaitMs`
+ceiling, or the row `pty-manager` appends when the PTY dies mid-delivery — or on
+one of three facts about the world, each of which means no answer is coming:
+
+- **the link went down** (`onDisconnected`);
+- **the harness exited** (`onExit` for this Session's own PTY). An exit frame is
+  not a log row, so it arrives even from a Core whose appends are failing, and a
+  harness that is gone will never take a prompt;
+- **the Core says it has no event log to report from** — see the floor below.
+  A Core older than the row, or one running with no event-log port, answers the
+  subscribe with no tip; that absence is read as "this Core cannot tell me", one
+  frame after the subscribe, instead of waiting for a row that is never coming.
+
+And a prompt that would not be delivered at all is refused before any of it: the
+empty string, and a string of nothing but spaces and control characters, are
+both dropped on the way to the harness (`sanitizeInitialInput`), so a wait for
+their delivery is a wait for nothing. `--wait-timeout` stays refused with
+`--await-prompt`, because with those bounds in place a second deadline could
+only end the wait early, with nothing to report except that it had.
+
+**The event-ordering discipline the 483 amendment recorded applies unchanged,
+and one clause of it is new.** The latch is still opened before the session
+exists and still takes a floor, because the delivered row is as durable and as
+replayable as the abandoned one — a resume of a Session that once lost its
+prompt must not read that old row as this start's verdict. What the positive row
+adds is a *third* ordering: it is appended in the same synchronous tick as the
+carriage return that submits the prompt, so it is in the log before the event
+loop can carry a byte of the harness's reply, and therefore strictly before any
+status the turn it starts eventually produces. A delivery row behind the status
+would be as unreadable as the reason row behind it was.
+
+**And the floor has to be the log's actual end, which the `eventsReplayed`
+marker never was.** The 483 amendment's floor was that marker, on the reading
+that "everything up to here was already history when you asked". It is not:
+`handleSubscribe` caps its replay at `EVENT_TAIL_LIMIT` — a thousand rows — and
+reports the last row it *sent*, then delivers the remaining history behind the
+marker through `pushLiveEvents` as ordinary events. Nothing prunes the log. So
+on any Core past a few days of use the floor sat around a thousand and every
+historical delivery row above it was read as the current command's verdict: an
+instant exit 0 on a start the Core had not typed a character of, and the mirror
+case failing a start whose prompt landed. The Core therefore reports
+`tipEventId` on the marker — read *before* the tail, so every row that existed
+when the client asked is at or below it — and the latch floors on that. It is
+carried beside `lastEventId` and no cursor consumes it: a cursor advanced to a
+tip would skip history the client was never sent, which is the trade
+`packages/cli/src/event-tip.ts` refuses and still refuses.
+
+This is #487's own reasoning made true rather than a new rule — that review
+argued "every replayed row is necessarily below the marker", which holds exactly
+when the marker is the tip. It repairs the same hole in the report path #483
+already shipped, where it made `promptAbandoned()` answer from a stale row on a
+`session wait`; that is why the repair lands here rather than waiting for a
+ticket of its own. What it does not do is make a bare `session wait` report an
+abandon that happened *before* it attached — that remains #483's deliberate
+semantic (a bare wait reports what happens during it) rather than, as it was
+until now, an accident of where the replay stopped.
+
+**A latch with no floor now says so instead of answering.** The observation left
+by the review of PR #487 — that `openPromptDeliveryLatch` depends on having
+caused the `subscribe`, and would hold every row for ever on a client that
+arrived already subscribed — was survivable while the answer was a silent
+`null`. It is not survivable for a wait, which would simply never end. The latch
+records that it cannot judge and reports `unavailable`; `openSessionGateway`,
+which builds one fresh client per gateway, is where the invariant is kept.
+
+**`session send` is not gated, and the contract is still the same on both
+sides.** The issue offers the choice — gate the start, or gate the send — and
+gating the start is the one that can be honest: a send is a raw write by design
+(#404), the Core adds no delivery machinery to it, and there is nothing there to
+report. A caller that wants to know its send will be read waits on the start
+that precedes it.

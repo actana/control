@@ -41,7 +41,7 @@ import {
 } from "@actana/shared/harness-cli-version-requirements";
 import { applyHarnessPtyEnv } from "@actana/shared/harness-pty-env";
 import { acquireSpawnSlot, SPAWN_SETTLE_MS } from "./pty-spawn-queue";
-import { HarnessPromptDelivery } from "./harness-prompt-delivery";
+import { HarnessPromptDelivery, type PromptDeliveryEvent } from "./harness-prompt-delivery";
 
 function sanitizeEnv(): Record<string, string> {
   const out = sanitizedProcessEnv();
@@ -171,6 +171,25 @@ function reportPromptAbandoned(
   }
 }
 
+/** Report a delivered starting prompt on the same terms. */
+function reportPromptDelivered(
+  deps: PtyCoreDeps,
+  info: {
+    taskId: string;
+    ptyId: string;
+    characters: number;
+    waitedMs: number;
+    composerObserved: boolean;
+  },
+): void {
+  if (!info.taskId) return;
+  try {
+    deps.onSessionPromptDelivered?.(info);
+  } catch (err) {
+    log.warn("pty.prompt-delivered.failed", { error: String(err) });
+  }
+}
+
 const ptys = new Map<string, Pty>();
 const RING_LIMIT_BYTES = 1_000_000;
 
@@ -233,6 +252,37 @@ export type PtyCoreDeps = {
     taskId: string;
     ptyId: string;
     reason: string;
+  }) => void;
+  /**
+   * The Core **has** delivered this Session's starting prompt (issue 395).
+   *
+   * The other half of the pair above, and the one a caller has to have if
+   * `session start` is ever to stop claiming a readiness it has not
+   * established. The absence of an abandon row is not evidence that the prompt
+   * landed — it is equally the shape of a delivery still in progress, which is
+   * what a `start` sees, because delivery runs on the harness's clock and the
+   * client has hung up long before it (#129 D6). This row is the Core saying
+   * the harness took the text: composer marker on screen, prompt written, echo
+   * confirmed where the harness confirms echo, carriage return gone.
+   *
+   * **The row is appended in the same synchronous tick as the submit**, from
+   * inside `HarnessPromptDelivery.submit`, which is what keeps issue 483's
+   * ordering discipline pointed the other way: any status the turn this prompt
+   * starts eventually produces is appended to the same log strictly later, so a
+   * client that hears the status has already heard the delivery. A reason
+   * appended behind the status is a reason nobody reads, and a delivery
+   * appended behind it would be no better.
+   *
+   * Optional like its neighbours: a host that wires nothing loses the event and
+   * keeps every behaviour that shipped before.
+   */
+  onSessionPromptDelivered?: (info: {
+    taskId: string;
+    ptyId: string;
+    characters: number;
+    waitedMs: number;
+    /** Was a composer seen, or did the quiet gap vouch for it? See issue 395. */
+    composerObserved: boolean;
   }) => void;
   /**
    * This Session's harness is still talking (issue 243). Not a status and not
@@ -734,7 +784,13 @@ export class PtyCore {
                 /* pty already exited before the starting prompt could be written */
               }
             },
-            onEvent: ({ phase, ...detail }) => {
+            onEvent: (event: PromptDeliveryEvent) => {
+              // Taken whole and destructured here rather than in the parameter
+              // list, because the rest of a discriminated union is not narrowed
+              // by its own discriminant: `event.phase === "delivered"` gives
+              // `event.promptChars` its type, and `detail.promptChars` would
+              // have needed a cast that a rename could walk straight through.
+              const { phase, ...detail } = event;
               // Delivery gave up with something still on screen.
               //
               // **The reason goes out before the status, and the order is load-
@@ -765,6 +821,29 @@ export class PtyCore {
                 // harness waiting on a human — and it is a settled status, so an
                 // SDK `waitForIdle` stops waiting instead of waiting forever.
                 reportOutputSignal(this.deps, p.taskId, "dialog-unanswered");
+              }
+              // And the other outcome, which had no wire at all until issue
+              // 395: the prompt reached the harness. Said here rather than
+              // inferred anywhere, because "no abandon row yet" is the same
+              // silence as "still waiting for the composer", and a `session
+              // start` that read the second as the first would be claiming a
+              // readiness nobody established — the defect 395 is about.
+              //
+              // This runs inside `submit`, in the same synchronous tick as the
+              // carriage return, so the row is in the log before the event loop
+              // can carry a single byte of the harness's reply. Whatever status
+              // the turn produces is therefore strictly behind it.
+              if (event.phase === "delivered" && p.taskId) {
+                reportPromptDelivered(this.deps, {
+                  taskId: p.taskId,
+                  ptyId: id,
+                  characters: event.promptChars,
+                  waitedMs: event.waitedMs,
+                  // Carried rather than inferred: this Core knows whether it
+                  // matched a composer marker or typed on the quiet gap, and no
+                  // client can work that out from the outside (issue 395).
+                  composerObserved: event.composerObserved,
+                });
               }
               // A dialog's label is harness output, so it goes through the same
               // cleaner every other borrowed string in this file does.

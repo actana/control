@@ -1865,3 +1865,43 @@ describe("delivering to codex (issue 277)", () => {
     );
   });
 });
+
+describe("did the Core see a composer, or did the clock vouch for it (issue 395)", () => {
+  // #483 stopped the backstop from typing blind into a harness with a known
+  // composer, and deliberately left the generic backstop alone for a harness
+  // with none: for those the screen going quiet is still the whole signal.
+  // That is a fine way to deliver and a bad thing to call evidence — a quiet
+  // screen is as easily a trust dialog — so the delivered event says which of
+  // the two it was, and a client that reports readiness reads it.
+  //
+  // The marker-less case uses an invented harness name rather than `codex`
+  // on purpose: `codex` is getting a readiness row in #277, and a test written
+  // against its *absence* would fail the day that lands for no reason anybody
+  // would enjoy tracing.
+
+  it("says a composer was seen when a marker matched", () => {
+    // opencode's own boot, inline rather than reaching for the helper in the
+    // describe above it: this block is about the field, not about opencode.
+    const h = startDelivery("say hello", { harness: "opencode" });
+    h.clock.advance(1_426);
+    h.delivery.onOutput(OPENCODE_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    h.delivery.onOutput(`${ESC}[2J${ESC}[H┃ say hello ┃\n`);
+    h.clock.advance(submitPauseMs("say hello", PROFILE) + PROFILE.quietGapMs);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.at(-1)).toMatchObject({ phase: "delivered", composerObserved: true });
+  });
+
+  it("says nothing was seen when the quiet gap is all there was", () => {
+    // The generic backstop, unchanged: no marker, so `composerOnScreen` is true
+    // from the first byte, the screen goes quiet and the prompt goes out. What
+    // is new is that the event admits nothing looked at the screen.
+    const h = startDelivery("ship it", { harness: "some-harness-invented-tomorrow" });
+    h.delivery.onOutput(`${ESC}[2J${ESC}[Hwhatever this harness paints\n`);
+    h.clock.advance(PROFILE.quietGapMs + 1);
+    expect(h.writes).toEqual(["ship it"]);
+    h.clock.advance(submitPauseMs("ship it", PROFILE) + PROFILE.quietGapMs + 1);
+    expect(h.delivery.currentPhase).toBe("delivered");
+    expect(h.events.at(-1)).toMatchObject({ phase: "delivered", composerObserved: false });
+  });
+});

@@ -353,7 +353,9 @@ export class CoreClient {
   private readonly dataListeners = new Set<(frame: CoreLinkDataFrame) => void>();
   private readonly exitListeners = new Set<(frame: CoreLinkExitFrame) => void>();
   private readonly eventListeners = new Set<(msg: { event: CoreLinkEvent }) => void>();
-  private readonly eventsReplayedListeners = new Set<(msg: { lastEventId: number }) => void>();
+  private readonly eventsReplayedListeners = new Set<
+    (msg: { lastEventId: number; tipEventId?: number }) => void
+  >();
   private readonly authOkListeners = new Set<(msg: { coreId: string; exp: number }) => void>();
   private readonly authErrorListeners = new Set<
     (msg: { reason: CoreLinkAuthErrorReason }) => void
@@ -499,7 +501,8 @@ export class CoreClient {
           for (const cb of this.exitListeners) cb(frame);
         },
         onEvent: (event) => this.deliverEvent(event),
-        onEventsReplayed: (lastEventId) => this.deliverEventsReplayed(lastEventId),
+        onEventsReplayed: (lastEventId, tipEventId) =>
+          this.deliverEventsReplayed(lastEventId, tipEventId),
         onClose: (reason) => {
           this.ready = null;
           this.multiConnection = null;
@@ -1054,7 +1057,7 @@ export class CoreClient {
   }
 
   /** Notified when a `subscribe` replay tail has been fully streamed. */
-  onEventsReplayed(cb: (msg: { lastEventId: number }) => void): Unsubscribe {
+  onEventsReplayed(cb: (msg: { lastEventId: number; tipEventId?: number }) => void): Unsubscribe {
     this.eventsReplayedListeners.add(cb);
     return () => this.eventsReplayedListeners.delete(cb);
   }
@@ -1127,8 +1130,12 @@ export class CoreClient {
   }
 
   /** Hand the end-of-replay marker on. Overridden where a cursor is kept. */
-  protected deliverEventsReplayed(lastEventId: number): void {
-    for (const cb of this.eventsReplayedListeners) cb({ lastEventId });
+  protected deliverEventsReplayed(lastEventId: number, tipEventId?: number): void {
+    // The key is omitted rather than carried as `undefined` when the Core named
+    // no tip, so a listener on a Core that cannot report one is handed exactly
+    // the object it was handed before #395.
+    const msg = tipEventId === undefined ? { lastEventId } : { lastEventId, tipEventId };
+    for (const cb of this.eventsReplayedListeners) cb(msg);
   }
 
   // ─── Typed frame methods ───────────────────────────────────────────────────
