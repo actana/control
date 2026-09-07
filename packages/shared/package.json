@@ -14,7 +14,7 @@
   },
   "dependencies": {
     "@actana/sdk": "workspace:*",
-    "@peculiar/x509": "^1.14.2",
+    "@peculiar/x509": "^2.0.0",
     "selfsigned": "^5.5.0"
   },
   "devDependencies": {
