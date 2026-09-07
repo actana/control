@@ -32,13 +32,13 @@
   "dependencies": {
     "@actana/sdk": "workspace:*",
     "selfsigned": "^5.5.0",
-    "undici": "8.9.0",
-    "ws": "8.21.0"
+    "undici": "8.10.1",
+    "ws": "8.21.3"
   },
   "devDependencies": {
     "@types/node": "25.8.0",
     "@types/ws": "8.18.1",
-    "esbuild": "0.28.1",
+    "esbuild": "0.28.2",
     "typescript": "6.0.3",
     "vitest": "4.1.6"
   }
