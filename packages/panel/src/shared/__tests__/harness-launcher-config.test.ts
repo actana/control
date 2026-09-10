@@ -18,18 +18,18 @@ describe("normalizeHarnessLauncherConfig", () => {
       order: ["codex", "not-an-agent", "codex", "claude-code"],
       hidden: ["nope", "opencode", "opencode"],
     });
-    expect(result.order).toEqual(["codex", "claude-code", "cursor-cli", "opencode"]);
+    expect(result.order).toEqual(["codex", "claude-code", "cursor-cli", "opencode", "pi"]);
     expect(result.hidden).toEqual(["opencode"]);
   });
 
   it("appends agents missing from order in default order", () => {
     const result = normalizeHarnessLauncherConfig({ order: ["opencode"], hidden: [] });
-    expect(result.order).toEqual(["opencode", "claude-code", "codex", "cursor-cli"]);
+    expect(result.order).toEqual(["opencode", "claude-code", "codex", "cursor-cli", "pi"]);
   });
 
   it("keeps at least one agent visible when everything is hidden", () => {
     const result = normalizeHarnessLauncherConfig({
-      order: ["cursor-cli", "codex", "claude-code", "opencode"],
+      order: ["cursor-cli", "codex", "claude-code", "opencode", "pi"],
       hidden: [...HARNESSES],
     });
     expect(result.hidden).not.toContain("cursor-cli");
@@ -47,10 +47,10 @@ describe("visibleLauncherHarnesses", () => {
   it("filters hidden agents preserving order", () => {
     expect(
       visibleLauncherHarnesses({
-        order: ["codex", "claude-code", "cursor-cli", "opencode"],
+        order: ["codex", "claude-code", "cursor-cli", "opencode", "pi"],
         hidden: ["claude-code", "opencode"],
       }),
-    ).toEqual(["codex", "cursor-cli"]);
+    ).toEqual(["codex", "cursor-cli", "pi"]);
   });
 
   it("returns everything when nothing is hidden", () => {

@@ -67,4 +67,19 @@ describe("agent registry", () => {
       args: ["run", "name this task"],
     });
   });
+
+  it("exposes Pi as a selectable agent", () => {
+    expect(UI_HARNESSES).toContain("pi");
+    expect(HARNESS_REGISTRY.pi).toMatchObject({
+      command: "pi",
+      uiVisible: true,
+      supportsSkipPermissions: false,
+    });
+    expect(HARNESS_REGISTRY.pi.disabled).toBeUndefined();
+    expect(HARNESS_REGISTRY.pi.startCommand()).toBe("pi");
+    expect(HARNESS_REGISTRY.pi.titleInvocation?.("name this task")).toEqual({
+      cmd: "pi",
+      args: ["-p", "--no-tools", "-nc", "--no-session", "name this task"],
+    });
+  });
 });

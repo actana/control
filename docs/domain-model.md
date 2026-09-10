@@ -59,8 +59,8 @@ surface first.
 
 Definition per `CONTEXT.md`; the family is open per ADR 0013, which
 carries the two rules that follow from it. The delta this file records is
-only the roster: `claude-code`, `codex`, `cursor-cli` and `opencode` are
-current; `pi` and `hermes` are planned additions.
+only the roster: `claude-code`, `codex`, `cursor-cli`, `opencode` and `pi` are
+current; `hermes` is a planned addition.
 
 ## Core
 

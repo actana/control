@@ -1,6 +1,6 @@
 import { safeJsonParse } from "./safe-json";
 
-export const HARNESSES = ["claude-code", "codex", "cursor-cli", "opencode"] as const;
+export const HARNESSES = ["claude-code", "codex", "cursor-cli", "opencode", "pi"] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 export const TASK_STATUSES = [

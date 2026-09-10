@@ -317,10 +317,15 @@ describe("both skills are generic and self-contained (ADR 0031 D9)", () => {
     // skill's prohibition has to be written harness-neutrally for the same
     // reason (ADR 0035 D3), which is why this sweeps both files rather than
     // exempting the new one.
+    //
+    // Match as a token, not a substring: a short id like `pi` otherwise hits
+    // ordinary English ("capital", "opinion") and the assertion becomes
+    // unusable the moment that Harness joins the registry.
     for (const [name, content] of everyShippedFile()) {
       for (const harness of HARNESSES) {
+        const token = new RegExp(`(?:^|[^A-Za-z0-9_-])${harness}(?:[^A-Za-z0-9_-]|$)`);
         expect(
-          content.includes(harness),
+          token.test(content),
           `${name} names the harness "${harness}" — selection is the caller's`,
         ).toBe(false);
       }

@@ -188,6 +188,39 @@ describe("buildHarnessLaunchCommand", () => {
       `opencode --session ${OPENCODE_SESSION_ID}`,
     );
   });
+
+  it("starts Pi without a session id until one is captured", () => {
+    const task = {
+      ...baseTask,
+      agent: "pi",
+      claudeSessionId: null,
+    } satisfies Task;
+    expect(buildHarnessLaunchCommand(task, "", "new")).toBe("pi");
+  });
+
+  it("resumes Pi with a captured session UUID", () => {
+    const sessionId = "00000000-0000-4000-8000-000000000001";
+    const task = {
+      ...baseTask,
+      agent: "pi",
+      status: "running",
+      claudeSessionId: sessionId,
+    } satisfies Task;
+    expect(buildHarnessLaunchCommand(task, sessionId, "resume")).toBe(
+      `pi --session ${sessionId}`,
+    );
+  });
+
+  it("passes a model on a fresh Pi launch", () => {
+    const task = {
+      ...baseTask,
+      agent: "pi",
+      claudeSessionId: null,
+    } satisfies Task;
+    expect(buildHarnessLaunchCommand(task, "", "new", { model: "anthropic/claude-sonnet-4-5" })).toBe(
+      "pi --model anthropic/claude-sonnet-4-5",
+    );
+  });
 });
 
 describe("harnessLaunchMode", () => {

@@ -32,6 +32,8 @@ const SESSION_IDS: Record<CoreLinkPtySpawnHarness, string> = {
   "cursor-cli": "00000000-0000-4000-8000-000000000000",
   // OpenCode ids carry a `ses` prefix and the Core insists on it.
   opencode: "ses_01H8Z0MEXAMPLE",
+  // Pi session ids are UUIDs with no prefix.
+  pi: "00000000-0000-4000-8000-000000000001",
 };
 
 function policyDeps(): SpawnPolicyDeps {
@@ -65,15 +67,20 @@ describe("harnessResumeCommand", () => {
     expect(harnessResumeCommand("codex", "abc")).toBe("codex resume abc --enable hooks");
     expect(harnessResumeCommand("cursor-cli", "abc")).toBe("cursor-agent --resume abc");
     expect(harnessResumeCommand("opencode", "ses_abc")).toBe("opencode --session ses_abc");
+    expect(harnessResumeCommand("pi", "00000000-0000-4000-8000-000000000001")).toBe(
+      "pi --session 00000000-0000-4000-8000-000000000001",
+    );
   });
 
-  it("appends each harness's own skip-permissions flag, and none for OpenCode", () => {
+  it("appends each harness's own skip-permissions flag, and none for OpenCode or Pi", () => {
     const skip = { dangerouslySkipPermissions: true };
     expect(harnessResumeCommand("claude-code", "abc", skip)).toContain("--dangerously-skip-permissions");
     expect(harnessResumeCommand("codex", "abc", skip)).toContain("--yolo");
     expect(harnessResumeCommand("cursor-cli", "abc", skip)).toContain("--force");
     // OpenCode has no such flag. Inventing one would be a rejected spawn.
     expect(harnessResumeCommand("opencode", "ses_abc", skip)).toBe("opencode --session ses_abc");
+    // Pi never asks — same empty cell, opposite reason.
+    expect(harnessResumeCommand("pi", "abc", skip)).toBe("pi --session abc");
   });
 
   it("builds a command for every harness this build knows", () => {

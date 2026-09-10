@@ -83,6 +83,7 @@ describe("Harness config", () => {
         // mode the way Claude Code does.
         "cursor-cli": "--dangerously-skip-permissions",
         opencode: null,
+        pi: null,
       }),
     ).toThrow(/cursor-cli/);
   });
@@ -96,6 +97,7 @@ describe("Harness config", () => {
     expect(HARNESS_CLI_CONFIG["claude-code"].npmPackage).toBe("@anthropic-ai/claude-code");
     expect(HARNESS_CLI_CONFIG.codex.npmPackage).toBe("@openai/codex");
     expect(HARNESS_CLI_CONFIG.opencode.npmPackage).toBe("opencode-ai");
+    expect(HARNESS_CLI_CONFIG.pi.npmPackage).toBe("@earendil-works/pi-coding-agent");
     expect(HARNESS_CLI_CONFIG["cursor-cli"].npmPackage).toBeUndefined();
   });
 

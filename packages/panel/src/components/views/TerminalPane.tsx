@@ -1070,7 +1070,9 @@ export function TerminalPane({
         ) {
           void (async () => {
             const fresh =
-              task.agent === "codex" || task.agent === "opencode" ? null : newSessionId();
+              task.agent === "codex" || task.agent === "opencode" || task.agent === "pi"
+                ? null
+                : newSessionId();
             try {
               // The row is the Core's (ADR 0004/0005) — the Panel's own HTTP
               // task API has no such row, so writing the fresh session id

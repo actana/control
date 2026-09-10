@@ -82,6 +82,13 @@ async function liveModelOptions(
       });
       return parsePlainModelList(raw);
     }
+    case "pi": {
+      const raw = await runCli("pi", ["--list-models"], {
+        cwd: os.tmpdir(),
+        timeoutMs: MODEL_LIST_TIMEOUT_MS,
+      });
+      return parsePlainModelList(raw);
+    }
     case "claude-code":
     case "codex":
       return null;

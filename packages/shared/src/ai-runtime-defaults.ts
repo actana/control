@@ -81,6 +81,10 @@ export const AI_RUNTIME_MODEL_OPTIONS: Record<
     { id: "openai/gpt-5.5", label: "GPT-5.5", description: "OpenAI provider" },
     { id: "openai/gpt-5.4", label: "GPT-5.4", description: "OpenAI provider" },
   ],
+  // Empty catalog: Pi's models are provider/id and come from `pi --list-models`
+  // at runtime. An empty row still satisfies Record<Harness, …>; the picker
+  // falls back to the harness default when the operator picks none.
+  pi: [],
 };
 
 export function isAiModelId(value: unknown): value is AiModelId {
@@ -136,6 +140,13 @@ export function buildAiPrintInvocation(
       return {
         cmd: "opencode",
         args: model ? ["run", "--model", model, prompt] : ["run", prompt],
+      };
+    case "pi":
+      return {
+        cmd: "pi",
+        args: model
+          ? ["-p", "--no-tools", "-nc", "--no-session", "--model", model, prompt]
+          : ["-p", "--no-tools", "-nc", "--no-session", prompt],
       };
   }
 }

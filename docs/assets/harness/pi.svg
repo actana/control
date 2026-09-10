@@ -1,0 +1,6 @@
+<svg width="48" height="48" viewBox="0 0 48 48" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Pi">
+  <rect width="48" height="48" rx="10.5" fill="#151b26"/>
+  <text x="24" y="24" text-anchor="middle" dominant-baseline="central"
+        font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        font-size="26" font-weight="600" fill="#5eead4">&#960;</text>
+</svg>

@@ -79,6 +79,22 @@ export const HARNESS_REGISTRY: Record<Harness, HarnessRegistryEntry> = {
     startCommand: () => "opencode",
     titleInvocation: (input) => ({ cmd: "opencode", args: ["run", input] }),
   },
+  pi: {
+    label: "Pi",
+    description: "Earendil's coding agent. Always unattended — no permission popups.",
+    color: "#5eead4",
+    glyph: "π",
+    command: HARNESS_CLI_CONFIG.pi.command,
+    uiVisible: true,
+    // No auto-mode flag: Pi never prompts, so skip-permissions is inherent
+    // rather than requested. Same cell shape as OpenCode, opposite meaning.
+    supportsSkipPermissions: false,
+    startCommand: () => "pi",
+    titleInvocation: (input) => ({
+      cmd: "pi",
+      args: ["-p", "--no-tools", "-nc", "--no-session", input],
+    }),
+  },
 };
 
 export const UI_HARNESSES = Object.entries(HARNESS_REGISTRY)

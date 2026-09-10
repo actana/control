@@ -69,12 +69,25 @@ function readOpenCodeAccount(): HarnessAccountStatus {
   }
 }
 
+function readPiAccount(): HarnessAccountStatus {
+  // Pi auth is provider-config under `~/.pi`; presence of the home marker is
+  // enough to say the CLI has run here. No single display identifier is
+  // published the way Claude's email or Cursor's user id are.
+  try {
+    const connected = fs.existsSync(path.join(homeDir(), ".pi"));
+    return { agent: "pi", connected, identifier: null };
+  } catch {
+    return { agent: "pi", connected: false, identifier: null };
+  }
+}
+
 export function readHarnessAccounts(): HarnessAccountStatus[] {
   const byHarness: Record<Harness, () => HarnessAccountStatus> = {
     "claude-code": readClaudeAccount,
     codex: readCodexAccount,
     "cursor-cli": readCursorAccount,
     opencode: readOpenCodeAccount,
+    pi: readPiAccount,
   };
   return MANAGED_HARNESSES.map((agent) => byHarness[agent]());
 }

@@ -94,6 +94,7 @@ describe("finding 1 — argv[0] is the canonical binary, never the harness id", 
       codex: "/usr/local/bin/codex",
       "cursor-cli": "/usr/local/bin/cursor-agent",
       opencode: "/usr/local/bin/opencode",
+      pi: "/usr/local/bin/pi",
     };
     for (const harness of KNOWN_HARNESSES) {
       const plan = planFor(harness, false);
@@ -114,6 +115,9 @@ describe("finding 2 — auto mode reaches the harness, or the spawn is refused",
     // OpenCode ships no such flag. `null` is the fact, not a gap.
     expect(harnessAutoModeFlag("opencode")).toBeNull();
     expect(harnessLaunchCommand("opencode", true)).toBe("opencode");
+    // Pi never asks — same empty cell, opposite reason.
+    expect(harnessAutoModeFlag("pi")).toBeNull();
+    expect(harnessLaunchCommand("pi", true)).toBe("pi");
   });
 
   it("is accepted by the Core for every harness, auto mode on", () => {

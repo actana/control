@@ -315,7 +315,7 @@ function baseCommandForTask(task: Task, model: string | null): string {
   }
 
   let sessionId = task.claudeSessionId;
-  if (!sessionId && task.agent !== "codex" && task.agent !== "opencode") {
+  if (!sessionId && task.agent !== "codex" && task.agent !== "opencode" && task.agent !== "pi") {
     sessionId = newSessionId();
     // The row for a Core's task lives on that Core, so the Panel's own
     // PATCH would 404. `tasksMutate` doesn't carry claudeSessionId today
@@ -328,7 +328,7 @@ function baseCommandForTask(task: Task, model: string | null): string {
   }
 
   const mode = harnessLaunchMode({ ...task, claudeSessionId: sessionId });
-  if ((task.agent === "codex" || task.agent === "opencode") && mode === "new") {
+  if ((task.agent === "codex" || task.agent === "opencode" || task.agent === "pi") && mode === "new") {
     return buildHarnessLaunchCommand(task, sessionId ?? "", mode, { model });
   }
 

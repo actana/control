@@ -312,6 +312,33 @@ export const HARNESS_CLI_CONFIG = {
       verifiedOn: "2026-08-19",
     },
   }),
+  pi: withResolveAs({
+    agent: "pi",
+    command: "pi",
+    label: "Pi",
+    versionScheme: "semver",
+    // Floor is the first release that ships both `agent_settled` (true turn-end)
+    // and `ui_prompt_start` / `ui_prompt_end` (needs-input). Earlier builds have
+    // one without the other; Actana needs both before the hooks family can land.
+    minimumVersion: "0.84.4",
+    packageUrl: "https://www.npmjs.com/package/@earendil-works/pi-coding-agent",
+    npmPackage: "@earendil-works/pi-coding-agent",
+    updateCommands: ["pi update --self"],
+    // `--ignore-scripts` is the vendor's documented install; the package posts
+    // install scripts that are not required to put `pi` on PATH.
+    installCommand: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+    // Pi never asks for permission (no built-in sandbox / no permission popups),
+    // so there is no auto-mode flag to send — the same `null` cell OpenCode has,
+    // for the opposite reason: OpenCode cannot run unattended; Pi always does.
+    skillTarget: {
+      kind: "skill-dir",
+      homeMarkers: [".pi"],
+      skillDir: ".agents/skills",
+      source:
+        "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md — Global: `~/.pi/agent/skills/`, `~/.agents/skills/`",
+      verifiedOn: "2026-09-10",
+    },
+  }),
 } as const satisfies Record<Harness, HarnessCliConfig>;
 
 export type ManagedHarness = Harness;

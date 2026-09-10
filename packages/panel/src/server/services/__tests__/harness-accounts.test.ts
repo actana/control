@@ -35,6 +35,7 @@ describe("readHarnessAccounts", () => {
       { agent: "codex", connected: false, identifier: null },
       { agent: "cursor-cli", connected: false, identifier: null },
       { agent: "opencode", connected: false, identifier: null },
+      { agent: "pi", connected: false, identifier: null },
     ]);
   });
 
@@ -96,6 +97,15 @@ describe("readHarnessAccounts", () => {
     fs.writeFileSync(path.join(opencodeDir, "auth.json"), "{}");
     expect(accountFor("opencode")).toEqual({
       agent: "opencode",
+      connected: true,
+      identifier: null,
+    });
+  });
+
+  it("detects Pi via the ~/.pi home marker", () => {
+    fs.mkdirSync(path.join(tmpHome, ".pi"), { recursive: true });
+    expect(accountFor("pi")).toEqual({
+      agent: "pi",
       connected: true,
       identifier: null,
     });
