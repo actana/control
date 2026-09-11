@@ -20,6 +20,11 @@ describe("applyHarnessPtyEnv", () => {
     const env = { COLORTERM: "truecolor", TERM: "xterm-256color" };
     applyHarnessPtyEnv(env, "claude-code");
     expect(env).toEqual({ COLORTERM: "truecolor", TERM: "xterm-256color" });
+
+    // Pi's TUI is not OpenTUI — leave COLORTERM alone (see harness-pty-env.ts).
+    const piEnv = { COLORTERM: "truecolor", TERM: "xterm-256color" };
+    applyHarnessPtyEnv(piEnv, "pi");
+    expect(piEnv).toEqual({ COLORTERM: "truecolor", TERM: "xterm-256color" });
   });
 });
 
@@ -34,6 +39,7 @@ describe("harnessPtyEnvOverrides", () => {
 
   it("does not override env for other agents", () => {
     expect(harnessPtyEnvOverrides("claude-code")).toEqual({});
+    expect(harnessPtyEnvOverrides("pi")).toEqual({});
     expect(harnessPtyEnvOverrides(undefined)).toEqual({});
   });
 });
