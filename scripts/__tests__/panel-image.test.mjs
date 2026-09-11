@@ -838,7 +838,7 @@ describe("core image", () => {
   });
 
   // D9 — ~1.15 GB of the ~1.4 GB a baked image would weigh, stale within days
-  // of a build, and four vendors' binaries nobody has licence-cleared.
+  // of a build, and five vendors' binaries nobody has licence-cleared.
   // Asserted against the instructions, not the file text: the comments name
   // every one of these on purpose, to say why it is absent.
   it("bakes no Harnesses", () => {

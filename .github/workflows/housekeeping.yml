@@ -986,7 +986,7 @@ jobs:
 
   # The vendor canary (D38). "A vendor changed their installer and `actana
   # harnesses install <id>` no longer leaves a CLI on PATH" is worth catching —
-  # it is what `e2e-actana-harnesses-linux.mjs` asserts, against four vendors'
+  # it is what `e2e-actana-harnesses-linux.mjs` asserts, against five vendors'
   # real installers over the real network.
   #
   # It is deliberately non-hermetic, which is exactly why it is here and not in
