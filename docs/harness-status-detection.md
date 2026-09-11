@@ -927,8 +927,8 @@ What it maps, from Pi ≥ 0.84.4's extension API:
 | `session_start` | `SessionStart` (+ session UUID) | captures the session id, no status change |
 | `input` (text stashed) + `agent_start` | `UserPromptSubmit` (+ prompt text) | `running`; captures the session id; names an unnamed Session |
 | `agent_settled` | `Stop` | `finished` |
-| `ui_prompt_start` | `QuestionRequest` | `needs-input` |
-| `ui_prompt_end` | `PermissionReplied` | back to `running` |
+| `ui_prompt_start` (inside a run) | `QuestionRequest` | `needs-input` |
+| `ui_prompt_end` (inside a run) | `PermissionReplied` | back to `running` |
 
 Two details are load-bearing:
 
@@ -938,7 +938,9 @@ Two details are load-bearing:
   when nothing is left — that is the ADR 0033 D1 obligation.
 - **`ui_prompt_*` covers extension dialogs, not a built-in permission gate.**
   Pi itself never asks for permission; an operator-installed gate extension
-  that calls `ctx.ui.confirm` / `select` is what raises `needs-input`.
+  that calls `ctx.ui.confirm` / `select` is what raises `needs-input`. Only a
+  dialog between `agent_start` and `agent_settled` is reported: one raised
+  while Pi is idle would close into `running` with no turn end coming.
 
 ## What about a custom MCP?
 

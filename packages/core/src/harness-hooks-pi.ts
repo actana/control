@@ -113,6 +113,11 @@ export default function (pi) {
   // Last interactive/rpc prompt text, attached to the next UserPromptSubmit so
   // the Core can name an unnamed Session the same way Claude's hook does.
   let lastPrompt = null;
+  // True from agent_start to agent_settled. Extension dialogs are reported
+  // only inside a run: one raised while Pi is idle (an operator's own slash
+  // command) would post PermissionReplied -> running when it closed, and no
+  // agent_settled would ever come to finish the card.
+  let inRun = false;
 
   // Posts are chained so they arrive in the order the harness produced them.
   // Nothing awaits the chain — a hook must never hold up a turn.
@@ -208,6 +213,7 @@ export default function (pi) {
 
   // Turn start. agent_start fires when a low-level agent run begins.
   pi.on("agent_start", async (_event, ctx) => {
+    inRun = true;
     const prompt = lastPrompt;
     lastPrompt = null;
     post("UserPromptSubmit", idOf(ctx), prompt ? { prompt } : {});
@@ -217,17 +223,21 @@ export default function (pi) {
   // that fires after auto-retry and compaction have nowhere left to go, so a
   // turn with either reports finished exactly once.
   pi.on("agent_settled", async (_event, ctx) => {
+    inRun = false;
     post("Stop", idOf(ctx), {});
   });
 
   // Extension dialog (select / confirm / input / editor / custom). Posted as
   // QuestionRequest rather than PermissionRequest: Pi's ui_prompt_* wraps
   // extension UI, not a tool-permission gate, and both map to needs-input.
+  // Inside a run only — see inRun above.
   pi.on("ui_prompt_start", async (_event, ctx) => {
+    if (!inRun) return;
     post("QuestionRequest", idOf(ctx), {});
   });
 
   pi.on("ui_prompt_end", async (_event, ctx) => {
+    if (!inRun) return;
     post("PermissionReplied", idOf(ctx), {});
   });
 }

@@ -176,6 +176,27 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     ]);
   });
 
+  it("reports nothing for an extension dialog raised while Pi is idle", async () => {
+    // An operator's own slash command can open a dialog between turns. Its
+    // PermissionReplied would put the card on running with no agent_settled
+    // coming to finish it, so only dialogs inside a run are reported.
+    const pi = await loadExtension(WIRED);
+    await pi.fire("session_start", { reason: "startup" });
+    await pi.fire("ui_prompt_start", { kind: "confirm", title: "Reload?" });
+    await pi.fire("ui_prompt_end", { kind: "confirm" });
+    await pi.fire("agent_start");
+    await pi.fire("agent_settled");
+    await pi.fire("ui_prompt_start", { kind: "select" });
+    await pi.fire("ui_prompt_end", { kind: "select" });
+    await settle();
+
+    expect(posts.map((p) => p.body.hook_event_name)).toEqual([
+      "SessionStart",
+      "UserPromptSubmit",
+      "Stop",
+    ]);
+  });
+
   it("answers project_trust yes without remembering (ADO #4987 / ADR 0040)", async () => {
     // Preferred path: the global extension answers before Pi paints
     // "Trust project folder?", so prompt delivery never sees the dialog.
