@@ -35,8 +35,9 @@ trigger the prompt.
 **D1 — Actana-spawned Pi Sessions answer `project_trust` with
 `{ trusted: "yes" }` from the global extension.** No dialog, no new spawn
 flag. The handler lives in the same `@actana-control-managed` file ADR 0039
-installs. It is inert unless `AC_HOOK_URL` is set, so a hand-run `pi` still
-gets the interactive prompt.
+installs. It is inert unless `AC_HOOK_URL` is set and `AC_HOOK_HARNESS` is
+`pi` (ADR 0039 D2), so a hand-run `pi` — or one nested in another harness's
+Session — still gets the interactive prompt.
 
 **D2 — The answer is session-only (`remember` is omitted).** Answering yes
 lets the Session proceed; writing `trust.json` behind the operator's back is

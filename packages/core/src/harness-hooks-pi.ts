@@ -34,13 +34,16 @@
 // earlier one wrote and never an operator's own extension. It carries no
 // secret — the URL, the token and the task id are read from the PTY's
 // environment. And it is fail-soft in every direction: no `AC_HOOK_URL` means
-// the extension does nothing (so `pi` run by hand posts nothing), every POST
+// the extension does nothing (so `pi` run by hand posts nothing), neither does
+// an `AC_HOOK_HARNESS` other than `pi` (a `pi` nested in another harness's
+// Session, which inherits that Session's hook env), every POST
 // swallows its own errors, and nothing it does is awaited by the harness.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import {
+  HOOK_HARNESS_ENV,
   HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
   HOOK_TOKEN_ENV,
@@ -97,6 +100,7 @@ const HOOK_URL = process.env.${HOOK_URL_ENV};
 const HOOK_TOKEN = process.env.${HOOK_TOKEN_ENV};
 const HOOK_TASK_ID = process.env.${HOOK_TASK_ID_ENV};
 const MISS_LOG = process.env.${HOOK_MISS_LOG_ENV};
+const HOOK_HARNESS = process.env.${HOOK_HARNESS_ENV};
 const ENDPOINT = ${JSON.stringify(`/api/hooks/${slug}`)};
 const TIMEOUT_MS = 3000;
 const ATTEMPTS = 2;
@@ -106,6 +110,11 @@ export default function (pi) {
   // extension left behind that an operator opened by hand. Do nothing at all.
   if (!HOOK_URL) return;
   if (!HOOK_TOKEN || !HOOK_TASK_ID) return;
+  // A pi an agent started from inside another harness's Session inherits
+  // that Session's URL, token and task id. Only a PTY the Core spawned as pi
+  // is this extension's to report; anything else would post into, and
+  // re-key, a task that is not a Pi Session.
+  if (HOOK_HARNESS !== "pi") return;
 
   // Captured on session_start so later events can address the Core even when
   // a handler's ctx is thin. getSessionId() is the UUID \`pi --session\` takes.

@@ -916,8 +916,9 @@ The extension follows the same three rules as the other writers: tagged
 `@actana-control-managed` so the next spawn replaces exactly what the last one
 wrote and never an operator's neighbouring file, carrying no secret (URL,
 token and task id are read from the PTY's environment), and fail-soft — no
-`AC_HOOK_URL` means it registers no handlers, so a hand-run `pi` outside
-Actana posts nothing.
+`AC_HOOK_URL`, or an `AC_HOOK_HARNESS` other than `pi`, means it registers no
+handlers, so neither a hand-run `pi` nor one an agent starts inside another
+harness's Session posts anything.
 
 What it maps, from Pi ≥ 0.84.4's extension API:
 

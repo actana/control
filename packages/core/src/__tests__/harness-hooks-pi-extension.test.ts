@@ -77,6 +77,7 @@ const WIRED = {
   AC_HOOK_URL: "http://127.0.0.1:45112",
   AC_HOOK_TOKEN: "hook-token-pi",
   AC_HOOK_TASK_ID: "task_pi_1",
+  AC_HOOK_HARNESS: "pi",
 };
 
 /** Posts are queued, not awaited by the harness — let the chain drain. */
@@ -256,6 +257,14 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     await pi.fire("agent_settled");
     await settle();
     expect(posts).toEqual([]);
+  });
+
+  it("does nothing in a pi nested inside another harness's Session", async () => {
+    // The file is global, so a pi an agent starts from inside a Claude Code
+    // Session loads it too, carrying that Session's URL, token and task id.
+    // Its SessionStart would re-key the Claude task and its Stop finish it.
+    const pi = await loadExtension({ ...WIRED, AC_HOOK_HARNESS: "claude-code" });
+    expect(Object.keys(pi.handlers)).toEqual([]);
   });
 
   it("never lets a failing receiver take the turn down", async () => {

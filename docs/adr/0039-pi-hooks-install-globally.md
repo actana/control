@@ -41,7 +41,12 @@ touched for hooks.
 **D2 — The global extension is inert unless Actana spawned the session.** It
 does nothing unless `AC_HOOK_URL` is set in the process environment. A
 hand-run `pi` outside Actana therefore posts nothing and shows no errors,
-even though the file sits in the operator's global folder.
+even though the file sits in the operator's global folder. It also does
+nothing unless `AC_HOOK_HARNESS` is `pi`: a `pi` an agent starts from inside
+another harness's Session inherits that Session's hook URL, token and task
+id, and a global file would otherwise report it into — and re-key — a task
+that is not a Pi Session. A `pi` nested inside a Pi Session is not told
+apart; that residue is accepted.
 
 **D3 — The managed-marker and fail-soft rules are unchanged.** The file is
 tagged `@actana-control-managed` so the next spawn replaces exactly what the
