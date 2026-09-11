@@ -6,6 +6,17 @@ import { _setHarnessAccountsDepsForTests, readHarnessAccounts } from "../harness
 
 let tmpHome: string;
 const originalXdgDataHome = process.env.XDG_DATA_HOME;
+const originalPiCodingAgentDir = process.env.PI_CODING_AGENT_DIR;
+
+/** Env vars that would make Pi look connected; stash and clear for hermetic tests. */
+const PI_ENV_KEYS_TO_CLEAR = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_OAUTH_TOKEN",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+] as const;
+const stashedPiEnvs = new Map<string, string | undefined>();
 
 function accountFor(agent: string) {
   return readHarnessAccounts().find((entry) => entry.agent === agent)!;
@@ -14,6 +25,12 @@ function accountFor(agent: string) {
 beforeEach(() => {
   tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "mc-harness-accounts-"));
   process.env.XDG_DATA_HOME = path.join(tmpHome, ".local", "share");
+  delete process.env.PI_CODING_AGENT_DIR;
+  stashedPiEnvs.clear();
+  for (const key of PI_ENV_KEYS_TO_CLEAR) {
+    stashedPiEnvs.set(key, process.env[key]);
+    delete process.env[key];
+  }
   _setHarnessAccountsDepsForTests({
     homeDir: () => tmpHome,
     codexReader: () => null,
@@ -25,6 +42,13 @@ afterEach(() => {
   _setHarnessAccountsDepsForTests({ homeDir: null, codexReader: null, cursorReader: null });
   if (originalXdgDataHome === undefined) delete process.env.XDG_DATA_HOME;
   else process.env.XDG_DATA_HOME = originalXdgDataHome;
+  if (originalPiCodingAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+  else process.env.PI_CODING_AGENT_DIR = originalPiCodingAgentDir;
+  for (const [key, value] of stashedPiEnvs) {
+    if (value === undefined) delete process.env[key];
+    else process.env[key] = value;
+  }
+  stashedPiEnvs.clear();
   fs.rmSync(tmpHome, { recursive: true, force: true });
 });
 
@@ -102,13 +126,42 @@ describe("readHarnessAccounts", () => {
     });
   });
 
-  it("detects Pi via the ~/.pi home marker", () => {
-    fs.mkdirSync(path.join(tmpHome, ".pi"), { recursive: true });
+  it("does not treat a bare ~/.pi (fresh install, no login) as connected", () => {
+    fs.mkdirSync(path.join(tmpHome, ".pi", "agent"), { recursive: true });
+    fs.writeFileSync(path.join(tmpHome, ".pi", "agent", "auth.json"), "{}");
+    expect(accountFor("pi")).toEqual({
+      agent: "pi",
+      connected: false,
+      identifier: null,
+    });
+  });
+
+  it("reports Pi connected after a stored login in ~/.pi/agent/auth.json", () => {
+    fs.mkdirSync(path.join(tmpHome, ".pi", "agent"), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpHome, ".pi", "agent", "auth.json"),
+      JSON.stringify({ anthropic: { type: "api_key", key: "sk-ant-test" } }),
+    );
     expect(accountFor("pi")).toEqual({
       agent: "pi",
       connected: true,
       identifier: null,
     });
+  });
+
+  it("reports Pi connected when a provider API key env is set", () => {
+    const previous = process.env.ANTHROPIC_API_KEY;
+    process.env.ANTHROPIC_API_KEY = "sk-ant-from-env";
+    try {
+      expect(accountFor("pi")).toEqual({
+        agent: "pi",
+        connected: true,
+        identifier: null,
+      });
+    } finally {
+      if (previous === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = previous;
+    }
   });
 
   it("never includes token-shaped fields in the payload", () => {

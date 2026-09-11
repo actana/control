@@ -69,12 +69,86 @@ function readOpenCodeAccount(): HarnessAccountStatus {
   }
 }
 
-function readPiAccount(): HarnessAccountStatus {
-  // Pi auth is provider-config under `~/.pi`; presence of the home marker is
-  // enough to say the CLI has run here. No single display identifier is
-  // published the way Claude's email or Cursor's user id are.
+/**
+ * Provider API-key environment variables Pi resolves (see
+ * `@earendil-works/pi-ai` `env-api-keys` / Pi providers docs). Presence of any
+ * non-empty value counts as a credential even when `auth.json` is empty.
+ */
+const PI_PROVIDER_API_KEY_ENVS = [
+  "ANTHROPIC_API_KEY",
+  "ANTHROPIC_AUTH_TOKEN",
+  "ANTHROPIC_OAUTH_TOKEN",
+  "ANT_LING_API_KEY",
+  "AZURE_OPENAI_API_KEY",
+  "OPENAI_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "NVIDIA_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_CLOUD_API_KEY",
+  "AWS_BEARER_TOKEN_BEDROCK",
+  "MISTRAL_API_KEY",
+  "GROQ_API_KEY",
+  "CEREBRAS_API_KEY",
+  "CLOUDFLARE_API_KEY",
+  "XAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "AI_GATEWAY_API_KEY",
+  "ZAI_API_KEY",
+  "ZAI_CODING_CN_API_KEY",
+  "OPENCODE_API_KEY",
+  "RADIUS_API_KEY",
+  "HF_TOKEN",
+  "FIREWORKS_API_KEY",
+  "TOGETHER_API_KEY",
+  "BASETEN_API_KEY",
+  "KIMI_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY",
+  "MOONSHOT_API_KEY",
+  "QWEN_TOKEN_PLAN_API_KEY",
+  "QWEN_TOKEN_PLAN_CN_API_KEY",
+  "XIAOMI_API_KEY",
+  "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+  "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+  "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+  "COPILOT_GITHUB_TOKEN",
+] as const;
+
+/** Pi agent dir: `$PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`. */
+function piAgentDir(): string {
+  const fromEnv = process.env.PI_CODING_AGENT_DIR?.trim();
+  if (fromEnv) {
+    return path.resolve(fromEnv.replace(/^~(?=$|[/\\])/, homeDir()));
+  }
+  return path.join(homeDir(), ".pi", "agent");
+}
+
+/** True when `auth.json` holds at least one provider credential (api_key or oauth). */
+function hasPiStoredLogin(): boolean {
   try {
-    const connected = fs.existsSync(path.join(homeDir(), ".pi"));
+    const raw = fs.readFileSync(path.join(piAgentDir(), "auth.json"), "utf8");
+    const json = JSON.parse(raw) as Record<string, unknown>;
+    return Object.values(json).some((entry) => entry !== null && typeof entry === "object");
+  } catch {
+    return false;
+  }
+}
+
+function hasPiProviderApiKeyEnv(): boolean {
+  return PI_PROVIDER_API_KEY_ENVS.some((name) => {
+    const value = process.env[name];
+    return typeof value === "string" && value.trim().length > 0;
+  });
+}
+
+function readPiAccount(): HarnessAccountStatus {
+  // Pi credentials are either a stored login under `~/.pi/agent/auth.json`
+  // (after `/login`) or a provider API-key environment variable. The mere
+  // existence of `~/.pi` (created on first run with an empty auth.json) is
+  // not enough. No single display identifier is published the way Claude's
+  // email or Cursor's user id are.
+  try {
+    const connected = hasPiStoredLogin() || hasPiProviderApiKeyEnv();
     return { agent: "pi", connected, identifier: null };
   } catch {
     return { agent: "pi", connected: false, identifier: null };
