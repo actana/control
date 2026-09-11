@@ -309,6 +309,35 @@ const CURSOR_TRUST_DIALOG = readFileSync(
 );
 
 /**
+ * Pi 0.85.1's "Trust project folder?" screen, captured off a live PTY in a
+ * fresh directory that has `.agents/skills` and no saved trust.json entry
+ * (ADO #4987). Substituted: the project path.
+ *
+ * The preferred fix for this screen is not in prompt delivery — Actana's
+ * global extension answers `project_trust` before Pi paints it (ADR 0040).
+ * The fixture is here for the defence-in-depth path: if the dialog still
+ * appears, `folder-trust` must recognise it and abandon rather than type.
+ * The menu is arrow-keyed (`→ Trust` / `Do not trust`), so
+ * {@link readDialogOptions} returns empty and the answer is null — the same
+ * shape as cursor-cli's letter-keyed trust screen.
+ */
+const PI_TRUST_DIALOG = readFileSync(
+  path.resolve(__dirname, "fixtures/pi-0.85.1-project-trust.txt"),
+  "utf8",
+);
+
+/**
+ * Pi 0.85.1's idle editor after `--approve`, captured off a live PTY. The
+ * listening screen has no placeholder text; readiness matches the footer
+ * context line (`0.0%/0 (auto)`), which this fixture carries and the trust
+ * dialog above does not.
+ */
+const PI_COMPOSER = readFileSync(
+  path.resolve(__dirname, "fixtures/pi-0.85.1-composer.txt"),
+  "utf8",
+);
+
+/**
  * OpenCode 1.18.18's boot, up to the point where issue 229's prompt was lost —
  * captured byte-for-byte from a live PTY (only the project path substituted).
  *
@@ -786,6 +815,13 @@ describe("dialogsForHarness", () => {
     // digit comes off the menu on screen.
     expect(dialogsForHarness("cursor-cli").map((d) => d.id)).toEqual(["folder-trust"]);
   });
+
+  it("gives pi the folder-trust spec as defence in depth (ADO #4987)", () => {
+    // Preferred path: the global extension answers `project_trust` (ADR 0040)
+    // and this screen never appears. The row is here so a spawn that still
+    // paints it abandons rather than typing the prompt into it.
+    expect(dialogsForHarness("pi").map((d) => d.id)).toEqual(["folder-trust"]);
+  });
 });
 
 describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
@@ -868,6 +904,56 @@ describe("cursor-agent's trust prompt (issue 177 finding 3)", () => {
     // Nothing in the cursor-cli spec list matches it — that screen is Claude
     // Code's and stays Claude Code's.
     expect(matchBlockingDialog(screen, specs)?.spec.id).not.toBe("bypass-permissions");
+  });
+});
+
+describe("Pi's project-trust prompt (ADO #4987)", () => {
+  const specs = dialogsForHarness("pi");
+  const readiness = readinessFor("pi");
+
+  it("recognises the real trust screen and answers nothing on it", () => {
+    // Arrow-keyed menu (`→ Trust`), not digits — same unreadable shape as
+    // cursor-cli. Recognition is what routes delivery to abandon.
+    const match = matchBlockingDialog(PI_TRUST_DIALOG, specs);
+    expect(match?.spec.id).toBe("folder-trust");
+    expect(readDialogOptions(PI_TRUST_DIALOG)).toEqual([]);
+    expect(match?.answer).toBeNull();
+  });
+
+  it("replays the real screen into an abandoned delivery, writing nothing", () => {
+    // Defence in depth for the case the global extension did not answer
+    // project_trust. Before the pi row, this screen would settle and type
+    // the prompt into the dialog while reporting delivered.
+    const h = startDelivery("refactor the picker", { harness: "pi" });
+    h.delivery.onOutput(PI_TRUST_DIALOG);
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "folder-trust" });
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by folder-trust" });
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
+  });
+
+  it("does not see a composer marker on the trust dialog", () => {
+    expect(composerOnScreen(PI_TRUST_DIALOG, readiness)).toBe(false);
+  });
+
+  it("sees the composer marker on the idle editor footer", () => {
+    expect(composerOnScreen(PI_COMPOSER, readiness)).toBe(true);
+    expect(HARNESS_READINESS.pi?.composer.length).toBeGreaterThan(0);
+  });
+
+  it("delivers once the idle composer footer is on screen", () => {
+    const h = startDelivery("refactor the picker", { harness: "pi" });
+    h.delivery.onOutput(PI_COMPOSER);
+    h.clock.advance(PROFILE.quietGapMs);
+
+    expect(h.writes[0]).toBe("refactor the picker");
+    h.delivery.onOutput("refactor the picker");
+    h.clock.advance(submitPauseMs("refactor the picker", PROFILE) + PROFILE.quietGapMs);
+    expect(h.writes.at(-1)).toBe("\r");
+    expect(h.delivery.currentPhase).toBe("delivered");
   });
 });
 
@@ -1208,11 +1294,12 @@ describe("HarnessPromptDelivery", () => {
 describe("HARNESS_READINESS", () => {
   it("gates only the harnesses whose composer somebody has actually read", () => {
     // The table is still the ONLY thing that turns any of this on, and the
-    // default is still the pre-229 path. What changed in issues 232 and 277 is
-    // which harnesses have a row, not the rule for getting one: a screen has to
-    // have been looked at. All four shipped harnesses now have been, so what is
-    // left on the default is a harness nobody has written yet — which is the
-    // case the empty default is actually for.
+    // default is still the pre-229 path. What changed in issues 232 and 277
+    // (and ADO #4987 for pi) is which harnesses have a row, not the rule for
+    // getting one: a screen has to have been looked at. All five shipped
+    // harnesses now have been, so what is left on the default is a harness
+    // nobody has written yet — which is the case the empty default is actually
+    // for.
     expect(readinessFor("invented-tomorrow")).toEqual({
       composer: [],
       confirmEcho: false,
@@ -1225,6 +1312,7 @@ describe("HARNESS_READINESS", () => {
       "codex",
       "cursor-cli",
       "opencode",
+      "pi",
     ]);
   });
 
@@ -1279,6 +1367,12 @@ describe("HARNESS_READINESS", () => {
     expect(composerOnScreen(CODEX_IDLE, readiness)).toBe(true);
     // The 72 bytes before it are capability probes with no text in them.
     expect(composerOnScreen(CODEX_BOOT, readiness)).toBe(false);
+  });
+
+  it("recognises pi's composer footer and not its project-trust dialog (ADO #4987)", () => {
+    const readiness = readinessFor("pi");
+    expect(composerOnScreen(PI_COMPOSER, readiness)).toBe(true);
+    expect(composerOnScreen(PI_TRUST_DIALOG, readiness)).toBe(false);
   });
 
   it("reads no composer on the trust dialog codex swallows prompts into", () => {

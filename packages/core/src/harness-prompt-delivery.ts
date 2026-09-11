@@ -327,7 +327,14 @@ export type BlockingDialogMatch = {
 export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
   {
     id: "folder-trust",
-    harnesses: ["claude-code", "cursor-cli"],
+    // `pi` is here as defence in depth for ADO #4987: the preferred path is
+    // the global extension answering `project_trust` (ADR 0040), so this
+    // screen should not appear on an Actana spawn. If it does — extension
+    // missing, marker taken, hand-written argv — Pi's menu is arrow-keyed
+    // (`→ Trust` / `Do not trust`), `OPTION_LINE` finds no digit, and
+    // delivery abandons with `needs-input` rather than typing the prompt
+    // into the dialog. Same shape as cursor-cli's letter-keyed trust screen.
+    harnesses: ["claude-code", "cursor-cli", "pi"],
     // `workspace|project|repo` join the nouns because they are what a vendor
     // other than Anthropic is as likely to call the same thing. Widening the
     // *nouns* rather than dropping the `trust` anchor keeps the pairing that
@@ -718,6 +725,16 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   },
   codex: {
     composer: [/ask\s+codex\s+to\s+do\s+anything/i],
+    confirmEcho: true,
+    maxPromptWrites: 3,
+  },
+  // Pi's editor has no placeholder text — the listening screen is an empty
+  // bordered box above a footer that always shows context usage as `N%/M`
+  // (captured on 0.85.1: `0.0%/0 (auto)`). That pattern is absent from the
+  // "Trust project folder?" dialog, so it is a real readiness gate and not a
+  // false positive on the screen delivery must not type into (ADO #4987).
+  pi: {
+    composer: [/\d+(\.\d+)?%\//],
     confirmEcho: true,
     maxPromptWrites: 3,
   },
