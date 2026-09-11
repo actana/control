@@ -42,6 +42,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import {
   HOOK_HARNESS_ENV,
   HOOK_MISS_LOG_ENV,
@@ -55,21 +56,6 @@ export const PI_EXTENSION_MARKER = "@actana-control-managed";
 
 /** Filename under Pi's global extensions folder. */
 export const PI_EXTENSION_FILENAME = "actana-control.ts";
-
-/**
- * Resolve Pi's agent config directory the same way Pi itself does:
- * `$PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`.
- */
-export function piAgentDir(
-  env: NodeJS.ProcessEnv = process.env,
-  home: string = os.homedir(),
-): string {
-  const fromEnv = env.PI_CODING_AGENT_DIR?.trim();
-  if (fromEnv) {
-    return path.resolve(fromEnv.replace(/^~(?=$|[/\\])/, home));
-  }
-  return path.join(home, ".pi", "agent");
-}
 
 /** Absolute path of the managed extension file. */
 export function piExtensionPath(

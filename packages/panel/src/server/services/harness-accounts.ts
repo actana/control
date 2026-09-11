@@ -9,6 +9,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import type { Harness } from "@actana/shared/domain";
 import { MANAGED_HARNESSES } from "@actana/shared/harness-cli-config";
+import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import type { HarnessAccountStatus } from "~/shared/harness-launchers";
 import { readCodexOAuthCredentials } from "./provider-usage/codex-usage";
 import { readCursorUserId } from "./provider-usage/cursor-usage";
@@ -114,19 +115,10 @@ const PI_PROVIDER_API_KEY_ENVS = [
   "COPILOT_GITHUB_TOKEN",
 ] as const;
 
-/** Pi agent dir: `$PI_CODING_AGENT_DIR` when set, otherwise `~/.pi/agent`. */
-function piAgentDir(): string {
-  const fromEnv = process.env.PI_CODING_AGENT_DIR?.trim();
-  if (fromEnv) {
-    return path.resolve(fromEnv.replace(/^~(?=$|[/\\])/, homeDir()));
-  }
-  return path.join(homeDir(), ".pi", "agent");
-}
-
 /** True when `auth.json` holds at least one provider credential (api_key or oauth). */
 function hasPiStoredLogin(): boolean {
   try {
-    const raw = fs.readFileSync(path.join(piAgentDir(), "auth.json"), "utf8");
+    const raw = fs.readFileSync(path.join(piAgentDir(process.env, homeDir()), "auth.json"), "utf8");
     const json = JSON.parse(raw) as Record<string, unknown>;
     return Object.values(json).some((entry) => entry !== null && typeof entry === "object");
   } catch {
