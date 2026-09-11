@@ -389,13 +389,15 @@ cannot present — and it binds the Core's public host, not loopback.
 ## Hook installation at spawn
 
 `installHarnessHooks(harness, cwd)` (`harness-hooks.ts`) writes the workspace
-file each family reads:
+file each family reads — except Pi, which writes a global extension (ADR 0039):
 
 | Harness | File |
 | --- | --- |
 | `claude-code` | `<cwd>/.claude/settings.local.json` |
 | `codex` | `<cwd>/.codex/hooks.json` (matcher groups; the Core adds `--dangerously-bypass-hook-trust` at spawn, for its own hooks only) |
 | `cursor-cli` | `<cwd>/.cursor/hooks.json` (needs `"version": 1`, or the CLI ignores it) |
+| `opencode` | `<cwd>/.opencode/plugins/actana-control.js` |
+| `pi` | `~/.pi/agent/extensions/actana-control.ts` (or `$PI_CODING_AGENT_DIR/extensions/`; never the workspace) |
 
 An operator's own hooks are preserved; ours are tagged `_acManaged: true` so the
 next spawn replaces exactly what a previous spawn wrote. Entries the retired
@@ -413,6 +415,7 @@ which is a narrower question than whether they were installed:
 | `codex` | yes | no | fires since #290, but flipping this stands the Panel's fallback down — no ticket yet |
 | `cursor-cli` | yes | no | `beforeSubmitPrompt` doesn't fire in cursor-agent |
 | `opencode` | yes | yes | plugin; `chat.message` and `session.status` fire |
+| `pi` | yes | yes | global extension; `agent_start` fires (ADR 0039) |
 
 Only the third column exempts the terminal-input fallback below.
 
@@ -565,9 +568,11 @@ for the Core:
 | matcher groups | yes | no | no — the hooks file is never loaded |
 | matcher groups | yes | yes | **yes, on the first turn** |
 
-Three of the four families take a table of shell commands. OpenCode takes a
+Three of the five families take a table of shell commands. OpenCode takes a
 JavaScript plugin instead, and its writer is `harness-hooks-opencode.ts` — see
-[OpenCode](#opencode) below.
+[OpenCode](#opencode) below. Pi takes a TypeScript extension installed
+**globally** (not in the workspace), and its writer is `harness-hooks-pi.ts` —
+see [Pi](#pi) below.
 
 Each managed entry runs:
 
@@ -884,6 +889,56 @@ workspace it installs `@opencode-ai/plugin` into `<workspace>/.opencode/
 node_modules` and writes a `package.json` beside it. That is opencode's
 behaviour, not the Core's, and it happens even though this plugin imports
 nothing.
+
+### Pi
+
+Pi's extension point is a TypeScript extension (`export default function (pi)
+{ pi.on(…) }`), not a JSON hooks file — the same shape of work as OpenCode's
+plugin, with one placement difference that is load-bearing.
+
+A project-local `.pi/extensions/` folder is itself a resource that trips Pi's
+project-trust prompt. Until that prompt is answered the extension does not
+load: no turn-end signal (ADR 0033 D1), and a blocking dialog in front of
+prompt delivery. So `packages/core/src/harness-hooks-pi.ts` writes the
+extension into Pi's **global** folder — `~/.pi/agent/extensions/actana-control.ts`,
+or `$PI_CODING_AGENT_DIR/extensions/` when that env var is set — where Pi
+loads it before trust. That choice is [ADR 0039](adr/0039-pi-hooks-install-globally.md).
+
+The same global extension answers Pi's `project_trust` event with
+`{ trusted: "yes" }` (session-only, no `remember`) whenever Actana spawned the
+Session, so "Trust project folder?" never appears and prompt delivery never
+types into it. That policy is [ADR 0040](adr/0040-pi-project-trust-answered-by-extension.md).
+Defence in depth: `pi` is on the `folder-trust` row of `BLOCKING_DIALOGS` and
+has a `HARNESS_READINESS` composer marker (footer `N%/M`); if the dialog still
+shows, delivery abandons to `needs-input` rather than typing or hanging.
+
+The extension follows the same three rules as the other writers: tagged
+`@actana-control-managed` so the next spawn replaces exactly what the last one
+wrote and never an operator's neighbouring file, carrying no secret (URL,
+token and task id are read from the PTY's environment), and fail-soft — no
+`AC_HOOK_URL` means it registers no handlers, so a hand-run `pi` outside
+Actana posts nothing.
+
+What it maps, from Pi ≥ 0.84.4's extension API:
+
+| Pi signal | Posted as | Effect |
+| --- | --- | --- |
+| `project_trust` | _(answered in-process)_ | `{ trusted: "yes" }` — no dialog (ADR 0040); posts nothing |
+| `session_start` | `SessionStart` (+ session UUID) | captures the session id, no status change |
+| `input` (text stashed) + `agent_start` | `UserPromptSubmit` (+ prompt text) | `running`; captures the session id; names an unnamed Session |
+| `agent_settled` | `Stop` | `finished` |
+| `ui_prompt_start` | `QuestionRequest` | `needs-input` |
+| `ui_prompt_end` | `PermissionReplied` | back to `running` |
+
+Two details are load-bearing:
+
+- **`agent_settled` is the turn end, not `agent_end` or `turn_end`.** Pi may
+  auto-retry, compact, or run queued continuations after `agent_end`;
+  `turn_end` fires once per LLM response. `agent_settled` fires exactly once
+  when nothing is left — that is the ADR 0033 D1 obligation.
+- **`ui_prompt_*` covers extension dialogs, not a built-in permission gate.**
+  Pi itself never asks for permission; an operator-installed gate extension
+  that calls `ctx.ui.confirm` / `select` is what raises `needs-input`.
 
 ## What about a custom MCP?
 
