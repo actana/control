@@ -305,6 +305,42 @@ describe("harnessLaunchMode", () => {
       } satisfies Task),
     ).toBe("resume");
   });
+
+  it("resumes Pi only after a session UUID is captured and the task has started (ADO #4986)", () => {
+    const piSession = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "pi",
+        status: "ready",
+        claudeSessionId: null,
+      } satisfies Task),
+    ).toBe("new");
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "pi",
+        status: "running",
+        claudeSessionId: null,
+      } satisfies Task),
+    ).toBe("new");
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "pi",
+        status: "ready",
+        claudeSessionId: piSession,
+      } satisfies Task),
+    ).toBe("new");
+    expect(
+      harnessLaunchMode({
+        ...baseTask,
+        agent: "pi",
+        status: "finished",
+        claudeSessionId: piSession,
+      } satisfies Task),
+    ).toBe("resume");
+  });
 });
 
 describe("isHarnessResumeCommand", () => {
@@ -327,6 +363,10 @@ describe("isHarnessResumeCommand", () => {
       ),
     ).toBe(true);
     expect(isHarnessResumeCommand("codex", "codex --enable hooks --yolo")).toBe(false);
+    expect(
+      isHarnessResumeCommand("pi", "pi --session a1b2c3d4-e5f6-7890-abcd-ef1234567890"),
+    ).toBe(true);
+    expect(isHarnessResumeCommand("pi", "pi")).toBe(false);
   });
 });
 
@@ -348,5 +388,17 @@ describe("buildFreshHarnessLaunchCommand", () => {
       claudeSessionId: OPENCODE_SESSION_ID,
     } satisfies Task;
     expect(buildFreshHarnessLaunchCommand(task, OPENCODE_SESSION_ID)).toBe("opencode");
+  });
+
+  it("falls back to a fresh Pi session without --session (ADO #4986)", () => {
+    const task = {
+      ...baseTask,
+      agent: "pi",
+      status: "running",
+      claudeSessionId: "a1b2c3d4-e5f6-7890-abcd-ef1234567890",
+    } satisfies Task;
+    expect(buildFreshHarnessLaunchCommand(task, "a1b2c3d4-e5f6-7890-abcd-ef1234567890")).toBe(
+      "pi",
+    );
   });
 });

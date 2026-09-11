@@ -1069,6 +1069,10 @@ export function TerminalPane({
           elapsed < START_FAILURE_EXIT_MS
         ) {
           void (async () => {
+            // Codex / OpenCode / Pi report their own session ids on a capture
+            // hook. Clearing to null (not minting a Panel UUID) lets the next
+            // spawn start fresh and the next SessionStart refill the column
+            // (ADO #4986).
             const fresh =
               task.agent === "codex" || task.agent === "opencode" || task.agent === "pi"
                 ? null

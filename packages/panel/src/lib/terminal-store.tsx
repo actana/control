@@ -315,6 +315,10 @@ function baseCommandForTask(task: Task, model: string | null): string {
   }
 
   let sessionId = task.claudeSessionId;
+  // Codex, OpenCode and Pi mint their own session ids and report them on a
+  // capture hook (SessionStart / UserPromptSubmit). Do not invent a Panel
+  // UUID for them — a fabricated id would never match the harness's, and
+  // relaunch would never reach `pi --session <uuid>` (ADO #4986).
   if (!sessionId && task.agent !== "codex" && task.agent !== "opencode" && task.agent !== "pi") {
     sessionId = newSessionId();
     // The row for a Core's task lives on that Core, so the Panel's own
