@@ -101,6 +101,30 @@ No models matching "zzz"
     ]);
   });
 
+  it("reads Pi's no-provider notice as no models, not as a model row", () => {
+    // Real `pi --list-models` stdout on a machine with no provider set up
+    // (Pi 0.85.1). The first line has more than six tokens, so a count alone
+    // read it as provider "No", model "models".
+    const noProvider = [
+      "No models available. Use /login to log into a provider via OAuth or API key. See:",
+      "  /home/core/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md",
+      "  /home/core/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md",
+    ].join("\n");
+    expect(parsePiModelList(noProvider)).toEqual([]);
+  });
+
+  it("shows the Pi catalog when pi has no provider to list models from", async () => {
+    vi.mocked(runCli).mockResolvedValueOnce(
+      "No models available. Use /login to log into a provider via OAuth or API key. See:\n",
+    );
+
+    const result = await listAiRuntimeModels("pi");
+
+    expect(result.source).toBe("catalog");
+    expect(result.models.some((model) => model.id === "No/models")).toBe(false);
+    expect(result.models.some((model) => model.id === "anthropic/claude-sonnet-4-5")).toBe(true);
+  });
+
   it("uses live Pi models when pi --list-models succeeds", async () => {
     vi.mocked(runCli).mockResolvedValueOnce(
       [

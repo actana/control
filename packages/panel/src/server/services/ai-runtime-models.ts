@@ -57,34 +57,36 @@ export function parsePlainModelList(raw: string): AiModelOption[] {
   );
 }
 
+/** The thinking and images columns of a `pi --list-models` row. */
+const PI_FLAG_COLUMN = /^(yes|no)$/;
+
 /**
  * Parse `pi --list-models` padded table output.
  *
  * Upstream (`dist/cli/list-models.js`) prints a header row
  * (`provider  model  context  max-out  thinking  images`) then one row per
  * model. Columns are `padEnd`'d and joined with two spaces; when a column is
- * at full width the gap is still at least one whitespace token. Take the
- * first two whitespace-separated tokens as provider and model id — the form
- * `pi --model` accepts is `provider/id` (model ids may themselves contain
- * `/`, e.g. OpenRouter). Require six tokens so prose lines like "No models
- * matching…" are dropped. {@link parsePlainModelList} cannot keep these
- * lines because they contain spaces.
+ * at full width the gap is still at least one whitespace token. A model row
+ * is exactly six tokens whose last two — thinking and images — are `yes` or
+ * `no`. That one test drops the header and every line of prose Pi prints on
+ * stdout in place of a table ("No models available. Use /login …", "No models
+ * matching …"), which a token count alone lets through. The first two tokens
+ * are provider and model id — the form `pi --model` accepts is `provider/id`
+ * (model ids may themselves contain `/`, e.g. OpenRouter).
+ * {@link parsePlainModelList} cannot keep these lines because they contain
+ * spaces.
  */
 export function parsePiModelList(raw: string): AiModelOption[] {
   return dedupeModels(
     raw
       .split("\n")
       .map((line) => {
-        const tokens = line.trim().split(/\s+/).filter(Boolean);
-        // Real rows have six columns: provider, model, context, max-out,
-        // thinking, images. Prose ("No models matching…") has fewer.
-        if (tokens.length < 6) return null;
-        const [provider, model] = tokens;
-        // Skip the header row printed by dist/cli/list-models.js.
-        if (provider === "provider" && model === "model") return null;
-        const id = `${provider}/${model}`;
-        if (!isAiModelId(id)) return null;
-        return { id, label: id };
+        const tokens = line.trim().split(/\s+/);
+        if (tokens.length !== 6 || !tokens.slice(4).every((t) => PI_FLAG_COLUMN.test(t))) {
+          return null;
+        }
+        const id = `${tokens[0]}/${tokens[1]}`;
+        return isAiModelId(id) ? { id, label: id } : null;
       })
       .filter((model): model is AiModelOption => model !== null),
   );
