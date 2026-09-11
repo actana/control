@@ -57,6 +57,39 @@ export function parsePlainModelList(raw: string): AiModelOption[] {
   );
 }
 
+/**
+ * Parse `pi --list-models` padded table output.
+ *
+ * Upstream (`dist/cli/list-models.js`) prints a header row
+ * (`provider  model  context  max-out  thinking  images`) then one row per
+ * model. Columns are `padEnd`'d and joined with two spaces; when a column is
+ * at full width the gap is still at least one whitespace token. Take the
+ * first two whitespace-separated tokens as provider and model id — the form
+ * `pi --model` accepts is `provider/id` (model ids may themselves contain
+ * `/`, e.g. OpenRouter). Require six tokens so prose lines like "No models
+ * matching…" are dropped. {@link parsePlainModelList} cannot keep these
+ * lines because they contain spaces.
+ */
+export function parsePiModelList(raw: string): AiModelOption[] {
+  return dedupeModels(
+    raw
+      .split("\n")
+      .map((line) => {
+        const tokens = line.trim().split(/\s+/).filter(Boolean);
+        // Real rows have six columns: provider, model, context, max-out,
+        // thinking, images. Prose ("No models matching…") has fewer.
+        if (tokens.length < 6) return null;
+        const [provider, model] = tokens;
+        // Skip the header row printed by dist/cli/list-models.js.
+        if (provider === "provider" && model === "model") return null;
+        const id = `${provider}/${model}`;
+        if (!isAiModelId(id)) return null;
+        return { id, label: id };
+      })
+      .filter((model): model is AiModelOption => model !== null),
+  );
+}
+
 function redactDiscoveryError(value: string): string {
   return value
     .replace(/\b(sk-[A-Za-z0-9_-]{12,})\b/g, "sk-<redacted>")
@@ -87,7 +120,7 @@ async function liveModelOptions(
         cwd: os.tmpdir(),
         timeoutMs: MODEL_LIST_TIMEOUT_MS,
       });
-      return parsePlainModelList(raw);
+      return parsePiModelList(raw);
     }
     case "claude-code":
     case "codex":
