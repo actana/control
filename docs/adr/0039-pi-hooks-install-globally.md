@@ -1,6 +1,6 @@
 # Pi's status hooks install globally, not in the workspace
 
-> **Status: ACCEPTED.** Records the placement decision for the Pi hook family
+> **Status: PROPOSED.** Not accepted. Records the placement decision for the Pi hook family
 > added by ADO #4985. Depends on [ADR 0033](0033-turn-end-is-the-one-mandatory-harness-signal.md)
 > D1 (turn-end reporting is mandatory) and on the open-family rule in
 > [ADR 0013](0013-core-is-the-machine-harness-is-the-cli.md).

@@ -1,6 +1,6 @@
 # Pi's project-trust prompt is answered by the global extension
 
-> **Status: ACCEPTED.** Records the trust policy for ADO #4987. Depends on
+> **Status: PROPOSED.** Not accepted. Records the trust policy for ADO #4987. Depends on
 > [ADR 0039](0039-pi-hooks-install-globally.md) (the Actana extension is
 > already loaded before Pi decides trust) and on
 > [ADR 0026](0026-prompt-delivery-is-a-core-responsibility.md) (prompt delivery
