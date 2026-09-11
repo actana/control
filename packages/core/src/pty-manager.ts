@@ -27,6 +27,7 @@ import {
   type SpawnRequest,
 } from "@actana/shared/pty-spawn-policy";
 import { type PtyHookEnv } from "./pty-hook-env";
+import { HOOK_HARNESS_ENV } from "./harness-hook-env";
 import {
   HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
@@ -686,6 +687,10 @@ export class PtyCore {
           env[HOOK_URL_ENV] = hookEnv.apiUrl;
           env[HOOK_TOKEN_ENV] = hookEnv.token;
           env[HOOK_TASK_ID_ENV] = opts.taskId;
+          // Which harness this PTY is, so a hook file every run of that
+          // harness loads (Pi's global extension) can tell its own Session
+          // from a run nested inside another harness's Session.
+          if (plan.agent) env[HOOK_HARNESS_ENV] = plan.agent;
           // Where this Session's hooks record a POST the Core never acked
           // (issue 243). Absent, the command writes to /dev/null and the hook
           // is as fail-soft as it always was — just as invisible when it drops.

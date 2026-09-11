@@ -29,7 +29,7 @@
 
 // ─── Shared payload types ─────────────────────────────────────────────────────
 
-export type CoreLinkPtySpawnHarness = "claude-code" | "codex" | "cursor-cli" | "opencode";
+export type CoreLinkPtySpawnHarness = "claude-code" | "codex" | "cursor-cli" | "opencode" | "pi";
 
 export type CoreLinkBaseSpawnOptions = {
   taskId: string;

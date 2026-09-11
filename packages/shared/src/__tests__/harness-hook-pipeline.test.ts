@@ -476,6 +476,57 @@ describe("a turn end from a session this task never captured (issue 390)", () =>
   });
 });
 
+describe("Pi SessionStart captures the session UUID (ADO #4986)", () => {
+  // Pi's extension posts SessionStart with ctx.sessionManager.getSessionId()
+  // — that UUID is what `pi --session <uuid>` resumes. The Panel never mints
+  // a client-side id for Pi (same as Codex/OpenCode), so this capture is the
+  // only way the task row learns it. Without it, harnessLaunchMode stays on
+  // "new" and every relaunch starts a fresh conversation.
+  const PI_SESSION = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+
+  it("stores Pi's UUID on the task from SessionStart alone", () => {
+    const h = harness();
+    expect(h.task.claudeSessionId).toBeNull();
+
+    const result = h.post({
+      hook_event_name: "SessionStart",
+      session_id: PI_SESSION,
+      source: "startup",
+    });
+
+    // Capture runs before the no-status early return — `ignored` means no
+    // status write, not "skipped the session id". Same shape as OpenCode.
+    expect(result).toEqual({ outcome: "ignored", event: "SessionStart" });
+    expect(h.task.claudeSessionId).toBe(PI_SESSION);
+    expect(h.captured).toEqual([PI_SESSION]);
+    // SessionStart is capture-only — status stays ready until a turn starts.
+    expect(h.task.status).toBe("ready");
+    expect(h.writes).toEqual([]);
+  });
+
+  it("keeps the same UUID after a full turn so relaunch can resume", () => {
+    const h = harness();
+    h.post({
+      hook_event_name: "SessionStart",
+      session_id: PI_SESSION,
+      source: "startup",
+    });
+    h.post({
+      hook_event_name: "UserPromptSubmit",
+      session_id: PI_SESSION,
+      prompt: "say hello",
+    });
+    h.post({ hook_event_name: "Stop", session_id: PI_SESSION });
+
+    expect(h.task.claudeSessionId).toBe(PI_SESSION);
+    expect(h.task.status).toBe("finished");
+    expect(h.writes).toEqual(["running", "finished"]);
+    // Captured once on SessionStart; UserPromptSubmit with the same id does
+    // not re-write it.
+    expect(h.captured).toEqual([PI_SESSION]);
+  });
+});
+
 describe("matching-session Stop behaviour is unchanged (issue 390)", () => {
   it("finishes on a Stop carrying the captured session id", () => {
     const h = harness();

@@ -52,15 +52,15 @@ repos.
   <a href="https://cursor.com/cli" title="Cursor CLI — supported"><img src="docs/assets/harness/cursor-cli.png" width="44" height="44" alt="Cursor CLI"></a>
   &nbsp;
   <a href="https://opencode.ai" title="OpenCode — supported"><img src="docs/assets/harness/opencode.svg" width="44" height="44" alt="OpenCode"></a>
+  &nbsp;
+  <a href="https://github.com/earendil-works/pi" title="Pi — supported"><img src="docs/assets/harness/pi.svg" width="44" height="44" alt="Pi"></a>
   &nbsp;&nbsp;&nbsp;
   <a href="#supported-harnesses" title="Hermes — planned"><img src="docs/assets/harness/soon-hermes.svg" width="44" height="44" alt="Hermes (planned)"></a>
-  &nbsp;
-  <a href="#supported-harnesses" title="Pi — planned"><img src="docs/assets/harness/soon-pi.svg" width="44" height="44" alt="Pi (planned)"></a>
 </p>
 
 <p align="center">
-  <b>Claude Code · Codex · Cursor CLI · OpenCode</b><br>
-  <sub>work here today — <a href="#supported-harnesses">Hermes and Pi are next</a>, and the family is open</sub>
+  <b>Claude Code · Codex · Cursor CLI · OpenCode · Pi</b><br>
+  <sub>work here today — <a href="#supported-harnesses">Hermes is next</a>, and the family is open</sub>
 </p>
 
 <!-- Demo recording goes here once it exists. Deliberately empty until then. -->
@@ -154,8 +154,8 @@ what makes them coming soon.
 | <img src="docs/assets/harness/codex.svg" width="18" align="top" alt=""> **Codex** | `codex` | Supported | `--yolo` |
 | <img src="docs/assets/harness/cursor-cli.png" width="18" align="top" alt=""> **Cursor CLI** | `cursor-agent` | Supported | `--force` |
 | <img src="docs/assets/harness/opencode.svg" width="18" align="top" alt=""> **OpenCode** | `opencode` | Supported | — (none offered) |
+| <img src="docs/assets/harness/pi.svg" width="18" align="top" alt=""> **Pi** | `pi` | Supported | — (never prompts; always unattended) |
 | <img src="docs/assets/harness/soon-hermes.svg" width="18" align="top" alt=""> Hermes | — | *Coming soon* | — |
-| <img src="docs/assets/harness/soon-pi.svg" width="18" align="top" alt=""> Pi | — | *Coming soon* | — |
 
 The dashed rows are the planned additions recorded in
 [the domain model](docs/domain-model.md#harness) — the Panel already has a
@@ -166,7 +166,7 @@ appear as themselves rather than as a footnote.
 The family is open by design
 ([ADR 0013](docs/adr/0013-core-is-the-machine-harness-is-the-cli.md)):
 a Harness is one registry entry plus a launcher, and nothing in the Panel or the
-core-link is specific to any of the four supported today. Using one that is not
+core-link is specific to any of the five supported today. Using one that is not
 here? [Open an issue](https://github.com/actana/control/issues/new) — that is
 how a row gets added.
 

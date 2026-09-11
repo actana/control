@@ -17,7 +17,8 @@ export function harnessUsesPersistedSession(agent: Harness): boolean {
     agent === "claude-code" ||
     agent === "codex" ||
     agent === "cursor-cli" ||
-    agent === "opencode"
+    agent === "opencode" ||
+    agent === "pi"
   );
 }
 
@@ -47,7 +48,7 @@ export function harnessLaunchMode(task: Task): HarnessLaunchMode {
       ? "resume"
       : "new";
   }
-  if (task.agent === "codex") {
+  if (task.agent === "codex" || task.agent === "pi") {
     return task.claudeSessionId && task.status !== "ready" ? "resume" : "new";
   }
   return "new";
@@ -57,7 +58,7 @@ export function isHarnessResumeCommand(agent: Harness, command: string): boolean
   if (agent === "claude-code" || agent === "cursor-cli") {
     return command.includes("--resume");
   }
-  if (agent === "opencode") {
+  if (agent === "opencode" || agent === "pi") {
     return command.includes("--session");
   }
   if (agent === "codex") {
@@ -111,6 +112,19 @@ export function buildCodexCommand(opts: {
   return parts.join(" ");
 }
 
+export function buildPiCommand(opts: {
+  mode: HarnessLaunchMode;
+  sessionId?: string | null;
+  model?: AiModelId | null;
+}): string {
+  const parts = ["pi"];
+  if (opts.model) parts.push("--model", opts.model);
+  if (opts.mode === "resume" && opts.sessionId) {
+    parts.push("--session", opts.sessionId);
+  }
+  return parts.join(" ");
+}
+
 export function buildHarnessLaunchCommand(
   task: Task,
   sessionId: string,
@@ -143,6 +157,8 @@ export function buildHarnessLaunchCommand(
         skipPermissions,
         model,
       });
+    case "pi":
+      return buildPiCommand({ mode, sessionId, model });
     default:
       throw new Error(`unsupported agent for session launch: ${task.agent}`);
   }
@@ -171,6 +187,8 @@ export function buildFreshHarnessLaunchCommand(
         skipPermissions: harnessLaunchesWithSkipPermissions(task.agent),
         model,
       });
+    case "pi":
+      return buildPiCommand({ mode: "new", model });
     default:
       throw new Error(`unsupported agent for fresh session launch: ${task.agent}`);
   }

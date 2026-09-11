@@ -69,6 +69,7 @@ describe("hookEndpointSlug", () => {
     expect(hookEndpointSlug("codex")).toBe("codex");
     expect(hookEndpointSlug("cursor-cli")).toBe("cursor");
     expect(hookEndpointSlug("opencode")).toBe("opencode");
+    expect(hookEndpointSlug("pi")).toBe("pi");
     expect(hookEndpointSlug("claude-code")).toBe("claude");
     expect(hookEndpointSlug(undefined)).toBe("claude");
   });

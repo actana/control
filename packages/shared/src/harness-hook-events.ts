@@ -12,10 +12,10 @@ export const HARNESS_HOOK_EVENTS = {
   // SessionEnd hook, which also fires on /clear while the process lives on.
   sessionProcessExited: "MissionControlSessionEnded",
   permissionRequest: "PermissionRequest",
-  // The operator answered a permission prompt and the turn carries on. Only
-  // OpenCode reports this today: its plugin sees `permission.replied`, where
-  // Claude Code fires nothing at all when a permission is GRANTED and has to
-  // be healed by the next `PostToolUse` instead.
+  // The operator answered a permission prompt and the turn carries on.
+  // OpenCode reports this from `permission.replied`; Pi reports it from
+  // `ui_prompt_end`. Claude Code fires nothing at all when a permission is
+  // GRANTED and has to be healed by the next `PostToolUse` instead.
   permissionReplied: "PermissionReplied",
   questionRequest: "QuestionRequest",
   notification: "Notification",

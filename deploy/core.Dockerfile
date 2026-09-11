@@ -207,10 +207,10 @@ RUN --mount=type=bind,from=tarball,target=/mnt/tarball \
     tar -xzf "$1" -C /opt/actana --strip-components=1; \
     chown -R root:root /opt/actana
 
-# Harnesses (claude-code, codex, cursor-cli, opencode) are deliberately NOT
+# Harnesses (claude-code, codex, cursor-cli, opencode, pi) are deliberately NOT
 # baked (D9). They are ~1.15 GB of what would be a ~1.4 GB image, they add
 # about one finding between them, they ship on their own cadences and are
-# stale within days of any build, and baking them would redistribute four
+# stale within days of any build, and baking them would redistribute five
 # vendors' binaries under licences nobody has cleared. They install at runtime
 # — `actana setup --with-<id>`, `actana harnesses install <id>` — into $HOME,
 # which is the persistent volume, so they survive every image upgrade and

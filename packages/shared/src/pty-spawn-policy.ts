@@ -229,6 +229,11 @@ const HARNESS_ARG_RULES_BASE: Readonly<
     "--model": { value: {} },
     "--session": { value: {}, valuePrefix: "ses" },
   },
+  pi: {
+    "--model": { value: {} },
+    // Pi session ids are UUIDs (`ctx.sessionManager.getSessionId()`); no prefix.
+    "--session": { value: {} },
+  },
 };
 
 function withAutoModeFlags(

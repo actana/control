@@ -99,8 +99,8 @@ because we do not ship other people's branding for a Harness we have not built.
 | `cursor-cli.png` | supported | `packages/panel/public/cursor.png` — likewise |
 | `codex.svg` | supported | the OpenAI mark, path verbatim from Simple Icons (`SiOpenai` in `react-icons`, which `HarnessLogo.tsx` also uses) |
 | `opencode.svg` | supported | `packages/panel/public/opencode.svg`, geometry verbatim |
+| `pi.svg` | supported | placeholder π on a solid chip — Earendil ships no separate brand mark in-repo |
 | `soon-hermes.svg` | planned | placeholder — `H` |
-| `soon-pi.svg` | planned | placeholder — `π` |
 
 The chip is not decoration. Both raster marks are near-white
 (`#FDF3EE`, `#EDECEC`) because they are drawn for the app's dark surface, so on
@@ -109,7 +109,7 @@ same `#151b26` chip keeps the vendor artwork untouched — no recolouring — an
 makes one set that reads identically in both themes.
 
 The planned set is not a wishlist. It is exactly the roster recorded in
-[`domain-model.md` § Harness](../domain-model.md#harness) — `pi` and `hermes` —
+[`domain-model.md` § Harness](../domain-model.md#harness) — `hermes` —
 which is also what [ADR 0007](../adr/0007-scope-narrowing-and-rebrand.md) names
 as the reason the registry stays extensible. Adding a dimmed mark here is a
 roadmap claim on a public front page, so it follows the domain model rather

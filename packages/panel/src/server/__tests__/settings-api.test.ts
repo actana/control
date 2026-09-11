@@ -117,7 +117,7 @@ describe("settings API", () => {
     expect(response?.status).toBe(200);
     expect(await jsonBody(response!)).toMatchObject({
       harnessLauncherConfig: {
-        order: ["claude-code", "codex", "cursor-cli", "opencode"],
+        order: ["claude-code", "codex", "cursor-cli", "opencode", "pi"],
         hidden: [],
       },
     });
@@ -140,7 +140,7 @@ describe("settings API", () => {
 
     expect(update?.status).toBe(200);
     const expected = {
-      order: ["codex", "claude-code", "cursor-cli", "opencode"],
+      order: ["codex", "claude-code", "cursor-cli", "opencode", "pi"],
       hidden: ["opencode"],
     };
     expect(await jsonBody(update!)).toMatchObject({ harnessLauncherConfig: expected });
@@ -154,8 +154,8 @@ describe("settings API", () => {
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           harnessLauncherConfig: {
-            order: ["cursor-cli", "codex", "claude-code", "opencode"],
-            hidden: ["claude-code", "codex", "cursor-cli", "opencode"],
+            order: ["cursor-cli", "codex", "claude-code", "opencode", "pi"],
+            hidden: ["claude-code", "codex", "cursor-cli", "opencode", "pi"],
           },
         }),
       }),

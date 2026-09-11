@@ -99,6 +99,8 @@ routing around it.
 | [0036](adr/0036-the-beta-release-channel.md) | The beta release channel: a beta installs like a release, and the ref is the channel — **PROPOSED**, amends 0016 (D28, D29, D34, D35) and 0023 (D8, D9) |
 | [0037](adr/0037-one-version-per-line.md) | One version per line: where a version string is written, and what is authoritative — **PROPOSED**, amends 0023 (D3, D7), the two clauses 0036 §G left open |
 | [0038](adr/0038-a-core-has-several-addresses.md) | A Core has several addresses: multi-SAN certificates, and a per-pairing endpoint — **PROPOSED**, amends 0016 (D15, D18) and adds to 0034 |
+| [0039](adr/0039-pi-hooks-install-globally.md) | Pi's status hooks install globally, not in the workspace — so the turn-end signal loads before project trust — **PROPOSED**, depends on 0033 (D1) |
+| [0040](adr/0040-pi-project-trust-answered-by-extension.md) | Pi's project-trust prompt is answered by the global extension — no dialog and no `--approve` on Actana spawns — **PROPOSED**, depends on 0039 and 0026 |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

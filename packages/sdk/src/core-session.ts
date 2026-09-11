@@ -78,6 +78,7 @@ export const HARNESS_LAUNCH_COMMANDS: Readonly<Record<CoreLinkPtySpawnHarness, s
   codex: "codex --enable hooks",
   "cursor-cli": "cursor-agent",
   opencode: "opencode",
+  pi: "pi",
 };
 
 /**
@@ -111,6 +112,8 @@ export const HARNESS_SKIP_PERMISSION_FLAGS: Readonly<
   codex: "--yolo",
   "cursor-cli": "--force",
   opencode: null,
+  // Pi never asks; there is no flag. Same cell as OpenCode, opposite reason.
+  pi: null,
 };
 
 /** The flag that puts `harness` in auto mode, or null where it ships none. */

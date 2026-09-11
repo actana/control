@@ -33,6 +33,9 @@ export function HarnessLogo({
   if (agent === "opencode") {
     return <PngLogo src="/opencode.svg" alt={title ?? "OpenCode"} size={size} style={style} />;
   }
+  if (agent === "pi") {
+    return <PiMark size={size} style={style} title={title} />;
+  }
   return <ShellMark size={size} style={style} title={title} />;
 }
 
@@ -61,6 +64,40 @@ function PngLogo({
         ...style,
       }}
     />
+  );
+}
+
+function PiMark({
+  size,
+  style,
+  title,
+}: {
+  size: number;
+  style?: CSSProperties;
+  title?: string;
+}) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 16 16"
+      fill="currentColor"
+      style={style}
+      aria-hidden={title ? undefined : true}
+    >
+      {title ? <title>{title}</title> : null}
+      <text
+        x="8"
+        y="8"
+        textAnchor="middle"
+        dominantBaseline="central"
+        fontFamily="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace"
+        fontSize="12"
+        fontWeight="600"
+      >
+        π
+      </text>
+    </svg>
   );
 }
 

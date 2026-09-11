@@ -46,6 +46,7 @@ export function hookEndpointSlug(agent: string | undefined): string {
   if (agent === "codex") return "codex";
   if (agent === "cursor-cli") return "cursor";
   if (agent === "opencode") return "opencode";
+  if (agent === "pi") return "pi";
   return "claude";
 }
 

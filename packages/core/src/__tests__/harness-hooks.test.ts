@@ -15,6 +15,11 @@ import {
   OPENCODE_PLUGIN_MARKER,
   OPENCODE_PLUGIN_PATH,
 } from "../harness-hooks-opencode";
+import {
+  PI_EXTENSION_FILENAME,
+  PI_EXTENSION_MARKER,
+  piExtensionPath,
+} from "../harness-hooks-pi";
 
 describe("installing a harness's lifecycle hooks (issue 84)", () => {
   let cwd: string;
@@ -473,6 +478,77 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
       hookTrustBypassEarned: false,
     });
     expect(fs.readFileSync(file, "utf8")).toBe("export const Mine = async () => ({});\n");
+  });
+
+  it("writes Pi a global extension, because a workspace one would trip trust (ADO #4985)", () => {
+    // Pi loads project-local `.pi/extensions/` only after the trust prompt.
+    // Installing there would leave the turn-end signal unloaded and put a
+    // dialog in front of prompt delivery. Global under PI_CODING_AGENT_DIR
+    // (or ~/.pi/agent) loads before trust — ADR 0039.
+    const piDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-agent-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = piDir;
+    try {
+      expect(harnessSupportsHooks("pi")).toBe(true);
+      expect(installHarnessHooks("pi", cwd)).toEqual({
+        installed: true,
+        reportsTurnStart: true,
+        hookTrustBypassEarned: false,
+      });
+
+      const file = path.join(piDir, "extensions", PI_EXTENSION_FILENAME);
+      expect(file).toBe(piExtensionPath());
+      const extension = fs.readFileSync(file, "utf8");
+      expect(extension).toContain(PI_EXTENSION_MARKER);
+      expect(extension).toContain("/api/hooks/pi");
+      expect(extension).toContain(`process.env.${HOOK_URL_ENV}`);
+      expect(extension).toContain(`process.env.${HOOK_TOKEN_ENV}`);
+      expect(extension).toContain(`process.env.${HOOK_TASK_ID_ENV}`);
+      expect(extension).toContain('pi.on("agent_settled"');
+      expect(extension).toContain('pi.on("agent_start"');
+      expect(extension).toContain('pi.on("ui_prompt_start"');
+      // ADO #4987 / ADR 0040: answer project_trust before the dialog paints.
+      expect(extension).toContain('pi.on("project_trust"');
+      expect(extension).toContain('trusted: "yes"');
+      // Never in the workspace — that path is what trips the trust prompt.
+      expect(fs.existsSync(path.join(cwd, ".pi"))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(piDir, { recursive: true, force: true });
+    }
+  });
+
+  it("replaces its own Pi extension on the next spawn and leaves the operator's alone", () => {
+    const piDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-agent-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = piDir;
+    try {
+      const file = path.join(piDir, "extensions", PI_EXTENSION_FILENAME);
+      installHarnessHooks("pi", cwd);
+      installHarnessHooks("pi", cwd);
+      expect(fs.readFileSync(file, "utf8")).toContain(PI_EXTENSION_MARKER);
+
+      fs.writeFileSync(file, "export default function (pi) {}\n");
+      expect(installHarnessHooks("pi", cwd)).toEqual({
+        installed: false,
+        reportsTurnStart: false,
+        hookTrustBypassEarned: false,
+      });
+      expect(fs.readFileSync(file, "utf8")).toBe("export default function (pi) {}\n");
+
+      // An operator's neighbouring extension is never touched.
+      const theirs = path.join(piDir, "extensions", "mine.ts");
+      fs.writeFileSync(theirs, "export default function (pi) { /* mine */ }\n");
+      // Restore ours so a later spawn can write again.
+      fs.unlinkSync(file);
+      expect(installHarnessHooks("pi", cwd).installed).toBe(true);
+      expect(fs.readFileSync(theirs, "utf8")).toBe("export default function (pi) { /* mine */ }\n");
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(piDir, { recursive: true, force: true });
+    }
   });
 
   it("reports false rather than clobbering a settings file it could not read", () => {

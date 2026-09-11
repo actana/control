@@ -125,8 +125,45 @@ describe("harness status detection on the Core (issue 84)", () => {
 
   const rowStatus = () => coreQueryStore.getTask(TASK_ID)?.status;
   const rowTitle = () => coreQueryStore.getTask(TASK_ID)?.title;
+  const rowSessionId = () => coreQueryStore.getTask(TASK_ID)?.claudeSessionId;
   const events = (): CoreLinkEvent[] => readEventTail(0, 100);
   const kinds = () => events().map((e) => e.kind);
+
+  it("captures Pi's session UUID from SessionStart onto the task row (ADO #4986)", async () => {
+    // Pi's extension posts this exact shape; the Core must persist the UUID
+    // so relaunch can spell `pi --session <uuid>`. The Panel never mints one.
+    const piSession = "a1b2c3d4-e5f6-7890-abcd-ef1234567890";
+    expect(rowSessionId()).toBeNull();
+
+    const res = await fetch(
+      `${receiver.url}/api/hooks/pi?taskId=${TASK_ID}&hookEvent=SessionStart`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: `Bearer ${receiver.token}`,
+        },
+        body: JSON.stringify({
+          hook_event_name: "SessionStart",
+          session_id: piSession,
+          source: "startup",
+        }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, ignored: "SessionStart" });
+    expect(rowSessionId()).toBe(piSession);
+    expect(rowStatus()).toBe("ready");
+
+    await postHook({
+      hook_event_name: "UserPromptSubmit",
+      session_id: piSession,
+      prompt: "say hello",
+    });
+    await postHook({ hook_event_name: "Stop", session_id: piSession });
+    expect(rowStatus()).toBe("finished");
+    expect(rowSessionId()).toBe(piSession);
+  });
 
   it("moves ready → running when the operator submits a prompt", async () => {
     const res = await postHook({

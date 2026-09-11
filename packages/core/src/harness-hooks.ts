@@ -6,10 +6,11 @@
 // writer per harness family, and every per-harness difference stays inside this
 // Core process — the Panel learns only whether hooks went in (issue 84).
 //
-// Three of the four families take a table of shell commands, and their writers
-// are a few lines each. OpenCode's takes a JavaScript plugin instead, so its
-// writer lives next door in `harness-hooks-opencode.ts` (issue 230); the row it
-// occupies in `HOOK_FAMILIES` is the same shape as the others'.
+// Three of the five families take a table of shell commands, and their writers
+// are a few lines each. OpenCode takes a JavaScript plugin
+// (`harness-hooks-opencode.ts`, issue 230) and Pi takes a TypeScript extension
+// (`harness-hooks-pi.ts`, ADO #4985); the rows they occupy in `HOOK_FAMILIES`
+// are the same shape as the others'.
 //
 // Four rules the writers share:
 //
@@ -48,6 +49,7 @@ import {
 import { HARNESS_HOOK_TRUST_FLAGS } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
 import { installOpencodeHooks } from "./harness-hooks-opencode";
+import { installPiHooks } from "./harness-hooks-pi";
 
 /** Marks an entry this Core wrote, so the next spawn can replace just those. */
 const MANAGED_FLAG = "_acManaged";
@@ -442,6 +444,13 @@ const HOOK_FAMILIES: Record<string, HookFamily> = {
   // `session.status` goes `busy` — which is the one thing that earns a family
   // the right to stand the Panel's fallback down.
   opencode: { install: installOpencodeHooks, reportsTurnStart: true },
+  // Pi's extension point is a TypeScript extension, same shape of work as
+  // OpenCode's plugin, but it installs globally under `~/.pi/agent/extensions/`
+  // (respecting `PI_CODING_AGENT_DIR`) rather than in the workspace: a
+  // project-local `.pi/extensions/` trips Pi's trust prompt and would leave
+  // the turn-end signal unloaded until a human answers (ADR 0039).
+  // `agent_start` fires on turn start, so the Panel's fallback stands down.
+  pi: { install: installPiHooks, reportsTurnStart: true },
 };
 
 /**
