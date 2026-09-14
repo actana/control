@@ -636,7 +636,7 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.1.2
           cache: false
@@ -725,7 +725,7 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.1.2
           cache: false
@@ -797,7 +797,7 @@ jobs:
           node-version: 24.15.0
           package-manager-cache: false
 
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.1.2
           cache: false
@@ -889,7 +889,7 @@ jobs:
       # be installed. This is the same pair `release.yml`'s `npm` job carries
       # for the same script, and it is the only reason this job needs pnpm at
       # all: nothing else here builds anything.
-      - uses: pnpm/action-setup@0ebf47130e4866e96fce0953f49152a61190b271 # v6.0.9
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
         with:
           version: 11.1.2
           cache: false
