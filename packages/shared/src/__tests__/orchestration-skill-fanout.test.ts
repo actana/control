@@ -28,6 +28,7 @@ import {
   ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_NAMES,
 } from "../orchestration-skill-payload";
+import { piHomeMarkers } from "../pi-agent-dir";
 
 const REPO = path.resolve(import.meta.dirname, "..", "..", "..", "..");
 const read = (relative: string) => readFileSync(path.join(REPO, relative), "utf8");
@@ -109,14 +110,34 @@ describe("every Harness has a skill target (#265, ADR 0031 D4)", () => {
     }
   });
 
-  it("writes only into home-relative directories, never absolute ones", () => {
+  it("writes skills only into home-relative directories; markers may be absolute for Pi", () => {
+    // skillDir stays home-relative always. homeMarkers are home-relative for
+    // every harness except when Pi's `$PI_CODING_AGENT_DIR` sits outside home
+    // (#518 part 3) — Node's path.join then keeps the absolute segment, so the
+    // installer still finds it.
     for (const harness of HARNESSES) {
       const { skillDir, homeMarkers } = HARNESS_CLI_CONFIG[harness].skillTarget;
-      for (const segment of [skillDir, ...homeMarkers]) {
-        expect(segment.startsWith("/"), `${harness}: ${segment} is absolute`).toBe(false);
+      expect(skillDir.startsWith("/"), `${harness}: skillDir ${skillDir} is absolute`).toBe(false);
+      expect(skillDir.includes(".."), `${harness}: skillDir ${skillDir} escapes the home dir`).toBe(
+        false,
+      );
+      for (const segment of homeMarkers) {
+        if (path.isAbsolute(segment)) {
+          expect(harness, `${harness}: absolute marker ${segment}`).toBe("pi");
+          continue;
+        }
         expect(segment.includes(".."), `${harness}: ${segment} escapes the home dir`).toBe(false);
       }
     }
+  });
+
+  it("derives Pi's homeMarkers from piHomeMarkers (#518 part 3)", () => {
+    // Shared helper, not two hand-kept lists: both tables call piHomeMarkers()
+    // and the field-by-field sync below still holds them together.
+    expect(HARNESS_CLI_CONFIG.pi.skillTarget.homeMarkers).toEqual([...piHomeMarkers()]);
+    expect(CLI_TARGETS.find((row) => row.harness === "pi")!.homeMarkers).toEqual([
+      ...piHomeMarkers(),
+    ]);
   });
 });
 

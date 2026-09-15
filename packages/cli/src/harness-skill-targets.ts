@@ -17,6 +17,7 @@
 // path has the citation rather than a search engine. ADR 0031 D4 explains why
 // four harnesses resolve to two directories.
 
+import { piHomeMarkers } from "@actana/shared/pi-agent-dir";
 import type { SkillInstallTarget } from "./orchestration-skill-install.ts";
 
 export type HarnessSkillTargetRow = SkillInstallTarget & {
@@ -64,7 +65,8 @@ export const HARNESS_SKILL_TARGETS: readonly HarnessSkillTargetRow[] = [
   {
     harness: "pi",
     kind: "skill-dir",
-    homeMarkers: [".pi"],
+    // Same helper as packages/shared (ADR 0031 D8 sync + #518 part 3).
+    homeMarkers: piHomeMarkers(),
     skillDir: ".agents/skills",
     source:
       "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md — Global: `~/.pi/agent/skills/`, `~/.agents/skills/`",
