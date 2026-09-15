@@ -15,3 +15,50 @@ export function piAgentDir(
   if (fromEnv) return path.resolve(fromEnv.replace(/^~(?=$|[/\\])/, home));
   return path.join(home, ".pi", "agent");
 }
+
+/**
+ * Marker directories that mean "Pi is on this machine" for the skills fan-out
+ * (#518 part 3).
+ *
+ * Without `$PI_CODING_AGENT_DIR`, that is `~/.pi` — the same evidence the
+ * tables used before. With it set, it is the directory {@link piAgentDir}
+ * resolves to: home-relative when that path sits under `home`, absolute
+ * otherwise. `path.join(home, absoluteMarker)` still yields the absolute path
+ * (Node discards prior segments on an absolute join), so the installer needs
+ * no special case.
+ */
+export function piHomeMarkers(
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): readonly string[] {
+  if (!env.PI_CODING_AGENT_DIR?.trim()) return [".pi"];
+
+  const agentDir = piAgentDir(env, home);
+  const relative = path.relative(path.resolve(home), agentDir);
+  if (relative.length > 0 && !relative.startsWith("..") && !path.isAbsolute(relative)) {
+    return [relative.split(path.sep).join("/")];
+  }
+  return [agentDir];
+}
+
+/**
+ * Resolve Pi's homeMarkers on a skill-target table at call time.
+ *
+ * The shared / CLI fan-out tables keep a static `.pi` marker so
+ * `harness-cli-config` stays Node-free for the Panel. Node-side writers call
+ * this with `sanitizedProcessEnv()` (and the home they are writing under)
+ * before handing the table to the installer (#518 part 3 gate follow-up).
+ */
+export function withPiHomeMarkersResolved<
+  T extends { harness: string; homeMarkers: readonly string[] },
+>(
+  targets: readonly T[],
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): T[] {
+  return targets.map((target) =>
+    target.harness === "pi"
+      ? { ...target, homeMarkers: piHomeMarkers(env, home) }
+      : target,
+  );
+}

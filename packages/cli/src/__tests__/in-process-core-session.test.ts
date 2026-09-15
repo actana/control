@@ -55,6 +55,7 @@ import {
 } from "./cli-harness.ts";
 import {
   arrayEventLog,
+  awaitStage,
   unavailableEventLog,
   startInProcessCore,
   waitFor,
@@ -498,13 +499,22 @@ describe("actana session, against a Core in this process", () => {
     );
     // The turn ends once the delivery has been stamped — which is the ordering
     // a harness's Stop hook has: it cannot fire before the text arrives.
+    // Named stages (#517): under parallel vitest load a bare 60 s test timeout
+    // did not say whether the stamp or the CLI wait stalled. `waitFor` /
+    // `awaitStage` name the step; the budget matches #446's "give it room
+    // under full-suite contention" rather than serialising the file.
     await waitFor(
       () => eventLog.events.some((e) => e.kind === SESSION_DELIVERED_EVENT_KIND),
       "the write was stamped",
+      30_000,
     );
     endTurn("task_live", "finished");
 
-    const result = await run;
+    const result = await awaitStage(
+      run,
+      "the CLI wait settled after endTurn",
+      90_000,
+    );
     expect(result.code, result.err.join("\n")).toBe(EXIT_OK);
 
     // Two writes, verbatim, with the return as its own byte (ADR 0026).
@@ -529,10 +539,10 @@ describe("actana session, against a Core in this process", () => {
     // The transcript rides along, rendered, read while the Session is alive —
     // and it is the Core's replay ring, so it holds what came before the wait.
     expect(String(payload.screen)).toContain("done: 3 files changed");
-    // A minute, not thirty seconds: this one dials a real Core, runs a CLI
-    // command end to end and waits on a live event push, and `pnpm test` runs it
-    // beside five other packages' suites.
-  }, 60_000);
+    // Two and a half minutes (#517): named stages are 30 s + 90 s; the test
+    // budget stays above their sum so setup and assertion time under
+    // full-suite contention cannot fire Vitest's bare timeout first.
+  }, 150_000);
 
   it("waits as a verb, and refuses to wait on a Session with no harness running", async () => {
     const { eventLog, endTurn } = await coreWithSessions();

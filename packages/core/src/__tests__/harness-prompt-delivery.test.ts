@@ -327,13 +327,24 @@ const PI_TRUST_DIALOG = readFileSync(
 );
 
 /**
- * Pi 0.85.1's idle editor after `--approve`, captured off a live PTY. The
- * listening screen has no placeholder text; readiness matches the footer
- * context line (`0.0%/0 (auto)`), which this fixture carries and the trust
- * dialog above does not.
+ * Pi 0.85.1 with no provider credential — the "Warning: No models available…"
+ * screen. The idle footer `0.0%/0 (auto)` is still painted under it, so
+ * readiness alone would call this ready; the `no-models` dialog row stops
+ * delivery instead (ADO #4993 / #520).
+ */
+const PI_NO_MODELS = readFileSync(
+  path.resolve(__dirname, "fixtures/pi-0.85.1-composer.txt"),
+  "utf8",
+);
+
+/**
+ * Pi 0.85.1's idle editor after `--approve` with a provider configured,
+ * captured off a live PTY. The listening screen has no placeholder text;
+ * readiness matches the footer context line (`0.0%/1.0M (auto)`), which this
+ * fixture carries and the trust dialog above does not.
  */
 const PI_COMPOSER = readFileSync(
-  path.resolve(__dirname, "fixtures/pi-0.85.1-composer.txt"),
+  path.resolve(__dirname, "fixtures/pi-0.85.1-composer-ready.txt"),
   "utf8",
 );
 
@@ -816,11 +827,16 @@ describe("dialogsForHarness", () => {
     expect(dialogsForHarness("cursor-cli").map((d) => d.id)).toEqual(["folder-trust"]);
   });
 
-  it("gives pi the folder-trust spec as defence in depth (ADO #4987)", () => {
-    // Preferred path: the global extension answers `project_trust` (ADR 0040)
-    // and this screen never appears. The row is here so a spawn that still
-    // paints it abandons rather than typing the prompt into it.
-    expect(dialogsForHarness("pi").map((d) => d.id)).toEqual(["folder-trust"]);
+  it("gives pi the folder-trust and no-models specs (ADO #4987 / #520)", () => {
+    // Preferred path for trust: the global extension answers `project_trust`
+    // (ADR 0040) and that screen never appears. The folder-trust row is here
+    // so a spawn that still paints it abandons rather than typing into it.
+    // no-models covers the provider-less warning that shares the readiness
+    // footer (ADO #520).
+    expect(dialogsForHarness("pi").map((d) => d.id)).toEqual([
+      "folder-trust",
+      "no-models",
+    ]);
   });
 });
 
@@ -954,6 +970,43 @@ describe("Pi's project-trust prompt (ADO #4987)", () => {
     h.clock.advance(submitPauseMs("refactor the picker", PROFILE) + PROFILE.quietGapMs);
     expect(h.writes.at(-1)).toBe("\r");
     expect(h.delivery.currentPhase).toBe("delivered");
+  });
+});
+
+describe("Pi's no-models warning (ADO #4993 / #520)", () => {
+  const specs = dialogsForHarness("pi");
+  const readiness = readinessFor("pi");
+
+  it("recognises the warning screen and answers nothing on it", () => {
+    // No menu — recognition alone routes delivery to abandon / needs-input.
+    const match = matchBlockingDialog(PI_NO_MODELS, specs);
+    expect(match?.spec.id).toBe("no-models");
+    expect(readDialogOptions(PI_NO_MODELS)).toEqual([]);
+    expect(match?.answer).toBeNull();
+  });
+
+  it("still sees the readiness footer on the warning (hence the dialog row)", () => {
+    // Without `no-models`, readiness alone would treat this as ready and type.
+    expect(composerOnScreen(PI_NO_MODELS, readiness)).toBe(true);
+  });
+
+  it("does not match the no-models row on a logged-in composer", () => {
+    expect(matchBlockingDialog(PI_COMPOSER, specs)?.spec.id).not.toBe("no-models");
+    expect(matchBlockingDialog(PI_COMPOSER, specs)).toBeNull();
+  });
+
+  it("replays the warning into an abandoned delivery, writing nothing", () => {
+    // Before the row, this screen settled and typed while reporting delivered;
+    // the card sat on "Waiting for initial prompt…" and send --wait timed out.
+    const h = startDelivery("refactor the picker", { harness: "pi" });
+    h.delivery.onOutput(PI_NO_MODELS);
+    h.clock.advance(PROFILE.maxWaitMs * 2);
+
+    expect(h.writes).toEqual([]);
+    expect(h.delivery.currentPhase).toBe("abandoned");
+    expect(h.events).toContainEqual({ phase: "dialog-unreadable", dialog: "no-models" });
+    expect(h.events.at(-1)).toEqual({ phase: "abandoned", reason: "blocked by no-models" });
+    expect(h.events.some((e) => e.phase === "delivered")).toBe(false);
   });
 });
 
@@ -1373,6 +1426,9 @@ describe("HARNESS_READINESS", () => {
     const readiness = readinessFor("pi");
     expect(composerOnScreen(PI_COMPOSER, readiness)).toBe(true);
     expect(composerOnScreen(PI_TRUST_DIALOG, readiness)).toBe(false);
+    // The warning fixture also carries the footer — readiness alone is not
+    // enough; see the no-models dialog tests (ADO #520).
+    expect(composerOnScreen(PI_NO_MODELS, readiness)).toBe(true);
   });
 
   it("reads no composer on the trust dialog codex swallows prompts into", () => {

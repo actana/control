@@ -39,6 +39,11 @@ installs. It is inert unless `AC_HOOK_URL` is set and `AC_HOOK_HARNESS` is
 `pi` (ADR 0039 D2), so a hand-run `pi` — or one nested in another harness's
 Session — still gets the interactive prompt.
 
+*Amended 2026-09-15 (#519 / PR follow-up):* trust is no longer unconditional
+for every Actana-spawned Pi. The handler returns `{ trusted: "yes" }` only
+when `event.cwd` realpath-equals the spawn workspace exported as
+`AC_HOOK_CWD`; any other cwd falls through to Pi's `trust.json` / prompt.
+
 **D2 — The answer is session-only (`remember` is omitted).** Answering yes
 lets the Session proceed; writing `trust.json` behind the operator's back is
 the larger act ADR 0026 already rejected for "pre-mark the folder trusted in

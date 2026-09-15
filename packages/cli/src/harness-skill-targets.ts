@@ -64,6 +64,8 @@ export const HARNESS_SKILL_TARGETS: readonly HarnessSkillTargetRow[] = [
   {
     harness: "pi",
     kind: "skill-dir",
+    // Static default; ensureOrchestrationSkill resolves `$PI_CODING_AGENT_DIR`
+    // at call time (same shape as packages/shared — ADR 0031 D8 + #518 part 3).
     homeMarkers: [".pi"],
     skillDir: ".agents/skills",
     source:

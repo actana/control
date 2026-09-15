@@ -18,7 +18,7 @@ import { piExtensionSource } from "../harness-hooks-pi";
 
 type Post = { url: string; auth: string | undefined; body: Record<string, unknown> };
 
-type PiHandler = (event: unknown, ctx: unknown) => Promise<void> | void;
+type PiHandler = (event: unknown, ctx: unknown) => Promise<unknown> | unknown;
 
 type MockPi = {
   on: (event: string, handler: PiHandler) => void;
@@ -78,6 +78,7 @@ const WIRED = {
   AC_HOOK_TOKEN: "hook-token-pi",
   AC_HOOK_TASK_ID: "task_pi_1",
   AC_HOOK_HARNESS: "pi",
+  AC_HOOK_CWD: "/tmp/ac-pi-spawn-ws",
 };
 
 /** Posts are queued, not awaited by the harness — let the chain drain. */
@@ -198,14 +199,14 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     ]);
   });
 
-  it("answers project_trust yes without remembering (ADO #4987 / ADR 0040)", async () => {
+  it("answers project_trust yes for the spawn workspace without remembering (ADO #4987 / ADR 0040 / #519)", async () => {
     // Preferred path: the global extension answers before Pi paints
     // "Trust project folder?", so prompt delivery never sees the dialog.
     // Session-only — no `remember` — so trust.json is not written for the
-    // operator.
+    // operator. Scoped to AC_HOOK_CWD (ADO #4992 / #519).
     const pi = await loadExtension(WIRED);
     const result = await pi.handlers.project_trust?.(
-      { type: "project_trust", cwd: "/tmp/ws" },
+      { type: "project_trust", cwd: WIRED.AC_HOOK_CWD },
       { hasUI: true },
     );
     expect(result).toEqual({ trusted: "yes" });
@@ -213,6 +214,85 @@ describe("the Pi extension the Core writes (ADO #4985)", () => {
     await settle();
     // Answering trust posts nothing — it is a Pi decision, not a Core hook.
     expect(posts).toEqual([]);
+  });
+
+  it("does not answer project_trust for a different folder (ADO #4992 / #519)", async () => {
+    // A nested pi the agent starts in another directory inherits the hook
+    // env, including AC_HOOK_CWD of the parent Session. Returning undefined
+    // lets Pi fall through to trust.json / its own prompt for that folder.
+    const pi = await loadExtension(WIRED);
+    const result = await pi.handlers.project_trust?.(
+      { type: "project_trust", cwd: "/tmp/other-project" },
+      { hasUI: true },
+    );
+    expect(result).toBeUndefined();
+  });
+
+  it("treats a symlink to the spawn workspace as the same folder (ADO #4992 / #519)", async () => {
+    const real = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-trust-real-"));
+    const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-trust-link-"));
+    const link = path.join(linkParent, "ws-link");
+    fs.symlinkSync(real, link);
+    try {
+      const pi = await loadExtension({ ...WIRED, AC_HOOK_CWD: real });
+      const viaLink = await pi.handlers.project_trust?.(
+        { type: "project_trust", cwd: link },
+        { hasUI: true },
+      );
+      expect(viaLink).toEqual({ trusted: "yes" });
+
+      const piViaLink = await loadExtension({ ...WIRED, AC_HOOK_CWD: link });
+      const viaReal = await piViaLink.handlers.project_trust?.(
+        { type: "project_trust", cwd: real },
+        { hasUI: true },
+      );
+      expect(viaReal).toEqual({ trusted: "yes" });
+    } finally {
+      fs.rmSync(linkParent, { recursive: true, force: true });
+      fs.rmSync(real, { recursive: true, force: true });
+    }
+  });
+
+  it("treats a relative path that resolves to the spawn workspace as trusted (ADO #4992 / #519)", async () => {
+    const ws = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-trust-rel-"));
+    const previous = process.cwd();
+    try {
+      process.chdir(ws);
+      const pi = await loadExtension({ ...WIRED, AC_HOOK_CWD: ws });
+      const result = await pi.handlers.project_trust?.(
+        { type: "project_trust", cwd: "." },
+        { hasUI: true },
+      );
+      expect(result).toEqual({ trusted: "yes" });
+
+      const nested = path.join(ws, "nested");
+      fs.mkdirSync(nested);
+      process.chdir(nested);
+      const viaParent = await pi.handlers.project_trust?.(
+        { type: "project_trust", cwd: ".." },
+        { hasUI: true },
+      );
+      expect(viaParent).toEqual({ trusted: "yes" });
+
+      // A relative path that lands elsewhere must not be auto-trusted.
+      const other = await pi.handlers.project_trust?.(
+        { type: "project_trust", cwd: "." },
+        { hasUI: true },
+      );
+      expect(other).toBeUndefined();
+    } finally {
+      process.chdir(previous);
+      fs.rmSync(ws, { recursive: true, force: true });
+    }
+  });
+
+  it("does not answer project_trust when AC_HOOK_CWD is unset (ADO #4992 / #519)", async () => {
+    const pi = await loadExtension({ ...WIRED, AC_HOOK_CWD: undefined });
+    const result = await pi.handlers.project_trust?.(
+      { type: "project_trust", cwd: "/tmp/ws" },
+      { hasUI: true },
+    );
+    expect(result).toBeUndefined();
   });
 
   it("does not answer project_trust when AC_HOOK_URL is unset", async () => {

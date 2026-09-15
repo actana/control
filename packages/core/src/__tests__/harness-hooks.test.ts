@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
@@ -11,6 +11,7 @@ import {
   hookCommand,
   installHarnessHooks,
 } from "../harness-hooks";
+import { HOOK_CWD_ENV } from "../harness-hook-env";
 import {
   OPENCODE_PLUGIN_MARKER,
   OPENCODE_PLUGIN_PATH,
@@ -18,7 +19,10 @@ import {
 import {
   PI_EXTENSION_FILENAME,
   PI_EXTENSION_MARKER,
+  installPiHooks,
+  piExtensionFs,
   piExtensionPath,
+  piExtensionSource,
 } from "../harness-hooks-pi";
 
 describe("installing a harness's lifecycle hooks (issue 84)", () => {
@@ -507,15 +511,76 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
       expect(extension).toContain('pi.on("agent_settled"');
       expect(extension).toContain('pi.on("agent_start"');
       expect(extension).toContain('pi.on("ui_prompt_start"');
-      // ADO #4987 / ADR 0040: answer project_trust before the dialog paints.
+      // ADO #4987 / ADR 0040 / #519: answer project_trust for the spawn cwd.
       expect(extension).toContain('pi.on("project_trust"');
       expect(extension).toContain('trusted: "yes"');
+      expect(extension).toContain(`process.env.${HOOK_CWD_ENV}`);
+      expect(extension).toContain("realpathSync");
       // Never in the workspace — that path is what trips the trust prompt.
       expect(fs.existsSync(path.join(cwd, ".pi"))).toBe(false);
     } finally {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
       fs.rmSync(piDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes the Pi extension under the spawn env's PI_CODING_AGENT_DIR, not the daemon's (#518 part 1)", () => {
+    // The Core daemon may lack PI_CODING_AGENT_DIR while the login-shell
+    // overlay that sanitizedProcessEnv merges into the PTY has it. Writing
+    // against process.env then leaves Pi looking at an empty folder.
+    const daemonDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-daemon-"));
+    const spawnDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-spawn-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = daemonDir;
+    try {
+      const spawnEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        PI_CODING_AGENT_DIR: spawnDir,
+      };
+      expect(installHarnessHooks("pi", cwd, spawnEnv)).toEqual({
+        installed: true,
+        reportsTurnStart: true,
+        hookTrustBypassEarned: false,
+      });
+
+      const spawnFile = path.join(spawnDir, "extensions", PI_EXTENSION_FILENAME);
+      expect(spawnFile).toBe(piExtensionPath(spawnEnv));
+      expect(fs.existsSync(spawnFile)).toBe(true);
+      expect(fs.readFileSync(spawnFile, "utf8")).toContain(PI_EXTENSION_MARKER);
+      // Daemon path must stay untouched — that is what Pi would never load.
+      expect(fs.existsSync(path.join(daemonDir, "extensions", PI_EXTENSION_FILENAME))).toBe(
+        false,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(daemonDir, { recursive: true, force: true });
+      fs.rmSync(spawnDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Pi hooks uninstalled when the spawn-env extension path is not writable (#518 part 1)", () => {
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    // A regular file where the agent dir should be: mkdir of .../extensions fails.
+    const blocker = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-block-"));
+    const notADir = path.join(blocker, "not-a-dir");
+    fs.writeFileSync(notADir, "not a directory\n");
+    try {
+      const spawnEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        PI_CODING_AGENT_DIR: notADir,
+      };
+      expect(installHarnessHooks("pi", cwd, spawnEnv)).toEqual({
+        installed: false,
+        reportsTurnStart: false,
+        hookTrustBypassEarned: false,
+      });
+      expect(fs.existsSync(path.join(notADir, "extensions", PI_EXTENSION_FILENAME))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(blocker, { recursive: true, force: true });
     }
   });
 
@@ -544,6 +609,113 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
       fs.unlinkSync(file);
       expect(installHarnessHooks("pi", cwd).installed).toBe(true);
       expect(fs.readFileSync(theirs, "utf8")).toBe("export default function (pi) { /* mine */ }\n");
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(piDir, { recursive: true, force: true });
+    }
+  });
+
+  it("writes a changed Pi extension via temp+rename so readers never see a partial file (#518 part 2)", () => {
+    const piDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-atomic-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = piDir;
+    try {
+      const file = path.join(piDir, "extensions", PI_EXTENSION_FILENAME);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      // Managed but stale — forces the rename path rather than the skip path.
+      const stale = `// ${PI_EXTENSION_MARKER}\nexport default function (pi) { /* stale */ }\n`;
+      fs.writeFileSync(file, stale, "utf8");
+
+      const writeSpy = vi.spyOn(piExtensionFs, "writeFileSync");
+      const renameSpy = vi.spyOn(piExtensionFs, "renameSync");
+      try {
+        writeSpy.mockImplementation((target, data, encoding) => {
+          // While bytes land on the temp path, the live file must still be the
+          // previous complete contents — never a truncated rewrite of `file`.
+          expect(String(target)).not.toBe(file);
+          expect(fs.readFileSync(file, "utf8")).toBe(stale);
+          return fs.writeFileSync(target, data, encoding as BufferEncoding);
+        });
+        renameSpy.mockImplementation((from, to) => {
+          expect(String(to)).toBe(file);
+          expect(String(from)).not.toBe(file);
+          expect(fs.readFileSync(String(from), "utf8")).toBe(piExtensionSource("pi"));
+          expect(fs.readFileSync(file, "utf8")).toBe(stale);
+          return fs.renameSync(from, to);
+        });
+
+        expect(installPiHooks(cwd, "pi")).toBe(true);
+        expect(fs.readFileSync(file, "utf8")).toBe(piExtensionSource("pi"));
+        expect(writeSpy).toHaveBeenCalledTimes(1);
+        expect(renameSpy).toHaveBeenCalledTimes(1);
+        expect(
+          fs.readdirSync(path.dirname(file)).filter((name) => name.endsWith(".tmp")),
+        ).toEqual([]);
+      } finally {
+        writeSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(piDir, { recursive: true, force: true });
+    }
+  });
+
+  it("skips rewriting the Pi extension when on-disk content already matches (#518 part 2)", () => {
+    const piDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-skip-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = piDir;
+    try {
+      const file = path.join(piDir, "extensions", PI_EXTENSION_FILENAME);
+      expect(installPiHooks(cwd, "pi")).toBe(true);
+      const before = fs.readFileSync(file, "utf8");
+      expect(before).toBe(piExtensionSource("pi"));
+      const beforeStat = fs.statSync(file);
+
+      const writeSpy = vi.spyOn(piExtensionFs, "writeFileSync");
+      const renameSpy = vi.spyOn(piExtensionFs, "renameSync");
+      try {
+        expect(installPiHooks(cwd, "pi")).toBe(true);
+        expect(writeSpy).not.toHaveBeenCalled();
+        expect(renameSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
+      expect(fs.readFileSync(file, "utf8")).toBe(before);
+      const afterStat = fs.statSync(file);
+      expect(afterStat.mtimeMs).toBe(beforeStat.mtimeMs);
+      expect(afterStat.ino).toBe(beforeStat.ino);
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(piDir, { recursive: true, force: true });
+    }
+  });
+
+  it("still refuses to clobber an operator-owned Pi extension at the managed path (#518 part 2)", () => {
+    const piDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-guard-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = piDir;
+    try {
+      const file = path.join(piDir, "extensions", PI_EXTENSION_FILENAME);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      const operatorOwned = "export default function (pi) { /* mine */ }\n";
+      fs.writeFileSync(file, operatorOwned, "utf8");
+
+      const writeSpy = vi.spyOn(piExtensionFs, "writeFileSync");
+      const renameSpy = vi.spyOn(piExtensionFs, "renameSync");
+      try {
+        expect(installPiHooks(cwd, "pi")).toBe(false);
+        expect(fs.readFileSync(file, "utf8")).toBe(operatorOwned);
+        expect(writeSpy).not.toHaveBeenCalled();
+        expect(renameSpy).not.toHaveBeenCalled();
+      } finally {
+        writeSpy.mockRestore();
+        renameSpy.mockRestore();
+      }
     } finally {
       if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
       else process.env.PI_CODING_AGENT_DIR = previous;
