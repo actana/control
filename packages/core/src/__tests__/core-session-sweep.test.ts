@@ -24,6 +24,19 @@ import {
 import { CoreTaskWriter } from "../core-task-writer";
 import { sweepStrandedSessions } from "../core-session-sweep";
 
+/**
+ * The log's tip, insisting there is a log. `getLastEventId` answers `null` for
+ * a store it cannot reach (#495 gate review, addendum blocker 7); in this file
+ * the store is a real temp DB, so a `null` is a broken fixture and not a case
+ * worth folding into `0` — folding it would make an assertion pass for the
+ * wrong reason.
+ */
+function lastEventId(): number {
+  const id = getLastEventId();
+  if (id === null) throw new Error("this test's event-log store is unavailable");
+  return id;
+}
+
 // The boot sweep (issue 243 part 3), against this Core's real SQLite and real
 // event log — the two things a stranded row is wrong in.
 //
@@ -148,7 +161,7 @@ describe("settling the Sessions a Core restart stranded", () => {
   it("settles a swept ready row without claiming its work finished", () => {
     insert("t-zombie", "ready");
     spawnPty("t-zombie");
-    const before = getLastEventId();
+    const before = lastEventId();
 
     sweepStrandedSessions({ listBootSweepTasks, writer });
 
@@ -169,7 +182,7 @@ describe("settling the Sessions a Core restart stranded", () => {
 
   it("appends the event a connected Panel re-renders the card from", () => {
     insert("t-running", "running");
-    const before = getLastEventId();
+    const before = lastEventId();
 
     sweepStrandedSessions({ listBootSweepTasks, writer });
 
@@ -184,10 +197,10 @@ describe("settling the Sessions a Core restart stranded", () => {
   it("is a no-op on the second boot, because the first one settled everything", () => {
     insert("t-running", "running");
     sweepStrandedSessions({ listBootSweepTasks, writer });
-    const after = getLastEventId();
+    const after = lastEventId();
 
     expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
-    expect(getLastEventId()).toBe(after);
+    expect(lastEventId()).toBe(after);
   });
 
   it("keeps sweeping when one row cannot be written", () => {
@@ -216,8 +229,8 @@ describe("settling the Sessions a Core restart stranded", () => {
   });
 
   it("sweeps nothing, and says nothing, on a Core with no stranded rows", () => {
-    const before = getLastEventId();
+    const before = lastEventId();
     expect(sweepStrandedSessions({ listBootSweepTasks, writer })).toEqual([]);
-    expect(getLastEventId()).toBe(before);
+    expect(lastEventId()).toBe(before);
   });
 });

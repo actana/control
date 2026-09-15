@@ -16,6 +16,23 @@ export const HOOK_URL_ENV = "AC_HOOK_URL";
 export const HOOK_TOKEN_ENV = "AC_HOOK_TOKEN";
 export const HOOK_TASK_ID_ENV = "AC_HOOK_TASK_ID";
 /**
+ * The harness this PTY was spawned as. A hook file that every run of a
+ * harness loads — Pi's extension is global (ADR 0039) — also loads in a run
+ * an agent started from inside another harness's Session, which inherits
+ * that Session's URL, token and task id. The writer compares this against
+ * its own harness, so a nested run posts nothing into a task it is not.
+ */
+export const HOOK_HARNESS_ENV = "AC_HOOK_HARNESS";
+/**
+ * The workspace this PTY was spawned in (`plan.cwd`). Pi's global extension
+ * answers `project_trust` only when the event's cwd resolves to this folder
+ * (ADO #4992 / #519); a nested `pi` in another directory, or a `/session`
+ * resume into a different project, falls through to Pi's own trust.json /
+ * prompt. Absolute path as the spawn path set it — the extension resolves
+ * both sides before comparing.
+ */
+export const HOOK_CWD_ENV = "AC_HOOK_CWD";
+/**
  * Where a hook records a POST this Core never acked (issue 243). Unset — a
  * Core that wired no miss log, an operator running the workspace by hand —
  * means the record is written to `/dev/null` by the command's own default, so

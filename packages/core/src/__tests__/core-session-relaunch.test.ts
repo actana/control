@@ -24,6 +24,19 @@ import {
 import { CoreTaskWriter } from "../core-task-writer";
 import { readySessionOnAgentSpawn } from "../core-session-relaunch";
 
+/**
+ * The log's tip, insisting there is a log. `getLastEventId` answers `null` for
+ * a store it cannot reach (#495 gate review, addendum blocker 7); in this file
+ * the store is a real temp DB, so a `null` is a broken fixture and not a case
+ * worth folding into `0` — folding it would make an assertion pass for the
+ * wrong reason.
+ */
+function lastEventId(): number {
+  const id = getLastEventId();
+  if (id === null) throw new Error("this test's event-log store is unavailable");
+  return id;
+}
+
 // The other half of issue 387, against this Core's real SQLite and real event
 // log. The sweep moves a bare Session OFF `ready`; this is what puts it back
 // when a harness is spawned for it again — and what must not touch a Session
@@ -179,7 +192,7 @@ describe("putting a relaunched Session back on ready", () => {
 
   it("appends the event a connected Panel re-renders the card from", () => {
     insert("t-bare", "disconnected");
-    const before = getLastEventId();
+    const before = lastEventId();
 
     relaunch("t-bare");
 
@@ -193,10 +206,10 @@ describe("putting a relaunched Session back on ready", () => {
   it("is a no-op the second time, because the first one moved the row", () => {
     insert("t-bare", "disconnected");
     expect(relaunch("t-bare")).toBe(true);
-    const after = getLastEventId();
+    const after = lastEventId();
 
     expect(relaunch("t-bare")).toBe(false);
-    expect(getLastEventId()).toBe(after);
+    expect(lastEventId()).toBe(after);
   });
 
   it("stays quiet about a Session this Core does not have", () => {

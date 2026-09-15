@@ -28,6 +28,7 @@ import {
   ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_NAMES,
 } from "../orchestration-skill-payload";
+import { withPiHomeMarkersResolved } from "../pi-agent-dir";
 
 const REPO = path.resolve(import.meta.dirname, "..", "..", "..", "..");
 const read = (relative: string) => readFileSync(path.join(REPO, relative), "utf8");
@@ -109,14 +110,43 @@ describe("every Harness has a skill target (#265, ADR 0031 D4)", () => {
     }
   });
 
-  it("writes only into home-relative directories, never absolute ones", () => {
+  it("writes skills only into home-relative directories; markers may be absolute for Pi", () => {
+    // skillDir stays home-relative always. homeMarkers are home-relative for
+    // every harness except when Pi's `$PI_CODING_AGENT_DIR` sits outside home
+    // (#518 part 3) — Node's path.join then keeps the absolute segment, so the
+    // installer still finds it.
     for (const harness of HARNESSES) {
       const { skillDir, homeMarkers } = HARNESS_CLI_CONFIG[harness].skillTarget;
-      for (const segment of [skillDir, ...homeMarkers]) {
-        expect(segment.startsWith("/"), `${harness}: ${segment} is absolute`).toBe(false);
+      expect(skillDir.startsWith("/"), `${harness}: skillDir ${skillDir} is absolute`).toBe(false);
+      expect(skillDir.includes(".."), `${harness}: skillDir ${skillDir} escapes the home dir`).toBe(
+        false,
+      );
+      for (const segment of homeMarkers) {
+        if (path.isAbsolute(segment)) {
+          expect(harness, `${harness}: absolute marker ${segment}`).toBe("pi");
+          continue;
+        }
         expect(segment.includes(".."), `${harness}: ${segment} escapes the home dir`).toBe(false);
       }
     }
+  });
+
+  it("keeps a static .pi marker in both tables; call sites resolve PI_CODING_AGENT_DIR", () => {
+    // Tables stay Node-free (Panel bundle). withPiHomeMarkersResolved at the
+    // Core/CLI fan-out entry points applies piHomeMarkers against the call-time
+    // env (#518 part 3 gate follow-up).
+    expect(HARNESS_CLI_CONFIG.pi.skillTarget.homeMarkers).toEqual([".pi"]);
+    expect(CLI_TARGETS.find((row) => row.harness === "pi")!.homeMarkers).toEqual([".pi"]);
+    expect(withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, {}, "/home/op").find((r) => r.harness === "pi")!.homeMarkers).toEqual([
+      ".pi",
+    ]);
+    expect(
+      withPiHomeMarkersResolved(
+        HARNESS_SKILL_TARGETS,
+        { PI_CODING_AGENT_DIR: "~/moved/agent" },
+        "/home/op",
+      ).find((r) => r.harness === "pi")!.homeMarkers,
+    ).toEqual(["moved/agent"]);
   });
 });
 
@@ -317,10 +347,15 @@ describe("both skills are generic and self-contained (ADR 0031 D9)", () => {
     // skill's prohibition has to be written harness-neutrally for the same
     // reason (ADR 0035 D3), which is why this sweeps both files rather than
     // exempting the new one.
+    //
+    // Match as a token, not a substring: a short id like `pi` otherwise hits
+    // ordinary English ("capital", "opinion") and the assertion becomes
+    // unusable the moment that Harness joins the registry.
     for (const [name, content] of everyShippedFile()) {
       for (const harness of HARNESSES) {
+        const token = new RegExp(`(?:^|[^A-Za-z0-9_-])${harness}(?:[^A-Za-z0-9_-]|$)`);
         expect(
-          content.includes(harness),
+          token.test(content),
           `${name} names the harness "${harness}" — selection is the caller's`,
         ).toBe(false);
       }

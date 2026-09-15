@@ -8,6 +8,7 @@ export const HARNESS_META: Record<Harness, { label: string; color: string; glyph
   codex: metaFor("codex"),
   "cursor-cli": metaFor("cursor-cli"),
   opencode: metaFor("opencode"),
+  pi: metaFor("pi"),
 };
 
 export const STATUS_META: Record<

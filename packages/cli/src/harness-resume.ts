@@ -33,6 +33,8 @@ import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
  *   - `opencode --session <id>`      a different flag entirely, and the Core
  *                                    additionally requires the value to start
  *                                    `ses`
+ *   - `pi --session <id>`            same flag as OpenCode; values are UUIDs
+ *                                    with no prefix requirement
  *
  * `dangerouslySkipPermissions` appends that harness's spelling of "do not stop
  * to ask me", and it is **read from {@link harnessAutoModeFlag} rather than
@@ -45,9 +47,8 @@ import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
  * The Core now checks the gesture both ways: the flag is accepted only on a
  * spawn that set the option, and since issue 177 the option is refused on a
  * command that lacks the flag. The CLI sends both or neither (see
- * `session-gateway.ts`). OpenCode has no such flag and gets none, which is not
- * an omission — it is the one harness whose auto-mode cell is genuinely empty,
- * and the Core reads it the same way.
+ * `session-gateway.ts`). OpenCode and Pi have no such flag and get none —
+ * OpenCode because the vendor ships none, Pi because it never asks.
  */
 export function harnessResumeCommand(
   harness: CoreLinkPtySpawnHarness,
@@ -68,6 +69,8 @@ export function harnessResumeCommand(
       return join(["cursor-agent", "--resume", sessionId], autoMode);
     case "opencode":
       return join(["opencode", "--session", sessionId], autoMode);
+    case "pi":
+      return join(["pi", "--session", sessionId], autoMode);
   }
 }
 

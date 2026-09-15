@@ -79,6 +79,7 @@ import { SessionNotificationsButton } from "~/components/views/SessionNotificati
 import { Toaster } from "sonner";
 import { MC_TOAST_CLASS_NAMES, MC_TOAST_CLOSE_ICON } from "~/lib/mc-toast";
 import { useSessionFinishNotifications } from "~/lib/use-session-finish-notifications";
+import { useEventStreamReconcile } from "~/lib/use-event-stream-reconcile";
 import {
   clearAppNotification,
   clearAppNotifications,
@@ -257,6 +258,11 @@ function Shell() {
   // Window idle: freezes decorative per-frame animations while the window is
   // blurred/hidden (see src/lib/window-idle.ts).
   useWindowIdleController();
+  // The Panel's SSE stream has no replay: a drop is a hole in what this tab
+  // knows, not a pause (issue 484). Re-read on the way back rather than trust
+  // rows last heard about before the gap. Mounted here, once, for the whole
+  // shell — the stream is shared, and so is everything it feeds.
+  useEventStreamReconcile();
   const { data: settings } = useSettings();
   const { data: projects } = useProjects();
   // The rail draws its badges from the Panel's own rows PLUS every Core's pins

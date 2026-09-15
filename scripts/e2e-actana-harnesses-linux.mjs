@@ -28,17 +28,20 @@
 //
 // Needs network from inside the container: unlike the other installer e2es
 // this one is NOT hermetic, because "installed via the vendor's official
-// method" is only worth asserting against the vendor's actual method. Three
-// agents are installed for real, each by a self-contained shell installer with
-// no npm or Node prerequisite. Codex is the one always declined here — its
-// official method is `npm install -g`, and an npm on the image would be a
-// prerequisite this test does not otherwise need.
+// method" is only worth asserting against the vendor's actual method. Four
+// agents are installed for real: OpenCode, Claude Code and Cursor CLI via
+// their shell installers, and Pi via `npm install -g` (the image carries
+// Node/npm from nodejs.org for that — noble's apt Node is 18, and Pi's
+// engines require >=22.19.0). Codex is the one always declined here — same
+// npm path as Pi, kept as the declined-offer case so the decline path stays
+// covered.
 
 import * as fs from "node:fs";
 import * as path from "node:path";
 
 import { parseArgs, stringFlag } from "./lib/cli.mjs";
 import { distroDockerfile, distroFlag, imageTag } from "./lib/container-matrix.mjs";
+import { BUNDLED_NODE_VERSION } from "./lib/core-tarball.mjs";
 import { dialAndListHarnessAvailability, makeDie } from "./lib/core-smoke.mjs";
 import {
   OPERATOR,
@@ -46,6 +49,40 @@ import {
   startSystemdContainer,
   waitForPort,
 } from "./lib/systemd-container.mjs";
+
+/**
+ * Systemd image plus a Node runtime new enough for Pi.
+ *
+ * Apt's `nodejs` on Ubuntu 24.04 is 18; Pi declares `engines.node >= 22.19.0`.
+ * Same footing as `deploy/core.Dockerfile`: nodejs.org tarball, sha256-checked.
+ */
+function harnessesE2eDockerfile(distroId, fail) {
+  const base = distroDockerfile(distroId, {
+    // `curl` / `unzip` — vendor shell installers. `util-linux` — `script(1)` so
+    // setup can be fed answers on a real PTY. `xz-utils` — Node.org's .tar.xz.
+    packages: ["curl", "ca-certificates", "unzip", "util-linux", "xz-utils"],
+    fail,
+  });
+  const nodeVersion = BUNDLED_NODE_VERSION;
+  return `${base}
+RUN set -eux; \\
+    case "$(dpkg --print-architecture)" in \\
+      amd64) node_arch=x64 ;; \\
+      arm64) node_arch=arm64 ;; \\
+      *) echo "unsupported architecture: $(dpkg --print-architecture)" >&2; exit 1 ;; \\
+    esac; \\
+    archive="node-v${nodeVersion}-linux-\${node_arch}.tar.xz"; \\
+    cd /tmp; \\
+    curl -fsSLO "https://nodejs.org/dist/v${nodeVersion}/\${archive}"; \\
+    curl -fsSLO "https://nodejs.org/dist/v${nodeVersion}/SHASUMS256.txt"; \\
+    grep " \${archive}\\$" SHASUMS256.txt | sha256sum -c -; \\
+    tar -xJf "\${archive}" -C /usr/local --strip-components=1 \\
+        --exclude CHANGELOG.md --exclude LICENSE --exclude README.md; \\
+    rm -f "\${archive}" SHASUMS256.txt; \\
+    node --version; \\
+    npm --version
+`;
+}
 
 const die = makeDie("agents-e2e");
 const log = (message) => console.log(`[agents-e2e] ${message}`);
@@ -74,15 +111,7 @@ async function main() {
     name: `actana-harnesses-e2e-${distro.id}-${process.pid}`,
     containerPort: CONTAINER_PORT,
     hostPort,
-    // `curl` and `unzip` are what the vendor installers themselves need — bar
-    // `tar`, which OpenCode's Linux path uses and the base image already has
-    // as an Essential package. `util-linux` carries `script(1)`, which is how
-    // this test gives the CLI a terminal to prompt on while still feeding it
-    // scripted answers.
-    dockerfile: distroDockerfile(distro.id, {
-      packages: ["curl", "ca-certificates", "unzip", "util-linux"],
-      fail: die,
-    }),
+    dockerfile: harnessesE2eDockerfile(distro.id, die),
     keep: args.keep === true,
     die,
     log,
@@ -104,7 +133,7 @@ async function main() {
   mustAsOperator(`cd ~ && tar -xzf ${tarballName}`);
 
   // ─── the machine really has no Harnesses ───
-  for (const command of ["claude", "codex", "cursor-agent", "opencode"]) {
+  for (const command of ["claude", "codex", "cursor-agent", "opencode", "pi"]) {
     if (onPath(command)) {
       die(`the image already has ${command} on it — nothing below would prove anything`);
     }
@@ -142,7 +171,9 @@ async function main() {
   } catch (err) {
     die(`the registry entry for ${rows[0].name} did not decode (${err.message})`);
   }
-  if (onPath("opencode")) die("--no-harnesses installed a Harness anyway", quiet.stdout.split("\n"));
+  if (onPath("opencode") || onPath("pi")) {
+    die("--no-harnesses installed a Harness anyway", quiet.stdout.split("\n"));
+  }
   log("`--no-harnesses` installed nothing");
 
   const piped = mustAsOperator(`${extracted}/bin/actana setup --public-host 127.0.0.1 </dev/null`);
@@ -152,7 +183,9 @@ async function main() {
   if (/^Install /m.test(piped.stdout)) {
     die("a setup with no terminal prompted anyway", piped.stdout.split("\n"));
   }
-  if (onPath("opencode")) die("a setup with no terminal installed a Harness unasked");
+  if (onPath("opencode") || onPath("pi")) {
+    die("a setup with no terminal installed a Harness unasked");
+  }
   log("a run with no terminal prompted for nothing and installed nothing");
 
   // ─── unknown ids fail with the list ───
@@ -160,7 +193,8 @@ async function main() {
   if (unknown.status !== 2) {
     die(`\`actana harnesses install gemini\` exited ${unknown.status}, expected 2`);
   }
-  if (!/opencode/.test(unknown.stdout + unknown.stderr)) {
+  const unknownText = unknown.stdout + unknown.stderr;
+  if (!/opencode/.test(unknownText) || !/\bpi\b/.test(unknownText)) {
     die("an unknown agent id was rejected without naming the supported ones");
   }
   log("an unknown agent id fails with the supported list");
@@ -178,21 +212,41 @@ async function main() {
   }
   log("opencode is on PATH");
 
-  // ─── the Core sees it, and did not restart to do so ───
+  // ─── Pi installs over npm, and the Core sees it without a restart ───
+  // npm -g defaults to /usr/local on bare metal; the operator has no sudo (by
+  // design of this image). The product itself falls back to --prefix
+  // "$HOME/.local" when that prefix is not writable (#521) — do not pre-set
+  // one here, or the canary would prove a machine shape real operators lack.
+  log("running the real Pi installer — npm install -g from the registry");
+  const installedPi = mustAsOperator("actana harnesses install pi");
+  if (!installedPi.stdout.includes("Installing Pi")) {
+    die("`actana harnesses install pi` did not say what it was running", installedPi.stdout.split("\n"));
+  }
+  if (!onPath("pi")) {
+    die("pi is not on the operator's PATH after installing it", installedPi.stdout.split("\n"));
+  }
+  log("pi is on PATH");
+
+  // ─── the Core sees them, and did not restart to do so ───
   const dialed = { ...blob, endpoint: `wss://127.0.0.1:${hostPort}` };
   const deadline = Date.now() + AVAILABILITY_TIMEOUT_MS;
   for (;;) {
     const availability = await dialAndListHarnessAvailability(dialed);
-    if (availability?.opencode?.status === "available") break;
+    if (
+      availability?.opencode?.status === "available" &&
+      availability?.pi?.status === "available"
+    ) {
+      break;
+    }
     if (Date.now() >= deadline) {
       die(
-        "the Core still does not see opencode as available: " +
-          JSON.stringify(availability?.opencode),
+        "the Core still does not see opencode and pi as available: " +
+          JSON.stringify({ opencode: availability?.opencode, pi: availability?.pi }),
       );
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-  log("a Panel dialling the core-link sees the new agent");
+  log("a Panel dialling the core-link sees the new agents");
 
   // The criterion is "without a daemon restart" — so the daemon that answered
   // has to be the same process that was running before the install.
@@ -203,14 +257,22 @@ async function main() {
   log(`the daemon never restarted (pid ${pidAfter})`);
 
   const status = mustAsOperator("actana status");
-  if (!status.stdout.includes("healthy") || !/opencode\s+available/.test(status.stdout)) {
-    die("`actana status` does not show a healthy Core with the new agent", status.stdout.split("\n"));
+  if (
+    !status.stdout.includes("healthy") ||
+    !/opencode\s+available/.test(status.stdout) ||
+    !/\bpi\s+available/.test(status.stdout)
+  ) {
+    die("`actana status` does not show a healthy Core with the new agents", status.stdout.split("\n"));
   }
   const again = mustAsOperator("actana harnesses install opencode");
   if (!/already installed/i.test(again.stdout)) {
     die("re-installing an agent did not report it as already installed", again.stdout.split("\n"));
   }
-  log("`actana status` shows the new agent, and re-installing it does nothing");
+  const againPi = mustAsOperator("actana harnesses install pi");
+  if (!/already installed/i.test(againPi.stdout)) {
+    die("re-installing Pi did not report it as already installed", againPi.stdout.split("\n"));
+  }
+  log("`actana status` shows the new agents, and re-installing them does nothing");
 
   // ─── --with-<harness> installs unattended ───
   log("running the real Claude Code installer through --with-claude-code");
@@ -230,8 +292,8 @@ async function main() {
   // `script -qec` runs the CLI under a real pty while stdin stays a pipe this
   // test writes the answers into. Lingering was enabled by the first setup and
   // is not asked about twice, so the prompts here are exactly the two offers:
-  // decline Codex (its official installer wants an npm this image has no other
-  // reason to carry), accept Cursor CLI.
+  // decline Codex (kept as the declined-offer case), accept Cursor CLI. Pi is
+  // already on PATH from the explicit install above, so it is not offered.
   log("answering setup's offers on a terminal — accepting Cursor CLI installs it for real");
   const offered = mustAsOperator(
     `printf 'n\\ny\\n' | script -qec ` +
@@ -247,8 +309,8 @@ async function main() {
       die(`setup never offered ${label} on a terminal`, offered.stdout.split("\n"));
     }
   }
-  // The two already on the machine must not be offered again.
-  for (const label of ["Claude Code", "OpenCode"]) {
+  // The three already on the machine must not be offered again.
+  for (const label of ["Claude Code", "OpenCode", "Pi"]) {
     if (offered.stdout.includes(`Install ${label}`)) {
       die(`setup offered ${label}, which is already installed`, offered.stdout.split("\n"));
     }
@@ -262,7 +324,7 @@ async function main() {
   // ─── and the Panel's view has followed all of it ───
   await waitForPort(hostPort, die);
   const finalAvailability = await dialAndListHarnessAvailability(dialed);
-  for (const agent of ["opencode", "claude-code", "cursor-cli"]) {
+  for (const agent of ["opencode", "claude-code", "cursor-cli", "pi"]) {
     if (finalAvailability?.[agent]?.status !== "available") {
       die(
         `the Core does not report ${agent} as available: ` +

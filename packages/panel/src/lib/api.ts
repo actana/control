@@ -4,6 +4,7 @@ import type { ProjectPathStatus, ProjectWithCounts } from "~/shared/projects";
 import type { CoreListResponse, CoreWithDial } from "~/shared/cores";
 import type { CorePairingIdentityResponse } from "~/shared/core-pairing";
 import { DEV_SERVER_ORIGIN } from "~/shared/dev-server";
+import { LOGIN_PATH, isAuthPath, withCarriedQuery } from "~/lib/auth-paths";
 import type { Binding, BindingMap, HotkeyAction } from "~/lib/keybindings/types";
 import type { UsageSummary } from "~/shared/token-usage";
 import type { ClaudeUsageLimits } from "~/shared/claude-usage-limits";
@@ -104,9 +105,12 @@ export class ApiError extends Error {
  */
 function redirectToLoginOnce(): void {
   if (typeof window === "undefined") return;
-  const { pathname } = window.location;
-  if (pathname === "/login" || pathname === "/setup") return;
-  window.location.assign("/login");
+  const { pathname, search } = window.location;
+  if (isAuthPath(pathname)) return;
+  // The third leg of the same round trip `documentAuthRedirect` and the two
+  // auth pages make, so it carries the query for the same reason (#406): an
+  // expiry under an open `/?step=redeem` should come back to `/?step=redeem`.
+  window.location.assign(withCarriedQuery(LOGIN_PATH, search));
 }
 
 async function req<T>(url: string, init?: RequestInit): Promise<T> {

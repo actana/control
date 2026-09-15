@@ -94,11 +94,13 @@ routing around it.
 | [0030](adr/0030-the-panel-is-a-dumb-pipe-for-file-bytes.md) | The Panel is a dumb pipe for file bytes, and it is the end that holds the credentials |
 | [0031](adr/0031-the-product-ships-one-skill.md) | The product ships one skill, and installs it into the operator's home — **PROPOSED**, amends 0006 |
 | [0032](adr/0032-one-actana-cli.md) | There is one `actana`, and it is both the Core manager and the client — supersedes #265 §6 and 0031 D8's two-binaries premise |
-| [0033](adr/0033-turn-end-is-the-one-mandatory-harness-signal.md) | Turn-end reporting is the one mandatory harness signal; turn-start, auto-mode flags and resume ids may never gate a feature |
+| [0033](adr/0033-turn-end-is-the-one-mandatory-harness-signal.md) | Turn-end reporting is the one mandatory harness signal; turn-start, auto-mode flags and resume ids may never gate a feature — D5 (#405) gives `send --wait` a default deadline and D6 (#396) ends a wait whose link dropped as unknown, both amending D4 |
 | [0035](adr/0035-a-second-skill-for-the-sub-agent-role.md) | A second skill for the sub-agent role, and it is eager — **PROPOSED**, depends on 0031 |
 | [0036](adr/0036-the-beta-release-channel.md) | The beta release channel: a beta installs like a release, and the ref is the channel — **PROPOSED**, amends 0016 (D28, D29, D34, D35) and 0023 (D8, D9) |
 | [0037](adr/0037-one-version-per-line.md) | One version per line: where a version string is written, and what is authoritative — **PROPOSED**, amends 0023 (D3, D7), the two clauses 0036 §G left open |
 | [0038](adr/0038-a-core-has-several-addresses.md) | A Core has several addresses: multi-SAN certificates, and a per-pairing endpoint — **PROPOSED**, amends 0016 (D15, D18) and adds to 0034 |
+| [0039](adr/0039-pi-hooks-install-globally.md) | Pi's status hooks install globally, not in the workspace — so the turn-end signal loads before project trust — **PROPOSED**, depends on 0033 (D1) |
+| [0040](adr/0040-pi-project-trust-answered-by-extension.md) | Pi's project-trust prompt is answered by the global extension — no dialog and no `--approve` on Actana spawns — **PROPOSED**, depends on 0039 and 0026 |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files

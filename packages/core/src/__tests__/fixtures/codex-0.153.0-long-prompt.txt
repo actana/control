@@ -1,0 +1,13 @@
+You are running as a sub-agent of an orchestrating Session on Core `developer`, project `control`.
+
+Task: implement the readiness row for this harness and nothing else.
+
+Rules you must follow:
+1. Work only in the worktree you were given. Do not touch main and do not touch any beta branch.
+2. Every commit message is Conventional Commits, and every body line is 132 characters or fewer.
+3. Do not force push, not with --force and not with --force-with-lease.
+4. Do not merge anything and do not mark the pull request ready for review.
+
+When you are finished, write your complete report to reports/impl-agent.md under your home
+directory, creating the reports directory if it does not exist. The file's final line must be
+exactly ACT-REPORT-END. After writing it, say only that the report is written.

@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { MANAGED_BLOCK_BEGIN } from "../operator-login-path";
 import { cleanupTempHomes, makeTempHome, readHomeFile } from "./temp-home";
 import {
@@ -20,6 +22,7 @@ const ALL_MISSING: CoreLinkHarnessAvailabilityMap = {
   codex: { status: "missing", reason: "not-found" },
   "cursor-cli": { status: "missing", reason: "not-found" },
   opencode: { status: "missing", reason: "not-found" },
+  pi: { status: "missing", reason: "not-found" },
 };
 
 const ALL_PRESENT: CoreLinkHarnessAvailabilityMap = {
@@ -27,6 +30,7 @@ const ALL_PRESENT: CoreLinkHarnessAvailabilityMap = {
   codex: { status: "available", path: "/usr/bin/codex" },
   "cursor-cli": { status: "available", path: "/usr/bin/cursor-agent" },
   opencode: { status: "available", path: "/usr/bin/opencode" },
+  pi: { status: "available", path: "/usr/bin/pi" },
 };
 
 let ran: string[][];
@@ -120,6 +124,7 @@ describe("missing detection", () => {
       "codex",
       "cursor-cli",
       "opencode",
+      "pi",
     ]);
     expect(missingHarnesses(ALL_PRESENT)).toEqual([]);
   });
@@ -164,7 +169,7 @@ describe("non-interactive runs", () => {
   it("installs every missing agent under --yes", async () => {
     const outcomes = await offerHarnessInstalls(options({ assumeYes: true }));
     expect(asked).toEqual([]);
-    expect(ran).toHaveLength(4);
+    expect(ran).toHaveLength(5);
     expect(outcomes.every((o) => o.status === "installed")).toBe(true);
   });
 
@@ -188,10 +193,10 @@ describe("non-interactive runs", () => {
 
 describe("interactive offers", () => {
   it("asks about each missing agent and installs the accepted ones", async () => {
-    answers = [true, false, false, true];
+    answers = [true, false, false, true, false];
     const outcomes = await offerHarnessInstalls(options({ interactive: true }));
 
-    expect(asked).toHaveLength(4);
+    expect(asked).toHaveLength(5);
     expect(asked[0]).toContain("Claude Code");
     expect(ran.map((call) => call[2])).toEqual([
       "curl -fsSL https://claude.ai/install.sh | bash",
@@ -199,12 +204,13 @@ describe("interactive offers", () => {
     ]);
     expect(outcomes.find((o) => o.agent === "codex")?.status).toBe("declined");
     expect(outcomes.find((o) => o.agent === "opencode")?.status).toBe("installed");
+    expect(outcomes.find((o) => o.agent === "pi")?.status).toBe("declined");
   });
 
   it("does not ask about an agent already requested with --with-<harness>", async () => {
-    answers = [false, false, false];
+    answers = [false, false, false, false];
     await offerHarnessInstalls(options({ interactive: true, requested: ["claude-code"] }));
-    expect(asked).toHaveLength(3);
+    expect(asked).toHaveLength(4);
     expect(asked.join("\n")).not.toContain("Claude Code");
     expect(ran).toHaveLength(1);
   });
@@ -216,7 +222,7 @@ describe("interactive offers", () => {
         availability: { ...ALL_MISSING, opencode: { status: "available" } },
       }),
     );
-    expect(asked).toHaveLength(3);
+    expect(asked).toHaveLength(4);
   });
 });
 
@@ -228,8 +234,8 @@ describe("vendor installer failures", () => {
 
     const failed = outcomes.find((o) => o.agent === "claude-code");
     expect(failed?.status).toBe("failed");
-    expect(ran).toHaveLength(4);
-    expect(outcomes.filter((o) => o.status === "installed")).toHaveLength(3);
+    expect(ran).toHaveLength(5);
+    expect(outcomes.filter((o) => o.status === "installed")).toHaveLength(4);
     // The operator is told where to get it by hand rather than left guessing.
     expect(out.join("\n")).toContain("https://docs.anthropic.com/en/docs/claude-code/setup");
   });
@@ -239,6 +245,42 @@ describe("vendor installer failures", () => {
       options({ assumeYes: true, system: fakeSystem({ "": 1 }) }),
     );
     expect(outcomes.every((o) => o.status === "failed")).toBe(true);
+  });
+});
+
+describe("npm global prefix fallback (#521)", () => {
+  it("rewrites Pi and Codex installs when the npm prefix is not writable", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-eacces-"));
+    const locked = path.join(root, "locked");
+    fs.mkdirSync(locked);
+    fs.chmodSync(locked, 0o555);
+    const previous = process.env.NPM_CONFIG_PREFIX;
+    process.env.NPM_CONFIG_PREFIX = path.join(locked, "npm-prefix");
+    try {
+      await offerHarnessInstalls(
+        options({
+          assumeYes: true,
+          availability: {
+            ...ALL_PRESENT,
+            pi: { status: "missing", reason: "not-found" },
+            codex: { status: "missing", reason: "not-found" },
+          },
+          requested: ["pi", "codex"],
+        }),
+      );
+      const commands = ran.map((call) => call[2] ?? "");
+      expect(commands.some((c) => c.includes('npm install -g --prefix "$HOME/.local"') && c.includes("pi-coding-agent"))).toBe(
+        true,
+      );
+      expect(commands.some((c) => c.includes('npm install -g --prefix "$HOME/.local"') && c.includes("@openai/codex"))).toBe(
+        true,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.NPM_CONFIG_PREFIX;
+      else process.env.NPM_CONFIG_PREFIX = previous;
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -260,6 +302,9 @@ describe("the operator's login PATH", () => {
     await offerHarnessInstalls(linking(home, { assumeYes: true }));
     expect(profile(home)).toContain(MANAGED_BLOCK_BEGIN);
     expect(profile(home)).toContain('"$HOME/.opencode/bin"');
+    // Pi/Codex npm fallback (#521) puts shims in ~/.local/bin; the managed
+    // block must name that directory so a login shell finds them.
+    expect(profile(home)).toContain('"$HOME/.local/bin"');
   });
 
   it("tells the operator which file it changed", async () => {
@@ -301,7 +346,7 @@ describe("the operator's login PATH", () => {
     process.env.HOME = home;
     try {
       const outcomes = await offerHarnessInstalls(options({ assumeYes: true }));
-      expect(outcomes.filter((o) => o.status === "installed")).toHaveLength(4);
+      expect(outcomes.filter((o) => o.status === "installed")).toHaveLength(5);
     } finally {
       if (realHome === undefined) delete process.env.HOME;
       else process.env.HOME = realHome;

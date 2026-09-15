@@ -11,6 +11,10 @@
  *
  * Keep OpenCode on 256-color rendering inside Actana Control by stripping
  * truecolor hints and disabling the incompatible probes.
+ *
+ * Pi uses `@earendil-works/pi-tui` (standard SGR / truecolor), not OpenTUI —
+ * no OSC 66 probe and no half-block logo path — so it inherits the default
+ * PTY env and needs no override here.
  */
 export function applyHarnessPtyEnv(
   env: Record<string, string>,

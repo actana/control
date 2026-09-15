@@ -75,7 +75,7 @@ export type CoreLinkTransportHandlers = {
   /** One event off the Core's monotonic log — replayed or live, same frame. */
   onEvent?: (event: CoreLinkEvent) => void;
   /** End of the `subscribe` replay tail; live push resumes after it. */
-  onEventsReplayed?: (lastEventId: number) => void;
+  onEventsReplayed?: (lastEventId: number, tipEventId?: number) => void;
   onAuthOk?: (frame: CoreLinkAuthOkFrame) => void;
   onAuthError?: (reason: CoreLinkAuthErrorReason) => void;
   /**
@@ -391,7 +391,13 @@ export class CoreLinkTransport {
       }
       case "eventsReplayed": {
         const lastEventId = typeof msg.lastEventId === "number" ? msg.lastEventId : 0;
-        this.guard(() => this.handlers.onEventsReplayed?.(lastEventId));
+        // Absent on a Core that has no event log to have an end (#395), and
+        // absent on one built before the field existed. Both are "this Core
+        // cannot tell me where its log ends", which is the answer a caller acts
+        // on — so it stays `undefined` rather than becoming a 0 that reads as a
+        // real, and very low, tip.
+        const tipEventId = typeof msg.tipEventId === "number" ? msg.tipEventId : undefined;
+        this.guard(() => this.handlers.onEventsReplayed?.(lastEventId, tipEventId));
         return;
       }
       case "subscribeAck":

@@ -16,6 +16,8 @@
 
 import log from "@actana/shared/log";
 import { HARNESS_SKILL_TARGETS } from "@actana/shared/harness-cli-config";
+import { withPiHomeMarkersResolved } from "@actana/shared/pi-agent-dir";
+import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 import {
   installOrchestrationSkill,
   type SkillInstallEntry,
@@ -53,10 +55,18 @@ import {
 export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
   let entries: SkillInstallEntry[];
   try {
+    // Pi's `$PI_CODING_AGENT_DIR` is resolved here against the sanitized
+    // process env (login-shell overlay included), never frozen from
+    // `process.env` at module load in the shared table (#518 part 3).
+    const targets = withPiHomeMarkersResolved(
+      HARNESS_SKILL_TARGETS,
+      sanitizedProcessEnv(),
+      homeDir,
+    );
     entries = ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
       installOrchestrationSkill({
         home: homeDir,
-        targets: HARNESS_SKILL_TARGETS,
+        targets,
         skillName,
         marker: ORCHESTRATION_SKILL_MARKER,
         files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},

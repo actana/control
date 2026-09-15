@@ -1,0 +1,55 @@
+# codex-cli 0.153.0 — the PTY read boundaries of the captures beside this file.
+#
+# One row per chunk, in arrival order: `<fixture> <offsetMs> <chars>`. The
+# chars column slices the fixture named in column one — JavaScript string
+# length, not bytes, because that is what a slice of the decoded capture is
+# indexed by — and the offset column is what the capture recorded for that
+# chunk. Together they let a test replay a capture the way the PTY delivered
+# it rather than as one blob, which is the only way the quiet gap falls where
+# it fell live. Issue 277: that ordering is the measurement, so the tests have
+# to exercise it rather than assert around it.
+#
+# `boot`, `composer` and `boot-settling` are one boot in a trusted directory;
+# `untrusted-boot` and `directory-trust` are one boot in a directory codex does
+# not trust. Offsets are per capture and are not comparable across the two.
+boot 62 55
+boot 169 17
+composer 171 738
+boot-settling 171 78
+boot-settling 171 78
+boot-settling 177 78
+boot-settling 183 78
+boot-settling 207 78
+boot-settling 214 99
+boot-settling 252 78
+boot-settling 252 78
+boot-settling 336 78
+boot-settling 338 78
+boot-settling 427 78
+boot-settling 489 64
+boot-settling 490 14
+boot-settling 499 78
+boot-settling 502 78
+boot-settling 503 78
+boot-settling 520 78
+boot-settling 596 28
+boot-settling 596 36
+boot-settling 596 6
+boot-settling 596 8
+boot-settling 597 28
+boot-settling 597 36
+boot-settling 597 6
+boot-settling 597 8
+untrusted-boot 197 17
+untrusted-boot 198 816
+untrusted-boot 198 156
+untrusted-boot 208 78
+untrusted-boot 229 78
+untrusted-boot 284 53
+untrusted-boot 285 128
+untrusted-boot 345 78
+untrusted-boot 479 156
+untrusted-boot 587 28
+untrusted-boot 589 50
+directory-trust 633 17
+directory-trust 638 592

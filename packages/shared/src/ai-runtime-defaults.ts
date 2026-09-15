@@ -81,6 +81,30 @@ export const AI_RUNTIME_MODEL_OPTIONS: Record<
     { id: "openai/gpt-5.5", label: "GPT-5.5", description: "OpenAI provider" },
     { id: "openai/gpt-5.4", label: "GPT-5.4", description: "OpenAI provider" },
   ],
+  // Live list comes from `pi --list-models` (provider/id). These entries are
+  // the catalog fallback when discovery fails or returns nothing.
+  pi: [
+    {
+      id: "anthropic/claude-sonnet-4-5",
+      label: "Claude Sonnet 4.5",
+      description: "Anthropic via Pi",
+    },
+    {
+      id: "anthropic/claude-opus-4-5",
+      label: "Claude Opus 4.5",
+      description: "Anthropic via Pi",
+    },
+    {
+      id: "openai/gpt-5.5",
+      label: "GPT-5.5",
+      description: "OpenAI via Pi",
+    },
+    {
+      id: "openai/gpt-5.4",
+      label: "GPT-5.4",
+      description: "OpenAI via Pi",
+    },
+  ],
 };
 
 export function isAiModelId(value: unknown): value is AiModelId {
@@ -136,6 +160,13 @@ export function buildAiPrintInvocation(
       return {
         cmd: "opencode",
         args: model ? ["run", "--model", model, prompt] : ["run", prompt],
+      };
+    case "pi":
+      return {
+        cmd: "pi",
+        args: model
+          ? ["-p", "--no-tools", "-nc", "--no-session", "--model", model, prompt]
+          : ["-p", "--no-tools", "-nc", "--no-session", prompt],
       };
   }
 }

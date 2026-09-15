@@ -16,6 +16,7 @@ import {
   installOrchestrationSkill,
   type SkillInstallTarget,
 } from "../orchestration-skill-install";
+import { piHomeMarkers } from "../pi-agent-dir";
 
 const MARKER = "x-actana-managed: true";
 const CONTENT = `---\nname: actana-sessions\n${MARKER}\n---\n\n# body\n`;
@@ -100,6 +101,74 @@ describe("only where the harness already lives (ADR 0031 D4)", () => {
       marker: MARKER,
       files: FILES,
     });
+    expect(entries[0]!.outcome).toBe("written");
+  });
+
+  it("treats PI_CODING_AGENT_DIR as Pi's presence marker when ~/.pi is absent (#518 part 3)", () => {
+    // Operator relocated Pi's config; no ~/.pi. The skills fan-out must still
+    // see Pi and copy into ~/.agents/skills.
+    const moved = path.join(home, "relocated-pi");
+    fs.mkdirSync(moved, { recursive: true });
+    expect(fs.existsSync(path.join(home, ".pi"))).toBe(false);
+
+    const target: SkillInstallTarget = {
+      harness: "pi",
+      kind: "skill-dir",
+      homeMarkers: piHomeMarkers({ PI_CODING_AGENT_DIR: moved }, home),
+      skillDir: ".agents/skills",
+    };
+    const entries = installOrchestrationSkill({
+      home,
+      targets: [target],
+      skillName: "actana-sessions",
+      marker: MARKER,
+      files: FILES,
+    });
+    expect(entries[0]!.outcome).toBe("written");
+    expect(fs.readFileSync(path.join(agentsDir(), "SKILL.md"), "utf8")).toBe(CONTENT);
+  });
+
+  it("finds Pi via an absolute PI_CODING_AGENT_DIR outside home (#518 part 3)", () => {
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), "actana-pi-outside-"));
+    try {
+      const target: SkillInstallTarget = {
+        harness: "pi",
+        kind: "skill-dir",
+        homeMarkers: piHomeMarkers({ PI_CODING_AGENT_DIR: outside }, home),
+        skillDir: ".agents/skills",
+      };
+      expect(path.isAbsolute(target.homeMarkers[0]!)).toBe(true);
+      const entries = installOrchestrationSkill({
+        home,
+        targets: [target],
+        skillName: "actana-sessions",
+        marker: MARKER,
+        files: FILES,
+      });
+      expect(entries[0]!.outcome).toBe("written");
+      expect(fs.existsSync(path.join(home, ".pi"))).toBe(false);
+      expect(fs.readFileSync(path.join(agentsDir(), "SKILL.md"), "utf8")).toBe(CONTENT);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("still recognises a default ~/.pi install for Pi", () => {
+    fs.mkdirSync(path.join(home, ".pi"), { recursive: true });
+    const target: SkillInstallTarget = {
+      harness: "pi",
+      kind: "skill-dir",
+      homeMarkers: piHomeMarkers({}, home),
+      skillDir: ".agents/skills",
+    };
+    const entries = installOrchestrationSkill({
+      home,
+      targets: [target],
+      skillName: "actana-sessions",
+      marker: MARKER,
+      files: FILES,
+    });
+    expect(target.homeMarkers).toEqual([".pi"]);
     expect(entries[0]!.outcome).toBe("written");
   });
 });

@@ -1043,7 +1043,7 @@ point that is not a check and not a publish. Eight chores on two crons:
 | `dev-tag-sweep` | Mondays, 07:00 UTC | deletes stale `pr-*` and `sha-*` tags from `panel-dev` and `core-dev` |
 | `descriptions` | Mondays, 07:00 UTC | syncs all four Docker Hub pages from `docs/images/` |
 | `dev-audit` | Mondays, 07:00 UTC | `pnpm audit --audit-level high` over the dev tree — **opens an issue** |
-| `harness-canary` | Mondays, 07:00 UTC | the four vendors' real installers — **opens an issue** |
+| `harness-canary` | Mondays, 07:00 UTC | the five vendors' real installers — **opens an issue** |
 
 A ninth job, `release-ref`, resolves the newest published release for
 `release-detector`; it is a job rather than a step only because a matrix job

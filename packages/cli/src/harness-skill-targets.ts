@@ -61,4 +61,15 @@ export const HARNESS_SKILL_TARGETS: readonly HarnessSkillTargetRow[] = [
       "https://opencode.ai/docs/skills — global paths: `~/.config/opencode/skills/<name>/SKILL.md`, `~/.claude/skills/<name>/SKILL.md`, `~/.agents/skills/<name>/SKILL.md`",
     verifiedOn: "2026-08-19",
   },
+  {
+    harness: "pi",
+    kind: "skill-dir",
+    // Static default; ensureOrchestrationSkill resolves `$PI_CODING_AGENT_DIR`
+    // at call time (same shape as packages/shared — ADR 0031 D8 + #518 part 3).
+    homeMarkers: [".pi"],
+    skillDir: ".agents/skills",
+    source:
+      "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md — Global: `~/.pi/agent/skills/`, `~/.agents/skills/`",
+    verifiedOn: "2026-09-10",
+  },
 ];

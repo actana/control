@@ -3,6 +3,7 @@ import { useState, type FormEvent } from "react";
 import { AuthCard } from "~/components/views/AuthCard";
 import { TextField } from "~/components/ui/TextField";
 import { api, ApiError } from "~/lib/api";
+import { withCarriedQuery } from "~/lib/auth-paths";
 import { MIN_PASSWORD_LENGTH } from "~/shared/operator-password";
 
 // First boot: the Panel serves this page, and only this page, until the single
@@ -33,7 +34,10 @@ function SetupPage() {
     setError(null);
     try {
       await api.setupOperator({ name, password });
-      window.location.assign("/");
+      // Carrying the query, for the same reason `login.tsx` does: creating the
+      // Operator is the *other* way out of the auth round trip, and a fix that
+      // survives sign-in but not first-boot is not a fix (#406).
+      window.location.assign(withCarriedQuery("/", window.location.search));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "setup failed");
       setBusy(false);

@@ -2200,6 +2200,7 @@ const NO_HARNESSES = {
   codex: { status: "missing" as const, reason: "not-found" },
   "cursor-cli": { status: "missing" as const, reason: "not-found" },
   opencode: { status: "missing" as const, reason: "not-found" },
+  pi: { status: "missing" as const, reason: "not-found" },
 };
 
 /** The vendor installer command lines a run shelled out to, in order. */
@@ -2235,7 +2236,7 @@ describe("agent offers during setup", () => {
   it("installs every missing agent under --yes", async () => {
     const system = fakeSystem();
     await runActanaCli(deps(["setup", "--yes"], system, { probeHarnesses: () => NO_HARNESSES }));
-    expect(vendorCommands(system)).toHaveLength(4);
+    expect(vendorCommands(system)).toHaveLength(5);
   });
 
   it("installs nothing under --no-harnesses", async () => {

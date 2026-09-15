@@ -353,12 +353,15 @@ export class CoreClient {
   private readonly dataListeners = new Set<(frame: CoreLinkDataFrame) => void>();
   private readonly exitListeners = new Set<(frame: CoreLinkExitFrame) => void>();
   private readonly eventListeners = new Set<(msg: { event: CoreLinkEvent }) => void>();
-  private readonly eventsReplayedListeners = new Set<(msg: { lastEventId: number }) => void>();
+  private readonly eventsReplayedListeners = new Set<
+    (msg: { lastEventId: number; tipEventId?: number }) => void
+  >();
   private readonly authOkListeners = new Set<(msg: { coreId: string; exp: number }) => void>();
   private readonly authErrorListeners = new Set<
     (msg: { reason: CoreLinkAuthErrorReason }) => void
   >();
   private readonly disconnectedListeners = new Set<(msg: { error?: string }) => void>();
+  private readonly establishedListeners = new Set<() => void>();
   private readonly reclaimedListeners = new Set<
     (msg: { replaced: boolean; taskIds: string[] }) => void
   >();
@@ -498,7 +501,8 @@ export class CoreClient {
           for (const cb of this.exitListeners) cb(frame);
         },
         onEvent: (event) => this.deliverEvent(event),
-        onEventsReplayed: (lastEventId) => this.deliverEventsReplayed(lastEventId),
+        onEventsReplayed: (lastEventId, tipEventId) =>
+          this.deliverEventsReplayed(lastEventId, tipEventId),
         onClose: (reason) => {
           this.ready = null;
           this.multiConnection = null;
@@ -568,6 +572,10 @@ export class CoreClient {
     // tail is delivered ahead of the answers to requests that were waiting.
     this.flushQueue();
     this.settleConnect();
+    // Last, so a listener hears about a connection that has already sent what it
+    // owed the Core — the reclaim, and on a durable client the subscribe that
+    // re-opens the event stream. See {@link onEstablished}.
+    for (const cb of this.establishedListeners) cb();
   }
 
   /** The socket is gone. A one-shot client is done; a durable one reconnects. */
@@ -616,6 +624,22 @@ export class CoreClient {
   /** True while a link is up and able to carry a frame. */
   isConnected(): boolean {
     return this.transport?.writable ?? false;
+  }
+
+  /**
+   * Will this client dial again on its own after a link it just lost?
+   *
+   * **False here, and that is the whole of a one-shot client's story**: it has no
+   * supervisor, so a dropped socket is the end of it and nothing above it should
+   * be written to wait one out. {@link DurableCoreClient} overrides it.
+   *
+   * Asked by anything that has to decide how long to keep waiting after a drop —
+   * `CoreSession`'s waits are the first (#396). The alternative was a fixed
+   * grace everywhere, which is either too short to cover a reconnect or long
+   * enough to be a hang on a client that will never have one.
+   */
+  willReconnect(): boolean {
+    return false;
   }
 
   /**
@@ -1008,8 +1032,16 @@ export class CoreClient {
    */
   subscribeEvents(lastEventId = 0): boolean {
     if (this.closed) return false;
-    this.eventsSubscribed = true;
-    return this.sendNow({ type: "subscribe", reqId: "", lastEventId }, "sub");
+    // Recorded only if the frame actually went out (#396). Setting it first made
+    // `isSubscribedToEvents()` answer true for a subscribe that was never sent —
+    // `sendNow` returns false when there is no writable connection to put it on
+    // — and the caller that consults it, `CoreSession`, reads it to decide
+    // whether it still owes the Core a subscribe. A lie there is a Session
+    // wired to an event stream that was never asked for: no status ever
+    // arrives, and every wait on it is one nothing will end.
+    const sent = this.sendNow({ type: "subscribe", reqId: "", lastEventId }, "sub");
+    if (sent) this.eventsSubscribed = true;
+    return sent;
   }
 
   /**
@@ -1025,7 +1057,7 @@ export class CoreClient {
   }
 
   /** Notified when a `subscribe` replay tail has been fully streamed. */
-  onEventsReplayed(cb: (msg: { lastEventId: number }) => void): Unsubscribe {
+  onEventsReplayed(cb: (msg: { lastEventId: number; tipEventId?: number }) => void): Unsubscribe {
     this.eventsReplayedListeners.add(cb);
     return () => this.eventsReplayedListeners.delete(cb);
   }
@@ -1047,6 +1079,25 @@ export class CoreClient {
   onAuthError(cb: (msg: { reason: CoreLinkAuthErrorReason }) => void): Unsubscribe {
     this.authErrorListeners.add(cb);
     return () => this.authErrorListeners.delete(cb);
+  }
+
+  /**
+   * Notified when a connection is **established**: the Core has said who it is
+   * and the link can be written to — authenticated, where a bearer was
+   * configured. Fires once per connection, so a reconnect fires it again.
+   *
+   * **This, and not {@link onReady}, is "the link is usable again"** (#396).
+   * `ready` is the Core's first unsolicited frame and lands *before* `auth` is
+   * answered, so a connection the Core is about to refuse for an expired bearer
+   * produces one. A caller that took `ready` as recovery would forgive an outage
+   * that never ended: nothing can be sent on that connection, no `subscribe`
+   * goes out — that rides {@link onConnectionEstablished} — and the next frame
+   * is the `authError` that closes it. Anything waiting on the Core's report
+   * must count the link as down for the whole of that.
+   */
+  onEstablished(cb: () => void): Unsubscribe {
+    this.establishedListeners.add(cb);
+    return () => this.establishedListeners.delete(cb);
   }
 
   /**
@@ -1079,8 +1130,12 @@ export class CoreClient {
   }
 
   /** Hand the end-of-replay marker on. Overridden where a cursor is kept. */
-  protected deliverEventsReplayed(lastEventId: number): void {
-    for (const cb of this.eventsReplayedListeners) cb({ lastEventId });
+  protected deliverEventsReplayed(lastEventId: number, tipEventId?: number): void {
+    // The key is omitted rather than carried as `undefined` when the Core named
+    // no tip, so a listener on a Core that cannot report one is handed exactly
+    // the object it was handed before #395.
+    const msg = tipEventId === undefined ? { lastEventId } : { lastEventId, tipEventId };
+    for (const cb of this.eventsReplayedListeners) cb(msg);
   }
 
   // ─── Typed frame methods ───────────────────────────────────────────────────

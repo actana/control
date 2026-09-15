@@ -9,6 +9,7 @@ const {
   clearAiRuntimeModelCache,
   listAiRuntimeModels,
   parseCursorModelList,
+  parsePiModelList,
   parsePlainModelList,
 } = await import("../ai-runtime-models");
 
@@ -49,6 +50,106 @@ bad model with spaces
     ]);
   });
 
+  it("parses Pi's padded --list-models table and skips the header row", () => {
+    // Captured shape from @earendil-works/pi-coding-agent dist/cli/list-models.js
+    // (padEnd columns joined with two spaces). parsePlainModelList drops every
+    // line because of the spaces between columns.
+    const captured = `provider    model                        context  max-out  thinking  images
+anthropic   claude-haiku-4-5             200K     64K      yes       yes   
+anthropic   claude-opus-4-5              200K     32K      yes       yes   
+anthropic   claude-sonnet-4-5            200K     64K      yes       yes   
+google      gemini-2.5-flash             1M       65.5K    yes       yes   
+google      gemini-2.5-pro               1M       65.5K    yes       yes   
+openai      gpt-4o                       128K     16.4K    no        yes   
+openai      gpt-5.5                      400K     128K     yes       no    
+openrouter  anthropic/claude-sonnet-4.5  200K     64K      yes       yes   
+No models matching "zzz"
+`;
+    expect(parsePiModelList(captured)).toEqual([
+      { id: "anthropic/claude-haiku-4-5", label: "anthropic/claude-haiku-4-5" },
+      { id: "anthropic/claude-opus-4-5", label: "anthropic/claude-opus-4-5" },
+      {
+        id: "anthropic/claude-sonnet-4-5",
+        label: "anthropic/claude-sonnet-4-5",
+      },
+      { id: "google/gemini-2.5-flash", label: "google/gemini-2.5-flash" },
+      { id: "google/gemini-2.5-pro", label: "google/gemini-2.5-pro" },
+      { id: "openai/gpt-4o", label: "openai/gpt-4o" },
+      { id: "openai/gpt-5.5", label: "openai/gpt-5.5" },
+      {
+        id: "openrouter/anthropic/claude-sonnet-4.5",
+        label: "openrouter/anthropic/claude-sonnet-4.5",
+      },
+    ]);
+    // Header must not become provider/model.
+    expect(
+      parsePiModelList(captured).some((m) => m.id === "provider/model"),
+    ).toBe(false);
+  });
+
+  it("parses Pi rows that have only a single space between full-width columns", () => {
+    // Defensive: still accept a single-space gap if pad/join ever collapses.
+    const exactWidth = [
+      "provider model              context max-out thinking images",
+      "anthropic claude-sonnet-4-5 200K    64K     yes      yes",
+    ].join("\n");
+    expect(parsePiModelList(exactWidth)).toEqual([
+      {
+        id: "anthropic/claude-sonnet-4-5",
+        label: "anthropic/claude-sonnet-4-5",
+      },
+    ]);
+  });
+
+  it("reads Pi's no-provider notice as no models, not as a model row", () => {
+    // Real `pi --list-models` stdout on a machine with no provider set up
+    // (Pi 0.85.1). The first line has more than six tokens, so a count alone
+    // read it as provider "No", model "models".
+    const noProvider = [
+      "No models available. Use /login to log into a provider via OAuth or API key. See:",
+      "  /home/core/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/providers.md",
+      "  /home/core/.local/lib/node_modules/@earendil-works/pi-coding-agent/docs/models.md",
+    ].join("\n");
+    expect(parsePiModelList(noProvider)).toEqual([]);
+  });
+
+  it("shows the Pi catalog when pi has no provider to list models from", async () => {
+    vi.mocked(runCli).mockResolvedValueOnce(
+      "No models available. Use /login to log into a provider via OAuth or API key. See:\n",
+    );
+
+    const result = await listAiRuntimeModels("pi");
+
+    expect(result.source).toBe("catalog");
+    expect(result.models.some((model) => model.id === "No/models")).toBe(false);
+    expect(result.models.some((model) => model.id === "anthropic/claude-sonnet-4-5")).toBe(true);
+  });
+
+  it("uses live Pi models when pi --list-models succeeds", async () => {
+    vi.mocked(runCli).mockResolvedValueOnce(
+      [
+        "provider   model               context  max-out  thinking  images",
+        "anthropic  claude-sonnet-4-5    200K     64K      yes       yes",
+      ].join("\n"),
+    );
+
+    await expect(listAiRuntimeModels("pi")).resolves.toEqual({
+      harness: "pi",
+      source: "cli",
+      models: [
+        {
+          id: "anthropic/claude-sonnet-4-5",
+          label: "anthropic/claude-sonnet-4-5",
+        },
+      ],
+    });
+    expect(runCli).toHaveBeenCalledWith(
+      "pi",
+      ["--list-models"],
+      expect.objectContaining({ timeoutMs: expect.any(Number) }),
+    );
+  });
+
   it("uses live Cursor models when the CLI list succeeds", async () => {
     vi.mocked(runCli).mockResolvedValueOnce("composer-2.5 - Composer 2.5\n");
 
@@ -68,6 +169,19 @@ bad model with spaces
     expect(result.source).toBe("catalog");
     expect(result.error).toBe("model discovery failed");
     expect(result.models.some((model) => model.id === "composer-2.5")).toBe(true);
+  });
+
+  it("falls back to the Pi catalog when live discovery fails", async () => {
+    vi.mocked(runCli).mockRejectedValueOnce(new Error("pi not found"));
+
+    const result = await listAiRuntimeModels("pi");
+
+    expect(result.harness).toBe("pi");
+    expect(result.source).toBe("catalog");
+    expect(result.error).toBe("model discovery failed");
+    expect(
+      result.models.some((model) => model.id === "anthropic/claude-sonnet-4-5"),
+    ).toBe(true);
   });
 
   it("dedupes concurrent live discovery for the same core", async () => {

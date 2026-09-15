@@ -347,6 +347,32 @@ export async function waitFor(
 }
 
 /**
+ * Await a promise, or fail naming the stage that stalled (#517).
+ *
+ * Vitest's bare "Test timed out in Nms" does not say whether the hang was the
+ * stamp, the turn end, or the CLI's own wait — which is exactly the diagnosis
+ * a reviewer needs when this suite flakes under parallel load. Same sentence
+ * shape as {@link waitFor}, so a timeout reads as one kind of failure.
+ */
+export async function awaitStage<T>(
+  promise: Promise<T>,
+  what: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting: ${what}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * An event log in an array, satisfying the port the Core writes through.
  *
  * In memory rather than the real SQLite store because the object outlives the
@@ -365,6 +391,28 @@ export type ArrayEventLog = EventLogPort & {
   events: CoreLinkEvent[];
   tailReads: number;
 };
+
+/**
+ * A store that is **wired and broken** — the state `eventLog: undefined` cannot
+ * express (#495 gate review, addendum blocker 7).
+ *
+ * `event-log-store.ts` degrades rather than throws: an unconfigured store, a DB
+ * the server process has not bootstrapped, a native binding that will not load,
+ * all leave `ensureConnection()` returning null. `appendEvent` then returns `0`
+ * without throwing and `getLastEventId` used to return `0` as well — a number
+ * indistinguishable from an empty log, and a perfectly usable floor. A client
+ * armed on it and waited for a row that could never be written.
+ *
+ * This is that Core: it answers every call, records nothing, and says `null`
+ * where it has nothing to say.
+ */
+export function unavailableEventLog(): EventLogPort {
+  return {
+    appendEvent: () => 0,
+    readEventTail: () => [],
+    getLastEventId: () => null,
+  };
+}
 
 export function arrayEventLog(): ArrayEventLog {
   const events: CoreLinkEvent[] = [];

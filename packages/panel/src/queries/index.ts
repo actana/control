@@ -27,6 +27,8 @@ export const queryKeys = {
   // `useCoreArchivedTaskCount`).
   coreArchivedTasks: (projectId: string, coreId: string) =>
     ["core-archived-tasks", coreId, projectId] as const,
+  /** Prefix over every Core's archived bucket, for a blanket invalidation. */
+  coreArchivedTasksAll: ["core-archived-tasks"] as const,
   coreArchivedTaskCount: (projectId: string, coreId: string) =>
     ["core-archived-task-count", coreId, projectId] as const,
   settings: ["settings"] as const,
@@ -40,6 +42,35 @@ export const queryKeys = {
   updateCheck: ["update-check"] as const,
 };
 
+/**
+ * What every project-scoped read asks of react-query, on top of the client
+ * defaults in `router.tsx`.
+ *
+ * The defaults are `staleTime: 30_000` with `refetchOnWindowFocus: false`
+ * (`src/router.tsx:198` and `:200`), and together they are what leaves a
+ * finished Session reading `running` (issue 484, symptom W2). Navigating away
+ * unmounts the board; navigating back mounts it again, and `refetchOnMount`'s
+ * default only refetches a query it considers STALE — so a return inside the
+ * 30s window is served the cached, pre-finish list and never asks the Core.
+ * Refocusing the tab does not ask either, because focus refetching is off.
+ * Nothing else covers the gap: the Core's events only reach this tab while the
+ * route that subscribes to them is mounted, which is exactly what it was not.
+ *
+ * `"always"` on both, and only here. Freshness matters for the rows the
+ * operator is looking at — a Session's status is a live fact about a machine,
+ * not a cached page — and it does not matter equally for usage rollups or the
+ * update check, which set their own long `staleTime` and are left alone. The
+ * global default stays as it is for everything else.
+ *
+ * Cost is a list read on mount and on focus, against a Core that is already
+ * asked for this same list on every `pty:` event while a Session runs (see
+ * `useCoreLiveQueries`).
+ */
+const PROJECT_SCOPED_FRESHNESS = {
+  refetchOnMount: "always",
+  refetchOnWindowFocus: "always",
+} as const;
+
 export const projectsQueryOptions = () =>
   queryOptions({
     queryKey: queryKeys.projects,
@@ -50,6 +81,7 @@ export const projectsQueryOptions = () =>
 export const projectQueryOptions = (id: string, opts?: { coreId?: string | null }) => {
   const coreId = opts?.coreId ?? null;
   return queryOptions({
+    ...PROJECT_SCOPED_FRESHNESS,
     // A Core's rows get their own cache bucket; the Panel's own rows keep the
     // untagged key so existing invalidations don't need to thread coreId
     // through.
@@ -150,6 +182,7 @@ export const tasksQueryOptions = (
 ) => {
   const coreId = opts?.coreId ?? null;
   return queryOptions({
+    ...PROJECT_SCOPED_FRESHNESS,
     // See `tasksCacheKey` — same rule, shared with the optimistic-task
     // helpers so writes land in the same bucket the query reads from.
     queryKey: tasksCacheKey(projectId, coreId),
@@ -206,6 +239,7 @@ export const archivedTasksQueryOptions = (
   opts: { coreId: string; enabled: boolean },
 ) =>
   queryOptions({
+    ...PROJECT_SCOPED_FRESHNESS,
     queryKey: queryKeys.coreArchivedTasks(projectId, opts.coreId),
     queryFn: async () => {
       const bridge = getPanelBridge();

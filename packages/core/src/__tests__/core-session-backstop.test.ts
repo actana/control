@@ -28,6 +28,19 @@ import { CoreHarnessStatus } from "../core-harness-status";
 import type { HarnessHookBody } from "@actana/shared/harness-hook-pipeline";
 import { clearSubagentActivity } from "@actana/shared/subagent-activity";
 
+/**
+ * The log's tip, insisting there is a log. `getLastEventId` answers `null` for
+ * a store it cannot reach (#495 gate review, addendum blocker 7); in this file
+ * the store is a real temp DB, so a `null` is a broken fixture and not a case
+ * worth folding into `0` — folding it would make an assertion pass for the
+ * wrong reason.
+ */
+function lastEventId(): number {
+  const id = getLastEventId();
+  if (id === null) throw new Error("this test's event-log store is unavailable");
+  return id;
+}
+
 // The backstop nobody has to arm (issue 243 part 2), against this Core's real
 // SQLite and event log.
 //
@@ -104,7 +117,7 @@ describe("settling a turn whose end nobody reported", () => {
   it("finishes a Session that has gone quiet, with nothing having armed it", () => {
     insert("t-1", "running");
     const backstop = makeBackstop();
-    const before = getLastEventId();
+    const before = lastEventId();
 
     // No hook was ever seen for this row, so no timer exists for it anywhere —
     // which is precisely the state a lost `Stop` leaves behind.
@@ -165,7 +178,7 @@ describe("settling a turn whose end nobody reported", () => {
     insert("t-1", "running");
     livePtys.delete("t-1");
     const backstop = makeBackstop();
-    const before = getLastEventId();
+    const before = lastEventId();
 
     nowMs += QUIET_MS + MINUTE;
     expect(backstop.sweepOnce()).toEqual(["t-1"]);
@@ -179,11 +192,11 @@ describe("settling a turn whose end nobody reported", () => {
 
     nowMs += QUIET_MS + MINUTE;
     expect(backstop.sweepOnce()).toEqual(["t-1"]);
-    const after = getLastEventId();
+    const after = lastEventId();
 
     nowMs += QUIET_MS;
     expect(backstop.sweepOnce()).toEqual([]);
-    expect(getLastEventId()).toBe(after);
+    expect(lastEventId()).toBe(after);
   });
 
   it("settles every quiet Session, not just the first", () => {
@@ -244,7 +257,7 @@ describe("settling a turn whose end nobody reported", () => {
     it("settles inside the idle window, though the bytes never stop", () => {
       insert("t-1", "running");
       const backstop = makeBackstop();
-      const before = getLastEventId();
+      const before = lastEventId();
 
       // Seven minutes of clock. The old rule sees a chatty harness; this one
       // sees a screen on which nothing has happened — but not yet for long
@@ -398,7 +411,7 @@ describe("settling a turn whose end nobody reported", () => {
       insert("t-1", "running");
       const backstop = makeBackstop();
       settleByIdleRule(backstop);
-      const after = getLastEventId();
+      const after = lastEventId();
 
       nowMs += 30 * 1000;
       deliverHook(backstop, { hook_event_name: "Stop" });
@@ -481,7 +494,7 @@ describe("settling a turn whose end nobody reported", () => {
 
       nowMs += 30 * 1000;
       coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "finished" });
-      const after = getLastEventId();
+      const after = lastEventId();
 
       nowMs += 30 * 1000;
       backstop.noteActivity("t-1", "output");
