@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { MANAGED_BLOCK_BEGIN } from "../operator-login-path";
 import { cleanupTempHomes, makeTempHome, readHomeFile } from "./temp-home";
 import {
@@ -246,6 +248,42 @@ describe("vendor installer failures", () => {
   });
 });
 
+describe("npm global prefix fallback (#521)", () => {
+  it("rewrites Pi and Codex installs when the npm prefix is not writable", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "actana-npm-eacces-"));
+    const locked = path.join(root, "locked");
+    fs.mkdirSync(locked);
+    fs.chmodSync(locked, 0o555);
+    const previous = process.env.NPM_CONFIG_PREFIX;
+    process.env.NPM_CONFIG_PREFIX = path.join(locked, "npm-prefix");
+    try {
+      await offerHarnessInstalls(
+        options({
+          assumeYes: true,
+          availability: {
+            ...ALL_PRESENT,
+            pi: { status: "missing", reason: "not-found" },
+            codex: { status: "missing", reason: "not-found" },
+          },
+          requested: ["pi", "codex"],
+        }),
+      );
+      const commands = ran.map((call) => call[2] ?? "");
+      expect(commands.some((c) => c.includes('npm install -g --prefix "$HOME/.local"') && c.includes("pi-coding-agent"))).toBe(
+        true,
+      );
+      expect(commands.some((c) => c.includes('npm install -g --prefix "$HOME/.local"') && c.includes("@openai/codex"))).toBe(
+        true,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.NPM_CONFIG_PREFIX;
+      else process.env.NPM_CONFIG_PREFIX = previous;
+      fs.chmodSync(locked, 0o755);
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
 // A vendor installer decides for itself which dotfile it edits, and OpenCode's
 // picks one a non-interactive login shell never reads. After a successful
 // install the offer round writes Actana's own block so the CLI it just
@@ -264,6 +302,9 @@ describe("the operator's login PATH", () => {
     await offerHarnessInstalls(linking(home, { assumeYes: true }));
     expect(profile(home)).toContain(MANAGED_BLOCK_BEGIN);
     expect(profile(home)).toContain('"$HOME/.opencode/bin"');
+    // Pi/Codex npm fallback (#521) puts shims in ~/.local/bin; the managed
+    // block must name that directory so a login shell finds them.
+    expect(profile(home)).toContain('"$HOME/.local/bin"');
   });
 
   it("tells the operator which file it changed", async () => {

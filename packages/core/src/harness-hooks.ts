@@ -372,7 +372,12 @@ function installCursorHooks(cwd: string, slug: string): boolean {
 }
 
 type HookFamily = {
-  install: (cwd: string, slug: string) => boolean;
+  /**
+   * `env` is the environment the harness PTY will inherit. Families that
+   * resolve paths from the harness process (Pi's `PI_CODING_AGENT_DIR`) must
+   * use it; workspace-local writers ignore it.
+   */
+  install: (cwd: string, slug: string, env?: NodeJS.ProcessEnv) => boolean;
   /**
    * Do the hooks we install for this family actually fire when a turn STARTS?
    *
@@ -509,10 +514,16 @@ const NO_HOOKS: HookInstallResult = {
  * A failed write reports the same as an unsupported harness: from the Panel's
  * point of view those are one fact, and the honest answer is what keeps its
  * fallback armed rather than suppressed on a promise nobody kept.
+ *
+ * `env` is the spawn environment the harness PTY will inherit. Pass the same
+ * record `pty-manager` hands `node-pty` so writers that follow harness-side
+ * paths (Pi under `$PI_CODING_AGENT_DIR`) land where the child will read.
+ * Defaults to `process.env` for callers that do not spawn.
  */
 export function installHarnessHooks(
   harness: string | undefined,
   cwd: string,
+  env: NodeJS.ProcessEnv = process.env,
 ): HookInstallResult {
   const family = harness ? HOOK_FAMILIES[harness] : undefined;
   if (!family || !cwd) return NO_HOOKS;
@@ -523,7 +534,7 @@ export function installHarnessHooks(
   const slug = hookEndpointSlug(harness);
   let installed = false;
   try {
-    installed = family.install(cwd, slug);
+    installed = family.install(cwd, slug, env);
   } catch {
     return NO_HOOKS;
   }

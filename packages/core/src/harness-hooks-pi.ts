@@ -24,10 +24,14 @@
 //    while Pi may still auto-retry, auto-compact, or drain a follow-up; posting
 //    `Stop` on them would finish the card mid-turn. `agent_settled` is the
 //    signal Pi documents for "will not continue running automatically".
-//  - `project_trust` is answered `{ trusted: "yes" }` with no `remember`, so an
-//    Actana-spawned Pi never paints "Trust project folder?" and never needs
-//    `--approve` / `--no-approve`. Hand-run `pi` still gets the interactive
-//    prompt, because this whole module is inert without `AC_HOOK_URL`.
+//  - `project_trust` is answered `{ trusted: "yes" }` only when `event.cwd`
+//    resolves to the workspace the Core spawned (`AC_HOOK_CWD`), with no
+//    `remember`, so an Actana-spawned Pi never paints "Trust project folder?"
+//    for its own workspace and never needs `--approve` / `--no-approve`. A
+//    nested `pi` in another directory, or a `/session` resume into a different
+//    project, gets no answer and falls through to Pi's trust.json / prompt
+//    (ADO #4992 / #519). Hand-run `pi` still gets the interactive prompt,
+//    because this whole module is inert without `AC_HOOK_URL`.
 //
 // The three rules the JSON writers follow apply here unchanged. The file is
 // tagged `@actana-control-managed` so a later spawn replaces exactly what an
@@ -39,11 +43,13 @@
 // Session, which inherits that Session's hook env), every POST
 // swallows its own errors, and nothing it does is awaited by the harness.
 
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import {
+  HOOK_CWD_ENV,
   HOOK_HARNESS_ENV,
   HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
@@ -56,6 +62,19 @@ export const PI_EXTENSION_MARKER = "@actana-control-managed";
 
 /** Filename under Pi's global extensions folder. */
 export const PI_EXTENSION_FILENAME = "actana-control.ts";
+
+/**
+ * fs surface `installPiHooks` writes through. Exported so unit tests can
+ * spy on it under ESM (where `vi.spyOn(fs, …)` cannot redefine node:fs
+ * exports) and assert the temp+rename path never truncates the live file.
+ */
+export const piExtensionFs = {
+  readFileSync: fs.readFileSync.bind(fs) as typeof fs.readFileSync,
+  writeFileSync: fs.writeFileSync.bind(fs) as typeof fs.writeFileSync,
+  renameSync: fs.renameSync.bind(fs) as typeof fs.renameSync,
+  unlinkSync: fs.unlinkSync.bind(fs) as typeof fs.unlinkSync,
+  mkdirSync: fs.mkdirSync.bind(fs) as typeof fs.mkdirSync,
+};
 
 /** Absolute path of the managed extension file. */
 export function piExtensionPath(
@@ -87,6 +106,7 @@ const HOOK_TOKEN = process.env.${HOOK_TOKEN_ENV};
 const HOOK_TASK_ID = process.env.${HOOK_TASK_ID_ENV};
 const MISS_LOG = process.env.${HOOK_MISS_LOG_ENV};
 const HOOK_HARNESS = process.env.${HOOK_HARNESS_ENV};
+const HOOK_CWD = process.env.${HOOK_CWD_ENV};
 const ENDPOINT = ${JSON.stringify(`/api/hooks/${slug}`)};
 const TIMEOUT_MS = 3000;
 const ATTEMPTS = 2;
@@ -180,12 +200,31 @@ export default function (pi) {
     return sessionId;
   };
 
-  // Project trust (ADO #4987 / ADR 0040). Pi asks global extensions before
-  // painting "Trust project folder?"; answering here keeps prompt delivery
-  // off that dialog. Session-only — no \`remember\` — so trust.json is not
-  // written behind the operator's back. Hand-run \`pi\` never reaches this
-  // handler: the early return above left no listeners at all.
-  pi.on("project_trust", async (_event, _ctx) => {
+  // Project trust (ADO #4987 / ADR 0040; scoped by ADO #4992 / #519). Pi asks
+  // global extensions before painting "Trust project folder?"; answering here
+  // for the spawn workspace keeps prompt delivery off that dialog. Session-
+  // only — no \`remember\` — so trust.json is not written behind the operator's
+  // back. A different folder (nested pi, /session resume) returns undefined so
+  // Pi falls through to its own trust.json or prompt. Hand-run \`pi\` never
+  // reaches this handler: the early return above left no listeners at all.
+  const resolveCwd = async (p) => {
+    const pathMod = await import("node:path");
+    const fsMod = await import("node:fs");
+    const abs = pathMod.resolve(p);
+    try {
+      return fsMod.realpathSync(abs);
+    } catch {
+      return abs;
+    }
+  };
+
+  pi.on("project_trust", async (event, _ctx) => {
+    if (!HOOK_CWD || !event || typeof event.cwd !== "string" || !event.cwd) return;
+    try {
+      if ((await resolveCwd(event.cwd)) !== (await resolveCwd(HOOK_CWD))) return;
+    } catch {
+      return;
+    }
     return { trusted: "yes" };
   });
 
@@ -247,21 +286,51 @@ export default function (pi) {
  * unused: a workspace-local install would load only after trust and would
  * itself trigger the trust prompt (ADR 0039). The managed marker is the whole
  * guard against clobbering an operator's own extension.
+ *
+ * `env` must be the environment the Pi PTY will inherit (the spawn env), not
+ * the Core daemon's `process.env`. Pi resolves `$PI_CODING_AGENT_DIR` from its
+ * own process; writing under the daemon's value while Pi reads a login-shell
+ * overlay leaves the extension unloaded and `installed: true` lying (#518).
+ * A failed write returns `false` so the Panel keeps its fallback armed.
+ *
+ * When the on-disk bytes already match `piExtensionSource(slug)`, the write is
+ * skipped (#518 part 2). Otherwise the payload lands via a same-directory
+ * temp file and `renameSync`, so a concurrent Pi spawn never observes a
+ * half-written extension.
  */
-export function installPiHooks(_cwd: string, slug: string): boolean {
-  const file = piExtensionPath();
+export function installPiHooks(
+  _cwd: string,
+  slug: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const file = piExtensionPath(env);
+  const desired = piExtensionSource(slug);
   let existing: string | null = null;
   try {
-    existing = fs.readFileSync(file, "utf8");
+    existing = piExtensionFs.readFileSync(file, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
   }
   if (existing !== null && !existing.includes(PI_EXTENSION_MARKER)) return false;
+  if (existing === desired) return true;
+  const dir = path.dirname(file);
+  // Hidden, non-`.ts` name so Pi's extension loader cannot pick the temp up
+  // mid-write. Same directory as `file` so rename stays atomic on one FS.
+  const tmp = path.join(
+    dir,
+    `.actana-control-write.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
+  );
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, piExtensionSource(slug), "utf8");
+    piExtensionFs.mkdirSync(dir, { recursive: true });
+    piExtensionFs.writeFileSync(tmp, desired, "utf8");
+    piExtensionFs.renameSync(tmp, file);
     return true;
   } catch {
+    try {
+      piExtensionFs.unlinkSync(tmp);
+    } catch {
+      /* best effort — the temp may never have been created */
+    }
     return false;
   }
 }

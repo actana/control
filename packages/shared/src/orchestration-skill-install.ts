@@ -154,6 +154,10 @@ export type SkillInstallRequest = {
 const MARKER_SCAN_BYTES = 4096;
 
 function homePath(home: string, relative: string): string {
+  // Absolute markers (Pi under `$PI_CODING_AGENT_DIR` outside home, #518 part 3)
+  // must stay absolute: splitting on `/` and rejoining would turn `/var/pi` into
+  // `home + "" + "var" + "pi"` and look under the home directory instead.
+  if (path.isAbsolute(relative)) return relative;
   return path.join(home, ...relative.split("/"));
 }
 

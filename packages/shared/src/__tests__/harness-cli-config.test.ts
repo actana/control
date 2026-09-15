@@ -123,6 +123,11 @@ describe("Harness config", () => {
     );
   });
 
+  it("puts the npm user-prefix bin on PATH for Pi and Codex (#521)", () => {
+    expect(HARNESS_CLI_CONFIG.codex.homePathSuffixes).toEqual([".local/bin"]);
+    expect(HARNESS_CLI_CONFIG.pi.homePathSuffixes).toEqual([".local/bin"]);
+  });
+
   it("has no install command where the vendor publishes none for the platform", () => {
     expect(resolveHarnessCliInstallCommand({ win32: "x" }, "linux")).toBeNull();
   });

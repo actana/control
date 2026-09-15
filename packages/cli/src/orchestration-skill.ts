@@ -23,6 +23,8 @@ import {
   ORCHESTRATION_SKILL_NAMES,
 } from "./orchestration-skill-payload.ts";
 import { HARNESS_SKILL_TARGETS } from "./harness-skill-targets.ts";
+import { withPiHomeMarkersResolved } from "@actana/shared/pi-agent-dir";
+import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 
 /**
  * Write or repair every copy, and report one row per Harness per skill.
@@ -37,10 +39,16 @@ import { HARNESS_SKILL_TARGETS } from "./harness-skill-targets.ts";
  * Never throws.
  */
 export function ensureOrchestrationSkill(home: string): SkillInstallEntry[] {
+  // Same call-time Pi marker resolution as the Core twin (#518 part 3).
+  const targets = withPiHomeMarkersResolved(
+    HARNESS_SKILL_TARGETS,
+    sanitizedProcessEnv(),
+    home,
+  );
   return ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
     installOrchestrationSkill({
       home,
-      targets: HARNESS_SKILL_TARGETS,
+      targets,
       skillName,
       marker: ORCHESTRATION_SKILL_MARKER,
       files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},

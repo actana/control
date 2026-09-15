@@ -17,12 +17,17 @@
 // what `actana logs` and `docker compose logs` read. That is the only place a
 // daemon's subprocess output can honestly go.
 //
-// The three verbs the operator's port has and this one does not — `run`,
-// `waitForPort`, `signal` — throw rather than returning a plausible answer:
-// nothing on the Harness-install path calls them, and a silent stub would make
-// a future caller's bug look like a machine with no systemd on it.
+// `run` is used once per offer round for `npm prefix -g` (#521): the probe
+// must go through this port so it never bypasses the injected system with a
+// direct `spawnSync` from `npm-install-prefix.ts`. On a Core image
+// `NPM_CONFIG_PREFIX` short-circuits before `run` is called.
+//
+// The verbs the operator's port has and this one does not — `waitForPort`,
+// `signal` — throw rather than returning a plausible answer: nothing on the
+// Harness-install path calls them, and a silent stub would make a future
+// caller's bug look like a machine with no systemd on it.
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import type { ActanaSystem } from "@actana/shared/actana-system-port";
 import log from "@actana/shared/log";
 
@@ -32,7 +37,21 @@ export function daemonHarnessSystem(): ActanaSystem {
     throw new Error(`the daemon's harness system port has no ${verb}()`);
   };
   return {
-    run: () => unused("run"),
+    run(command, args) {
+      const result = spawnSync(command, args, { encoding: "utf8" });
+      if (result.error || result.status === null) {
+        return {
+          status: 127,
+          stdout: result.stdout ?? "",
+          stderr: result.error?.message ?? result.stderr ?? "",
+        };
+      }
+      return {
+        status: result.status,
+        stdout: result.stdout ?? "",
+        stderr: result.stderr ?? "",
+      };
+    },
     passthrough(command, args) {
       return new Promise((resolve) => {
         const child = spawn(command, args, { stdio: "inherit" });

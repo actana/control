@@ -62,6 +62,10 @@ export type HarnessSkillTarget = {
    * cases a cross-vendor one that proves nothing about any particular harness.
    * `~/.agents/skills` existing says somebody uses some agent; `~/.codex`
    * existing says Codex has run here.
+   *
+   * Pi's static default is `.pi`. Node-side fan-out call sites replace it via
+   * `piHomeMarkers` against `sanitizedProcessEnv()` at call time so this
+   * table stays Node-free for the Panel bundle (#518 part 3 gate follow-up).
    */
   homeMarkers: readonly string[];
   /**
@@ -228,6 +232,9 @@ export const HARNESS_CLI_CONFIG = {
       darwin: ["npm install -g @openai/codex@latest", "brew upgrade codex"],
     },
     installCommand: "npm install -g @openai/codex@latest",
+    // When `npm prefix -g` is not writable, the install falls back to
+    // `--prefix "$HOME/.local"` (#521); this is where that puts the shim.
+    homePathSuffixes: [".local/bin"],
     autoModeFlag: "--yolo",
     // See `hookTrustFlag` above. Not put in any launch command: the Core adds
     // it at spawn, and only for hooks it wrote itself (issue 290).
@@ -327,11 +334,17 @@ export const HARNESS_CLI_CONFIG = {
     // `--ignore-scripts` is the vendor's documented install; the package posts
     // install scripts that are not required to put `pi` on PATH.
     installCommand: "npm install -g --ignore-scripts @earendil-works/pi-coding-agent",
+    // Same bare-metal npm-prefix fallback as Codex (#521): when the global
+    // prefix is root-owned, the shim lands under `$HOME/.local/bin`.
+    homePathSuffixes: [".local/bin"],
     // Pi never asks for permission (no built-in sandbox / no permission popups),
     // so there is no auto-mode flag to send — the same `null` cell OpenCode has,
     // for the opposite reason: OpenCode cannot run unattended; Pi always does.
     skillTarget: {
       kind: "skill-dir",
+      // Static default only. Node call sites resolve `$PI_CODING_AGENT_DIR`
+      // through piHomeMarkers(sanitizedProcessEnv(), home) at fan-out time —
+      // never here: this module is in the Panel browser bundle (#518 part 3).
       homeMarkers: [".pi"],
       skillDir: ".agents/skills",
       source:
