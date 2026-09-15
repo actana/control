@@ -363,6 +363,17 @@ export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
     affirmative: /\b(yes|accept|proceed|continue)\b/i,
     refuse: /\b(no|exit|quit|cancel)\b/i,
   },
+  {
+    // Pi paints its idle footer (`N%/M`) under "Warning: No models available…"
+    // when no provider is logged in, so readiness alone would type into a
+    // composer that cannot start a turn (ADO #4993 / #520). There is no menu
+    // to answer — recognition abandons with `needs-input` and the reason.
+    id: "no-models",
+    harnesses: ["pi"],
+    match: [/no\s+models\s+available/i],
+    affirmative: /\b(yes|proceed|login)\b/i,
+    refuse: /\b(no|exit|quit|cancel)\b/i,
+  },
 ];
 
 // `❯ 2. Yes, proceed` / `2) Yes, proceed` / `  2. No, exit` — the leading run
@@ -730,9 +741,12 @@ export const HARNESS_READINESS: Partial<Record<Harness, HarnessReadiness>> = {
   },
   // Pi's editor has no placeholder text — the listening screen is an empty
   // bordered box above a footer that always shows context usage as `N%/M`
-  // (captured on 0.85.1: `0.0%/0 (auto)`). That pattern is absent from the
-  // "Trust project folder?" dialog, so it is a real readiness gate and not a
-  // false positive on the screen delivery must not type into (ADO #4987).
+  // (captured on 0.85.1: `0.0%/1.0M (auto)` with a model selected). That
+  // pattern is absent from the "Trust project folder?" dialog, so it is a
+  // real readiness gate and not a false positive on the screen delivery must
+  // not type into (ADO #4987). The same footer also appears under Pi's
+  // "No models available" warning; that screen is refused by the `no-models`
+  // row in {@link BLOCKING_DIALOGS}, not by narrowing this pattern (ADO #520).
   pi: {
     composer: [/\d+(\.\d+)?%\//],
     confirmEcho: true,
