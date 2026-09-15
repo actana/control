@@ -43,6 +43,7 @@
 // Session, which inherits that Session's hook env), every POST
 // swallows its own errors, and nothing it does is awaited by the harness.
 
+import { randomBytes } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -61,6 +62,19 @@ export const PI_EXTENSION_MARKER = "@actana-control-managed";
 
 /** Filename under Pi's global extensions folder. */
 export const PI_EXTENSION_FILENAME = "actana-control.ts";
+
+/**
+ * fs surface `installPiHooks` writes through. Exported so unit tests can
+ * spy on it under ESM (where `vi.spyOn(fs, …)` cannot redefine node:fs
+ * exports) and assert the temp+rename path never truncates the live file.
+ */
+export const piExtensionFs = {
+  readFileSync: fs.readFileSync.bind(fs) as typeof fs.readFileSync,
+  writeFileSync: fs.writeFileSync.bind(fs) as typeof fs.writeFileSync,
+  renameSync: fs.renameSync.bind(fs) as typeof fs.renameSync,
+  unlinkSync: fs.unlinkSync.bind(fs) as typeof fs.unlinkSync,
+  mkdirSync: fs.mkdirSync.bind(fs) as typeof fs.mkdirSync,
+};
 
 /** Absolute path of the managed extension file. */
 export function piExtensionPath(
@@ -278,6 +292,11 @@ export default function (pi) {
  * own process; writing under the daemon's value while Pi reads a login-shell
  * overlay leaves the extension unloaded and `installed: true` lying (#518).
  * A failed write returns `false` so the Panel keeps its fallback armed.
+ *
+ * When the on-disk bytes already match `piExtensionSource(slug)`, the write is
+ * skipped (#518 part 2). Otherwise the payload lands via a same-directory
+ * temp file and `renameSync`, so a concurrent Pi spawn never observes a
+ * half-written extension.
  */
 export function installPiHooks(
   _cwd: string,
@@ -285,18 +304,33 @@ export function installPiHooks(
   env: NodeJS.ProcessEnv = process.env,
 ): boolean {
   const file = piExtensionPath(env);
+  const desired = piExtensionSource(slug);
   let existing: string | null = null;
   try {
-    existing = fs.readFileSync(file, "utf8");
+    existing = piExtensionFs.readFileSync(file, "utf8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") return false;
   }
   if (existing !== null && !existing.includes(PI_EXTENSION_MARKER)) return false;
+  if (existing === desired) return true;
+  const dir = path.dirname(file);
+  // Hidden, non-`.ts` name so Pi's extension loader cannot pick the temp up
+  // mid-write. Same directory as `file` so rename stays atomic on one FS.
+  const tmp = path.join(
+    dir,
+    `.actana-control-write.${process.pid}.${randomBytes(6).toString("hex")}.tmp`,
+  );
   try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, piExtensionSource(slug), "utf8");
+    piExtensionFs.mkdirSync(dir, { recursive: true });
+    piExtensionFs.writeFileSync(tmp, desired, "utf8");
+    piExtensionFs.renameSync(tmp, file);
     return true;
   } catch {
+    try {
+      piExtensionFs.unlinkSync(tmp);
+    } catch {
+      /* best effort — the temp may never have been created */
+    }
     return false;
   }
 }
