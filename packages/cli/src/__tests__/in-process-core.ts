@@ -347,6 +347,32 @@ export async function waitFor(
 }
 
 /**
+ * Await a promise, or fail naming the stage that stalled (#517).
+ *
+ * Vitest's bare "Test timed out in Nms" does not say whether the hang was the
+ * stamp, the turn end, or the CLI's own wait — which is exactly the diagnosis
+ * a reviewer needs when this suite flakes under parallel load. Same sentence
+ * shape as {@link waitFor}, so a timeout reads as one kind of failure.
+ */
+export async function awaitStage<T>(
+  promise: Promise<T>,
+  what: string,
+  timeoutMs: number,
+): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(`timed out waiting: ${what}`)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
+/**
  * An event log in an array, satisfying the port the Core writes through.
  *
  * In memory rather than the real SQLite store because the object outlives the
