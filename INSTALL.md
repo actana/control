@@ -284,6 +284,13 @@ work). A vendor installer that fails is reported with the vendor's own docs
 URL and never fails your Core install. After an install the Core
 re-probes immediately, so a paired Panel sees the new harness without a restart.
 
+**npm-installed harnesses (Pi, Codex).** Their installers are `npm install -g`.
+On a machine where Node's global prefix belongs to root and you have no sudo,
+`actana harnesses install` detects that the prefix is not writable and reruns
+the install with `--prefix "$HOME/.local"` instead, then puts `$HOME/.local/bin`
+on your login PATH. The Core Docker image already sets `NPM_CONFIG_PREFIX` to
+that directory, so the fallback is a no-op there.
+
 Re-running `setup` is safe: it upgrades in place, keeps this Core's identity, and
 leaves exactly one unit (or one LaunchAgent). It re-signs the server certificate
 only when `--public-host` changed, and it says so when it does — **adding** an

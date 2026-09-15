@@ -213,11 +213,10 @@ async function main() {
   log("opencode is on PATH");
 
   // ─── Pi installs over npm, and the Core sees it without a restart ───
-  // npm -g defaults to /usr/local; the operator has no sudo (by design of this
-  // image). Point the prefix at ~/.local so the binary lands where Ubuntu's
-  // stock ~/.profile already puts ~/.local/bin on a login PATH — same shape
-  // as the Core image's NPM_CONFIG_PREFIX.
-  mustAsOperator('mkdir -p "$HOME/.local/bin" && npm config set prefix "$HOME/.local"');
+  // npm -g defaults to /usr/local on bare metal; the operator has no sudo (by
+  // design of this image). The product itself falls back to --prefix
+  // "$HOME/.local" when that prefix is not writable (#521) — do not pre-set
+  // one here, or the canary would prove a machine shape real operators lack.
   log("running the real Pi installer — npm install -g from the registry");
   const installedPi = mustAsOperator("actana harnesses install pi");
   if (!installedPi.stdout.includes("Installing Pi")) {
