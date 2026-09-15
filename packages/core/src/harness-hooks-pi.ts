@@ -24,10 +24,14 @@
 //    while Pi may still auto-retry, auto-compact, or drain a follow-up; posting
 //    `Stop` on them would finish the card mid-turn. `agent_settled` is the
 //    signal Pi documents for "will not continue running automatically".
-//  - `project_trust` is answered `{ trusted: "yes" }` with no `remember`, so an
-//    Actana-spawned Pi never paints "Trust project folder?" and never needs
-//    `--approve` / `--no-approve`. Hand-run `pi` still gets the interactive
-//    prompt, because this whole module is inert without `AC_HOOK_URL`.
+//  - `project_trust` is answered `{ trusted: "yes" }` only when `event.cwd`
+//    resolves to the workspace the Core spawned (`AC_HOOK_CWD`), with no
+//    `remember`, so an Actana-spawned Pi never paints "Trust project folder?"
+//    for its own workspace and never needs `--approve` / `--no-approve`. A
+//    nested `pi` in another directory, or a `/session` resume into a different
+//    project, gets no answer and falls through to Pi's trust.json / prompt
+//    (ADO #4992 / #519). Hand-run `pi` still gets the interactive prompt,
+//    because this whole module is inert without `AC_HOOK_URL`.
 //
 // The three rules the JSON writers follow apply here unchanged. The file is
 // tagged `@actana-control-managed` so a later spawn replaces exactly what an
@@ -44,6 +48,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
 import {
+  HOOK_CWD_ENV,
   HOOK_HARNESS_ENV,
   HOOK_MISS_LOG_ENV,
   HOOK_TASK_ID_ENV,
@@ -87,6 +92,7 @@ const HOOK_TOKEN = process.env.${HOOK_TOKEN_ENV};
 const HOOK_TASK_ID = process.env.${HOOK_TASK_ID_ENV};
 const MISS_LOG = process.env.${HOOK_MISS_LOG_ENV};
 const HOOK_HARNESS = process.env.${HOOK_HARNESS_ENV};
+const HOOK_CWD = process.env.${HOOK_CWD_ENV};
 const ENDPOINT = ${JSON.stringify(`/api/hooks/${slug}`)};
 const TIMEOUT_MS = 3000;
 const ATTEMPTS = 2;
@@ -180,12 +186,31 @@ export default function (pi) {
     return sessionId;
   };
 
-  // Project trust (ADO #4987 / ADR 0040). Pi asks global extensions before
-  // painting "Trust project folder?"; answering here keeps prompt delivery
-  // off that dialog. Session-only — no \`remember\` — so trust.json is not
-  // written behind the operator's back. Hand-run \`pi\` never reaches this
-  // handler: the early return above left no listeners at all.
-  pi.on("project_trust", async (_event, _ctx) => {
+  // Project trust (ADO #4987 / ADR 0040; scoped by ADO #4992 / #519). Pi asks
+  // global extensions before painting "Trust project folder?"; answering here
+  // for the spawn workspace keeps prompt delivery off that dialog. Session-
+  // only — no \`remember\` — so trust.json is not written behind the operator's
+  // back. A different folder (nested pi, /session resume) returns undefined so
+  // Pi falls through to its own trust.json or prompt. Hand-run \`pi\` never
+  // reaches this handler: the early return above left no listeners at all.
+  const resolveCwd = async (p) => {
+    const pathMod = await import("node:path");
+    const fsMod = await import("node:fs");
+    const abs = pathMod.resolve(p);
+    try {
+      return fsMod.realpathSync(abs);
+    } catch {
+      return abs;
+    }
+  };
+
+  pi.on("project_trust", async (event, _ctx) => {
+    if (!HOOK_CWD || !event || typeof event.cwd !== "string" || !event.cwd) return;
+    try {
+      if ((await resolveCwd(event.cwd)) !== (await resolveCwd(HOOK_CWD))) return;
+    } catch {
+      return;
+    }
     return { trusted: "yes" };
   });
 

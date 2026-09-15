@@ -11,6 +11,7 @@ import {
   hookCommand,
   installHarnessHooks,
 } from "../harness-hooks";
+import { HOOK_CWD_ENV } from "../harness-hook-env";
 import {
   OPENCODE_PLUGIN_MARKER,
   OPENCODE_PLUGIN_PATH,
@@ -507,9 +508,11 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
       expect(extension).toContain('pi.on("agent_settled"');
       expect(extension).toContain('pi.on("agent_start"');
       expect(extension).toContain('pi.on("ui_prompt_start"');
-      // ADO #4987 / ADR 0040: answer project_trust before the dialog paints.
+      // ADO #4987 / ADR 0040 / #519: answer project_trust for the spawn cwd.
       expect(extension).toContain('pi.on("project_trust"');
       expect(extension).toContain('trusted: "yes"');
+      expect(extension).toContain(`process.env.${HOOK_CWD_ENV}`);
+      expect(extension).toContain("realpathSync");
       // Never in the workspace — that path is what trips the trust prompt.
       expect(fs.existsSync(path.join(cwd, ".pi"))).toBe(false);
     } finally {
