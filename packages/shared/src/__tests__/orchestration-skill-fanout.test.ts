@@ -28,7 +28,7 @@ import {
   ORCHESTRATION_SKILL_MARKER,
   ORCHESTRATION_SKILL_NAMES,
 } from "../orchestration-skill-payload";
-import { piHomeMarkers } from "../pi-agent-dir";
+import { withPiHomeMarkersResolved } from "../pi-agent-dir";
 
 const REPO = path.resolve(import.meta.dirname, "..", "..", "..", "..");
 const read = (relative: string) => readFileSync(path.join(REPO, relative), "utf8");
@@ -131,13 +131,22 @@ describe("every Harness has a skill target (#265, ADR 0031 D4)", () => {
     }
   });
 
-  it("derives Pi's homeMarkers from piHomeMarkers (#518 part 3)", () => {
-    // Shared helper, not two hand-kept lists: both tables call piHomeMarkers()
-    // and the field-by-field sync below still holds them together.
-    expect(HARNESS_CLI_CONFIG.pi.skillTarget.homeMarkers).toEqual([...piHomeMarkers()]);
-    expect(CLI_TARGETS.find((row) => row.harness === "pi")!.homeMarkers).toEqual([
-      ...piHomeMarkers(),
+  it("keeps a static .pi marker in both tables; call sites resolve PI_CODING_AGENT_DIR", () => {
+    // Tables stay Node-free (Panel bundle). withPiHomeMarkersResolved at the
+    // Core/CLI fan-out entry points applies piHomeMarkers against the call-time
+    // env (#518 part 3 gate follow-up).
+    expect(HARNESS_CLI_CONFIG.pi.skillTarget.homeMarkers).toEqual([".pi"]);
+    expect(CLI_TARGETS.find((row) => row.harness === "pi")!.homeMarkers).toEqual([".pi"]);
+    expect(withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, {}, "/home/op").find((r) => r.harness === "pi")!.homeMarkers).toEqual([
+      ".pi",
     ]);
+    expect(
+      withPiHomeMarkersResolved(
+        HARNESS_SKILL_TARGETS,
+        { PI_CODING_AGENT_DIR: "~/moved/agent" },
+        "/home/op",
+      ).find((r) => r.harness === "pi")!.homeMarkers,
+    ).toEqual(["moved/agent"]);
   });
 });
 

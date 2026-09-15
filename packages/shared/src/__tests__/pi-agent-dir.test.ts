@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import * as os from "node:os";
 import * as path from "node:path";
-import { piAgentDir, piHomeMarkers } from "../pi-agent-dir";
+import { piAgentDir, piHomeMarkers, withPiHomeMarkersResolved } from "../pi-agent-dir";
 
 describe("piAgentDir", () => {
   it("defaults to ~/.pi/agent", () => {
@@ -39,8 +39,23 @@ describe("piHomeMarkers (#518 part 3)", () => {
     ]);
   });
 
-  it("agrees with the process env when called with defaults", () => {
-    // Smoke: the tables call piHomeMarkers() with no args at module load.
+  it("agrees with an explicit env when called with defaults", () => {
     expect(piHomeMarkers()).toEqual(piHomeMarkers(process.env, os.homedir()));
+  });
+});
+
+describe("withPiHomeMarkersResolved", () => {
+  it("rewrites only the Pi row", () => {
+    const rows = [
+      { harness: "codex", homeMarkers: [".codex"] as const },
+      { harness: "pi", homeMarkers: [".pi"] as const },
+    ];
+    const resolved = withPiHomeMarkersResolved(
+      rows,
+      { PI_CODING_AGENT_DIR: "/var/pi" },
+      "/home/op",
+    );
+    expect(resolved[0]).toEqual(rows[0]);
+    expect(resolved[1]!.homeMarkers).toEqual([path.resolve("/var/pi")]);
   });
 });

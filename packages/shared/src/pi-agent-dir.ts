@@ -40,3 +40,25 @@ export function piHomeMarkers(
   }
   return [agentDir];
 }
+
+/**
+ * Resolve Pi's homeMarkers on a skill-target table at call time.
+ *
+ * The shared / CLI fan-out tables keep a static `.pi` marker so
+ * `harness-cli-config` stays Node-free for the Panel. Node-side writers call
+ * this with `sanitizedProcessEnv()` (and the home they are writing under)
+ * before handing the table to the installer (#518 part 3 gate follow-up).
+ */
+export function withPiHomeMarkersResolved<
+  T extends { harness: string; homeMarkers: readonly string[] },
+>(
+  targets: readonly T[],
+  env: NodeJS.ProcessEnv = process.env,
+  home: string = os.homedir(),
+): T[] {
+  return targets.map((target) =>
+    target.harness === "pi"
+      ? { ...target, homeMarkers: piHomeMarkers(env, home) }
+      : target,
+  );
+}

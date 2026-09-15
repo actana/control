@@ -45,6 +45,10 @@ export function isNpmGlobalInstallCommand(command: string): boolean {
  * What `npm prefix -g` would use right now: `NPM_CONFIG_PREFIX` when set
  * (the Core image), else the live npm answer. Null when npm is missing or
  * refuses to answer — the caller then leaves the command alone.
+ *
+ * Prefer {@link resolveNpmGlobalPrefixViaRun} on the offer / install path so
+ * the probe goes through the injected {@link ActanaSystem} port rather than a
+ * direct `spawnSync` (#521 gate follow-up).
  */
 export function resolveNpmGlobalPrefix(env: NodeJS.ProcessEnv = process.env): string | null {
   const fromEnv = env.NPM_CONFIG_PREFIX?.trim();
@@ -57,6 +61,29 @@ export function resolveNpmGlobalPrefix(env: NodeJS.ProcessEnv = process.env): st
       timeout: 5_000,
     });
     if (result.error || result.status !== 0) return null;
+    const prefix = (result.stdout ?? "").trim();
+    return prefix.length > 0 ? prefix : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the effective npm global prefix through a captured `run` port.
+ *
+ * Used once per offer round so npm-family installs share one answer and the
+ * daemon event loop never takes a direct `spawnSync` from this module.
+ */
+export function resolveNpmGlobalPrefixViaRun(
+  run: (command: string, args: string[]) => { status: number; stdout: string },
+  env: NodeJS.ProcessEnv = process.env,
+): string | null {
+  const fromEnv = env.NPM_CONFIG_PREFIX?.trim();
+  if (fromEnv) return fromEnv;
+
+  try {
+    const result = run("npm", ["prefix", "-g"]);
+    if (result.status !== 0) return null;
     const prefix = (result.stdout ?? "").trim();
     return prefix.length > 0 ? prefix : null;
   } catch {

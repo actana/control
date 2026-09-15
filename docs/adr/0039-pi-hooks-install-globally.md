@@ -48,6 +48,12 @@ id, and a global file would otherwise report it into — and re-key — a task
 that is not a Pi Session. A `pi` nested inside a Pi Session is not told
 apart; that residue is accepted.
 
+*Amended 2026-09-15 (#519 / PR follow-up):* the same-harness nesting residue
+on the **trust** axis is closed. `AC_HOOK_CWD` scopes `project_trust` to the
+spawn workspace, so a nested `pi` whose cwd is not that workspace no longer
+receives an automatic `{ trusted: "yes" }`. Hook posting still follows D2's
+`AC_HOOK_HARNESS === "pi"` gate; only the trust answer narrowed.
+
 **D3 — The managed-marker and fail-soft rules are unchanged.** The file is
 tagged `@actana-control-managed` so the next spawn replaces exactly what the
 last one wrote and never an operator's neighbouring extension; it carries no

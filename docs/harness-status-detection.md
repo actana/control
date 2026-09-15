@@ -905,12 +905,18 @@ or `$PI_CODING_AGENT_DIR/extensions/` when that env var is set — where Pi
 loads it before trust. That choice is [ADR 0039](adr/0039-pi-hooks-install-globally.md).
 
 The same global extension answers Pi's `project_trust` event with
-`{ trusted: "yes" }` (session-only, no `remember`) whenever Actana spawned the
-Session, so "Trust project folder?" never appears and prompt delivery never
-types into it. That policy is [ADR 0040](adr/0040-pi-project-trust-answered-by-extension.md).
-Defence in depth: `pi` is on the `folder-trust` row of `BLOCKING_DIALOGS` and
-has a `HARNESS_READINESS` composer marker (footer `N%/M`); if the dialog still
-shows, delivery abandons to `needs-input` rather than typing or hanging.
+`{ trusted: "yes" }` (session-only, no `remember`) only when the event's cwd
+realpath-equals the spawn workspace exported as `AC_HOOK_CWD`. Any other
+folder — including a nested `pi` whose cwd differs — falls through to Pi's
+`trust.json` / interactive prompt. That scoped policy is
+[ADR 0040](adr/0040-pi-project-trust-answered-by-extension.md) (amended
+2026-09-15). Defence in depth: `pi` is on the `folder-trust` row of
+`BLOCKING_DIALOGS` and has a `HARNESS_READINESS` composer marker (footer
+`N%/M`); if the dialog still shows, delivery abandons to `needs-input`
+rather than typing or hanging. A separate `no-models` row (Pi only) matches
+the vendor line `Warning: No models available` so a provider-less composer
+is abandoned rather than typed into, even when the idle footer would
+otherwise look ready.
 
 The extension follows the same three rules as the other writers: tagged
 `@actana-control-managed` so the next spawn replaces exactly what the last one
@@ -924,7 +930,7 @@ What it maps, from Pi ≥ 0.84.4's extension API:
 
 | Pi signal | Posted as | Effect |
 | --- | --- | --- |
-| `project_trust` | _(answered in-process)_ | `{ trusted: "yes" }` — no dialog (ADR 0040); posts nothing |
+| `project_trust` | _(answered in-process)_ | `{ trusted: "yes" }` only when `event.cwd` equals `AC_HOOK_CWD` (ADR 0040); else undefined → Pi's trust.json/prompt; posts nothing |
 | `session_start` | `SessionStart` (+ session UUID) | captures the session id, no status change |
 | `input` (text stashed) + `agent_start` | `UserPromptSubmit` (+ prompt text) | `running`; captures the session id; names an unnamed Session |
 | `agent_settled` | `Stop` | `finished` |

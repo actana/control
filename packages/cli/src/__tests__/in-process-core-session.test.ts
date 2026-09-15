@@ -539,10 +539,10 @@ describe("actana session, against a Core in this process", () => {
     // The transcript rides along, rendered, read while the Session is alive —
     // and it is the Core's replay ring, so it holds what came before the wait.
     expect(String(payload.screen)).toContain("done: 3 files changed");
-    // Two minutes (#517): this dials a real Core, runs a CLI command end to end
-    // and waits on a live event push, and `pnpm test` runs it beside five other
-    // packages' suites — 60 s was not enough under that contention.
-  }, 120_000);
+    // Two and a half minutes (#517): named stages are 30 s + 90 s; the test
+    // budget stays above their sum so setup and assertion time under
+    // full-suite contention cannot fire Vitest's bare timeout first.
+  }, 150_000);
 
   it("waits as a verb, and refuses to wait on a Session with no harness running", async () => {
     const { eventLog, endTurn } = await coreWithSessions();

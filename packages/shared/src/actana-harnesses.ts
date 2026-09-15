@@ -32,7 +32,7 @@ import {
 import type { Harness } from "./domain";
 import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
 import type { ActanaSystem } from "./actana-system-port";
-import { withNpmUserPrefixIfNeeded } from "./npm-install-prefix";
+import { withNpmUserPrefixIfNeeded, resolveNpmGlobalPrefixViaRun } from "./npm-install-prefix";
 import { ensureOperatorLoginPathOnDisk } from "./operator-login-path";
 
 /** What became of one agent during an offer round. */
@@ -176,6 +176,8 @@ export function missingHarnesses(availability: CoreLinkHarnessAvailabilityMap): 
 async function installHarness(
   config: HarnessCliConfig,
   opts: HarnessOfferOptions,
+  /** Effective npm global prefix, resolved once per offer round (#521). */
+  npmGlobalPrefix: string | null,
 ): Promise<HarnessInstallStatus> {
   const resolved = resolveHarnessCliInstallCommand(config.installCommand, opts.platform);
   if (!resolved) {
@@ -194,6 +196,7 @@ async function installHarness(
   const command = withNpmUserPrefixIfNeeded(resolved, {
     platform: opts.platform,
     env: process.env,
+    resolvePrefix: () => npmGlobalPrefix,
   });
 
   opts.out(`Installing ${config.label}: ${command}`);
@@ -231,6 +234,14 @@ export async function offerHarnessInstalls(
   const outcomes: HarnessInstallOutcome[] = [];
   const deferred: Harness[] = [];
 
+  // One prefix probe for the whole round, through the injected system port —
+  // never a direct spawnSync that would write `~/.npm` under a redirected
+  // HOME and bypass the test fake (#521 gate follow-up).
+  const npmGlobalPrefix = resolveNpmGlobalPrefixViaRun(
+    (command, args) => opts.system.run(command, args),
+    process.env,
+  );
+
   for (const agent of considered) {
     const config = HARNESS_CLI_CONFIG[agent];
     const record = (status: HarnessInstallStatus) =>
@@ -247,7 +258,7 @@ export async function offerHarnessInstalls(
     }
 
     if (requested.has(agent) || opts.assumeYes) {
-      record(await installHarness(config, opts));
+      record(await installHarness(config, opts, npmGlobalPrefix));
       continue;
     }
 
@@ -265,7 +276,7 @@ export async function offerHarnessInstalls(
       record("declined");
       continue;
     }
-    record(await installHarness(config, opts));
+    record(await installHarness(config, opts, npmGlobalPrefix));
   }
 
   if (deferred.length > 0) {

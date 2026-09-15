@@ -368,9 +368,11 @@ export const BLOCKING_DIALOGS: readonly BlockingDialogSpec[] = [
     // when no provider is logged in, so readiness alone would type into a
     // composer that cannot start a turn (ADO #4993 / #520). There is no menu
     // to answer — recognition abandons with `needs-input` and the reason.
+    // Anchor on the vendor warning line so a transcript that merely mentions
+    // the phrase cannot block a later `session send`.
     id: "no-models",
     harnesses: ["pi"],
-    match: [/no\s+models\s+available/i],
+    match: [/Warning:\s*No models available/i],
     affirmative: /\b(yes|proceed|login)\b/i,
     refuse: /\b(no|exit|quit|cancel)\b/i,
   },

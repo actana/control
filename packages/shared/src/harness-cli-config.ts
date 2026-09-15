@@ -1,5 +1,4 @@
 import { HARNESSES, type Harness } from "./domain";
-import { piHomeMarkers } from "./pi-agent-dir";
 
 export type HarnessCliVersionScheme = "semver" | "calendar-date";
 
@@ -64,9 +63,9 @@ export type HarnessSkillTarget = {
    * `~/.agents/skills` existing says somebody uses some agent; `~/.codex`
    * existing says Codex has run here.
    *
-   * Pi is the one exception that may carry an absolute marker: when
-   * `$PI_CODING_AGENT_DIR` points outside the home directory, {@link piHomeMarkers}
-   * returns that path so the skills fan-out still finds it (#518 part 3).
+   * Pi's static default is `.pi`. Node-side fan-out call sites replace it via
+   * `piHomeMarkers` against `sanitizedProcessEnv()` at call time so this
+   * table stays Node-free for the Panel bundle (#518 part 3 gate follow-up).
    */
   homeMarkers: readonly string[];
   /**
@@ -343,9 +342,10 @@ export const HARNESS_CLI_CONFIG = {
     // for the opposite reason: OpenCode cannot run unattended; Pi always does.
     skillTarget: {
       kind: "skill-dir",
-      // Follows `$PI_CODING_AGENT_DIR` via piHomeMarkers (#518 part 3); default
-      // installs still see `~/.pi`.
-      homeMarkers: piHomeMarkers(),
+      // Static default only. Node call sites resolve `$PI_CODING_AGENT_DIR`
+      // through piHomeMarkers(sanitizedProcessEnv(), home) at fan-out time —
+      // never here: this module is in the Panel browser bundle (#518 part 3).
+      homeMarkers: [".pi"],
       skillDir: ".agents/skills",
       source:
         "https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/skills.md — Global: `~/.pi/agent/skills/`, `~/.agents/skills/`",
