@@ -283,6 +283,65 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
+ * Nearest ancestor Codex treats as the project root for local config layers.
+ *
+ * Source: openai/codex `codex-rs/config/src/loader/mod.rs` `find_project_root`
+ * (lines 1461–1496 on main @ 7f01a84effcc). Default marker is `.git`
+ * (`project_root_markers.rs`); a `.git` directory without `HEAD` is skipped;
+ * if no marker is found the root is `cwd` itself — Codex does **not** walk to
+ * the filesystem root.
+ */
+function findCodexProjectRoot(cwd: string): string {
+  const start = path.resolve(cwd);
+  let dir = start;
+  for (;;) {
+    const git = path.join(dir, ".git");
+    try {
+      const st = fs.statSync(git);
+      if (st.isFile()) return dir;
+      if (st.isDirectory() && fs.existsSync(path.join(git, "HEAD"))) return dir;
+    } catch {
+      // No `.git` at this level — keep walking.
+    }
+    const parent = path.dirname(dir);
+    if (parent === dir) return start;
+    dir = parent;
+  }
+}
+
+/**
+ * Every `.codex/` folder on Codex's project-layer discovery path, cwd-first.
+ *
+ * Source: openai/codex `codex-rs/config/src/loader/mod.rs`
+ * `discover_project_layers` (lines 1609–1647 on main @ 7f01a84effcc) walks
+ * `cwd.ancestors()` up to and including `project_root`, and records a layer for
+ * each directory that contains a `.codex/` folder. Hook JSON is then loaded
+ * from `layer.hooks_config_folder().join("hooks.json")` — see
+ * `codex-rs/hooks/src/engine/discovery.rs` `load_hooks_json` (lines 339–346)
+ * and the call at lines 146–148. So Codex **does** walk parents up to the
+ * project root; this audit searches that path, no more and no less (user /
+ * system / plugin layers stay out of scope, as before).
+ */
+function codexProjectCodexFolders(cwd: string): string[] {
+  const root = path.resolve(findCodexProjectRoot(cwd));
+  const folders: string[] = [];
+  let dir = path.resolve(cwd);
+  for (;;) {
+    const dot = path.join(dir, ".codex");
+    try {
+      if (fs.statSync(dot).isDirectory()) folders.push(dot);
+    } catch {
+      // No `.codex` here — Codex skips the directory entirely.
+    }
+    if (dir === root) break;
+    const parent = path.dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return folders;
+}
+
+/**
  * Is every hook Codex will run in this workspace one THIS Core just wrote?
  *
  * The question behind `hookTrustBypassEarned`, and the reason that field is
@@ -306,23 +365,28 @@ function canonicalJson(value: unknown): string {
  * and earned the bypass. A marker inside untrusted content can never be the
  * proof that the content is trusted.
  *
- * So the file must match the record this module keeps on its own side, which
- * is `CODEX_HOOK_EVENTS` and {@link codexGroup} — the same two things the
- * writer used moments earlier, deterministic in `slug`, and not reachable from
- * a workspace. Four conditions, and every one of them fails towards refusing:
+ * So the files on Codex's project discovery path (see
+ * {@link codexProjectCodexFolders}) must match the record this module keeps on
+ * its own side, which is `CODEX_HOOK_EVENTS` and {@link codexGroup} — the same
+ * two things the writer used moments earlier, deterministic in `slug`, and not
+ * reachable from a workspace. Four conditions, and every one of them fails
+ * towards refusing:
  *
  *  - **The event keys are exactly the ones we write.** An event we do not
  *    write is an event we cannot vouch for, so ownership is never inherited by
  *    default — an extra key is a refusal whatever it contains, and a missing
- *    one means our write did not survive.
+ *    one means our write did not survive. When several project-layer
+ *    `hooks.json` files exist, their event tables are merged low-to-high the
+ *    way Codex appends layer handlers — an ancestor file is not invisible.
  *  - **Each event holds exactly one group, byte-identical to ours** (modulo
  *    key order). Anything appended beside ours, and any edit to ours, is a
  *    refusal.
- *  - **A `.codex/config.toml` in the workspace refuses outright.** That file
- *    can declare hooks of its own, it is TOML, and this repository has no TOML
- *    parser — so its existence reads as "there may be hooks here we cannot
- *    account for". An operator who wants the bypass back can move those hooks
- *    to `~/.codex/config.toml`, which is theirs rather than the repository's.
+ *  - **A `.codex/config.toml` anywhere on that discovery path refuses
+ *    outright.** That file can declare hooks of its own, it is TOML, and this
+ *    repository has no TOML parser — so its existence reads as "there may be
+ *    hooks here we cannot account for". An operator who wants the bypass back
+ *    can move those hooks to `~/.codex/config.toml`, which is theirs rather
+ *    than the repository's.
  *  - **A file we could not read refuses.** Unreadable is not empty.
  *
  * What it cannot see is a Codex plugin supplying hooks from outside the
@@ -331,24 +395,39 @@ function canonicalJson(value: unknown): string {
  * to enumerate every hook source Codex has.
  */
 function codexOwnsEveryHook(cwd: string, slug: string): boolean {
-  if (fs.existsSync(path.join(cwd, ".codex", "config.toml"))) return false;
-  const config = readJsonSettingsFile<{ hooks?: Record<string, unknown> }>(
-    path.join(cwd, ".codex", "hooks.json"),
-  );
-  // `null` is a read that failed for a reason other than "not there yet".
-  if (config === null) return false;
-  const hooks = config.hooks;
-  if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return false;
+  const folders = codexProjectCodexFolders(cwd);
+  for (const folder of folders) {
+    if (fs.existsSync(path.join(folder, "config.toml"))) return false;
+  }
 
-  const onDisk = hooks as Record<string, unknown>;
+  // Merge project-layer hooks.json files from project_root toward cwd — the
+  // same low-to-high order `discover_handlers` walks config layers.
+  const merged: Record<string, unknown[]> = {};
+  for (const folder of [...folders].reverse()) {
+    const config = readJsonSettingsFile<{ hooks?: Record<string, unknown> }>(
+      path.join(folder, "hooks.json"),
+    );
+    // `null` is a read that failed for a reason other than "not there yet".
+    if (config === null) return false;
+    const hooks = config.hooks;
+    // Missing file → `{}` from readJsonSettingsFile; no `hooks` key means this
+    // layer contributes nothing (Codex's load_hooks_json returns None).
+    if (hooks === undefined) continue;
+    if (!hooks || typeof hooks !== "object" || Array.isArray(hooks)) return false;
+    for (const [event, groups] of Object.entries(hooks)) {
+      if (!Array.isArray(groups)) return false;
+      merged[event] = [...(merged[event] ?? []), ...groups];
+    }
+  }
+
   // Our side of the comparison, rebuilt rather than remembered: `codexGroup`
   // is a pure function of `slug` and the event, so recomputing it here is the
   // same record the writer used and cannot be influenced by the workspace.
   const ours = CODEX_HOOK_EVENTS.map(
     (event) => [event, canonicalJson([codexGroup(slug, event)])] as const,
   );
-  if (Object.keys(onDisk).length !== ours.length) return false;
-  return ours.every(([event, expected]) => canonicalJson(onDisk[event]) === expected);
+  if (Object.keys(merged).length !== ours.length) return false;
+  return ours.every(([event, expected]) => canonicalJson(merged[event]) === expected);
 }
 
 const CURSOR_HOOK_EVENTS = ["beforeSubmitPrompt", "stop", "afterAgentResponse"] as const;
