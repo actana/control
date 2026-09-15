@@ -519,6 +519,65 @@ describe("installing a harness's lifecycle hooks (issue 84)", () => {
     }
   });
 
+  it("writes the Pi extension under the spawn env's PI_CODING_AGENT_DIR, not the daemon's (#518 part 1)", () => {
+    // The Core daemon may lack PI_CODING_AGENT_DIR while the login-shell
+    // overlay that sanitizedProcessEnv merges into the PTY has it. Writing
+    // against process.env then leaves Pi looking at an empty folder.
+    const daemonDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-daemon-"));
+    const spawnDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-spawn-"));
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    process.env.PI_CODING_AGENT_DIR = daemonDir;
+    try {
+      const spawnEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        PI_CODING_AGENT_DIR: spawnDir,
+      };
+      expect(installHarnessHooks("pi", cwd, spawnEnv)).toEqual({
+        installed: true,
+        reportsTurnStart: true,
+        hookTrustBypassEarned: false,
+      });
+
+      const spawnFile = path.join(spawnDir, "extensions", PI_EXTENSION_FILENAME);
+      expect(spawnFile).toBe(piExtensionPath(spawnEnv));
+      expect(fs.existsSync(spawnFile)).toBe(true);
+      expect(fs.readFileSync(spawnFile, "utf8")).toContain(PI_EXTENSION_MARKER);
+      // Daemon path must stay untouched — that is what Pi would never load.
+      expect(fs.existsSync(path.join(daemonDir, "extensions", PI_EXTENSION_FILENAME))).toBe(
+        false,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(daemonDir, { recursive: true, force: true });
+      fs.rmSync(spawnDir, { recursive: true, force: true });
+    }
+  });
+
+  it("reports Pi hooks uninstalled when the spawn-env extension path is not writable (#518 part 1)", () => {
+    const previous = process.env.PI_CODING_AGENT_DIR;
+    // A regular file where the agent dir should be: mkdir of .../extensions fails.
+    const blocker = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-block-"));
+    const notADir = path.join(blocker, "not-a-dir");
+    fs.writeFileSync(notADir, "not a directory\n");
+    try {
+      const spawnEnv: NodeJS.ProcessEnv = {
+        ...process.env,
+        PI_CODING_AGENT_DIR: notADir,
+      };
+      expect(installHarnessHooks("pi", cwd, spawnEnv)).toEqual({
+        installed: false,
+        reportsTurnStart: false,
+        hookTrustBypassEarned: false,
+      });
+      expect(fs.existsSync(path.join(notADir, "extensions", PI_EXTENSION_FILENAME))).toBe(false);
+    } finally {
+      if (previous === undefined) delete process.env.PI_CODING_AGENT_DIR;
+      else process.env.PI_CODING_AGENT_DIR = previous;
+      fs.rmSync(blocker, { recursive: true, force: true });
+    }
+  });
+
   it("replaces its own Pi extension on the next spawn and leaves the operator's alone", () => {
     const piDir = fs.mkdtempSync(path.join(os.tmpdir(), "ac-pi-agent-"));
     const previous = process.env.PI_CODING_AGENT_DIR;

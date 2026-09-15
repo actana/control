@@ -676,7 +676,9 @@ export class PtyCore {
       // clearest case of not earning it (issue 290).
       let hookTrustBypassEarned = false;
       if (hookEnv) {
-        const hooks = installHarnessHooks(plan.agent, plan.cwd);
+        // Pass the same spawn env the PTY inherits so Pi's writer resolves
+        // `$PI_CODING_AGENT_DIR` the way `pi` will (#518 part 1).
+        const hooks = installHarnessHooks(plan.agent, plan.cwd, env);
         hooksReportTurnStart = hooks.reportsTurnStart;
         hookTrustBypassEarned = hooks.hookTrustBypassEarned;
         // The env goes in whenever a file landed, even for a family whose

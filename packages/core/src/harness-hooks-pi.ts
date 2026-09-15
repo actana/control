@@ -247,9 +247,19 @@ export default function (pi) {
  * unused: a workspace-local install would load only after trust and would
  * itself trigger the trust prompt (ADR 0039). The managed marker is the whole
  * guard against clobbering an operator's own extension.
+ *
+ * `env` must be the environment the Pi PTY will inherit (the spawn env), not
+ * the Core daemon's `process.env`. Pi resolves `$PI_CODING_AGENT_DIR` from its
+ * own process; writing under the daemon's value while Pi reads a login-shell
+ * overlay leaves the extension unloaded and `installed: true` lying (#518).
+ * A failed write returns `false` so the Panel keeps its fallback armed.
  */
-export function installPiHooks(_cwd: string, slug: string): boolean {
-  const file = piExtensionPath();
+export function installPiHooks(
+  _cwd: string,
+  slug: string,
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
+  const file = piExtensionPath(env);
   let existing: string | null = null;
   try {
     existing = fs.readFileSync(file, "utf8");
