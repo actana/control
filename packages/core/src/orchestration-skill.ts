@@ -55,30 +55,41 @@ import {
 export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
   let entries: SkillInstallEntry[];
   try {
-    // Pi's `$PI_CODING_AGENT_DIR` is resolved here against the sanitized
-    // process env (login-shell overlay included), never frozen from
-    // `process.env` at module load in the shared table (#518 part 3).
-    const targets = withPiHomeMarkersResolved(
-      HARNESS_SKILL_TARGETS,
-      sanitizedProcessEnv(),
-      homeDir,
-    );
-    entries = ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
-      installOrchestrationSkill({
-        home: homeDir,
-        targets,
-        skillName,
-        marker: ORCHESTRATION_SKILL_MARKER,
-        files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},
-      }),
-    );
+    entries = installOrchestrationSkills(homeDir);
   } catch (err) {
     log.warn("core-skill.install-failed", {
       error: err instanceof Error ? err.message : String(err),
     });
     return [];
   }
+  reportSkillEntries(entries);
+  return entries;
+}
 
+/**
+ * The install itself, with no logging: the half that touches `homeDir`. It is
+ * what `core-home-ops` runs as `core` in the container (issue 559), where the
+ * daemon reads the entries back and calls {@link reportSkillEntries} itself.
+ * Throws when the install cannot run at all.
+ */
+export function installOrchestrationSkills(homeDir: string): SkillInstallEntry[] {
+  // Pi's `$PI_CODING_AGENT_DIR` is resolved here against the sanitized
+  // process env (login-shell overlay included), never frozen from
+  // `process.env` at module load in the shared table (#518 part 3).
+  const targets = withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, sanitizedProcessEnv(), homeDir);
+  return ORCHESTRATION_SKILL_NAMES.flatMap((skillName) =>
+    installOrchestrationSkill({
+      home: homeDir,
+      targets,
+      skillName,
+      marker: ORCHESTRATION_SKILL_MARKER,
+      files: ORCHESTRATION_SKILL_FILES[skillName] ?? {},
+    }),
+  );
+}
+
+/** One log line per write, refusal or failure; `current` is silent (see above). */
+export function reportSkillEntries(entries: readonly SkillInstallEntry[]): void {
   for (const entry of entries) {
     if (entry.outcome === "written") {
       log.info("core-skill.written", { harness: entry.harness, path: entry.path });
@@ -96,5 +107,4 @@ export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
       });
     }
   }
-  return entries;
 }
