@@ -38,6 +38,7 @@ beforeEach(() => {
   ctx = { home, roots: [home], env: { HOME: home } };
 });
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.unstubAllEnvs();
   fs.rmSync(base, { recursive: true, force: true });
 });
@@ -155,8 +156,14 @@ describe("path confinement: nothing outside the home is touched", () => {
     expect(filesUnder(sibling)).toEqual([]);
   });
 
-  it("refuses a relative path", () => {
+  it("refuses a relative path, even one that would resolve inside the home", () => {
+    fs.mkdirSync(path.join(home, "repos", "app"), { recursive: true });
+    // Resolved against the helper's own cwd (which `asCore` makes core's home), it
+    // would land in the home: it is refused anyway, because nothing relative is a
+    // path anybody chose.
+    vi.spyOn(process, "cwd").mockReturnValue(home);
     expect(refusal(() => handleCoreHomeOpSync(hooks("repos/app"), ctx)).code).toBe("path-escape");
+    expect(fs.existsSync(path.join(home, "repos", "app", ".claude"))).toBe(false);
   });
 
   it("refuses a symlink inside the home that points outside it, and does not follow it", () => {
