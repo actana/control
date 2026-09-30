@@ -46,6 +46,8 @@ vi.mock("node:fs", async (importOriginal) => {
 });
 
 import { disposePty, ensureClaudeShiftEnterBinding, PtyCore } from "../pty-manager";
+import { configureCoreHomeOps } from "../core-home-ops-client";
+import { cannedHelper, inProcessHelper } from "./core-home-ops-kit";
 
 const nodePty = createRequire(import.meta.url)("node-pty") as typeof import("node-pty");
 
@@ -64,6 +66,7 @@ beforeEach(() => {
   setprivPresent.value = true;
 });
 afterEach(() => {
+  configureCoreHomeOps(null);
   vi.unstubAllEnvs();
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -93,6 +96,7 @@ function core() {
 describe("PtyCore.spawn", () => {
   it("starts a VM shell as core: setpriv argv, no uid/gid options, core's env, core's home", async () => {
     inContainer();
+    configureCoreHomeOps(cannedHelper().options);
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await core().spawn({ taskId: "t1", shellSession: true } as never);
 
@@ -125,6 +129,7 @@ describe("PtyCore.spawn", () => {
 
   it("refuses to start the PTY when setpriv is missing", async () => {
     inContainer();
+    configureCoreHomeOps(cannedHelper().options);
     setprivPresent.value = false;
     const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
     await expect(core().spawn({ taskId: "t2", shellSession: true } as never)).rejects.toThrow(
@@ -192,13 +197,16 @@ describe("disposePty in container mode", () => {
 });
 
 describe("ensureClaudeShiftEnterBinding", () => {
-  it("writes into core's home, not the daemon's", () => {
+  it("writes into core's home, not the daemon's (through the helper)", () => {
     const coreHome = fs.mkdtempSync(path.join(os.tmpdir(), "core-home-"));
     const daemonHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-home-"));
     try {
       inContainer(coreHome);
       vi.stubEnv("HOME", daemonHome);
+      const helper = inProcessHelper(coreHome);
+      configureCoreHomeOps(helper.options);
       ensureClaudeShiftEnterBinding();
+      expect(helper.requests.map((r) => r.request.op)).toEqual(["ensureClaudeShiftEnterBinding"]);
       expect(fs.existsSync(path.join(coreHome, ".claude", "settings.json"))).toBe(true);
       expect(fs.existsSync(path.join(daemonHome, ".claude"))).toBe(false);
     } finally {
