@@ -9,7 +9,12 @@ import { EventEmitter } from "node:events";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "../core-files-routes";
-import { auditPairingRoutes, composeCoreHttpRoutes } from "../core-pairing-wiring";
+import {
+  auditPairingRoutes,
+  composeCoreHttpRoutes,
+  reportUnreadableRevocations,
+  revokedHandler,
+} from "../core-pairing-wiring";
 
 /** A family that claims whatever its prefix names, and records that it did. */
 function family(prefix: string, claimed: string[]): CoreHttpRoutes {
@@ -139,5 +144,73 @@ describe("auditPairingRoutes", () => {
     expect(line).not.toContain("secret");
     expect(line).not.toContain("ABCD-EFGH");
     expect(line).toContain("unknown");
+  });
+
+  it("writes one line when the response finishes and then closes", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+    routes.handle(req, res);
+    res.statusCode = 200;
+    Object.assign(res, { writableFinished: true });
+    res.emit("finish");
+    res.emit("close");
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith("pairing.attempt", expect.objectContaining({ outcome: "issued" }));
+  });
+
+  it("writes a line for a request that was destroyed or hung up, where finish never fires", () => {
+    const info = vi.spyOn(log, "info").mockImplementation(() => {});
+    const routes = auditPairingRoutes(family("/v1/pair/", []));
+    const { req, res } = exchange("203.0.113.9");
+    routes.handle(req, res);
+    res.statusCode = 200;
+    Object.assign(res, { writableFinished: false });
+    res.emit("close");
+    res.emit("close");
+
+    expect(info).toHaveBeenCalledTimes(1);
+    expect(info).toHaveBeenCalledWith(
+      "pairing.attempt",
+      expect.objectContaining({ outcome: "aborted", peer: "203.0.113.9" }),
+    );
+  });
+});
+
+describe("the fail-closed log line", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("is written when the seeding refresh could not read the store", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    expect(reportUnreadableRevocations({ ok: false, error: "pairing.json is not valid JSON" })).toBe(true);
+    expect(error).toHaveBeenCalledWith("core-pairing.revocation.unreadable", {
+      error: "pairing.json is not valid JSON",
+      effect: "every pairing refused",
+    });
+  });
+
+  it("is not written when the store was read", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    expect(reportUnreadableRevocations({ ok: true })).toBe(false);
+    expect(error).not.toHaveBeenCalled();
+  });
+
+  it("is written by onRevoked when the sweep reports fail-closed, and the links are still closed", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    let closed = 0;
+    revokedHandler(() => true, () => (closed += 1))();
+    expect(closed).toBe(1);
+    expect(error).toHaveBeenCalledWith("core-pairing.revocation.unreadable", expect.objectContaining({ effect: "every pairing refused" }));
+  });
+
+  it("is not written by onRevoked for an ordinary revocation", () => {
+    const error = vi.spyOn(log, "error").mockImplementation(() => {});
+    let closed = 0;
+    revokedHandler(() => false, () => (closed += 1))();
+    expect(closed).toBe(1);
+    expect(error).not.toHaveBeenCalled();
   });
 });

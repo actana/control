@@ -71,7 +71,13 @@ import {
 } from "./pty-manager";
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
-import { CORE_PAIRING_NAMES, auditPairingRoutes, composeCoreHttpRoutes } from "./core-pairing-wiring";
+import {
+  CORE_PAIRING_NAMES,
+  auditPairingRoutes,
+  composeCoreHttpRoutes,
+  reportUnreadableRevocations,
+  revokedHandler,
+} from "./core-pairing-wiring";
 import { createPairing } from "@actana/sdk/pairing/server";
 import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
 import { corePairingStore } from "./core-pairing-store";
@@ -623,10 +629,14 @@ async function startCore(): Promise<void> {
         // A label the operator left off `actana pair new` falls back to the
         // one the client sent, then to the session id, as it always has.
         clientLabel: "session-or-client",
-        // What a fresh revocation does: close that client's open links. The
-        // server does not exist yet, so this reaches it through the binding
-        // below rather than by name.
-        onRevoked: () => server.closeRevoked(),
+        // What a fresh revocation does: close that client's open links, and say
+        // so when the sweep found the store unreadable. The server does not
+        // exist yet, so this reaches it through the binding below rather than
+        // by name, and the set through `pairing`, which this call assigns.
+        onRevoked: revokedHandler(
+          () => pairing?.gate.revocations.isFailClosed() ?? false,
+          () => server.closeRevoked(),
+        ),
       });
       // The other half of `actana pair revoke` (#283). That command runs in the
       // CLI and can only stamp a row; this is the process that makes the stamp
@@ -639,8 +649,10 @@ async function startCore(): Promise<void> {
       // `startRevocationSweep` below schedules its own first read but does not
       // return it, so it is no guarantee that a revocation already on file is
       // known when the first request arrives. Awaiting one refresh ourselves is.
-      // An unreadable store leaves the set failing closed, as it should.
-      await pairing.gate.revocations.refresh();
+      // An unreadable store leaves the set failing closed, as it should, and
+      // says so in the log: every paired client is about to be refused, and the
+      // only other lines would name serials nobody revoked.
+      reportUnreadableRevocations(await pairing.gate.revocations.refresh());
 
       serverOpts.tls = {
         caCert: material.caCert,

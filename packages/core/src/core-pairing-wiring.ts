@@ -21,10 +21,16 @@ import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
 
 /**
- * What the pairing surface signs as. The certificate names are the ones
- * `generateCertMaterial` has always minted for a Core (they are how an
- * operator's `openssl x509` recognises one), and the bearer's `iss` is
- * `core:<coreId>` (#282) — the SDK's neutral defaults would change all three.
+ * What the pairing surface signs as.
+ *
+ * `createPairing` reads exactly one of these for redemption: `issPrefix`, so the
+ * bearer's `iss` stays `core:<coreId>` (#282) rather than the SDK's neutral
+ * `pairing:`. The CA it signs with comes from the persisted material, and the
+ * client certificate's subject from the session label, so `caCommonName` and
+ * `organizationName` do not affect what a redemption issues. They are here
+ * because the type asks for them and because they are the names
+ * `generateCertMaterial` has always minted a Core's CA with, which is what an
+ * operator's `openssl x509` recognises; keep them equal to that.
  */
 export const CORE_PAIRING_NAMES = {
   caCommonName: "mission-control-core-ca",
@@ -79,16 +85,62 @@ export function auditPairingRoutes(routes: CoreHttpRoutes): CoreHttpRoutes {
     (req: IncomingMessage, res: ServerResponse): boolean => {
       const claimed = inner(req, res);
       if (claimed) {
-        res.once("finish", () => {
+        // `finish` when the response went out whole; `close` covers a request
+        // the SDK destroyed (a body over its drain ceiling) or a client that
+        // hung up, where `finish` never fires. Both fire on a normal response,
+        // so the flag keeps it to one line.
+        let written = false;
+        const write = (aborted: boolean): void => {
+          if (written) return;
+          written = true;
           log.info("pairing.attempt", {
-            outcome: attemptOutcome(res.statusCode),
+            outcome: aborted ? "aborted" : attemptOutcome(res.statusCode),
             status: res.statusCode,
             peer: req.socket?.remoteAddress ?? "unknown",
             at: Date.now(),
           });
-        });
+        };
+        res.once("finish", () => write(false));
+        res.once("close", () => write(!res.writableFinished));
       }
       return claimed;
     };
   return { handle: audited(routes.handle), handleContinue: audited(routes.handleContinue) };
+}
+
+/** What one revocation refresh answered — the SDK's `RevocationRefresh`, as far as the log needs it. */
+export type RevocationRefreshResult = { ok: true } | { ok: false; error: string };
+
+/**
+ * Say so in the log when the revocation set could not be read.
+ *
+ * A Core in this state refuses every paired client (fail-closed), and the only
+ * other lines it writes are `core-link.*.revoked`, which name serials the
+ * operator never revoked. The SDK logs through a no-op sink, so this restores
+ * the 0.4.5 line (`core-pairing.revocation.unreadable`) from outside. Returns
+ * whether a line was written.
+ */
+export function reportUnreadableRevocations(result: RevocationRefreshResult): boolean {
+  if (result.ok) return false;
+  log.error("core-pairing.revocation.unreadable", { error: result.error, effect: "every pairing refused" });
+  return true;
+}
+
+/**
+ * The `onRevoked` the pairing surface calls: close the revoked clients' links,
+ * and, when the sweep called it because the store became unreadable, say so.
+ * The sweep calls it on a fresh revocation and on entering fail-closed, and
+ * `isFailClosed` tells the two apart. It is a getter because the set is built by
+ * the same call that takes this handler.
+ */
+export function revokedHandler(isFailClosed: () => boolean, closeRevoked: () => void): () => void {
+  return () => {
+    if (isFailClosed()) {
+      log.error("core-pairing.revocation.unreadable", {
+        error: "the pairing store could not be read on the last sweep",
+        effect: "every pairing refused",
+      });
+    }
+    closeRevoked();
+  };
 }
