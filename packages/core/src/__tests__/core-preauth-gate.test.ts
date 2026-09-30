@@ -7,7 +7,7 @@ import {
   coreLinkUpgradeGate,
   rejectUnauthorizedAtHandshake,
 } from "../core-preauth-gate";
-import { isPairingPath } from "../core-pairing-wiring";
+const isPairingPath = (pathname: string): boolean => pathname.startsWith("/v1/pair/");
 
 describe("clientCertGate", () => {
   it("serves anything to a connection that presented a verified certificate", () => {

@@ -1,54 +1,37 @@
-// How `core-entry` mounts the pairing endpoint beside the file routes, and what
-// the mTLS gate is told about it (#282).
+// How `core-entry` mounts the pairing endpoint beside the file routes (#282).
 //
-// `core-files-wiring.ts` exists because the one decision in the file routes'
-// wiring — are they gated by a bearer? — was got wrong when it lived inline in
-// `core-entry.ts`, which no test can import. This module exists for the same
-// reason and holds three decisions of its own, each of which is a security
+// The pairing endpoint itself — redemption, rate limit, revocation, the
+// endpoint a redemption hands back — is `@actana/sdk/pairing/server`'s, mounted
+// from `core-entry` with `createPairing`. What is left here is the one decision
+// about *this* server that the SDK cannot make for it, and it is a security
 // property rather than plumbing:
 //
-//   1. **Order.** The pairing family is consulted before the file family. The
-//      file routes claim the whole `/v1/` prefix, so a composition that asked
-//      them first would have them answer `/v1/pair/redeem` — with a `401`,
-//      since they require a bearer and a pairing client has none. Pairing would
-//      be unreachable, and the failure would look like an auth bug rather than
-//      a mounting bug.
-//   2. **Exactly one path is pre-auth.** {@link isPairingPath} is the predicate
-//      `core-preauth-gate.ts` consults, and it names the pairing prefix and
-//      nothing else. It is a function here rather than a string in the server
-//      so that the set of pre-auth paths has one definition.
-//   3. **A Core without pairing material mounts nothing.** No CA key, no
-//      endpoint to hand out — and, through the gate, no relaxation of the TLS
-//      handshake. The loopback Core is unchanged by this ticket.
-//   4. **Which address a redemption hands back is decided here, from the
-//      session and the configured list, and from nothing else** (#347). See
-//      {@link buildPairingEndpointResolver}: it is the second of the two places
-//      the "a pairing code can only name a host this certificate covers" rule
-//      is enforced, the first being `actana pair new` refusing to mint one.
+//   **Order.** The pairing family is consulted before the file family. The
+//   file routes claim the whole `/v1/` prefix, so a composition that asked them
+//   first would have them answer `/v1/pair/redeem` — with a `401`, since they
+//   require a bearer and a pairing client has none. Pairing would be
+//   unreachable, and the failure would look like an auth bug rather than a
+//   mounting bug.
+//
+// A Core without pairing material mounts nothing: no CA key, no endpoint to
+// hand out — and, through the gate, no relaxation of the TLS handshake. The
+// loopback Core is unchanged.
+import type { IncomingMessage, ServerResponse } from "node:http";
+import log from "@actana/shared/log";
 import type { CoreHttpRoutes } from "./core-files-routes";
-import { isConfiguredPublicHost, primaryPublicHost } from "@actana/shared/public-hosts";
-import type { PairingSession } from "@actana/shared/pairing-session";
-import {
-  CORE_PAIRING_ROUTE_PREFIX,
-  createCorePairingRequestHandler,
-  type CorePairingRoutesOptions,
-} from "./core-pairing-routes";
-
-/** Is this pathname the Core's pre-auth surface? The whole of it, and only it. */
-export function isPairingPath(pathname: string): boolean {
-  return pathname.startsWith(CORE_PAIRING_ROUTE_PREFIX);
-}
 
 /**
- * Build the pairing route family.
- *
- * A thin pass-through today, and kept anyway: `core-entry` reaches for a
- * wiring module rather than a route factory for every other surface it mounts,
- * and the day pairing grows a second decision this is where it goes.
+ * What the pairing surface signs as. The certificate names are the ones
+ * `generateCertMaterial` has always minted for a Core (they are how an
+ * operator's `openssl x509` recognises one), and the bearer's `iss` is
+ * `core:<coreId>` (#282) — the SDK's neutral defaults would change all three.
  */
-export function buildCorePairingRoutes(opts: CorePairingRoutesOptions): CoreHttpRoutes {
-  return createCorePairingRequestHandler(opts);
-}
+export const CORE_PAIRING_NAMES = {
+  caCommonName: "mission-control-core-ca",
+  clientCommonName: "mission-control-panel",
+  organizationName: "Mission Control",
+  issPrefix: "core:",
+} as const;
 
 /**
  * Compose several route families into the one surface the server mounts.
@@ -58,7 +41,7 @@ export function buildCorePairingRoutes(opts: CorePairingRoutesOptions): CoreHttp
  * already documents. Everything nobody claims still falls through to the
  * server's own 404, so the Core's HTTP surface stays a closed list.
  *
- * **Order is the argument order**, and decision 1 in this file's header is why
+ * **Order is the argument order**, and the note at the top of this file is why
  * that matters here rather than being a detail.
  */
 export function composeCoreHttpRoutes(...families: CoreHttpRoutes[]): CoreHttpRoutes {
@@ -68,46 +51,44 @@ export function composeCoreHttpRoutes(...families: CoreHttpRoutes[]): CoreHttpRo
   };
 }
 
-/** What a redemption's endpoint is built out of: this Core's own addresses. */
-export type PairingEndpointOptions = {
-  /**
-   * Every address this Core's server certificate covers, in the operator's
-   * order. The first is the primary.
-   */
-  publicHosts: readonly string[];
-  /** The port the core link listens on — the same one for every address. */
-  port: number;
-};
+/** What became of one redemption attempt, as far as its HTTP status can say. */
+function attemptOutcome(status: number): string {
+  if (status === 200) return "issued";
+  if (status === 429) return "rate-limited";
+  if (status >= 500) return "core-error";
+  if (status === 403) return "refused";
+  return "bad-request";
+}
 
 /**
- * Build the `endpointFor` the redeem route answers with (#347).
+ * Write one `pairing.attempt` line for every request the pairing surface
+ * answers, to the same log the Core has always used for it.
  *
- * Two rules, and both of them are the ticket:
- *
- * **The session decides, not the request.** The only input is the stored
- * pairing session — what `actana pair new` wrote on the machine that is the
- * Core. No header, no body field and no socket address reaches this function,
- * which is what keeps the property `core-pairing-routes.ts` has always had: a
- * client pins the address this Core chose for it, never one a caller supplied.
- *
- * **A session can only ever name a configured host.** `actana pair new`
- * refuses a `--public-host` that is not in the recorded list, so a session
- * carrying one is already impossible through the supported path. It is checked
- * again here anyway, because the two ends are a file apart and time passes
- * between them: an operator can shorten `ACTANA_PUBLIC_HOST` while a code
- * minted against the longer list is still live, and by then the certificate no
- * longer covers the address that code was going to hand back. Falling back to
- * the primary sends that client somewhere it can actually verify, where
- * honouring the stale value would hand it a name TLS is about to reject.
+ * `createPairing` in the SDK takes no audit sink, so the record the 0.4.x route
+ * wrote itself is written here from outside, from what is observable: when the
+ * response finishes, its status and the peer that asked. That is a narrower
+ * record than before — no internal `reason` (`wrong-code` against `expired`),
+ * no session id or label — and it is the whole of what a wrapper can see. What
+ * it keeps is the property that matters most: **every attempt leaves a line,
+ * and no line can hold the code or the CSR**, because neither the body nor the
+ * headers are read.
  */
-export function buildPairingEndpointResolver(
-  opts: PairingEndpointOptions,
-): (session: PairingSession) => string {
-  const primary = primaryPublicHost(opts.publicHosts);
-  return (session) => {
-    const chosen = session.endpointHost ?? "";
-    const host =
-      chosen.length > 0 && isConfiguredPublicHost(opts.publicHosts, chosen) ? chosen : primary;
-    return `wss://${host}:${opts.port}`;
-  };
+export function auditPairingRoutes(routes: CoreHttpRoutes): CoreHttpRoutes {
+  const audited =
+    (inner: (req: IncomingMessage, res: ServerResponse) => boolean) =>
+    (req: IncomingMessage, res: ServerResponse): boolean => {
+      const claimed = inner(req, res);
+      if (claimed) {
+        res.once("finish", () => {
+          log.info("pairing.attempt", {
+            outcome: attemptOutcome(res.statusCode),
+            status: res.statusCode,
+            peer: req.socket?.remoteAddress ?? "unknown",
+            at: Date.now(),
+          });
+        });
+      }
+      return claimed;
+    };
+  return { handle: audited(routes.handle), handleContinue: audited(routes.handleContinue) };
 }

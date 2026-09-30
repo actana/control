@@ -26,13 +26,13 @@ import { WebSocket } from "ws";
 import { generateCertMaterial, generateClientCsr } from "@actana/shared/core-cert-material";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { generatePairingCode } from "@actana/shared/pairing-code";
-import { createPairingSession } from "@actana/shared/pairing-session";
-import { PairingStore, derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
+import { derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
+import { createPairing } from "@actana/sdk/pairing/server";
+import { corePairingStore, type CorePairingStore } from "../core-pairing-store";
 import { PtyCoreLinkServer } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
-import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "../core-pairing-wiring";
-import { PairingRevocations } from "../core-pairing-revocation";
+import { CORE_PAIRING_NAMES, composeCoreHttpRoutes } from "../core-pairing-wiring";
 
 const SECRET = "core-revocation-suite-secret-at-least-32-bytes";
 const CORE_UUID = "0b1d2e3f-4a5b-6c7d-8e9f-0a1b2c3d4e5f";
@@ -49,9 +49,9 @@ type Rig = {
   origin: string;
   wsUrl: string;
   caCert: string;
-  store: PairingStore;
+  store: CorePairingStore;
   storeFile: string;
-  revocations: PairingRevocations;
+  revocations: ReturnType<typeof createPairing>["gate"]["revocations"];
   server: PtyCoreLinkServer;
   /** Redeem a fresh code and come back with a usable client credential. */
   pair(label?: string): Promise<Paired>;
@@ -166,22 +166,33 @@ async function startCore(): Promise<Rig> {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-revocation-transport-"));
   tempDirs.push(dir);
   const storeFile = path.join(dir, "pairing.json");
-  const store = new PairingStore(storeFile);
+  const store = corePairingStore(storeFile);
   const codeKey = derivePairingCodeKey(SECRET);
-  const revocations = new PairingRevocations(store);
-  revocations.refresh();
 
-  const pairingRoutes = buildCorePairingRoutes({
+  const pairing = createPairing({
+    store,
     material: {
       caCert: material.ca.cert,
       caKey: material.ca.key,
+      serverCert: material.server.cert,
+      serverKey: material.server.key,
+      clientCert: material.client.cert,
+      clientKey: material.client.key,
       bearerSecret: SECRET,
       coreId: "core_revocation",
       coreUuid: CORE_UUID,
+      serverHosts: ["127.0.0.1"],
     },
-    sessions: store,
-    endpointFor: () => `wss://127.0.0.1:${port}`,
+    endpointScheme: "wss",
+    port,
+    publicHosts: ["127.0.0.1"],
+    names: CORE_PAIRING_NAMES,
+    clientLabel: "session-or-client",
+    onRevoked: () => {},
   });
+  const revocations = pairing.gate.revocations;
+  await revocations.refresh();
+  const pairingRoutes = pairing.redeem;
   const fileRoutes = createCoreFilesRequestHandler({
     filesPort: { projectRoot: () => null },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
@@ -193,7 +204,7 @@ async function startCore(): Promise<Rig> {
     tls: { caCert: material.ca.cert, serverCert: material.server.cert, serverKey: material.server.key },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
     httpRoutes: composeCoreHttpRoutes(pairingRoutes, fileRoutes),
-    isPreAuthPath: isPairingPath,
+    isPreAuthPath: pairing.gate.isPreAuthPath,
     revocation: revocations,
   });
   live = server;
@@ -209,14 +220,12 @@ async function startCore(): Promise<Rig> {
     pair: async (label = "laptop") => {
       const code = generatePairingCode();
       const sessionId = `ps_${Math.random().toString(16).slice(2, 10)}`;
-      store.createSession(
-        createPairingSession({
-          id: sessionId,
-          label,
-          codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
-          now: Date.now(),
-        }),
-      );
+      await store.createSession({
+        id: sessionId,
+        label,
+        codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
+        now: Date.now(),
+      });
       const { csrPem, privateKeyPem } = await generateClientCsr(label);
       const res = await request(rig, "/v1/pair/redeem", {
         method: "POST",
@@ -246,9 +255,9 @@ async function startCore(): Promise<Rig> {
 }
 
 /** What `actana pair revoke` does, in the process that is not this one. */
-function revoke(rig: Rig, serial: string): void {
-  rig.store.revokeClient(serial.toLowerCase(), Date.now());
-  rig.revocations.refresh();
+async function revoke(rig: Rig, serial: string): Promise<void> {
+  await rig.store.revoke({ kind: "client", certSerial: serial.toLowerCase(), at: Date.now() });
+  await rig.revocations.refresh();
 }
 
 describe("a revoked certificate, over the real transport", () => {
@@ -261,7 +270,7 @@ describe("a revoked certificate, over the real transport", () => {
     const before = await request(rig, "/v1/projects/p1/files", { client });
     expect(before.status).not.toBe(403);
 
-    revoke(rig, client.serial);
+    await revoke(rig, client.serial);
 
     const after = await request(rig, "/v1/projects/p1/files", { client });
     expect(after.status).toBe(403);
@@ -275,7 +284,7 @@ describe("a revoked certificate, over the real transport", () => {
     const before = await dial(rig, client, client.bearer);
     expect(before.frames).toContain("authOk");
 
-    revoke(rig, client.serial);
+    await revoke(rig, client.serial);
 
     const after = await dial(rig, client, client.bearer);
     expect(after.frames).not.toContain("authOk");
@@ -286,7 +295,7 @@ describe("a revoked certificate, over the real transport", () => {
     const doomed = await rig.pair("doomed");
     const spared = await rig.pair("spared");
 
-    revoke(rig, doomed.serial);
+    await revoke(rig, doomed.serial);
 
     expect((await request(rig, "/v1/projects/p1/files", { client: doomed })).status).toBe(403);
     expect((await request(rig, "/v1/projects/p1/files", { client: spared })).status).not.toBe(403);
@@ -299,7 +308,7 @@ describe("a revoked certificate, over the real transport", () => {
     // revoked, and the operator's recovery path stays open.
     const rig = await startCore();
     const client = await rig.pair();
-    revoke(rig, client.serial);
+    await revoke(rig, client.serial);
 
     const res = await request(rig, "/v1/pair/redeem", { method: "POST", body: { nonsense: true } });
     expect(res.status).not.toBe(403);
@@ -309,14 +318,14 @@ describe("a revoked certificate, over the real transport", () => {
 describe("an unreadable pairing store, over the real transport", () => {
   it("refuses every paired client rather than serving them all", async () => {
     // The fail-closed guarantee, end to end. A half-written document is renamed
-    // into place — which is how `PairingStore` writes, so a truncated write
+    // into place — which is how the JSON-file store writes, so a truncated write
     // looks exactly like this — and the daemon re-reads it.
     const rig = await startCore();
     const client = await rig.pair();
     expect((await request(rig, "/v1/projects/p1/files", { client })).status).not.toBe(403);
 
     fs.writeFileSync(rig.storeFile, '{"version":1,"sessions":[],"clients":[{"certSerial"');
-    expect(rig.revocations.refresh().ok).toBe(false);
+    expect((await rig.revocations.refresh()).ok).toBe(false);
 
     expect((await request(rig, "/v1/projects/p1/files", { client })).status).toBe(403);
     expect((await dial(rig, client, client.bearer)).frames).not.toContain("authOk");
@@ -328,11 +337,11 @@ describe("an unreadable pairing store, over the real transport", () => {
     const good = fs.readFileSync(rig.storeFile, "utf8");
 
     fs.writeFileSync(rig.storeFile, "{ not json");
-    rig.revocations.refresh();
+    await rig.revocations.refresh();
     expect((await request(rig, "/v1/projects/p1/files", { client })).status).toBe(403);
 
     fs.writeFileSync(rig.storeFile, good);
-    rig.revocations.refresh();
+    await rig.revocations.refresh();
     expect((await request(rig, "/v1/projects/p1/files", { client })).status).not.toBe(403);
   }, 30_000);
 });

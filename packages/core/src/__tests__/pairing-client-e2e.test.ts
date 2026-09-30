@@ -1,11 +1,17 @@
-// SDK pairing, against a real Core (#284).
+// The published pairing client, against a real Core (#284).
+//
+// This suite used to live in `packages/sdk`, beside the client it drove. The
+// client ships from actana/client now, so the half that needs a Core moved here:
+// it is the check that the `@actana/sdk` a Panel or the CLI pairs with and the
+// `@actana/sdk` the Core answers with still agree on the wire.
 //
 // Everything the client claims here is a claim about an exchange, so almost
 // nothing below is stubbed: the server is the Core's own `PtyCoreLinkServer`
-// with the Core's own pairing routes mounted through its own wiring, the
+// with the SDK's pairing surface mounted the way `core-entry.ts` mounts it, the
 // certificates come from `generateCertMaterial` (what `actana setup` writes),
-// the sessions go into the `PairingStore` the operator's `actana pair new` will
-// write, and the client is `pairWithCore` with nothing patched underneath it.
+// the sessions go into the JSON-file store the operator's `actana pair new`
+// will write, and the client is `pairWithCore` with nothing patched underneath
+// it.
 //
 // Two things are staged rather than real, and both are staged because the
 // property under test cannot be observed otherwise:
@@ -32,44 +38,27 @@ import { afterEach, describe, expect, it } from "vitest";
 import { generateCertMaterial, issueServerCert } from "@actana/shared/core-cert-material";
 import { verifyBearer } from "@actana/shared/core-link-bearer";
 import { generatePairingCode } from "@actana/shared/pairing-code";
-import { createPairingSession } from "@actana/shared/pairing-session";
-import { PairingStore, derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
-import type { CoreHttpRoutes } from "@actana/core/core-files-routes";
-import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
-import { PairingRateLimiter } from "@actana/core/core-pairing-rate-limit";
-import { buildCorePairingRoutes, composeCoreHttpRoutes, isPairingPath } from "@actana/core/core-pairing-wiring";
-import { CORE_PAIRING_REDEEM_PATH as CORE_ROUTE_REDEEM_PATH } from "@actana/core/core-pairing-routes";
-import type {
-  CorePairingRedeemRequest,
-  CorePairingRedeemResponse,
-} from "../core-pairing-wire.ts";
-import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
-import type { PtyCore, PtyCoreEvent } from "@actana/core/pty-manager";
+import { derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
+import { createPairing } from "@actana/sdk/pairing/server";
 import {
   CORE_PAIRING_REDEEM_PATH,
-  CorePairingError,
+  PairingError,
+  coreConnectionFromBlob,
   fetchCorePairingIdentity,
   fingerprintOf,
   pairWithCore,
   parsePairingTicket,
-  type CorePairingFailure,
-} from "../core-pairing";
-import { coreConnectionFromBlob, type CoreRegistrationBlob } from "../core-registration-blob";
-import { createNodeCoreLinkSocket } from "../core-link-socket";
+  type CoreRegistrationBlob,
+  type PairingFailure,
+} from "@actana/sdk/pairing";
+import { createNodeCoreLinkSocket } from "@actana/sdk/core";
+import { createCoreFilesRequestHandler, type CoreHttpRoutes } from "../core-files-routes";
+import { CORE_PAIRING_NAMES, composeCoreHttpRoutes } from "../core-pairing-wiring";
+import { corePairingStore, type CorePairingStore } from "../core-pairing-store";
+import { PtyCoreLinkServer } from "../pty-core-link-server";
+import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 
-/**
- * The audit line, as this suite reads it — one field, and it is the one #282
- * refuses to put on the wire.
- *
- * Declared rather than imported from the Core. #297 moves that module to
- * `packages/shared`, and the two branches merge cleanly: git would report no
- * conflict while leaving an import of a file that no longer exists, and because
- * it was an `import type` the vitest run would not have caught it either. A
- * structural read of one field costs nothing and survives the move.
- */
-type PairingAuditLine = { outcome: string; reason?: string };
-
-const SECRET = "sdk-pairing-suite-secret-at-least-32-bytes";
+const SECRET = "core-pairing-client-suite-secret-32-bytes";
 const CORE_UUID = "9c1f4a5e-3f6d-0f0a-6c1f-1d0a5b7e9c31";
 
 /** What the pairing endpoint was actually sent, byte for byte. */
@@ -80,11 +69,10 @@ type Rig = {
   origin: string;
   caCert: string;
   fingerprint: string;
-  audit: PairingAuditLine[];
   wire: WireLog;
-  clock: { now: number };
-  openSession(opts?: { label?: string; ttlMs?: number }): { sessionId: string; code: string };
-  store: PairingStore;
+  openSession(opts?: { label?: string; ttlMs?: number; now?: number }): Promise<{ sessionId: string; code: string }>;
+  sessionOf(sessionId: string): Promise<{ attempts: number } | undefined>;
+  store: CorePairingStore;
 };
 
 let server: PtyCoreLinkServer | null = null;
@@ -151,31 +139,37 @@ function recording(inner: CoreHttpRoutes, wire: WireLog): CoreHttpRoutes {
   return { handle: tee(inner.handle), handleContinue: tee(inner.handleContinue) };
 }
 
-async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promise<Rig> {
+async function startCore(): Promise<Rig> {
   const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
   const port = await freePort();
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-sdk-pairing-"));
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-core-pairing-client-"));
   tempDirs.push(dir);
-  const store = new PairingStore(path.join(dir, "pairing.json"));
-  const audit: PairingAuditLine[] = [];
+  const store = corePairingStore(path.join(dir, "pairing.json"));
   const wire: WireLog = { requests: 0, bodies: [] };
-  const clock = { now: Date.now() };
   const codeKey = derivePairingCodeKey(SECRET);
 
-  const pairingRoutes = buildCorePairingRoutes({
+  const pairing = createPairing({
+    store,
     material: {
       caCert: material.ca.cert,
       caKey: material.ca.key,
+      serverCert: material.server.cert,
+      serverKey: material.server.key,
+      clientCert: material.client.cert,
+      clientKey: material.client.key,
       bearerSecret: SECRET,
       coreId: "core_pairing",
       coreUuid: CORE_UUID,
+      serverHosts: ["127.0.0.1"],
     },
-    sessions: store,
-    endpointFor: () => `wss://127.0.0.1:${port}`,
-    now: () => clock.now,
-    audit: (event) => audit.push(event),
-    ...(opts.rateLimiter ? { rateLimiter: opts.rateLimiter } : {}),
+    endpointScheme: "wss",
+    port,
+    publicHosts: ["127.0.0.1"],
+    names: CORE_PAIRING_NAMES,
+    clientLabel: "session-or-client",
+    onRevoked: () => {},
   });
+  const pairingRoutes = pairing.redeem;
 
   const fileRoutes = createCoreFilesRequestHandler({
     filesPort: { projectRoot: () => null },
@@ -192,7 +186,7 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
     },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
     httpRoutes: composeCoreHttpRoutes(recording(pairingRoutes, wire), fileRoutes),
-    isPreAuthPath: isPairingPath,
+    isPreAuthPath: pairing.gate.isPreAuthPath,
   });
 
   const rig: Rig = {
@@ -200,30 +194,26 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
     origin: `https://127.0.0.1:${port}`,
     caCert: material.ca.cert,
     fingerprint: fingerprintOf(new X509Certificate(material.ca.cert).raw),
-    audit,
     wire,
-    clock,
     store,
-    openSession: ({ label = "laptop", ttlMs } = {}) => {
+    sessionOf: async (sessionId) => (await store.listSessions()).find((session) => session.id === sessionId),
+    openSession: async ({ label = "laptop", ttlMs, now } = {}) => {
       const code = generatePairingCode();
       const sessionId = `ps_${Math.random().toString(16).slice(2, 10)}`;
-      store.createSession(
-        createPairingSession({
-          id: sessionId,
-          label,
-          codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
-          now: clock.now,
-          ...(ttlMs === undefined ? {} : { ttlMs }),
-        }),
-        clock.now,
-      );
+      await store.createSession({
+        id: sessionId,
+        label,
+        codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
+        now: now ?? Date.now(),
+        ...(ttlMs === undefined ? {} : { ttlMs }),
+      });
       return { sessionId, code };
     },
   };
 
   // Readiness is observed rather than awaited, as the Core's own suite does —
   // and on a route that is not the pairing one, so no probe spends a rate-limit
-  // attempt or writes an audit line before a test has started.
+  // attempt before a test has started.
   const deadline = Date.now() + 10_000;
   for (;;) {
     try {
@@ -247,11 +237,11 @@ async function startCore(opts: { rateLimiter?: PairingRateLimiter } = {}): Promi
 }
 
 /** The pairing failure of a call that must not have produced a blob. */
-async function failureOf(promise: Promise<unknown>): Promise<CorePairingError> {
+async function failureOf(promise: Promise<unknown>): Promise<PairingError> {
   try {
     await promise;
   } catch (err) {
-    if (err instanceof CorePairingError) return err;
+    if (err instanceof PairingError) return err;
     throw err;
   }
   throw new Error("expected the pairing attempt to fail, and it did not");
@@ -295,7 +285,7 @@ function privateKeyPublicHalf(keyPem: string): string {
 describe("a client with a code pairs with a Core it has verified", () => {
   it("returns a blob assembled from the response and the key that never moved", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession({ label: "laptop" });
+    const { sessionId, code } = await rig.openSession({ label: "laptop" });
 
     const blob = await pairWithCore({
       address: rig.address,
@@ -324,7 +314,7 @@ describe("a client with a code pairs with a Core it has verified", () => {
 
   it("sends the CSR and never the private key", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const blob = await pairWithCore({
       address: rig.address,
@@ -356,7 +346,7 @@ describe("a client with a code pairs with a Core it has verified", () => {
     // straight into `coreConnectionFromBlob` with no conversion, and what comes
     // out of that dials the same socket every Core client dials.
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const blob = await pairWithCore({
       address: rig.address,
@@ -373,7 +363,7 @@ describe("a client with a code pairs with a Core it has verified", () => {
 
   it("accepts the fingerprint in the shapes a human copies it in", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const blob = await pairWithCore({
       address: `https://${rig.address}`,
@@ -411,14 +401,14 @@ describe("the fingerprint is checked before the code is sent", () => {
 
   it("aborts on a mismatch, naming both fingerprints, with the Core never asked", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const wrong = "AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99";
 
     const failure = await failureOf(
       pairWithCore({ address: rig.address, sessionId, code, expectedCaFingerprint: wrong }),
     );
 
-    expect(failure.failure).toBe<CorePairingFailure>("fingerprint-mismatch");
+    expect(failure.failure).toBe<PairingFailure>("fingerprint-mismatch");
     expect(failure.message).toContain(wrong);
     expect(failure.message).toContain(rig.fingerprint);
     expect(failure.detail.expectedFingerprint).toBe(wrong);
@@ -428,19 +418,18 @@ describe("the fingerprint is checked before the code is sent", () => {
     // the endpoint was never reached, so the code was never on the wire.
     expect(rig.wire.requests).toBe(0);
     expect(rig.wire.bodies).toEqual([]);
-    expect(rig.audit).toEqual([]);
     // And the session is untouched: no attempt was spent on a Core the operator
     // never described.
-    expect(rig.store.getSession(sessionId)?.attempts).toBe(0);
+    expect((await rig.sessionOf(sessionId))?.attempts).toBe(0);
   }, 30_000);
 
   it("refuses to send a code when it was given no fingerprint to check", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const failure = await failureOf(pairWithCore({ address: rig.address, sessionId, code }));
 
-    expect(failure.failure).toBe<CorePairingFailure>("fingerprint-unconfirmed");
+    expect(failure.failure).toBe<PairingFailure>("fingerprint-unconfirmed");
     expect(failure.detail.presentedFingerprint).toBe(rig.fingerprint);
     expect(failure.detail.presentedCaCert).toContain("BEGIN CERTIFICATE");
     expect(rig.wire.requests).toBe(0);
@@ -453,7 +442,7 @@ describe("every refusal a caller can act on is a different failure", () => {
     // them. Sharing the rig is deliberate: the point is that the *same* client
     // call reports four different things.
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const wrongCode = await failureOf(
       pairWithCore({
@@ -463,13 +452,12 @@ describe("every refusal a caller can act on is a different failure", () => {
         expectedCaFingerprint: rig.fingerprint,
       }),
     );
-    expect(wrongCode.failure).toBe<CorePairingFailure>("refused");
+    expect(wrongCode.failure).toBe<PairingFailure>("refused");
     expect(wrongCode.detail.status).toBe(403);
     expect(wrongCode.detail.coreCode).toBe("pairing-refused");
     // The Core knows which of the four it was. The client is told one thing on
-    // purpose (`core-pairing-routes.ts`: "every refusal is the same refusal"),
-    // and the distinction lives in the audit log the operator owns.
-    expect(rig.audit.at(-1)?.reason).toBe("wrong-code");
+    // purpose ("every refusal is the same refusal"), which is what the four
+    // refusals below have in common.
 
     const good = await pairWithCore({
       address: rig.address,
@@ -483,12 +471,10 @@ describe("every refusal a caller can act on is a different failure", () => {
     const replay = await failureOf(
       pairWithCore({ address: rig.address, sessionId, code, expectedCaFingerprint: rig.fingerprint }),
     );
-    expect(replay.failure).toBe<CorePairingFailure>("refused");
-    expect(rig.audit.at(-1)?.reason).toBe("already-consumed");
+    expect(replay.failure).toBe<PairingFailure>("refused");
 
-    // An expired session, by moving the Core's clock rather than waiting.
-    const expiring = rig.openSession({ ttlMs: 60_000 });
-    rig.clock.now += 120_000;
+    // An expired session, minted two minutes ago with a one-minute life.
+    const expiring = await rig.openSession({ ttlMs: 60_000, now: Date.now() - 120_000 });
     const expired = await failureOf(
       pairWithCore({
         address: rig.address,
@@ -497,8 +483,7 @@ describe("every refusal a caller can act on is a different failure", () => {
         expectedCaFingerprint: rig.fingerprint,
       }),
     );
-    expect(expired.failure).toBe<CorePairingFailure>("refused");
-    expect(rig.audit.at(-1)?.reason).toBe("expired");
+    expect(expired.failure).toBe<PairingFailure>("refused");
 
     // An unknown session — the same refusal again, and no leak of whether it
     // ever existed.
@@ -510,42 +495,37 @@ describe("every refusal a caller can act on is a different failure", () => {
         expectedCaFingerprint: rig.fingerprint,
       }),
     );
-    expect(unknown.failure).toBe<CorePairingFailure>("refused");
+    expect(unknown.failure).toBe<PairingFailure>("refused");
   }, 60_000);
 
   it("reports a spent attempt cap as a refusal, and a rate limit as its own failure", async () => {
-    // A limiter tight enough to trip inside a test, and generous enough to let
-    // the five wrong attempts before it through.
-    const limiter = new PairingRateLimiter({
-      peer: { limit: 6, windowMs: 60_000 },
-      global: { limit: 100, windowMs: 60_000 },
-    });
-    const rig = await startCore({ rateLimiter: limiter });
-    const { sessionId, code } = rig.openSession();
+    const rig = await startCore();
+    const { sessionId, code } = await rig.openSession();
     const wrong = code === "AAAA-AAAA" ? "BBBB-BBBB" : "AAAA-AAAA";
 
     for (let attempt = 0; attempt < 5; attempt += 1) {
       const refusal = await failureOf(
         pairWithCore({ address: rig.address, sessionId, code: wrong, expectedCaFingerprint: rig.fingerprint }),
       );
-      expect(refusal.failure).toBe<CorePairingFailure>("refused");
+      expect(refusal.failure).toBe<PairingFailure>("refused");
     }
-    expect(rig.audit.at(-1)?.reason).toBe("wrong-code");
 
     // The session is dead now, and the right code no longer works — still one
-    // refusal, still nothing said about which defence answered.
-    const dead = await failureOf(
-      pairWithCore({ address: rig.address, sessionId, code, expectedCaFingerprint: rig.fingerprint }),
-    );
-    expect(dead.failure).toBe<CorePairingFailure>("refused");
-    expect(rig.audit.at(-1)?.reason).toBe("attempts-exhausted");
+    // refusal, still nothing said about which defence answered. Attempts six to
+    // ten spend the rest of the peer's window (ten a minute, the SDK's default).
+    for (let attempt = 5; attempt < 10; attempt += 1) {
+      const dead = await failureOf(
+        pairWithCore({ address: rig.address, sessionId, code, expectedCaFingerprint: rig.fingerprint }),
+      );
+      expect(dead.failure).toBe<PairingFailure>("refused");
+    }
 
     // And one more trips the limiter, which the Core *does* distinguish,
     // because a client that waits is not a client that guessed.
     const limited = await failureOf(
       pairWithCore({ address: rig.address, sessionId, code, expectedCaFingerprint: rig.fingerprint }),
     );
-    expect(limited.failure).toBe<CorePairingFailure>("rate-limited");
+    expect(limited.failure).toBe<PairingFailure>("rate-limited");
     expect(limited.detail.status).toBe(429);
     expect(limited.detail.retryAfterSeconds).toBeGreaterThan(0);
   }, 60_000);
@@ -563,7 +543,7 @@ describe("every refusal a caller can act on is a different failure", () => {
       }),
     );
 
-    expect(failure.failure).toBe<CorePairingFailure>("unreachable");
+    expect(failure.failure).toBe<PairingFailure>("unreachable");
     expect(failure.message).toContain(String(port));
   }, 30_000);
 
@@ -607,7 +587,7 @@ describe("every refusal a caller can act on is a different failure", () => {
     // mistake, and redeeming against the wrong session fails in a way that
     // looks exactly like a mistyped code.
     const clash = (): unknown => parsePairingTicket("ps_7f3a:ABCD-EFGH", "ps_other");
-    expect(clash).toThrow(CorePairingError);
+    expect(clash).toThrow(PairingError);
     expect(clash).toThrow(/must agree/);
   });
 });
@@ -682,7 +662,7 @@ describe("the redemption dial is pinned to the certificate authority that matche
       }),
     );
 
-    expect(failure.failure).toBe<CorePairingFailure>("fingerprint-mismatch");
+    expect(failure.failure).toBe<PairingFailure>("fingerprint-mismatch");
     // The pin refusing, by name: OpenSSL finds the pinned CA by subject and the
     // impostor's signature does not check out against it.
     expect(failure.detail.tlsCode).toBe("CERT_SIGNATURE_FAILURE");
@@ -718,7 +698,7 @@ describe("the redemption dial is pinned to the certificate authority that matche
       }),
     );
 
-    expect(failure.failure).toBe<CorePairingFailure>("fingerprint-mismatch");
+    expect(failure.failure).toBe<PairingFailure>("fingerprint-mismatch");
     expect(stub.requests).toBe(1);
   }, 30_000);
 });
@@ -749,7 +729,7 @@ describe("a certificate problem is not an accusation", () => {
       }),
     );
 
-    expect(failure.failure).toBe<CorePairingFailure>("hostname-mismatch");
+    expect(failure.failure).toBe<PairingFailure>("hostname-mismatch");
     expect(failure.detail.tlsCode).toBe("ERR_TLS_CERT_ALTNAME_INVALID");
     expect(failure.message).toContain("127.0.0.2");
     // Said plainly, because the wrong sentence here costs an operator an
@@ -781,7 +761,7 @@ describe("a certificate problem is not an accusation", () => {
       }),
     );
 
-    expect(failure.failure).toBe<CorePairingFailure>("certificate-invalid");
+    expect(failure.failure).toBe<PairingFailure>("certificate-invalid");
     expect(failure.detail.tlsCode).toBe("CERT_HAS_EXPIRED");
     expect(stub.requests).toBe(0);
   }, 30_000);
@@ -792,7 +772,7 @@ describe("answers that are not a Core's", () => {
     status: number;
     body: string;
     headers?: Record<string, string>;
-  }): Promise<CorePairingError> {
+  }): Promise<PairingError> {
     const material = await generateCertMaterial({ hosts: ["127.0.0.1"] });
     const stub = await startStub({
       cert: { cert: material.server.cert, key: material.server.key, ca: material.ca.cert },
@@ -811,37 +791,37 @@ describe("answers that are not a Core's", () => {
 
   it("tells a Core with no pairing endpoint from one that failed, and both from a bad answer", async () => {
     const missing = await failureAgainst({ status: 404, body: JSON.stringify({ code: "not-found", error: "no route" }) });
-    expect(missing.failure).toBe<CorePairingFailure>("not-pairable");
+    expect(missing.failure).toBe<PairingFailure>("not-pairable");
     expect(missing.detail.status).toBe(404);
 
     const broken = await failureAgainst({
       status: 500,
       body: JSON.stringify({ code: "core-error", error: "this Core could not sign the request" }),
     });
-    expect(broken.failure).toBe<CorePairingFailure>("core-error");
+    expect(broken.failure).toBe<PairingFailure>("core-error");
 
     const rejected = await failureAgainst({
       status: 400,
       body: JSON.stringify({ code: "bad-request", error: "the CSR was not acceptable" }),
     });
-    expect(rejected.failure).toBe<CorePairingFailure>("rejected");
+    expect(rejected.failure).toBe<PairingFailure>("rejected");
     expect(rejected.message).toContain("the CSR was not acceptable");
 
     const garbage = await failureAgainst({ status: 200, body: "not json at all" });
-    expect(garbage.failure).toBe<CorePairingFailure>("malformed-response");
+    expect(garbage.failure).toBe<PairingFailure>("malformed-response");
 
     const incomplete = await failureAgainst({ status: 200, body: JSON.stringify({ endpoint: "wss://x:1" }) });
-    expect(incomplete.failure).toBe<CorePairingFailure>("malformed-response");
+    expect(incomplete.failure).toBe<PairingFailure>("malformed-response");
     expect(incomplete.message).toContain("caCert");
 
     // `JSON.parse("null")` succeeds, and so does an array. Both used to reach
     // the field sweep, where `null` threw a raw `TypeError` past the failure
     // union every caller of this module switches on.
     const nulled = await failureAgainst({ status: 200, body: "null" });
-    expect(nulled.failure).toBe<CorePairingFailure>("malformed-response");
+    expect(nulled.failure).toBe<PairingFailure>("malformed-response");
 
     const listed = await failureAgainst({ status: 200, body: "[]" });
-    expect(listed.failure).toBe<CorePairingFailure>("malformed-response");
+    expect(listed.failure).toBe<PairingFailure>("malformed-response");
   }, 60_000);
 
   it("refuses a credential for a plaintext endpoint", async () => {
@@ -859,83 +839,7 @@ describe("answers that are not a Core's", () => {
       }),
     });
 
-    expect(failure.failure).toBe<CorePairingFailure>("malformed-response");
+    expect(failure.failure).toBe<PairingFailure>("malformed-response");
     expect(failure.message).toContain("ws://127.0.0.1:9443");
   }, 30_000);
-});
-
-describe("nothing this package ships stays unverified", () => {
-  it("has exactly one unverified dial, and it is the bootstrap one", () => {
-    // The rule #284 states as "no code path leaves `rejectUnauthorized: false`
-    // in place for anything after the fingerprint check", read off the source
-    // rather than inferred from behaviour: a second one could be added tomorrow
-    // in a path no test happens to drive, and this is what would fail.
-    const src = path.resolve(import.meta.dirname, "..");
-    const shipped = fs
-      .readdirSync(src, { withFileTypes: true })
-      .filter((entry) => entry.isFile() && entry.name.endsWith(".ts") && !entry.name.endsWith(".test.ts"));
-
-    const relaxed: string[] = [];
-    for (const entry of shipped) {
-      const lines = fs.readFileSync(path.join(src, entry.name), "utf8").split("\n");
-      for (const [index, line] of lines.entries()) {
-        // Comments out: this file argues about the flag in prose, and prose is
-        // not a code path.
-        if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;
-        if (/rejectUnauthorized:\s*false/.test(line)) relaxed.push(`${entry.name}:${index + 1}`);
-      }
-    }
-
-    expect(relaxed).toHaveLength(1);
-    expect(relaxed[0]).toMatch(/^core-pairing\.ts:/);
-
-    // And it is inside the bootstrap dial — the one function that runs before
-    // there is anything to verify against, and sends nothing.
-    const source = fs.readFileSync(path.join(src, "core-pairing.ts"), "utf8");
-    const bootstrap = source.slice(source.indexOf("function presentedChain"), source.indexOf("function chainOf"));
-    expect(bootstrap).toContain("rejectUnauthorized: false");
-  });
-});
-
-describe("the route this client posts to", () => {
-  it("is the one the Core mounts", () => {
-    // Two constants, one string, and a mismatch that would be a 404 in
-    // production and nothing at all in a suite that declared its own.
-    expect(CORE_PAIRING_REDEEM_PATH).toBe("/v1/pair/redeem");
-    expect(isPairingPath(CORE_PAIRING_REDEEM_PATH)).toBe(true);
-  });
-
-  it("is one constant now, not two that agree", () => {
-    // #306's review: the path was pinned by this suite, but the request and
-    // response shapes around it were a hand-kept mirror. Both sides now import
-    // `@actana/sdk/core-pairing-wire`, so this asserts identity rather than
-    // equality — a Core that redeclared the string would fail here.
-    expect(CORE_PAIRING_REDEEM_PATH).toBe(CORE_ROUTE_REDEEM_PATH);
-  });
-});
-
-describe("the redeem contract has one definition (ADR 0025 D3)", () => {
-  // These do nothing at runtime. They fail at *compile* time if the Core's use
-  // of the redeem shapes stops matching the SDK's declaration of them, which is
-  // the failure a mirror cannot produce: it disagrees on a wire instead.
-  it("types the Core's 200 body as the SDK's response type", () => {
-    const answer: CorePairingRedeemResponse = {
-      endpoint: "wss://core.test:9444",
-      caCert: "-----BEGIN CERTIFICATE-----",
-      clientCert: "-----BEGIN CERTIFICATE-----",
-      bearer: "bearer.value",
-    };
-    // Every field the Core sends, and no fifth one — the key is not here.
-    expect(Object.keys(answer).sort()).toEqual(["bearer", "caCert", "clientCert", "endpoint"]);
-  });
-
-  it("types the request the client posts as the shape the Core parses", () => {
-    const body: CorePairingRedeemRequest = {
-      sessionId: "ps_1",
-      code: "ABCD2345",
-      client: { label: "laptop", platform: "linux" },
-      csr: "-----BEGIN CERTIFICATE REQUEST-----",
-    };
-    expect(Object.keys(body).sort()).toEqual(["client", "code", "csr", "sessionId"]);
-  });
 });
