@@ -444,6 +444,9 @@ const setuidLeft = docker(
   ["run", "--rm", "-u", "0", "--entrypoint", "find", image, "/", "-xdev", "-type", "f", "-perm", "/6000"],
   { allowFailure: true },
 );
+if (setuidLeft.status !== 0) {
+  die(`setuid/setgid scan exited ${setuidLeft.status}:\n${setuidLeft.stderr}`);
+}
 if ((setuidLeft.stdout ?? "").trim()) {
   die(`image still has setuid/setgid files:\n${setuidLeft.stdout}`);
 }
@@ -536,25 +539,42 @@ if (noNewPrivs !== "1") {
 }
 log("daemon uids/gids/groups/caps/NoNewPrivs look clean");
 
-// Prep as root one-shot with a hostile PATH and CORE_HOME — must leave /etc
-// root-owned and home paths 1000:1000, and must not run a fake volume binary.
+// Prep as root one-shot with the compose capability set (CHOWN + DAC_OVERRIDE)
+// plus a hostile PATH and CORE_HOME — must leave /etc root-owned and home
+// paths 1000:1000, and must not run a fake volume binary.
 const marker = `${CORE_HOME}/.local/share/actana/fake-stat.log`;
 core.exec([
   "sh",
   "-c",
   [
     `mkdir -p ${CORE_HOME}/.local/bin ${CORE_HOME}/.local/share/actana`,
-    `printf '%s\\n' '#!/bin/sh' 'echo FAKE_STAT_RAN_AS_$(id -u) >> ${marker}' 'exec /usr/bin/stat "$@"' > ${CORE_HOME}/.local/bin/stat`,
+    `printf '%s\\n' '#!/bin/sh' 'echo FAKE_STAT_RAN_AS_$(/usr/bin/id -u) >> ${marker}' 'exec /usr/bin/stat "$@"' > ${CORE_HOME}/.local/bin/stat`,
     `chmod +x ${CORE_HOME}/.local/bin/stat`,
     `rm -f ${marker}`,
   ].join(" && "),
 ]);
+// Compose capability set that ships: CHOWN + DAC_OVERRIDE, no-new-privs, no net.
+const coreInitCaps = [
+  "--cap-drop",
+  "ALL",
+  "--cap-add",
+  "CHOWN",
+  "--cap-add",
+  "DAC_OVERRIDE",
+  "--security-opt",
+  "no-new-privileges:true",
+  "--network",
+  "none",
+];
 const hostileScript = [
   `export PATH=${CORE_HOME}/.local/bin:/usr/sbin:/usr/bin`,
   "export CORE_HOME=/etc",
   "export CORE_UID=0",
-  "/usr/local/libexec/core-fs-prep.sh",
-  `stat -c '%u:%g %n' /etc ${CORE_HOME} ${CORE_HOME}/shared`,
+  "prep_rc=0",
+  "/usr/local/libexec/core-fs-prep.sh || prep_rc=$?",
+  // Hard-code paths in the assertion so a hostile CORE_HOME cannot redirect them.
+  "stat -c '%u:%g %n' /etc /home/core /home/core/shared",
+  'exit "$prep_rc"',
 ].join("; ");
 const prepHostile = docker(
   [
@@ -562,6 +582,7 @@ const prepHostile = docker(
     "--rm",
     "-u",
     "0",
+    ...coreInitCaps,
     "--entrypoint",
     "sh",
     "--volume",
@@ -576,14 +597,16 @@ const hostileOut = `${prepHostile.stdout ?? ""}${prepHostile.stderr ?? ""}`;
 if (prepHostile.status !== 0) {
   die(`hostile-env prep exited ${prepHostile.status}:\n${hostileOut}`);
 }
-if (!hostileOut.includes(`0:0 /etc`)) {
-  die(`hostile prep left /etc not root-owned:\n${hostileOut}`);
-}
-if (!hostileOut.includes(`1000:1000 ${CORE_HOME}`)) {
-  die(`hostile prep changed home ownership:\n${hostileOut}`);
-}
-if (!hostileOut.includes(`1000:1000 ${CORE_HOME}/shared`)) {
-  die(`hostile prep changed shared ownership:\n${hostileOut}`);
+const hostileLines = new Set(
+  hostileOut
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean),
+);
+for (const expected of ["0:0 /etc", `1000:1000 ${CORE_HOME}`, `1000:1000 ${CORE_HOME}/shared`]) {
+  if (!hostileLines.has(expected)) {
+    die(`hostile prep missing exact ownership line ${JSON.stringify(expected)}:\n${hostileOut}`);
+  }
 }
 const fakeLog = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
   allowFailure: true,
@@ -591,7 +614,7 @@ const fakeLog = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
 if (/FAKE_STAT_RAN_AS_0/.test(fakeLog)) {
   die("fake ~/.local/bin/stat ran as root during prep — PATH was not pinned");
 }
-log("hostile PATH/CORE_HOME prep left /etc 0:0 and home 1000:1000");
+log("hostile PATH/CORE_HOME prep (compose caps) left /etc 0:0 and home 1000:1000");
 
 // Restart the default boot (no -u 0): entrypoint must not invoke prep, so the
 // fake stat on the volume PATH cannot run as root on restart either.
@@ -604,6 +627,130 @@ if (/FAKE_STAT_RAN_AS_0/.test(fakeAfterRestart)) {
   die("fake ~/.local/bin/stat ran as root on container restart");
 }
 log("restart did not run a volume binary as root");
+
+/** Run shipped prep with the compose capability set against a named volume. */
+function runCoreInitOnVolume(volumeName) {
+  return docker(
+    [
+      "run",
+      "--rm",
+      "-u",
+      "0",
+      ...coreInitCaps,
+      "--entrypoint",
+      "/usr/local/libexec/core-fs-prep.sh",
+      "--volume",
+      `${volumeName}:${CORE_HOME}`,
+      image,
+    ],
+    { allowFailure: true },
+  );
+}
+
+function assertSharedOwned(volumeName, label) {
+  const check = docker(
+    [
+      "run",
+      "--rm",
+      "-u",
+      "1000:1000",
+      "--entrypoint",
+      "stat",
+      "--volume",
+      `${volumeName}:${CORE_HOME}`,
+      image,
+      "-c",
+      "%u:%g %a %n",
+      `${CORE_HOME}/shared`,
+    ],
+    { allowFailure: true },
+  );
+  if (check.status !== 0) {
+    die(`${label}: could not stat shared:\n${check.stderr}${check.stdout}`);
+  }
+  const line = (check.stdout ?? "").trim();
+  if (!line.startsWith("1000:1000 ")) {
+    die(`${label}: shared ownership is ${JSON.stringify(line)}, expected 1000:1000`);
+  }
+}
+
+// Fresh named volume with noble-style 0750 home (HOME_MODE) that already has
+// shared seeded — prep must still be able to search inside and exit 0.
+log("verifying core-init on a fresh 0750 home volume (compose caps) …");
+const freshVol = `actana-core-smoke-fresh0750-${suffix}`;
+docker(["volume", "create", freshVol]);
+teardown.push(() => docker(["volume", "rm", "-f", freshVol], { allowFailure: true }));
+const seedFresh = docker(
+  [
+    "run",
+    "--rm",
+    "-u",
+    "0",
+    "--entrypoint",
+    "sh",
+    "--volume",
+    `${freshVol}:${CORE_HOME}`,
+    image,
+    "-c",
+    [
+      `mkdir -p ${CORE_HOME}/shared ${CORE_HOME}/.local/share/actana/data ${CORE_HOME}/.config/actana ${CORE_HOME}/repos`,
+      `chown -R 1000:1000 ${CORE_HOME}`,
+      `chmod 0750 ${CORE_HOME}`,
+    ].join(" && "),
+  ],
+  { allowFailure: true },
+);
+if (seedFresh.status !== 0) {
+  die(`seeding fresh 0750 volume failed:\n${seedFresh.stderr}${seedFresh.stdout}`);
+}
+const prepFresh = runCoreInitOnVolume(freshVol);
+if (prepFresh.status !== 0) {
+  die(
+    `core-init on fresh 0750 volume failed (need DAC_OVERRIDE?):\n` +
+      `${prepFresh.stderr}${prepFresh.stdout}`,
+  );
+}
+assertSharedOwned(freshVol, "fresh 0750 volume");
+log("core-init succeeded on a fresh 0750 home volume");
+
+// Upgrade path: 0.4.5-style volume has .local/.config but no ~/shared.
+log("verifying core-init creates missing ~/shared under 0750 (compose caps) …");
+const upgradeVol = `actana-core-smoke-noshared-${suffix}`;
+docker(["volume", "create", upgradeVol]);
+teardown.push(() => docker(["volume", "rm", "-f", upgradeVol], { allowFailure: true }));
+const seedUpgrade = docker(
+  [
+    "run",
+    "--rm",
+    "-u",
+    "0",
+    "--entrypoint",
+    "sh",
+    "--volume",
+    `${upgradeVol}:${CORE_HOME}`,
+    image,
+    "-c",
+    [
+      `mkdir -p ${CORE_HOME}/.local/share/actana/data ${CORE_HOME}/.config/actana ${CORE_HOME}/repos`,
+      `rm -rf ${CORE_HOME}/shared`,
+      `chown -R 1000:1000 ${CORE_HOME}`,
+      `chmod 0750 ${CORE_HOME}`,
+      `test ! -e ${CORE_HOME}/shared`,
+    ].join(" && "),
+  ],
+  { allowFailure: true },
+);
+if (seedUpgrade.status !== 0) {
+  die(`seeding no-shared upgrade volume failed:\n${seedUpgrade.stderr}${seedUpgrade.stdout}`);
+}
+const prepUpgrade = runCoreInitOnVolume(upgradeVol);
+if (prepUpgrade.status !== 0) {
+  die(
+    `core-init on missing-shared volume failed:\n${prepUpgrade.stderr}${prepUpgrade.stdout}`,
+  );
+}
+assertSharedOwned(upgradeVol, "missing-shared upgrade volume");
+log("core-init created ~/shared on a 0750 upgrade volume");
 
 // #551 — a missing host ./repos is created root-owned by Docker; core-init
 // must chown the mount point so core can write.
@@ -624,7 +771,7 @@ fs.writeFileSync(
     '    user: "0:0"',
     '    entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]',
     "    cap_drop: [ALL]",
-    "    cap_add: [CHOWN]",
+    "    cap_add: [CHOWN, DAC_OVERRIDE]",
     "    security_opt: [no-new-privileges:true]",
     "    network_mode: none",
     "    volumes:",

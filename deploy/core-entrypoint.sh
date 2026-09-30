@@ -9,7 +9,9 @@
 # `docker run -u 0` must not boot the daemon as root. tini is PID 1.
 set -eu
 
-if [ "$(id -u)" -eq 0 ]; then
+# Absolute path: image PATH starts with the volume-writable ~/.local/bin, and
+# a mistaken `docker run -u 0` must not pick up a fake `id` planted there.
+if [ "$(/usr/bin/id -u)" -eq 0 ]; then
   echo "core-entrypoint: refusing to start as root; use USER 1000:1000" >&2
   echo "core-entrypoint: bind-mount prep is: docker run -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh …" >&2
   exit 1

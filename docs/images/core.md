@@ -132,8 +132,12 @@ cannot become root. Named volumes are seeded `core:core` in the image. A host
 bind mount that Docker created as root is repaired by a separate root one-shot
 (`core-init` in compose, or `docker run -u 0 --entrypoint
 /usr/local/libexec/core-fs-prep.sh …`) that only chowns mount points — never
-recursively, and never following a symlink. The main entrypoint refuses uid 0,
-sets `HOME=/home/core`, and applies `no-new-privs` before exec'ing the daemon.
+recursively, and never following a symlink. Compose gives that one-shot
+`CHOWN` (to retarget ownership) and `DAC_OVERRIDE` (noble seeds `~/` as
+`0750`, so without it uid 0 cannot search or `mkdir` under the home), keeps
+`no-new-privileges` and `network_mode: none`, then exits. The main entrypoint
+refuses uid 0, sets `HOME=/home/core`, and applies `no-new-privs` before
+exec'ing the daemon.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside

@@ -92,11 +92,18 @@ services:
     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
     user: "0:0"
     entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
-    # Only needs CHOWN for mount-point repair; no network, no other caps.
+    # Smallest capability set that can finish prep on a 0750 home:
+    #   CHOWN         — change mount-point owners to 1000:1000
+    #   DAC_OVERRIDE  — noble seeds ~/ as 0750 (HOME_MODE); without this,
+    #                   uid 0 with only CHOWN is checked as "other" and cannot
+    #                   search or mkdir under /home/core (fresh volume or an
+    #                   upgrade that still lacks ~/shared).
+    # No network; no-new-privileges keeps the set from growing.
     cap_drop:
       - ALL
     cap_add:
       - CHOWN
+      - DAC_OVERRIDE
     security_opt:
       - no-new-privileges:true
     network_mode: none
@@ -169,6 +176,7 @@ services:
 #       - ALL
 #     cap_add:
 #       - CHOWN
+#       - DAC_OVERRIDE
 #     security_opt:
 #       - no-new-privileges:true
 #     network_mode: none

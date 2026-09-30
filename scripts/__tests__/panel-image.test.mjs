@@ -345,6 +345,7 @@ describe("reference compose", () => {
     expect(composeText).toContain("no-new-privileges:true");
     expect(composeText).toMatch(/cap_drop:[\s\S]*?- ALL/);
     expect(composeText).toMatch(/cap_add:[\s\S]*?- CHOWN/);
+    expect(composeText).toMatch(/cap_add:[\s\S]*?- DAC_OVERRIDE/);
     // Main service must not be root — that would make compose exec root.
     expect(coreService.scalars.user).toBeUndefined();
   });
@@ -846,7 +847,7 @@ describe("core image", () => {
     expect(entrypoint).toContain("setpriv");
     expect(entrypoint).toContain("--no-new-privs");
     expect(entrypoint).not.toContain("--bounding-set");
-    expect(entrypoint).toContain('id -u)" -eq 0');
+    expect(entrypoint).toContain('/usr/bin/id -u)" -eq 0');
     const body = entrypoint
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
