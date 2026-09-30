@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapCoreDb } from "../core-db-bootstrap";
 import {
   configureCoreMutationStore,
@@ -103,10 +103,17 @@ describe("settling a turn whose end nobody reported", () => {
       path: userDataDir,
     });
     nowMs = Date.now();
+    // One clock for the store and the backstop. The store stamps a row's
+    // `updatedAt` from `Date.now()` while the backstop reads `nowMs`; pinning the
+    // first to the second puts every write exactly where the test put it, and is
+    // what lets the same-millisecond test below collide on purpose rather than by
+    // luck (issue 588). The store's revision no longer needs the pin to be safe.
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     livePtys = new Set();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     clearSubagentActivity("t-1");
     disposeCoreMutationStore();
     disposeCoreQueryStore();
@@ -500,6 +507,28 @@ describe("settling a turn whose end nobody reported", () => {
       backstop.noteActivity("t-1", "output");
       expect(statusOf("t-1")).toBe("finished");
       // No reopen, so no re-settle, so no second `session:finished` toast.
+      expect(kindsSince(after)).toEqual([]);
+    });
+
+    it("never takes back a finish another writer wrote in the same millisecond", () => {
+      // Issue 588. The row's `updatedAt` is the backstop's only proof that the
+      // row still holds its own write, and a wall-clock millisecond is not
+      // unique: a `Stop` queued behind the synchronous sweep writes in the very
+      // millisecond the idle settle did. The clock is pinned and NOT advanced
+      // between the two writes, so both would carry one `updatedAt` if the
+      // store stamped the wall clock alone.
+      insert("t-1", "running");
+      const backstop = makeBackstop();
+      settleByIdleRule(backstop);
+      const settledAt = coreQueryStore.getTask("t-1")!.updatedAt;
+
+      coreMutationStore.mutateTask({ op: "update", taskId: "t-1", status: "finished" });
+      expect(coreQueryStore.getTask("t-1")!.updatedAt).toBeGreaterThan(settledAt);
+      const after = lastEventId();
+
+      nowMs += 30 * 1000;
+      backstop.noteActivity("t-1", "output");
+      expect(statusOf("t-1")).toBe("finished");
       expect(kindsSince(after)).toEqual([]);
     });
 
