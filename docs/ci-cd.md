@@ -721,12 +721,14 @@ claim stated as a test. Run it locally with `pnpm panel:image:smoke`.
 
 **Core** — [`scripts/smoke-core-image.mjs`](../scripts/smoke-core-image.mjs)
 boots the image with a plain `docker run` — nothing privileged, no host cgroup,
-one volume — and then pairs a real Panel with it end to end. Along the way it
+two volumes (home and state) — and then pairs a real Panel with it end to end. Along the way it
 proves what a *build* can get wrong (the identity is `core` at 1000:1000,
 `tini` is PID 1 with the daemon as its child, and the Core tree in `/opt/actana` is the
 *architecture-matched* one) and what the *contract* can get wrong: the
-lifecycle verbs refuse and name their Docker equivalent, `docker restart` is a
-no-op for pairing, and destroying the volume is the one thing that unpairs.
+lifecycle verbs refuse and name their Docker equivalent, the daemon's state is in
+`/var/lib/actana` on a volume of its own and the home holds none of it, a hook miss a Session
+appends to its drop box is read by the daemon, `docker restart` is a
+no-op for pairing, and destroying the state volume is the one thing that unpairs.
 
 It replaced `panel-e2e-core-in-a-box`, which needed `--privileged` and the host
 cgroup to boot a systemd fixture and asserted against bytes no operator ever

@@ -49,16 +49,27 @@ never updates anything — `docker compose pull && docker compose up -d` stays y
 
 ## State
 
-One volume, mounted at `/home/core` — the whole home directory.
+Two volumes.
 
-It holds the identity (CA, certificates, bearer secret, Core ID), the recorded configuration, the
-SQLite database, **and each Harness's own credentials** (`~/.claude`, `~/.codex`,
-`~/.config/opencode`, …). The mount is the home rather than a narrower state directory precisely
-because Harnesses write all over `$HOME`: a narrower mount would log you out of your coding CLIs on
-every `docker compose up`. One mount, one backup target.
+**`core-home`, at `/home/core`** — the home directory: your work and **each Harness's own
+credentials** (`~/.claude`, `~/.codex`, `~/.config/opencode`, …). The mount is the whole home rather
+than a narrower directory because Harnesses write all over `$HOME`: a narrower mount would log you
+out of your coding CLIs on every `docker compose up`.
 
-`docker compose down -v` destroys the pairing. Nothing else does — restarts, upgrades and host
-changes all keep it.
+**`core-state`, at `/var/lib/actana`** (mode `0700`) — what only the daemon may hold: the identity
+(CA, certificates, bearer secret, Core ID) in `config/material.json`, the pairings beside it, the
+SQLite database and the update-check caches in `data/`, and, reserved for the Shared folder's key,
+`shared/`. It is a volume of its own so that the home — the place Sessions work in — never holds
+the Core's keys, and a copy of it carries none. Today the daemon still runs as `core`, so the
+directory is owned by `core` (1000:1000); nothing else in the image can read it either way.
+
+`docker compose down -v` destroys both and with them the pairing. Nothing else does — restarts,
+upgrades and host changes keep it, and so does losing `core-home` alone: the Core is still the
+same Core and every Harness has to be logged in again.
+
+The one file a Session writes for the daemon is the hook miss log, `/run/actana/hook-misses.log`: a
+hook that could not reach the Core appends a line there, and the daemon reads it back as untrusted
+input (size-capped and tolerantly parsed). It is outside the state directory on purpose.
 
 ### More than one address
 
@@ -167,7 +178,8 @@ Without compose, run the prep one-shot once before the main container:
 
 ```bash
 docker run --rm -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh \
-  -v core-home:/home/core -v "$PWD/repos:/home/core/repos" actana/core:latest
+  -v core-home:/home/core -v core-state:/var/lib/actana \
+  -v "$PWD/repos:/home/core/repos" actana/core:latest
 ```
 
 Under rootless Docker or Podman the engine maps container uid 1000 to a host subuid, so plain
