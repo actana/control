@@ -961,6 +961,20 @@ describe("core image", () => {
     expect(fs.existsSync(path.join(repoRoot, "scripts/lib/systemd-container.mjs"))).toBe(true);
   });
 
+  // Hostile-env smoke exports a fake `stat` on PATH, then asserts ownership
+  // after prep. That assertion must use an absolute `/usr/bin/stat` — a bare
+  // `stat` would run the fake as root and fail the marker check even when prep
+  // pinned PATH correctly (CI run 36730945627).
+  it("asserts hostile-env ownership with absolute /usr/bin/stat, not PATH stat", () => {
+    const smoke = readRepoFile("scripts/smoke-core-image.mjs");
+    expect(smoke).toContain(
+      "/usr/bin/stat -c '%u:%g %n' /etc /home/core /home/core/shared",
+    );
+    expect(smoke).not.toMatch(
+      /^[^/\n]*stat -c '%u:%g %n' \/etc \/home\/core \/home\/core\/shared/m,
+    );
+  });
+
   // Docker publishes the port at container start and `docker-proxy` answers a
   // handshake before anything inside is listening, so a TCP probe against the
   // published port returns immediately and every leg that "waits" for a boot

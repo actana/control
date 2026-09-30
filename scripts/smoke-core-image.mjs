@@ -572,8 +572,11 @@ const hostileScript = [
   "export CORE_UID=0",
   "prep_rc=0",
   "/usr/local/libexec/core-fs-prep.sh || prep_rc=$?",
-  // Hard-code paths in the assertion so a hostile CORE_HOME cannot redirect them.
-  "stat -c '%u:%g %n' /etc /home/core /home/core/shared",
+  // Absolute /usr/bin/stat: this shell still has the hostile PATH. A bare
+  // `stat` here would run the volume fake as root and trip the marker check,
+  // even when prep correctly pinned PATH (CI run 36730945627).
+  // Hard-code paths so a hostile CORE_HOME cannot redirect the assertion.
+  "/usr/bin/stat -c '%u:%g %n' /etc /home/core /home/core/shared",
   'exit "$prep_rc"',
 ].join("; ");
 const prepHostile = docker(
@@ -756,7 +759,6 @@ log("core-init created ~/shared on a 0750 upgrade volume");
 // must chown the mount point so core can write.
 log("verifying core-init repairs a missing root-owned repos bind mount …");
 const reposScratch = fs.mkdtempSync(path.join(os.tmpdir(), "actana-core-repos-"));
-teardown.push(() => fs.rmSync(reposScratch, { recursive: true, force: true }));
 const scratchHome = path.join(reposScratch, "home");
 const scratchRepos = path.join(reposScratch, "repos");
 fs.mkdirSync(scratchHome, { recursive: true });
@@ -800,6 +802,26 @@ teardown.push(() => {
   spawnSync("docker", ["compose", "-f", compose551, "down", "-v", "--remove-orphans"], {
     encoding: "utf8",
   });
+  // Core wrote as 1000; host rmSync would EACCES. Wipe via a root one-shot.
+  const parent = path.dirname(reposScratch);
+  const leaf = path.basename(reposScratch);
+  spawnSync(
+    "docker",
+    [
+      "run",
+      "--rm",
+      "-u",
+      "0",
+      "--entrypoint",
+      "rm",
+      "-v",
+      `${parent}:/parent`,
+      image,
+      "-rf",
+      `/parent/${leaf}`,
+    ],
+    { encoding: "utf8" },
+  );
 });
 if (up551.status !== 0) {
   die(`compose up with missing repos failed:\n${up551.stderr}${up551.stdout}`);
