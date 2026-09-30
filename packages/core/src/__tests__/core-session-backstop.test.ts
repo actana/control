@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bootstrapCoreDb } from "../core-db-bootstrap";
 import {
   configureCoreMutationStore,
@@ -103,10 +103,17 @@ describe("settling a turn whose end nobody reported", () => {
       path: userDataDir,
     });
     nowMs = Date.now();
+    // The row's `updatedAt` is stamped by the store from `Date.now()`, while the
+    // backstop reads `nowMs`. Left on the wall clock, two back-to-back writes
+    // land in one millisecond and carry one `updatedAt`, so a finish another
+    // writer wrote is indistinguishable from the idle rule's own (issue 588).
+    // One clock for both keeps every write exactly where the test put it.
+    vi.spyOn(Date, "now").mockImplementation(() => nowMs);
     livePtys = new Set();
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     clearSubagentActivity("t-1");
     disposeCoreMutationStore();
     disposeCoreQueryStore();
