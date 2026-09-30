@@ -12,7 +12,7 @@
 // exactly one output subscription and one reconnect reattach, demuxed by ptyId.
 
 import type { PanelLinkClient } from "./panel-link-client";
-import type { CoreLinkPtyReplay, CoreLinkPtySpawnOptions } from "@actana/sdk/core";
+import type { CoreLinkPtyReplay, CoreLinkPtySpawnOptions } from "@actana/shared/sdk-link-frames";
 import type { CoreLinkAnswer as Answer } from "~/shared/panel-link";
 
 export type CorePtyBridge = {

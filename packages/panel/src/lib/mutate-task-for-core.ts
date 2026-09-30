@@ -1,7 +1,7 @@
 import type {
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core";
+} from "@actana/shared/sdk-link-frames";
 import { isTaskStatus } from "@actana/shared/domain";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { api } from "~/lib/api";

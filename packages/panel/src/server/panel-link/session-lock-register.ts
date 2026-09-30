@@ -36,8 +36,8 @@ import type {
   CoreLinkEvent,
   CoreLinkSessionLock,
   CoreLinkSessionLockChangedPayload,
-} from "@actana/sdk/core";
-import { SESSION_LOCK_CHANGED_EVENT_KIND } from "@actana/sdk/core";
+} from "@actana/shared/sdk-link-frames";
+import { SESSION_LOCK_CHANGED_EVENT_KIND } from "@actana/shared/sdk-link-frames";
 import {
   UNSUPPORTED_SESSION_LOCK,
   type PanelSessionLock,

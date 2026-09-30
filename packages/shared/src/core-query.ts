@@ -13,7 +13,7 @@
 // better-sqlite3 handle without the full db/client bootstrap — mirroring
 // `event-log.ts`.
 
-import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/sdk/core";
+import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "./sdk-link-frames";
 
 /**
  * Minimal slice of `better-sqlite3.Database` that the query helpers need.

@@ -32,7 +32,7 @@ import {
   HARNESSES_AVAILABILITY_EVENT_KIND,
   type CoreLinkHarnessAvailability,
   type CoreLinkHarnessAvailabilityMap,
-} from "@actana/sdk/core";
+} from "./sdk-link-frames";
 import {
   resolveHarnessCommandMeetingVersion,
   resolveHarnessCommandOnPath,
