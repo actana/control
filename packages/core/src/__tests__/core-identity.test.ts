@@ -3,12 +3,17 @@
 // In the container the daemon is another uid with no CAP_KILL, so the signal is
 // sent by a short-lived process that is `core`. Outside it, nothing changes.
 
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { killAsCore } from "../core-identity";
 
 const CONTAINER = { AC_CORE_HOME: "/home/core", AC_CORE_UID: "1000", AC_CORE_GID: "1000" };
 const exists = () => true;
 
+// Never a real signal, whatever the code under test does: a mutated killAsCore
+// must fail these tests, not kill the runner's own process group.
+beforeEach(() => {
+  vi.spyOn(process, "kill").mockImplementation(() => true);
+});
 afterEach(() => vi.restoreAllMocks());
 
 describe("killAsCore outside container mode", () => {
@@ -41,7 +46,7 @@ describe("killAsCore outside container mode", () => {
 describe("killAsCore in container mode", () => {
   it("never signals itself: the wrapped kill runs as core instead", () => {
     const kill = vi.fn();
-    const spy = vi.spyOn(process, "kill");
+    const spy = vi.spyOn(process, "kill").mockImplementation(() => true);
     const run = vi.fn(() => ({ status: 0, stderr: "" }));
     expect(killAsCore({ pid: 4242, kill }, "SIGKILL", { identityEnv: CONTAINER, exists, run })).toBe(true);
     expect(kill).not.toHaveBeenCalled();
