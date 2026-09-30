@@ -14,6 +14,7 @@
 // seam: it supplies the home directory, reads the fan-out table off
 // `HARNESS_CLI_CONFIG`, and turns the result into log lines.
 
+import * as path from "node:path";
 import log from "@actana/shared/log";
 import { HARNESS_SKILL_TARGETS } from "@actana/shared/harness-cli-config";
 import { withPiHomeMarkersResolved } from "@actana/shared/pi-agent-dir";
@@ -64,6 +65,24 @@ export function ensureOrchestrationSkill(homeDir: string): SkillInstallEntry[] {
   }
   reportSkillEntries(entries);
   return entries;
+}
+
+/**
+ * Every Harness skill folder `installOrchestrationSkills` may write under
+ * `homeDir`, resolved the way it resolves them. The helper confines each through
+ * `realpath` first, so a linked `~/.claude/skills` cannot carry the write out of
+ * the home.
+ */
+export function orchestrationSkillFolders(homeDir: string): string[] {
+  const targets = withPiHomeMarkersResolved(HARNESS_SKILL_TARGETS, sanitizedProcessEnv(), homeDir);
+  return targets.flatMap((target) =>
+    ORCHESTRATION_SKILL_NAMES.map((name) =>
+      // An absolute skillDir stays absolute, as the installer's own `homePath` has it.
+      path.isAbsolute(target.skillDir)
+        ? path.join(target.skillDir, name)
+        : path.join(homeDir, ...target.skillDir.split("/"), name),
+    ),
+  );
 }
 
 /**

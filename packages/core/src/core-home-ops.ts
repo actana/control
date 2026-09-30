@@ -39,12 +39,12 @@ import * as path from "node:path";
 import { registryPaths } from "@actana/shared/blob-registry";
 import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-wiring";
 import { piAgentDir } from "@actana/shared/pi-agent-dir";
-import { ensureStatuslineTap } from "@actana/shared/statusline-tap";
+import { ensureStatuslineTap, statuslineTapPath } from "@actana/shared/statusline-tap";
 import type { SkillInstallEntry } from "@actana/shared/orchestration-skill-install";
 import type { CoreLinkDirListing } from "@actana/sdk/core";
-import { installHarnessHooks, type HookInstallResult } from "./harness-hooks";
+import { hookWritePaths, installHarnessHooks, type HookInstallResult } from "./harness-hooks";
 import { listDirectory } from "./directory-browse";
-import { installOrchestrationSkills } from "./orchestration-skill";
+import { installOrchestrationSkills, orchestrationSkillFolders } from "./orchestration-skill";
 
 /** The only operations the helper will run. A name not in this list is refused. */
 export const CORE_HOME_OPERATIONS = [
@@ -358,16 +358,24 @@ export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOp
         confine(piAgentDir({ PI_CODING_AGENT_DIR: request.piAgentDir }, ctx.home), ctx, "piAgentDir");
       }
       const env = request.piAgentDir === null ? {} : { PI_CODING_AGENT_DIR: request.piAgentDir };
+      // The files the writers will write, not just the directory they start from:
+      // a linked `.claude` or `.codex` inside the workspace leads out of the home.
+      for (const file of hookWritePaths(request.harness, cwd, env)) confine(file, ctx, "hook file");
       return installHarnessHooks(request.harness, cwd, env);
     }
-    case "ensureStatuslineTap":
-      ensureStatuslineTap(confine(request.cwd, ctx, "cwd"));
+    case "ensureStatuslineTap": {
+      const cwd = confine(request.cwd, ctx, "cwd");
+      confine(path.join(cwd, ".claude", "settings.local.json"), ctx, "statusline settings file");
+      confine(statuslineTapPath(ctx.home), ctx, "statusline tap script");
+      ensureStatuslineTap(cwd);
       return null;
+    }
     case "ensureClaudeShiftEnterBinding":
       ensureShiftEnterBinding(ctx.home, ctx);
       return null;
     case "ensureOrchestrationSkill":
       confine(ctx.home, ctx, "home");
+      if (ctx.roots) for (const folder of orchestrationSkillFolders(ctx.home)) confine(folder, ctx, "skill folder");
       return installOrchestrationSkills(ctx.home);
     case "wireLocalCore": {
       const paths = registryPaths(ctx.env, ctx.home);

@@ -195,6 +195,68 @@ describe("path confinement: nothing outside the home is touched", () => {
     expect(filesUnder(outside)).toEqual([]);
   });
 
+  it.each([
+    ["claude-code", ".claude", ".claude/settings.local.json"],
+    ["codex", ".codex", ".codex/hooks.json"],
+    ["cursor-cli", ".cursor", ".cursor/hooks.json"],
+    ["opencode", ".opencode", ".opencode/plugins/actana-control.js"],
+  ])("refuses %s hooks when the workspace's %s is a link out of the home, and writes nothing through it", (harness, dirName, file) => {
+    const work = path.join(home, "p2");
+    fs.mkdirSync(work);
+    const target = path.join(outside, "c2");
+    fs.mkdirSync(target);
+    fs.symlinkSync(target, path.join(work, dirName));
+    const err = refusal(() => handleCoreHomeOpSync({ op: "installHarnessHooks", harness, cwd: work, piAgentDir: null }, ctx));
+    expect(err.code).toBe("path-escape");
+    expect(err.message).toContain("hook file");
+    expect(filesUnder(outside)).toEqual([]);
+    expect(file.startsWith(dirName)).toBe(true);
+  });
+
+  it("refuses a hook file that is itself a link to a file outside the home", () => {
+    const work = path.join(home, "p3");
+    fs.mkdirSync(path.join(work, ".claude"), { recursive: true });
+    const victim = path.join(outside, "victim.json");
+    fs.writeFileSync(victim, "{}");
+    fs.symlinkSync(victim, path.join(work, ".claude", "settings.local.json"));
+    expect(refusal(() => handleCoreHomeOpSync(hooks(work), ctx)).code).toBe("path-escape");
+    expect(fs.readFileSync(victim, "utf8")).toBe("{}");
+  });
+
+  it("refuses Pi's hook when its extensions folder is a link out of the home", () => {
+    const work = path.join(home, "w");
+    fs.mkdirSync(work);
+    fs.mkdirSync(path.join(home, ".pi", "agent"), { recursive: true });
+    fs.symlinkSync(outside, path.join(home, ".pi", "agent", "extensions"));
+    const err = refusal(() => handleCoreHomeOpSync({ op: "installHarnessHooks", harness: "pi", cwd: work, piAgentDir: null }, ctx));
+    expect(err.code).toBe("path-escape");
+    expect(filesUnder(outside)).toEqual([]);
+  });
+
+  it("refuses the statusline tap when the workspace's .claude, or ~/.claude/mission-control, is a link out", () => {
+    const work = path.join(home, "p4");
+    fs.mkdirSync(work);
+    fs.symlinkSync(outside, path.join(work, ".claude"));
+    expect(refusal(() => handleCoreHomeOpSync({ op: "ensureStatuslineTap", cwd: work }, ctx)).code).toBe("path-escape");
+    expect(filesUnder(outside)).toEqual([]);
+
+    const work2 = path.join(home, "p5");
+    fs.mkdirSync(work2);
+    fs.mkdirSync(path.join(home, ".claude"));
+    fs.symlinkSync(outside, path.join(home, ".claude", "mission-control"));
+    expect(refusal(() => handleCoreHomeOpSync({ op: "ensureStatuslineTap", cwd: work2 }, ctx)).code).toBe("path-escape");
+    expect(filesUnder(outside)).toEqual([]);
+  });
+
+  it("refuses the skill install when a Harness's skills folder is a link out of the home", () => {
+    fs.mkdirSync(path.join(home, ".claude"));
+    fs.symlinkSync(outside, path.join(home, ".claude", "skills"));
+    const err = refusal(() => handleCoreHomeOpSync({ op: "ensureOrchestrationSkill" }, ctx));
+    expect(err.code).toBe("path-escape");
+    expect(err.message).toContain("skill folder");
+    expect(filesUnder(outside)).toEqual([]);
+  });
+
   it("refuses a Pi agent dir outside the home, and expands `~` inside it", () => {
     const work = path.join(home, "w");
     fs.mkdirSync(work);
