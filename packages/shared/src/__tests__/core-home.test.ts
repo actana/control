@@ -422,7 +422,7 @@ describe.skipIf(!isRoot || !SETPRIV)("asCore for real: from a non-root daemon wi
   }
 
   const field = (status: string, name: string) =>
-    new RegExp(`^${name}:\\s*(.*)$`, "m").exec(status)?.[1];
+    new RegExp(`^${name}:[ \\t]*(.*)$`, "m").exec(status)?.[1];
 
   function run(argv: string[], env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" }) {
     return spawnSync(SETPRIV!, argv, { cwd: "/", env, encoding: "utf8", timeout: 15_000 });
