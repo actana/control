@@ -30,6 +30,7 @@
 import { spawn, spawnSync } from "node:child_process";
 import type { ActanaSystem } from "@actana/shared/actana-system-port";
 import log from "@actana/shared/log";
+import { asCore } from "./core-identity";
 
 /** The port the daemon hands `installAgentsNow`. Non-interactive by construction. */
 export function daemonHarnessSystem(): ActanaSystem {
@@ -38,7 +39,12 @@ export function daemonHarnessSystem(): ActanaSystem {
   };
   return {
     run(command, args) {
-      const result = spawnSync(command, args, { encoding: "utf8" });
+      const launch = asCore({ command, args });
+      const result = spawnSync(launch.command, launch.args, {
+        cwd: launch.cwd,
+        env: launch.env,
+        encoding: "utf8",
+      });
       if (result.error || result.status === null) {
         return {
           status: 127,
@@ -54,7 +60,12 @@ export function daemonHarnessSystem(): ActanaSystem {
     },
     passthrough(command, args) {
       return new Promise((resolve) => {
-        const child = spawn(command, args, { stdio: "inherit" });
+        const launch = asCore({ command, args });
+        const child = spawn(launch.command, launch.args, {
+          cwd: launch.cwd,
+          env: launch.env,
+          stdio: "inherit",
+        });
         child.on("error", (err) => {
           log.error(`could not run ${command}: ${err.message}`);
           resolve(127);

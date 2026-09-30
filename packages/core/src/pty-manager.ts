@@ -4,6 +4,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawnSync } from "node:child_process";
 import { getAppTheme } from "./app-theme";
+import { asCore, coreHome, isContainerMode, killAsCore } from "./core-identity";
 import { ensureStatuslineTap } from "@actana/shared/statusline-tap";
 import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
@@ -61,7 +62,7 @@ function sanitizeEnv(): Record<string, string> {
 // setup` writes it; do it eagerly so the user doesn't have to.
 export function ensureClaudeShiftEnterBinding(): void {
   try {
-    const dir = path.join(os.homedir(), ".claude");
+    const dir = path.join(coreHome(), ".claude");
     const file = path.join(dir, "settings.json");
     let settings: Record<string, unknown> = {};
     if (fs.existsSync(file)) {
@@ -396,7 +397,10 @@ function sleep(ms: number): Promise<void> {
 function killProcessTreeWindows(pid: number | undefined): void {
   if (os.platform() !== "win32" || !pid || pid <= 0) return;
   try {
-    spawnSync("taskkill", ["/pid", String(pid), "/t", "/f"], {
+    const spec = asCore({ command: "taskkill", args: ["/pid", String(pid), "/t", "/f"] });
+    spawnSync(spec.command, spec.args, {
+      cwd: spec.cwd,
+      env: spec.env,
       timeout: TASKKILL_TIMEOUT_MS,
     });
   } catch {
@@ -444,11 +448,12 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
   // dispose never fired and one conhost.exe (~8.5 MB, parented to our main
   // process) leaked on every create→delete of a terminal.
   const closable = proc as unknown as { destroy?: () => void };
+  armCoreKillEscalation(proc, pid);
   try {
     if (typeof closable.destroy === "function") {
       closable.destroy();
     } else {
-      proc.kill();
+      killAsCore(proc, "SIGHUP");
     }
   } catch {
     /* already exited or fd already closed */
@@ -460,11 +465,43 @@ export function disposePty(proc: import("node-pty").IPty | null | undefined): vo
   killProcessTreeWindows(pid);
 }
 
+/**
+ * In the container, a Session that ignores SIGHUP survives `destroy()`, and the
+ * daemon cannot signal it itself (another uid, no CAP_KILL). So when the master
+ * is closed, give it {@link SIGTERM_GRACE_MS} and then SIGKILL its process group
+ * through {@link killAsCore}. Outside the container nothing is armed: the
+ * teardown is what it always was.
+ */
+function armCoreKillEscalation(
+  proc: import("node-pty").IPty,
+  pid: number | undefined,
+): void {
+  if (!isContainerMode() || typeof pid !== "number" || pid <= 1) return;
+  let exited = false;
+  (proc as { onExit?: (cb: () => void) => unknown }).onExit?.(() => {
+    exited = true;
+  });
+  const timer = setTimeout(() => {
+    if (exited) return;
+    try {
+      killAsCore(-pid, "SIGKILL");
+    } catch (err) {
+      log.warn("pty.kill.escalation-failed", { pid, error: String(err) });
+    }
+  }, SIGTERM_GRACE_MS);
+  timer.unref?.();
+}
+
 function pidsListeningOnPort(port: number): number[] {
   if (!Number.isInteger(port) || port <= 0 || port > MAX_TCP_PORT) return [];
   if (os.platform() === "win32") return [];
 
-  const result = spawnSync("lsof", ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"], {
+  // As core: listeners are Session processes, and another uid's sockets are
+  // not visible to the daemon's `lsof`.
+  const spec = asCore({ command: "lsof", args: ["-nP", `-tiTCP:${port}`, "-sTCP:LISTEN"] });
+  const result = spawnSync(spec.command, spec.args, {
+    cwd: spec.cwd,
+    env: spec.env,
     encoding: "utf8",
     timeout: LSOF_PROBE_TIMEOUT_MS,
   });
@@ -484,7 +521,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
 
   for (const pid of pids) {
     try {
-      process.kill(pid, "SIGTERM");
+      killAsCore(pid, "SIGTERM");
       killed.push(pid);
     } catch (err: any) {
       errors.push(`pid ${pid}: ${err?.message ?? String(err)}`);
@@ -498,7 +535,7 @@ async function killPidsListeningOnPort(port: number): Promise<PortKillResult> {
     }
     for (const pid of pidsListeningOnPort(port).filter((pid) => killed.includes(pid))) {
       try {
-        process.kill(pid, "SIGKILL");
+        killAsCore(pid, "SIGKILL");
       } catch {
         /* already exited or not permitted */
       }
@@ -605,7 +642,7 @@ export class PtyCore {
     const { userDataDir, appPath, getHookEnv } = this.deps;
 
     // Home shell terminals: the renderer never learns the host's home path, so
-    // the handler replaces cwd with its own os.homedir() before the policy's
+    // the handler replaces cwd with the Core's home before the policy's
     // project-root check. VM Shell Sessions (issue 06) use the same trick — a
     // VM shell has no project folder, and the Core's own home is the only
     // sensible place to drop the operator. The policy's `shellSession` branch
@@ -613,15 +650,15 @@ export class PtyCore {
     // the real home here means node-pty gets a valid cwd to chdir into.
     const spawnReq: SpawnRequest =
       opts.shell === true && opts.home
-        ? ({ ...opts, cwd: os.homedir() } as SpawnRequest)
+        ? ({ ...opts, cwd: coreHome() } as SpawnRequest)
         : opts.shellSession === true
-          ? ({ ...opts, cwd: opts.cwd || os.homedir() } as SpawnRequest)
+          ? ({ ...opts, cwd: opts.cwd || coreHome() } as SpawnRequest)
           : opts;
     let plan: ReturnType<typeof resolveSpawnPlan>;
     try {
       plan = resolveSpawnPlan(spawnReq, {
         projectRoots: loadProjectRoots,
-        homeShellRoots: () => [os.homedir()],
+        homeShellRoots: () => [coreHome()],
         resolveCommand: (name) => {
           const env = sanitizedProcessEnv();
           const requirement = HARNESS_CLI_CONFIG_BY_COMMAND[name];
@@ -737,12 +774,17 @@ export class PtyCore {
 
     let proc: import("node-pty").IPty;
     try {
-      proc = pty.spawn(spawnTarget, spawnArgs, {
+      // The only way a Session process starts. In the container it is
+      // `setpriv` -> `core` with no capabilities (node-pty's own uid/gid
+      // options keep them, so they are never passed); elsewhere it is the
+      // spec unchanged.
+      const launch = asCore({ command: spawnTarget, args: spawnArgs, cwd: plan.cwd, env });
+      proc = pty.spawn(launch.command, launch.args, {
         name: "xterm-256color",
         cols: opts.cols ?? DEFAULT_PTY_COLS,
         rows: opts.rows ?? DEFAULT_PTY_ROWS,
-        cwd: plan.cwd,
-        env,
+        cwd: launch.cwd,
+        env: launch.env as Record<string, string>,
       });
     } catch (err: any) {
       const msg = err?.message ?? String(err);
