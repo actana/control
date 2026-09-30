@@ -69,11 +69,14 @@ if (typeof serveNodeRequest !== "function") {
   process.exit(1);
 }
 
-// The Panel's state is moving to Postgres (#567). Until a feature reads from
-// it the pool is only opened and checked, but that is enough for the rule the
-// rest of the move leans on: no database, no Panel. The bundle is already
-// imported above, which starts the SQLite-backed core links; that is harmless
-// to abandon, since the process exits before it listens.
+// The Panel's state is moving to Postgres (#567). `connectPanelDatabase` opens
+// the pool, checks it, then runs the pending migrations under an advisory lock.
+// Until a feature reads from it nothing else uses the pool, but the rule the
+// rest of the move leans on holds: no database, or a migration that fails or a
+// database that does not match this Panel, and the Panel exits with the reason
+// instead of listening. The bundle is already imported above, which starts the
+// SQLite-backed core links; that is harmless to abandon, since the process
+// exits before it listens.
 if (typeof mod.connectPanelDatabase !== "function") {
   console.error(`[panel] server entry exports no connectPanelDatabase: ${entry}`);
   process.exit(1);

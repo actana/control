@@ -1,4 +1,5 @@
 import pg from "pg";
+import type { MigrateSource } from "./pg-migrate";
 
 /**
  * The Panel's Postgres connection (#567, ADR 0041 D16 and D19).
@@ -39,7 +40,7 @@ export interface PanelPgConfig {
 }
 
 /** The slice of `pg.Pool` this module uses, so a test can hand in a stand-in. */
-export interface PanelPoolLike {
+export interface PanelPoolLike extends MigrateSource {
   query(text: string): Promise<unknown>;
   end(): Promise<void>;
   on(event: "error", listener: (err: Error) => void): unknown;
