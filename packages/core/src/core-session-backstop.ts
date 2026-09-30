@@ -492,9 +492,11 @@ export class CoreSessionBackstop {
       // Only the idle rule leaves a marker, and only a `finished` can be taken
       // back — a `disconnected` row has no process left to change its mind.
       if (rule === "idle" && status === "finished") {
-        // The row as this rule left it. Anything that moves `updatedAt` after
-        // this — a real `Stop`, an operator, the Panel — takes the row out of
-        // this rule's hands for good.
+        // The row as this rule left it. `updatedAt` is the row's revision: the
+        // store makes it strictly increase on every write, even within one
+        // millisecond (issue 588), so it identifies this write. Anything that
+        // moves it after this — a real `Stop`, an operator, the Panel — takes
+        // the row out of this rule's hands for good.
         this.idleSettled.set(taskId, { at: this.now(), rowUpdatedAt: updated.updatedAt });
         while (this.idleSettled.size > MAX_TRACKED_TASKS) {
           const oldest = this.idleSettled.keys().next().value;
