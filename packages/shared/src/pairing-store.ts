@@ -12,7 +12,8 @@
 //     never imports `@actana/core` — one binary does both jobs by keeping the
 //     daemon's bundle out of its own.
 //   • **The Core daemon** redeems it, at the pre-auth endpoint in
-//     `packages/core/src/core-pairing-routes.ts`.
+//     `createPairing` from `@actana/sdk/pairing/server`, mounted by
+//     `packages/core/src/core-pairing-wiring.ts`.
 //
 // So this sits next to `core-material-store.ts`, which is in `packages/shared`
 // for exactly that reason after #288 — the CLI writes the material and the
@@ -164,7 +165,7 @@ export class PairingStore {
    * Everything on disk, or throw saying why it could not be read.
    *
    * The distinction {@link read} cannot draw, for the one caller that must:
-   * `core-pairing-revocation.ts` treats an unreadable store as *everything is
+   * the SDK's revocation set (`@actana/sdk/pairing/server`, fed by `core-pairing-store.ts`) treats an unreadable store as *everything is
    * revoked*, and it can only do that if being unable to read is a different
    * outcome from reading nothing.
    *
@@ -412,7 +413,7 @@ function isPairingSession(value: unknown): value is PairingSession {
     // optional, it is not load-bearing for whether a session is a session, and
     // this predicate is not a mere shape check: `parse(strict: true)` throws on
     // the first row it fails, `readStrict` propagates that, and
-    // `core-pairing-revocation.ts` reads an unreadable store as *everything is
+    // the SDK's revocation set (`@actana/sdk/pairing/server`, fed by `core-pairing-store.ts`) reads an unreadable store as *everything is
     // revoked*. So a single row with a wrong-typed `endpointHost` would lock
     // out every client the Core has ever paired — a total failure bought by a
     // field that decides nothing about session validity.

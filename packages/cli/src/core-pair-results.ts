@@ -130,8 +130,8 @@ export type CorePairSuccess = {
    *
    * **A purely local fact, and the row is worded to claim nothing else**
    * (#366 review 2). The first version of this row said it was "this machine,
-   * in the Core's `pair ls`", and that is false: `core-pairing-routes.ts`
-   * builds `PairedClient.label` from **`session.label`** — the name the *Core*
+   * in the Core's `pair ls`", and that is false: the Core's redeem route (the SDK's
+   * `createPairing`) builds `PairedClient.label` from **`session.label`** — the name the *Core*
    * operator typed at `actana pair new --label <name>` — and this value
    * reaches the Core only as the certificate CN, and only in the sub-case
    * where the session carried no label at all. `actana pair revoke` matches on
