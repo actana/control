@@ -61,7 +61,9 @@ out of your coding CLIs on every `docker compose up`.
 SQLite database and the update-check caches in `data/`, and, reserved for the Shared folder's key,
 `shared/`. It is a volume of its own so that the home — the place Sessions work in — never holds
 the Core's keys, and a copy of it carries none. Today the daemon still runs as `core`, so the
-directory is owned by `core` (1000:1000); nothing else in the image can read it either way.
+directory is owned by `core` (1000:1000) and **a Session, which runs as `core`, can still read it**
+until the daemon gets its own user (a later change). Today the volume keeps the keys out of the home
+volume and out of a copy of it, not out of a Session's reach.
 
 `docker compose down -v` destroys both and with them the pairing. Nothing else does — restarts,
 upgrades and host changes keep it, and so does losing `core-home` alone: the Core is still the
@@ -69,7 +71,8 @@ same Core and every Harness has to be logged in again.
 
 The one file a Session writes for the daemon is the hook miss log, `/run/actana/hook-misses.log`: a
 hook that could not reach the Core appends a line there, and the daemon reads it back as untrusted
-input (size-capped and tolerantly parsed). It is outside the state directory on purpose.
+input (size-capped and tolerantly parsed). The file is mode 0622, so any Session can also truncate
+it or overwrite another Session's lines; it is a diagnostic. It is outside the state directory on purpose.
 
 ### More than one address
 

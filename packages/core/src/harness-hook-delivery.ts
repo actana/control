@@ -78,7 +78,8 @@ export function hookMissLogPath(userDataDir: string, containerMode = false): str
 
 /**
  * Make the drop box a Session can append to: the directory traversable, the
- * file world-appendable. Created here, by the daemon, because a Session's `>>`
+ * file world-writable (0622: a Session can append, and also truncate it).
+ * Created here, by the daemon, because a Session's `>>`
  * can create nothing in a directory it may not write to, and the mode is set
  * with `chmod` because the daemon's umask would otherwise decide it.
  *
@@ -90,8 +91,15 @@ export function ensureHookMissDropBox(missLogPath: string): boolean {
     const dir = path.dirname(missLogPath);
     fs.mkdirSync(dir, { recursive: true, mode: 0o711 });
     fs.chmodSync(dir, 0o711);
-    const fd = fs.openSync(missLogPath, "a", 0o622);
+    // O_NOFOLLOW and a regular-file check: the drain refuses a symlink, and
+    // the creator must not chmod whatever one points at.
+    const fd = fs.openSync(
+      missLogPath,
+      fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW,
+      0o622,
+    );
     try {
+      if (!fs.fstatSync(fd).isFile()) throw new Error("not a regular file");
       fs.fchmodSync(fd, 0o622);
     } finally {
       fs.closeSync(fd);
@@ -166,7 +174,7 @@ function readRegularFile(fd: number): string | null {
 
 /** A field with every control character gone and a length cap: it is about to be logged. */
 function cleanField(value: string): string {
-  return value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, MAX_FIELD_CHARS);
+  return value.replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/g, "").slice(0, MAX_FIELD_CHARS);
 }
 
 /**

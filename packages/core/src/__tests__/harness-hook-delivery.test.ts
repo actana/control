@@ -250,7 +250,7 @@ describe("the hook miss drop box", () => {
     expect(hookMissLogPath("/data", false)).toBe("/data/hook-misses.log");
   });
 
-  it("is made traversable and world-appendable whatever the umask says", () => {
+  it("is made traversable and world-writable (0622) whatever the umask says", () => {
     const umask = process.umask(0o077);
     try {
       expect(ensureHookMissDropBox(missLog)).toBe(true);
@@ -271,6 +271,18 @@ describe("the hook miss drop box", () => {
     const blocked = path.join(dir, "plain-file");
     fs.writeFileSync(blocked, "");
     expect(ensureHookMissDropBox(path.join(blocked, "hook-misses.log"))).toBe(false);
+    expect(warn.mock.calls.flat().join(" ")).toContain("hook-delivery.drop-box-failed");
+  });
+
+  it("does not follow a symlink where the drop box should be, and does not chmod its target", () => {
+    const target = path.join(dir, "elsewhere.log");
+    fs.writeFileSync(target, "keep", { mode: 0o600 });
+    fs.mkdirSync(path.dirname(missLog), { recursive: true });
+    fs.symlinkSync(target, missLog);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    expect(ensureHookMissDropBox(missLog)).toBe(false);
+    expect(fs.statSync(target).mode & 0o777).toBe(0o600);
     expect(warn.mock.calls.flat().join(" ")).toContain("hook-delivery.drop-box-failed");
   });
 
@@ -322,6 +334,7 @@ describe("the hook miss drop box", () => {
           `2026-01-01T00:00:00Z\t${"y".repeat(200)}\tStop\t28`,
           "\t\t\t",
           "\u0000\u0000\u0000",
+          "2026-01-01T00:00:00Z\tt-c1\u009b\u2028x\tStop\t28",
         ].join("\n") + "\n",
       );
 
@@ -330,6 +343,7 @@ describe("the hook miss drop box", () => {
       expect(misses).toEqual([
         { at: "2026-01-01T00:00:00Z", taskId: "t-[31mred", event: "Stop", code: "28" },
         { at: "2026-01-01T00:00:00Z", taskId: "y".repeat(128), event: "Stop", code: "28" },
+        { at: "2026-01-01T00:00:00Z", taskId: "t-c1x", event: "Stop", code: "28" },
       ]);
     });
 
