@@ -57,3 +57,7 @@ The field is **present in every entry either way**, so no reader feature-detects
 - **The `projects` table's `path` column is now load-bearing for a second surface.** It was the spawn path's root check; it is now also the file surface's address space. Both go through the Core, and neither caches it.
 - **A Panel-side path check would be a review finding, not a judgement call** (D3). Named here so a reviewer can cite a clause instead of an opinion.
 - **`files-confinement.ts` and its test both carry D5 in their header comments.** The claim is denied in the place a reader meets the code, not only here, because a file called "confinement" is read far more often than an ADR is.
+
+## Amended by ADR 0041
+
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 **supersedes D1** ("a Project's files are the directory. There is no index"): the files are no longer a Project's. It **amends D2** (the address `(projectId, relative path)`) and **D6** (`/v1/projects/:projectId/files/list`), which address a Project: the Files API is re-rooted at the workspace (#557). Any other clause that says Project is read the same way. What the Shared folder does about change detection is #561's to decide. The text is left as it was written.

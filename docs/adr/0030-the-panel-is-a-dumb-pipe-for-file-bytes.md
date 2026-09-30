@@ -212,3 +212,7 @@ be stale the moment an agent wrote, which on these machines is constantly.
 - **`docs/external-api.md` gains no entry.** These routes are the Panel's own
   `/api/*` surface, behind the Operator session, and they forward to routes that
   document is already about. The Core's surface is the published one.
+
+## Amended by ADR 0041
+
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 amends **D5** ("a file view is not presentation") and every place this record says Project. D5 argues from [ADR 0022](0022-a-core-owned-project-has-a-panel-side-presentation-row.md), which 0041 supersedes. Whether the Panel stays a dumb pipe for Shared-folder bytes is open (#565). The text is left as it was written.

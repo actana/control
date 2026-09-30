@@ -96,3 +96,7 @@ core-link snapshot has no such field and should not grow one — and the rail's
 own fan-out (`lib/core-pins-engine.ts`) overlays the slot from the presentation
 row it has already read for the group. Folding that overlay into the mapper is
 the tidier home for it and is left to whoever next owns that file.
+
+## Superseded by ADR 0041
+
+[ADR 0041](0041-the-0-5-0-core-model.md) D1 removes Projects, so this record is **superseded in full**, including the two amendments above. The text is left as it was written.
