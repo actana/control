@@ -20,10 +20,14 @@ function runShippedPrep(env = {}) {
   });
 }
 
+/** The state mount point `runPrepAt` stands in for /var/lib/actana: beside the home. */
+const stateFor = (home) => path.join(path.dirname(home), "state");
+
 function runPrepAt(home, env = {}) {
   const script = fs
     .readFileSync(PREP, "utf8")
     .replaceAll("/home/core", home)
+    .replaceAll("/var/lib/actana", stateFor(home))
     .replaceAll("CORE_UID=1000", `CORE_UID=${process.getuid()}`)
     .replaceAll("CORE_GID=1000", `CORE_GID=${process.getgid()}`);
   const tmp = path.join(home, ".prep-test.sh");
@@ -134,5 +138,43 @@ describe("core-fs-prep.sh", () => {
     // Whatever the exit code (often fail without root on /home/core), it must
     // not have taken CORE_HOME=/etc as the repair root.
     expect(result.stderr + result.stdout).not.toMatch(/chown.*\/etc[^\w]/);
+  });
+
+  // #559 — the daemon's state mount point is prepared like the home's, with
+  // its own owner and a mode that is never looser than 0700.
+  describe("the state mount point", () => {
+    it("is created 0700 when it is missing", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "core-fs-prep-"));
+      const home = path.join(root, "home");
+      const result = runPrepAt(home);
+      expect(result.status, result.stderr).toBe(0);
+      const state = fs.statSync(stateFor(home));
+      expect(state.isDirectory()).toBe(true);
+      expect(state.mode & 0o777).toBe(0o700);
+    });
+
+    it("keeps the mode of one that exists and only repairs the mount point", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "core-fs-prep-"));
+      const home = path.join(root, "home");
+      fs.mkdirSync(path.join(stateFor(home), "data"), { recursive: true, mode: 0o700 });
+      fs.writeFileSync(path.join(stateFor(home), "data", "missioncontrol.db"), "x");
+      const result = runPrepAt(home);
+      expect(result.status, result.stderr).toBe(0);
+      expect(fs.statSync(stateFor(home)).mode & 0o777).toBe(0o700);
+      expect(fs.readFileSync(path.join(stateFor(home), "data", "missioncontrol.db"), "utf8")).toBe("x");
+    });
+
+    it("fails hard, on stderr, when the state mount point is a symlink", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "core-fs-prep-"));
+      const home = path.join(root, "home");
+      const evil = path.join(root, "evil-state");
+      fs.mkdirSync(evil, { recursive: true });
+      fs.symlinkSync(evil, stateFor(home));
+      const before = fs.readdirSync(evil);
+      const result = runPrepAt(home);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/core-fs-prep: error: .*state.*symlink/);
+      expect(fs.readdirSync(evil)).toEqual(before);
+    });
   });
 });

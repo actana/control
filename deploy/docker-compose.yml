@@ -157,6 +157,7 @@ services:
     network_mode: none
     volumes:
       - core-home:/home/core
+      - core-state:/var/lib/actana
       - ./repos:/home/core/repos
     restart: "no"
 
@@ -189,11 +190,16 @@ services:
       # and once a day in `docker compose logs core`.
       - ACTANA_UPDATE_CHECK=${ACTANA_UPDATE_CHECK:-}
     volumes:
-      # The Core's whole home: the pairing identity, the SQLite database, and
-      # each Harness's own credentials (~/.claude, ~/.codex, …). One mount,
-      # one backup target, and the only thing `docker compose down -v`
-      # destroys. Restarts and image upgrades keep it.
+      # The Core's home: its work and each Harness's own credentials
+      # (~/.claude, ~/.codex, …). Restarts and image upgrades keep it.
       - core-home:/home/core
+      # What only the daemon may hold (#559): the pairing identity, the SQLite
+      # database and the update caches, in /var/lib/actana. A volume of its
+      # own, so a Session working in the home volume is not working beside the
+      # Core's keys. Together with `core-home`, what `docker compose down -v`
+      # destroys; a Core whose `core-state` is gone has a new identity and every
+      # client must pair it again.
+      - core-state:/var/lib/actana
       # Your checkouts, where the Panel's "Add project" will find them.
       # Swappable for a named volume — `core-repos:/home/core/repos`, with
       # `core-repos:` added under `volumes:` — if you would rather the Core
@@ -283,11 +289,12 @@ services:
       start_period: 20s
 
 # A second Core is the block above again with three things changed: the
-# service name, ACTANA_PUBLIC_HOST to match it, and its own volumes (including
-# a `core2-init` one-shot on those volumes). Nothing here is a singleton.
-# Uncomment, add `core2-home:` and `core2-repos:` under `volumes:`, and pair
-# it the same way — `docker compose exec core2 actana pair new` prints its
-# own code and CA fingerprint.
+# service name, ACTANA_PUBLIC_HOST to match it, and its own volumes (home,
+# state and repos, including a `core2-init` one-shot on those volumes).
+# Nothing here is a singleton. Uncomment, add `core2-home:`, `core2-state:` and
+# `core2-repos:` under `volumes:`, and pair it the same way —
+# `docker compose exec core2 actana pair new` prints its own code and CA
+# fingerprint.
 #
 # Its repos are a named volume rather than a second bind mount, which is the
 # swap the first Core's comment describes: a bind mount needs a host directory
@@ -309,6 +316,7 @@ services:
 #     network_mode: none
 #     volumes:
 #       - core2-home:/home/core
+#       - core2-state:/var/lib/actana
 #       - core2-repos:/home/core/repos
 #     restart: "no"
 #   core2:
@@ -324,6 +332,7 @@ services:
 #       - ACTANA_LABEL=core2
 #     volumes:
 #       - core2-home:/home/core
+#       - core2-state:/var/lib/actana
 #       - core2-repos:/home/core/repos
 # <<< second Core
 
@@ -331,4 +340,5 @@ volumes:
   panel-data:
   postgres-data:
   core-home:
+  core-state:
   seaweedfs-data:
