@@ -3,6 +3,11 @@
 > **Status: PROPOSED.** It becomes ACCEPTED when this record is merged. It **supersedes** ADR 0022 and parts of
 > ADR 0016 (D6, D12), 0027 (D1) and **amends** parts of ADR 0016 (D19), 0027 (D2, D6), 0028 and 0030, as the table
 > below says. Older records are amended by dated or appended notes; none is rewritten or renumbered.
+>
+> **Amended 2026-09-30 by [#567](https://github.com/actana/control/issues/567)** with D14–D21, the Panel's Postgres
+> decisions, which further **amend** ADR 0010, ADR 0011 and ADR 0016 (D20, D25). The decisions are the owner's, in
+> their comment on #567 and their comment on [#556](https://github.com/actana/control/issues/556), both dated
+> 2026-09-30. Nothing in D1–D13 is changed.
 
 > **On the number.** This record takes **0041**, the next free number after
 > [`0040-pi-project-trust-answered-by-extension.md`](0040-pi-project-trust-answered-by-extension.md).
@@ -100,7 +105,7 @@ These are not decided here. Each is the named ticket's to settle.
 - **The Report contract** through the Shared folder: file names, layout and
   fields (actana/client#8).
 - **The wire form of the rename** in D3, and what happens to core-link frames
-  and the protocol version (#556).
+  and the protocol version (#556). *Decided on 2026-09-30: a hard cut, D21.*
 - **The new Files API address and its delete and create-folder routes** (#557).
 - **The Shared folder's change feed** and the mount mechanism (#561, #562).
 - **How the Panel's Files tab reaches Shared-folder bytes**, and so whether the
@@ -114,6 +119,77 @@ These are not decided here. Each is the named ticket's to settle.
 - **How an Agent relates to Remembered session settings.** Both are a Harness with settings. Only #569 defines
   Agent.
 
+## Amended by #567: the Panel's database is Postgres
+
+Decided by the owner on 2026-09-30 ([#567](https://github.com/actana/control/issues/567), and
+[#556](https://github.com/actana/control/issues/556) for D21). D8 already says the layers above a Core live in the
+Panel (Postgres); these clauses say what that means for the Panel's own database. They are appended, so no earlier
+number moves. This record only writes the decisions down. The code, the deploy files and the packages change in the
+later pull requests of #567, and until they land the Panel still runs on SQLite.
+
+**D14 — The Panel's state lives in Postgres only.** Every Panel table moves, including the Projects family, which
+#560 then deletes on Postgres. No SQLite is left in the Panel's state. "Done" for #567 is that the Panel runs on
+Postgres only.
+
+**D15 — `owner_id` references `operator.id`.** It keeps ADR 0011's single Operator. Ownership is enforced in Panel
+code: every user-facing table has an `owner_id`, and every query filters on the owner (#567).
+
+**D16 — Postgres is bundled, and the Panel refuses to start without it.** The compose file carries a Postgres
+service. Its image is pinned by digest and is at least 7 days old. An operator may point the Panel at their own
+server with the optional `AC_PANEL_DATABASE_URL`. The Panel refuses to start without a database. **A backup is a dump
+plus the secrets key**, because `core_secrets` is sealed (ADR 0011).
+
+**D17 — Migrations are drizzle-kit SQL migrations from a clean baseline, run at boot.** The legacy SQL migration files
+are dropped.
+
+**D18 — Time columns keep epoch milliseconds, as `bigint`.** They match the wire. The Panel does not move to
+`timestamptz`.
+
+**D19 — The driver is `pg`. Unit tests use PGlite. One CI job runs against a real Postgres.**
+
+**D20 — `better-sqlite3` leaves the Panel.** The Panel's provider-usage readers of other apps' SQLite files move to
+`node:sqlite`.
+
+**D21 — The wire rename in D3 is a hard cut, with no alias (#556).** Frames, events, the DB and the SDK and CLI say
+`sessionId` only. There is no `taskId` alias anywhere, including `session start --json`. The protocol version is
+bumped, and a 0.5.0 Core and SDK do not talk to 0.4.x. 0.5.0 Cores are installed fresh. The SDK side is
+actana/client#10.
+
+**No backward compatibility.** A 0.5.0 Panel starts on an **empty** Postgres. **0.4.x Panel data is not migrated.**
+There is no import of the SQLite file.
+
+### What D14–D21 do to older records
+
+Each older record gets a dated note pointing here. No text is rewritten.
+
+| Earlier decision | Effect | Because |
+|---|---|---|
+| [ADR 0010](0010-panel-becomes-a-self-hosted-web-service.md), the last shape bullet: "`node-pty` and `better-sqlite3` need no Electron-ABI rebuilds" | **Amended** | D20. The Panel no longer has `better-sqlite3`. The bullet's point stands for `node-pty`, which is the Core's. |
+| ADR 0010, "one deployable" and the single Docker image | **Amended** | D16. The Panel is still one service and one image, but a normal install now runs a Postgres service beside it. A bare Node process needs a reachable Postgres too. |
+| [ADR 0011](0011-operator-identity-and-panel-auth.md), "the auto-generated key file stored in the data volume next to the database" | **Amended** | D14, D16. The database is Postgres, not a file in the data volume. The key file, and `AC_SECRETS_KEY`, are unchanged, and the key is now a separate thing to back up. |
+| ADR 0011, one Operator per Panel, tenancy out of scope | **Not changed** | D15 builds on it. `owner_id` references the one Operator. |
+| [ADR 0016](0016-the-0-1-0-shape.md) **D20** (distroless runtime, digest-pinned) | **Amended** | D16. The digest-pin rule now also covers the Postgres image. The Panel image itself is not changed by this record. |
+| ADR 0016 **D25** (build and runtime both on Debian 13, with a `better-sqlite3` compiled in the build stage as the evidence) | **Amended** | D20. That example no longer applies, because the Panel has no compiled `better-sqlite3`. The alignment on Debian 13 is not changed by this record. |
+
+### Open questions
+
+These are not decided here. Each is for the pull request that needs it, and is settled by amending this record.
+
+- **Row-level security.** The owner asked for ownership "enforced in Panel code". Whether Postgres row-level security
+  is also wanted, and whether `owner_id` is also a database foreign key, was asked on #567 and not answered.
+- **Which tables count as user-facing**, and so carry an `owner_id`. The #567 comment proposes cores, groups,
+  projects, presentation, tasks, terminal logs and token usage. The owner did not confirm the list.
+- **The exact `pg` version and the Postgres image tag and digest.** The #567 comment names `pg` 8.23.0. Each must be
+  a release at least 7 days old and pinned exactly at the time the pull request adds it.
+- **The name of the Postgres service and its volume, how the dump is taken and restored**, and whether the Panel
+  image carries any Postgres client tool (D20 in ADR 0016 leaves nothing but Node in it).
+- **How the boot migration behaves** when two Panel processes start at once, and when the database holds migrations
+  newer than the Panel. The real-Postgres CI job exists for pool and lock behaviour, but the behaviour is not chosen.
+- **The Panel image's healthcheck** while the database is down (ADR 0016 D23), given that the Panel refuses to start
+  without it.
+- **What "refuse to start" does about a database that is up later**: exit and let the restart policy retry, or
+  retry in process.
+
 ## Consequences
 
 - **#555 and #556 change the code to match** and #560 the Panel. Until they land,
@@ -122,3 +198,4 @@ These are not decided here. Each is the named ticket's to settle.
 - **Every later ticket in #552 cites this record** for the model.
 - **A ticket that needs a decision changed amends this record rather than settling it in a comment.** This rule is
   from `docs/adr/README.md` and ADR 0024. It is new to this record and was not decided in #552 or #554.
+- **#567 is built in seven pull requests, and this record is the first.** Each later one builds on D14–D21.

@@ -72,11 +72,11 @@ routing around it.
 | [0007](adr/0007-scope-narrowing-and-rebrand.md) | Scope narrowing and rebrand |
 | [0008](adr/0008-cross-core-session-finish-notifications.md) | Cross-core session-finish notifications |
 | [0009](adr/0009-remove-managed-sandbox.md) | Remove the managed sandbox |
-| [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service |
-| [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth |
+| [0010](adr/0010-panel-becomes-a-self-hosted-web-service.md) | The Panel becomes a self-hosted web service — amended by 0041 (D14, D16, D20) |
+| [0011](adr/0011-operator-identity-and-panel-auth.md) | Operator identity and Panel auth — amended by 0041 (D14–D16) |
 | [0012](adr/0012-panel-link-browser-transport.md) | Panel link browser transport |
 | [0013](adr/0013-core-is-the-machine-harness-is-the-cli.md) | Core is the machine, Harness is the CLI |
-| [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows — amended by 0041 (D6 `sudo`, D12 sudo and headline, D19) |
+| [0016](adr/0016-the-0-1-0-shape.md) | The 0.1.0 shape: two images, one installer, three workflows — amended by 0041 (D6 `sudo`, D12 sudo and headline, D19, D20, D25) |
 | [0017](adr/0017-remembered-session-settings-are-core-facts.md) | Remembered session settings are Core facts |
 | [0018](adr/0018-docker-hub-is-the-only-registry.md) | Docker Hub is the only registry — GHCR is retired. **Amended:** npm is a second registry, for the published packages |
 | [0018](adr/0018-the-task-mutation-frame-carries-delete.md) | The task mutation frame carries delete |
@@ -101,7 +101,7 @@ routing around it.
 | [0038](adr/0038-a-core-has-several-addresses.md) | A Core has several addresses: multi-SAN certificates, and a per-pairing endpoint — **PROPOSED**, amends 0016 (D15, D18) and adds to 0034 |
 | [0039](adr/0039-pi-hooks-install-globally.md) | Pi's status hooks install globally, not in the workspace — so the turn-end signal loads before project trust — **PROPOSED**, depends on 0033 (D1) |
 | [0040](adr/0040-pi-project-trust-answered-by-extension.md) | Pi's project-trust prompt is answered by the global extension — no dialog and no `--approve` on Actana spawns — **PROPOSED**, depends on 0039 and 0026 |
-| [0041](adr/0041-the-0-5-0-core-model.md) | The 0.5.0 Core model: no Projects, one workspace, a Shared folder, Tasks on the Panel — **PROPOSED**, supersedes 0022, 0016 (D6 `sudo` package, D12 headline and sudo) and 0027 D1; amends 0016 D19, 0027 (D2, D6), 0028, 0030 |
+| [0041](adr/0041-the-0-5-0-core-model.md) | The 0.5.0 Core model: no Projects, one workspace, a Shared folder, Tasks on the Panel — **PROPOSED**, supersedes 0022, 0016 (D6 `sudo` package, D12 headline and sudo) and 0027 D1; amends 0016 (D19, D20, D25), 0010, 0011, 0027 (D2, D6), 0028, 0030; D14–D21 put the Panel's state in Postgres only |
 
 **Two files claim 0018**, as the table shows. It is a pre-existing collision,
 not breakage, and **nothing is renumbered** — every citation in the CI files
