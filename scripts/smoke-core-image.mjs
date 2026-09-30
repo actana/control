@@ -16,14 +16,14 @@
 //
 // The legs, in order:
 //
-//   • the built image's config carries tini + the root-prep entrypoint, and
-//     the daemon runs as `core` after setpriv (image USER is unset on purpose);
+//   • the built image's config carries tini + the prep entrypoint, USER core,
+//     and the daemon runs after setpriv with no-new-privs;
 //   • a plain `docker run` — no privileges, no host mounts — boots the daemon
 //     and mints an identity on the empty volume, printing no credential at all;
 //   • tini is PID 1 and the daemon is a child of PID 1 (D14), read out of /proc;
 //   • the lifecycle verbs the image owns refuse, and each names its Docker
 //     equivalent rather than just saying no (D16);
-//   • `docker compose exec -u core core actana pair new` mints a one-time code
+//   • `docker compose exec core actana pair new` mints a one-time code
 //     inside the container, and a real Panel — booted as the deployable it is —
 //     checks the CA fingerprint, spends the code in "Add Core", and the panel
 //     link reports the Core connected;
@@ -148,7 +148,7 @@ async function bootCore(name, { port } = {}) {
       const result = docker(["logs", "--tail", tail, containerName], { allowFailure: true });
       return `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
     },
-    exec: (argv, options) => docker(["exec", "-u", "core", containerName, ...argv], options),
+    exec: (argv, options) => docker(["exec", containerName, ...argv], options),
     start: () => {
       docker([
         "run",
@@ -366,8 +366,8 @@ if (!args["skip-build"]) {
 
 // D14, on the built bytes: a Dockerfile line saying tini is the entrypoint is
 // not evidence that the image carries it, and this is exactly the kind of
-// clause a "simplify the Dockerfile" edit drops. #558 wraps the root-prep
-// script under tini; both must be present.
+// clause a "simplify the Dockerfile" edit drops. #558 wraps the prep script
+// under tini; both must be present. USER stays core so exec is non-root.
 log("verifying the built image's entrypoint and identity …");
 const config = JSON.parse(docker(["image", "inspect", "--format", "{{json .Config}}", image]).stdout);
 if ((config?.Entrypoint ?? []).join(" ") !== "/usr/bin/tini -- /usr/local/bin/core-entrypoint.sh") {
@@ -379,10 +379,8 @@ if ((config?.Entrypoint ?? []).join(" ") !== "/usr/bin/tini -- /usr/local/bin/co
 if ((config?.Cmd ?? []).join(" ") !== "actana daemon") {
   die(`${image} cmd is ${JSON.stringify(config?.Cmd)}, expected ["actana","daemon"]`);
 }
-// Image USER must stay unset: a trailing USER core would run the entrypoint
-// unprivileged and skip the #551/#558 filesystem repair.
-if (config?.User) {
-  die(`${image} runs as ${JSON.stringify(config?.User)}, expected unset (root entrypoint)`);
+if (config?.User !== "core") {
+  die(`${image} runs as ${JSON.stringify(config?.User)}, expected core`);
 }
 
 // ─── Boot 1: an empty volume mints an identity ───────────────────────────────
@@ -418,15 +416,20 @@ function assertNoCredentialInLogs(what) {
 const identity = core.exec(["id", "-u"]).stdout.trim() + ":" + core.exec(["id", "-g"]).stdout.trim();
 if (identity !== "1000:1000") die(`the Core runs as ${identity}, expected 1000:1000`);
 
-// #558 — `sudo -n true` must fail for core (no package, or no NOPASSWD).
-const sudoN = core.exec(
-  ["sh", "-c", "command -v sudo >/dev/null 2>&1 && sudo -n true"],
-  { allowFailure: true },
-);
-if (sudoN.status === 0) {
-  die("core can run `sudo -n true` — NOPASSWD sudo must be gone (#558)");
+// Exec defaults to image USER core — not root.
+const execUser = core.exec(["id", "-un"]).stdout.trim();
+if (execUser !== "core") {
+  die(`docker exec without -u ran as ${JSON.stringify(execUser)}, expected core`);
 }
-log("core cannot sudo -n (expected)");
+
+// #558 — sudo is gone from the image, not merely deconfigured.
+if (core.exec(["sh", "-c", "command -v sudo"], { allowFailure: true }).status === 0) {
+  die("sudo is on PATH — the package must be absent from the Core image (#558)");
+}
+if (core.exec(["test", "-e", "/etc/sudoers.d/core"], { allowFailure: true }).status === 0) {
+  die("/etc/sudoers.d/core exists — NOPASSWD sudoers must be gone (#558)");
+}
+log("sudo binary and sudoers.d/core are absent (expected)");
 
 for (const owned of [CORE_HOME, `${CORE_HOME}/shared`, `${CORE_HOME}/.local/share/actana/data`]) {
   const owner = core.exec(["stat", "-c", "%u:%g", owned]).stdout.trim();
@@ -471,6 +474,34 @@ if (!daemon) {
   );
 }
 log(`tini is PID 1 and the daemon (pid ${daemon.pid}) is its child`);
+
+// #558 — complete privilege drop on the daemon itself.
+const status = core.exec(["cat", `/proc/${daemon.pid}/status`]).stdout;
+const uidLine = status.match(/^Uid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m);
+const gidLine = status.match(/^Gid:\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/m);
+const groupsLine = status.match(/^Groups:\s*(.*?)\s*$/m);
+const capPrm = status.match(/^CapPrm:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
+const capEff = status.match(/^CapEff:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
+const capBnd = status.match(/^CapBnd:\s+([0-9a-fA-F]+)\s*$/m)?.[1];
+const noNewPrivs = status.match(/^NoNewPrivs:\s+(\d+)\s*$/m)?.[1];
+if (!uidLine || uidLine.slice(1).some((v) => v !== "1000")) {
+  die(`daemon Uid is not all 1000:\n${status}`);
+}
+if (!gidLine || gidLine.slice(1).some((v) => v !== "1000")) {
+  die(`daemon Gid is not all 1000:\n${status}`);
+}
+const groups = (groupsLine?.[1] ?? "").trim().split(/\s+/).filter(Boolean);
+if (groups.length !== 1 || groups[0] !== "1000") {
+  die(`daemon Groups is ${JSON.stringify(groupsLine?.[1])}, expected only 1000`);
+}
+const zeroCap = (hex) => hex && /^0+$/.test(hex);
+if (!zeroCap(capPrm) || !zeroCap(capEff) || !zeroCap(capBnd)) {
+  die(`daemon capabilities not cleared: CapPrm=${capPrm} CapEff=${capEff} CapBnd=${capBnd}`);
+}
+if (noNewPrivs !== "1") {
+  die(`daemon NoNewPrivs is ${JSON.stringify(noNewPrivs)}, expected 1`);
+}
+log("daemon uids/gids/groups/caps/NoNewPrivs look clean");
 
 if (target) {
   // A cross-architecture tarball surfaces as `exec format error` at first boot

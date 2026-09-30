@@ -159,15 +159,18 @@ RUN userdel --remove ubuntu \
  && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash core
 
 # No sudoers, and no `sudo` package (#558). ADR 0016 D12's NOPASSWD grant is
-# retired; the ADR that replaces it is #554. Root exists only for the
-# entrypoint's filesystem prep, then `setpriv` drops to `core` for good.
+# retired; the ADR that replaces it is #554. Root is used only during
+# filesystem prep (via the setuid wrap when the image USER is core, or when
+# an operator starts with `-u 0`), then `setpriv` drops to `core` for good.
 #
-# There is deliberately no accommodation for overriding `user:` in compose.
-# It half-works, and half-working is worse than a refusal: NPM_CONFIG_PREFIX
-# below points at a home that an overridden uid cannot write — so
-# `actana harnesses install` fails. A host whose login user is not uid 1000
-# has two supported answers: chown the bind-mounted directory to 1000:1000, or
-# use a named volume and let the Core own the repos.
+# There is deliberately no accommodation for overriding `user:` in compose
+# to a non-root uid other than core. NPM_CONFIG_PREFIX points at a home that
+# uid cannot write — so `actana harnesses install` fails. A host whose login
+# user is not uid 1000 has two supported answers: chown the bind-mounted
+# directory to 1000:1000, or use a named volume and let the Core own the repos.
+# Compose must not set `user: "0"` on the service either: that would make
+# `docker compose exec` default to root. Prep escalates through the setuid
+# wrapper instead.
 
 # The Core itself, from the release tarball built for this architecture. It
 # arrives as a named build context because artifacts/ is .dockerignore'd:
@@ -221,7 +224,7 @@ RUN --mount=type=bind,from=tarball,target=/mnt/tarball \
 # deployment unwritable by the daemon. `shared` is the Shared folder (#561's
 # contract starts here as an empty local dir). `repos` is the workspace bind
 # mount compose still uses; the entrypoint also repairs a host dir Docker
-# created as root (#551).
+# created as root (#551), at the mount point only — never recursively.
 RUN mkdir -p /home/core/.local/bin \
              /home/core/.local/share/actana/data \
              /home/core/.config/actana \
@@ -229,14 +232,23 @@ RUN mkdir -p /home/core/.local/bin \
              /home/core/repos \
  && chown -R core:core /home/core
 
-# Runs as root only long enough to ensure those paths exist and are owned by
-# core on a live volume/bind mount, then setpriv-drops to core before exec'ing
-# CMD. The image USER stays unset so this script actually starts as root; a
-# trailing `USER core` would make the prep a no-op. Operator `docker compose
-# exec` must pass `-u core` — see docs/images/core.md.
+# Prep script + setuid wrap: image USER stays `core` so exec is non-root, but
+# ownership repair still needs euid 0. The wrap is the only escalation; the
+# script is root:root and not writable by core. build-essential (already in
+# the image for harness native addons) compiles the wrap — no new package.
+RUN mkdir -p /usr/local/libexec
+COPY core-fs-prep.sh /usr/local/libexec/core-fs-prep.sh
+COPY core-fs-prep-wrap.c /tmp/core-fs-prep-wrap.c
+RUN gcc -O2 -o /usr/local/libexec/core-fs-prep-wrap /tmp/core-fs-prep-wrap.c \
+ && rm -f /tmp/core-fs-prep-wrap.c \
+ && chown root:root /usr/local/libexec/core-fs-prep.sh /usr/local/libexec/core-fs-prep-wrap \
+ && chmod 0755 /usr/local/libexec/core-fs-prep.sh \
+ && chmod 4755 /usr/local/libexec/core-fs-prep-wrap
+
 COPY core-entrypoint.sh /usr/local/bin/core-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/core-entrypoint.sh
 
+USER core
 WORKDIR /home/core
 
 # The operator contract is three variables, and the minimum for a working
@@ -273,13 +285,8 @@ WORKDIR /home/core
 # next start would say "no Core is installed here" instead of booting a daemon.
 # Setting it in the image is what leaves the collision with no outcome to decide:
 # whichever `actana` runs, it is the same program and it finds the same tree.
-#
-# HOME is pinned because the image USER is root (for the entrypoint). After
-# setpriv the daemon is uid 1000; keeping HOME=/home/core means harness npm
-# installs still land under the user prefix without needing sudo.
 ARG ACTANA_PORT=8443
 ENV ACTANA_PORT=${ACTANA_PORT} \
-    HOME=/home/core \
     ACTANA_CONTAINER=1 \
     AC_CORE_REMOTE=1 \
     AC_CORE_LINK_HOST=0.0.0.0 \
@@ -293,13 +300,14 @@ ENV ACTANA_PORT=${ACTANA_PORT} \
 # The same ARG, so the exposed port cannot drift from the documented default.
 EXPOSE ${ACTANA_PORT}
 
-# tini is PID 1; the entrypoint preps the filesystem as root, drops to core,
-# and the daemon is then tini's child (D14 + #558). node-pty forks a shell and
-# the shell forks a Harness, so when the shell exits first that Harness
-# reparents to PID 1 — and libuv only waitpid()s children Node spawned itself.
-# A Core running as PID 1 therefore accumulates zombies until the PID table
-# fills. Baked in rather than left to `--init` / `init: true`, because those
-# are opt-in and anyone copying a bare `docker run` off a README would get the
-# broken configuration by default. tini is 10 kB and is not a supervisor.
+# tini is PID 1; the entrypoint preps the filesystem (setuid wrap when USER is
+# core), setpriv-drops capabilities / no-new-privs, and the daemon is then
+# tini's child (D14 + #558). node-pty forks a shell and the shell forks a
+# Harness, so when the shell exits first that Harness reparents to PID 1 —
+# and libuv only waitpid()s children Node spawned itself. A Core running as
+# PID 1 therefore accumulates zombies until the PID table fills. Baked in
+# rather than left to `--init` / `init: true`, because those are opt-in and
+# anyone copying a bare `docker run` off a README would get the broken
+# configuration by default. tini is 10 kB and is not a supervisor.
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]
 CMD ["actana", "daemon"]

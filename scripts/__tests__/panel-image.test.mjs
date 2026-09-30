@@ -793,14 +793,13 @@ describe("core image", () => {
 
   // D12 — 1000:1000 explicitly, because useradd's own pick is 1001:100 and
   // that breaks every bind-mounted repo. #558 retires the NOPASSWD half of
-  // D12: the image USER is unset so the entrypoint can start as root, then
-  // setpriv-drops to core before the daemon runs.
+  // D12: USER stays `core` so exec is non-root; prep escalates via setuid wrap.
   it("removes the stock ubuntu user and pins core to 1000:1000", () => {
     const account = coreImage.runs.find((run) => run.includes("useradd"));
     expect(account).toContain("userdel");
     expect(account).toMatch(/groupadd --gid 1000 core/);
     expect(account).toMatch(/useradd --uid 1000 --gid 1000/);
-    expect(coreImage.users).toEqual([]);
+    expect(coreImage.users.at(-1)).toBe("core");
   });
 
   it("gives core no sudo and no sudoers file", () => {
@@ -809,18 +808,24 @@ describe("core image", () => {
     expect(aptPackages(install)).not.toContain("sudo");
     expect(coreImage.runs.filter((run) => run.includes("NOPASSWD"))).toHaveLength(0);
     expect(coreDockerfile).not.toContain("/etc/sudoers.d/core");
-    // No RUN writes a sudoers drop-in; comments may still name the retired path.
     expect(coreImage.runs.join("\n")).not.toMatch(/sudoers\.d/);
   });
 
-  it("preps the filesystem as root then setpriv-drops to core", () => {
+  it("preps via setuid wrap then setpriv-drops with no-new-privs", () => {
     const entrypoint = readRepoFile("deploy/core-entrypoint.sh");
+    const prep = readRepoFile("deploy/core-fs-prep.sh");
+    const wrap = readRepoFile("deploy/core-fs-prep-wrap.c");
     expect(entrypoint).toContain("setpriv");
-    expect(entrypoint).toContain("--reuid=");
-    expect(entrypoint).toContain('SHARED_DIR="${CORE_HOME}/shared"');
-    expect(entrypoint).toContain('WORKSPACE_DIR="${CORE_HOME}/repos"');
-    expect(entrypoint).toContain("ensure_core_owned");
-    // The script must not invoke sudo — comments naming its absence are fine.
+    expect(entrypoint).toContain("--no-new-privs");
+    expect(entrypoint).toContain("--inh-caps=-all");
+    expect(entrypoint).toContain("--bounding-set=-all");
+    expect(entrypoint).toContain("core-fs-prep-wrap");
+    expect(prep).toContain("chown -h");
+    expect(prep).toContain("path_safe_under_home");
+    expect(prep).toContain('ensure_core_owned "${WORKSPACE_DIR}" warn');
+    expect(prep).toContain('ensure_core_owned "${STATE_DIR}" hard');
+    expect(wrap).toContain("setuid(0)");
+    expect(wrap).toContain("core-fs-prep.sh");
     const body = entrypoint
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
@@ -830,7 +835,8 @@ describe("core image", () => {
       '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
     );
     expect(coreDockerfile).toContain("COPY core-entrypoint.sh");
-    // Seed shared + repos as core-owned so a fresh named volume is writable.
+    expect(coreDockerfile).toContain("COPY core-fs-prep.sh");
+    expect(coreDockerfile).toContain("chmod 4755");
     const seed = coreImage.runs.find((run) => run.includes("/home/core/shared"));
     expect(seed).toContain("/home/core/repos");
     expect(seed).toContain("chown -R core:core /home/core");
@@ -849,7 +855,6 @@ describe("core image", () => {
   // is a private image constant the container mode depends on.
   it("bakes the container-mode environment", () => {
     expect(coreImage.env).toMatchObject({
-      HOME: CORE_HOME,
       ACTANA_CONTAINER: "1",
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_HOST: "0.0.0.0",
@@ -860,6 +865,7 @@ describe("core image", () => {
     });
     expect(coreImage.env.PATH).toContain(`${CORE_APP_ROOT}/bin`);
     expect(coreImage.env.PATH).toContain(`${CORE_HOME}/.local/bin`);
+    expect(coreImage.env.HOME).toBeUndefined();
   });
 
   it("exposes the port from the same ARG as ACTANA_PORT", () => {

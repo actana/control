@@ -1,48 +1,43 @@
 #!/bin/sh
-# Root-only filesystem prep for the Core image, then drop to `core` for good.
+# Root filesystem prep for the Core image, then drop to `core` for good.
 #
 # The image has no sudo and no sudoers (see #558; retires ADR 0016 D12, whose
-# replacement ADR is #554). Root is used only here, at container start:
-# create/fix ownership of the home, the Shared folder, the daemon state
-# directory, and a root-owned workspace bind mount (#551), then never again.
-#
-# setpriv comes from util-linux on the Ubuntu base — do not apt-get install
-# anything for this drop. tini remains PID 1; this script execs into the
-# daemon so the process tree stays tini → daemon.
+# replacement ADR is #554). Image USER is `core` so `docker exec` / compose
+# exec stay non-root. Prep escalates only through the setuid wrapper
+# `/usr/local/libexec/core-fs-prep-wrap` (or runs inline when already root,
+# e.g. `docker run -u 0` in smoke). Then setpriv drops every capability and
+# sets no-new-privs before exec'ing CMD. tini remains PID 1.
 set -eu
 
 CORE_USER=core
-CORE_HOME=/home/core
-SHARED_DIR="${CORE_HOME}/shared"
-STATE_DIR="${CORE_HOME}/.local/share/actana/data"
-CONFIG_DIR="${CORE_HOME}/.config/actana"
-# Compose still bind-mounts here; Docker creates a missing host dir as root.
-WORKSPACE_DIR="${CORE_HOME}/repos"
+PREP_SCRIPT=/usr/local/libexec/core-fs-prep.sh
+PREP_WRAP=/usr/local/libexec/core-fs-prep-wrap
 
-# Own the path as core when it exists but is not already uid/gid 1000.
-# Directory only — never chown -R a bind-mounted tree of host checkouts.
-ensure_core_owned() {
-  path=$1
-  mkdir -p "$path"
-  owner=$(stat -c '%u:%g' "$path")
-  if [ "$owner" != "1000:1000" ]; then
-    chown "${CORE_USER}:${CORE_USER}" "$path"
+run_prep() {
+  if [ "$(id -u)" -eq 0 ]; then
+    "$PREP_SCRIPT"
+  else
+    "$PREP_WRAP"
   fi
 }
 
-if [ "$(id -u)" -eq 0 ]; then
-  ensure_core_owned "${CORE_HOME}"
-  ensure_core_owned "${CORE_HOME}/.local"
-  ensure_core_owned "${CORE_HOME}/.local/bin"
-  ensure_core_owned "${CORE_HOME}/.local/share"
-  ensure_core_owned "${CORE_HOME}/.local/share/actana"
-  ensure_core_owned "${STATE_DIR}"
-  ensure_core_owned "${CORE_HOME}/.config"
-  ensure_core_owned "${CONFIG_DIR}"
-  ensure_core_owned "${SHARED_DIR}"
-  ensure_core_owned "${WORKSPACE_DIR}"
+run_prep
 
-  exec setpriv --reuid="${CORE_USER}" --regid="${CORE_USER}" --init-groups -- "$@"
+# Complete drop: real+effective uid/gid, supplementary groups, no inherited
+# or bounding capabilities, and no-new-privs so setuid binaries stay inert.
+if [ "$(id -u)" -eq 0 ]; then
+  exec setpriv \
+    --reuid="${CORE_USER}" \
+    --regid="${CORE_USER}" \
+    --init-groups \
+    --inh-caps=-all \
+    --bounding-set=-all \
+    --no-new-privs \
+    -- "$@"
 fi
 
-exec "$@"
+exec setpriv \
+  --inh-caps=-all \
+  --bounding-set=-all \
+  --no-new-privs \
+  -- "$@"
