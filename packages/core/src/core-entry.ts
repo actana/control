@@ -29,8 +29,10 @@
 //                                     code chose another of them
 //                                     (default: AC_CORE_LINK_HOST)
 //   AC_CORE_BEARER_DAYS=<n>     — validity in days of the bearer this Core signs for itself
-//                                 (default: 365). A bearer a pairing redemption issues is
-//                                 the SDK's, and lives 365 days whatever this says.
+//                                 (default: 365). It does NOT bound the bearer a pairing
+//                                 redemption issues: that one is the SDK's and always lives
+//                                 365 days, whatever this says. A regression from 0.4.5, where
+//                                 it bounded both; tracked in actana/client#12.
 //   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
 //                                     **Required in remote mode.** The daemon
 //                                     restarts with the same CA + certs +
@@ -633,6 +635,12 @@ async function startCore(): Promise<void> {
       // already has open. The set is built with the pairing surface and armed
       // below once there is a server for it to close connections on.
       serverOpts.revocation = pairing.gate.revocations;
+      // Seeded here, before the server is built and so before anything listens:
+      // `startRevocationSweep` below schedules its own first read but does not
+      // return it, so it is no guarantee that a revocation already on file is
+      // known when the first request arrives. Awaiting one refresh ourselves is.
+      // An unreadable store leaves the set failing closed, as it should.
+      await pairing.gate.revocations.refresh();
 
       serverOpts.tls = {
         caCert: material.caCert,
@@ -767,10 +775,11 @@ async function startCore(): Promise<void> {
   const server = new PtyCoreLinkServer(core, serverOpts);
 
   // Armed after the server exists, because what it does when it finds a fresh
-  // revocation is close that client's connections. Its first read runs here and
-  // is deliberately not dispatched — see `startPairingRevocationSweep` — so a
-  // Core that boots with revocations already on file refuses them from its
-  // first request rather than from one second in.
+  // revocation is close that client's connections. The set was already seeded
+  // by the awaited refresh above, so a Core that boots with revocations on file
+  // refuses them from its first request; the sweep's own boot read is only a
+  // repeat, and it is not dispatched (the SDK's boot tick never calls
+  // `onRevoked`).
   const revocationSweep = pairing ? pairing.startRevocationSweep() : null;
 
   // Alert-only, once a day, into this daemon's log — never a frame the Panel
