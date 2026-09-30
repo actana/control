@@ -17,6 +17,9 @@
  *                          one at <data dir>/secrets.key; set it to hold the
  *                          key somewhere other than beside the data. Losing it
  *                          means re-pairing every Core.
+ *   AC_PANEL_DATABASE_URL  Postgres connection URL (postgres://user:pass@host/db).
+ *                          Required: the Panel checks it can connect and exits
+ *                          with a message, before listening, when it cannot.
  *   AC_PANEL_SERVER_ENTRY  override the built server bundle (tests, dev builds)
  *
  * The Panel speaks plain HTTP and trusts a reverse proxy for TLS (ADR 0010).
@@ -63,6 +66,22 @@ if (!handler || typeof handler.fetch !== "function") {
 const serveNodeRequest = mod.serveNodeRequest;
 if (typeof serveNodeRequest !== "function") {
   console.error(`[panel] server entry exports no serveNodeRequest bridge: ${entry}`);
+  process.exit(1);
+}
+
+// The Panel's state is moving to Postgres (#567). Until a feature reads from
+// it the pool is only opened and checked, but that is enough for the rule the
+// rest of the move leans on: no database, no Panel. The bundle is already
+// imported above, which starts the SQLite-backed core links; that is harmless
+// to abandon, since the process exits before it listens.
+if (typeof mod.connectPanelDatabase !== "function") {
+  console.error(`[panel] server entry exports no connectPanelDatabase: ${entry}`);
+  process.exit(1);
+}
+try {
+  await mod.connectPanelDatabase();
+} catch (err) {
+  console.error(`[panel] ${err instanceof Error ? err.message : String(err)}`);
   process.exit(1);
 }
 
@@ -160,6 +179,8 @@ server.listen(port, host, () => {
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => {
-    server.close(() => process.exit(0));
+    server.close(() => {
+      Promise.resolve(mod.closePanelDatabase?.()).finally(() => process.exit(0));
+    });
   });
 }
