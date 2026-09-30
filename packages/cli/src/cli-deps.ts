@@ -23,7 +23,7 @@ import type { OpenProjectFilesFn } from "./project-files-gateway.ts";
 import type { OpenSessionAttachFn } from "./session-attach-channel.ts";
 import type { ActanaSystem } from "./actana-system.ts";
 import type { ReleaseFetcher } from "./actana-release.ts";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 
 export type ActanaCliDeps = {
   // ─── both halves ──────────────────────────────────────────────────────────

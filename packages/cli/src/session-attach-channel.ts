@@ -45,10 +45,10 @@
 // vocabulary — `claim`, `release`, `ptySubscribe`, `replay`, `write`, `resize`,
 // `onData`, `onExit` — with no TTY, no signal and no raw-mode call near it.
 
-import { CoreClient, CoreLinkRequestError } from "@actana/sdk/core-client.ts";
-import { SESSION_LOCKED_ERROR_CODE } from "@actana/sdk/core-link-frames.ts";
+import { CoreClient, CoreLinkRequestError } from "@actana/sdk/core";
+import { SESSION_LOCKED_ERROR_CODE } from "@actana/sdk/core";
 import { SessionGatewayError } from "./session-gateway.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 import type { Unsubscribe } from "./cli-terminal.ts";
 
 /** How a harness's process ended, while somebody was attached to it. */

@@ -29,7 +29,7 @@ import {
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkProjectMutation,
   type CoreLinkProjectSnapshot,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 import type {
   CoreDirectoryPort,
   CoreMutationPort,

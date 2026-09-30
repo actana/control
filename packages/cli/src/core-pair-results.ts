@@ -40,7 +40,7 @@ import {
   wrapText,
   type Span,
 } from "./cli-frame.ts";
-import type { CorePairingErrorDetail, CorePairingFailure } from "@actana/sdk/core-pairing.ts";
+import type { CorePairingErrorDetail, PairingFailure } from "@actana/sdk/pairing";
 import {
   EXIT_PAIR_CERTIFICATE_INVALID,
   EXIT_PAIR_CORE_ERROR,
@@ -130,8 +130,8 @@ export type CorePairSuccess = {
    *
    * **A purely local fact, and the row is worded to claim nothing else**
    * (#366 review 2). The first version of this row said it was "this machine,
-   * in the Core's `pair ls`", and that is false: `core-pairing-routes.ts`
-   * builds `PairedClient.label` from **`session.label`** — the name the *Core*
+   * in the Core's `pair ls`", and that is false: the Core's redeem route (the SDK's
+   * `createPairing`) builds `PairedClient.label` from **`session.label`** — the name the *Core*
    * operator typed at `actana pair new --label <name>` — and this value
    * reaches the Core only as the certificate CN, and only in the sub-case
    * where the session carried no label at all. `actana pair revoke` matches on
@@ -361,7 +361,7 @@ export type CorePairingOutcome = {
 /**
  * Every failure the SDK distinguishes, given a number, a next step and a remedy.
  *
- * One `switch` with no `default`, so a failure added to `CorePairingFailure`
+ * One `switch` with no `default`, so a failure added to `PairingFailure`
  * stops this file compiling until somebody decides what an operator should do
  * about it — which is the only way a list like this stays honest.
  *
@@ -372,7 +372,7 @@ export type CorePairingOutcome = {
  * prose started.
  */
 export function corePairingOutcome(
-  failure: CorePairingFailure,
+  failure: PairingFailure,
   detail: CorePairingErrorDetail = {},
 ): CorePairingOutcome {
   switch (failure) {
@@ -769,7 +769,7 @@ export function badNameSteps(nameError: string): readonly CorePairStep[] {
   ];
 }
 
-/** Anything that is not a `CorePairingError` — a defect, not an operator error. */
+/** Anything that is not a `PairingError` — a defect, not an operator error. */
 export const DEFECT_STEPS: readonly CorePairStep[] = [
   {
     note:

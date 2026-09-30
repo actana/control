@@ -26,7 +26,7 @@ import {
 import {
   CoreSessionLinkLostError,
   CoreSessionTurnTimeoutError,
-} from "@actana/sdk/core-session.ts";
+} from "@actana/sdk/core";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 
 let fixture: CliFixture | null = null;

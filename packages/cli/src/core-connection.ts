@@ -20,11 +20,11 @@
 // that must survive a Core restart and takes the durable one, cursor and all.
 // Nothing here chooses for them.
 
-import { CoreClient } from "@actana/sdk/core-client.ts";
-import { DurableCoreClient } from "@actana/sdk/durable-core-client.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
-import type { CoreLinkCursorStorage } from "@actana/sdk/core-link-cursor-storage.ts";
-import type { CoreConnectionInfo } from "@actana/sdk/core-client.ts";
+import { CoreClient } from "@actana/sdk/core";
+import { DurableCoreClient } from "@actana/sdk/core";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
+import type { CoreLinkCursorStorage } from "@actana/sdk/core";
+import type { CoreConnectionInfo } from "@actana/sdk/core";
 import type {
   CoreLinkEvent,
   CoreLinkHarnessAvailabilityMap,
@@ -32,7 +32,7 @@ import type {
   CoreLinkProjectSnapshot,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 import { resolveCore, type ResolveResult } from "./core-resolution.ts";
 import { EXIT_FAILURE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";

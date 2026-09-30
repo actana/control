@@ -46,7 +46,7 @@
 // bookkeeping — reference comparison inside this process — and nothing puts its
 // answer on the wire.
 
-import type { CoreLinkSessionLock } from "@actana/sdk/core-link-frames";
+import type { CoreLinkSessionLock } from "@actana/sdk/core";
 
 /**
  * A lock holder, as this table sees one: an identity to compare by reference.

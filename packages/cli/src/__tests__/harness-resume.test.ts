@@ -19,7 +19,7 @@ import {
 } from "@actana/shared/pty-spawn-policy";
 import { harnessResumeCommand } from "../harness-resume.ts";
 import { KNOWN_HARNESSES } from "../session-gateway.ts";
-import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core";
 
 const PROJECT_ROOT = "/home/core/projects/web";
 

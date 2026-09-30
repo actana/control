@@ -28,7 +28,11 @@
 //                                     endpoint a pairing hands back unless the
 //                                     code chose another of them
 //                                     (default: AC_CORE_LINK_HOST)
-//   AC_CORE_BEARER_DAYS=<n>     — bearer validity in days (default: 365)
+//   AC_CORE_BEARER_DAYS=<n>     — validity in days of the bearer this Core signs for itself
+//                                 (default: 365). It does NOT bound the bearer a pairing
+//                                 redemption issues: that one is the SDK's and always lives
+//                                 365 days, whatever this says. A regression from 0.4.5, where
+//                                 it bounded both; tracked in actana/client#12.
 //   AC_CORE_MATERIAL_FILE=<path> — persisted cert material + bearer secret.
 //                                     **Required in remote mode.** The daemon
 //                                     restarts with the same CA + certs +
@@ -68,18 +72,15 @@ import {
 import { PtyCoreLinkServer } from "./pty-core-link-server";
 import { buildCoreFileRoutes, shouldAnnounceFiles } from "./core-files-wiring";
 import {
-  buildCorePairingRoutes,
-  buildPairingEndpointResolver,
+  CORE_PAIRING_NAMES,
+  auditPairingRoutes,
   composeCoreHttpRoutes,
-  isPairingPath,
+  reportUnreadableRevocations,
+  revokedHandler,
 } from "./core-pairing-wiring";
-import type { CorePairingRoutesOptions } from "./core-pairing-routes";
-import { PairingStore, pairingStorePath } from "@actana/shared/pairing-store";
-import {
-  PairingRevocations,
-  startPairingRevocationSweep,
-  type PairingRevocationSweep,
-} from "./core-pairing-revocation";
+import { createPairing } from "@actana/sdk/pairing/server";
+import { pairingStorePath } from "@actana/sdk/pairing/stores/json-file";
+import { corePairingStore } from "./core-pairing-store";
 import { createDirectory, listDirectory } from "./directory-browse";
 import { runCoreExec } from "./core-exec";
 import { configureProjectRootsDb } from "./project-roots";
@@ -110,7 +111,7 @@ import {
   SESSION_PROMPT_DELIVERED_EVENT_KIND,
   type CoreLinkSessionPromptAbandonedPayload,
   type CoreLinkSessionPromptDeliveredPayload,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import { CoreTaskWriter } from "./core-task-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";
@@ -449,11 +450,7 @@ async function startCore(): Promise<void> {
   // the only shape of Core that can pair (#282). Left null otherwise, which is
   // what keeps a loopback Core's TLS posture and route list exactly as they
   // were.
-  let pairing: CorePairingRoutesOptions | null = null;
-  // Set beside `pairing`, and for the same reason: a Core with no persisted
-  // material has no pairing store, so there is nothing on this machine that
-  // could have been revoked.
-  let revocations: PairingRevocations | null = null;
+  let pairing: ReturnType<typeof createPairing> | null = null;
 
   const serverOpts: import("./pty-core-link-server").PtyCoreLinkServerOptions = {
     port,
@@ -614,31 +611,48 @@ async function startCore(): Promise<void> {
       // operator's `actana pair new` and this daemon can both see — all three
       // are the persisted material, and a daemon started without one has
       // nowhere for a session to live.
-      const pairingStore = new PairingStore(pairingStorePath(materialFile));
-      pairing = {
-        material: {
-          caCert: material.caCert,
-          caKey: material.caKey,
-          bearerSecret: material.bearerSecret,
-          coreId: material.coreId,
-          coreUuid: material.coreUuid,
-        },
-        sessions: pairingStore,
-        // Per redeemed session, not one string for the route: which of this
-        // Core's addresses a client is told to dial is the operator's choice at
-        // `actana pair new` time, and the resolver reads it off the stored
-        // session and off nothing in the request (#347).
-        endpointFor: buildPairingEndpointResolver({ publicHosts, port }),
-        bearerDays,
-      };
+      //
+      // `@actana/sdk/pairing/server` owns the endpoint, the rate limit, the
+      // redemption and the revocation set; the JSON-file store is the same
+      // `pairing.json` beside the material file that `actana pair new` writes.
+      // Which of this Core's addresses a client is told to dial is still the
+      // operator's choice at `actana pair new` time, read off the stored
+      // session and off nothing in the request (#347): `publicHosts` and
+      // `port` are what the SDK's resolver chooses from.
+      pairing = createPairing({
+        store: corePairingStore(pairingStorePath(materialFile)),
+        material,
+        endpointScheme: "wss",
+        port,
+        publicHosts,
+        names: CORE_PAIRING_NAMES,
+        // A label the operator left off `actana pair new` falls back to the
+        // one the client sent, then to the session id, as it always has.
+        clientLabel: "session-or-client",
+        // What a fresh revocation does: close that client's open links, and say
+        // so when the sweep found the store unreadable. The server does not
+        // exist yet, so this reaches it through the binding below rather than
+        // by name, and the set through `pairing`, which this call assigns.
+        onRevoked: revokedHandler(
+          () => pairing?.gate.revocations.isFailClosed() ?? false,
+          () => server.closeRevoked(),
+        ),
+      });
       // The other half of `actana pair revoke` (#283). That command runs in the
       // CLI and can only stamp a row; this is the process that makes the stamp
       // mean something — refusing the certificate at the gate, refusing the
       // bearer at the `auth` frame, and closing the link a revoked client
-      // already has open. Built here, next to the store it reads, and armed
+      // already has open. The set is built with the pairing surface and armed
       // below once there is a server for it to close connections on.
-      revocations = new PairingRevocations(pairingStore);
-      serverOpts.revocation = revocations;
+      serverOpts.revocation = pairing.gate.revocations;
+      // Seeded here, before the server is built and so before anything listens:
+      // `startRevocationSweep` below schedules its own first read but does not
+      // return it, so it is no guarantee that a revocation already on file is
+      // known when the first request arrives. Awaiting one refresh ourselves is.
+      // An unreadable store leaves the set failing closed, as it should, and
+      // says so in the log: every paired client is about to be refused, and the
+      // only other lines would name serials nobody revoked.
+      reportUnreadableRevocations(await pairing.gate.revocations.refresh());
 
       serverOpts.tls = {
         caCert: material.caCert,
@@ -763,25 +777,22 @@ async function startCore(): Promise<void> {
   // surface is no longer only them, so the default ("yes if any HTTP surface is
   // mounted") would now be announcing a capability on the strength of a
   // pairing endpoint — the exact confusion ADR 0028 D4 warns about.
-  serverOpts.httpRoutes = pairing
-    ? composeCoreHttpRoutes(buildCorePairingRoutes(pairing), fileRoutes)
-    : fileRoutes;
+  serverOpts.httpRoutes = pairing ? composeCoreHttpRoutes(auditPairingRoutes(pairing.redeem), fileRoutes) : fileRoutes;
   serverOpts.announceFiles = shouldAnnounceFiles(fileRoutes);
   // What the mTLS gate is allowed to serve without a client certificate. Absent
   // unless pairing is mounted, and absent means the handshake keeps refusing
   // uncertificated clients outright — see `core-preauth-gate.ts`.
-  if (pairing) serverOpts.isPreAuthPath = isPairingPath;
+  if (pairing) serverOpts.isPreAuthPath = pairing.gate.isPreAuthPath;
 
   const server = new PtyCoreLinkServer(core, serverOpts);
 
   // Armed after the server exists, because what it does when it finds a fresh
-  // revocation is close that client's connections. Its first read runs here and
-  // is deliberately not dispatched — see `startPairingRevocationSweep` — so a
-  // Core that boots with revocations already on file refuses them from its
-  // first request rather than from one second in.
-  const revocationSweep: PairingRevocationSweep | null = revocations
-    ? startPairingRevocationSweep({ revocations, onRevoked: () => server.closeRevoked() })
-    : null;
+  // revocation is close that client's connections. The set was already seeded
+  // by the awaited refresh above, so a Core that boots with revocations on file
+  // refuses them from its first request; the sweep's own boot read is only a
+  // repeat, and it is not dispatched (the SDK's boot tick never calls
+  // `onRevoked`).
+  const revocationSweep = pairing ? pairing.startRevocationSweep() : null;
 
   // Alert-only, once a day, into this daemon's log — never a frame the Panel
   // raises and never an update this process applies (ADR 0010).

@@ -30,8 +30,8 @@ import type {
 } from "../session-attach-channel.ts";
 import type { CoreConnectFn, CoreConnectOptions, CoreLinkClient } from "../core-connection.ts";
 import type { CorePairingPort } from "../core-pair.ts";
-import { CorePairingError, type CorePairingFailure } from "@actana/sdk/core-pairing.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import { PairingError, type PairingFailure } from "@actana/sdk/pairing";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 import type { OpenSessionGateway, SessionGateway, StartedSession } from "../session-gateway.ts";
 import { projectFilesErrorFrom } from "../project-files-gateway.ts";
 import type {
@@ -45,7 +45,7 @@ import type {
   CoreFileListOptions,
   CoreFileProgress,
   CoreFileSource,
-} from "@actana/sdk/core-files.ts";
+} from "@actana/sdk/core";
 import type {
   CoreLinkDirListing,
   CoreLinkEvent,
@@ -54,7 +54,7 @@ import type {
   CoreLinkProjectSnapshot,
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 
 /** One run's captured output, plus the exit code. */
 export type CliRun = {
@@ -214,7 +214,7 @@ export type FakePairing = CorePairingPort & {
  * The SDK's pairing surface, without a Core.
  *
  * `identify` answers with the fingerprint the test says the Core presents;
- * `pair` hands back a credential or throws the `CorePairingError` the suite is
+ * `pair` hands back a credential or throws the `PairingError` the suite is
  * about. Both are recorded, because half of what this verb has to get right is
  * *not* reaching the second one.
  */
@@ -223,9 +223,9 @@ export function fakePairing(
     fingerprint?: string;
     identifyFails?: unknown;
     blob?: CoreRegistrationBlob;
-    fails?: CorePairingFailure;
+    fails?: PairingFailure;
     failsWith?: unknown;
-    detail?: ConstructorParameters<typeof CorePairingError>[2];
+    detail?: ConstructorParameters<typeof PairingError>[2];
   } = {},
 ): FakePairing {
   const fingerprint = opts.fingerprint ?? PAIRED_FINGERPRINT;
@@ -247,7 +247,7 @@ export function fakePairing(
       state.paired.push(pairOpts);
       if (opts.failsWith) throw opts.failsWith;
       if (opts.fails) {
-        throw new CorePairingError(opts.fails, `the fake Core answered ${opts.fails}`, opts.detail ?? {});
+        throw new PairingError(opts.fails, `the fake Core answered ${opts.fails}`, opts.detail ?? {});
       }
       // **The label is echoed, because `pairWithCore` echoes it.** The real
       // function copies `opts.label` straight into the blob it returns — the

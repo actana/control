@@ -1,4 +1,4 @@
-import { DurableCoreClient } from "@actana/sdk/durable-core-client";
+import { DurableCoreClient } from "@actana/sdk/core";
 import {
   advanceCoreCursor,
   getCore,
@@ -14,7 +14,7 @@ import {
   type CoreLinkFilesCapability,
   type CoreLinkRequestFrame,
   type CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 
 /**
  * The Panel service's core-links: one dialed connection per registered Core,

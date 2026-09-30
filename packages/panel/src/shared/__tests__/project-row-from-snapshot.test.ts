@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkProjectSnapshot } from "@actana/sdk/core";
 import type { ProjectPresentation } from "~/db/schema";
 import { projectPresentationById, projectRowFromSnapshot } from "../projects";
 

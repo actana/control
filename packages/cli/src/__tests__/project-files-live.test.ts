@@ -27,8 +27,8 @@ import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { createCoreFilesRequestHandler } from "@actana/core/core-files-routes";
-import { CoreFiles } from "@actana/sdk/core-files.ts";
-import { createCoreFilesFetch } from "@actana/sdk/core-files-http.ts";
+import { CoreFiles } from "@actana/sdk/core";
+import { createCoreFilesFetch } from "@actana/sdk/core";
 import {
   makeCliFixture,
   registerCore,

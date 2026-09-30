@@ -53,7 +53,7 @@ import { runSessionAttach } from "./session-attach.ts";
 import {
   CoreSessionLinkLostError,
   CoreSessionTurnTimeoutError,
-} from "@actana/sdk/core-session.ts";
+} from "@actana/sdk/core";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";

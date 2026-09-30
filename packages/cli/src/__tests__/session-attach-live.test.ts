@@ -39,7 +39,7 @@ import type {
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 
 /** `Ctrl-]`, the detach key. */
 const DETACH = "\u001D";

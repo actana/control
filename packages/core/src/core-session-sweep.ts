@@ -37,7 +37,7 @@
 // the honest position. Nobody knows.
 
 import log from "@actana/shared/log";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
 import type { CoreTaskWriter } from "./core-task-writer";
 
 /** The status a stranded Session settles on. See the note above. */

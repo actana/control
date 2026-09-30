@@ -14,8 +14,8 @@
 // spawn with the Core's own message on it — not a command trimmed here on a
 // guess about a machine this process is not on.
 
-import { harnessAutoModeFlag } from "@actana/sdk/core-session.ts";
-import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
+import { harnessAutoModeFlag } from "@actana/sdk/core";
+import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core";
 
 /**
  * The launch command that resumes `sessionId` under `harness`.

@@ -139,7 +139,7 @@ import {
   readOnlyDetail,
   readOnlyLabel,
 } from "~/shared/session-write-access";
-import type { CoreLinkSessionLockState } from "@actana/sdk/core-link-frames";
+import type { CoreLinkSessionLockState } from "@actana/shared/sdk-link-frames";
 import type { Project, Task } from "~/db/schema";
 import { normalizePtySize } from "~/shared/pty-size";
 import { HARNESS_REGISTRY } from "@actana/shared/harnesses";

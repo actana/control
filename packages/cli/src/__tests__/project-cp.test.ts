@@ -29,8 +29,8 @@ import {
 } from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
 import { packLocalTree, unpackTarInto } from "../local-tar.ts";
-import { CoreFilesConflictError, CoreFilesStreamError } from "@actana/sdk/core-files-http.ts";
-import type { CoreFileProgress } from "@actana/sdk/core-files.ts";
+import { CoreFilesConflictError, CoreFilesStreamError } from "@actana/sdk/core";
+import type { CoreFileProgress } from "@actana/sdk/core";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {

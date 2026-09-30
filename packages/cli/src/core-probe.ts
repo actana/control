@@ -12,8 +12,8 @@
 // `harness` and `events` are all "connect, ask, print", and they will each want
 // the client this builds rather than a second way of building one.
 
-import { CoreClient } from "@actana/sdk/core-client.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import { CoreClient } from "@actana/sdk/core";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 
 /** What one round trip to a Core tells you about it. */
 export type CoreProbe = {

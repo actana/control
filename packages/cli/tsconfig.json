@@ -20,7 +20,6 @@
     "noEmit": true,
     "types": ["node"],
     "paths": {
-      "@actana/sdk/*": ["../sdk/src/*"],
       // Test-only, and the mate of the same two entries in `vitest.config.ts` —
       // the type checker and the test runner resolve independently, so a path
       // that exists for one and not the other is a suite that runs and does not

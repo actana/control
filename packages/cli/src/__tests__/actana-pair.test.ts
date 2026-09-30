@@ -11,8 +11,8 @@
 // The daemon's half of revocation — a revoked certificate refused at the gate,
 // a revoked bearer refused at the `auth` frame, a live link closed — is not
 // here. It cannot be: it happens in another process. It is in
-// `packages/core/src/__tests__/core-pairing-revocation.test.ts` and
-// `core-link-revocation.test.ts`, which is the seam this command writes to.
+// `packages/core/src/__tests__/pairing-sdk-contract.test.ts`,
+// `core-revocation-transport.test.ts` and `core-link-revocation.test.ts`, which is the seam this command writes to.
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import * as fs from "node:fs";
 import * as os from "node:os";

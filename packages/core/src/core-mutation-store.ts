@@ -42,7 +42,7 @@ import type {
   CoreLinkSessionSnapshot,
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import type { CoreMutationPort } from "./pty-core-link-server";
 
 export type { CoreMutationPort };

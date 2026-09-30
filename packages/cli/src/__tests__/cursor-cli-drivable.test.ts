@@ -34,11 +34,11 @@ import {
   HARNESS_LAUNCH_COMMANDS,
   harnessAutoModeFlag,
   harnessLaunchCommand,
-} from "@actana/sdk/core-session.ts";
+} from "@actana/sdk/core";
 import { KNOWN_HARNESSES } from "../session-gateway.ts";
 import { makeCliFixture, type CliFixture } from "./cli-harness.ts";
 import { EXIT_OK } from "../exit-codes.ts";
-import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkPtySpawnHarness } from "@actana/sdk/core";
 
 const PROJECT_ROOT = "/home/core/projects/web";
 

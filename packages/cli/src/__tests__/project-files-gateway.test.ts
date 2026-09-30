@@ -14,7 +14,7 @@ import {
   CoreFilesRequestError,
   CoreFilesStreamError,
   CoreFilesUnavailableError,
-} from "@actana/sdk/core-files-http.ts";
+} from "@actana/sdk/core";
 
 /** The Core's real words, from `transferInProgress` in core-files-routes.ts. */
 const CORE_CONFLICT =

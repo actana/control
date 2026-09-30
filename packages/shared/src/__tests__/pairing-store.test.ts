@@ -296,7 +296,7 @@ describe("cancelling a pending session", () => {
 // `read()` answers a corrupt file with an empty store, which is right for every
 // writer here — a daemon must not fail to boot because a file it is about to
 // rewrite is malformed — and wrong for anything whose safety depends on the
-// contents. `core-pairing-revocation.ts` is that reader: it treats an unreadable
+// contents. the SDK's revocation set, through `core-pairing-store.ts`, is that reader: it treats an unreadable
 // store as *everything is revoked*, and it can only do that if being unable to
 // read is a different outcome from reading nothing.
 
@@ -361,7 +361,7 @@ describe("reading strictly", () => {
 // ─── endpointHost never fails the store closed (#347 review R2) ─────────────
 //
 // `readStrict` throws on a row this build does not know, and
-// `core-pairing-revocation.ts` reads an unreadable store as *everything is
+// the SDK's revocation set (through `core-pairing-store.ts`) reads an unreadable store as *everything is
 // revoked* — so a row condemned here costs a Core every client it ever paired.
 // `endpointHost` is optional and decides no part of session validity, so it
 // must not be able to buy that price. A bad value reads as absent instead,

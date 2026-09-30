@@ -1045,7 +1045,7 @@ function pairRevoke(deps: ActanaCliDeps, rest: string[], ctx: PairCommandContext
  * *replaces* it, taking the record of which clients are revoked with it.
  *
  * That last one is not hypothetical damage. The daemon fails closed on exactly
- * this file (`core-pairing-revocation.ts`), so a Core with an unreadable
+ * this file (the SDK's revocation set, through `core-pairing-store.ts`), so a Core with an unreadable
  * `pairing.json` is refusing every client it ever paired — and a `pair new`
  * that quietly rewrote the file would end that refusal by forgetting who was
  * revoked, handing every revoked certificate its access back. Recovery has to

@@ -5,7 +5,7 @@ import {
   type PanelLinkSocketLike,
 } from "../panel-link-client";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 /**
  * The client is driven the way the Panel service drives it: frames in, frames

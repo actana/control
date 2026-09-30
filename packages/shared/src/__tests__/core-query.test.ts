@@ -13,7 +13,7 @@ import {
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 
 // Pure SQL helpers that read the Core's projects + tasks tables and map
 // them to core-link snapshots (issue 07). The Core is the single source of

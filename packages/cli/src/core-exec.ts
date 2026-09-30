@@ -51,7 +51,7 @@ import { EXIT_FAILURE, EXIT_LINK_LOST, EXIT_USAGE } from "./exit-codes.ts";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
-import type { CoreLinkResponseFrame } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkResponseFrame } from "@actana/sdk/core";
 
 /**
  * How long this CLI waits for a command to finish.

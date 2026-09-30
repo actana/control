@@ -68,7 +68,7 @@ import { ProjectFilesError, type ProjectFileTransfers } from "./project-files-ga
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
-import type { CoreFileProgress } from "@actana/sdk/core-files.ts";
+import type { CoreFileProgress } from "@actana/sdk/core";
 
 /**
  * How long a transfer waits for the Core to *answer*, not to finish.

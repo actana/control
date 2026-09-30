@@ -1,7 +1,7 @@
 import type {
   CoreLinkProjectMutation,
   CoreLinkProjectSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 import { getPanelBridge } from "~/lib/panel-bridge";
 import { api } from "~/lib/api";
 
