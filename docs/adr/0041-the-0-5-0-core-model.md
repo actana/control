@@ -124,7 +124,7 @@ These are not decided here. Each is the named ticket's to settle.
 Decided by the owner on 2026-09-30 ([#567](https://github.com/actana/control/issues/567), and
 [#556](https://github.com/actana/control/issues/556) for D21). D8 already says the layers above a Core live in the
 Panel (Postgres); these clauses say what that means for the Panel's own database. They are appended, so no earlier
-number moves. This record only writes the decisions down. The code, the deploy files and the packages change in the
+number moves. D14–D20 come from #567. D21 comes from #556. This record only writes the decisions down. The code, the deploy files and the packages change in the
 later pull requests of #567, and until they land the Panel still runs on SQLite.
 
 **D14 — The Panel's state lives in Postgres only.** Every Panel table moves, including the Projects family, which
@@ -145,7 +145,11 @@ are dropped.
 **D18 — Time columns keep epoch milliseconds, as `bigint`.** They match the wire. The Panel does not move to
 `timestamptz`.
 
-**D19 — The driver is `pg`. Unit tests use PGlite. One CI job runs against a real Postgres.**
+**D19 — The driver is `pg`. Unit tests use PGlite. One CI job runs against a real Postgres.** Any new or bumped
+package (`pg`, PGlite, drizzle-kit) is a release at least 7 days old and pinned exactly. That rule is the owner's
+workspace dependency policy (the Actana workspace `SECURITY.md`, rule 1: a release-age cooldown of at least 7 days for
+any install). It is not written in this repository's own `SECURITY.md`. The owner's #567 comment sets the 7 days for
+the Postgres image itself (D16).
 
 **D20 — `better-sqlite3` leaves the Panel.** The Panel's provider-usage readers of other apps' SQLite files move to
 `node:sqlite`.
@@ -179,8 +183,8 @@ These are not decided here. Each is for the pull request that needs it, and is s
   is also wanted, and whether `owner_id` is also a database foreign key, was asked on #567 and not answered.
 - **Which tables count as user-facing**, and so carry an `owner_id`. The #567 comment proposes cores, groups,
   projects, presentation, tasks, terminal logs and token usage. The owner did not confirm the list.
-- **The exact `pg` version and the Postgres image tag and digest.** The #567 comment names `pg` 8.23.0. Each must be
-  a release at least 7 days old and pinned exactly at the time the pull request adds it.
+- **The exact `pg` version and the Postgres image tag and digest.** The #567 comment names `pg` 8.23.0. The pull
+  request that adds each picks it under D16 and D19.
 - **The name of the Postgres service and its volume, how the dump is taken and restored**, and whether the Panel
   image carries any Postgres client tool (D20 in ADR 0016 leaves nothing but Node in it).
 - **How the boot migration behaves** when two Panel processes start at once, and when the database holds migrations

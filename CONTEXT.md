@@ -9,7 +9,7 @@ The 0.5.0 model is locked by [ADR 0041](docs/adr/0041-the-0-5-0-core-model.md). 
 ### Topology
 
 **Panel**:
-The self-hosted web service the Operator deploys — one container (or Node process), typically behind a reverse proxy. Owns the Core registry — connection endpoints, auth material, aliases — terminates every core-link, and serves the Panel UI to browsers. Holds no Session state. Holds the Tasks, comments, Agents, API keys and webhooks that sit above the Cores. All of the Panel's state lives in Postgres, bundled or external, and the Panel refuses to start without it, and reaches Cores only through the public SDK. See ADR 0041.
+The self-hosted web service the Operator deploys — one container (or Node process), typically behind a reverse proxy. Owns the Core registry — connection endpoints, auth material, aliases — terminates every core-link, and serves the Panel UI to browsers. Holds no Session state. Holds the Tasks, comments, Agents, API keys and webhooks that sit above the Cores. All of the Panel's state lives in Postgres, bundled or external, and the Panel refuses to start without it. It reaches Cores only through the public SDK. See ADR 0041.
 _Avoid_: control surface, frontend, client app, desktop app, backend
 
 **Panel UI**:
