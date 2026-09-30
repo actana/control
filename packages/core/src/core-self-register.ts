@@ -113,7 +113,7 @@ export function localEndpoint(dialHost: string, port: number): string {
  * serving Panels, not a reason to fail a boot that is otherwise healthy. The
  * caller reports the error; the Core comes up either way.
  */
-export function registerSelfWithLocalCli(opts: SelfRegistrationOptions): SelfRegistration {
+export async function registerSelfWithLocalCli(opts: SelfRegistrationOptions): Promise<SelfRegistration> {
   const dialHost = localDialHost(opts.bindHost);
   const endpoint = localEndpoint(dialHost, opts.port);
   try {
@@ -123,7 +123,7 @@ export function registerSelfWithLocalCli(opts: SelfRegistrationOptions): SelfReg
     // `core` process (issue 559), and that process is handed the finished
     // credential, never `bearerSecret`, which signs every bearer this Core will
     // ever accept.
-    const wiring = wireLocalCoreViaCore(
+    const wiring = await wireLocalCoreViaCore(
       opts.label,
       {
         endpoint,

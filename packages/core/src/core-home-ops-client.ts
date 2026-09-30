@@ -9,15 +9,15 @@
 // Outside the container there is no second user, and the same request is handled
 // in this process, so nothing about a metal install changes.
 //
-// Sync and async both exist because the call sites are both. The async form is
-// the default and the one a Session's spawn uses, since the event loop also
-// carries every Session's output; the sync form is for a boot step and for
-// `registerSelfWithLocalCli`, whose callers have nothing to await.
-//
-// A helper that hangs is signalled through `killAsCore`, not `ChildProcess.kill`:
-// after the switch it is another uid, and the daemon has no CAP_KILL.
+// **Async only, on purpose.** A sync wait (`spawnSync`) cannot be bounded here:
+// its timeout sends a signal and then waits for the child to exit, and the
+// helper is another uid with no CAP_KILL on the daemon's side, so a hung helper
+// would hold the whole event loop, and every Session's output with it, until it
+// chose to exit. Every request has a deadline (`HELPER_TIMEOUT_MS`), and past it
+// the helper is signalled through `killAsCore`, not `ChildProcess.kill`: after
+// the switch it is another uid, and the daemon has no CAP_KILL.
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import * as path from "node:path";
 import log from "@actana/shared/log";
 import type { CoreLinkDirListing } from "@actana/sdk/core";
@@ -27,6 +27,7 @@ import {
   coreHome,
   coreIdentity,
   killAsCoreQuietly,
+  type KillAsCoreOptions,
   type SpawnSpec,
 } from "./core-identity";
 import type { AsCoreOptions } from "@actana/shared/core-home";
@@ -34,7 +35,6 @@ import {
   CoreHomeOpFailedError,
   CoreHomeOpRefusedError,
   handleCoreHomeOp,
-  handleCoreHomeOpSync,
   parseCoreHomeOpRequest,
   type CoreHomeOpContext,
   type CoreHomeOpRequest,
@@ -52,10 +52,12 @@ export type { SpawnPathFacts } from "./core-home-ops";
 /** The helper's bundle, beside `core-entry.cjs` (`build.mjs` emits both into `dist`). */
 export const CORE_HOME_OPS_BUNDLE = "core-home-ops.cjs";
 /** A helper that has not answered by now is stuck; nothing it does is this slow. */
-const HELPER_TIMEOUT_MS = 15_000;
+export const HELPER_TIMEOUT_MS = 15_000;
 /** A directory listing is the largest answer; this is far above it. */
 const MAX_ANSWER_BYTES = 16 * 1024 * 1024;
 const STDERR_EXCERPT = 500;
+/** `MAX_ROOTS` of the operations module, which refuses more. */
+const MAX_FACT_ROOTS = 256;
 
 type HelperSpec = SpawnSpec & { args: string[] };
 
@@ -74,8 +76,10 @@ export type CoreHomeOpsOptions = AsCoreOptions & {
   wrap?: typeof asCore;
   /** Async runner for the helper. Tests stub it. */
   run?: (spec: HelperSpec, input: string) => Promise<HelperOutcome>;
-  /** Sync runner for the helper. Tests stub it. */
-  runSync?: (spec: HelperSpec, input: string) => HelperOutcome;
+  /** How long the helper may take before it is killed. Tests shorten it. */
+  timeoutMs?: number;
+  /** Options for the kill of a hung helper (`killAsCore`). Tests pass a runner. */
+  killOptions?: KillAsCoreOptions;
   /** In-process only (outside the container): the home and env the handler works in. */
   home?: string;
   env?: NodeJS.ProcessEnv;
@@ -100,7 +104,8 @@ function helperSpec(options: CoreHomeOpsOptions): HelperSpec {
   return (options.wrap ? options.wrap(spec, options) : asCore(spec, options)) as HelperSpec;
 }
 
-function runHelper(spec: HelperSpec, input: string): Promise<HelperOutcome> {
+function runHelper(spec: HelperSpec, input: string, options: CoreHomeOpsOptions): Promise<HelperOutcome> {
+  const timeoutMs = options.timeoutMs ?? HELPER_TIMEOUT_MS;
   return new Promise((resolve) => {
     let stdout = "";
     let stderr = "";
@@ -113,9 +118,13 @@ function runHelper(spec: HelperSpec, input: string): Promise<HelperOutcome> {
     };
     const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, stdio: ["pipe", "pipe", "pipe"] });
     const timer = setTimeout(() => {
-      killAsCoreQuietly(child, "SIGKILL", "core-home-ops.kill");
-      done({ status: null, stdout, stderr, error: new Error(`no answer within ${HELPER_TIMEOUT_MS} ms`) });
-    }, HELPER_TIMEOUT_MS);
+      killAsCoreQuietly(child, "SIGKILL", "core-home-ops.kill", options.killOptions);
+      // Let go of the pipes, so a helper that never dies holds no handle here.
+      child.stdout.destroy();
+      child.stderr.destroy();
+      child.stdin.destroy();
+      done({ status: null, stdout, stderr, error: new Error(`no answer within ${timeoutMs} ms`) });
+    }, timeoutMs);
     child.stdout.on("data", (chunk: Buffer) => {
       if (stdout.length < MAX_ANSWER_BYTES) stdout += chunk.toString();
     });
@@ -127,22 +136,6 @@ function runHelper(spec: HelperSpec, input: string): Promise<HelperOutcome> {
     child.stdin.on("error", () => undefined); // the helper may answer and exit before it reads all of it
     child.stdin.end(input);
   });
-}
-
-function runHelperSync(spec: HelperSpec, input: string): HelperOutcome {
-  const result = spawnSync(spec.command, spec.args, {
-    cwd: spec.cwd,
-    env: spec.env,
-    input,
-    encoding: "utf8",
-    timeout: HELPER_TIMEOUT_MS,
-    maxBuffer: MAX_ANSWER_BYTES,
-  });
-  if (result.error && typeof result.pid === "number" && result.pid > 1) {
-    // spawnSync's own kill cannot reach a process that is now `core`'s.
-    killAsCoreQuietly(result.pid, "SIGKILL", "core-home-ops.kill");
-  }
-  return { status: result.status, stdout: result.stdout ?? "", stderr: result.stderr ?? "", error: result.error };
 }
 
 type HelperAnswer = { ok?: unknown; result?: unknown; code?: unknown; message?: unknown };
@@ -199,21 +192,7 @@ export async function coreHomeOp<Op extends CoreHomeOperation>(
   // Checked here too, so a malformed request is refused without a process; the
   // helper checks it again, since it cannot trust who sent it.
   parseCoreHomeOpRequest(request);
-  const outcome = await (options.run ?? runHelper)(helperSpec(options), JSON.stringify(request));
-  return decodeHelperOutcome((request as CoreHomeOpRequest).op, outcome) as CoreHomeOpResult[Op];
-}
-
-/** {@link coreHomeOp} for the operations that need no `await`, for a caller that cannot await. */
-export function coreHomeOpSync<Op extends Exclude<CoreHomeOperation, "dirList">>(
-  request: Extract<CoreHomeOpRequest, { op: Op }>,
-  callOptions: CoreHomeOpsOptions = {},
-): CoreHomeOpResult[Op] {
-  const options = { ...defaults, ...callOptions };
-  if (!coreIdentity(options.identityEnv ?? process.env)) {
-    return handleCoreHomeOpSync(parseCoreHomeOpRequest(request) as typeof request, inProcessContext(options));
-  }
-  parseCoreHomeOpRequest(request);
-  const outcome = (options.runSync ?? runHelperSync)(helperSpec(options), JSON.stringify(request));
+  const outcome = await (options.run ?? ((spec, input) => runHelper(spec, input, options)))(helperSpec(options), JSON.stringify(request));
   return decodeHelperOutcome((request as CoreHomeOpRequest).op, outcome) as CoreHomeOpResult[Op];
 }
 
@@ -225,9 +204,9 @@ export function coreHomeOpSync<Op extends Exclude<CoreHomeOperation, "dirList">>
 // throws the same sentence.
 
 /** Claude Code's Shift+Enter flag, best-effort: a failure is a log line, never a boot failure. */
-export function ensureClaudeShiftEnterBindingViaCore(options: CoreHomeOpsOptions = {}): void {
+export async function ensureClaudeShiftEnterBindingViaCore(options: CoreHomeOpsOptions = {}): Promise<void> {
   try {
-    coreHomeOpSync({ op: "ensureClaudeShiftEnterBinding" }, options);
+    await coreHomeOp({ op: "ensureClaudeShiftEnterBinding" }, options);
   } catch (err) {
     log.warn("core-home-ops.shift-enter.failed", { error: String(err) });
   }
@@ -268,10 +247,10 @@ export async function installHarnessHooksViaCore(
 }
 
 /** The product's orchestration skill into core's Harness skill folders; logs as the local install does. */
-export function ensureOrchestrationSkillViaCore(options: CoreHomeOpsOptions = {}): SkillInstallEntry[] {
+export async function ensureOrchestrationSkillViaCore(options: CoreHomeOpsOptions = {}): Promise<SkillInstallEntry[]> {
   let entries: SkillInstallEntry[];
   try {
-    entries = coreHomeOpSync({ op: "ensureOrchestrationSkill" }, options);
+    entries = await coreHomeOp({ op: "ensureOrchestrationSkill" }, options);
   } catch (err) {
     log.warn("core-skill.install-failed", { error: err instanceof Error ? err.message : String(err) });
     return [];
@@ -286,7 +265,7 @@ export function wireLocalCoreViaCore(
   credential: RegistrationCredential,
   options: CoreHomeOpsOptions = {},
 ) {
-  return coreHomeOpSync({ op: "wireLocalCore", label, credential }, options);
+  return coreHomeOp({ op: "wireLocalCore", label, credential }, options);
 }
 
 /** The spawn policy's two filesystem questions, answered once for a spawn (see `pty-manager`). */
@@ -295,7 +274,11 @@ export function spawnPathFactsViaCore(
   roots: string[],
   options: CoreHomeOpsOptions = {},
 ): Promise<SpawnPathFacts> {
-  return coreHomeOp({ op: "spawnPathFacts", cwd, roots }, options);
+  // Only roots the helper will accept: one registered root that is malformed, or
+  // the 256th, must not fail every spawn. A root left out is one the policy cannot
+  // resolve, and it drops it, which is the safe direction.
+  const usable = roots.filter((r) => typeof r === "string" && r.length > 0 && r.length <= 4096 && !r.includes("\0"));
+  return coreHomeOp({ op: "spawnPathFacts", cwd, roots: usable.slice(0, MAX_FACT_ROOTS) }, options);
 }
 
 /** `core exec`'s working directory, checked by the user that will run there. */

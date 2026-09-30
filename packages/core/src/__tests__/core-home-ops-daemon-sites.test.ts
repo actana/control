@@ -51,11 +51,11 @@ const register = () =>
   registerSelfWithLocalCli({ material, bindHost: "0.0.0.0", port: 8443, label: "core-01", bearerDays: 365, env: {}, home: coreHome });
 
 describe("self-registration", () => {
-  it("asks core to write the registry, with a finished credential and never the bearer secret", () => {
+  it("asks core to write the registry, with a finished credential and never the bearer secret", async () => {
     inContainer();
     const helper = cannedHelper();
     configureCoreHomeOps(helper.options);
-    const result = register();
+    const result = await register();
     expect(result.ok).toBe(true);
 
     expect(helper.requests.map((r) => r.request.op)).toEqual(["wireLocalCore"]);
@@ -70,45 +70,45 @@ describe("self-registration", () => {
     expect(fs.existsSync(path.join(daemonHome, ".config"))).toBe(false);
   });
 
-  it("lands the blob in core's home when the helper does its work, and the CLI can use it", () => {
+  it("lands the blob in core's home when the helper does its work, and the CLI can use it", async () => {
     inContainer();
     configureCoreHomeOps(inProcessHelper(coreHome).options);
-    const result = register();
+    const result = await register();
     expect(result.ok).toBe(true);
     const blob = fs.readFileSync(path.join(coreHome, ".config/actana/cores/core-01.txt"), "utf8");
     expect(decodeRegistrationBlob(blob.trim())).toMatchObject({ endpoint: "wss://127.0.0.1:8443", clientKey: material.clientKey });
     expect(fs.existsSync(path.join(daemonHome, ".config"))).toBe(false);
   });
 
-  it("reports a helper that refused as ok: false, and never throws", () => {
+  it("reports a helper that refused as ok: false, and never throws", async () => {
     inContainer();
     configureCoreHomeOps({
-      runSync: () => ({ status: 2, stdout: JSON.stringify({ ok: false, code: "path-escape", message: "registry escapes" }), stderr: "" }),
+      run: async () => ({ status: 2, stdout: JSON.stringify({ ok: false, code: "path-escape", message: "registry escapes" }), stderr: "" }),
     });
-    expect(register()).toEqual({ ok: false, error: "registry escapes" });
+    await expect(register()).resolves.toEqual({ ok: false, error: "registry escapes" });
   });
 });
 
 describe("the orchestration skill", () => {
-  it("is a request to the helper, and its entries are logged by the daemon", () => {
+  it("is a request to the helper, and its entries are logged by the daemon", async () => {
     inContainer();
     const info = vi.spyOn(log, "info").mockImplementation(() => undefined);
     const entries = [{ harness: "claude-code", outcome: "written", path: "/home/core/.claude/skills/actana-sessions" }];
     const requests: string[] = [];
     configureCoreHomeOps({
-      runSync: (_spec, input) => (requests.push(input), { status: 0, stdout: JSON.stringify({ ok: true, result: entries }), stderr: "" }),
+      run: async (_spec, input) => (requests.push(input), { status: 0, stdout: JSON.stringify({ ok: true, result: entries }), stderr: "" }),
     });
-    expect(ensureOrchestrationSkillViaCore()).toEqual(entries);
+    await expect(ensureOrchestrationSkillViaCore()).resolves.toEqual(entries);
     expect(requests.map((r) => JSON.parse(r))).toEqual([{ op: "ensureOrchestrationSkill" }]);
     expect(info).toHaveBeenCalledWith("core-skill.written", { harness: "claude-code", path: "/home/core/.claude/skills/actana-sessions" });
     expect(fs.readdirSync(coreHome)).toEqual([]);
   });
 
-  it("is best-effort: a helper that could not run is one warning and no entries", () => {
+  it("is best-effort: a helper that could not run is one warning and no entries", async () => {
     inContainer();
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
-    configureCoreHomeOps({ runSync: () => ({ status: null, stdout: "", stderr: "", error: new Error("spawn EACCES") }) });
-    expect(ensureOrchestrationSkillViaCore()).toEqual([]);
+    configureCoreHomeOps({ run: async () => ({ status: null, stdout: "", stderr: "", error: new Error("spawn EACCES") }) });
+    await expect(ensureOrchestrationSkillViaCore()).resolves.toEqual([]);
     expect(warn.mock.calls.map((c) => c[0])).toContain("core-skill.install-failed");
   });
 });

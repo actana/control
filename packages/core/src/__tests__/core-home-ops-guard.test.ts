@@ -105,6 +105,10 @@ describe("the daemon-side modules do not touch core's home", () => {
     expect(importers).toEqual(["core-home-ops-client.ts", "core-home-ops-main.ts"]);
   });
 
+  it("the client never waits on the helper synchronously: a sync wait cannot be bounded against a process the daemon cannot signal", () => {
+    expect(code("core-home-ops-client.ts")).not.toMatch(/spawnSync|execFileSync|execSync|coreHomeOpSync|runSync/);
+  });
+
   it("the daemon still reaches each thing through the client", () => {
     const wired: Record<string, string[]> = {
       "pty-manager.ts": ["ensureClaudeShiftEnterBindingViaCore", "ensureStatuslineTapViaCore", "installHarnessHooksViaCore", "spawnPathFactsViaCore"],

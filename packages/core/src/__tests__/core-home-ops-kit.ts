@@ -14,12 +14,7 @@
 
 import { Readable } from "node:stream";
 import { runCoreHomeOpsMain } from "../core-home-ops-main";
-import {
-  handleCoreHomeOpSync,
-  parseCoreHomeOpRequest,
-  type CoreHomeOpRequest,
-  type SyncRequest,
-} from "../core-home-ops";
+import type { CoreHomeOpRequest } from "../core-home-ops";
 import type { CoreHomeOpsOptions, HelperOutcome } from "../core-home-ops-client";
 
 export type RecordedRequest = { request: CoreHomeOpRequest; env: NodeJS.ProcessEnv | undefined; command: string };
@@ -60,7 +55,7 @@ export function cannedHelper(): { options: CoreHomeOpsOptions; requests: Recorde
   };
   return {
     requests,
-    options: { run: async (spec, input) => answer(spec, input), runSync: (spec, input) => answer(spec, input) },
+    options: { run: async (spec, input) => answer(spec, input) },
   };
 }
 
@@ -82,19 +77,6 @@ export function inProcessHelper(home: string, extraEnv: NodeJS.ProcessEnv = {}):
           env,
         });
         return { status, stdout, stderr };
-      },
-      runSync: (spec, input) => {
-        const request = JSON.parse(input) as CoreHomeOpRequest;
-        requests.push({ request, env: spec.env, command: spec.command });
-        try {
-          const result = handleCoreHomeOpSync(parseCoreHomeOpRequest(request) as SyncRequest, { home, roots: [home], env });
-          return ok(result);
-        } catch (err) {
-          const refused = (err as { name?: string }).name === "CoreHomeOpRefusedError";
-          const message = err instanceof Error ? err.message : String(err);
-          const code = refused ? (err as { code: string }).code : "failed";
-          return { status: refused ? 2 : 1, stdout: `${JSON.stringify({ ok: false, code, message })}\n`, stderr: message };
-        }
       },
     },
   };

@@ -17,7 +17,6 @@ import {
   CoreHomeOpFailedError,
   CoreHomeOpRefusedError,
   coreHomeOp,
-  coreHomeOpSync,
   type CoreHomeOpsOptions,
 } from "../core-home-ops-client";
 
@@ -67,8 +66,8 @@ function runBundle(input: string, env: NodeJS.ProcessEnv = { HOME: home, PATH: p
 }
 
 describe("the helper bundle as a process", () => {
-  it("does a sync operation end to end through the client", () => {
-    coreHomeOpSync({ op: "ensureClaudeShiftEnterBinding" }, options());
+  it("does a write operation end to end through the client", async () => {
+    await coreHomeOp({ op: "ensureClaudeShiftEnterBinding" }, options());
     expect(JSON.parse(fs.readFileSync(path.join(home, ".claude", "settings.json"), "utf8"))).toEqual({
       shiftEnterKeyBindingInstalled: true,
     });

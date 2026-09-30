@@ -378,7 +378,7 @@ async function startCore(): Promise<void> {
 
   // Eagerly install Claude Code's Shift+Enter keybinding flag for terminals
   // spawned by this Core (best-effort; see ensureClaudeShiftEnterBinding).
-  ensureClaudeShiftEnterBinding();
+  await ensureClaudeShiftEnterBinding();
 
   const core = new PtyCore(deps);
 
@@ -418,9 +418,10 @@ async function startCore(): Promise<void> {
   // hold: it sees each event once, in order, as it is produced. The guard is
   // there anyway, because "this is only ever fed live events" is a property of
   // this one call site and not of the class.
-  ensureOrchestrationSkillViaCore();
+  await ensureOrchestrationSkillViaCore();
   const skillWatcher = new HarnessSkillWatcher({
-    ensure: () => ensureOrchestrationSkillViaCore(),
+    // Fire and forget: the helper has its own deadline and the wrapper never rejects.
+    ensure: () => void ensureOrchestrationSkillViaCore(),
   });
   const availabilityStore = new HarnessAvailabilityStore({
     appendEvent: (kind, payload, opts) => {
@@ -715,7 +716,7 @@ async function startCore(): Promise<void> {
       // volume that predates this has material but no registry entry, and this
       // is the boot that fixes it. See `core-self-register.ts`.
       if (containerMode) {
-        const registered = registerSelfWithLocalCli({
+        const registered = await registerSelfWithLocalCli({
           material,
           bindHost: host,
           port,

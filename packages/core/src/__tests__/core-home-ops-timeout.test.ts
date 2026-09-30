@@ -1,4 +1,4 @@
-// A helper that hangs (issue 559, PR 3). After the `setpriv` switch it is another
+// A helper that hangs, with the real 15 s default (issue 559, PR 3; the real-process version is core-home-ops-hang.test.ts). After the `setpriv` switch it is another
 // uid, so the daemon's own `kill` would be EPERM: the stuck helper must be
 // signalled through `killAsCore`, and the caller must get an error rather than
 // wait forever.
@@ -15,9 +15,10 @@ vi.mock("node:child_process", async (importOriginal) => {
     spawn: (command: string, args: string[]) => {
       spawned.push({ command, args });
       const child = new EventEmitter() as EventEmitter & Record<string, any>;
-      child.stdout = new EventEmitter();
-      child.stderr = new EventEmitter();
-      child.stdin = Object.assign(new EventEmitter(), { end: () => undefined });
+      const pipe = () => Object.assign(new EventEmitter(), { destroy: vi.fn(), end: () => undefined });
+      child.stdout = pipe();
+      child.stderr = pipe();
+      child.stdin = pipe();
       child.pid = 4242;
       child.exitCode = null;
       child.signalCode = null;
@@ -26,14 +27,10 @@ vi.mock("node:child_process", async (importOriginal) => {
       if (args.some((a) => a.startsWith("kill -s"))) setImmediate(() => child.emit("close", 0));
       return child;
     },
-    spawnSync: (command: string, args: string[]) => {
-      spawned.push({ command, args });
-      return { status: null, stdout: "", stderr: "", error: Object.assign(new Error("spawnSync ETIMEDOUT"), { code: "ETIMEDOUT" }), pid: 4343 };
-    },
   };
 });
 
-import { coreHomeOp, coreHomeOpSync } from "../core-home-ops-client";
+import { coreHomeOp, HELPER_TIMEOUT_MS } from "../core-home-ops-client";
 
 beforeEach(() => {
   spawned.length = 0;
@@ -49,6 +46,10 @@ afterEach(() => {
 const setpriv = (p: string) => p === "/usr/bin/setpriv";
 
 describe("a helper that does not answer", () => {
+  it("has a stated deadline of 15 s", () => {
+    expect(HELPER_TIMEOUT_MS).toBe(15_000);
+  });
+
   it("is signalled as core, and the caller gets an error naming the wait", async () => {
     vi.useFakeTimers();
     const pending = coreHomeOp({ op: "dirList", path: null }, { exists: setpriv, helperPath: "/opt/actana/app/core-home-ops.cjs" });
@@ -64,12 +65,5 @@ describe("a helper that does not answer", () => {
     // `kill -s KILL -- 4242`, run as core: not `child.kill()`, which the daemon cannot do.
     expect(kill.args.slice(-3)).toEqual(["sh", "KILL", "4242"]);
     expect(kill.args).toContain('kill -s "$1" -- "$2"');
-  });
-
-  it("does the same for a sync caller whose wait ran out", () => {
-    expect(() => coreHomeOpSync({ op: "ensureClaudeShiftEnterBinding" }, { exists: setpriv })).toThrow(/did not finish.*ETIMEDOUT/);
-    expect(spawned[0]!.command).toBe("/usr/bin/setpriv");
-    // The kill is async and quiet: it is on its way, as core, for the helper's pid.
-    expect(spawned[1]!.args.slice(-3)).toEqual(["sh", "KILL", "4343"]);
   });
 });

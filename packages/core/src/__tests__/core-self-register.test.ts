@@ -53,8 +53,8 @@ afterEach(() => {
 });
 
 describe("a containerised Core registers itself with its own machine's CLI (#288 D9)", () => {
-  it("writes the blob into the registry and selects it", () => {
-    const result = register();
+  it("writes the blob into the registry and selects it", async () => {
+    const result = await register();
 
     expect(result.ok).toBe(true);
     if (!result.ok) return;
@@ -68,8 +68,8 @@ describe("a containerised Core registers itself with its own machine's CLI (#288
     expect(fs.statSync(blobFile).mode & 0o777).toBe(0o600);
   });
 
-  it("registers a blob the CLI can actually use", () => {
-    const result = register();
+  it("registers a blob the CLI can actually use", async () => {
+    const result = await register();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
@@ -87,7 +87,7 @@ describe("a containerised Core registers itself with its own machine's CLI (#288
     });
   });
 
-  it("dials the loopback address, not the host a Panel dials", () => {
+  it("dials the loopback address, not the host a Panel dials", async () => {
     // `ACTANA_PUBLIC_HOST` is the address *other* machines use, and inside the
     // container it may not route at all. Every server cert's SAN carries
     // 127.0.0.1 (`core-cert-material.ts`) so this dial verifies.
@@ -101,23 +101,23 @@ describe("a containerised Core registers itself with its own machine's CLI (#288
     expect(localDialHost("10.0.0.5")).toBe("10.0.0.5");
     expect(localEndpoint("fd00::5", 8443)).toBe("wss://[fd00::5]:8443");
 
-    const result = register({ bindHost: "10.0.0.5" });
+    const result = await register({ bindHost: "10.0.0.5" });
     expect(result.ok && result.endpoint).toBe("wss://10.0.0.5:8443");
   });
 
-  it("names the Core after its label, and falls back when the label cannot be one", () => {
-    expect(register({ label: "web 01" }).ok && fs.existsSync(path.join(home, ".config/actana/cores/web-01.txt"))).toBe(true);
-    expect(register({ label: "" }).ok && fs.existsSync(path.join(home, ".config/actana/cores/local.txt"))).toBe(true);
+  it("names the Core after its label, and falls back when the label cannot be one", async () => {
+    expect((await register({ label: "web 01" })).ok && fs.existsSync(path.join(home, ".config/actana/cores/web-01.txt"))).toBe(true);
+    expect((await register({ label: "" })).ok && fs.existsSync(path.join(home, ".config/actana/cores/local.txt"))).toBe(true);
   });
 
-  it("does not clobber a selection the operator made", () => {
+  it("does not clobber a selection the operator made", async () => {
     // The rule `wireLocalCore` carries and this module adds nothing to: an
     // operator who pointed this machine's CLI at a *different* Core gets the
     // local one registered and named, not silently switched under them.
     writeCoreBlob(paths(), "elsewhere", "not-a-real-blob");
     writeCurrentCore(paths(), "elsewhere");
 
-    const result = register();
+    const result = await register();
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.wiring).toEqual({
@@ -131,33 +131,33 @@ describe("a containerised Core registers itself with its own machine's CLI (#288
     );
   });
 
-  it("re-registers on a later boot, so a volume older than this repairs itself", () => {
+  it("re-registers on a later boot, so a volume older than this repairs itself", async () => {
     // Not gated on the boot that mints: a volume created before this existed
     // has material and a `registration-blob.txt` but no registry entry, and a
     // Core that wired itself only once would never fix one. Idempotent, and the
     // bearer is fresh each time.
-    const first = register();
-    const second = register();
+    const first = await register();
+    const second = await register();
     expect(first.ok && second.ok).toBe(true);
     expect(second.ok && second.wiring.selected).toBe(true);
     expect(fs.readdirSync(path.join(home, ".config/actana/cores"))).toEqual(["core-01.txt"]);
   });
 
-  it("honours XDG_CONFIG_HOME, because the registry does", () => {
+  it("honours XDG_CONFIG_HOME, because the registry does", async () => {
     const xdg = path.join(home, "xdg");
-    const result = register({ env: { XDG_CONFIG_HOME: xdg } });
+    const result = await register({ env: { XDG_CONFIG_HOME: xdg } });
     expect(result.ok).toBe(true);
     expect(fs.existsSync(path.join(xdg, "actana/cores/core-01.txt"))).toBe(true);
   });
 
-  it("reports a registry it cannot write instead of failing the boot", () => {
+  it("reports a registry it cannot write instead of failing the boot", async () => {
     // Serving Panels does not depend on this. A read-only home, or one owned by
     // somebody else, is a line in the log — the Core comes up either way and the
     // Core can still enroll a client with `actana pair new`.
     fs.mkdirSync(path.join(home, ".config"), { recursive: true });
     fs.writeFileSync(path.join(home, ".config/actana"), "not a directory");
 
-    const result = register();
+    const result = await register();
     expect(result.ok).toBe(false);
     expect(result.ok === false && result.error.length).toBeGreaterThan(0);
   });

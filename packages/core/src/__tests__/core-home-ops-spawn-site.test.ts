@@ -34,8 +34,8 @@ vi.mock("node:fs", async (importOriginal) => {
   return { ...actual, default: { ...actual, existsSync }, existsSync };
 });
 
-const workspace = vi.hoisted(() => ({ dir: "" }));
-vi.mock("../project-roots", () => ({ loadProjectRoots: () => [workspace.dir] }));
+const workspace = vi.hoisted(() => ({ dir: "", roots: null as string[] | null }));
+vi.mock("../project-roots", () => ({ loadProjectRoots: () => workspace.roots ?? [workspace.dir] }));
 vi.mock("@actana/shared/harness-cli-resolution", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@actana/shared/harness-cli-resolution")>();
   return {
@@ -74,6 +74,7 @@ function inContainer() {
 }
 
 beforeEach(() => {
+  workspace.roots = null;
   workspace.dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "spawn-site-")));
 });
 afterEach(() => {
@@ -150,6 +151,38 @@ describe("spawning a Claude Code Session in container mode", () => {
     await expect(core(false).spawn({ taskId: "t4", cwd: other, agent: "claude-code", command: "claude" } as never)).rejects.toThrow(
       "pty:spawn rejected (cwd-outside-project-roots)",
     );
+    expect(spawn).not.toHaveBeenCalled();
+  });
+});
+
+describe("a path the helper will not look at does not fail the spawn with a raw error", () => {
+  it("sends only roots the helper accepts, so one bad or surplus root cannot fail every spawn", async () => {
+    inContainer();
+    const helper = cannedHelper();
+    configureCoreHomeOps(helper.options);
+    vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    workspace.roots = [
+      workspace.dir,
+      "",
+      "x".repeat(5000),
+      "a\0b",
+      ...Array.from({ length: 300 }, (_, i) => `/srv/root-${i}`),
+    ];
+    await core(false).spawn({ taskId: "t6", cwd: workspace.dir, agent: "claude-code", command: "claude" } as never);
+    const roots = (helper.requests[0]!.request as { roots: string[] }).roots;
+    expect(roots).toContain(workspace.dir);
+    expect(roots[0]).toBe(path.dirname(workspace.dir)); // core home first: it is what a home shell needs
+    expect(roots.length).toBe(256);
+    expect(roots.every((r) => r.length > 0 && r.length <= 4096 && !r.includes("\0"))).toBe(true);
+  });
+
+  it("turns the helper's refusal of the cwd into the policy's invalid-cwd rejection", async () => {
+    inContainer();
+    configureCoreHomeOps(cannedHelper().options);
+    const spawn = vi.spyOn(nodePty, "spawn").mockReturnValue(fakePty() as never);
+    await expect(
+      core(false).spawn({ taskId: "t7", cwd: `${workspace.dir}/a\0b`, agent: "claude-code", command: "claude" } as never),
+    ).rejects.toThrow("pty:spawn rejected (invalid-cwd)");
     expect(spawn).not.toHaveBeenCalled();
   });
 });

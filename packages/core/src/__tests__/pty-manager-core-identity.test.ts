@@ -197,7 +197,7 @@ describe("disposePty in container mode", () => {
 });
 
 describe("ensureClaudeShiftEnterBinding", () => {
-  it("writes into core's home, not the daemon's (through the helper)", () => {
+  it("writes into core's home, not the daemon's (through the helper)", async () => {
     const coreHome = fs.mkdtempSync(path.join(os.tmpdir(), "core-home-"));
     const daemonHome = fs.mkdtempSync(path.join(os.tmpdir(), "daemon-home-"));
     try {
@@ -205,7 +205,7 @@ describe("ensureClaudeShiftEnterBinding", () => {
       vi.stubEnv("HOME", daemonHome);
       const helper = inProcessHelper(coreHome);
       configureCoreHomeOps(helper.options);
-      ensureClaudeShiftEnterBinding();
+      await ensureClaudeShiftEnterBinding();
       expect(helper.requests.map((r) => r.request.op)).toEqual(["ensureClaudeShiftEnterBinding"]);
       expect(fs.existsSync(path.join(coreHome, ".claude", "settings.json"))).toBe(true);
       expect(fs.existsSync(path.join(daemonHome, ".claude"))).toBe(false);

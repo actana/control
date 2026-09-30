@@ -9,6 +9,7 @@ import {
   ensureStatuslineTapViaCore,
   installHarnessHooksViaCore,
   spawnPathFactsViaCore,
+  CoreHomeOpRefusedError,
   type SpawnPathFacts,
 } from "./core-home-ops-client";
 import { PtyOutputBatcher } from "./pty-output-batch";
@@ -64,10 +65,10 @@ function sanitizeEnv(): Record<string, string> {
 // Claude Code only treats ESC+CR (`\x1b\r`, what `terminal-keymap.ts` emits for
 // Shift+Enter) as "insert newline" when this flag is set. Normally `/terminal-
 // setup` writes it; do it eagerly so the user doesn't have to.
-export function ensureClaudeShiftEnterBinding(): void {
+export async function ensureClaudeShiftEnterBinding(): Promise<void> {
   // In the container the file is core's and the daemon is not core: the write is
   // done by a `core` process (issue 559). The writer lives in `core-home-ops`.
-  ensureClaudeShiftEnterBindingViaCore();
+  await ensureClaudeShiftEnterBindingViaCore();
 }
 
 type Pty = {
@@ -675,7 +676,15 @@ export class PtyCore {
     const projectRoots = loadProjectRoots();
     const pathFacts = isContainerMode()
       ? spawnReq.cwd
-        ? await spawnPathFactsViaCore(spawnReq.cwd, [...projectRoots, coreHome()])
+        ? await spawnPathFactsViaCore(spawnReq.cwd, [coreHome(), ...projectRoots]).catch((err: unknown) => {
+            // A cwd the helper will not look at is an invalid cwd, said the way the
+            // policy says it. (A helper that hangs or crashes is still a plain error.)
+            if (err instanceof CoreHomeOpRefusedError) {
+              log.warn("pty.spawn.rejected", { code: "invalid-cwd", cwd: safeLogValue(opts.cwd), taskId: safeLogValue(opts.taskId) });
+              throw new Error("pty:spawn rejected (invalid-cwd)");
+            }
+            throw err;
+          })
         : { cwdOk: false, realpaths: {} }
       : undefined;
     try {

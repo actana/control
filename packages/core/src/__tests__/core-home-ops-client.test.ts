@@ -6,7 +6,6 @@ import {
   CoreHomeOpRefusedError,
   configureCoreHomeOps,
   coreHomeOp,
-  coreHomeOpSync,
   decodeHelperOutcome,
   ensureClaudeShiftEnterBindingViaCore,
   installHarnessHooksViaCore,
@@ -93,15 +92,6 @@ describe("in the container: one helper process per request, started as core", ()
     expect(env!.USER).toBe("core");
   });
 
-  it("uses the sync runner for sync callers and never the async one", () => {
-    inContainer();
-    const run = vi.fn();
-    const runSync = vi.fn(() => ok(null));
-    coreHomeOpSync({ op: "ensureClaudeShiftEnterBinding" }, { exists: setpriv, run, runSync });
-    expect(runSync).toHaveBeenCalledTimes(1);
-    expect(run).not.toHaveBeenCalled();
-  });
-
   it("refuses to start the helper when setpriv is missing: it would run as the daemon", async () => {
     inContainer();
     const run = vi.fn();
@@ -121,10 +111,8 @@ describe("in the container: one helper process per request, started as core", ()
 describe("outside the container: the same request, handled in this process", () => {
   it("starts no process", async () => {
     const run = vi.fn();
-    const runSync = vi.fn();
-    await coreHomeOp({ op: "resolveExecCwd", cwd: null }, { run, runSync, home: process.cwd() });
+    await coreHomeOp({ op: "resolveExecCwd", cwd: null }, { run, home: process.cwd() });
     expect(run).not.toHaveBeenCalled();
-    expect(runSync).not.toHaveBeenCalled();
   });
 
   it("still refuses an unknown operation and a malformed field", async () => {
@@ -167,11 +155,11 @@ describe("what the helper's outcome means", () => {
 });
 
 describe("the daemon's wrappers keep the contracts of what they replaced", () => {
-  it("Shift+Enter is best-effort: a failed helper is a log line, not a throw", () => {
+  it("Shift+Enter is best-effort: a failed helper is a log line, not a throw", async () => {
     inContainer();
     const warn = vi.spyOn(log, "warn").mockImplementation(() => undefined);
-    configureCoreHomeOps({ exists: setpriv, runSync: () => ({ status: 70, stdout: "", stderr: "boom" }) });
-    expect(() => ensureClaudeShiftEnterBindingViaCore()).not.toThrow();
+    configureCoreHomeOps({ exists: setpriv, run: async () => ({ status: 70, stdout: "", stderr: "boom" }) });
+    await expect(ensureClaudeShiftEnterBindingViaCore()).resolves.toBeUndefined();
     expect(warn.mock.calls.map((c) => c[0])).toContain("core-home-ops.shift-enter.failed");
   });
 
