@@ -18,7 +18,7 @@ import {
   type CliFixture,
 } from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
-import type { CoreFileEntry } from "@actana/sdk/core-files.ts";
+import type { CoreFileEntry } from "@actana/sdk/core";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {

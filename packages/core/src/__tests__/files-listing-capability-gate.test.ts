@@ -23,7 +23,7 @@
 // in `packages/sdk`). The reader used here is the one that client is built on.
 import * as http from "node:http";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { readFilesCapability, type CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import { readFilesCapability, type CoreLinkEvent } from "@actana/sdk/core";
 import { createCoreFilesRequestHandler, type CoreFilesPort } from "../core-files-routes";
 import {
   PtyCoreLinkServer,

@@ -41,12 +41,12 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 // The redeem contract, defined once and imported by both sides (ADR 0025 D2 as
 // amended by #306, D3). The module is import-free, which is what lets a Core
 // take it without taking any client machinery with it.
-import { CORE_PAIRING_REDEEM_PATH as SDK_CORE_PAIRING_REDEEM_PATH } from "@actana/sdk/core-pairing-wire";
+import { CORE_PAIRING_REDEEM_PATH as SDK_CORE_PAIRING_REDEEM_PATH } from "@actana/sdk/pairing";
 import type {
   CorePairingClientInfo,
   CorePairingRedeemRequest,
   CorePairingRedeemResponse,
-} from "@actana/sdk/core-pairing-wire";
+} from "@actana/sdk/pairing";
 import { CsrRejectedError, assertSignableCsr, signClientCsr } from "@actana/shared/core-cert-material";
 import { signBearer } from "@actana/shared/core-link-bearer";
 import { normalisePairingCode } from "@actana/shared/pairing-code";

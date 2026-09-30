@@ -25,7 +25,7 @@
 import log from "@actana/shared/log";
 import { HARNESS_CLI_CONFIG } from "@actana/shared/harness-cli-config";
 import type { Harness } from "@actana/shared/domain";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 import {
   installAgentsNow,
   resolveHarnessId,

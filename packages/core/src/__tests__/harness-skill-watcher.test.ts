@@ -7,7 +7,7 @@
 // every tick; one that ignored event ids would re-install on every replay.
 
 import { describe, it, expect, vi } from "vitest";
-import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core-link-frames";
+import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core";
 import { HarnessSkillWatcher } from "../harness-skill-watcher";
 
 const KIND = HARNESSES_AVAILABILITY_EVENT_KIND;

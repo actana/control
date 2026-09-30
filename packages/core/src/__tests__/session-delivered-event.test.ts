@@ -31,8 +31,8 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
-import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
+import { SESSION_DELIVERED_EVENT_KIND } from "@actana/sdk/core";
 
 type Listener = (...args: unknown[]) => void;
 

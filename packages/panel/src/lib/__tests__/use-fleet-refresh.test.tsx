@@ -13,7 +13,7 @@
 // an event-driven one — which is exactly the claim under test.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
 
 const CORE_ID = "core-a";
 const PROJECT_ID = "project-1";

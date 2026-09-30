@@ -39,12 +39,12 @@ import type {
   CoreLinkProjectSnapshot,
   CoreLinkSessionSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 import {
   SESSION_DELIVERED_EVENT_KIND,
   SESSION_PROMPT_ABANDONED_EVENT_KIND,
   SESSION_PROMPT_DELIVERED_EVENT_KIND,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 
 import { openSessionGateway } from "../session-gateway.ts";
 import { EXIT_FAILURE, EXIT_OK } from "../exit-codes.ts";

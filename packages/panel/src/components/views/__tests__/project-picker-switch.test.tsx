@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
-import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkProjectSnapshot } from "@actana/sdk/core";
 
 // The top bar's Project control is a switcher, not a label (issue 231). A
 // Project is a Core-scoped noun, so everything it shows — the name it wears and

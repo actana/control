@@ -7,7 +7,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 // The live-event cursor advances only behind a send that landed (issue 244).
 //

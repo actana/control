@@ -20,8 +20,8 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { coreLinkCursorStorageKey } from "@actana/sdk/core-link-cursor-storage.ts";
-import type { CoreLinkCursorStorage } from "@actana/sdk/core-link-cursor-storage.ts";
+import { coreLinkCursorStorageKey } from "@actana/sdk/core";
+import type { CoreLinkCursorStorage } from "@actana/sdk/core";
 import type { RegistryPaths } from "./blob-registry.ts";
 
 /** The directory holding one cursor file per Core, beside the blob registry. */

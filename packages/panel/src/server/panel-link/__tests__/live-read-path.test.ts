@@ -15,12 +15,12 @@ import {
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
-import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION } from "@actana/sdk/core";
 import type {
   CoreLinkEvent,
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import type { PanelLinkClientFrame, PanelLinkServerFrame } from "~/shared/panel-link";
 
 /**

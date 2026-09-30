@@ -32,7 +32,6 @@
     "baseUrl": ".",
     "paths": {
       "~/*": ["./src/*"],
-      "@actana/sdk/*": ["../sdk/src/*"],
       "@actana/shared/*": ["../shared/src/*"],
       "@actana/core/*": ["../core/src/*"]
     },

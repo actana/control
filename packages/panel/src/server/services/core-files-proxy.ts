@@ -39,9 +39,9 @@
 // path validation: it is refusing to send at all to a Core that has told us it
 // has no file surface, so an operator reads "this Core has no file surface"
 // rather than a `404` that looks like an outage.
-import { httpsBaseUrlFor } from "@actana/sdk/core-registration-blob";
-import { createCoreFilesFetch, type CoreFilesFetch } from "@actana/sdk/core-files-http";
-import { CoreFiles } from "@actana/sdk/core-files";
+import { httpsBaseUrlFor } from "@actana/sdk/pairing";
+import { createCoreFilesFetch, type CoreFilesFetch } from "@actana/sdk/core";
+import { CoreFiles } from "@actana/sdk/core";
 import { getCore, getCoreSecrets } from "./cores";
 import { coreLinkManager } from "./core-link-manager";
 import { HTTP_CLIENT_CLOSED_REQUEST } from "~/shared/http-status";

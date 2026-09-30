@@ -21,7 +21,7 @@ import type {
   CoreLinkSessionSnapshot,
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 
 /**
  * Minimal slice of `better-sqlite3.Database` that the mutation helpers need.

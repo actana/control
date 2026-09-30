@@ -16,8 +16,8 @@
 // what F3 means by calling `core shell` the sanctioned escape hatch.
 
 import { randomUUID } from "node:crypto";
-import { CoreClient } from "@actana/sdk/core-client.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import { CoreClient } from "@actana/sdk/core";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 import type { Unsubscribe } from "./cli-terminal.ts";
 
 /** How a remote shell ended. `signal` is the far side's, not this process's. */

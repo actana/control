@@ -17,7 +17,7 @@ import {
   isPairingPath,
 } from "@actana/core/core-pairing-wiring";
 import { PtyCoreLinkServer } from "@actana/core/pty-core-link-server";
-import { fingerprintOf } from "@actana/sdk/core-pairing";
+import { fingerprintOf } from "@actana/sdk/pairing";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { EventLogPort } from "@actana/core/pty-core-link-server";
 

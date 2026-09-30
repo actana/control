@@ -7,7 +7,7 @@ import {
   type WebSocketServerLike,
 } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
-import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import { CORE_LINK_PROTOCOL_VERSION, type CoreLinkEvent } from "@actana/sdk/core";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
 
 /** The real file routes, over a Project root nothing in this suite reads. */

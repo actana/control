@@ -10,7 +10,7 @@ import {
   readCachedProjects,
   readCachedSettings,
 } from "~/lib/shell-query-cache";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
 import type { Task } from "~/db/schema";
 import type { Harness } from "@actana/shared/domain";
 import { projectRowFromSnapshot } from "~/shared/projects";

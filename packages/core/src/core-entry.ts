@@ -110,7 +110,7 @@ import {
   SESSION_PROMPT_DELIVERED_EVENT_KIND,
   type CoreLinkSessionPromptAbandonedPayload,
   type CoreLinkSessionPromptDeliveredPayload,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import { CoreTaskWriter } from "./core-task-writer";
 import { CoreHarnessStatus } from "./core-harness-status";
 import { CoreTitleGenerator } from "./core-title-generator";

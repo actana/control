@@ -47,7 +47,7 @@ import { EXIT_FAILURE, EXIT_OK, EXIT_UNIMPLEMENTED, EXIT_USAGE } from "./exit-co
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
-import type { CoreLinkDirListing, CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkDirListing, CoreLinkProjectSnapshot } from "@actana/sdk/core";
 
 export const PROJECT_HELP = `actana project — the Projects a Core owns
 

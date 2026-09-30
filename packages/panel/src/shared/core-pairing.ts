@@ -24,7 +24,7 @@
 /**
  * Why a pairing attempt did not produce a Core.
  *
- * Structurally the SDK's `CorePairingFailure`. Switch on it to write a
+ * Structurally the SDK's `PairingFailure`. Switch on it to write a
  * sentence; the message that comes with it is already written for the
  * operator, and neither ever carries the code or the key.
  */

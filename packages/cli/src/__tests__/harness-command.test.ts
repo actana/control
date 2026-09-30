@@ -22,7 +22,7 @@ import {
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkRequestFrame,
   type CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {

@@ -8,7 +8,7 @@ import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
 import type { PtyCore } from "@actana/core/pty-manager";
 import type { EventLogPort } from "@actana/core/pty-core-link-server";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 /**
  * The Cores surface, driven the way a browser drives it: register the

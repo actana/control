@@ -23,7 +23,7 @@
 // and `FormData` all do exactly that and are all deliberately absent below. The
 // same discipline as the Panel's, one hop earlier: the file crosses three
 // processes and is buffered whole by none of them.
-import type { CoreFileEntry, CoreFileProgress } from "@actana/sdk/core-files";
+import type { CoreFileEntry, CoreFileProgress } from "@actana/sdk/core";
 
 export type { CoreFileEntry, CoreFileProgress };
 

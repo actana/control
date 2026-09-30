@@ -19,11 +19,11 @@ import {
   type CliFixture,
 } from "./cli-harness.ts";
 import { EXIT_FAILURE, EXIT_LINK_LOST, EXIT_OK, EXIT_USAGE } from "../exit-codes.ts";
-import { EXEC_OUTPUT_TOO_LARGE_ERROR_CODE } from "@actana/sdk/core-link-frames.ts";
+import { EXEC_OUTPUT_TOO_LARGE_ERROR_CODE } from "@actana/sdk/core";
 import type {
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 
 let fixture: CliFixture | null = null;
 function cli(): CliFixture {
