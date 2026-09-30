@@ -3809,7 +3809,7 @@ snapshots:
     dependencies:
       '@peculiar/x509': 1.14.2
       selfsigned: 5.5.0
-      undici: 8.9.0
+      undici: 8.10.2
       ws: 8.21.0
       zod: 3.25.76
     transitivePeerDependencies:
