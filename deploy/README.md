@@ -161,7 +161,10 @@ Backup](../DEPLOY.md#backup) has the `tar` one-liner.
 One caveat on `./repos`: files the Core writes there are owned by uid 1000,
 which is your own uid only on a host whose login user was the first created. If
 that bites, swap it for a named volume (`core-repos:/home/core/repos`, with
-`core-repos:` added under `volumes:`) and let the Core own them.
+`core-repos:` added under `volumes:`) and let the Core own them. A missing host
+`./repos` that Docker creates as root is repaired by the `core-init` one-shot
+(mount point only) before `core` starts — the main service stays uid 1000 so
+`docker compose exec` is never root.
 
 ## The `127.0.0.1:7420:7420` port
 

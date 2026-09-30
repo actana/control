@@ -124,34 +124,42 @@ that `npm install` on a project with a native addon can actually invoke node-gyp
 (uid 1000, gid 1000) has **no sudo** — system packages are baked into the image, and an agent
 cannot install more at run time.
 
-The container image `USER` is `core`, so `docker exec` and `docker compose exec`
-default to non-root (what Kubernetes `runAsNonRoot` and image-policy scanners
-see). Filesystem prep still needs euid 0 once per start: a setuid wrapper runs
-`core-fs-prep.sh`, which creates `~`, `~/shared` and the daemon state directory
-owned by `core`, and repairs a root-owned workspace **mount point** only (it
-does not `chown -R` host checkouts). Prep never follows a symlink out of
-`/home/core`. The entrypoint then `setpriv`-drops every capability and sets
-no-new-privs before exec'ing the daemon. Do not set compose `user: "0"` — that
-would make exec root again.
+The container image `USER` is numeric `1000:1000` (the `core` account), so
+`docker exec` / `docker compose exec` stay non-root and Kubernetes
+`runAsNonRoot` accepts the image. There is **no setuid helper** and `core`
+cannot become root. Named volumes are seeded `core:core` in the image. A host
+bind mount that Docker created as root is repaired by a separate root one-shot
+(`core-init` in compose, or `docker run -u 0 --entrypoint
+/usr/local/libexec/core-fs-prep.sh …`) that only chowns mount points — never
+recursively, and never following a symlink. The main entrypoint only sets
+`HOME=/home/core` and `no-new-privs` before exec'ing the daemon.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
 its own release tarball.
 
-`tini` is PID 1 and the daemon runs as its child (after the entrypoint drops privileges). That is
-baked into the image rather than left to `--init` / `init: true`, because a Core forks shells that
-fork agents, and a Node process running as PID 1 does not reap the ones that get reparented to it.
+`tini` is PID 1 and the daemon runs as its child. That is baked into the image rather than left to
+`--init` / `init: true`, because a Core forks shells that fork agents, and a Node process running as
+PID 1 does not reap the ones that get reparented to it.
 
 ### uid 1000, and bind-mounted repositories
 
 The `core` user is pinned to uid 1000 and gid 1000 explicitly. If you bind-mount a repository from
 your host and your login user is not uid 1000, files the Core writes will be owned by a uid that
 does not exist on your host. Two supported answers: `chown -R 1000:1000` the directory, or use a
-named volume and let the Core own the checkout.
+named volume and let the Core own the checkout. A missing host `./repos` that Docker creates as
+root is fixed by `core-init` at the **mount point only** (contents are not walked).
 
-Overriding `user:` is **not** supported — it half-works, which is worse. npm's prefix points into
-`/home/core`, so an overridden uid cannot install harnesses, and compose `user: "0"` would make
-every `docker compose exec` root. Prep escalates through the setuid wrap instead.
+Overriding `user:` on the main Core service is **not** supported — npm's prefix points into
+`/home/core`, and `user: "0"` would make every `docker compose exec` root. Prep runs only in the
+one-shot init service.
+
+Without compose, run the prep one-shot once before the main container:
+
+```bash
+docker run --rm -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh \
+  -v core-home:/home/core -v "$PWD/repos:/home/core/repos" actana/core:latest
+```
 
 Under rootless Docker or Podman the engine maps container uid 1000 to a host subuid, so plain
 `chown 1000` is the wrong advice there; use `podman unshare chown` or `--userns=keep-id`.
