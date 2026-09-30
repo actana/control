@@ -67,6 +67,7 @@ import {
   pollUntil,
   startPanelService,
 } from "./lib/panel-e2e.mjs";
+import { ensurePanelDatabase } from "./lib/postgres-fixture.mjs";
 
 const die = makeDie("panel-e2e");
 const log = (message) => console.log(`[panel-e2e] ${message}`);
@@ -143,6 +144,9 @@ async function main() {
     die(`core fixture failed to boot: ${err.message}`, err.logLines),
   );
   teardown.push(() => core.stop());
+
+  // The Panel refuses to start without a Postgres (#567), so one runs beside it.
+  teardown.push(await ensurePanelDatabase({ name: `ac-e2e-panel-pg-${process.pid}`, log }));
 
   await keyFilePhase({ panelBin, panelEntry, core });
   await envKeyPhase({ panelBin, panelEntry, core });
