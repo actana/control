@@ -29,7 +29,11 @@ function runPrepAt(home, env = {}) {
     .replaceAll("/home/core", home)
     .replaceAll("/var/lib/actana", stateFor(home))
     .replaceAll("CORE_UID=1000", `CORE_UID=${process.getuid()}`)
-    .replaceAll("CORE_GID=1000", `CORE_GID=${process.getgid()}`);
+    .replaceAll("CORE_GID=1000", `CORE_GID=${process.getgid()}`)
+    // The state directory's owner is the runner too: chown to a uid the runner
+    // is not fails (EPERM) for anyone but root, and CI is not uid 1000.
+    .replaceAll("STATE_UID=1000", `STATE_UID=${process.getuid()}`)
+    .replaceAll("STATE_GID=1000", `STATE_GID=${process.getgid()}`);
   const tmp = path.join(home, ".prep-test.sh");
   fs.mkdirSync(home, { recursive: true });
   fs.writeFileSync(tmp, script, { mode: 0o755 });
@@ -153,7 +157,19 @@ describe("core-fs-prep.sh", () => {
       expect(state.mode & 0o777).toBe(0o700);
     });
 
-    it("keeps the mode of one that exists and only repairs the mount point", () => {
+    it("fails hard, on stderr, when the state mount point is a file", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "core-fs-prep-"));
+      const home = path.join(root, "home");
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(stateFor(home), "not a directory");
+      const result = runPrepAt(home);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/core-fs-prep: error: .*state is not a directory/);
+    });
+
+    // A regression guard, not a test of the change: the old prep never looked
+    // at the state directory, so this passes there too.
+    it("regression guard: leaves the mode and contents of an existing one alone", () => {
       const root = fs.mkdtempSync(path.join(os.tmpdir(), "core-fs-prep-"));
       const home = path.join(root, "home");
       fs.mkdirSync(path.join(stateFor(home), "data"), { recursive: true, mode: 0o700 });
