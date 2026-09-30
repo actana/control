@@ -18,6 +18,7 @@ import {
   handleCoreHomeOpSync,
   parseCoreHomeOpRequest,
   type CoreHomeOpRequest,
+  type SyncRequest,
 } from "../core-home-ops";
 import type { CoreHomeOpsOptions, HelperOutcome } from "../core-home-ops-client";
 
@@ -86,7 +87,7 @@ export function inProcessHelper(home: string, extraEnv: NodeJS.ProcessEnv = {}):
         const request = JSON.parse(input) as CoreHomeOpRequest;
         requests.push({ request, env: spec.env, command: spec.command });
         try {
-          const result = handleCoreHomeOpSync(parseCoreHomeOpRequest(request), { home, roots: [home], env });
+          const result = handleCoreHomeOpSync(parseCoreHomeOpRequest(request) as SyncRequest, { home, roots: [home], env });
           return ok(result);
         } catch (err) {
           const refused = (err as { name?: string }).name === "CoreHomeOpRefusedError";

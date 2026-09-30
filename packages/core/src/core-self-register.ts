@@ -43,8 +43,8 @@
 // this module adds nothing to it.
 
 import { signBearer, type BearerSecret } from "@actana/shared/core-link-bearer";
-import { registryPaths } from "@actana/shared/blob-registry";
-import { wireLocalCore, type LocalCoreWiring } from "@actana/shared/local-core-wiring";
+import type { LocalCoreWiring } from "@actana/shared/local-core-wiring";
+import { wireLocalCoreViaCore } from "./core-home-ops-client";
 import type { PersistedMaterial } from "@actana/shared/core-material-store";
 
 /** The identity fields the credential is built from — what the boot has in hand. */
@@ -119,20 +119,30 @@ export function registerSelfWithLocalCli(opts: SelfRegistrationOptions): SelfReg
   try {
     // The bearer is signed here rather than stored, so the entry this boot
     // writes carries a full lease instead of whatever is left of an older one.
-    const wiring = wireLocalCore(registryPaths(opts.env, opts.home), opts.label, {
-      endpoint,
-      label: opts.label,
-      caCert: opts.material.caCert,
-      clientCert: opts.material.clientCert,
-      clientKey: opts.material.clientKey,
-      bearer: signBearer(
-        {
-          coreId: opts.material.coreId,
-          exp: Date.now() + opts.bearerDays * 24 * 60 * 60 * 1000,
-        },
-        opts.material.bearerSecret as BearerSecret,
-      ),
-    });
+    // It is also signed **here, in the daemon**: the registry is written by a
+    // `core` process (issue 559), and that process is handed the finished
+    // credential, never `bearerSecret`, which signs every bearer this Core will
+    // ever accept.
+    const wiring = wireLocalCoreViaCore(
+      opts.label,
+      {
+        endpoint,
+        label: opts.label,
+        caCert: opts.material.caCert,
+        clientCert: opts.material.clientCert,
+        clientKey: opts.material.clientKey,
+        bearer: signBearer(
+          {
+            coreId: opts.material.coreId,
+            exp: Date.now() + opts.bearerDays * 24 * 60 * 60 * 1000,
+          },
+          opts.material.bearerSecret as BearerSecret,
+        ),
+      },
+      // In-process only (outside the container): where the registry is. In the
+      // container the helper uses its own HOME.
+      { env: opts.env, home: opts.home },
+    );
     return { ok: true, wiring, endpoint };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

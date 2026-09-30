@@ -33,8 +33,8 @@
 //      process on this machine until the Core restarted.
 
 import { spawn } from "node:child_process";
-import { asCore, coreHome, killAsCoreQuietly } from "./core-identity";
-import * as fs from "node:fs";
+import { asCore, killAsCoreQuietly } from "./core-identity";
+import { resolveExecCwdViaCore } from "./core-home-ops-client";
 import { sanitizedProcessEnv } from "@actana/shared/shell-env";
 import type { CoreExecPortResult } from "./pty-core-link-server";
 
@@ -87,25 +87,6 @@ export function outputTooLargeMessage(limitBytes: number): string {
 }
 
 /**
- * Resolve and check the working directory, or throw the operator's sentence.
- *
- * Blank means this Core's home, for the same reason `dirList` starts there: a
- * client has never seen this machine and cannot compute a sensible default for
- * it.
- */
-function resolveCwd(requested: string | null | undefined): string {
-  const raw = typeof requested === "string" && requested.trim() ? requested.trim() : coreHome();
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(raw);
-  } catch {
-    throw new Error(`No such directory on this Core: ${raw}`);
-  }
-  if (!stat.isDirectory()) throw new Error(`Not a directory on this Core: ${raw}`);
-  return raw;
-}
-
-/**
  * Run one command and wait for it.
  *
  * Resolves for every command that ran, whatever it did — a non-zero status is
@@ -119,7 +100,10 @@ function resolveCwd(requested: string | null | undefined): string {
 // throws synchronously makes every caller write two error paths for one
 // outcome.
 export async function runCoreExec(input: CoreExecInput): Promise<CoreExecOutcome> {
-  const cwd = resolveCwd(input.cwd);
+  // Checked by `core`, the user the command will run as (issue 559). Blank means
+  // this Core's home, for the same reason `dirList` starts there: a client has
+  // never seen this machine and cannot compute a sensible default for it.
+  const cwd = await resolveExecCwdViaCore(input.cwd);
   const limit = input.maxOutputBytes ?? EXEC_MAX_OUTPUT_BYTES;
   const timeoutMs = input.timeoutMs ?? EXEC_TIMEOUT_MS;
 

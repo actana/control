@@ -9,8 +9,8 @@ import {
   ensureStatuslineTapViaCore,
   installHarnessHooksViaCore,
   spawnPathFactsViaCore,
+  type SpawnPathFacts,
 } from "./core-home-ops-client";
-import type { SpawnPathFacts } from "./core-home-ops";
 import { PtyOutputBatcher } from "./pty-output-batch";
 import { PtyOutputActivityWatcher, type PtyOutputActivityKind } from "./pty-output-activity";
 import { sliceReplayWindow, type PtyReplayWindow } from "./pty-replay-window";

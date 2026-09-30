@@ -19,6 +19,7 @@ import {
   parseCoreHomeOpRequest,
   type CoreHomeOpContext,
   type CoreHomeOpRequest,
+  type SyncRequest,
 } from "../core-home-ops";
 
 let base: string;
@@ -125,7 +126,7 @@ describe("request validation: known operations only", () => {
 });
 
 describe("path confinement: nothing outside the home is touched", () => {
-  const hooks = (cwd: string): CoreHomeOpRequest => ({ op: "installHarnessHooks", harness: "claude-code", cwd, piAgentDir: null });
+  const hooks = (cwd: string): SyncRequest => ({ op: "installHarnessHooks", harness: "claude-code", cwd, piAgentDir: null });
 
   it("writes hooks into a workspace inside the home", () => {
     const work = path.join(home, "repos", "app");
@@ -190,7 +191,7 @@ describe("path confinement: nothing outside the home is touched", () => {
   it("refuses a Pi agent dir outside the home, and expands `~` inside it", () => {
     const work = path.join(home, "w");
     fs.mkdirSync(work);
-    const pi = (piAgentDir: string): CoreHomeOpRequest => ({ op: "installHarnessHooks", harness: "pi", cwd: work, piAgentDir });
+    const pi = (piAgentDir: string): SyncRequest => ({ op: "installHarnessHooks", harness: "pi", cwd: work, piAgentDir });
     expect(refusal(() => handleCoreHomeOpSync(pi(path.join(outside, "agent")), ctx)).code).toBe("path-escape");
     expect(filesUnder(outside)).toEqual([]);
     expect(handleCoreHomeOpSync(pi("~/.pi/agent"), ctx)).toMatchObject({ installed: true });
@@ -198,7 +199,7 @@ describe("path confinement: nothing outside the home is touched", () => {
   });
 
   it("refuses to register into a registry that XDG_CONFIG_HOME moves outside the home", () => {
-    const request: CoreHomeOpRequest = {
+    const request: SyncRequest = {
       op: "wireLocalCore",
       label: "core-01",
       credential: { endpoint: "wss://127.0.0.1:8443", label: "core-01", caCert: "ca", clientCert: "cc", clientKey: "ck", bearer: "b" },
@@ -315,6 +316,6 @@ describe("operations", () => {
   });
 
   it("does not run the async operation synchronously", () => {
-    expect(() => handleCoreHomeOpSync({ op: "dirList", path: null }, ctx)).toThrow(/async/);
+    expect(() => handleCoreHomeOpSync({ op: "dirList", path: null } as never, ctx)).toThrow(/async/);
   });
 });

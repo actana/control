@@ -47,6 +47,7 @@ import { reportSkillEntries } from "./orchestration-skill";
 import type { HookInstallResult } from "./harness-hooks";
 
 export { CoreHomeOpFailedError, CoreHomeOpRefusedError } from "./core-home-ops";
+export type { SpawnPathFacts } from "./core-home-ops";
 
 /** The helper's bundle, beside `core-entry.cjs` (`build.mjs` emits both into `dist`). */
 export const CORE_HOME_OPS_BUNDLE = "core-home-ops.cjs";
@@ -95,7 +96,8 @@ function helperSpec(options: CoreHomeOpsOptions): HelperSpec {
   const helper = options.helperPath ?? path.join(__dirname, CORE_HOME_OPS_BUNDLE);
   // `env: {}` on purpose. `asCore` builds the child's environment from it and
   // from nothing else; the daemon's own `process.env` is never the base.
-  return (options.wrap ?? asCore)({ command: process.execPath, args: [helper], env: {} }, options) as HelperSpec;
+  const spec = { command: process.execPath, args: [helper], env: {} };
+  return (options.wrap ? options.wrap(spec, options) : asCore(spec, options)) as HelperSpec;
 }
 
 function runHelper(spec: HelperSpec, input: string): Promise<HelperOutcome> {
@@ -301,7 +303,8 @@ export async function resolveExecCwdViaCore(
   requested: string | null | undefined,
   options: CoreHomeOpsOptions = {},
 ): Promise<string> {
-  const { cwd } = await coreHomeOp({ op: "resolveExecCwd", cwd: requested ?? null }, options);
+  // Blank is "this Core's home", and is said as null: the helper takes no empty strings.
+  const { cwd } = await coreHomeOp({ op: "resolveExecCwd", cwd: requested?.trim() ? requested : null }, options);
   return cwd;
 }
 
@@ -310,5 +313,5 @@ export function listDirectoryViaCore(
   requested: string | null | undefined,
   options: CoreHomeOpsOptions = {},
 ): Promise<CoreLinkDirListing> {
-  return coreHomeOp({ op: "dirList", path: requested ?? null }, options);
+  return coreHomeOp({ op: "dirList", path: requested?.trim() ? requested : null }, options);
 }

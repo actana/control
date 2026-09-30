@@ -335,7 +335,8 @@ function realpathOrNull(p: string): string | null {
   }
 }
 
-type SyncRequest = Exclude<CoreHomeOpRequest, { op: "dirList" }>;
+/** The operations that need no `await`. */
+export type SyncRequest = Exclude<CoreHomeOpRequest, { op: "dirList" }>;
 
 /**
  * Run one operation that needs no `await`. Throws {@link CoreHomeOpRefusedError}
@@ -346,6 +347,7 @@ export function handleCoreHomeOpSync<Op extends SyncRequest["op"]>(
   request: Extract<CoreHomeOpRequest, { op: Op }>,
   ctx: CoreHomeOpContext,
 ): CoreHomeOpResult[Op];
+export function handleCoreHomeOpSync(request: SyncRequest, ctx: CoreHomeOpContext): CoreHomeOpResult[SyncRequest["op"]];
 export function handleCoreHomeOpSync(request: CoreHomeOpRequest, ctx: CoreHomeOpContext): unknown {
   switch (request.op) {
     case "dirList":
