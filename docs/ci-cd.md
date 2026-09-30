@@ -14,6 +14,7 @@ checks, labels) lives in [`REPO_SETUP.md`](REPO_SETUP.md).
 | --- | --- | --- |
 | [`ci.yml`](../.github/workflows/ci.yml) | every PR | nothing published on a fork or a docs-only diff; otherwise `pr-<prid><YYYYMM>` in `panel-dev` / `core-dev`. It gates |
 | [`ci.yml`](../.github/workflows/ci.yml) | push to `beta/**` | `beta-x.y.z` in `panel` / `core`, `sha-<short>` in `panel-dev` / `core-dev` |
+| [`ci.yml`](../.github/workflows/ci.yml) | push to `feat/x.y.z` (an integration branch; the filter is `feat/[0-9]+.[0-9]+.[0-9]+`) | nothing published. The pull-request verification, with the real image build and smoke on the merged commit — see [The integration branch](#the-integration-branch) |
 | [`promote.yml`](../.github/workflows/promote.yml) | dispatch, naming a train | the human pause, the digest verification, the fast-forward of `main`, the `vx.y.z` tag, the release line, retiring the promoted train |
 | [`release.yml`](../.github/workflows/release.yml) | a dispatch and only a dispatch: `promote.yml` dispatches it **at `vx.y.z`**, or a person does — **not** a `v*` tag, and no longer a `workflow_call` (D40, as amended by [#326](https://github.com/actana/control/issues/326)) | Core tarballs + checksums, `:<version>`, `:latest` when it is the highest version, the GitHub Release |
 | [`beta-release.yml`](../.github/workflows/beta-release.yml) | dispatch, naming a train | a beta cut: the moving `vx.y.z-beta` tag, a prerelease Release, three Core tarballs + `SHA256SUMS`, `install.sh` and the CLI tarball as assets, `x.y.z-beta` in `panel` / `core`. Never `latest` |
@@ -28,14 +29,15 @@ re-prove what the train proved. `:edge` is retired with it (D13): it published
 from `main`, and under the train model `main` is only ever a released version,
 so `:edge` would have been a second name for `:latest`.
 
-`ci.yml` is one file doing two jobs, and the trigger is the difference. On a
+`ci.yml` is one file doing three jobs, and the trigger is the difference. On a
 pull request it gates, and publishes a `pr-` image a reviewer can run; on a
-push to a train it publishes the image a promotion will re-point. The repo
-conventions — PR title, commit messages, branch name — are the `Conventions`
-job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and the branch
-model itself is the `Train rules` job beside it. A third, `Promotion gate`,
-refuses one thing only: a pull request from a train into `main`, which is a
-gate and must never be merged by hand (#264).
+push to a train it publishes the image a promotion will re-point; on a push to
+an integration branch it verifies the merged result and publishes nothing. The
+repo conventions — PR title, commit messages, branch name — are the
+`Conventions` job inside it ([ADR 0016](adr/0016-the-0-1-0-shape.md) D34), and
+the branch model itself is the `Train rules` job beside it. A third,
+`Promotion gate`, refuses one thing only: a pull request from a train into
+`main`, which is a gate and must never be merged by hand (#264).
 
 `promote.yml` is the fifth entry point, and the only thing in the repository
 that writes to `main`. It is described under [Cutting a
@@ -159,6 +161,84 @@ cut itself, and a required check asserts they still agree (D3, amended by #152
 and #157). Nothing else should be editing them. The check also asserts that its
 own list covers every workspace package, so the next package fails it rather
 than being silently left out.
+
+## The integration branch
+
+A release's work can be gathered on an **integration branch**, `feat/x.y.z`,
+before it goes to the train. The model is three moves:
+
+```
+  ticket PR ──▶ feat/0.5.0 ──(every merge: a push run, nothing published)
+  ticket PR ──▶ feat/0.5.0 ──(same)
+                   │
+                   └──▶ one PR ──▶ beta/0.5.0 ──▶ the train, as above
+                        (after the last wave)
+```
+
+- **Ticket pull requests go into `feat/x.y.z`**, not into the train.
+- **Every merge into `feat/x.y.z` starts a push run of `ci.yml`.** Two pull
+  requests that each passed alone can break together, and without this run
+  nothing would verify the merged result until the last pull request.
+- **One pull request goes from `feat/x.y.z` to `beta/x.y.z`** after the last
+  wave, and from there the train model above applies unchanged.
+
+What the workflow enforces is the push trigger and what it runs. **It does not
+enforce the routing**: nothing in `ci.yml` requires ticket pull requests to
+target `feat/x.y.z`, or limits the train to one pull request from it. That part
+is convention. A pull request *based on* `feat/x.y.z` gets the same checks as
+any pull request, except that `Train rules` has nothing to say about it: its
+base is neither `main`, a train nor a release line, so it ends at the notice
+*"No train rules apply"* (the final `*)` arm of its `case "$BASE"`).
+
+### What a push to `feat/x.y.z` runs
+
+The trigger is `on.push.branches: "feat/[0-9]+.[0-9]+.[0-9]+"`, next to
+`"beta/**"`. These are globs, not regexes: `+` means "one or more of the
+preceding character" and `.` is a literal dot, so the filter matches `feat/`
+and three dot-separated digit runs and nothing else. `feat/0.5.0` starts a run;
+a ticket branch such as `feat/553-adopt-actana-client`, `feat/0.5` and
+`feat/0.5.0-rc1` do not. `scripts/__tests__/integration-branch-push.test.mjs`
+holds the table of names.
+
+| Job | On a push to `feat/x.y.z` | The line it rests on |
+| --- | --- | --- |
+| `Conventions` | runs | `if: github.event_name == 'pull_request' \|\| (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))` |
+| `Resolve PR image mode` | runs, and decides `build` with `push=false` | the same `if:` |
+| `Panel image`, `Core image` | run: the real build and smoke, amd64 only, on the pushed commit | the same `if:`, `needs: pr-image-mode` |
+| `Promotion gate`, `Typecheck`, `Unit Tests`, `Lint`, `Dependency Audit`, `Secret Scan`, `E2E — Panel service seam`, `Smoke — Core release tarball`, `E2E — installer` | run | no job-level `if:`, so they run on every event |
+| `Train rules` | does not run | `if: github.event_name == 'pull_request'` |
+| `Train versions`, `Resolve train tags`, `Panel image (train)`, `Core image (train)` | do not run | `if: startsWith(github.ref, 'refs/heads/beta/')` |
+
+Three details of the ones that run:
+
+- **`Conventions` lints the commits the push brought** (`github.event.before`
+  to `github.sha`). A new branch has an all-zero `before`, and a `before` that
+  is no longer in the repository has no range either; in both cases it lints
+  the tip alone (`--last`). The branch-name check reads `github.ref_name` on a
+  push, and `feat/0.5.0` satisfies its pattern. The title check is gated to
+  `pull_request`, so it does not run.
+- **The image build is never skipped.** A push has no pull request, so there
+  is no draft flag and no file list: the documentation-only test is not run on
+  a push, and `pr-image-mode` never returns `pass` for it. A push that only
+  touches documentation still builds both images. The build's stage is
+  `integration-feat-x.y.z` (slashes become hyphens), so its per-arch build tags
+  never collide with a pull request's `pr-<number>`.
+- **Nothing is published, and that is a property of the output.** The final
+  step of `pr-image-mode` sets `push=false` and empties `tags`, `dev_tags` and
+  `version` whenever the event is a push, whatever the resolver wrote or failed
+  to write. `panel-image` and `core-image` pass `push` from that output, and
+  every job that publishes a train's images is keyed to `refs/heads/beta/`.
+  No `beta-x.y.z`, `sha-<short>` or `pr-<prid><YYYYMM>` tag moves.
+
+Because nothing publishes, a superseded run is safe to cancel. The concurrency
+group is `ci-<ref>` with `cancel-in-progress: true` on everything except a
+`beta/` ref, so a newer push to `feat/0.5.0` cancels an older run of
+`feat/0.5.0` and nothing else: not `feat/0.6.0`, and not a train, whose own
+group never cancels (D7).
+
+Because `Train versions` is keyed to `beta/`, a push to `feat/x.y.z` does not
+assert the six manifests' versions; that assertion runs when the train is
+pushed.
 
 ## The published images
 
