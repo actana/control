@@ -92,6 +92,14 @@ services:
     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
     user: "0:0"
     entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
+    # Only needs CHOWN for mount-point repair; no network, no other caps.
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+    security_opt:
+      - no-new-privileges:true
+    network_mode: none
     volumes:
       - core-home:/home/core
       - ./repos:/home/core/repos
@@ -157,6 +165,13 @@ services:
 #     image: ${ACTANA_IMAGE_NAMESPACE:-actana}/core:${ACTANA_TAG:-latest}
 #     user: "0:0"
 #     entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]
+#     cap_drop:
+#       - ALL
+#     cap_add:
+#       - CHOWN
+#     security_opt:
+#       - no-new-privileges:true
+#     network_mode: none
 #     volumes:
 #       - core2-home:/home/core
 #       - core2-repos:/home/core/repos

@@ -126,13 +126,14 @@ cannot install more at run time.
 
 The container image `USER` is numeric `1000:1000` (the `core` account), so
 `docker exec` / `docker compose exec` stay non-root and Kubernetes
-`runAsNonRoot` accepts the image. There is **no setuid helper** and `core`
+`runAsNonRoot` accepts the image. There is **no setuid/setgid bit left** on
+any file in the image (stripped as the last root build step), and `core`
 cannot become root. Named volumes are seeded `core:core` in the image. A host
 bind mount that Docker created as root is repaired by a separate root one-shot
 (`core-init` in compose, or `docker run -u 0 --entrypoint
 /usr/local/libexec/core-fs-prep.sh …`) that only chowns mount points — never
-recursively, and never following a symlink. The main entrypoint only sets
-`HOME=/home/core` and `no-new-privs` before exec'ing the daemon.
+recursively, and never following a symlink. The main entrypoint refuses uid 0,
+sets `HOME=/home/core`, and applies `no-new-privs` before exec'ing the daemon.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
@@ -149,6 +150,10 @@ your host and your login user is not uid 1000, files the Core writes will be own
 does not exist on your host. Two supported answers: `chown -R 1000:1000` the directory, or use a
 named volume and let the Core own the checkout. A missing host `./repos` that Docker creates as
 root is fixed by `core-init` at the **mount point only** (contents are not walked).
+
+Prep fails hard if `~/shared` is a symlink or a non-directory: `core` can make the next
+`compose up` fail by replacing that path. That is intentional — the one-shot will not follow
+or repair through a symlink.
 
 Overriding `user:` on the main Core service is **not** supported — npm's prefix points into
 `/home/core`, and `user: "0"` would make every `docker compose exec` root. Prep runs only in the

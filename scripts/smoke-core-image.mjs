@@ -440,7 +440,24 @@ if (core.exec(["test", "-e", "/etc/sudoers.d/core"], { allowFailure: true }).sta
 if (core.exec(["test", "-e", "/usr/local/libexec/core-fs-prep-wrap"], { allowFailure: true }).status === 0) {
   die("setuid prep wrap is in the image — it must be gone (#558)");
 }
-log("sudo binary, sudoers.d/core and setuid wrap are absent (expected)");
+const setuidLeft = docker(
+  ["run", "--rm", "-u", "0", "--entrypoint", "find", image, "/", "-xdev", "-type", "f", "-perm", "/6000"],
+  { allowFailure: true },
+);
+if ((setuidLeft.stdout ?? "").trim()) {
+  die(`image still has setuid/setgid files:\n${setuidLeft.stdout}`);
+}
+log("sudo binary, sudoers.d/core, setuid wrap and setuid/setgid bits are absent");
+
+// A mistaken `docker run -u 0` must not boot the daemon as root.
+const rootBoot = docker(["run", "--rm", "-u", "0", image], { allowFailure: true });
+if (rootBoot.status === 0) {
+  die("image started successfully as uid 0 — entrypoint must refuse root");
+}
+if (!`${rootBoot.stderr}${rootBoot.stdout}`.includes("refusing to start as root")) {
+  die(`uid 0 boot did not refuse clearly:\n${rootBoot.stderr}${rootBoot.stdout}`);
+}
+log("entrypoint refuses to start as uid 0");
 
 for (const owned of [CORE_HOME, `${CORE_HOME}/shared`, `${CORE_HOME}/.local/share/actana/data`]) {
   const owner = core.exec(["stat", "-c", "%u:%g", owned]).stdout.trim();
@@ -519,8 +536,8 @@ if (noNewPrivs !== "1") {
 }
 log("daemon uids/gids/groups/caps/NoNewPrivs look clean");
 
-// Prep as root one-shot with a hostile PATH and CORE_HOME — must have no effect
-// outside /home/core and must not run a fake binary from the volume.
+// Prep as root one-shot with a hostile PATH and CORE_HOME — must leave /etc
+// root-owned and home paths 1000:1000, and must not run a fake volume binary.
 const marker = `${CORE_HOME}/.local/share/actana/fake-stat.log`;
 core.exec([
   "sh",
@@ -532,6 +549,13 @@ core.exec([
     `rm -f ${marker}`,
   ].join(" && "),
 ]);
+const hostileScript = [
+  `export PATH=${CORE_HOME}/.local/bin:/usr/sbin:/usr/bin`,
+  "export CORE_HOME=/etc",
+  "export CORE_UID=0",
+  "/usr/local/libexec/core-fs-prep.sh",
+  `stat -c '%u:%g %n' /etc ${CORE_HOME} ${CORE_HOME}/shared`,
+].join("; ");
 const prepHostile = docker(
   [
     "run",
@@ -539,21 +563,27 @@ const prepHostile = docker(
     "-u",
     "0",
     "--entrypoint",
-    "/usr/local/libexec/core-fs-prep.sh",
-    "--env",
-    `PATH=${CORE_HOME}/.local/bin:/usr/sbin:/usr/bin`,
-    "--env",
-    "CORE_HOME=/etc",
-    "--env",
-    "CORE_UID=0",
+    "sh",
     "--volume",
     `${core.volume}:${CORE_HOME}`,
     image,
+    "-c",
+    hostileScript,
   ],
   { allowFailure: true },
 );
+const hostileOut = `${prepHostile.stdout ?? ""}${prepHostile.stderr ?? ""}`;
 if (prepHostile.status !== 0) {
-  die(`hostile-env prep exited ${prepHostile.status}:\n${prepHostile.stderr}${prepHostile.stdout}`);
+  die(`hostile-env prep exited ${prepHostile.status}:\n${hostileOut}`);
+}
+if (!hostileOut.includes(`0:0 /etc`)) {
+  die(`hostile prep left /etc not root-owned:\n${hostileOut}`);
+}
+if (!hostileOut.includes(`1000:1000 ${CORE_HOME}`)) {
+  die(`hostile prep changed home ownership:\n${hostileOut}`);
+}
+if (!hostileOut.includes(`1000:1000 ${CORE_HOME}/shared`)) {
+  die(`hostile prep changed shared ownership:\n${hostileOut}`);
 }
 const fakeLog = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
   allowFailure: true,
@@ -561,7 +591,7 @@ const fakeLog = core.exec(["sh", "-c", `cat ${marker} 2>/dev/null || true`], {
 if (/FAKE_STAT_RAN_AS_0/.test(fakeLog)) {
   die("fake ~/.local/bin/stat ran as root during prep — PATH was not pinned");
 }
-log("hostile PATH/CORE_HOME prep did not run a volume binary as root");
+log("hostile PATH/CORE_HOME prep left /etc 0:0 and home 1000:1000");
 
 // Restart the default boot (no -u 0): entrypoint must not invoke prep, so the
 // fake stat on the volume PATH cannot run as root on restart either.
@@ -574,6 +604,75 @@ if (/FAKE_STAT_RAN_AS_0/.test(fakeAfterRestart)) {
   die("fake ~/.local/bin/stat ran as root on container restart");
 }
 log("restart did not run a volume binary as root");
+
+// #551 — a missing host ./repos is created root-owned by Docker; core-init
+// must chown the mount point so core can write.
+log("verifying core-init repairs a missing root-owned repos bind mount …");
+const reposScratch = fs.mkdtempSync(path.join(os.tmpdir(), "actana-core-repos-"));
+teardown.push(() => fs.rmSync(reposScratch, { recursive: true, force: true }));
+const scratchHome = path.join(reposScratch, "home");
+const scratchRepos = path.join(reposScratch, "repos");
+fs.mkdirSync(scratchHome, { recursive: true });
+// Deliberately do not create scratchRepos — Docker will create it as root.
+const compose551 = path.join(reposScratch, "compose.yml");
+fs.writeFileSync(
+  compose551,
+  [
+    "services:",
+    "  core-init:",
+    `    image: ${image}`,
+    '    user: "0:0"',
+    '    entrypoint: ["/usr/local/libexec/core-fs-prep.sh"]',
+    "    cap_drop: [ALL]",
+    "    cap_add: [CHOWN]",
+    "    security_opt: [no-new-privileges:true]",
+    "    network_mode: none",
+    "    volumes:",
+    `      - ${scratchHome}:${CORE_HOME}`,
+    `      - ${scratchRepos}:${CORE_HOME}/repos`,
+    '    restart: "no"',
+    "  core:",
+    `    image: ${image}`,
+    "    environment:",
+    "      ACTANA_PUBLIC_HOST: core",
+    "    volumes:",
+    `      - ${scratchHome}:${CORE_HOME}`,
+    `      - ${scratchRepos}:${CORE_HOME}/repos`,
+    "    depends_on:",
+    "      core-init:",
+    "        condition: service_completed_successfully",
+    "    security_opt: [no-new-privileges:true]",
+  ].join("\n") + "\n",
+);
+const up551 = spawnSync(
+  "docker",
+  ["compose", "-f", compose551, "up", "-d", "--wait", "--wait-timeout", "60", "core"],
+  { encoding: "utf8" },
+);
+teardown.push(() => {
+  spawnSync("docker", ["compose", "-f", compose551, "down", "-v", "--remove-orphans"], {
+    encoding: "utf8",
+  });
+});
+if (up551.status !== 0) {
+  die(`compose up with missing repos failed:\n${up551.stderr}${up551.stdout}`);
+}
+if (!fs.existsSync(scratchRepos)) {
+  die("Docker did not create the missing repos host dir");
+}
+const reposOwner = spawnSync("stat", ["-c", "%u:%g", scratchRepos], { encoding: "utf8" });
+if (reposOwner.stdout.trim() !== "1000:1000") {
+  die(`repos mount point is ${reposOwner.stdout.trim()}, expected 1000:1000 after core-init`);
+}
+const writeProbe = spawnSync(
+  "docker",
+  ["compose", "-f", compose551, "exec", "-T", "core", "touch", `${CORE_HOME}/repos/.actana-write-ok`],
+  { encoding: "utf8" },
+);
+if (writeProbe.status !== 0) {
+  die(`core could not write repos after core-init:\n${writeProbe.stderr}${writeProbe.stdout}`);
+}
+log("core-init repaired a missing root-owned repos bind mount; core can write");
 
 if (target) {
   // A cross-architecture tarball surfaces as `exec format error` at first boot

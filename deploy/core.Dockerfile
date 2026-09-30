@@ -242,6 +242,11 @@ RUN chown root:root /usr/local/libexec/core-fs-prep.sh \
 COPY core-entrypoint.sh /usr/local/bin/core-entrypoint.sh
 RUN chmod 0755 /usr/local/bin/core-entrypoint.sh
 
+# Last root step (#558): strip every setuid/setgid bit the base packages ship
+# (su, mount, passwd, ssh-keysign, unix_chkpwd, …). no-new-privs on the daemon
+# and on compose exec is not enough — a plain `docker exec` shell has neither.
+RUN find / -xdev -type f -perm /6000 -exec chmod a-s {} +
+
 # Numeric USER so Kubernetes runAsNonRoot / image-policy scanners accept it.
 USER 1000:1000
 WORKDIR /home/core

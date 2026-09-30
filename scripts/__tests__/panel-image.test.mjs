@@ -256,12 +256,21 @@ describe("reference compose", () => {
     const override = readRepoFile("deploy/docker-compose.dev-images.yml");
     const dev = composeFacts(override);
     expect(dev.services.panel.image).toContain(`/${panelName}-dev:`);
-    expect(dev.services.core.image).toContain(`/${coreName}-dev:`);
-    for (const service of ["panel", "core"]) {
-      expect(dev.services[service].image, `${service} defaults its -dev tag`).toContain(
+    // Every service that uses the Core release image must be remapped to
+    // core-dev — including the root one-shot core-init (#558).
+    const coreImageServices = Object.keys(compose.services).filter((name) => {
+      const image = compose.services[name].image ?? "";
+      return image.includes(`/${coreName}:`);
+    });
+    expect(coreImageServices.length).toBeGreaterThan(0);
+    for (const name of coreImageServices) {
+      expect(dev.services[name], `${name} missing from -dev override`).toBeTruthy();
+      expect(dev.services[name].image).toContain(`/${coreName}-dev:`);
+      expect(dev.services[name].image, `${name} defaults its -dev tag`).toContain(
         "${ACTANA_TAG:?",
       );
     }
+    expect(dev.services.panel.image).toContain("${ACTANA_TAG:?");
   });
 
   it("publishes the Panel on loopback, and names no TLS terminator at all", () => {
@@ -330,9 +339,12 @@ describe("reference compose", () => {
     expect(init.scalars.user).toBe('"0:0"');
     expect(init.scalars.entrypoint).toBe('["/usr/local/libexec/core-fs-prep.sh"]');
     expect(init.scalars.restart).toBe('"no"');
+    expect(init.scalars.network_mode).toBe("none");
     expect(init.volumes).toEqual(coreService.volumes);
     expect(composeText).toContain("service_completed_successfully");
     expect(composeText).toContain("no-new-privileges:true");
+    expect(composeText).toMatch(/cap_drop:[\s\S]*?- ALL/);
+    expect(composeText).toMatch(/cap_add:[\s\S]*?- CHOWN/);
     // Main service must not be root — that would make compose exec root.
     expect(coreService.scalars.user).toBeUndefined();
   });
@@ -830,22 +842,28 @@ describe("core image", () => {
     expect(fs.existsSync(path.join(repoRoot, "deploy/core-fs-prep-wrap.c"))).toBe(false);
     expect(coreDockerfile).not.toContain("core-fs-prep-wrap");
     expect(coreDockerfile).not.toContain("chmod 4755");
-    expect(coreDockerfile).not.toMatch(/chmod\s+[0-7]*[4567][0-7]{3}/);
+    expect(coreDockerfile).toContain("find / -xdev -type f -perm /6000 -exec chmod a-s");
     expect(entrypoint).toContain("setpriv");
     expect(entrypoint).toContain("--no-new-privs");
     expect(entrypoint).not.toContain("--bounding-set");
+    expect(entrypoint).toContain('id -u)" -eq 0');
     const body = entrypoint
       .split("\n")
       .filter((line) => !line.trim().startsWith("#"))
       .join("\n");
-    expect(body).not.toContain("core-fs-prep");
+    expect(body).toContain("refusing to start as root");
+    // Prep is named only in the refuse-as-root hint, never invoked.
+    const withoutHints = body
+      .split("\n")
+      .filter((line) => !line.includes("echo "))
+      .join("\n");
+    expect(withoutHints).not.toContain("core-fs-prep");
     expect(body).not.toMatch(/\bsudo\b/);
     expect(prep).toContain("PATH=/usr/sbin:/usr/bin:/sbin:/bin");
     expect(prep).toContain("CORE_HOME=/home/core");
     expect(prep).toContain("chown -h");
     expect(prep).toContain('fix_mount_point "$WORKSPACE" warn');
     expect(prep).toContain('fix_mount_point "$SHARED" hard');
-    // Production ignores hostile CORE_* from the environment.
     expect(prep).not.toMatch(/CORE_HOME=\$\{/);
     expect(prep).not.toMatch(/CORE_USER=\$\{/);
     expect(coreImage.entrypoint).toBe(
