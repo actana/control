@@ -33,6 +33,24 @@ on:
       # `landing.yml` keeps its own `push: main` trigger, which is what still
       # deploys the front door.
       - "beta/**"
+      # A release's integration branch, `feat/x.y.z` (#584). Every ticket pull
+      # request lands there, and only the final `feat/x.y.z → beta/x.y.z` pull
+      # request goes to the train — so without this, a merge into it is never
+      # verified on the merged result, and two pull requests that pass alone can
+      # break together unseen until that final one.
+      #
+      # These pushes run the pull-request verification and **publish nothing**:
+      # every publishing job below is keyed to `refs/heads/beta/`, and the
+      # image jobs are handed `push=false` by `pr-image-mode` on this event.
+      #
+      # Filters are globs, not regexes. `feat/*` would also match a ticket
+      # branch such as `feat/553-adopt-actana-client`, which must start no push
+      # run. Here `+` means "one or more of the preceding character" and `.` is
+      # a literal dot, so this matches `feat/` and three dot-separated digit
+      # runs and nothing else: not `feat/553-adopt-actana-client`, not
+      # `feat/0.5`, not `feat/0.5.0-rc1`. `scripts/__tests__/workflows.test.mjs`
+      # holds the table of names.
+      - "feat/[0-9]+.[0-9]+.[0-9]+"
   # Republishing a train's images without a new commit, for when a registry
   # was down or a run was cancelled. On a dispatch the gate jobs run too —
   # that is the cheap half, and a dispatch is rare.
@@ -45,6 +63,11 @@ concurrency:
   # green. `release.yml` and `housekeeping.yml` take `false` for exactly this
   # reason; a pull request keeps cancelling, because a superseded push has
   # nothing to publish and nobody is waiting on its check.
+  #
+  # A push to `feat/x.y.z` takes the second arm (#584). The group carries the
+  # full ref, so `feat/0.5.0` and `feat/0.6.0` cancel only their own superseded
+  # runs, never each other's and never a train's, and cancelling is safe
+  # because those runs publish nothing.
   group: ${{ startsWith(github.ref, 'refs/heads/beta/') && format('ci-train-{0}', github.ref) || format('ci-{0}', github.ref) }}
   cancel-in-progress: ${{ !startsWith(github.ref, 'refs/heads/beta/') }}
 
@@ -83,7 +106,10 @@ jobs:
   # `--cwd` points commitlint back at the checkout for its git queries.
   conventions:
     name: Conventions
-    if: github.event_name == 'pull_request'
+    # A pull request, or a push to an integration branch (#584). The `push`
+    # trigger only ever starts on `beta/**` and `feat/x.y.z`, and the `feat/`
+    # test keeps a train push out of here as it is today.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -116,7 +142,7 @@ jobs:
       # a subject describing a train, not a change. Commit linting below is
       # deliberately kept — the train's commits *are* what lands on `main`.
       - name: Lint the PR title
-        if: ${{ !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
+        if: ${{ github.event_name == 'pull_request' && !(github.base_ref == 'main' && startsWith(github.head_ref, 'beta/')) }}
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -130,18 +156,32 @@ jobs:
 
       - name: Lint commits in PR
         env:
+          EVENT_NAME: ${{ github.event_name }}
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          AFTER_SHA: ${{ github.sha }}
         run: |
           set -euo pipefail
-          "$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
+          lint=("$RUNNER_TEMP/commitlint/node_modules/.bin/commitlint" \
             --config "$RUNNER_TEMP/commitlint/commitlint.config.mjs" \
-            --cwd "$GITHUB_WORKSPACE" \
-            --from "$BASE_SHA" --to "$HEAD_SHA" --verbose
+            --cwd "$GITHUB_WORKSPACE" --verbose)
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            "${lint[@]}" --from "$BASE_SHA" --to "$HEAD_SHA"
+          # A push to an integration branch (#584): the commits it brought. A
+          # new branch has an all-zero `before`, and a forced one can name a
+          # commit that is no longer here; both have no range to lint, so the
+          # tip alone is read rather than the branch's whole history.
+          elif [[ "$BEFORE_SHA" =~ ^0+$ ]] || ! git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            "${lint[@]}" --last
+          else
+            "${lint[@]}" --from "$BEFORE_SHA" --to "$AFTER_SHA"
+          fi
 
       - name: Check branch name
         env:
-          BRANCH: ${{ github.head_ref }}
+          # `head_ref` is empty on a push, where the branch is `ref_name`.
+          BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
           # Allowed: <type>/<kebab-case-description>
@@ -941,7 +981,11 @@ jobs:
   # leave Pending costs the repository.
   pr-image-mode:
     name: Resolve PR image mode
-    if: github.event_name == 'pull_request'
+    # Also a push to an integration branch (#584), which has no pull request to
+    # read a draft flag from. It is resolved here rather than skipped so the
+    # image jobs below get an explicit `build` + `push=false`, and never the
+    # vacuous `pass` a draft gets.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -969,6 +1013,8 @@ jobs:
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           DRAFT: ${{ github.event.pull_request.draft }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
           MERGE_SHA: ${{ github.sha }}
           CHANGED_FILES: ${{ github.event.pull_request.changed_files }}
           RESOLVED: ${{ runner.temp }}/pr-image-mode.env
@@ -992,14 +1038,20 @@ jobs:
           # The PR payload's own `changed_files` is the count that does not
           # truncate, so a short list is treated as no list at all.
           docs_only=false
-          files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
-          listed="$(grep -c . <<<"$files" || true)"
-          if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
-            echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
-            files=""
-          fi
-          if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
-            docs_only=true
+          files=""
+          # A push has no pull request, so there is no file list to ask for:
+          # `pulls//files` would fail and be swallowed, and the answer below
+          # would then rest on a failed call instead of on a decision.
+          if [[ "$EVENT_NAME" != "push" ]]; then
+            files="$(gh api --paginate "repos/$REPO/pulls/$PR/files" --jq '.[].filename' || true)"
+            listed="$(grep -c . <<<"$files" || true)"
+            if [[ -n "$files" && "$listed" -lt "${CHANGED_FILES:-0}" ]]; then
+              echo "::notice title=File list truncated::The API returned $listed of $CHANGED_FILES changed files, so the documentation-only test cannot be trusted and this build runs. GitHub truncates this endpoint past 300 files."
+              files=""
+            fi
+            if [[ -n "$files" ]] && ! grep -qvE '(\.md$|^docs/|^\.scratch/|^designs/|^landing/)' <<<"$files"; then
+              docs_only=true
+            fi
           fi
 
           mode=build
@@ -1016,7 +1068,23 @@ jobs:
           # builds pushed nothing; corrupting from the moment they do.
           stage="pr-$PR"
 
-          if [[ "$DRAFT" == "true" ]]; then
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            # A push to an integration branch `feat/x.y.z` (#584), and the first
+            # branch on purpose: a push carries no `pull_request` payload, so
+            # `DRAFT` is empty and every test below would be asking a pull
+            # request questions of an event that has none. Left to fall
+            # through, this would build only by accident (an empty `HEAD_REPO`
+            # happens to differ from `REPO`). It is decided here instead: the
+            # real build and smoke, the merged commit, and nothing published.
+            # Never `pass` — that is the vacuous ten-second skip a draft gets,
+            # and this push exists to be the run that is not.
+            #
+            # `feat-x.y.z`, not `pr-<n>`: per-arch tags are keyed on the stage
+            # (D12), so it names the branch rather than a pull request.
+            mode=build
+            stage="integration-${REF_NAME//\//-}"
+            why="a push to the integration branch $REF_NAME: full verification, nothing published"
+          elif [[ "$DRAFT" == "true" ]]; then
             mode=pass
             why="the pull request is a draft"
           elif [[ "$BASE" == "main" && "$HEAD" == beta/* ]]; then
@@ -1091,6 +1159,8 @@ jobs:
           RESOLVED: ${{ runner.temp }}/pr-image-mode.env
           PR: ${{ github.event.pull_request.number }}
           MERGE_SHA: ${{ github.sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           value() { sed -n "s/^$1=//p" "${RESOLVED:-/nonexistent}" 2>/dev/null | tail -n 1; }
 
@@ -1128,6 +1198,18 @@ jobs:
             why="the resolver did not finish"
           fi
           [[ "$push" == "true" ]] || push=false
+          if [[ "$EVENT_NAME" == "push" ]]; then
+            # An integration-branch push publishes nothing, whatever the
+            # resolver wrote or failed to write (#584): this is the one line
+            # that makes "never publish" a property of the output rather than
+            # of the resolver having been right. Its stage is the branch's, not
+            # `pr-0`, when the resolver did not finish.
+            push=false
+            tags=""
+            dev_tags=""
+            version=""
+            [[ -n "$stage" ]] || stage="integration-${REF_NAME//\//-}"
+          fi
           [[ -n "$stage" ]] || stage="pr-${PR:-0}"
           [[ -n "$ref" ]] || ref="$MERGE_SHA"
 
@@ -1159,7 +1241,9 @@ jobs:
   # is the build and the smoke. A Docker Hub outage must not freeze merging.
   panel-image:
     name: Panel image
-    if: github.event_name == 'pull_request'
+    # Also the integration branch's push (#584): the same build and smoke,
+    # `push=false` from `pr-image-mode`, so nothing is published.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
@@ -1199,7 +1283,9 @@ jobs:
   # a side effect of this ticket. The scan JSON is uploaded either way.
   core-image:
     name: Core image
-    if: github.event_name == 'pull_request'
+    # Also the integration branch's push (#584): the same build and smoke,
+    # `push=false` from `pr-image-mode`, so nothing is published.
+    if: github.event_name == 'pull_request' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/feat/'))
     needs: pr-image-mode
     uses: ./.github/workflows/container-image.yml
     permissions:
