@@ -121,7 +121,19 @@ digest still collects Canonical's security fixes.
 A real toolchain, because a Core exists to run coding agents against real repositories: `git`,
 `curl`, `openssh-client`, `ripgrep`, `jq`, `lsof`, `vim-tiny`, and `build-essential` + `python3` so
 that `npm install` on a project with a native addon can actually invoke node-gyp. The `core` user
-(uid 1000, gid 1000) has passwordless `sudo` for the same reason.
+(uid 1000, gid 1000) has **no sudo** — system packages are baked into the image, and an agent
+cannot install more at run time.
+
+The container image `USER` is numeric `1000:1000` (the `core` account), so
+`docker exec` / `docker compose exec` stay non-root and Kubernetes
+`runAsNonRoot` accepts the image. There is **no setuid/setgid bit left** on
+any file in the image (stripped as the last root build step), and `core`
+cannot become root. Named volumes are seeded `core:core` in the image. A host
+bind mount that Docker created as root is repaired by a separate root one-shot
+(`core-init` in compose, or `docker run -u 0 --entrypoint
+/usr/local/libexec/core-fs-prep.sh …`) that only chowns mount points — never
+recursively, and never following a symlink. The main entrypoint refuses uid 0,
+sets `HOME=/home/core`, and applies `no-new-privs` before exec'ing the daemon.
 
 A system Node 24, taken from nodejs.org and SHA-256 verified against that release's own
 `SHASUMS256.txt`, for `npm i -g` work. The daemon does not use it — it runs the Node bundled inside
@@ -136,10 +148,23 @@ PID 1 does not reap the ones that get reparented to it.
 The `core` user is pinned to uid 1000 and gid 1000 explicitly. If you bind-mount a repository from
 your host and your login user is not uid 1000, files the Core writes will be owned by a uid that
 does not exist on your host. Two supported answers: `chown -R 1000:1000` the directory, or use a
-named volume and let the Core own the checkout.
+named volume and let the Core own the checkout. A missing host `./repos` that Docker creates as
+root is fixed by `core-init` at the **mount point only** (contents are not walked).
 
-Overriding `user:` is **not** supported — it half-works, which is worse. `sudo` is granted by name,
-and npm's prefix points into `/home/core`, so an overridden uid gets neither.
+Prep fails hard if `~/shared` is a symlink or a non-directory: `core` can make the next
+`compose up` fail by replacing that path. That is intentional — the one-shot will not follow
+or repair through a symlink.
+
+Overriding `user:` on the main Core service is **not** supported — npm's prefix points into
+`/home/core`, and `user: "0"` would make every `docker compose exec` root. Prep runs only in the
+one-shot init service.
+
+Without compose, run the prep one-shot once before the main container:
+
+```bash
+docker run --rm -u 0 --entrypoint /usr/local/libexec/core-fs-prep.sh \
+  -v core-home:/home/core -v "$PWD/repos:/home/core/repos" actana/core:latest
+```
 
 Under rootless Docker or Podman the engine maps container uid 1000 to a host subuid, so plain
 `chown 1000` is the wrong advice there; use `podman unshare chown` or `--userns=keep-id`.

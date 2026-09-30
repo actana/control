@@ -234,7 +234,7 @@ describe("reference compose", () => {
     expect(coreService.image).toBe(
       `\${ACTANA_IMAGE_NAMESPACE:-actana}/${coreName}:\${ACTANA_TAG:-latest}`,
     );
-    expect(Object.keys(compose.services)).toEqual(["panel", "core"]);
+    expect(Object.keys(compose.services)).toEqual(["panel", "core-init", "core"]);
   });
 
   it("moves both services from one tag variable, because they are version-locked", () => {
@@ -256,12 +256,21 @@ describe("reference compose", () => {
     const override = readRepoFile("deploy/docker-compose.dev-images.yml");
     const dev = composeFacts(override);
     expect(dev.services.panel.image).toContain(`/${panelName}-dev:`);
-    expect(dev.services.core.image).toContain(`/${coreName}-dev:`);
-    for (const service of ["panel", "core"]) {
-      expect(dev.services[service].image, `${service} defaults its -dev tag`).toContain(
+    // Every service that uses the Core release image must be remapped to
+    // core-dev — including the root one-shot core-init (#558).
+    const coreImageServices = Object.keys(compose.services).filter((name) => {
+      const image = compose.services[name].image ?? "";
+      return image.includes(`/${coreName}:`);
+    });
+    expect(coreImageServices.length).toBeGreaterThan(0);
+    for (const name of coreImageServices) {
+      expect(dev.services[name], `${name} missing from -dev override`).toBeTruthy();
+      expect(dev.services[name].image).toContain(`/${coreName}-dev:`);
+      expect(dev.services[name].image, `${name} defaults its -dev tag`).toContain(
         "${ACTANA_TAG:?",
       );
     }
+    expect(dev.services.panel.image).toContain("${ACTANA_TAG:?");
   });
 
   it("publishes the Panel on loopback, and names no TLS terminator at all", () => {
@@ -315,14 +324,29 @@ describe("reference compose", () => {
 
   // D19 — the home is the state, because Harnesses write all over $HOME. The
   // repos bind mount is the one other mount, and it is the one an operator is
-  // expected to change.
+  // expected to change. core-init is the root one-shot that chowns that mount
+  // point when Docker created the host dir as root (#551 / #558).
   it("gives the Core one named volume — its home — plus a swappable repos mount", () => {
     expect(coreService.volumes).toEqual([`core-home:${CORE_HOME}`, `./repos:${CORE_HOME}/repos`]);
     expect(compose.volumes).toEqual(["panel-data", "core-home"]);
     expect(composeText).toMatch(/Swappable for a named volume/);
-    // The bind mount's host side has to exist in a clean checkout, or Docker
-    // creates it root-owned and uid 1000 cannot write to its own repos.
     expect(fs.existsSync(path.join(repoRoot, "deploy/repos"))).toBe(true);
+  });
+
+  it("runs bind-mount prep as a root one-shot, not inside the Core service", () => {
+    const init = compose.services["core-init"];
+    expect(init.image).toBe(coreService.image);
+    expect(init.scalars.user).toBe('"0:0"');
+    expect(init.scalars.entrypoint).toBe('["/usr/local/libexec/core-fs-prep.sh"]');
+    expect(init.scalars.restart).toBe('"no"');
+    expect(init.scalars.network_mode).toBe("none");
+    expect(init.volumes).toEqual(coreService.volumes);
+    expect(composeText).toContain("service_completed_successfully");
+    expect(composeText).toContain("no-new-privileges:true");
+    expect(composeText).toMatch(/cap_drop:[\s\S]*?- ALL/);
+    expect(composeText).toMatch(/cap_add:[\s\S]*?- CHOWN/);
+    // Main service must not be root — that would make compose exec root.
+    expect(coreService.scalars.user).toBeUndefined();
   });
 
   it("documents the env knob the compose path still has", () => {
@@ -792,26 +816,71 @@ describe("core image", () => {
   });
 
   // D12 — 1000:1000 explicitly, because useradd's own pick is 1001:100 and
-  // that breaks every bind-mounted repo.
+  // that breaks every bind-mounted repo. #558 retires NOPASSWD sudo: numeric
+  // USER so runAsNonRoot accepts the image; prep is a compose one-shot, never
+  // a setuid binary.
   it("removes the stock ubuntu user and pins core to 1000:1000", () => {
     const account = coreImage.runs.find((run) => run.includes("useradd"));
     expect(account).toContain("userdel");
     expect(account).toMatch(/groupadd --gid 1000 core/);
     expect(account).toMatch(/useradd --uid 1000 --gid 1000/);
-    expect(coreImage.users.at(-1)).toBe("core");
+    expect(coreImage.users.at(-1)).toBe("1000:1000");
   });
 
-  it("gives NOPASSWD sudo to core and to nobody else", () => {
-    const sudoers = coreImage.runs.filter((run) => run.includes("NOPASSWD"));
-    expect(sudoers).toHaveLength(1);
-    expect(sudoers[0]).toContain("core ALL=(ALL) NOPASSWD:ALL");
-    expect(sudoers[0]).toContain("/etc/sudoers.d/core");
+  it("gives core no sudo and no sudoers file", () => {
+    expect(CORE_PACKAGES).not.toContain("sudo");
+    const install = coreImage.runs.find((run) => run.includes("apt-get install"));
+    expect(aptPackages(install)).not.toContain("sudo");
+    expect(coreImage.runs.filter((run) => run.includes("NOPASSWD"))).toHaveLength(0);
+    expect(coreDockerfile).not.toContain("/etc/sudoers.d/core");
+    expect(coreImage.runs.join("\n")).not.toMatch(/sudoers\.d/);
+  });
+
+  it("ships bind-mount prep without any setuid binary", () => {
+    const entrypoint = readRepoFile("deploy/core-entrypoint.sh");
+    const prep = readRepoFile("deploy/core-fs-prep.sh");
+    expect(fs.existsSync(path.join(repoRoot, "deploy/core-fs-prep-wrap.c"))).toBe(false);
+    expect(coreDockerfile).not.toContain("core-fs-prep-wrap");
+    expect(coreDockerfile).not.toContain("chmod 4755");
+    expect(coreDockerfile).toContain("find / -xdev -type f -perm /6000 -exec chmod a-s");
+    expect(entrypoint).toContain("setpriv");
+    expect(entrypoint).toContain("--no-new-privs");
+    expect(entrypoint).not.toContain("--bounding-set");
+    expect(entrypoint).toContain('id -u)" -eq 0');
+    const body = entrypoint
+      .split("\n")
+      .filter((line) => !line.trim().startsWith("#"))
+      .join("\n");
+    expect(body).toContain("refusing to start as root");
+    // Prep is named only in the refuse-as-root hint, never invoked.
+    const withoutHints = body
+      .split("\n")
+      .filter((line) => !line.includes("echo "))
+      .join("\n");
+    expect(withoutHints).not.toContain("core-fs-prep");
+    expect(body).not.toMatch(/\bsudo\b/);
+    expect(prep).toContain("PATH=/usr/sbin:/usr/bin:/sbin:/bin");
+    expect(prep).toContain("CORE_HOME=/home/core");
+    expect(prep).toContain("chown -h");
+    expect(prep).toContain('fix_mount_point "$WORKSPACE" warn');
+    expect(prep).toContain('fix_mount_point "$SHARED" hard');
+    expect(prep).not.toMatch(/CORE_HOME=\$\{/);
+    expect(prep).not.toMatch(/CORE_USER=\$\{/);
+    expect(coreImage.entrypoint).toBe(
+      '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
+    );
+    expect(coreDockerfile).toContain("COPY core-fs-prep.sh");
+    const seed = coreImage.runs.find((run) => run.includes("/home/core/shared"));
+    expect(seed).toContain("/home/core/repos");
+    expect(seed).toContain("chown -R core:core /home/core");
   });
 
   // D14 — tini is PID 1 so reparented Harnesses get reaped; baked in, because
   // `--init` is opt-in and a bare `docker run` would skip it.
   it("runs the daemon under tini as PID 1", () => {
-    expect(coreImage.entrypoint).toBe('["/usr/bin/tini", "--"]');
+    expect(coreImage.entrypoint).toBe(
+      '["/usr/bin/tini", "--", "/usr/local/bin/core-entrypoint.sh"]',
+    );
     expect(coreImage.cmd).toBe('["actana", "daemon"]');
   });
 
@@ -819,6 +888,7 @@ describe("core image", () => {
   // is a private image constant the container mode depends on.
   it("bakes the container-mode environment", () => {
     expect(coreImage.env).toMatchObject({
+      HOME: CORE_HOME,
       ACTANA_CONTAINER: "1",
       AC_CORE_REMOTE: "1",
       AC_CORE_LINK_HOST: "0.0.0.0",
