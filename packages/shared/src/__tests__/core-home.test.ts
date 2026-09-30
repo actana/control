@@ -2,7 +2,7 @@ import { spawn, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it } from "vitest";
 import {
   asCore,
   coreChildEnv,
@@ -195,6 +195,50 @@ describe("coreChildEnv", () => {
     expect(JSON.stringify(env)).not.toContain("actana\"");
   });
 
+  it("drops the whole AC_ namespace except AC_HOOK_, including names nobody listed", () => {
+    const env = coreChildEnv(
+      identity,
+      { ...daemonEnv, AC_SOMETHING_NEW: "x", AC_CORE_LINK_HOST: "0.0.0.0", AC_HOOK_TOKEN: "t", AC_HOOK_MISS_LOG: "/tmp/m" },
+      daemonEnv,
+    );
+    expect(Object.keys(env).filter((k) => k.startsWith("AC_")).sort()).toEqual([
+      "AC_HOOK_MISS_LOG",
+      "AC_HOOK_TOKEN",
+      "AC_HOOK_URL",
+    ]);
+  });
+
+  it("no value in the child env contains the daemon's state directory, whatever the variable is called", () => {
+    const leaky = {
+      ...daemonEnv,
+      XDG_STATE_HOME: "/var/lib/actana/state",
+      FOO_CACHE: "/var/lib/actana/cache/foo",
+      SOME_TOOL_DB: "sqlite:///var/lib/actana/data/x.db",
+      PATH: "/var/lib/actana/bin:/opt/actana/bin:/usr/bin",
+      ACTANA_ROOT: "/opt/actana",
+    };
+    const env = coreChildEnv(identity, leaky, daemonEnv);
+    for (const [key, value] of Object.entries(env)) {
+      expect(value, key).not.toContain("/var/lib/actana");
+    }
+    expect(env.XDG_STATE_HOME).toBeUndefined();
+    expect(env.FOO_CACHE).toBeUndefined();
+    expect(env.SOME_TOOL_DB).toBeUndefined();
+    expect(env.PATH).toBe("/home/core/.local/bin:/opt/actana/bin:/usr/bin");
+    // Not secret, and the CLI in a Session may need it.
+    expect(env.ACTANA_ROOT).toBe("/opt/actana");
+  });
+
+  it("learns the daemon's paths from its own env too, not only from the list", () => {
+    const env = coreChildEnv(
+      identity,
+      { LEAK: "/srv/actana-state/keys", OK: "/srv/work" },
+      { HOME: "/srv/actana-state", AC_USER_DATA_DIR: "/srv/actana-state/data" },
+    );
+    expect(env.LEAK).toBeUndefined();
+    expect(env.OK).toBe("/srv/work");
+  });
+
   it("keeps what the caller meant the child to have", () => {
     const env = coreChildEnv(identity, daemonEnv);
     expect(env.LANG).toBe("C.UTF-8");
@@ -319,87 +363,179 @@ describe.skipIf(process.platform !== "linux")("the cd-then-exec script on the re
   });
 });
 
-// The wrapper for real. It needs CAP_SETUID and CAP_SETGID, so it only runs as
-// root (CI's container, or `unshare -Ur`); everywhere else it is skipped and
-// vitest says so in its summary. The argv tests above are what runs on every
-// machine.
+// The wrapper for real, as PR 4 will run it.
+//
+// The daemon there is not root: it is `actana`, holding ambient CAP_SETUID and
+// CAP_SETGID and nothing else. That matters for what is being proven. A uid-0 to
+// non-zero switch clears every capability by itself, so a root caller would pass
+// `CapPrm = 0` even without `--inh-caps=-all --ambient-caps=-all`, and root can
+// signal anyone. So the test first becomes that daemon (a non-root uid, with an
+// extra supplementary group, holding only the two ambient caps), proves it is
+// one, and only then runs what `asCore` and `coreKillSpec` build from there.
+//
+// It needs real root to set that up, so on a developer machine and in the plain
+// `Unit Tests` step it is SKIPPED. CI's "Real asCore wrapper" step runs this file
+// under `sudo` with ACTANA_REQUIRE_ROOT_TESTS=1, and with that set a missing root
+// or setpriv FAILS instead of skipping, so the step cannot go green without it.
 const isRoot = process.platform === "linux" && process.getuid?.() === 0;
-const realSetpriv = ["/usr/bin/setpriv", "/bin/setpriv"].some((f) => fs.existsSync(f));
+const SETPRIV = ["/usr/bin/setpriv", "/bin/setpriv"].find((f) => fs.existsSync(f));
+const required = process.env.ACTANA_REQUIRE_ROOT_TESTS === "1";
 
-describe.skipIf(!isRoot || !realSetpriv)("asCore for real (Linux, root)", () => {
-  const id = { AC_CORE_HOME: "", AC_CORE_UID: "65534", AC_CORE_GID: "65534" };
+describe.runIf(required)("the real-wrapper step has what it needs", () => {
+  it("is root on Linux with setpriv installed", () => {
+    expect(process.platform).toBe("linux");
+    expect(process.getuid?.()).toBe(0);
+    expect(SETPRIV).toBeDefined();
+  });
+});
 
-  function run(command: string, args: string[], cwd: string | undefined, home: string) {
-    const spec = asCore(
-      { command, args, cwd, env: { PATH: "/usr/bin:/bin", AC_USER_DATA_DIR: "/secret" } },
-      { identityEnv: { ...id, AC_CORE_HOME: home } },
-    );
-    return spawnSync(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, encoding: "utf8" });
+describe.skipIf(!isRoot || !SETPRIV)("asCore for real: from a non-root daemon with only SETUID and SETGID", () => {
+  const DAEMON_UID = 65533;
+  const DAEMON_EXTRA_GID = 65001;
+  const CORE_UID = 65534;
+  const CORE_GID = 65534;
+  const ZERO = "0000000000000000";
+  const SET_UID_GID = "00000000000000c0"; // CAP_SETGID (6) and CAP_SETUID (7)
+
+  const dirs: string[] = [];
+  afterAll(() => {
+    for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
+  });
+  function publicDir(prefix: string): string {
+    const dir = fs.mkdtempSync(path.join("/tmp", prefix));
+    fs.chmodSync(dir, 0o755);
+    dirs.push(dir);
+    return dir;
   }
 
-  it("runs the child as the core ids with no capabilities, no groups and no new privileges", () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "core-home-"));
-    fs.chmodSync(home, 0o755);
-    try {
-      const r = run("/bin/cat", ["/proc/self/status"], undefined, home);
-      expect(r.stderr).toBe("");
-      expect(r.status).toBe(0);
-      const field = (name: string) => new RegExp(`^${name}:\\s*(.*)$`, "m").exec(r.stdout)?.[1];
-      expect(field("Uid")).toBe("65534\t65534\t65534\t65534");
-      expect(field("Gid")).toBe("65534\t65534\t65534\t65534");
-      expect(field("Groups")?.trim()).toBe("");
-      expect(field("CapPrm")).toBe("0000000000000000");
-      expect(field("CapEff")).toBe("0000000000000000");
-      expect(field("CapInh")).toBe("0000000000000000");
-      expect(field("CapAmb")).toBe("0000000000000000");
-      expect(field("NoNewPrivs")).toBe("1");
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
+  /** argv that becomes the daemon: uid 65533, groups {65533, 65001}, ambient SETUID+SETGID only. */
+  function asDaemon(argv: string[]): string[] {
+    return [
+      `--reuid=${DAEMON_UID}`,
+      `--regid=${DAEMON_UID}`,
+      `--groups=${DAEMON_UID},${DAEMON_EXTRA_GID}`,
+      "--inh-caps=-all,+setuid,+setgid",
+      "--ambient-caps=+setuid,+setgid",
+      "--",
+      ...argv,
+    ];
+  }
 
-  it("does the cd after the switch, rebuilds the env, and leaks nothing from the caller", () => {
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "core cwd "));
-    fs.chmodSync(dir, 0o755);
-    const dashed = path.join(dir, "-dash dir");
-    fs.mkdirSync(dashed, { mode: 0o755 });
-    try {
-      const r = run("/usr/bin/env", [], dashed, "/home/core");
-      expect(r.stderr).toBe("");
-      expect(r.status).toBe(0);
-      expect(r.stdout).toContain("HOME=/home/core\n");
-      expect(r.stdout).toContain("USER=core\n");
-      expect(r.stdout).toContain("SHELL=/bin/bash\n");
-      expect(r.stdout).not.toContain("AC_USER_DATA_DIR");
-      const pwd = run("/bin/pwd", [], dashed, "/home/core");
-      expect(pwd.stdout.trim()).toBe(fs.realpathSync(dashed));
-    } finally {
-      fs.rmSync(dir, { recursive: true, force: true });
-    }
-  });
+  const field = (status: string, name: string) =>
+    new RegExp(`^${name}:\\s*(.*)$`, "m").exec(status)?.[1];
 
-  it("cannot setuid back: the capabilities really are gone", () => {
-    const r = run("/usr/bin/setpriv", ["--reuid=0", "true"], undefined, "/tmp");
-    expect(r.status).not.toBe(0);
-    expect(r.stderr).toMatch(/Operation not permitted|setresuid/i);
-  });
+  function run(argv: string[], env: NodeJS.ProcessEnv = { PATH: "/usr/bin:/bin" }) {
+    return spawnSync(SETPRIV!, argv, { cwd: "/", env, encoding: "utf8", timeout: 15_000 });
+  }
 
-  it("coreKillSpec stops a process of the core user that the caller could not signal", () => {
-    const spec = asCore(
-      { command: "/bin/sleep", args: ["30"], env: { PATH: "/usr/bin:/bin" } },
-      { identityEnv: { ...id, AC_CORE_HOME: "/tmp" } },
+  function coreSpec(command: string, args: string[], cwd: string | undefined, home: string) {
+    return asCore(
+      { command, args, cwd, env: { PATH: "/usr/bin:/bin", AC_USER_DATA_DIR: "/var/lib/actana/data" } },
+      { identityEnv: { AC_CORE_HOME: home, AC_CORE_UID: String(CORE_UID), AC_CORE_GID: String(CORE_GID) } },
     );
-    const child = spawn(spec.command, spec.args, { cwd: spec.cwd, env: spec.env, stdio: "ignore" });
-    const pid = child.pid as number;
-    const kill = coreKillSpec(pid, "SIGKILL", { identityEnv: { ...id, AC_CORE_HOME: "/tmp" } });
-    const r = spawnSync(kill.command, kill.args, { cwd: kill.cwd, env: kill.env, encoding: "utf8" });
+  }
+
+  /** Runs what `asCore` built, from inside the daemon. */
+  function runAsCoreFromDaemon(spec: ReturnType<typeof coreSpec>) {
+    return run(asDaemon([spec.command, ...spec.args]), spec.env);
+  }
+
+  it("the harness really is the daemon it claims to be (so the rest means something)", () => {
+    const r = run(asDaemon(["/bin/cat", "/proc/self/status"]));
     expect(r.stderr).toBe("");
     expect(r.status).toBe(0);
-    return new Promise<void>((resolve) =>
-      child.on("exit", (_code, signal) => {
-        expect(signal).toBe("SIGKILL");
-        resolve();
-      }),
+    expect(field(r.stdout, "Uid")).toBe(`${DAEMON_UID}\t${DAEMON_UID}\t${DAEMON_UID}\t${DAEMON_UID}`);
+    expect(field(r.stdout, "Groups")?.trim().split(/\s+/).sort()).toEqual(
+      [String(DAEMON_EXTRA_GID), String(DAEMON_UID)].sort(),
     );
+    expect(field(r.stdout, "CapPrm")).toBe(SET_UID_GID);
+    expect(field(r.stdout, "CapEff")).toBe(SET_UID_GID);
+    expect(field(r.stdout, "CapAmb")).toBe(SET_UID_GID);
+  });
+
+  it("the child has core's ids, no groups, no capabilities and no new privileges, read from its own /proc/self/status", () => {
+    const home = publicDir("core-home-real-");
+    const r = runAsCoreFromDaemon(coreSpec("/bin/cat", ["/proc/self/status"], undefined, home));
+    expect(r.stderr).toBe("");
+    expect(r.status).toBe(0);
+    expect(field(r.stdout, "Uid")).toBe(`${CORE_UID}\t${CORE_UID}\t${CORE_UID}\t${CORE_UID}`);
+    expect(field(r.stdout, "Gid")).toBe(`${CORE_GID}\t${CORE_GID}\t${CORE_GID}\t${CORE_GID}`);
+    // Only the target gid may appear: none of the daemon's supplementary groups.
+    const groups = (field(r.stdout, "Groups") ?? "").trim().split(/\s+/).filter(Boolean);
+    expect(groups.filter((g) => g !== String(CORE_GID))).toEqual([]);
+    expect(field(r.stdout, "CapPrm")).toBe(ZERO);
+    expect(field(r.stdout, "CapEff")).toBe(ZERO);
+    expect(field(r.stdout, "CapInh")).toBe(ZERO);
+    expect(field(r.stdout, "CapAmb")).toBe(ZERO);
+    expect(field(r.stdout, "NoNewPrivs")).toBe("1");
+  });
+
+  it("does the cd after the switch (a home only core could enter), and rebuilds the env", () => {
+    const base = publicDir("core-cwd-real-");
+    const dashed = path.join(base, "-dash dir");
+    fs.mkdirSync(dashed, { mode: 0o700 });
+    fs.chownSync(dashed, CORE_UID, CORE_GID);
+    const pwd = runAsCoreFromDaemon(coreSpec("/bin/pwd", [], dashed, "/tmp"));
+    expect(pwd.stderr).toBe("");
+    expect(pwd.status).toBe(0);
+    expect(pwd.stdout.trim()).toBe(fs.realpathSync(dashed));
+
+    const env = runAsCoreFromDaemon(coreSpec("/usr/bin/env", [], dashed, "/home/core"));
+    expect(env.stderr).toBe("");
+    expect(env.stdout).toContain("HOME=/home/core\n");
+    expect(env.stdout).toContain("USER=core\n");
+    expect(env.stdout).not.toContain("AC_USER_DATA_DIR");
+    expect(env.stdout).not.toContain("/var/lib/actana");
+  });
+
+  it("the child cannot give itself back the daemon's ids: the capabilities are gone", () => {
+    const r = runAsCoreFromDaemon(
+      coreSpec("/usr/bin/setpriv", [`--reuid=${DAEMON_UID}`, "/bin/true"], undefined, "/tmp"),
+    );
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toMatch(/not permitted|setresuid/i);
+  });
+
+  it("coreKillSpec reaches a core process the daemon itself cannot signal", async () => {
+    const spec = coreSpec("/bin/sleep", ["30"], undefined, "/tmp");
+    const child = spawn(SETPRIV!, asDaemon([spec.command, ...spec.args]), {
+      cwd: "/",
+      env: spec.env,
+      stdio: "ignore",
+    });
+    const pid = child.pid as number;
+    const exited = new Promise<string | null>((resolve) => child.on("exit", (_c, signal) => resolve(signal)));
+    try {
+      // Wait until it has become core's, so the signal is aimed at the right thing.
+      const deadline = Date.now() + 5_000;
+      let uid = "";
+      while (Date.now() < deadline) {
+        uid = /^Uid:\s*(\d+)/m.exec(fs.readFileSync(`/proc/${pid}/status`, "utf8"))?.[1] ?? "";
+        if (uid === String(CORE_UID)) break;
+        await new Promise((r) => setTimeout(r, 50));
+      }
+      expect(uid).toBe(String(CORE_UID));
+
+      // The daemon's own kill(2): refused, and the child is still there.
+      const direct = run(asDaemon(["/bin/sh", "-c", 'kill -s KILL "$1"', "sh", String(pid)]));
+      expect(direct.status).not.toBe(0);
+      expect(direct.stderr).toMatch(/not permitted/i);
+      expect(fs.existsSync(`/proc/${pid}`)).toBe(true);
+
+      // Through the wrapper: delivered.
+      const kill = coreKillSpec(pid, "SIGKILL", {
+        identityEnv: { AC_CORE_HOME: "/tmp", AC_CORE_UID: String(CORE_UID), AC_CORE_GID: String(CORE_GID) },
+      });
+      const r = run(asDaemon([kill.command, ...kill.args]), kill.env);
+      expect(r.stderr).toBe("");
+      expect(r.status).toBe(0);
+      expect(await exited).toBe("SIGKILL");
+    } finally {
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        /* already gone */
+      }
+    }
   });
 });

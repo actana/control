@@ -123,36 +123,70 @@ export function coreShell(env: NodeJS.ProcessEnv = process.env): string | null {
 // ─── the child's environment ──────────────────────────────────────────
 
 /**
- * Variables that describe the daemon's own state or secrets. A Session never
- * gets them: the daemon's state is the one thing `core` must not reach.
+ * The whole `AC_` namespace is the daemon's own configuration: where its state
+ * is, its keys and secrets, the Panel's database, the link's host and port. It is
+ * dropped as a namespace and not variable by variable, so a variable a later PR
+ * adds (PR 1's state path, the Shared-folder key) is private by default. The one
+ * exception is `AC_HOOK_`, which is what a Session's hook commands read back to
+ * the daemon's loopback receiver.
  */
-const DAEMON_PRIVATE_ENV = /^AC_(USER_DATA_DIR|SECRETS_KEY|HARNESS_MATERIAL_FILE|CORE_(MATERIAL_FILE|HOME|UID|GID)|PANEL_.*)$/;
+function isDaemonNamespace(key: string): boolean {
+  return key.startsWith("AC_") && !key.startsWith("AC_HOOK_");
+}
 
 /** Identity variables `asCore` sets itself, so the daemon's values can never reach the child. */
 const REBUILT_ENV = ["HOME", "USER", "LOGNAME", "SHELL", "PATH", "NPM_CONFIG_PREFIX", "PWD", "OLDPWD"];
 
 const DEFAULT_CHILD_PATH = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"];
 
+/** The daemon's state directory in the image (issue 559). A value that mentions it never reaches a child. */
+export const DAEMON_STATE_DIR = "/var/lib/actana";
+
+/**
+ * Paths that are the daemon's: its state directory, its own HOME and the
+ * directories of the state variables it was started with. A second net under the
+ * name rule: a variable with an unexpected name (`XDG_STATE_HOME`, a tool's
+ * `FOO_CACHE`) that points into the daemon's state is dropped by value.
+ */
+function daemonPaths(identity: CoreIdentity, ...envs: NodeJS.ProcessEnv[]): string[] {
+  const found = new Set<string>([DAEMON_STATE_DIR]);
+  for (const env of envs) {
+    for (const value of [env.HOME, env.AC_USER_DATA_DIR, env.AC_CORE_MATERIAL_FILE && path.posix.dirname(env.AC_CORE_MATERIAL_FILE)]) {
+      if (typeof value === "string" && path.posix.isAbsolute(value)) found.add(value.replace(/\/+$/, ""));
+    }
+  }
+  // A path that is, or contains, core's own home is not the daemon's secret.
+  return [...found].filter(
+    (dir) => dir.length > 1 && dir !== identity.home && !identity.home.startsWith(`${dir}/`),
+  );
+}
+
 /**
  * The environment a child gets in container mode.
  *
  * Built from `base` (what the caller meant the child to have, never
- * `process.env` implicitly) with the daemon-private variables removed and the
- * identity ones set for `core`: HOME, USER, LOGNAME, SHELL, and a PATH that
- * leads with core's own `~/.local/bin`, where the Harness CLIs are installed.
+ * `process.env` implicitly), and it **fails closed**: the `AC_` namespace is
+ * dropped except `AC_HOOK_`, any value that mentions the daemon's state
+ * directory, its HOME or its state variables' directories is dropped, and the
+ * identity variables are set for `core`: HOME, USER, LOGNAME, SHELL, and a PATH
+ * that leads with core's own `~/.local/bin`, where the Harness CLIs are
+ * installed. `daemonEnv` is only read to learn which paths are the daemon's.
  */
 export function coreChildEnv(
   identity: CoreIdentity,
   base: NodeJS.ProcessEnv = {},
+  daemonEnv: NodeJS.ProcessEnv = process.env,
 ): Record<string, string> {
+  const statePaths = daemonPaths(identity, base, daemonEnv);
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(base)) {
     if (typeof value !== "string") continue;
-    if (DAEMON_PRIVATE_ENV.test(key) || REBUILT_ENV.includes(key)) continue;
+    if (isDaemonNamespace(key) || REBUILT_ENV.includes(key)) continue;
+    if (statePaths.some((dir) => value.includes(dir))) continue;
     out[key] = value;
   }
   const localBin = path.posix.join(identity.home, ".local", "bin");
-  const inherited = (base.PATH ?? "").split(":").filter(Boolean);
+  const inherited = (base.PATH ?? "").split(":").filter(Boolean).filter((entry) => !statePaths.some((dir) => entry.includes(dir)));
   const pathEntries = inherited.length > 0 ? inherited : DEFAULT_CHILD_PATH;
   out.PATH = [localBin, ...pathEntries.filter((entry) => entry !== localBin)].join(":");
   out.HOME = identity.home;
