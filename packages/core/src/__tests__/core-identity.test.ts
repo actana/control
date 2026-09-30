@@ -47,7 +47,7 @@ describe("killAsCore in container mode", () => {
   it("never signals itself: the wrapped kill runs as core instead", () => {
     const kill = vi.fn();
     const spy = vi.spyOn(process, "kill").mockImplementation(() => true);
-    const run = vi.fn(() => ({ status: 0, stderr: "" }));
+    const run = vi.fn((_spec: { command: string; args: string[] }) => ({ status: 0, stderr: "" }));
     expect(killAsCore({ pid: 4242, kill }, "SIGKILL", { identityEnv: CONTAINER, exists, run })).toBe(true);
     expect(kill).not.toHaveBeenCalled();
     expect(spy).not.toHaveBeenCalled();
@@ -58,7 +58,7 @@ describe("killAsCore in container mode", () => {
   });
 
   it("signals a process group with a negative pid", () => {
-    const run = vi.fn(() => ({ status: 0, stderr: "" }));
+    const run = vi.fn((_spec: { command: string; args: string[] }) => ({ status: 0, stderr: "" }));
     killAsCore(-4242, "SIGTERM", { identityEnv: CONTAINER, exists, run });
     expect(run.mock.calls[0]![0].args.slice(-2)).toEqual(["TERM", "-4242"]);
   });
