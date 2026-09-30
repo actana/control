@@ -51,7 +51,7 @@ import {
   type CoreLinkHarnessAvailability,
   type CoreLinkHarnessAvailabilityMap,
   type CoreLinkHarnessInstallFailedPayload,
-} from "@actana/sdk/core-link-frames.ts";
+} from "@actana/sdk/core";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";

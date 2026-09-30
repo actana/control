@@ -40,7 +40,7 @@ import { parseTransferTarget, remoteDirectorySource } from "./project-file-targe
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";
-import type { CoreFileEntry, CoreFileListOptions } from "@actana/sdk/core-files.ts";
+import type { CoreFileEntry, CoreFileListOptions } from "@actana/sdk/core";
 
 /** The same dial deadline every other noun uses. */
 const LIST_TIMEOUT_MS = 30_000;

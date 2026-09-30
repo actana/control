@@ -33,13 +33,13 @@
 // methods — no `CoreClient`, no `CoreSession`, no frames escape it. That is
 // what keeps `session-command.ts` free of the SDK and free of a socket.
 
-import { CoreClient } from "@actana/sdk/core-client.ts";
+import { CoreClient } from "@actana/sdk/core";
 import {
   CoreSession,
   CoreSessionAttachError,
   HARNESS_LAUNCH_COMMANDS,
-} from "@actana/sdk/core-session.ts";
-import { TerminalScreen, DEFAULT_COLS, DEFAULT_ROWS } from "@actana/sdk/terminal-screen.ts";
+} from "@actana/sdk/core";
+import { TerminalScreen, DEFAULT_COLS, DEFAULT_ROWS } from "@actana/sdk/core";
 import { harnessResumeCommand } from "./harness-resume.ts";
 import {
   SESSION_PROMPT_ABANDONED_EVENT_KIND,
@@ -51,8 +51,8 @@ import {
   type CoreLinkSessionPromptAbandonedPayload,
   type CoreLinkSessionPromptDeliveredPayload,
   type CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+} from "@actana/sdk/core";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 
 /** The harnesses this build knows, in the order `--help` lists them. */
 export const KNOWN_HARNESSES: readonly CoreLinkPtySpawnHarness[] = Object.keys(

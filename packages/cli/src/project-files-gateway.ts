@@ -33,14 +33,14 @@
 // `CoreClient`, no `CoreProject`, and no `CoreFilesError` escapes — which is
 // what keeps `project-cp.ts` free of the SDK, and free of a socket.
 
-import { CoreClient } from "@actana/sdk/core-client.ts";
+import { CoreClient } from "@actana/sdk/core";
 import {
   CoreFilesConflictError,
   CoreFilesRequestError,
   CoreFilesStreamError,
   CoreFilesUnavailableError,
-} from "@actana/sdk/core-files-http.ts";
-import type { CoreFiles } from "@actana/sdk/core-files.ts";
+} from "@actana/sdk/core";
+import type { CoreFiles } from "@actana/sdk/core";
 import type {
   CoreFileDownload,
   CoreFileDownloadOptions,
@@ -48,9 +48,9 @@ import type {
   CoreFileListOptions,
   CoreFileProgress,
   CoreFileUploadOptions,
-} from "@actana/sdk/core-files.ts";
-import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+} from "@actana/sdk/core";
+import type { CoreLinkProjectSnapshot } from "@actana/sdk/core";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 
 /**
  * What went wrong, in a vocabulary the verbs can turn into a message and an

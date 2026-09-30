@@ -83,7 +83,7 @@ import type { ActanaServiceManager } from "./actana-service.ts";
 import type { CoreManifest } from "./actana-manifest.ts";
 import type { ActanaSystem } from "./actana-system.ts";
 import type { Harness } from "@actana/shared/domain";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
 
 /** Bearer validity. The Panel re-handshakes on expiry; a year is a long lease. */
 const BEARER_DAYS = 365;

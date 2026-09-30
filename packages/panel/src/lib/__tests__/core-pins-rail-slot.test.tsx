@@ -27,7 +27,7 @@
 // milliseconds, so each read observed is a mount-, event- or caller-driven one.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, renderHook, waitFor } from "@testing-library/react";
-import type { CoreLinkProjectSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkProjectSnapshot } from "@actana/sdk/core";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { ProjectPresentation } from "~/db/schema";
 import type { ProjectWithCounts } from "~/shared/projects";

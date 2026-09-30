@@ -63,14 +63,14 @@
 // different at a terminal is a command no script can trust.
 
 import {
-  CorePairingError,
+  PairingError,
   fetchCorePairingIdentity,
   pairWithCore,
   parsePairingTicket,
   type CorePairingIdentity,
   type PairWithCoreOptions,
-} from "@actana/sdk/core-pairing.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+} from "@actana/sdk/pairing";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 import {
   coreBlobPath,
   coreExists,
@@ -337,7 +337,7 @@ function readTicket(deps: ActanaCliDeps, code: string, session: string | null): 
     return { ok: true, sessionId: ticket.sessionId, code: ticket.code };
   } catch (err) {
     // Every remaining `bad-code` is a shape, the ids having been checked above.
-    if (err instanceof CorePairingError && err.failure === "bad-code") return { ok: false, exit: badCode(deps) };
+    if (err instanceof PairingError && err.failure === "bad-code") return { ok: false, exit: badCode(deps) };
     throw err;
   }
 }
@@ -458,12 +458,12 @@ async function confirmFingerprint(
 /**
  * Turn a failed pairing into one sentence, one next step and one exit code.
  *
- * Everything but a `CorePairingError` is a defect rather than an operator
+ * Everything but a `PairingError` is a defect rather than an operator
  * error, and it is reported as {@link EXIT_FAILURE} without a next step to
  * offer: there is nothing for an operator to do differently about a bug here.
  */
 function reportPairingFailure(deps: ActanaCliDeps, err: unknown): number {
-  if (!(err instanceof CorePairingError)) {
+  if (!(err instanceof PairingError)) {
     const message = err instanceof Error ? err.message : String(err);
     return refuse(deps, {
       plain: [`actana core pair: pairing failed — ${message}`],

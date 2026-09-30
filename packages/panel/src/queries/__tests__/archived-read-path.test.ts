@@ -1,6 +1,6 @@
 import { QueryClient } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
 
 /**
  * Where the Archived view's contents come from, per owner (ADR 0019).

@@ -30,7 +30,7 @@ import {
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import type { CoreQueryPort } from "./pty-core-link-server";
 
 export type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot, CoreQueryPort };

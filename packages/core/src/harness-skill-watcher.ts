@@ -22,8 +22,8 @@
 // mean every Core wrote the skill twice on every start.
 
 import log from "@actana/shared/log";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
-import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core";
+import { HARNESSES_AVAILABILITY_EVENT_KIND } from "@actana/sdk/core";
 
 export type HarnessSkillWatcherOptions = {
   /** Write or repair the copies. Called with no arguments; the Core supplies home. */

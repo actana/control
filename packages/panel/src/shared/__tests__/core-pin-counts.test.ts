@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
 import { corePinTaskCounts } from "../core-pin-counts";
 import { emptyTaskCounts, type ProjectTaskCounts } from "../projects";
 

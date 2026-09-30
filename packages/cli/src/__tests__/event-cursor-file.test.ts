@@ -14,7 +14,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import * as path from "node:path";
-import { coreLinkCursorStorageKey } from "@actana/sdk/core-link-cursor-storage.ts";
+import { coreLinkCursorStorageKey } from "@actana/sdk/core";
 import { FileCursorStorage, storedCursorFor } from "../event-cursor-file.ts";
 
 let root: string | null = null;

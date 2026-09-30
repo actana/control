@@ -131,8 +131,8 @@ import {
 } from "./event-cursor-file.ts";
 import { trackEventTip } from "./event-tip.ts";
 import { EXIT_FAILURE, EXIT_OK, EXIT_USAGE } from "./exit-codes.ts";
-import type { CoreLinkCursorStorage } from "@actana/sdk/core-link-cursor-storage.ts";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkCursorStorage } from "@actana/sdk/core";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 import type { RegistryPaths } from "./blob-registry.ts";
 import type { ActanaCliDeps } from "./cli-deps.ts";
 import type { ParsedArgs } from "./cli-args.ts";

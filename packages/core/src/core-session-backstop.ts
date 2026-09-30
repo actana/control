@@ -113,7 +113,7 @@ import {
   clearSubagentActivity,
   noteTaskFinished,
 } from "@actana/shared/subagent-activity";
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/sdk/core";
 import type { CoreTaskWriter } from "./core-task-writer";
 
 /**

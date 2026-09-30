@@ -9,7 +9,7 @@ import type {
   CoreLinkSessionSnapshot,
   CoreLinkTaskMutation,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 import type { CoreLinkAnswer as Answer } from "~/shared/panel-link";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { PanelSessionLock } from "~/shared/session-write-access";

@@ -48,7 +48,7 @@ import {
   rejectUnauthorizedAtHandshake,
   type PreAuthPathPredicate,
 } from "./core-preauth-gate";
-import { certSerialFromBearerSubject, type PairingRevocations } from "./core-pairing-revocation";
+import { certSerialFromBearerSubject, type CoreRevocations } from "./core-revocation-port";
 import type { WebSocketServer, WebSocket } from "ws";
 import {
   CORE_LINK_PROTOCOL_VERSION,
@@ -75,7 +75,7 @@ import {
   type CoreLinkTaskMutation,
   type CoreLinkTaskSnapshot,
   type CoreLinkLaunchProcessKillResult,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 // Re-export the snapshot types so tests / callers can import them from the
 // server module alongside {@link CoreQueryPort} (the per-Core navigation
 // query port, issue 07).
@@ -488,7 +488,7 @@ export type PtyCoreLinkServerOptions = {
    * `core-entry.ts`'s job (`startPairingRevocationSweep`), and a server that
    * owned a timer would be a server every test had to stop.
    */
-  revocation?: PairingRevocations;
+  revocation?: CoreRevocations;
 };
 
 /**
@@ -674,7 +674,7 @@ export class PtyCoreLinkServer {
   private readonly announceMultiConnection: boolean;
   private readonly announceFiles: boolean;
   /** This Core's revoked pairings, or null when it has no pairing surface. */
-  private readonly revocation: PairingRevocations | null;
+  private readonly revocation: CoreRevocations | null;
   /**
    * The one seam every task-row change goes through — the Panel's
    * `tasksMutate` frame below and the Core's own writers (hook receiver, PTY
@@ -2115,7 +2115,7 @@ export class PtyCoreLinkServer {
    *
    * **It takes no list and asks the authority instead.** Being handed the
    * newly-named serials would miss the change that matters most: when the
-   * pairing store cannot be read, `PairingRevocations` revokes *every* pairing
+   * pairing store cannot be read, `CoreRevocations` revokes *every* pairing
    * at once and there are no serials to hand over. Re-asking per connection
    * makes both cases one code path, and makes this method's answer always the
    * same answer the gates would give the same client at the door.

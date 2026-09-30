@@ -1,4 +1,4 @@
-import type { CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkTaskSnapshot } from "@actana/shared/sdk-link-frames";
 import {
   coreTaskCountsByProject,
   emptyTaskCounts,

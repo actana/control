@@ -21,7 +21,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { decodeRegistrationBlobText } from "./registration-blob-file.ts";
 import { loadCoreBlob, readCurrentCore, type RegistryPaths } from "./blob-registry.ts";
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 
 /** The environment variable that puts the CLI in single-Core mode. */
 export const CORE_BLOB_ENV = "ACTANA_CORE_BLOB";

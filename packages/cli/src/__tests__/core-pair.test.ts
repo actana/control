@@ -21,7 +21,7 @@ import { displayWidth, FRAME_WIDTH } from "../cli-frame.ts";
 import { corePairingOutcome, corePairSuccessBlock } from "../core-pair-results.ts";
 import { wrapText } from "../cli-frame.ts";
 import { resolveCore } from "../core-resolution.ts";
-import { CorePairingError, type CorePairingFailure } from "@actana/sdk/core-pairing.ts";
+import { PairingError, type PairingFailure } from "@actana/sdk/pairing";
 import {
   EXIT_FAILURE,
   EXIT_OK,
@@ -245,7 +245,7 @@ describe("actana core pair — refusals", () => {
     // The table is the acceptance criterion, and it is a table rather than
     // fifteen `it`s because what is being asserted is that the *set* is covered
     // and that no two members answer with the same number.
-    const expected: Array<[CorePairingFailure, number]> = [
+    const expected: Array<[PairingFailure, number]> = [
       ["bad-address", EXIT_USAGE],
       ["unreachable", EXIT_PAIR_UNREACHABLE],
       ["not-pairable", EXIT_PAIR_NOT_PAIRABLE],
@@ -286,7 +286,7 @@ describe("actana core pair — refusals", () => {
   it("reports a failure on the unverified dial the same way, with nothing sent", async () => {
     const system = fakeSystem();
     const pairing = fakePairing({
-      identifyFails: new CorePairingError("unreachable", "https://core.test:8443 could not be reached"),
+      identifyFails: new PairingError("unreachable", "https://core.test:8443 could not be reached"),
     });
     const run = await cli().run(["core", "pair", "prod", "core.test:8443", CODE, "--session", SESSION], {
       pairing,
@@ -296,7 +296,7 @@ describe("actana core pair — refusals", () => {
     expect(pairing.paired).toEqual([]);
   });
 
-  it("treats anything that is not a CorePairingError as a defect, not an operator error", async () => {
+  it("treats anything that is not a PairingError as a defect, not an operator error", async () => {
     const pairing = fakePairing({ failsWith: new TypeError("cannot read properties of undefined") });
     const run = await cli().run(pairArgv(), { pairing });
     expect(run.code).toBe(EXIT_FAILURE);
@@ -405,7 +405,7 @@ describe("actana core pair — the command line", () => {
     // would put the code on stderr through the one route the header's rule does
     // not cover.
     const pairing = fakePairing({
-      failsWith: new CorePairingError(
+      failsWith: new PairingError(
         "bad-code",
         `a pairing code is eight characters, written XXXX-XXXX — "${CODE}" is not`,
       ),
@@ -545,7 +545,7 @@ function sparePairArgv(): string[] {
 }
 
 /** Every failure the SDK distinguishes and that a fake Core can be told to raise. */
-const SDK_FAILURES: CorePairingFailure[] = [
+const SDK_FAILURES: PairingFailure[] = [
   "bad-address",
   // Both added after #366 review 8. `fingerprint-unconfirmed` the fake has
   // always been able to raise — the older table below proves it — and
@@ -961,10 +961,10 @@ describe("actana core pair, at a terminal", () => {
   // on this screen whose whole subject is a value compared character by
   // character. Built here to the SDK's own format rather than imported, so a
   // change to that format shows up as a diff a reader has to look at.
-  function sdkFingerprintMismatch(): CorePairingError {
+  function sdkFingerprintMismatch(): PairingError {
     const presented = PAIRED_FINGERPRINT;
     const expected = PAIRED_FINGERPRINT.split(":").reverse().join(":");
-    return new CorePairingError(
+    return new PairingError(
       "fingerprint-mismatch",
       `https://core.test:8443 presented a certificate authority with fingerprint ${presented}, ` +
         `but ${expected} was expected — the pairing code was not sent`,

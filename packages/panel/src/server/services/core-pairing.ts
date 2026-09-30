@@ -1,11 +1,11 @@
 import { hostname } from "node:os";
 import {
-  CorePairingError,
+  PairingError,
   fetchCorePairingIdentity,
   pairWithCore,
   parseCoreAddress,
-  type CorePairingFailure,
-} from "@actana/sdk/core-pairing";
+  type PairingFailure,
+} from "@actana/sdk/pairing";
 import { CoreRegistryError, coreRegisteredAt, registerCoreFromCredential } from "./cores";
 import {
   pairingFailureMessage,
@@ -59,7 +59,7 @@ export const PANEL_PAIRING_CLIENT_LABEL = `actana-panel ${hostname()}`;
  * only place that can see both.
  */
 type SameUnion<A, B> = [A] extends [B] ? ([B] extends [A] ? true : never) : never;
-const _failureUnionsMatch: SameUnion<CorePairingFailure, CorePairingFailureCode> = true;
+const _failureUnionsMatch: SameUnion<PairingFailure, CorePairingFailureCode> = true;
 void _failureUnionsMatch;
 
 /**
@@ -186,7 +186,7 @@ function refuseIfAlreadyRegistered(address: string): void {
  * Neither has any business in a response, so neither is copied.
  */
 function refusalFrom(err: unknown): CorePairingRefusedError {
-  if (!(err instanceof CorePairingError)) throw err;
+  if (!(err instanceof PairingError)) throw err;
   const failure: CorePairingFailureCode = err.failure;
   const detail: CorePairingRefusalDetail = {};
   if (err.detail.expectedFingerprint) detail.expectedFingerprint = err.detail.expectedFingerprint;

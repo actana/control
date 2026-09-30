@@ -10,8 +10,6 @@ export default defineConfig({
     alias: {
       // Same mapping as tsconfig's `paths` — Core reaches its siblings by
       // package name (ADR 0016 D3), and vitest needs telling where they live.
-      // The core-link frames are in `@actana/sdk` (ADR 0025).
-      "@actana/sdk": path.resolve(__dirname, "../sdk/src"),
       "@actana/shared": path.resolve(__dirname, "../shared/src"),
       // This package, by its own name. Only the shared listing contract
       // (#218) needs it: that spec is written for both suites, so it reaches

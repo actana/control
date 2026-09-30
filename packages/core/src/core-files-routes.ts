@@ -35,7 +35,7 @@ import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import * as path from "node:path";
-import type { CoreFilesErrorCode } from "@actana/sdk/core-files-error-codes";
+import type { CoreFilesErrorCode } from "@actana/sdk/core";
 import { confineToProjectRoot, confineWriteTarget, freeSpaceBytes } from "./files-confinement";
 import { listTree, type FileListingOptions } from "./files-listing";
 import { packDirectory, TarError, unpackTarInto, type TarEntryReport, type TarWriteOutcome } from "./files-tar";
@@ -111,7 +111,7 @@ export type CoreHttpRoutes = {
 // Re-exported because this module already exported the type and a consumer may
 // be naming it from here. A re-export is not a second copy: it cannot disagree
 // with what it aliases.
-export type { CoreFilesErrorCode } from "@actana/sdk/core-files-error-codes";
+export type { CoreFilesErrorCode } from "@actana/sdk/core";
 
 type Refusal = { status: number; code: CoreFilesErrorCode; message: string };
 

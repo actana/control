@@ -13,7 +13,7 @@
 // exactly the line somebody adds without thinking.
 
 import { describe, it, expect, afterEach } from "vitest";
-import { CorePairingError } from "@actana/sdk/core-pairing.ts";
+import { PairingError } from "@actana/sdk/pairing";
 import {
   fakeAttachment,
   fakePairing,
@@ -147,7 +147,7 @@ describe("no verb prints a blob, with --verbose on", () => {
         {
           pairing: fakePairing({
             fingerprint,
-            failsWith: new CorePairingError(
+            failsWith: new PairingError(
               "bad-code",
               `a pairing code is eight characters, written XXXX-XXXX — "${CODE}" is not`,
             ),

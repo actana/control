@@ -14,7 +14,7 @@ import {
   setCorePinsCores,
   subscribeCorePins,
 } from "~/lib/core-pins-engine";
-import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/sdk/core-link-frames";
+import type { CoreLinkProjectSnapshot, CoreLinkTaskSnapshot } from "@actana/shared/sdk-link-frames";
 import type { Harness } from "@actana/shared/domain";
 import { coreOrder, type CoreWithDial } from "~/shared/cores";
 import { subscribeCoreProjectEvents } from "~/lib/subscribe-core-project-events";

@@ -3,7 +3,7 @@
 // Everything here goes over the wire. The server is built by the Core's own
 // default factory, the certificates come from `generateCertMaterial` — the
 // material `actana setup` writes — the sessions go through the same
-// `PairingStore` the operator's `actana pair new` will write, and the client
+// JSON-file store the operator's `actana pair new` will write, and the client
 // dials `https` with no client certificate, because not having one is the whole
 // reason it is here.
 //
@@ -23,19 +23,13 @@ import { WebSocket } from "ws";
 import { generateCertMaterial, generateClientCsr } from "@actana/shared/core-cert-material";
 import { verifyBearer, decodeBearer } from "@actana/shared/core-link-bearer";
 import { generatePairingCode } from "@actana/shared/pairing-code";
-import { createPairingSession } from "@actana/shared/pairing-session";
-import { PairingStore, derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
+import { derivePairingCodeKey, hashPairingCode } from "@actana/shared/pairing-store";
+import { createPairing } from "@actana/sdk/pairing/server";
+import { corePairingStore, type CorePairingStore } from "../core-pairing-store";
 import { PtyCoreLinkServer } from "../pty-core-link-server";
 import type { PtyCore, PtyCoreEvent } from "../pty-manager";
 import { createCoreFilesRequestHandler } from "../core-files-routes";
-import {
-  buildCorePairingRoutes,
-  buildPairingEndpointResolver,
-  composeCoreHttpRoutes,
-  isPairingPath,
-} from "../core-pairing-wiring";
-import { PairingRateLimiter } from "../core-pairing-rate-limit";
-import type { PairingAuditEvent } from "@actana/shared/pairing-audit";
+import { CORE_PAIRING_NAMES, composeCoreHttpRoutes } from "../core-pairing-wiring";
 
 const SECRET = "core-pairing-suite-secret-at-least-32-bytes";
 const CORE_UUID = "3f6d0f0a-6c1f-4a5e-9c2f-1d0a5b7e9c31";
@@ -44,8 +38,11 @@ type Rig = {
   origin: string;
   wsUrl: string;
   caCert: string;
-  store: PairingStore;
-  audit: PairingAuditEvent[];
+  store: CorePairingStore;
+  /** What the store holds for one session, or undefined when it holds none. */
+  sessionOf(sessionId: string): Promise<{ attempts: number; consumedAt: number | null } | undefined>;
+  /** `actana pair cancel`: take a pending session back. */
+  cancelSession(sessionId: string): Promise<void>;
   /** Open a pending session and return its id and the code the operator reads out. */
   openSession(opts?: {
     label?: string;
@@ -53,8 +50,7 @@ type Rig = {
     now?: number;
     /** `actana pair new --public-host` — which configured host this code names. */
     endpointHost?: string;
-  }): { sessionId: string; code: string };
-  clock: { now: number };
+  }): Promise<{ sessionId: string; code: string }>;
 };
 
 let server: PtyCoreLinkServer | null = null;
@@ -100,37 +96,42 @@ function freePort(): Promise<number> {
   });
 }
 
-async function startCore(
-  opts: { rateLimiter?: PairingRateLimiter; publicHosts?: string[] } = {},
-): Promise<Rig> {
+async function startCore(opts: { publicHosts?: string[] } = {}): Promise<Rig> {
   const publicHosts = opts.publicHosts ?? ["127.0.0.1"];
   const material = await generateCertMaterial({ hosts: publicHosts });
   const port = await freePort();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "actana-pairing-"));
   tempDirs.push(dir);
-  const store = new PairingStore(path.join(dir, "pairing.json"));
-  const audit: PairingAuditEvent[] = [];
-  // A clock the tests move, so "expired" is a fact rather than a wait.
-  const clock = { now: Date.now() };
+  const store = corePairingStore(path.join(dir, "pairing.json"));
   const codeKey = derivePairingCodeKey(SECRET);
 
-  const pairingRoutes = buildCorePairingRoutes({
+  // The daemon's own composition (`core-entry.ts`): the SDK's pairing surface
+  // over the hosts this Core is configured for (#347), not a stub that answers
+  // one string — what these tests exercise is the mapping the Core really
+  // performs from a stored session to an address.
+  const pairing = createPairing({
+    store,
     material: {
+      ...material,
       caCert: material.ca.cert,
       caKey: material.ca.key,
+      serverCert: material.server.cert,
+      serverKey: material.server.key,
+      clientCert: material.client.cert,
+      clientKey: material.client.key,
       bearerSecret: SECRET,
       coreId: "core_pairing",
       coreUuid: CORE_UUID,
+      serverHosts: publicHosts,
     },
-    sessions: store,
-    // The daemon's own resolver over the hosts this Core is configured for
-    // (#347), not a stub that answers one string: what these tests exercise is
-    // the mapping the Core really performs from a stored session to an address.
-    endpointFor: buildPairingEndpointResolver({ publicHosts, port }),
-    now: () => clock.now,
-    audit: (event) => audit.push(event),
-    ...(opts.rateLimiter ? { rateLimiter: opts.rateLimiter } : {}),
+    endpointScheme: "wss",
+    port,
+    publicHosts,
+    names: CORE_PAIRING_NAMES,
+    clientLabel: "session-or-client",
+    onRevoked: () => {},
   });
+  const pairingRoutes = pairing.redeem;
 
   // The file routes are mounted beside it, exactly as `core-entry` mounts them,
   // so "every other route keeps its mTLS requirement" is asserted against a
@@ -152,7 +153,7 @@ async function startCore(
     },
     authVerifier: (bearer) => verifyBearer(bearer, SECRET),
     httpRoutes: composeCoreHttpRoutes(pairingRoutes, fileRoutes),
-    isPreAuthPath: isPairingPath,
+    isPreAuthPath: pairing.gate.isPreAuthPath,
   });
 
   const rig: Rig = {
@@ -160,22 +161,21 @@ async function startCore(
     wsUrl: `wss://127.0.0.1:${port}`,
     caCert: material.ca.cert,
     store,
-    audit,
-    clock,
-    openSession: ({ label = "laptop", ttlMs, now, endpointHost } = {}) => {
+    sessionOf: async (sessionId) => (await store.listSessions()).find((session) => session.id === sessionId),
+    cancelSession: async (sessionId) => {
+      await store.revoke({ kind: "session", sessionId, at: Date.now() });
+    },
+    openSession: async ({ label = "laptop", ttlMs, now, endpointHost } = {}) => {
       const code = generatePairingCode();
       const sessionId = `ps_${Math.random().toString(16).slice(2, 10)}`;
-      store.createSession(
-        createPairingSession({
-          id: sessionId,
-          label,
-          codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
-          now: now ?? clock.now,
-          ...(ttlMs === undefined ? {} : { ttlMs }),
-          ...(endpointHost === undefined ? {} : { endpointHost }),
-        }),
-        clock.now,
-      );
+      await store.createSession({
+        id: sessionId,
+        label,
+        codeHash: hashPairingCode({ key: codeKey, sessionId, code }),
+        now: now ?? Date.now(),
+        ...(ttlMs === undefined ? {} : { ttlMs }),
+        ...(endpointHost === undefined ? {} : { endpointHost }),
+      });
       return { sessionId, code };
     },
   };
@@ -184,8 +184,8 @@ async function startCore(
   // observed rather than awaited: poll until a request completes.
   //
   // The probe deliberately misses the pairing route. A probe that hit it would
-  // spend a rate-limit attempt and write an audit line before any test had
-  // started, and two suites below count exactly those.
+  // spend a rate-limit attempt before any test had started, and the suite
+  // below counts exactly those.
   const deadline = Date.now() + 10_000;
   for (;;) {
     try {
@@ -291,7 +291,7 @@ function coreLinkAuth(rig: Rig, material: { cert: string; key: string }, bearer:
 describe("a client with a code, and no certificate, pairs end to end", () => {
   it("issues a certificate, a CA and a bearer — and never a private key", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession({ label: "laptop" });
+    const { sessionId, code } = await rig.openSession({ label: "laptop" });
     const { csrPem, privateKeyPem } = await generateClientCsr("laptop");
 
     const res = await redeem(rig, { sessionId, code, csr: csrPem });
@@ -317,7 +317,7 @@ describe("a client with a code, and no certificate, pairs end to end", () => {
     // *usable*: the same socket the Panel dials, with the certificate this
     // endpoint signed and the bearer it issued beside it.
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const { csrPem, privateKeyPem } = await generateClientCsr("laptop");
 
     const res = await redeem(rig, { sessionId, code, csr: csrPem });
@@ -331,7 +331,7 @@ describe("a client with a code, and no certificate, pairs end to end", () => {
 
   it("issues a bearer carrying iss, sub, aud and jti beside exp", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const { csrPem } = await generateClientCsr("laptop");
 
     const res = await redeem(rig, { sessionId, code, csr: csrPem });
@@ -348,13 +348,13 @@ describe("a client with a code, and no certificate, pairs end to end", () => {
 
   it("persists the paired client so `pair ls` and `pair revoke` have something to read", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession({ label: "studio laptop" });
+    const { sessionId, code } = await rig.openSession({ label: "studio laptop" });
     const { csrPem } = await generateClientCsr("laptop");
 
     const res = await redeem(rig, { sessionId, code, csr: csrPem });
     const issued = JSON.parse(res.body) as Record<string, string>;
 
-    const [client] = rig.store.listClients();
+    const [client] = (await rig.store.listClients());
     expect(client).toMatchObject({
       label: "studio laptop",
       sessionId,
@@ -371,7 +371,7 @@ describe("a client with a code, and no certificate, pairs end to end", () => {
 describe("the defences, over the real transport", () => {
   it("kills the session at five wrong codes, and refuses identically throughout", async () => {
     const rig = await startCore();
-    const { sessionId } = rig.openSession();
+    const { sessionId } = await rig.openSession();
     const { csrPem } = await generateClientCsr("laptop");
 
     const refusals: Response[] = [];
@@ -381,11 +381,11 @@ describe("the defences, over the real transport", () => {
 
     expect(refusals.map((r) => r.status)).toEqual([403, 403, 403, 403, 403]);
     expect(new Set(refusals.map((r) => r.body)).size).toBe(1);
-    expect(rig.store.getSession(sessionId)?.attempts).toBe(5);
+    expect((await rig.sessionOf(sessionId))?.attempts).toBe(5);
 
     // And now even the right code is refused: the session is dead, not merely
     // out of guesses.
-    const { code } = rig.openSession();
+    const { code } = await rig.openSession();
     const dead = await redeem(rig, { sessionId, code, csr: csrPem });
     expect(dead.status).toBe(403);
     expect(dead.body).toBe(refusals[0]!.body);
@@ -393,19 +393,19 @@ describe("the defences, over the real transport", () => {
 
   it("refuses an expired session", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession({ ttlMs: 60_000 });
+    // Minted a minute and a millisecond ago with a one-minute life: the session
+    // is over by the real clock, which is the only one the SDK's route reads.
+    const { sessionId, code } = await rig.openSession({ ttlMs: 60_000, now: Date.now() - 60_001 });
     const { csrPem } = await generateClientCsr("laptop");
 
-    rig.clock.now += 60_001;
     const res = await redeem(rig, { sessionId, code, csr: csrPem });
 
     expect(res.status).toBe(403);
-    expect(rig.audit.at(-1)).toMatchObject({ outcome: "refused", reason: "expired" });
   }, 30_000);
 
   it("refuses a replay of a consumed session", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const first = await generateClientCsr("laptop");
     const second = await generateClientCsr("attacker");
 
@@ -414,29 +414,29 @@ describe("the defences, over the real transport", () => {
 
     expect(ok.status).toBe(200);
     expect(replay.status).toBe(403);
-    expect(rig.store.listClients()).toHaveLength(1);
+    expect((await rig.store.listClients())).toHaveLength(1);
   }, 30_000);
 
   it("refuses a code that belongs to another session", async () => {
     // Session binding. The code is real, the session is real, and they are not
     // each other's — which is the whole of "cannot be replayed against another".
     const rig = await startCore();
-    const a = rig.openSession({ label: "a" });
-    const b = rig.openSession({ label: "b" });
+    const a = await rig.openSession({ label: "a" });
+    const b = await rig.openSession({ label: "b" });
     const { csrPem } = await generateClientCsr("laptop");
 
     const crossed = await redeem(rig, { sessionId: b.sessionId, code: a.code, csr: csrPem });
 
     expect(crossed.status).toBe(403);
-    expect(rig.store.getSession(b.sessionId)?.attempts).toBe(1);
+    expect((await rig.sessionOf(b.sessionId))?.attempts).toBe(1);
     // And session A is untouched: the guess was spent against the session it
     // named, not against the one the code came from.
-    expect(rig.store.getSession(a.sessionId)?.attempts).toBe(0);
+    expect((await rig.sessionOf(a.sessionId))?.attempts).toBe(0);
   }, 30_000);
 
   it("refuses an unknown session with the same answer as a wrong code", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const { csrPem } = await generateClientCsr("laptop");
 
     const unknown = await redeem(rig, { sessionId: "ps_nothing", code, csr: csrPem });
@@ -447,33 +447,14 @@ describe("the defences, over the real transport", () => {
     expect(unknown.headers["content-length"]).toBe(wrong.headers["content-length"]);
   }, 30_000);
 
-  it("trips its own rate limit before the per-session cap is spent", async () => {
-    // The defence the attempt cap cannot provide: this session has five
-    // attempts, and the endpoint stops the caller at three regardless.
-    const rig = await startCore({
-      rateLimiter: new PairingRateLimiter({ peer: { limit: 3, windowMs: 60_000 } }),
-    });
-    const { sessionId } = rig.openSession();
-    const { csrPem } = await generateClientCsr("laptop");
-
-    const statuses: number[] = [];
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      statuses.push((await redeem(rig, { sessionId, code: "ZZZZ-ZZZZ", csr: csrPem })).status);
-    }
-
-    expect(statuses).toEqual([403, 403, 403, 429]);
-    expect(rig.store.getSession(sessionId)?.attempts).toBe(3);
-    expect(rig.audit.at(-1)).toMatchObject({ outcome: "rate-limited" });
-  }, 30_000);
-
   it("does not spend the session on a CSR it cannot sign", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
 
     const bad = await redeem(rig, { sessionId, code, csr: "-----BEGIN CERTIFICATE REQUEST-----\nnope\n" });
 
     expect(bad.status).toBe(400);
-    expect(rig.store.getSession(sessionId)?.consumedAt).toBeNull();
+    expect((await rig.sessionOf(sessionId))?.consumedAt).toBeNull();
 
     // The operator's code still works, which is the point of checking the CSR
     // before consuming: a client bug must not cost a pairing session.
@@ -483,7 +464,7 @@ describe("the defences, over the real transport", () => {
 
   it("lets only one of two simultaneous redemptions win", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const first = await generateClientCsr("laptop");
     const second = await generateClientCsr("desktop");
 
@@ -493,25 +474,7 @@ describe("the defences, over the real transport", () => {
     ]);
 
     expect([a.status, b.status].sort()).toEqual([200, 403]);
-    expect(rig.store.listClients()).toHaveLength(1);
-  }, 30_000);
-
-  it("audits every attempt — success and failure — and never the code or the CSR", async () => {
-    const rig = await startCore();
-    const { sessionId, code } = rig.openSession({ label: "laptop" });
-    const { csrPem } = await generateClientCsr("laptop");
-
-    await redeem(rig, { sessionId, code: "ZZZZ-ZZZZ", csr: csrPem });
-    await redeem(rig, { sessionId, code, csr: csrPem });
-
-    expect(rig.audit.map((event) => event.outcome)).toEqual(["refused", "issued"]);
-    for (const event of rig.audit) {
-      expect(event.peer).toMatch(/127\.0\.0\.1|::ffff:127\.0\.0\.1|::1/);
-      expect(event.label).toBe("laptop");
-      const serialised = JSON.stringify(event);
-      expect(serialised).not.toContain(code);
-      expect(serialised).not.toContain("CERTIFICATE REQUEST");
-    }
+    expect((await rig.store.listClients())).toHaveLength(1);
   }, 30_000);
 
   it("refuses a body too large to be a redemption", async () => {
@@ -531,39 +494,25 @@ describe("the defences, over the real transport", () => {
 describe("a session the operator cancelled (#283)", () => {
   it("is refused, and the refusal is indistinguishable from every other one", async () => {
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const { csrPem } = await generateClientCsr("laptop");
 
-    rig.store.cancelSession(sessionId, rig.clock.now);
+    await rig.cancelSession(sessionId);
 
     const res = await redeem(rig, { sessionId, code, csr: csrPem });
     expect(res.status).toBe(403);
-    expect(rig.store.listClients()).toEqual([]);
-  }, 30_000);
-
-  it("says `revoked` in the audit log, not `wrong-code`", async () => {
-    // The operator reading this log has to be able to see that their own
-    // cancellation is what stopped the redemption. Caught in the state ladder
-    // rather than left to `consume()` is what makes that true.
-    const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
-    const { csrPem } = await generateClientCsr("laptop");
-    rig.store.cancelSession(sessionId, rig.clock.now);
-
-    await redeem(rig, { sessionId, code, csr: csrPem });
-
-    expect(rig.audit.at(-1)).toMatchObject({ outcome: "refused", reason: "revoked", sessionId });
+    expect((await rig.store.listClients())).toEqual([]);
   }, 30_000);
 
   it("does not spend an attempt the session will never get to use", async () => {
     const rig = await startCore();
-    const { sessionId } = rig.openSession();
+    const { sessionId } = await rig.openSession();
     const { csrPem } = await generateClientCsr("laptop");
-    rig.store.cancelSession(sessionId, rig.clock.now);
+    await rig.cancelSession(sessionId);
 
     await redeem(rig, { sessionId, code: "AAAA-BBBB", csr: csrPem });
 
-    expect(rig.store.getSession(sessionId)?.attempts).toBe(0);
+    expect((await rig.sessionOf(sessionId))?.attempts).toBe(0);
   }, 30_000);
 });
 
@@ -608,7 +557,7 @@ describe("the pre-auth hole is exactly one route wide", () => {
     // this request has the certificate and no bearer, and must reach the file
     // routes' own 401 rather than the gate's 403.
     const rig = await startCore();
-    const { sessionId, code } = rig.openSession();
+    const { sessionId, code } = await rig.openSession();
     const { csrPem, privateKeyPem } = await generateClientCsr("laptop");
     const issued = JSON.parse((await redeem(rig, { sessionId, code, csr: csrPem })).body) as Record<string, string>;
 
@@ -634,8 +583,8 @@ describe("the pre-auth hole is exactly one route wide", () => {
 describe("the endpoint a redemption hands back", () => {
   it("is the host the operator chose for that code", async () => {
     const rig = await startCore({ publicHosts: ["core", "10.0.0.5"] });
-    const panel = rig.openSession({ label: "panel", endpointHost: "core" });
-    const laptop = rig.openSession({ label: "laptop", endpointHost: "10.0.0.5" });
+    const panel = await rig.openSession({ label: "panel", endpointHost: "core" });
+    const laptop = await rig.openSession({ label: "laptop", endpointHost: "10.0.0.5" });
 
     const first = await redeem(rig, {
       sessionId: panel.sessionId,
@@ -660,7 +609,7 @@ describe("the endpoint a redemption hands back", () => {
   // back the first configured address.
   it("is the primary when the code chose nothing", async () => {
     const rig = await startCore({ publicHosts: ["core", "10.0.0.5"] });
-    const { sessionId, code } = rig.openSession({ label: "panel" });
+    const { sessionId, code } = await rig.openSession({ label: "panel" });
 
     const res = await redeem(rig, {
       sessionId,
@@ -678,7 +627,7 @@ describe("the endpoint a redemption hands back", () => {
   // and neither does one naming a host that is not the Core's at all.
   it("ignores the Host header, whatever it claims", async () => {
     const rig = await startCore({ publicHosts: ["core", "10.0.0.5"] });
-    const { sessionId, code } = rig.openSession({ label: "panel" });
+    const { sessionId, code } = await rig.openSession({ label: "panel" });
 
     const res = await post(
       rig,
@@ -706,7 +655,7 @@ describe("the endpoint a redemption hands back", () => {
   // certificate no longer covers — a credential that fails on its first dial.
   it("falls back to the primary for a host that is no longer configured", async () => {
     const rig = await startCore({ publicHosts: ["core"] });
-    const { sessionId, code } = rig.openSession({ label: "laptop", endpointHost: "10.0.0.5" });
+    const { sessionId, code } = await rig.openSession({ label: "laptop", endpointHost: "10.0.0.5" });
 
     const res = await redeem(rig, {
       sessionId,

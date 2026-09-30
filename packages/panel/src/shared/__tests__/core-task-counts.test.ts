@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import type {
   CoreLinkProjectSnapshot,
   CoreLinkTaskSnapshot,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/sdk/core";
 import { getPinnedProjectStatusDots } from "~/components/views/project-bar-status-dots";
 import {
   coreTaskCountsByProject,

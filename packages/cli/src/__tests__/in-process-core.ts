@@ -62,7 +62,7 @@ import {
 } from "@actana/core/pty-core-link-server";
 import { generateCertMaterial } from "@actana/shared/core-cert-material";
 import { signBearer, verifyBearer } from "@actana/shared/core-link-bearer";
-import type { CoreLinkEvent } from "@actana/sdk/core-link-frames.ts";
+import type { CoreLinkEvent } from "@actana/sdk/core";
 
 export const CORE_SECRET = "cli-in-process-core-secret-at-least-32-bytes";
 export const CORE_ID = "core_in_process";

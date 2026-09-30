@@ -30,7 +30,7 @@ import {
   type HarnessCliConfig,
 } from "./harness-cli-config";
 import type { Harness } from "./domain";
-import type { CoreLinkHarnessAvailabilityMap } from "@actana/sdk/core-link-frames";
+import type { CoreLinkHarnessAvailabilityMap } from "./sdk-link-frames";
 import type { ActanaSystem } from "./actana-system-port";
 import { withNpmUserPrefixIfNeeded, resolveNpmGlobalPrefixViaRun } from "./npm-install-prefix";
 import { ensureOperatorLoginPathOnDisk } from "./operator-login-path";

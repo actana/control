@@ -21,7 +21,7 @@ import type {
   CoreLinkRequestFrame,
   CoreLinkResponseFrame,
   CoreLinkStreamFrame,
-} from "@actana/sdk/core-link-frames";
+} from "@actana/shared/sdk-link-frames";
 import type { CoreDialStatus } from "~/shared/cores";
 import type { PanelSessionLock } from "~/shared/session-write-access";
 

@@ -87,7 +87,7 @@ export type PairingSession = {
    * tell *this* client to dial me?" from something it stored when the operator
    * minted the code — never from the request. A `Host` header is chosen by the
    * caller, and a client that pinned it would have pinned whatever an attacker
-   * wrote there; `core-pairing-routes.ts` says so at the option that reads this.
+   * wrote there; the SDK's `createPairing` (`endpointScheme`, `publicHosts`) says so at the option that reads this.
    *
    * **It can only ever name a host the certificate already covers.** `actana
    * pair new --public-host` refuses an address that is not in the Core's

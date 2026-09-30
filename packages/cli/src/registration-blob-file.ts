@@ -26,7 +26,7 @@
 //
 // [adr]: ../../../docs/adr/0025-the-protocol-ships-with-the-client.md
 
-import type { CoreRegistrationBlob } from "@actana/sdk/core-registration-blob.ts";
+import type { CoreRegistrationBlob } from "@actana/sdk/pairing";
 
 /** A decode that worked, or the one line to print at the operator. */
 export type BlobDecodeResult =
